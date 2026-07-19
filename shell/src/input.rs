@@ -127,16 +127,8 @@ pub fn poll_events(input: &InputState) -> Vec<RawEvent> {
     }
     let wheel = mq::mouse_wheel().1;
     if wheel != 0.0 {
-        // Trackpads report small continuous deltas, discrete wheels big
-        // notchy ones (±120-ish); normalize both toward gentle notch
-        // counts. Heuristic — revisit if a device feels off.
-        let delta = if wheel.abs() >= 40.0 {
-            wheel / 120.0
-        } else {
-            wheel / 10.0
-        };
         events.push(RawEvent::Wheel {
-            delta: delta.clamp(-3.0, 3.0),
+            delta: normalize_wheel(wheel),
         });
     }
     for (button, mq_button) in [
@@ -609,5 +601,40 @@ fn train(game: &mut Game, kind: UnitKind) {
         .or_else(|| game.home_foundry().map(|b| b.id));
     if let Some(building) = building {
         game.issue(Command::Train { building, kind });
+    }
+}
+
+/// Normalizes a raw wheel reading toward gentle notch counts. Trackpads
+/// report small continuous deltas, discrete wheels big notchy ones
+/// (±120-ish); both should zoom at a comparable, capped rate. Heuristic —
+/// revisit if a device feels off.
+fn normalize_wheel(raw: f32) -> f32 {
+    let delta = if raw.abs() >= 40.0 {
+        raw / 120.0
+    } else {
+        raw / 10.0
+    };
+    delta.clamp(-3.0, 3.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wheel_notches_and_trackpad_swipes_land_in_the_same_range() {
+        // One mouse notch and a firm trackpad swipe both read as ~1 step.
+        assert_eq!(normalize_wheel(120.0), 1.0);
+        assert_eq!(normalize_wheel(-120.0), -1.0);
+        assert_eq!(normalize_wheel(10.0), 1.0);
+        assert!(normalize_wheel(2.0) > 0.0 && normalize_wheel(2.0) < 0.5);
+    }
+
+    #[test]
+    fn wheel_bursts_are_capped() {
+        assert_eq!(normalize_wheel(1200.0), 3.0);
+        assert_eq!(normalize_wheel(-1200.0), -3.0);
+        // The cap also catches fast trackpad flicks below the notch cutoff.
+        assert_eq!(normalize_wheel(39.9), 3.0);
     }
 }

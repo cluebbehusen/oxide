@@ -1086,3 +1086,95 @@ fn destroying_the_last_foundry_wins_and_freezes() {
         })
     );
 }
+
+#[test]
+fn congestion_survives_nonconsecutive_unit_ids() {
+    // Doorstep rotation and pair iteration both walk unit ids; this run
+    // punches holes in the sequence first. Three mid-id harvesters spawn
+    // beside an enemy sentinel and die to its auto-acquire, then the
+    // survivors (ids 0, 1, 4, 6, 7) crowd one node — the economy must keep
+    // flowing exactly as it does with dense ids.
+    let scenario = Scenario {
+        name: "id-gaps".into(),
+        seed: 42,
+        map: vec![
+            "########################".into(),
+            "#1..........s..........#".into(),
+            "#...........s..........#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#..................2...#".into(),
+            "#......................#".into(),
+            "########################".into(),
+        ],
+        players: vec![
+            PlayerSpec {
+                name: "Ferrous".into(),
+                faction: Faction::Ferrous,
+                scrap: 0,
+                bot: false,
+            },
+            PlayerSpec {
+                name: "Cupric".into(),
+                faction: Faction::Cupric,
+                scrap: 0,
+                bot: false,
+            },
+        ],
+        units: vec![
+            unit(0, UnitKind::Harvester, 4, 1),
+            unit(0, UnitKind::Harvester, 5, 1),
+            unit(0, UnitKind::Harvester, 19, 4), // victim
+            unit(0, UnitKind::Harvester, 20, 4), // victim
+            unit(0, UnitKind::Harvester, 4, 2),
+            unit(0, UnitKind::Harvester, 19, 5), // victim
+            unit(0, UnitKind::Harvester, 6, 1),
+            unit(0, UnitKind::Harvester, 5, 2),
+            unit(1, UnitKind::Sentinel, 20, 5),
+        ],
+    };
+    let mut state = scenario.build().unwrap();
+
+    let mut dead = 0;
+    run_until(&mut state, 1500, |_, events| {
+        dead += events
+            .iter()
+            .filter(|e| matches!(e, Event::UnitDied { .. }))
+            .count();
+        dead == 3
+    });
+    let survivors: Vec<UnitId> = state
+        .units()
+        .iter()
+        .filter(|u| u.player == PlayerId(0))
+        .map(|u| u.id)
+        .collect();
+    assert_eq!(
+        survivors,
+        [0, 1, 4, 6, 7].map(UnitId),
+        "the wrong harvesters died"
+    );
+
+    state.tick(&[cmd(
+        0,
+        Command::Harvest {
+            units: survivors,
+            node: TilePos::new(12, 1),
+        },
+    )]);
+    let mut deposited = [0u32; 2];
+    for tick in 0..3000u64 {
+        let report = state.tick(&[]);
+        for event in &report.events {
+            if let Event::ScrapDeposited { amount, .. } = event {
+                deposited[(tick >= 1500) as usize] += amount;
+            }
+        }
+    }
+    assert!(deposited[0] >= 50, "economy never started: {deposited:?}");
+    assert!(
+        deposited[1] >= 50,
+        "economy stalled with gapped ids: {deposited:?}"
+    );
+}

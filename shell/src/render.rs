@@ -750,11 +750,15 @@ pub fn minimap_rect(game: &Game) -> Rect {
 /// The world point under a screen position, if it lies on the minimap —
 /// how clicks jump the camera (and where armed attack-moves land).
 pub fn minimap_world_at(game: &Game, screen: Vec2) -> Option<Vec2> {
-    let rect = minimap_rect(game);
+    minimap_world_in(minimap_rect(game), game.state.map().width(), screen)
+}
+
+/// Testable core of [`minimap_world_at`] (no window queries).
+pub fn minimap_world_in(rect: Rect, map_w: i32, screen: Vec2) -> Option<Vec2> {
     if !rect.contains(screen) {
         return None;
     }
-    let scale = rect.w / game.state.map().width() as f32;
+    let scale = rect.w / map_w as f32;
     Some(vec2(
         (screen.x - rect.x) / scale,
         (screen.y - rect.y) / scale,
@@ -860,4 +864,59 @@ fn draw_minimap(game: &Game) {
     let x2 = rect.x + hi.x.min(game.state.map().width() as f32) * scale;
     let y2 = rect.y + hi.y.min(game.state.map().height() as f32) * scale;
     draw_rectangle_lines(x, y, (x2 - x).max(4.0), (y2 - y).max(4.0), 1.5, BONE);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VIEWPORT: Vec2 = vec2(1280.0, 800.0);
+
+    #[test]
+    fn minimap_keeps_map_aspect_and_fits_its_budget() {
+        for (w, h) in [(40, 24), (26, 16), (44, 20), (48, 30), (256, 256)] {
+            let rect = minimap_rect_scaled(w, h, VIEWPORT, 1.0);
+            assert!(rect.w <= MINIMAP_MAX.x + 0.01 && rect.h <= MINIMAP_MAX.y + 0.01);
+            let map_aspect = w as f32 / h as f32;
+            assert!(
+                (rect.w / rect.h - map_aspect).abs() < 0.01,
+                "{w}x{h} squished to {}x{}",
+                rect.w,
+                rect.h
+            );
+        }
+    }
+
+    #[test]
+    fn minimap_hugs_the_bottom_right_at_any_ui_scale() {
+        for s in [1.0, 2.0] {
+            let rect = minimap_rect_scaled(40, 24, VIEWPORT, s);
+            assert_eq!(rect.x + rect.w, VIEWPORT.x - 12.0 * s);
+            assert_eq!(rect.y + rect.h, VIEWPORT.y - 34.0 * s);
+        }
+    }
+
+    #[test]
+    fn minimap_clicks_map_back_to_world_tiles() {
+        let (map_w, map_h) = (40, 24);
+        let rect = minimap_rect_scaled(map_w, map_h, VIEWPORT, 1.0);
+        let scale = rect.w / map_w as f32;
+        // The pixel at a tile center's minimap position maps back to it.
+        for tile in [(0, 0), (20, 12), (39, 23)] {
+            let screen = vec2(
+                rect.x + (tile.0 as f32 + 0.5) * scale,
+                rect.y + (tile.1 as f32 + 0.5) * scale,
+            );
+            let world = minimap_world_in(rect, map_w, screen).unwrap();
+            assert_eq!((world.x.floor() as i32, world.y.floor() as i32), tile);
+        }
+        assert!(map_h as f32 * scale <= rect.h + 0.01);
+    }
+
+    #[test]
+    fn clicks_off_the_minimap_are_not_world_clicks() {
+        let rect = minimap_rect_scaled(40, 24, VIEWPORT, 1.0);
+        assert!(minimap_world_in(rect, 40, vec2(rect.x - 1.0, rect.y)).is_none());
+        assert!(minimap_world_in(rect, 40, vec2(0.0, 0.0)).is_none());
+    }
 }

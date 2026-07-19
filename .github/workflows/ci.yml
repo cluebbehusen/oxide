@@ -1,0 +1,54 @@
+# Oxide CI: lint, test, and prove cross-platform determinism.
+#
+# Authored before the repo had a remote — it runs the day this lands on
+# GitHub. The determinism step is the important one: the state-hash
+# fixtures were blessed on one machine, and every OS in the matrix must
+# reproduce them bit-for-bit or the "same seed, same bits, every platform"
+# invariant is broken.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # macroquad links against the platform's windowing/audio stacks even
+      # in headless test builds.
+      - name: Install Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
+
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      # The whole point of the fixed-point sim: hashes blessed on one
+      # platform must reproduce exactly on every other.
+      - name: Cross-platform determinism
+        run: cargo test -p oxide-driver --test hashes -- --nocapture
