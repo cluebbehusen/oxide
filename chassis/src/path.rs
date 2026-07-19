@@ -10,9 +10,89 @@
 //! every key unique, so ties cannot fall through to any unspecified heap
 //! behavior. Same query, same path, every time.
 
+use crate::fx::{Fx, Vec2Fx};
 use crate::grid::{CARDINALS, DIAGONALS, TilePos};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
+
+/// Whether the open segment between `a` and `b` crosses a tile that fails
+/// `passable`. The endpoints' own tiles are never tested — a shooter fires
+/// *from* its tile and a wall-mounted target is hit *on* its tile.
+///
+/// Deterministic supercover traversal (Amanatides–Woo in fixed point):
+/// every tile the segment passes through is visited; an exact corner
+/// crossing conservatively visits both adjacent tiles, so a diagonal shot
+/// cannot slip between two blockers, mirroring [`astar`]'s no-corner-cut
+/// rule.
+pub fn line_blocked(a: Vec2Fx, b: Vec2Fx, mut passable: impl FnMut(TilePos) -> bool) -> bool {
+    let start = TilePos::containing(a);
+    let end = TilePos::containing(b);
+    if start == end {
+        return false;
+    }
+    let delta = b - a;
+    let step_x: i32 = if delta.x > Fx::ZERO {
+        1
+    } else if delta.x < Fx::ZERO {
+        -1
+    } else {
+        0
+    };
+    let step_y: i32 = if delta.y > Fx::ZERO {
+        1
+    } else if delta.y < Fx::ZERO {
+        -1
+    } else {
+        0
+    };
+    // Parametric distance (0..1 along the segment) to the next x/y tile
+    // boundary, and per-tile increments. All exact Q32.32 arithmetic.
+    let (mut t_max_x, t_delta_x) = if step_x == 0 {
+        (Fx::MAX, Fx::MAX)
+    } else {
+        let next_boundary = Fx::from_num(if step_x > 0 { start.x + 1 } else { start.x });
+        ((next_boundary - a.x) / delta.x, (Fx::ONE / delta.x).abs())
+    };
+    let (mut t_max_y, t_delta_y) = if step_y == 0 {
+        (Fx::MAX, Fx::MAX)
+    } else {
+        let next_boundary = Fx::from_num(if step_y > 0 { start.y + 1 } else { start.y });
+        ((next_boundary - a.y) / delta.y, (Fx::ONE / delta.y).abs())
+    };
+
+    let mut tile = start;
+    // Bounded by the tile-space extent of the segment, corner visits incl.
+    let max_steps = (end.x - start.x).abs() + (end.y - start.y).abs() + 2;
+    for _ in 0..max_steps {
+        if t_max_x == t_max_y && step_x != 0 && step_y != 0 {
+            // Exact corner crossing: check both tiles flanking the corner.
+            let side_a = tile.offset(step_x, 0);
+            let side_b = tile.offset(0, step_y);
+            if side_a != end && !passable(side_a) {
+                return true;
+            }
+            if side_b != end && !passable(side_b) {
+                return true;
+            }
+            tile = tile.offset(step_x, step_y);
+            t_max_x += t_delta_x;
+            t_max_y += t_delta_y;
+        } else if t_max_x < t_max_y {
+            tile = tile.offset(step_x, 0);
+            t_max_x += t_delta_x;
+        } else {
+            tile = tile.offset(0, step_y);
+            t_max_y += t_delta_y;
+        }
+        if tile == end {
+            return false;
+        }
+        if !passable(tile) {
+            return true;
+        }
+    }
+    false // numerically exhausted without hitting anything — clear
+}
 
 const STRAIGHT_COST: u32 = 10;
 const DIAGONAL_COST: u32 = 14;
@@ -207,6 +287,59 @@ mod tests {
         let first = find(rows, (0, 0), (7, 3)).unwrap();
         for _ in 0..10 {
             assert_eq!(find(rows, (0, 0), (7, 3)).unwrap(), first);
+        }
+    }
+
+    fn center(x: i32, y: i32) -> Vec2Fx {
+        TilePos::new(x, y).center()
+    }
+
+    #[test]
+    fn line_across_open_ground_is_clear() {
+        let (grid, ..) = arena(&["......", "......", "......"]);
+        let clear = |p: TilePos| grid.get(p).copied().unwrap_or(false);
+        assert!(!line_blocked(center(0, 1), center(5, 1), clear));
+        assert!(!line_blocked(center(0, 0), center(5, 2), clear));
+        assert!(!line_blocked(center(2, 2), center(2, 2), clear));
+    }
+
+    #[test]
+    fn line_through_a_wall_is_blocked() {
+        let (grid, ..) = arena(&["...#..", "...#..", "...#.."]);
+        let open = |p: TilePos| grid.get(p).copied().unwrap_or(false);
+        assert!(line_blocked(center(0, 1), center(5, 1), open));
+        assert!(line_blocked(center(1, 0), center(5, 2), open));
+        // Parallel to the wall on the open side: clear.
+        assert!(!line_blocked(center(0, 0), center(2, 2), open));
+    }
+
+    #[test]
+    fn endpoints_never_block() {
+        // Target stands on (2,1), which is itself impassable (a building
+        // tile): the segment to it must not count the endpoint.
+        let (grid, ..) = arena(&["....", "..#.", "...."]);
+        let open = |p: TilePos| grid.get(p).copied().unwrap_or(false);
+        assert!(!line_blocked(center(0, 1), center(2, 1), open));
+        assert!(!line_blocked(center(2, 1), center(0, 1), open));
+    }
+
+    #[test]
+    fn exact_corner_crossing_cannot_slip_between_blockers() {
+        // The diagonal from (0,0) to (1,1) passes exactly through the
+        // corner shared with (1,0) and (0,1) — both blocked.
+        let (grid, ..) = arena(&[".#", "#."]);
+        let open = |p: TilePos| grid.get(p).copied().unwrap_or(false);
+        assert!(line_blocked(center(0, 0), center(1, 1), open));
+    }
+
+    #[test]
+    fn line_is_deterministic_and_symmetric_enough() {
+        let rows = &["........", "..##....", "....#...", "........"];
+        let (grid, ..) = arena(rows);
+        let open = |p: TilePos| grid.get(p).copied().unwrap_or(false);
+        let forward = line_blocked(center(0, 0), center(7, 3), open);
+        for _ in 0..10 {
+            assert_eq!(line_blocked(center(0, 0), center(7, 3), open), forward);
         }
     }
 

@@ -92,20 +92,24 @@ fn attack_move(state: &mut State, id: UnitId, goal: TilePos) {
 }
 
 /// Walks toward an exact goal tile; going idle on arrival or when no route
-/// exists.
+/// exists. A unit close to the goal that bumps into an already-settled
+/// arrival also counts as arrived — the whole group parks instead of
+/// churning around the click point forever.
 fn walk(state: &mut State, id: UnitId, goal: TilePos) {
     let unit = state.unit(id).expect("caller checked");
     let tile = unit.tile();
-    if tile == goal {
+    if tile == goal || touching_settled_arrival(state, id, goal) {
         let unit = state.unit_mut(id).expect("caller checked");
         unit.order = Order::Idle;
         unit.path = None;
         return;
     }
+    let unit = state.unit(id).expect("caller checked");
     let has_fresh_path = unit.path.as_ref().is_some_and(|p| p.goal == goal);
     if has_fresh_path {
         return;
     }
+    let tile = unit.tile();
     let path = astar_for(state, tile, goal);
     let unit = state.unit_mut(id).expect("caller checked");
     match path {
@@ -121,6 +125,28 @@ fn walk(state: &mut State, id: UnitId, goal: TilePos) {
             unit.path = None;
         }
     }
+}
+
+/// Whether this near-goal unit is in contact with a settled (idle,
+/// pathless) unit that itself sits near the same goal — the arrival wave
+/// propagates outward from the first unit to park.
+fn touching_settled_arrival(state: &State, id: UnitId, goal: TilePos) -> bool {
+    let unit = state.unit(id).expect("caller checked");
+    let near_sq = crate::stats::ARRIVAL_NEAR * crate::stats::ARRIVAL_NEAR;
+    let goal_center = goal.center();
+    if unit.pos.dist_sq(goal_center) > near_sq {
+        return false;
+    }
+    let my_radius = unit.kind.stats().radius;
+    let contact_slack = chassis::fx::Fx::lit("0.05");
+    state.units.iter().any(|other| {
+        other.id != id
+            && other.hp > 0
+            && other.path.is_none()
+            && other.order == Order::Idle
+            && other.pos.dist_sq(goal_center) <= near_sq
+            && unit.pos.dist(other.pos) <= my_radius + other.kind.stats().radius + contact_slack
+    })
 }
 
 /// The harvest loop: walk to node, extract to capacity, haul to the nearest
@@ -283,7 +309,23 @@ fn attack(
         return;
     };
 
-    if pos.dist_sq(aim_point) <= atk.range * atk.range {
+    // In range only counts with a clear line: rock is cover, and buildings
+    // (other than the victim itself) block shots. Scrap piles are low junk
+    // — fire passes over them. No LOS → keep approaching; the chase path
+    // already routes around whatever is in the way.
+    let clear_shot = |t: TilePos| {
+        let terrain_open = state
+            .map
+            .tile(t)
+            .is_some_and(|tile| tile.terrain != crate::map::Terrain::Rock);
+        let building_open = match target {
+            Target::Building(bid) => state.building_at(t).is_none_or(|b| b.id == bid),
+            _ => state.building_at(t).is_none(),
+        };
+        terrain_open && building_open
+    };
+    let in_range = pos.dist_sq(aim_point) <= atk.range * atk.range;
+    if in_range && !chassis::path::line_blocked(pos, aim_point, clear_shot) {
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = None;
         if cooldown > 0 {

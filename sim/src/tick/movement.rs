@@ -7,16 +7,49 @@
 //! but tiles are only ever blocked by terrain and buildings, so pathfinding
 //! stays deadlock-free while crowds physically jostle.
 
-use crate::state::State;
+use crate::map::Map;
+use crate::state::{Order, State};
 use chassis::fx::{Fx, Vec2Fx, sqrt};
 use chassis::grid::TilePos;
 
-use crate::stats::{COLLISION_ITERATIONS, COLLISION_MAX_STEP};
+use crate::stats::{
+    ANCHORED_PUSH_SHARE, COLLISION_ITERATIONS, COLLISION_MAX_STEP, WAYPOINT_ACCEPT,
+};
 
-/// Advances every unit along its path by its speed, consuming waypoints
-/// exactly (positions land on tile centers, never near them).
+/// Whether skipping from waypoint `cur` toward `nxt` early (from anywhere
+/// within the acceptance radius) can clip impassable ground. Cardinal
+/// neighbors are always safe — the swept band stays inside two open tiles.
+/// Diagonals are safe only when both shared cardinal tiles are open (then
+/// the whole 2×2 block is open); that is the same invariant A* enforces on
+/// the path itself, re-checked here because acceptance cuts the corner
+/// tighter than the path did.
+fn early_advance_safe(
+    cur: TilePos,
+    nxt: TilePos,
+    map: &Map,
+    buildings: &[crate::state::Building],
+) -> bool {
+    let open = |t: TilePos| map.terrain_passable(t) && !buildings.iter().any(|b| b.contains(t));
+    let (dx, dy) = (nxt.x - cur.x, nxt.y - cur.y);
+    if dx == 0 || dy == 0 {
+        return true;
+    }
+    open(cur.offset(dx, 0)) && open(cur.offset(0, dy))
+}
+
+/// Advances every unit along its path by its speed. Intermediate waypoints
+/// are accepted within [`WAYPOINT_ACCEPT`] (when geometry allows) so a
+/// unit shoved off the line flows forward instead of re-seeking each exact
+/// center; final waypoints are still landed exactly.
 pub(super) fn run(state: &mut State) {
-    for unit in &mut state.units {
+    // Disjoint field borrows: units move, terrain is read-only.
+    let State {
+        units,
+        map,
+        buildings,
+        ..
+    } = state;
+    for unit in units.iter_mut() {
         if unit.hp == 0 {
             continue;
         }
@@ -29,6 +62,13 @@ pub(super) fn run(state: &mut State) {
             };
             let center = waypoint.center();
             let dist = unit.pos.dist(center);
+            if let Some(&next_wp) = path.waypoints.get(path.next as usize + 1)
+                && dist <= WAYPOINT_ACCEPT
+                && early_advance_safe(waypoint, next_wp, map, buildings)
+            {
+                path.next += 1;
+                continue; // spend the budget on the next leg instead
+            }
             if dist <= budget {
                 unit.pos = center;
                 budget -= dist;
@@ -43,6 +83,12 @@ pub(super) fn run(state: &mut State) {
             }
         }
     }
+}
+
+/// A unit that is standing still to work — extracting or holding fire on a
+/// target — resists shoving; movers yield around it.
+fn is_anchored(unit: &crate::state::Unit) -> bool {
+    unit.path.is_none() && matches!(unit.order, Order::Harvest { .. } | Order::Attack { .. })
 }
 
 /// Unit directions for perfectly stacked pairs, indexed by id xor — any
@@ -137,13 +183,19 @@ fn relaxation_pass(state: &mut State) -> bool {
                     } else {
                         (delta / dist, min_dist - dist)
                     };
-                    let step = (overlap * chassis::fx::HALF).min(COLLISION_MAX_STEP);
-                    let push = dir * step;
-                    let away_j = pos_j + push;
+                    // Anchored units (working in place) yield a sliver;
+                    // movers absorb the correction and flow around them.
+                    let (share_i, share_j) =
+                        match (is_anchored(&state.units[i]), is_anchored(&state.units[j])) {
+                            (true, false) => (ANCHORED_PUSH_SHARE, Fx::ONE - ANCHORED_PUSH_SHARE),
+                            (false, true) => (Fx::ONE - ANCHORED_PUSH_SHARE, ANCHORED_PUSH_SHARE),
+                            _ => (chassis::fx::HALF, chassis::fx::HALF),
+                        };
+                    let away_j = pos_j + dir * (overlap * share_j).min(COLLISION_MAX_STEP);
                     if state.passable(TilePos::containing(away_j)) {
                         state.units[j].pos = away_j;
                     }
-                    let away_i = pos_i - push;
+                    let away_i = pos_i - dir * (overlap * share_i).min(COLLISION_MAX_STEP);
                     if state.passable(TilePos::containing(away_i)) {
                         state.units[i].pos = away_i;
                     }

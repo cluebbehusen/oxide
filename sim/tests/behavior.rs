@@ -424,6 +424,105 @@ fn bot_economy_progresses_against_an_idle_opponent() {
 }
 
 #[test]
+fn rock_is_cover_until_the_attacker_repositions() {
+    // Attacker and victim sit exactly 2 tiles apart — inside range 2.5 —
+    // with a 1-thick rock wall between them. Without LOS the first shot
+    // would land on the command tick from the starting tile; with it, the
+    // attacker must first walk around either end of the wall.
+    let scenario = Scenario {
+        name: "cover".into(),
+        seed: 42,
+        map: vec![
+            "############".into(),
+            "#1.........#".into(),
+            "#....#.....#".into(),
+            "#....#.....#".into(),
+            "#....#.....#".into(),
+            "#........2.#".into(),
+            "#..........#".into(),
+            "############".into(),
+        ],
+        players: arena(vec![]).players,
+        units: vec![
+            unit(0, UnitKind::Sentinel, 4, 3),
+            unit(1, UnitKind::Harvester, 6, 3),
+        ],
+    };
+    let mut state = scenario.build().unwrap();
+    let (attacker, victim) = (state.units()[0].id, state.units()[1].id);
+    let start_tile = state.unit(attacker).unwrap().tile();
+    let mut first_hit_tile = None;
+    let mut events = state
+        .tick(&[cmd(
+            0,
+            Command::Attack {
+                units: vec![attacker],
+                target: Target::Unit(victim),
+            },
+        )])
+        .events;
+    for _ in 0..600 {
+        if first_hit_tile.is_none() && events.iter().any(|e| matches!(e, Event::AttackHit { .. })) {
+            first_hit_tile = Some(state.unit(attacker).unwrap().tile());
+        }
+        if state.unit(victim).is_none() {
+            break;
+        }
+        events = state.tick(&[]).events;
+    }
+    assert!(state.unit(victim).is_none(), "victim must eventually die");
+    let hit_tile = first_hit_tile.expect("a hit must have been observed");
+    assert_ne!(
+        hit_tile, start_tile,
+        "the first shot must come from a repositioned tile — firing through \
+         the rock means LOS failed"
+    );
+}
+
+#[test]
+fn group_moves_fan_out_over_distinct_tiles() {
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 3, 2),
+        unit(0, UnitKind::Harvester, 4, 2),
+        unit(0, UnitKind::Harvester, 3, 6),
+        unit(0, UnitKind::Harvester, 4, 6),
+    ])
+    .build()
+    .unwrap();
+    let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: ids.clone(),
+            goal: TilePos::new(10, 4),
+        },
+    )]);
+    for _ in 0..400 {
+        state.tick(&[]);
+    }
+    // Everyone settled…
+    assert!(
+        state.units().iter().all(|u| u.order == Order::Idle),
+        "group should settle: {:?}",
+        state.units().iter().map(|u| u.order).collect::<Vec<_>>()
+    );
+    // …near the click, on distinct goals (spread), without stacking.
+    let mut tiles: Vec<TilePos> = state.units().iter().map(|u| u.tile()).collect();
+    for t in &tiles {
+        assert!(
+            t.chebyshev(TilePos::new(10, 4)) <= 3,
+            "unit parked too far from the group goal: {t}"
+        );
+    }
+    tiles.sort_unstable();
+    tiles.dedup();
+    assert!(
+        tiles.len() >= 3,
+        "group order must fan out, not stack on one tile"
+    );
+}
+
+#[test]
 fn idle_sentinel_auto_acquires_intruder() {
     let mut state = arena(vec![
         unit(0, UnitKind::Sentinel, 4, 6),

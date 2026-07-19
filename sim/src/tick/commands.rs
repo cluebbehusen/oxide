@@ -77,6 +77,47 @@ fn for_owned_units(
     applied
 }
 
+/// The units of `ids` that exist and belong to `player`, deduplicated and
+/// in id order — the deterministic basis for spread-goal assignment.
+fn accepted_units(state: &State, player: PlayerId, ids: &[UnitId]) -> Vec<UnitId> {
+    let mut accepted: Vec<UnitId> = ids
+        .iter()
+        .copied()
+        .filter(|id| state.unit(*id).is_some_and(|u| u.player == player))
+        .collect();
+    accepted.sort_unstable();
+    accepted.dedup();
+    accepted
+}
+
+/// The first `count` passable tiles ring-scanned outward from `center` —
+/// per-unit goals for a group order, so crowds fan out over an area
+/// instead of magnetizing onto a single tile. Falls back to repeating the
+/// last tile if open ground runs out (they'll jostle; that's honest).
+fn spread_goals(state: &State, center: TilePos, count: usize) -> Vec<TilePos> {
+    let mut out = Vec::with_capacity(count);
+    'scan: for r in 0..=GOAL_SNAP_RADIUS + 3 {
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs().max(dy.abs()) != r {
+                    continue;
+                }
+                let t = center.offset(dx, dy);
+                if state.passable(t) {
+                    out.push(t);
+                    if out.len() == count {
+                        break 'scan;
+                    }
+                }
+            }
+        }
+    }
+    while out.len() < count {
+        out.push(out.last().copied().unwrap_or(center));
+    }
+    out
+}
+
 fn apply_move(
     state: &mut State,
     player: PlayerId,
@@ -88,14 +129,18 @@ fn apply_move(
     }
     let goal =
         find_nearby_passable(state, goal, GOAL_SNAP_RADIUS).ok_or(RejectReason::UnreachableGoal)?;
-    let applied = for_owned_units(state, player, units, |u| {
-        u.order = Order::Move { goal };
-        u.path = None;
-        u.progress = 0;
-    });
-    (applied > 0)
-        .then_some(())
-        .ok_or(RejectReason::NoValidUnits)
+    let accepted = accepted_units(state, player, units);
+    if accepted.is_empty() {
+        return Err(RejectReason::NoValidUnits);
+    }
+    let goals = spread_goals(state, goal, accepted.len());
+    for (id, goal) in accepted.into_iter().zip(goals) {
+        let unit = state.unit_mut(id).expect("filtered above");
+        unit.order = Order::Move { goal };
+        unit.path = None;
+        unit.progress = 0;
+    }
+    Ok(())
 }
 
 fn apply_attack(
@@ -154,18 +199,22 @@ fn apply_attack_move(
     }
     let goal =
         find_nearby_passable(state, goal, GOAL_SNAP_RADIUS).ok_or(RejectReason::UnreachableGoal)?;
-    let applied = for_owned_units(state, player, units, |u| {
-        u.order = if u.kind.stats().attack.is_some() {
+    let accepted = accepted_units(state, player, units);
+    if accepted.is_empty() {
+        return Err(RejectReason::NoValidUnits);
+    }
+    let goals = spread_goals(state, goal, accepted.len());
+    for (id, goal) in accepted.into_iter().zip(goals) {
+        let unit = state.unit_mut(id).expect("filtered above");
+        unit.order = if unit.kind.stats().attack.is_some() {
             Order::AttackMove { goal }
         } else {
             Order::Move { goal }
         };
-        u.path = None;
-        u.progress = 0;
-    });
-    (applied > 0)
-        .then_some(())
-        .ok_or(RejectReason::NoValidUnits)
+        unit.path = None;
+        unit.progress = 0;
+    }
+    Ok(())
 }
 
 fn apply_harvest(

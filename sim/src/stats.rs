@@ -155,6 +155,20 @@ pub const GOAL_SNAP_RADIUS: i32 = 3;
 /// dense crowds faster; each pass is a full pairwise sweep.
 pub const COLLISION_ITERATIONS: u32 = 3;
 
+/// How close to a waypoint counts as "reached" when another waypoint
+/// follows (final waypoints are still landed exactly). Kills the
+/// push-off/re-seek oscillation that made crowds grind.
+pub const WAYPOINT_ACCEPT: Fx = Fx::lit("0.35");
+
+/// Within this range of a shared goal, touching an already-arrived
+/// neighbor counts as arriving — crowds settle instead of churning on the
+/// click point.
+pub const ARRIVAL_NEAR: Fx = Fx::lit("1.5");
+
+/// Collision share taken by an anchored unit (extracting or firing from a
+/// hold); the mover takes the rest. Passers-by flow around workers.
+pub const ANCHORED_PUSH_SHARE: Fx = Fx::lit("0.1");
+
 /// Furthest one collision pass may displace one unit, in tiles. Keeps
 /// packed crowds settling smoothly instead of popping apart.
 pub const COLLISION_MAX_STEP: Fx = Fx::lit("0.12");
