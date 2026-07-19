@@ -236,7 +236,7 @@ fn draw_overlay(game: &Game, alpha: f32) {
         let pos = game.draw_pos(unit.id, unit.pos, alpha);
         let screen = game.camera.to_screen(pos);
         draw_text(
-            &format!("u{} {}hp", unit.id.0, unit.hp),
+            format!("u{} {}hp", unit.id.0, unit.hp),
             screen.x + 8.0,
             screen.y - 8.0,
             16.0,
@@ -274,16 +274,10 @@ fn draw_hud(game: &Game) {
         .iter()
         .filter(|u| u.player == game.human)
         .count();
+    draw_text(format!("SCRAP {}", me.scrap), 12.0, 22.0, 22.0, SCRAP_COLOR);
+    draw_text(format!("UNITS {my_units}"), 150.0, 22.0, 22.0, BONE);
     draw_text(
-        &format!("SCRAP {}", me.scrap),
-        12.0,
-        22.0,
-        22.0,
-        SCRAP_COLOR,
-    );
-    draw_text(&format!("UNITS {my_units}"), 150.0, 22.0, 22.0, BONE);
-    draw_text(
-        &format!("TICK {}", game.state.tick),
+        format!("TICK {}", game.state.tick),
         270.0,
         22.0,
         22.0,
@@ -293,7 +287,7 @@ fn draw_hud(game: &Game) {
         draw_text("PAUSED (P)", 420.0, 22.0, 22.0, DANGER);
     } else if (game.speed - 1.0).abs() > f64::EPSILON {
         draw_text(
-            &format!("SPEED x{:.2}", game.speed),
+            format!("SPEED x{:.2}", game.speed),
             420.0,
             22.0,
             22.0,
