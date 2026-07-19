@@ -22,8 +22,6 @@ use chassis::rng::Pcg32;
 const HARVESTER_TARGET: usize = 4;
 /// Enemies inside this radius of home trigger a full defensive response.
 const DEFENSE_RADIUS: Fx = Fx::lit("8");
-/// While marching on a building, enemies inside this radius get priority.
-const SKIRMISH_RADIUS: Fx = Fx::lit("3");
 /// The bot thinks every N ticks (staggered per player so two bots never act
 /// on the same tick).
 const CADENCE: u64 = 8;
@@ -151,6 +149,7 @@ impl Bot {
                     s.order
                         != (Order::Attack {
                             target: Target::Unit(intruder),
+                            resume: None,
                         })
                 })
                 .map(|s| s.id)
@@ -164,60 +163,35 @@ impl Bot {
             return commands;
         }
 
-        // Offense: enough idle sentinels → march on the nearest enemy
-        // building (or unit, if they're homeless).
+        // Offense: enough idle sentinels → attack-move at the nearest enemy
+        // building (or their units, if they're homeless). Attack-move does
+        // the fighting-on-the-way; no hand-holding needed.
         let idle_sentinels: Vec<_> = my_sentinels
             .iter()
             .filter(|s| s.order == Order::Idle)
             .map(|s| s.id)
             .collect();
         if idle_sentinels.len() >= self.attack_threshold {
-            let building_target = state
+            let march_goal = state
                 .buildings
                 .iter()
                 .filter(|b| b.player != me)
-                .map(|b| (home_center.dist_sq(b.center()), b.id))
+                .map(|b| (home_center.dist_sq(b.center()), b.id, b.anchor))
                 .min()
-                .map(|(_, id)| Target::Building(id));
-            let target = building_target.or_else(|| {
-                state
-                    .units
-                    .iter()
-                    .filter(|u| u.player != me && u.hp > 0)
-                    .map(|u| (home_center.dist_sq(u.pos), u.id))
-                    .min()
-                    .map(|(_, id)| Target::Unit(id))
-            });
-            if let Some(target) = target {
-                commands.push(self.cmd(Command::Attack {
+                .map(|(_, _, anchor)| anchor)
+                .or_else(|| {
+                    state
+                        .units
+                        .iter()
+                        .filter(|u| u.player != me && u.hp > 0)
+                        .map(|u| (home_center.dist_sq(u.pos), u.id, u.tile()))
+                        .min()
+                        .map(|(_, _, tile)| tile)
+                });
+            if let Some(goal) = march_goal {
+                commands.push(self.cmd(Command::AttackMove {
                     units: idle_sentinels,
-                    target,
-                }));
-            }
-        }
-
-        // Marching sentinels shouldn't ignore defenders shooting at them.
-        for sentinel in &my_sentinels {
-            if !matches!(
-                sentinel.order,
-                Order::Attack {
-                    target: Target::Building(_)
-                }
-            ) {
-                continue;
-            }
-            let nearby_enemy = state
-                .units
-                .iter()
-                .filter(|u| u.player != me && u.hp > 0)
-                .map(|u| (sentinel.pos.dist_sq(u.pos), u.id))
-                .filter(|(d, _)| *d <= SKIRMISH_RADIUS * SKIRMISH_RADIUS)
-                .min()
-                .map(|(_, id)| id);
-            if let Some(enemy) = nearby_enemy {
-                commands.push(self.cmd(Command::Attack {
-                    units: vec![sentinel.id],
-                    target: Target::Unit(enemy),
+                    goal,
                 }));
             }
         }

@@ -30,18 +30,17 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
             Order::Idle => idle(state, id),
             Order::Move { goal } => walk(state, id, goal),
             Order::Harvest { node } => harvest(state, id, node, events),
-            Order::Attack { target } => attack(state, id, target, events),
+            Order::Attack { target, resume } => attack(state, id, target, resume, events),
+            Order::AttackMove { goal } => attack_move(state, id, goal),
         }
     }
 }
 
-/// Idle combat units acquire the nearest enemy in aggro range (units first,
-/// then buildings; ties break to the lowest id).
-fn idle(state: &mut State, id: UnitId) {
+/// The nearest enemy in this unit's aggro range — units before buildings,
+/// ties to the lowest id. `None` for pacifists and empty horizons.
+fn acquire_target(state: &State, id: UnitId) -> Option<Target> {
     let unit = state.unit(id).expect("caller checked");
-    let Some(atk) = unit.kind.stats().attack else {
-        return;
-    };
+    let atk = unit.kind.stats().attack?;
     let (pos, me) = (unit.pos, unit.player);
     let aggro_sq = atk.aggro_range * atk.aggro_range;
 
@@ -52,23 +51,44 @@ fn idle(state: &mut State, id: UnitId) {
         .map(|u| (pos.dist_sq(u.pos), u.id))
         .filter(|(d, _)| *d <= aggro_sq)
         .min();
-    let target = if let Some((_, uid)) = unit_target {
-        Some(Target::Unit(uid))
-    } else {
-        state
-            .buildings
-            .iter()
-            .filter(|b| b.player != me && b.hp > 0)
-            .map(|b| (pos.dist_sq(b.closest_point_to(pos)), b.id))
-            .filter(|(d, _)| *d <= aggro_sq)
-            .min()
-            .map(|(_, bid)| Target::Building(bid))
-    };
-    if let Some(target) = target {
+    if let Some((_, uid)) = unit_target {
+        return Some(Target::Unit(uid));
+    }
+    state
+        .buildings
+        .iter()
+        .filter(|b| b.player != me && b.hp > 0)
+        .map(|b| (pos.dist_sq(b.closest_point_to(pos)), b.id))
+        .filter(|(d, _)| *d <= aggro_sq)
+        .min()
+        .map(|(_, bid)| Target::Building(bid))
+}
+
+/// Idle combat units pick fights on their own.
+fn idle(state: &mut State, id: UnitId) {
+    if let Some(target) = acquire_target(state, id) {
         let unit = state.unit_mut(id).expect("caller checked");
-        unit.order = Order::Attack { target };
+        unit.order = Order::Attack {
+            target,
+            resume: None,
+        };
         unit.path = None;
     }
+}
+
+/// March toward the goal, but engage anything that shows up on the way;
+/// the attack order remembers the goal and hands it back afterwards.
+fn attack_move(state: &mut State, id: UnitId, goal: TilePos) {
+    if let Some(target) = acquire_target(state, id) {
+        let unit = state.unit_mut(id).expect("caller checked");
+        unit.order = Order::Attack {
+            target,
+            resume: Some(goal),
+        };
+        unit.path = None;
+        return;
+    }
+    walk(state, id, goal);
 }
 
 /// Walks toward an exact goal tile; going idle on arrival or when no route
@@ -207,16 +227,38 @@ fn deliver(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
     }
 }
 
-/// Chase-and-hit. Range is measured to the target's closest point, damage is
-/// immediate, and a vanished target drops the unit back to idle (where
-/// auto-acquire finds the next one).
-fn attack(state: &mut State, id: UnitId, target: Target, events: &mut Vec<Event>) {
+/// Chase-and-hit. Range is measured to the target's closest point and damage
+/// is immediate. A vanished target hands control back to the remembered
+/// attack-move (or idle, where auto-acquire finds the next fight).
+fn attack(
+    state: &mut State,
+    id: UnitId,
+    target: Target,
+    resume: Option<TilePos>,
+    events: &mut Vec<Event>,
+) {
     let unit = state.unit(id).expect("caller checked");
     let Some(atk) = unit.kind.stats().attack else {
         state.unit_mut(id).expect("caller checked").order = Order::Idle;
         return;
     };
     let (pos, tile, cooldown) = (unit.pos, unit.tile(), unit.cooldown);
+
+    // An attack-mover pounding a building stays alert: an enemy *unit*
+    // wandering into aggro takes priority (deterministic — acquire prefers
+    // units), so marching armies fight back instead of tunnel-visioning.
+    if resume.is_some()
+        && matches!(target, Target::Building(_))
+        && let Some(better @ Target::Unit(_)) = acquire_target(state, id)
+    {
+        let unit = state.unit_mut(id).expect("caller checked");
+        unit.order = Order::Attack {
+            target: better,
+            resume,
+        };
+        unit.path = None;
+        return;
+    }
 
     // Resolve the target's current position; None means it is gone.
     let target_info: Option<(Vec2Fx, TilePos)> = match target {
@@ -231,7 +273,10 @@ fn attack(state: &mut State, id: UnitId, target: Target, events: &mut Vec<Event>
     };
     let Some((aim_point, target_tile)) = target_info else {
         let unit = state.unit_mut(id).expect("caller checked");
-        unit.order = Order::Idle;
+        unit.order = match resume {
+            Some(goal) => Order::AttackMove { goal },
+            None => Order::Idle,
+        };
         unit.path = None;
         return;
     };

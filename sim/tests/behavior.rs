@@ -198,6 +198,77 @@ fn attack_command_kills_and_reports() {
 }
 
 #[test]
+fn attack_move_engages_on_the_way_then_resumes() {
+    // A wider arena than `arena()`: the enemy Foundry must sit outside
+    // aggro range of the march route, or the marcher will (correctly)
+    // besiege it instead of arriving.
+    let scenario = Scenario {
+        name: "attack-move-lane".into(),
+        seed: 42,
+        map: vec![
+            "####################".into(),
+            "#1.................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#................2.#".into(),
+            "#..................#".into(),
+            "####################".into(),
+        ],
+        players: arena(vec![]).players,
+        units: vec![
+            unit(0, UnitKind::Sentinel, 2, 4),
+            unit(1, UnitKind::Harvester, 8, 6),
+        ],
+    };
+    let mut state = scenario.build().unwrap();
+    let (marcher, bystander) = (state.units[0].id, state.units[1].id);
+    // The bystander starts outside aggro (~5.7 tiles) but sits ~2 tiles off
+    // the route: the marcher must engage mid-march, kill it, then still
+    // arrive and stand down.
+    let goal = TilePos::new(12, 4);
+    state.tick(&[cmd(
+        0,
+        Command::AttackMove {
+            units: vec![marcher],
+            goal,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| s.unit(bystander).is_none());
+    run_until(&mut state, 400, |s, _| {
+        let u = s.unit(marcher).unwrap();
+        u.tile() == goal && u.order == Order::Idle
+    });
+}
+
+#[test]
+fn attack_move_with_only_harvesters_degrades_to_move() {
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 4, 2)])
+        .build()
+        .unwrap();
+    let mover = state.units[0].id;
+    let goal = TilePos::new(10, 2);
+    state.tick(&[cmd(
+        0,
+        Command::AttackMove {
+            units: vec![mover],
+            goal,
+        },
+    )]);
+    assert!(matches!(
+        state.unit(mover).unwrap().order,
+        Order::Move { .. }
+    ));
+    run_until(&mut state, 200, |s, _| {
+        s.unit(mover).unwrap().tile() == goal
+    });
+}
+
+#[test]
 fn idle_sentinel_auto_acquires_intruder() {
     let mut state = arena(vec![
         unit(0, UnitKind::Sentinel, 4, 6),

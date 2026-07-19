@@ -77,6 +77,18 @@ pub enum Order {
     Attack {
         /// The victim.
         target: crate::ids::Target,
+        /// Where to resume attack-moving once the victim is gone. `None`
+        /// for a plain attack order (absent in old replays, hence the
+        /// default).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resume: Option<TilePos>,
+    },
+    /// March to a tile, engaging anything encountered on the way — the
+    /// stance for actually fighting, as opposed to [`Order::Move`]'s
+    /// oblivious walk.
+    AttackMove {
+        /// Destination (always passable — commands snap it).
+        goal: TilePos,
     },
 }
 

@@ -21,6 +21,9 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
         let outcome = match &pc.command {
             Command::Move { units, goal } => apply_move(state, pc.player, units, *goal),
             Command::Attack { units, target } => apply_attack(state, pc.player, units, *target),
+            Command::AttackMove { units, goal } => {
+                apply_attack_move(state, pc.player, units, *goal)
+            }
             Command::Harvest { units, node } => apply_harvest(state, pc.player, units, *node),
             Command::Stop { units } => apply_stop(state, pc.player, units),
             Command::Train { building, kind } => apply_train(state, pc.player, *building, *kind),
@@ -96,7 +99,10 @@ fn apply_attack(
     let walk_goal = find_nearby_passable(state, target_tile, GOAL_SNAP_RADIUS);
     let applied = for_owned_units(state, player, units, |u| {
         if u.kind.stats().attack.is_some() {
-            u.order = Order::Attack { target };
+            u.order = Order::Attack {
+                target,
+                resume: None,
+            };
             u.path = None;
             u.progress = 0;
         } else if let Some(goal) = walk_goal {
@@ -104,6 +110,28 @@ fn apply_attack(
             u.path = None;
             u.progress = 0;
         }
+    });
+    (applied > 0)
+        .then_some(())
+        .ok_or(RejectReason::NoValidUnits)
+}
+
+fn apply_attack_move(
+    state: &mut State,
+    player: PlayerId,
+    units: &[UnitId],
+    goal: TilePos,
+) -> Result<(), RejectReason> {
+    let goal =
+        find_nearby_passable(state, goal, GOAL_SNAP_RADIUS).ok_or(RejectReason::UnreachableGoal)?;
+    let applied = for_owned_units(state, player, units, |u| {
+        u.order = if u.kind.stats().attack.is_some() {
+            Order::AttackMove { goal }
+        } else {
+            Order::Move { goal }
+        };
+        u.path = None;
+        u.progress = 0;
     });
     (applied > 0)
         .then_some(())

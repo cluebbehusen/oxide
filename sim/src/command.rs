@@ -28,11 +28,20 @@ pub enum Command {
         goal: TilePos,
     },
     /// Attack one enemy. Units that cannot fight walk there instead.
+    /// Rejected unless the issuer can currently see the target.
     Attack {
         /// The units to commit.
         units: Vec<UnitId>,
         /// An enemy unit or building.
         target: Target,
+    },
+    /// March to a tile engaging everything on the way. Units that cannot
+    /// fight walk there obliviously instead.
+    AttackMove {
+        /// The units to commit.
+        units: Vec<UnitId>,
+        /// Destination tile (snapped like a move goal).
+        goal: TilePos,
     },
     /// Put harvesters to work on a scrap node.
     Harvest {
