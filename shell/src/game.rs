@@ -43,6 +43,27 @@ pub struct Effect {
     pub age: f32,
 }
 
+/// A clip the shell should play (queued by sim events, drained per frame).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SoundKind {
+    /// An attack landed somewhere you can see.
+    Laser,
+    /// A unit died somewhere you can see.
+    UnitDeath,
+    /// A building fell (yours are always audible).
+    BuildingBoom,
+    /// Your harvester delivered.
+    Deposit,
+    /// Your Foundry finished a unit.
+    TrainDone,
+    /// Menu activation.
+    Click,
+    /// The match ended in your favor.
+    Victory,
+    /// It did not.
+    Defeat,
+}
+
 /// Effect shapes.
 pub enum EffectKind {
     /// An attack beam.
@@ -89,6 +110,8 @@ pub struct Game {
     pub facing: HashMap<u32, f32>,
     /// Live effects.
     pub fx: Vec<Effect>,
+    /// Clips queued by this frame's ticks; the main loop drains and plays.
+    pub sounds_pending: Vec<SoundKind>,
     accum: f32,
 }
 
@@ -130,6 +153,7 @@ impl Game {
             prev_pos: HashMap::new(),
             facing: HashMap::new(),
             fx: Vec::new(),
+            sounds_pending: Vec::new(),
             accum: 0.0,
         })
     }
@@ -238,8 +262,10 @@ impl Game {
         for _ in 0..n {
             self.do_tick();
         }
-        // No cross-jump interpolation after a bulk advance.
+        // No cross-jump interpolation after a bulk advance — and no sound
+        // barrage from replaying hours of battle in one frame.
         self.accum = 0.0;
+        self.sounds_pending.clear();
         self.prev_pos = self
             .state
             .units
@@ -294,29 +320,43 @@ impl Game {
         });
     }
 
+    /// Turns a tick's events into flashes and queued clips. Sight rules
+    /// mirror rendering: positional sounds only play for ground the local
+    /// player can see (own losses and own milestones are always audible).
     fn spawn_fx(&mut self, events: &[Event]) {
+        let sees = |game: &Self, pos: chassis::fx::Vec2Fx| {
+            game.my_vision()
+                .visible(chassis::grid::TilePos::containing(pos))
+        };
         for event in events {
             match event {
                 Event::AttackHit { attacker, target } => {
-                    let Some(from) = self.state.unit(*attacker).map(|u| world_vec(u.pos)) else {
+                    let Some(from) = self.state.unit(*attacker).map(|u| u.pos) else {
                         continue;
                     };
                     let to = match target {
-                        oxide_sim::Target::Unit(id) => {
-                            self.state.unit(*id).map(|u| world_vec(u.pos))
-                        }
+                        oxide_sim::Target::Unit(id) => self.state.unit(*id).map(|u| u.pos),
                         oxide_sim::Target::Building(id) => {
-                            self.state.building(*id).map(|b| world_vec(b.center()))
+                            self.state.building(*id).map(|b| b.center())
                         }
                     };
                     if let Some(to) = to {
+                        if sees(self, from) || sees(self, to) {
+                            self.sounds_pending.push(SoundKind::Laser);
+                        }
                         self.fx.push(Effect {
-                            kind: EffectKind::Laser { from, to },
+                            kind: EffectKind::Laser {
+                                from: world_vec(from),
+                                to: world_vec(to),
+                            },
                             age: 0.0,
                         });
                     }
                 }
-                Event::UnitDied { pos, .. } => {
+                Event::UnitDied { pos, player, .. } => {
+                    if *player == self.human || sees(self, *pos) {
+                        self.sounds_pending.push(SoundKind::UnitDeath);
+                    }
                     self.fx.push(Effect {
                         kind: EffectKind::Puff {
                             at: world_vec(*pos),
@@ -324,12 +364,32 @@ impl Game {
                         age: 0.0,
                     });
                 }
-                Event::BuildingDestroyed { pos, .. } => {
+                Event::BuildingDestroyed { pos, player, .. } => {
+                    if *player == self.human || sees(self, *pos) {
+                        self.sounds_pending.push(SoundKind::BuildingBoom);
+                    }
                     self.fx.push(Effect {
                         kind: EffectKind::Puff {
                             at: world_vec(*pos),
                         },
                         age: 0.0,
+                    });
+                }
+                Event::ScrapDeposited { player, .. } if *player == self.human => {
+                    self.sounds_pending.push(SoundKind::Deposit);
+                }
+                Event::UnitTrained { player, .. } if *player == self.human => {
+                    self.sounds_pending.push(SoundKind::TrainDone);
+                }
+                Event::GameOver { result } => {
+                    let won = matches!(
+                        result,
+                        oxide_sim::GameResult::Victory { winner } if *winner == self.human
+                    );
+                    self.sounds_pending.push(if won {
+                        SoundKind::Victory
+                    } else {
+                        SoundKind::Defeat
                     });
                 }
                 _ => {}

@@ -25,7 +25,8 @@ mod render;
 use anyhow::{Context, Result};
 use clap::Parser;
 use debug_server::IncomingRequest;
-use game::{Game, GameReplay};
+use game::{Game, GameReplay, SoundKind};
+use macroquad::audio::{PlaySoundParams, play_sound};
 use macroquad::prelude::*;
 use menu::{Menu, ScenarioEntry};
 use oxide_protocol::{
@@ -107,9 +108,50 @@ fn build_main_menu() -> (Menu, Vec<ScenarioEntry>) {
     (Menu::new("OXIDE", items), entries)
 }
 
+/// Plays queued clips with a per-kind rate limit, so twenty simultaneous
+/// lasers read as battle, not noise.
+#[derive(Default)]
+struct Mixer {
+    last_played: std::collections::HashMap<SoundKind, f64>,
+}
+
+impl Mixer {
+    fn play(&mut self, sounds: &assets::Sounds, kind: SoundKind) {
+        let now = get_time();
+        let min_gap = match kind {
+            SoundKind::Laser => 0.09,
+            SoundKind::UnitDeath => 0.12,
+            _ => 0.05,
+        };
+        if now - self.last_played.get(&kind).copied().unwrap_or(f64::MIN) < min_gap {
+            return;
+        }
+        self.last_played.insert(kind, now);
+        let (sound, volume) = match kind {
+            SoundKind::Laser => (&sounds.laser, 0.18),
+            SoundKind::UnitDeath => (&sounds.unit_death, 0.35),
+            SoundKind::BuildingBoom => (&sounds.building_boom, 0.6),
+            SoundKind::Deposit => (&sounds.deposit, 0.25),
+            SoundKind::TrainDone => (&sounds.train_done, 0.3),
+            SoundKind::Click => (&sounds.click, 0.25),
+            SoundKind::Victory => (&sounds.victory, 0.6),
+            SoundKind::Defeat => (&sounds.defeat, 0.6),
+        };
+        play_sound(
+            sound,
+            PlaySoundParams {
+                looped: false,
+                volume,
+            },
+        );
+    }
+}
+
 async fn run() -> Result<()> {
     let args = Args::parse();
     let sprites = assets::Sprites::load().await?;
+    let sounds = assets::Sounds::load().await?;
+    let mut mixer = Mixer::default();
 
     let mut game = if let Some(path) = &args.replay {
         let replay = GameReplay::load(path).with_context(|| format!("loading replay {path}"))?;
@@ -168,6 +210,7 @@ async fn run() -> Result<()> {
             Mode::MainMenu => {
                 let (menu, entries) = main_menu.get_or_insert_with(build_main_menu);
                 if let Some(choice) = menu.handle(&events, &mut input.mouse) {
+                    game.sounds_pending.push(SoundKind::Click);
                     if choice >= entries.len() {
                         std::process::exit(0); // the appended Quit row
                     }
@@ -211,6 +254,9 @@ async fn run() -> Result<()> {
                     .iter()
                     .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
                 let choice = pause_menu.handle(&events, &mut input.mouse);
+                if choice.is_some() {
+                    game.sounds_pending.push(SoundKind::Click);
+                }
                 render::draw(&game, &sprites, &input);
                 veil();
                 pause_menu.draw(&game.scenario.name);
@@ -237,6 +283,11 @@ async fn run() -> Result<()> {
                     None => {}
                 }
             }
+        }
+
+        let queued: Vec<SoundKind> = game.sounds_pending.drain(..).collect();
+        for kind in queued {
+            mixer.play(&sounds, kind);
         }
 
         if let Some(shot) = pending_shot.take() {
