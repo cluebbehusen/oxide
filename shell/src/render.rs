@@ -56,8 +56,6 @@ const FOG_EXPLORED: Color = color_u8!(13, 13, 17, 130);
 /// explored-but-unseen is dimmed.
 fn draw_fog(game: &Game) {
     let vision = game.my_vision();
-    let zoom = game.camera.zoom;
-    let size = zoom.ceil() + 1.0;
     let (min, max) = visible_tiles(game);
     for y in min.y..max.y {
         for x in min.x..max.x {
@@ -69,8 +67,14 @@ fn draw_fog(game: &Game) {
             } else {
                 continue;
             };
-            let screen = game.camera.to_screen(vec2(x as f32, y as f32));
-            draw_rectangle(screen.x.floor(), screen.y.floor(), size, size, cover);
+            // Exact shared edges: translucent rects that overlap draw
+            // double-dark seams, so each tile ends where the next begins.
+            let a = game.camera.to_screen(vec2(x as f32, y as f32)).floor();
+            let b = game
+                .camera
+                .to_screen(vec2((x + 1) as f32, (y + 1) as f32))
+                .floor();
+            draw_rectangle(a.x, a.y, b.x - a.x, b.y - a.y, cover);
         }
     }
 }

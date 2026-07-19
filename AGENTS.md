@@ -87,12 +87,24 @@ driver() { cargo run -q -p oxide-driver -- "$@"; }
 driver live status
 driver live state --map            # ASCII map with entities overlaid
 driver live harvest 0 --units 0,1,2 --node 7,2
+driver live attack-move 0 --units 3 --to 34,18
 driver live advance 300            # exactly 300 ticks, replies with hash
 driver live screenshot -o screenshots/check.png   # then READ the png
 driver live inject-wheel 2.0       # events enter the real input funnel
+driver live inject-key escape      # opens the pause menu — menus share
+driver live inject-key enter       # the input funnel too
 driver live save-replay replays/session.json
 driver replay replays/session.json # must print the same hash as live
+driver live load-replay replays/session.json      # resume = load a save
 ```
+
+Save states are replays, by design: `load_replay` rebuilds the scenario,
+re-runs the recorded ticks headless-fast, and keeps recording on the same
+log — no snapshot format, no way for a save to desync from its history.
+The cost is version-pinning (replays reproduce only on the sim that wrote
+them) and load time proportional to session length, which at thousands of
+ticks per second is noise. If sessions ever get long enough to hurt,
+revisit with a snapshot+suffix-log hybrid — and keep the recorder valid.
 
 Headless, no window needed:
 
@@ -121,6 +133,24 @@ and test fixtures inside crate `tests/` directories.
 - **Balance numbers** all live in `sim/src/stats.rs`; expect hash churn
   when touching them.
 - Keep this file and README.md current when commands or behavior change.
+
+## Design decisions worth knowing
+
+- **Fog of war enforces exactly one thing in the sim**: targeted attacks
+  need the issuer to *see* the victim. Rendering honors fog fully
+  (unexplored void, explored dim, unseen enemies culled) but the debug
+  surface — `query_state`, the F1 overlay, the software renderer — is
+  deliberately omniscient. The bot reads full state (classic cheating AI);
+  its commands still pass normal validation.
+- **Units are solid but never block tiles.** Collision is iterative pair
+  relaxation after movement; pathfinding ignores units entirely, so crowds
+  jostle but can't deadlock a corridor the way tile-reservation schemes do.
+- **Attack-move is the fighting stance**: `Order::AttackMove` acquires in
+  aggro range, fights via `Order::Attack { resume: Some(goal) }`, and picks
+  the march back up. Plain `Move` stays oblivious on purpose.
+- **Enemy buildings render from live state once explored** — no ghost
+  memory, so a building destroyed outside your vision disappears from your
+  view anyway. Known leak, noted in README's roadmap.
 
 ## Gotchas learned the hard way
 

@@ -24,23 +24,28 @@ replay that re-executes headless to a bit-identical state hash.
 cargo run -p oxide-shell
 ```
 
-You're Ferrous, top-left. The bot is Cupric, and it is not asleep.
+A menu lists the shipped maps — Skirmish Basin, Scrapyard Brawl, Rustbelt
+Canyon, Verdigris Fields. You're Ferrous; the bot is Cupric, and it is not
+asleep.
 
 | Input | Action |
 |---|---|
 | Left click / drag | Select your units (click a Foundry to select it) |
 | Right click | Contextual order: enemy → attack, scrap → harvest, ground → move |
+| `A`, then click | Attack-move: march there, fighting everything on the way |
 | Mouse wheel | Zoom (toward the cursor) |
 | Arrow keys | Pan |
 | `H` / `S` | Train a Harvester (50) / Sentinel (75) |
 | `Space` | Jump to your Foundry |
-| `P` | Pause |
-| `F1` | Debug overlay (grid, ids, paths) |
-| `Esc` | Deselect |
+| `P` | Quick pause |
+| `Esc` | Deselect, then the pause menu (resume / restart / main menu) |
+| `F1` | Debug overlay (grid, ids, paths — and no fog) |
 
-Keep harvesters on scrap, keep the Foundry queue warm, and don't let your
-army idle at home while the other swarm grows. Everything is visible — no
-fog of war yet.
+Fog of war is real: you see what your machines see, explored ground stays
+dimly remembered, and you cannot target what nobody is looking at. Units
+are solid — a chokepoint held by a wall of Sentinels is actually held.
+Scout early, keep the Foundry queue warm, and attack-move (never plain
+move) into territory you don't control.
 
 ## How it's put together
 
@@ -72,11 +77,13 @@ Start the shell with a socket, then talk to it:
 cargo run -p oxide-shell -- --debug-server --paused   # driven mode
 cargo run -p oxide-driver -- live status
 cargo run -p oxide-driver -- live harvest 0 --units 0,1,2 --node 7,2
+cargo run -p oxide-driver -- live attack-move 0 --units 3 --to 34,18
 cargo run -p oxide-driver -- live advance 300         # exactly 300 ticks
 cargo run -p oxide-driver -- live screenshot -o screenshots/now.png
 cargo run -p oxide-driver -- live inject-wheel 2      # real input funnel
 cargo run -p oxide-driver -- live save-replay replays/session.json
 cargo run -p oxide-driver -- replay replays/session.json   # → same hash
+cargo run -p oxide-driver -- live load-replay replays/session.json  # resume
 ```
 
 `live --help` lists the rest (state queries with ASCII maps, key/click
@@ -97,16 +104,28 @@ decisive end); golden images rendered by a CPU rasterizer and compared
 byte-for-byte; and the live smoke drive. A full bot match simulates in well
 under a second.
 
+## Saving games
+
+There is no separate save format, on purpose. In a deterministic sim a
+replay *is* a save: `save-replay` writes the session's command log, and
+loading it (`--replay file.json`, or `live load-replay`) rebuilds the
+scenario and re-runs every tick — thousands per second, so "loading" a
+long game takes well under a second — then keeps playing and recording
+from exactly where you stood. Unlike a state snapshot, the save stays
+replayable end-to-end and can never desync from its own history. The
+trade-off: replays only reproduce on the sim version that wrote them.
+
 ## Status and road ahead
 
-Working today: the full loop (harvest → train → fight → win), a competent
-skirmish bot, replays, goldens, and the agent tooling described above.
+Working today: the full loop (harvest → train → fight → win) with fog of
+war, solid units, attack-move, four maps, menus, a competent skirmish bot,
+save/resume via replays, and the agent tooling described above.
 
-Not yet: attack-move and unit collision (units overlap softly), fog of war,
-minimap, sound, more maps, and the mobile ports — macroquad makes iOS/Android
-plausible, and `RawEvent` already carries touch variants, but nothing is
-wired. The sim freezes at game end rather than offering a rematch. Replays
-are only guaranteed against the sim version that recorded them.
+Not yet: minimap, sound, ghost memory for enemy buildings seen then lost
+(explored buildings currently render live state), rally points, and the
+mobile ports — macroquad makes iOS/Android plausible, and `RawEvent`
+already carries touch variants, but nothing is wired. The sim freezes at
+game end rather than offering a rematch.
 
 Built with [macroquad](https://macroquad.rs/); simulation math on the
 [`fixed`](https://crates.io/crates/fixed) crate; goldens via
