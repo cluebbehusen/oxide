@@ -142,9 +142,13 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 y,
             } => {
                 input.mouse = vec2(x, y);
+                // The minimap owns clicks landing on it: armed attack-moves
+                // resolve through its coordinates, plain clicks jump the
+                // camera. Either way, no drag-select starts there.
+                let minimap_world = crate::render::minimap_world_at(game, vec2(x, y));
                 if input.armed_attack_move {
                     input.armed_attack_move = false;
-                    let world = game.camera.to_world(vec2(x, y));
+                    let world = minimap_world.unwrap_or_else(|| game.camera.to_world(vec2(x, y)));
                     let units = game.selection.units.clone();
                     if !units.is_empty() {
                         game.issue(Command::AttackMove {
@@ -152,6 +156,9 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                             goal: TilePos::new(world.x.floor() as i32, world.y.floor() as i32),
                         });
                     }
+                } else if let Some(world) = minimap_world {
+                    game.camera.center = world;
+                    game.camera.pan(Vec2::ZERO); // re-clamp
                 } else {
                     input.drag_origin = Some(vec2(x, y));
                 }

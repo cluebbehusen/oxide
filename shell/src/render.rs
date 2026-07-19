@@ -36,6 +36,7 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     }
     draw_drag_rect(input);
     draw_hud(game);
+    draw_minimap(game);
     if input.armed_attack_move {
         let text = "ATTACK-MOVE — click a destination (Esc cancels)";
         let dims = measure_text(text, None, 22, 1.0);
@@ -468,4 +469,139 @@ fn draw_hud(game: &Game) {
 fn panel_line(text: &str) {
     draw_rectangle(0.0, screen_height() - 36.0, screen_width(), 36.0, PANEL);
     draw_text(text, 12.0, screen_height() - 12.0, 20.0, BONE);
+}
+
+// --- Minimap ------------------------------------------------------------
+
+const MINIMAP_MAX: Vec2 = vec2(220.0, 150.0);
+const MINI_VOID: Color = color_u8!(10, 10, 13, 255);
+const MINI_GROUND: Color = color_u8!(44, 44, 52, 255);
+const MINI_ROCK: Color = color_u8!(84, 84, 96, 255);
+
+fn dim(color: Color) -> Color {
+    Color::new(color.r * 0.55, color.g * 0.55, color.b * 0.55, color.a)
+}
+
+fn mini_faction_color(faction: oxide_sim::Faction) -> Color {
+    match faction {
+        oxide_sim::Faction::Ferrous => color_u8!(196, 87, 59, 255),
+        oxide_sim::Faction::Cupric => color_u8!(63, 148, 130, 255),
+    }
+}
+
+/// Where the minimap sits this frame (bottom-right, above the hint line).
+pub fn minimap_rect(game: &Game) -> Rect {
+    let mw = game.state.map.width() as f32;
+    let mh = game.state.map.height() as f32;
+    let scale = (MINIMAP_MAX.x / mw).min(MINIMAP_MAX.y / mh);
+    let (w, h) = (mw * scale, mh * scale);
+    Rect::new(screen_width() - w - 12.0, screen_height() - h - 34.0, w, h)
+}
+
+/// The world point under a screen position, if it lies on the minimap —
+/// how clicks jump the camera (and where armed attack-moves land).
+pub fn minimap_world_at(game: &Game, screen: Vec2) -> Option<Vec2> {
+    let rect = minimap_rect(game);
+    if !rect.contains(screen) {
+        return None;
+    }
+    let scale = rect.w / game.state.map.width() as f32;
+    Some(vec2(
+        (screen.x - rect.x) / scale,
+        (screen.y - rect.y) / scale,
+    ))
+}
+
+/// The whole war at a glance, under the same fog rules as the world view
+/// (and, like everything else, omniscient while the F1 overlay is up).
+fn draw_minimap(game: &Game) {
+    let rect = minimap_rect(game);
+    let scale = rect.w / game.state.map.width() as f32;
+    let omniscient = game.overlay;
+    let vision = game.my_vision();
+    draw_rectangle(
+        rect.x - 3.0,
+        rect.y - 3.0,
+        rect.w + 6.0,
+        rect.h + 6.0,
+        PANEL,
+    );
+
+    let cell = scale.ceil();
+    for (pos, tile) in game.state.map.iter() {
+        let (explored, visible) = if omniscient {
+            (true, true)
+        } else {
+            (vision.explored(pos), vision.visible(pos))
+        };
+        let color = if !explored {
+            MINI_VOID
+        } else {
+            let base = match (tile.terrain, tile.scrap) {
+                (oxide_sim::map::Terrain::Rock, _) => MINI_ROCK,
+                (_, 0) => MINI_GROUND,
+                (_, _) => SCRAP_COLOR,
+            };
+            if visible { base } else { dim(base) }
+        };
+        draw_rectangle(
+            rect.x + pos.x as f32 * scale,
+            rect.y + pos.y as f32 * scale,
+            cell,
+            cell,
+            color,
+        );
+    }
+
+    if !omniscient {
+        for ghost in vision.ghosts() {
+            let (w, h) = ghost.kind.stats().size;
+            let color = dim(mini_faction_color(game.state.player(ghost.owner).faction));
+            draw_rectangle(
+                rect.x + ghost.anchor.x as f32 * scale,
+                rect.y + ghost.anchor.y as f32 * scale,
+                w as f32 * scale,
+                h as f32 * scale,
+                color,
+            );
+        }
+    }
+    for building in &game.state.buildings {
+        let seen = omniscient
+            || building.player == game.human
+            || building.tiles().any(|t| vision.visible(t));
+        if !seen {
+            continue;
+        }
+        let (w, h) = building.kind.stats().size;
+        draw_rectangle(
+            rect.x + building.anchor.x as f32 * scale,
+            rect.y + building.anchor.y as f32 * scale,
+            w as f32 * scale,
+            h as f32 * scale,
+            mini_faction_color(game.state.player(building.player).faction),
+        );
+    }
+    for unit in &game.state.units {
+        let seen = omniscient || unit.player == game.human || vision.visible(unit.tile());
+        if !seen {
+            continue;
+        }
+        let dot = (scale * 0.7).max(2.0);
+        draw_rectangle(
+            rect.x + unit.pos.x.to_num::<f32>() * scale - dot * 0.5,
+            rect.y + unit.pos.y.to_num::<f32>() * scale - dot * 0.5,
+            dot,
+            dot,
+            mini_faction_color(game.state.player(unit.player).faction),
+        );
+    }
+
+    // Camera frame.
+    let (lo, hi) = game.camera.world_rect();
+    let x = rect.x + lo.x.max(0.0) * scale;
+    let y = rect.y + lo.y.max(0.0) * scale;
+    let x2 = rect.x + hi.x.min(game.state.map.width() as f32) * scale;
+    let y2 = rect.y + hi.y.min(game.state.map.height() as f32) * scale;
+    draw_rectangle_lines(x, y, (x2 - x).max(4.0), (y2 - y).max(4.0), 1.5, BONE);
 }
