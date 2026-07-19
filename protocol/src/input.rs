@@ -113,8 +113,12 @@ pub enum Key {
     H,
     /// Train a Sentinel.
     S,
+    /// Arm attack-move: the next left-click orders it.
+    A,
     /// Pause / unpause.
     P,
+    /// Activate the highlighted menu item.
+    Enter,
     /// Deselect.
     Escape,
     /// Center the camera on your Foundry.

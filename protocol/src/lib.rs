@@ -92,6 +92,14 @@ pub enum Request {
         /// Path to a scenario JSON.
         path: String,
     },
+    /// Resume a session from a replay file: rebuild its scenario, re-run
+    /// every recorded tick (fast — the sim does thousands per second), and
+    /// keep recording from there. In a deterministic sim, this *is* loading
+    /// a save.
+    LoadReplay {
+        /// Path to a replay JSON.
+        path: String,
+    },
     /// Write the session so far as a replay JSON.
     SaveReplay {
         /// Target path.

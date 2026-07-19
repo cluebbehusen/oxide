@@ -119,6 +119,22 @@ enum LiveCmd {
         /// Command JSON, e.g. '{"type":"stop","units":[3]}'.
         json: String,
     },
+    /// Attack-move units to a tile (engage everything on the way).
+    AttackMove {
+        /// Acting player index.
+        player: u8,
+        /// Unit ids, comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        units: Vec<u32>,
+        /// Goal as "x,y".
+        #[arg(long)]
+        to: String,
+    },
+    /// Resume a session from a replay file (fast-forwards, keeps recording).
+    LoadReplay {
+        /// Replay JSON path.
+        path: String,
+    },
     /// Move units to a tile.
     Move {
         /// Acting player index.
@@ -329,7 +345,9 @@ fn parse_key(s: &str) -> Result<Key> {
         "right" => Key::Right,
         "h" => Key::H,
         "s" => Key::S,
+        "a" => Key::A,
         "p" => Key::P,
+        "enter" | "return" => Key::Enter,
         "escape" | "esc" => Key::Escape,
         "space" => Key::Space,
         "f1" => Key::F1,
@@ -371,6 +389,18 @@ fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
                 goal: parse_tile(&to)?,
             },
         },
+        LiveCmd::AttackMove {
+            player,
+            units: ids,
+            to,
+        } => Request::SendCommand {
+            player: PlayerId(player),
+            command: Command::AttackMove {
+                units: units(ids),
+                goal: parse_tile(&to)?,
+            },
+        },
+        LiveCmd::LoadReplay { path } => Request::LoadReplay { path },
         LiveCmd::AttackUnit {
             player,
             units: ids,

@@ -36,6 +36,17 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     }
     draw_drag_rect(input);
     draw_hud(game);
+    if input.armed_attack_move {
+        let text = "ATTACK-MOVE — click a destination (Esc cancels)";
+        let dims = measure_text(text, None, 22, 1.0);
+        draw_text(
+            text,
+            (screen_width() - dims.width) * 0.5,
+            56.0,
+            22.0,
+            DANGER,
+        );
+    }
 }
 
 const FOG_UNEXPLORED: Color = color_u8!(13, 13, 17, 255);
@@ -367,7 +378,8 @@ fn draw_hud(game: &Game) {
     }
 
     // Controls hint.
-    let hint = "LMB select · RMB order · wheel zoom · arrows pan · H/S train · P pause · F1 debug";
+    let hint =
+        "LMB select · RMB order · A attack-move · H/S train · arrows pan · Esc menu · F1 debug";
     let width = measure_text(hint, None, 16, 1.0).width;
     draw_text(
         hint,
@@ -389,8 +401,17 @@ fn draw_hud(game: &Game) {
         let dims = measure_text(&text, None, size as u16, 1.0);
         let x = (screen_width() - dims.width) * 0.5;
         let y = screen_height() * 0.4;
-        draw_rectangle(x - 24.0, y - 48.0, dims.width + 48.0, 72.0, PANEL);
+        draw_rectangle(x - 24.0, y - 48.0, dims.width + 48.0, 100.0, PANEL);
         draw_text(&text, x, y, size, SCRAP_COLOR);
+        let hint = "Esc — menu";
+        let hint_dims = measure_text(hint, None, 20, 1.0);
+        draw_text(
+            hint,
+            (screen_width() - hint_dims.width) * 0.5,
+            y + 34.0,
+            20.0,
+            BONE_FAINT,
+        );
     }
 }
 

@@ -26,6 +26,9 @@ pub struct InputState {
     pub mouse: Vec2,
     /// Where the current left-drag started, if any.
     pub drag_origin: Option<Vec2>,
+    /// `A` was pressed: the next left-click issues an attack-move instead
+    /// of selecting.
+    pub armed_attack_move: bool,
     held: HashSet<KeyOrd>,
 }
 
@@ -46,6 +49,8 @@ fn key_ord(key: Key) -> KeyOrd {
         Key::Escape => 7,
         Key::Space => 8,
         Key::F1 => 9,
+        Key::A => 10,
+        Key::Enter => 11,
     })
 }
 
@@ -55,6 +60,7 @@ impl InputState {
         Self {
             mouse: vec2(0.0, 0.0),
             drag_origin: None,
+            armed_attack_move: false,
             held: HashSet::new(),
         }
     }
@@ -64,7 +70,7 @@ impl InputState {
     }
 }
 
-const KEY_MAP: [(Key, mq::KeyCode); 10] = [
+const KEY_MAP: [(Key, mq::KeyCode); 12] = [
     (Key::Up, mq::KeyCode::Up),
     (Key::Down, mq::KeyCode::Down),
     (Key::Left, mq::KeyCode::Left),
@@ -75,6 +81,8 @@ const KEY_MAP: [(Key, mq::KeyCode); 10] = [
     (Key::Escape, mq::KeyCode::Escape),
     (Key::Space, mq::KeyCode::Space),
     (Key::F1, mq::KeyCode::F1),
+    (Key::A, mq::KeyCode::A),
+    (Key::Enter, mq::KeyCode::Enter),
 ];
 
 /// Converts this frame's hardware input into events. Purely a poll→event
@@ -134,7 +142,19 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 y,
             } => {
                 input.mouse = vec2(x, y);
-                input.drag_origin = Some(vec2(x, y));
+                if input.armed_attack_move {
+                    input.armed_attack_move = false;
+                    let world = game.camera.to_world(vec2(x, y));
+                    let units = game.selection.units.clone();
+                    if !units.is_empty() {
+                        game.issue(Command::AttackMove {
+                            units,
+                            goal: TilePos::new(world.x.floor() as i32, world.y.floor() as i32),
+                        });
+                    }
+                } else {
+                    input.drag_origin = Some(vec2(x, y));
+                }
             }
             RawEvent::MouseUp {
                 button: MouseButton::Left,
@@ -157,6 +177,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 y,
             } => {
                 input.mouse = vec2(x, y);
+                input.armed_attack_move = false; // a direct order overrides
                 context_order(game, vec2(x, y));
             }
             RawEvent::MouseUp {
@@ -173,6 +194,13 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
             } => {}
             RawEvent::KeyDown { key } => {
                 input.held.insert(key_ord(key));
+                match key {
+                    Key::A if !game.selection.units.is_empty() => {
+                        input.armed_attack_move = true;
+                    }
+                    Key::Escape => input.armed_attack_move = false,
+                    _ => {}
+                }
                 key_action(game, key);
             }
             RawEvent::KeyUp { key } => {
@@ -323,7 +351,9 @@ fn key_action(game: &mut Game, key: Key) {
                 game.camera.pan(vec2(0.0, 0.0)); // re-clamp
             }
         }
-        Key::Up | Key::Down | Key::Left | Key::Right => {} // continuous, in update_held
+        // Pan keys are continuous (update_held); A is handled in
+        // apply_events where the arming state lives; Enter is menu-only.
+        Key::Up | Key::Down | Key::Left | Key::Right | Key::A | Key::Enter => {}
     }
 }
 

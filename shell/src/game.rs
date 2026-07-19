@@ -134,6 +134,42 @@ impl Game {
         })
     }
 
+    /// Resumes a session from a recorded replay: rebuild its scenario,
+    /// re-execute every recorded tick (headless-fast), and keep recording
+    /// onto the same log. In a deterministic sim a replay *is* a save file
+    /// — this is "load game".
+    pub fn from_replay(replay: GameReplay) -> Result<Self> {
+        let scenario = replay.setup.clone();
+        let mut state = scenario.build()?;
+        let total = replay
+            .meta
+            .ticks
+            .unwrap_or_else(|| replay.commands.last().map_or(0, |c| c.tick + 1));
+        let mut cursor = replay.cursor();
+        for _ in 0..total {
+            let commands: Vec<PlayerCommand> = cursor
+                .take_tick(state.tick)
+                .iter()
+                .map(|t| t.command.clone())
+                .collect();
+            state.tick(&commands);
+        }
+        let mut game = Self::new(scenario)?;
+        game.state = state;
+        game.recorder = replay;
+        if let Some(focus) = game
+            .state
+            .buildings
+            .iter()
+            .find(|b| b.player == game.human)
+            .map(|b| world_vec(b.center()))
+        {
+            game.camera.center = focus;
+            game.camera.pan(Vec2::ZERO); // re-clamp
+        }
+        Ok(game)
+    }
+
     /// Runs exactly one tick: bots think, staged commands drain, everything
     /// is recorded, presentation caches update. The only place `state.tick`
     /// is called.
