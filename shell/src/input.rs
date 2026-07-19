@@ -13,8 +13,19 @@ use oxide_protocol::{Key, MouseButton, RawEvent};
 use oxide_sim::{Command, Target, UnitKind};
 use std::collections::HashSet;
 
-/// Pixels of mouse travel under which a press+release counts as a click.
+/// Logical pixels of mouse travel under which a press+release counts as a
+/// click (scaled by dpi at use).
 const CLICK_SLOP: f32 = 6.0;
+
+fn click_slop() -> f32 {
+    CLICK_SLOP * crate::render::ui_scale()
+}
+
+/// Shared with the drag-rectangle renderer, so what draws as a drag is
+/// exactly what selects as one.
+pub fn drag_threshold() -> f32 {
+    click_slop()
+}
 /// World-unit pick radius around a unit's center.
 const PICK_RADIUS: f32 = 0.6;
 /// Camera pan speed in screen pixels per second (converted by zoom).
@@ -171,7 +182,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 input.mouse = vec2(x, y);
                 if let Some(origin) = input.drag_origin.take() {
                     let release = vec2(x, y);
-                    if origin.distance(release) <= CLICK_SLOP {
+                    if origin.distance(release) <= click_slop() {
                         click_select(game, release);
                     } else {
                         box_select(game, origin, release);
@@ -240,7 +251,7 @@ pub fn update_held(game: &mut Game, input: &InputState, dt: f32) {
         dir.x += 1.0;
     }
     if dir != vec2(0.0, 0.0) {
-        let world_per_sec = PAN_PX_PER_SEC / game.camera.zoom;
+        let world_per_sec = PAN_PX_PER_SEC * crate::render::ui_scale() / game.camera.zoom;
         game.camera.pan(dir.normalize() * world_per_sec * dt);
     }
 }

@@ -3,33 +3,24 @@
 
 use anyhow::{Context, Result};
 use macroquad::audio::{Sound, load_sound};
-use macroquad::prelude::{FilterMode, Texture2D, load_texture};
+use macroquad::prelude::{FilterMode, Rect, Texture2D, load_texture};
 use oxide_sim::{Faction, UnitKind};
 
-/// Every texture the shell draws.
+/// Every sprite the shell draws, as regions of ONE texture.
+///
+/// A single atlas means macroquad batches the entire world into a handful
+/// of draw calls; the previous texture-per-sprite scheme flushed the batch
+/// on nearly every tile and halved the framerate zoomed out.
 pub struct Sprites {
-    /// Ground variants, picked per tile by position hash.
-    pub ground: [Texture2D; 3],
-    /// Rock overlay.
-    pub rock: Texture2D,
-    /// Scrap node at >2/3 remaining.
-    pub scrap_full: Texture2D,
-    /// Scrap node at 1/3–2/3.
-    pub scrap_mid: Texture2D,
-    /// Scrap node below 1/3.
-    pub scrap_low: Texture2D,
-    foundry: [Texture2D; 2],
-    harvester: [Texture2D; 2],
-    sentinel: [Texture2D; 2],
-}
-
-async fn tex(name: &str) -> Result<Texture2D> {
-    let path = format!("assets/sprites/{name}.png");
-    let texture = load_texture(&path)
-        .await
-        .with_context(|| format!("loading {path} (run from the workspace root)"))?;
-    texture.set_filter(FilterMode::Linear);
-    Ok(texture)
+    texture: Texture2D,
+    ground: [Rect; 3],
+    rock: Rect,
+    scrap_full: Rect,
+    scrap_mid: Rect,
+    scrap_low: Rect,
+    foundry: [Rect; 2],
+    harvester: [Rect; 2],
+    sentinel: [Rect; 2],
 }
 
 fn faction_index(faction: Faction) -> usize {
@@ -40,41 +31,74 @@ fn faction_index(faction: Faction) -> usize {
 }
 
 impl Sprites {
-    /// Loads everything up front; missing files are a startup error, not a
-    /// mid-game pop.
+    /// Loads the atlas up front; a missing or incomplete atlas is a
+    /// startup error, not a mid-game pop.
     pub async fn load() -> Result<Self> {
+        let texture = load_texture("assets/sprites/atlas.png")
+            .await
+            .context("loading assets/sprites/atlas.png (run from the workspace root)")?;
+        texture.set_filter(FilterMode::Linear);
+        let manifest = macroquad::file::load_string("assets/sprites/atlas.json")
+            .await
+            .context("loading assets/sprites/atlas.json")?;
+        let rects: std::collections::HashMap<String, [f32; 4]> =
+            serde_json::from_str(&manifest).context("parsing atlas manifest")?;
+        let rect = |name: &str| -> Result<Rect> {
+            let [x, y, w, h] = rects
+                .get(name)
+                .copied()
+                .with_context(|| format!("sprite {name:?} missing from atlas"))?;
+            Ok(Rect::new(x, y, w, h))
+        };
         Ok(Self {
-            ground: [
-                tex("ground_0").await?,
-                tex("ground_1").await?,
-                tex("ground_2").await?,
-            ],
-            rock: tex("rock").await?,
-            scrap_full: tex("scrap_full").await?,
-            scrap_mid: tex("scrap_mid").await?,
-            scrap_low: tex("scrap_low").await?,
-            foundry: [tex("foundry_ferrous").await?, tex("foundry_cupric").await?],
-            harvester: [
-                tex("harvester_ferrous").await?,
-                tex("harvester_cupric").await?,
-            ],
-            sentinel: [
-                tex("sentinel_ferrous").await?,
-                tex("sentinel_cupric").await?,
-            ],
+            texture,
+            ground: [rect("ground_0")?, rect("ground_1")?, rect("ground_2")?],
+            rock: rect("rock")?,
+            scrap_full: rect("scrap_full")?,
+            scrap_mid: rect("scrap_mid")?,
+            scrap_low: rect("scrap_low")?,
+            foundry: [rect("foundry_ferrous")?, rect("foundry_cupric")?],
+            harvester: [rect("harvester_ferrous")?, rect("harvester_cupric")?],
+            sentinel: [rect("sentinel_ferrous")?, rect("sentinel_cupric")?],
         })
     }
 
-    /// The building sprite for a faction.
-    pub fn foundry(&self, faction: Faction) -> &Texture2D {
-        &self.foundry[faction_index(faction)]
+    /// The one texture every sprite lives in.
+    pub fn texture(&self) -> &Texture2D {
+        &self.texture
     }
 
-    /// The unit sprite for a kind and faction.
-    pub fn unit(&self, kind: UnitKind, faction: Faction) -> &Texture2D {
+    /// A ground variant's atlas region.
+    pub fn ground(&self, variant: usize) -> Rect {
+        self.ground[variant % self.ground.len()]
+    }
+
+    /// The rock overlay's atlas region.
+    pub fn rock(&self) -> Rect {
+        self.rock
+    }
+
+    /// The scrap sprite region for a remaining amount (in thirds of full).
+    pub fn scrap(&self, amount: u32, full_amount: u32) -> Rect {
+        if amount * 3 > full_amount * 2 {
+            self.scrap_full
+        } else if amount * 3 > full_amount {
+            self.scrap_mid
+        } else {
+            self.scrap_low
+        }
+    }
+
+    /// The building sprite region for a faction.
+    pub fn foundry(&self, faction: Faction) -> Rect {
+        self.foundry[faction_index(faction)]
+    }
+
+    /// The unit sprite region for a kind and faction.
+    pub fn unit(&self, kind: UnitKind, faction: Faction) -> Rect {
         match kind {
-            UnitKind::Harvester => &self.harvester[faction_index(faction)],
-            UnitKind::Sentinel => &self.sentinel[faction_index(faction)],
+            UnitKind::Harvester => self.harvester[faction_index(faction)],
+            UnitKind::Sentinel => self.sentinel[faction_index(faction)],
         }
     }
 }

@@ -20,6 +20,12 @@ const HP_BACK: Color = color_u8!(20, 20, 24, 220);
 const DANGER: Color = color_u8!(217, 82, 74, 255);
 const PANEL: Color = color_u8!(20, 20, 24, 200);
 
+/// UI scale factor: chrome (text, bars, minimap) is authored in logical
+/// pixels and multiplied by this so it reads the same on every display.
+pub fn ui_scale() -> f32 {
+    macroquad::miniquad::window::dpi_scale().max(1.0)
+}
+
 /// Draws one frame.
 pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     clear_background(OUTSIDE);
@@ -89,17 +95,17 @@ fn draw_tiles(game: &Game, sprites: &Sprites) {
                 continue;
             };
             let screen = game.camera.to_screen(vec2(x as f32, y as f32));
-            let params = DrawTextureParams {
-                dest_size: Some(vec2(size, size)),
-                ..Default::default()
-            };
             let variant = ((x * 7 + y * 13) % 3) as usize;
             draw_texture_ex(
-                &sprites.ground[variant],
+                sprites.texture(),
                 screen.x.floor(),
                 screen.y.floor(),
                 WHITE,
-                params.clone(),
+                DrawTextureParams {
+                    dest_size: Some(vec2(size, size)),
+                    source: Some(sprites.ground(variant)),
+                    ..Default::default()
+                },
             );
             // Scrap draws at its live amount only in sight; unseen ground
             // shows what the player remembers (frozen, like ghosts).
@@ -110,14 +116,22 @@ fn draw_tiles(game: &Game, sprites: &Sprites) {
                 game.my_vision().remembered_scrap(pos)
             };
             let overlay = match (tile.terrain, scrap) {
-                (oxide_sim::map::Terrain::Rock, _) => Some(&sprites.rock),
+                (oxide_sim::map::Terrain::Rock, _) => Some(sprites.rock()),
                 (_, 0) => None,
-                (_, s) if s * 3 > SCRAP_NODE_AMOUNT * 2 => Some(&sprites.scrap_full),
-                (_, s) if s * 3 > SCRAP_NODE_AMOUNT => Some(&sprites.scrap_mid),
-                _ => Some(&sprites.scrap_low),
+                (_, s) => Some(sprites.scrap(s, SCRAP_NODE_AMOUNT)),
             };
-            if let Some(texture) = overlay {
-                draw_texture_ex(texture, screen.x.floor(), screen.y.floor(), WHITE, params);
+            if let Some(source) = overlay {
+                draw_texture_ex(
+                    sprites.texture(),
+                    screen.x.floor(),
+                    screen.y.floor(),
+                    WHITE,
+                    DrawTextureParams {
+                        dest_size: Some(vec2(size, size)),
+                        source: Some(source),
+                        ..Default::default()
+                    },
+                );
             }
         }
     }
@@ -143,12 +157,13 @@ fn draw_buildings(game: &Game, sprites: &Sprites) {
                 .camera
                 .to_screen(vec2(ghost.anchor.x as f32, ghost.anchor.y as f32));
             draw_texture_ex(
-                sprites.foundry(faction),
+                sprites.texture(),
                 screen.x,
                 screen.y,
                 GHOST_TINT,
                 DrawTextureParams {
                     dest_size: Some(vec2(w as f32 * zoom, h as f32 * zoom)),
+                    source: Some(sprites.foundry(faction)),
                     ..Default::default()
                 },
             );
@@ -168,12 +183,13 @@ fn draw_buildings(game: &Game, sprites: &Sprites) {
         let (w, h) = building.kind.stats().size;
         let dest = vec2(w as f32 * zoom, h as f32 * zoom);
         draw_texture_ex(
-            sprites.foundry(faction),
+            sprites.texture(),
             screen.x,
             screen.y,
             WHITE,
             DrawTextureParams {
                 dest_size: Some(dest),
+                source: Some(sprites.foundry(faction)),
                 ..Default::default()
             },
         );
@@ -230,12 +246,13 @@ fn draw_units(game: &Game, sprites: &Sprites, alpha: f32) {
             );
         }
         draw_texture_ex(
-            sprites.unit(unit.kind, faction),
+            sprites.texture(),
             screen.x - dest * 0.5,
             screen.y - dest * 0.5,
             WHITE,
             DrawTextureParams {
                 dest_size: Some(vec2(dest, dest)),
+                source: Some(sprites.unit(unit.kind, faction)),
                 rotation: game.facing.get(&unit.id.0).copied().unwrap_or(0.0),
                 ..Default::default()
             },
@@ -317,7 +334,7 @@ fn draw_fx(game: &Game) {
 fn draw_drag_rect(input: &InputState) {
     if let Some(origin) = input.drag_origin {
         let now = input.mouse;
-        if origin.distance(now) > 6.0 {
+        if origin.distance(now) > crate::input::drag_threshold() {
             let lo = origin.min(now);
             let size = (origin - now).abs();
             draw_rectangle_lines(lo.x, lo.y, size.x, size.y, 1.5, BONE);
@@ -373,12 +390,14 @@ fn draw_overlay(game: &Game, alpha: f32) {
         game.camera.center.x,
         game.camera.center.y,
     );
-    draw_text(&info, screen_width() - 420.0, 54.0, 18.0, BONE);
+    let s = ui_scale();
+    draw_text(&info, screen_width() - 420.0 * s, 54.0 * s, 18.0 * s, BONE);
 }
 
 fn draw_hud(game: &Game) {
+    let s = ui_scale();
     // Top bar.
-    draw_rectangle(0.0, 0.0, screen_width(), 32.0, PANEL);
+    draw_rectangle(0.0, 0.0, screen_width(), 32.0 * s, PANEL);
     let me = game.state.player(game.human);
     let my_units = game
         .state
@@ -386,23 +405,35 @@ fn draw_hud(game: &Game) {
         .iter()
         .filter(|u| u.player == game.human)
         .count();
-    draw_text(format!("SCRAP {}", me.scrap), 12.0, 22.0, 22.0, SCRAP_COLOR);
-    draw_text(format!("UNITS {my_units}"), 150.0, 22.0, 22.0, BONE);
+    draw_text(
+        format!("SCRAP {}", me.scrap),
+        12.0 * s,
+        22.0 * s,
+        22.0 * s,
+        SCRAP_COLOR,
+    );
+    draw_text(
+        format!("UNITS {my_units}"),
+        150.0 * s,
+        22.0 * s,
+        22.0 * s,
+        BONE,
+    );
     draw_text(
         format!("TICK {}", game.state.current_tick()),
-        270.0,
-        22.0,
-        22.0,
+        270.0 * s,
+        22.0 * s,
+        22.0 * s,
         BONE_FAINT,
     );
     if game.paused {
-        draw_text("PAUSED (P)", 420.0, 22.0, 22.0, DANGER);
+        draw_text("PAUSED (P)", 420.0 * s, 22.0 * s, 22.0 * s, DANGER);
     } else if (game.speed - 1.0).abs() > f64::EPSILON {
         draw_text(
             format!("SPEED x{:.2}", game.speed),
-            420.0,
-            22.0,
-            22.0,
+            420.0 * s,
+            22.0 * s,
+            22.0 * s,
             SCRAP_COLOR,
         );
     }
@@ -432,12 +463,12 @@ fn draw_hud(game: &Game) {
 
     // Controls hint.
     let hint = "LMB select · RMB move/engage · H/S train · arrows pan · Esc menu · F1 debug";
-    let width = measure_text(hint, None, 16, 1.0).width;
+    let width = measure_text(hint, None, (16.0 * s) as u16, 1.0).width;
     draw_text(
         hint,
-        screen_width() - width - 10.0,
-        screen_height() - 10.0,
-        16.0,
+        screen_width() - width - 10.0 * s,
+        screen_height() - 10.0 * s,
+        16.0 * s,
         BONE_FAINT,
     );
 
@@ -449,27 +480,40 @@ fn draw_hud(game: &Game) {
             }
             GameResult::Draw => "MUTUAL DESTRUCTION".to_string(),
         };
-        let size = 56.0;
+        let size = 56.0 * s;
         let dims = measure_text(&text, None, size as u16, 1.0);
         let x = (screen_width() - dims.width) * 0.5;
         let y = screen_height() * 0.4;
-        draw_rectangle(x - 24.0, y - 48.0, dims.width + 48.0, 100.0, PANEL);
+        draw_rectangle(
+            x - 24.0 * s,
+            y - 48.0 * s,
+            dims.width + 48.0 * s,
+            100.0 * s,
+            PANEL,
+        );
         draw_text(&text, x, y, size, SCRAP_COLOR);
         let hint = "Esc — menu";
-        let hint_dims = measure_text(hint, None, 20, 1.0);
+        let hint_dims = measure_text(hint, None, (20.0 * s) as u16, 1.0);
         draw_text(
             hint,
             (screen_width() - hint_dims.width) * 0.5,
-            y + 34.0,
-            20.0,
+            y + 34.0 * s,
+            20.0 * s,
             BONE_FAINT,
         );
     }
 }
 
 fn panel_line(text: &str) {
-    draw_rectangle(0.0, screen_height() - 36.0, screen_width(), 36.0, PANEL);
-    draw_text(text, 12.0, screen_height() - 12.0, 20.0, BONE);
+    let s = ui_scale();
+    draw_rectangle(
+        0.0,
+        screen_height() - 36.0 * s,
+        screen_width(),
+        36.0 * s,
+        PANEL,
+    );
+    draw_text(text, 12.0 * s, screen_height() - 12.0 * s, 20.0 * s, BONE);
 }
 
 // --- Minimap ------------------------------------------------------------
@@ -494,11 +538,16 @@ fn mini_faction_color(faction: oxide_sim::Faction) -> Color {
 /// `map_w`×`map_h` tiles in a `viewport`-pixel window. Pure — shared with
 /// input hit-testing and unit tests.
 pub fn minimap_rect_for(map_w: i32, map_h: i32, viewport: Vec2) -> Rect {
+    minimap_rect_scaled(map_w, map_h, viewport, ui_scale())
+}
+
+/// Testable core of [`minimap_rect_for`] (no window queries).
+pub fn minimap_rect_scaled(map_w: i32, map_h: i32, viewport: Vec2, s: f32) -> Rect {
     let mw = map_w as f32;
     let mh = map_h as f32;
-    let scale = (MINIMAP_MAX.x / mw).min(MINIMAP_MAX.y / mh);
+    let scale = (MINIMAP_MAX.x * s / mw).min(MINIMAP_MAX.y * s / mh);
     let (w, h) = (mw * scale, mh * scale);
-    Rect::new(viewport.x - w - 12.0, viewport.y - h - 34.0, w, h)
+    Rect::new(viewport.x - w - 12.0 * s, viewport.y - h - 34.0 * s, w, h)
 }
 
 /// Where the minimap sits this frame.

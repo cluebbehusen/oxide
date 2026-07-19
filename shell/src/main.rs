@@ -81,6 +81,9 @@ fn window_conf() -> Conf {
         window_title: "Oxide".to_string(),
         window_width: 1280,
         window_height: 800,
+        // Render at native pixel density — pre-atlas this was too many
+        // pixels to afford; post-atlas it's crisp text and art for free.
+        high_dpi: true,
         ..Default::default()
     }
 }

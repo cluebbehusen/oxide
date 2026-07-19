@@ -149,6 +149,7 @@ impl Game {
                 macroquad::prelude::screen_width(),
                 macroquad::prelude::screen_height(),
             ),
+            macroquad::miniquad::window::dpi_scale(),
         );
         Ok(Self {
             scenario,

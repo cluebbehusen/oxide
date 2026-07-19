@@ -17,6 +17,7 @@ heading.
 
 from __future__ import annotations
 
+import json
 import random
 from pathlib import Path
 
@@ -24,6 +25,10 @@ from PIL import Image, ImageDraw
 
 OUT = Path(__file__).resolve().parent.parent / "assets" / "sprites"
 SS = 4  # supersample factor
+
+# Every finished sprite lands here too, so main() can pack one atlas the
+# shell renders from — one texture means one GPU batch for the whole world.
+REGISTRY: dict[str, Image.Image] = {}
 
 # The Oxide palette. Keep in sync with driver/src/render.rs and the shell.
 GROUND = (35, 35, 41)
@@ -62,7 +67,51 @@ def canvas(px: int, color=(0, 0, 0, 0)) -> tuple[Image.Image, ImageDraw.ImageDra
 def finish(img: Image.Image, px: int, name: str) -> None:
     img = img.resize((px, px), Image.LANCZOS)
     img.save(OUT / f"{name}.png")
+    REGISTRY[name] = img
     print(f"  {name}.png")
+
+
+def pack_atlas() -> None:
+    """Shelf-packs every registered sprite into atlas.png + atlas.json.
+
+    Deterministic: sprites are placed tallest-first, then by name. Each
+    sprite gets a padded cell with its own edges extruded one pixel into the
+    padding, so linear filtering at any zoom never bleeds a neighbor (or
+    transparency) into the sample.
+    """
+    pad = 2
+    atlas_w = 512
+    entries = sorted(REGISTRY.items(), key=lambda kv: (-kv[1].height, kv[0]))
+    placements: dict[str, tuple[int, int, int, int]] = {}
+    x, y, shelf_h = pad, pad, 0
+    for name, img in entries:
+        w, h = img.width, img.height
+        if x + w + pad > atlas_w:
+            x = pad
+            y += shelf_h + 2 * pad
+            shelf_h = 0
+        placements[name] = (x, y, w, h)
+        shelf_h = max(shelf_h, h)
+        x += w + 2 * pad
+    atlas_h = y + shelf_h + pad
+    atlas = Image.new("RGBA", (atlas_w, atlas_h), (0, 0, 0, 0))
+    for name, (px_, py, w, h) in placements.items():
+        img = REGISTRY[name]
+        atlas.paste(img, (px_, py))
+        # 1px edge extrusion into the padding.
+        atlas.paste(img.crop((0, 0, w, 1)), (px_, py - 1))
+        atlas.paste(img.crop((0, h - 1, w, h)), (px_, py + h))
+        atlas.paste(img.crop((0, 0, 1, h)), (px_ - 1, py))
+        atlas.paste(img.crop((w - 1, 0, w, h)), (px_ + w, py))
+    atlas.save(OUT / "atlas.png")
+    with open(OUT / "atlas.json", "w") as f:
+        json.dump(
+            {name: list(rect) for name, rect in sorted(placements.items())},
+            f,
+            indent=1,
+            sort_keys=True,
+        )
+    print(f"  atlas.png ({atlas_w}x{atlas_h}, {len(placements)} sprites) + atlas.json")
 
 
 def s(v: float) -> int:
@@ -235,6 +284,7 @@ def main() -> None:
         foundry(faction)
         harvester(faction)
         sentinel(faction)
+    pack_atlas()
     print("done")
 
 

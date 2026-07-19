@@ -19,6 +19,10 @@ const PANEL: Color = color_u8!(20, 20, 24, 230);
 const ITEM_HEIGHT: f32 = 44.0;
 const ITEM_WIDTH: f32 = 420.0;
 
+fn ui() -> f32 {
+    crate::render::ui_scale()
+}
+
 /// A titled, selectable list.
 pub struct Menu {
     /// Heading above the list.
@@ -40,12 +44,13 @@ impl Menu {
     }
 
     fn item_rect(&self, index: usize) -> Rect {
+        let s = ui();
         let top = screen_height() * 0.42;
         Rect::new(
-            (screen_width() - ITEM_WIDTH) * 0.5,
-            top + index as f32 * ITEM_HEIGHT,
-            ITEM_WIDTH,
-            ITEM_HEIGHT - 8.0,
+            (screen_width() - ITEM_WIDTH * s) * 0.5,
+            top + index as f32 * ITEM_HEIGHT * s,
+            ITEM_WIDTH * s,
+            (ITEM_HEIGHT - 8.0) * s,
         )
     }
 
@@ -89,7 +94,8 @@ impl Menu {
 
     /// Draws the menu (over whatever the caller already drew).
     pub fn draw(&self, subtitle: &str) {
-        let title_size = 96.0;
+        let s = ui();
+        let title_size = 96.0 * s;
         let dims = measure_text(&self.title, None, title_size as u16, 1.0);
         draw_text(
             &self.title,
@@ -98,12 +104,12 @@ impl Menu {
             title_size,
             TITLE_COLOR,
         );
-        let sub_dims = measure_text(subtitle, None, 20, 1.0);
+        let sub_dims = measure_text(subtitle, None, (20.0 * s) as u16, 1.0);
         draw_text(
             subtitle,
             (screen_width() - sub_dims.width) * 0.5,
-            screen_height() * 0.28 + 34.0,
-            20.0,
+            screen_height() * 0.28 + 34.0 * s,
+            20.0 * s,
             DIM,
         );
 
@@ -115,17 +121,23 @@ impl Menu {
                 draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 2.0, TITLE_COLOR);
             }
             let color = if selected { SELECTED_COLOR } else { ITEM_COLOR };
-            draw_text(label, rect.x + 18.0, rect.y + rect.h * 0.68, 26.0, color);
+            draw_text(
+                label,
+                rect.x + 18.0 * s,
+                rect.y + rect.h * 0.68,
+                26.0 * s,
+                color,
+            );
         }
 
         // ASCII on purpose: the default font has no glyphs for arrows.
         let hint = "Up/Down select - Enter confirm - or click";
-        let hint_dims = measure_text(hint, None, 18, 1.0);
+        let hint_dims = measure_text(hint, None, (18.0 * s) as u16, 1.0);
         draw_text(
             hint,
             (screen_width() - hint_dims.width) * 0.5,
-            screen_height() - 24.0,
-            18.0,
+            screen_height() - 24.0 * s,
+            18.0 * s,
             DIM,
         );
     }

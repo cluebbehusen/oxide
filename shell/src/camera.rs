@@ -9,27 +9,34 @@
 
 use macroquad::prelude::{Vec2, vec2};
 
-/// Zoom bounds in pixels per tile.
+/// Zoom bounds in *logical* pixels per tile (scaled by dpi at
+/// construction, so a tile looks the same physical size on every display).
 const ZOOM_MIN: f32 = 8.0;
 const ZOOM_MAX: f32 = 96.0;
+const ZOOM_DEFAULT: f32 = 32.0;
 
 /// A pan/zoom camera over the tile grid.
 pub struct Camera {
     /// World point at the viewport center.
     pub center: Vec2,
-    /// Pixels per world unit.
+    /// Physical pixels per world unit.
     pub zoom: f32,
+    zoom_min: f32,
+    zoom_max: f32,
     viewport: Vec2,
     map_size: Vec2,
 }
 
 impl Camera {
     /// A camera looking at `focus` on a `width`×`height`-tile map, rendered
-    /// into a `viewport`-pixel window.
-    pub fn new(focus: Vec2, width: i32, height: i32, viewport: Vec2) -> Self {
+    /// into a `viewport`-physical-pixel window at `dpi_scale` (1.0 on
+    /// standard displays, 2.0 on Retina).
+    pub fn new(focus: Vec2, width: i32, height: i32, viewport: Vec2, dpi_scale: f32) -> Self {
         let mut camera = Self {
             center: focus,
-            zoom: 32.0,
+            zoom: ZOOM_DEFAULT * dpi_scale,
+            zoom_min: ZOOM_MIN * dpi_scale,
+            zoom_max: ZOOM_MAX * dpi_scale,
             viewport,
             map_size: vec2(width as f32, height as f32),
         };
@@ -71,7 +78,7 @@ impl Camera {
     /// stationary — zoom goes where you're looking.
     pub fn zoom_at(&mut self, cursor_px: Vec2, notches: f32) {
         let anchor = self.to_world(cursor_px);
-        self.zoom = (self.zoom * 1.15f32.powf(notches)).clamp(ZOOM_MIN, ZOOM_MAX);
+        self.zoom = (self.zoom * 1.15f32.powf(notches)).clamp(self.zoom_min, self.zoom_max);
         let after = self.to_world(cursor_px);
         self.center += anchor - after;
         self.clamp();
@@ -98,7 +105,7 @@ mod tests {
     use super::*;
 
     fn camera() -> Camera {
-        Camera::new(vec2(20.0, 12.0), 40, 24, vec2(1280.0, 800.0))
+        Camera::new(vec2(20.0, 12.0), 40, 24, vec2(1280.0, 800.0), 1.0)
     }
 
     #[test]
