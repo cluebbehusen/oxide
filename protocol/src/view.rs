@@ -155,9 +155,8 @@ impl StateView {
             tick: state.tick,
             hash: crate::hash_hex(state.hash()),
             result: state.result,
-            players: filter
-                .players
-                .then(|| {
+            players: if filter.players {
+                {
                     state
                         .players
                         .iter()
@@ -179,16 +178,20 @@ impl StateView {
                                 .count(),
                         })
                         .collect()
-                })
-                .unwrap_or_default(),
-            units: filter
-                .units
-                .then(|| state.units.iter().map(unit_view).collect())
-                .unwrap_or_default(),
-            buildings: filter
-                .buildings
-                .then(|| state.buildings.iter().map(building_view).collect())
-                .unwrap_or_default(),
+                }
+            } else {
+                Default::default()
+            },
+            units: if filter.units {
+                state.units.iter().map(unit_view).collect()
+            } else {
+                Default::default()
+            },
+            buildings: if filter.buildings {
+                state.buildings.iter().map(building_view).collect()
+            } else {
+                Default::default()
+            },
             map: filter.map.then(|| ascii_with_entities(state)),
         }
     }

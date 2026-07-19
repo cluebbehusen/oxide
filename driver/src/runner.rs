@@ -22,13 +22,13 @@ pub struct RunOutcome {
 pub fn step(
     state: &mut State,
     bots: &mut [Bot],
-    mut replay: Option<&mut GameReplay>,
+    replay: Option<&mut GameReplay>,
 ) -> oxide_sim::TickReport {
     let mut commands: Vec<PlayerCommand> = Vec::new();
     for bot in bots.iter_mut() {
         commands.extend(bot.act(state));
     }
-    if let Some(replay) = replay.as_deref_mut() {
+    if let Some(replay) = replay {
         for command in &commands {
             replay.record(state.tick, command.clone());
         }
