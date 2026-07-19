@@ -239,6 +239,11 @@ impl Game {
         hash_hex(self.state.hash())
     }
 
+    /// The local player's fog view (what rendering and targeting honor).
+    pub fn my_vision(&self) -> &oxide_sim::Vision {
+        self.state.vision(self.human)
+    }
+
     /// Ages and prunes effects.
     pub fn update_fx(&mut self, dt: f32) {
         for fx in &mut self.fx {

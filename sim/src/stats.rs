@@ -64,6 +64,8 @@ pub struct UnitStats {
     pub attack: Option<AttackStats>,
     /// Present iff the unit can gather.
     pub harvest: Option<HarvestStats>,
+    /// Fog-of-war reveal radius, in tiles.
+    pub vision: i32,
 }
 
 /// Static parameters of a building kind.
@@ -73,6 +75,8 @@ pub struct BuildingStats {
     pub max_hp: u32,
     /// Footprint in tiles (width, height), anchored top-left.
     pub size: (i32, i32),
+    /// Fog-of-war reveal radius, in tiles (from each footprint tile).
+    pub vision: i32,
 }
 
 const HARVESTER: UnitStats = UnitStats {
@@ -86,6 +90,7 @@ const HARVESTER: UnitStats = UnitStats {
         capacity: 10,
         ticks_per_scrap: 10, // 2 scrap/s while extracting
     }),
+    vision: 6,
 };
 
 const SENTINEL: UnitStats = UnitStats {
@@ -101,11 +106,13 @@ const SENTINEL: UnitStats = UnitStats {
         aggro_range: Fx::lit("5"),
     }),
     harvest: None,
+    vision: 7, // strictly wider than aggro, so acquired targets are seen
 };
 
 const FOUNDRY: BuildingStats = BuildingStats {
     max_hp: 800,
     size: (2, 2),
+    vision: 8,
 };
 
 impl UnitKind {

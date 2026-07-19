@@ -199,6 +199,8 @@ pub struct State {
     pub map: Map,
     /// Players, indexed by [`PlayerId`].
     pub players: Vec<Player>,
+    /// Per-player fog of war, indexed by [`PlayerId`].
+    pub vision: Vec<crate::vision::Vision>,
     /// All living units, sorted by id.
     pub units: Vec<Unit>,
     /// All standing buildings, sorted by id.
@@ -213,11 +215,16 @@ impl State {
     /// Assembles a state from parts; [`crate::Scenario::build`] is the public
     /// entry point.
     pub(crate) fn assemble(map: Map, players: Vec<Player>, seed: u64) -> Self {
+        let vision = players
+            .iter()
+            .map(|_| crate::vision::Vision::new(map.width(), map.height()))
+            .collect();
         Self {
             tick: 0,
             rng: Pcg32::new(seed, 0),
             map,
             players,
+            vision,
             units: Vec::new(),
             buildings: Vec::new(),
             result: None,
@@ -236,6 +243,23 @@ impl State {
     /// scenario setup and never dangle.
     pub fn player(&self, id: PlayerId) -> &Player {
         &self.players[id.0 as usize]
+    }
+
+    /// A player's fog-of-war view. Panics on a foreign id, like
+    /// [`State::player`].
+    pub fn vision(&self, id: PlayerId) -> &crate::vision::Vision {
+        &self.vision[id.0 as usize]
+    }
+
+    /// Whether `player` currently sees `pos`.
+    pub fn can_see(&self, player: PlayerId, pos: TilePos) -> bool {
+        self.vision(player).visible(pos)
+    }
+
+    /// Rebuilds every player's visible set; runs each tick and once at
+    /// scenario build so tick 0 already has sight.
+    pub(crate) fn refresh_vision(&mut self) {
+        crate::vision::refresh(self);
     }
 
     /// Mutable access to a player.

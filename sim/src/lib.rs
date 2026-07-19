@@ -21,6 +21,7 @@ pub mod scenario;
 pub mod state;
 pub mod stats;
 mod tick;
+pub mod vision;
 
 pub use command::{Command, PlayerCommand};
 pub use event::{Event, TickReport};
@@ -28,6 +29,7 @@ pub use ids::{BuildingId, PlayerId, Target, UnitId};
 pub use scenario::Scenario;
 pub use state::{Building, Faction, GameResult, Order, Player, State, Unit};
 pub use stats::{BuildingKind, UnitKind};
+pub use vision::Vision;
 
 /// Version stamped into replays; a replay is only guaranteed to reproduce on
 /// the sim version that recorded it.

@@ -131,6 +131,14 @@ impl<T> Grid<T> {
             .map(|i| &mut self.cells[i])
     }
 
+    /// Overwrites every cell with clones of `value`.
+    pub fn fill(&mut self, value: T)
+    where
+        T: Clone,
+    {
+        self.cells.fill(value);
+    }
+
     /// Iterates all cells with their positions, row-major (a deterministic
     /// order).
     pub fn iter(&self) -> impl Iterator<Item = (TilePos, &T)> {

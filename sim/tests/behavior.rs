@@ -430,6 +430,63 @@ fn train_rejects_poverty_and_foreign_buildings() {
 }
 
 #[test]
+fn fog_reveals_persists_and_gates_attacks() {
+    // Harvester scouts on both sides: nobody can shoot, so vision changes
+    // come purely from walking. Foundries sit in opposite corners; the
+    // arena is wide enough that each side starts blind to the other.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 3, 3),
+        unit(1, UnitKind::Harvester, 13, 3),
+    ])
+    .build()
+    .unwrap();
+    let (scout, quarry) = (state.units[0].id, state.units[1].id);
+    let quarry_tile = state.unit(quarry).unwrap().tile();
+    assert!(
+        !state.can_see(PlayerId(0), quarry_tile),
+        "enemy corner must start fogged"
+    );
+
+    // Attacking through fog is rejected outright.
+    let report = state.tick(&[cmd(
+        0,
+        Command::Attack {
+            units: vec![scout],
+            target: Target::Unit(quarry),
+        },
+    )]);
+    assert!(report.events.contains(&Event::CommandRejected {
+        player: PlayerId(0),
+        reason: RejectReason::InvalidTarget,
+    }));
+
+    // Scouting toward it brings it into view…
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![scout],
+            goal: TilePos::new(9, 3),
+        },
+    )]);
+    run_until(&mut state, 300, |s, _| s.can_see(PlayerId(0), quarry_tile));
+
+    // …and walking home drops visibility but keeps the exploration.
+    let home = TilePos::new(2, 6);
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![scout],
+            goal: home,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| {
+        s.unit(scout).unwrap().tile() == home
+    });
+    assert!(!state.can_see(PlayerId(0), quarry_tile));
+    assert!(state.vision(PlayerId(0)).explored(quarry_tile));
+}
+
+#[test]
 fn commanding_enemy_units_is_rejected() {
     let mut state = arena(vec![unit(1, UnitKind::Harvester, 8, 6)])
         .build()

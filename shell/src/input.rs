@@ -266,11 +266,13 @@ fn context_order(game: &mut Game, screen: Vec2) {
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     let units = game.selection.units.clone();
 
+    // Fog rules what right-click may target: unseen enemies aren't there
+    // as far as the player is concerned (the sim enforces this too).
     let enemy_unit = game
         .state
         .units
         .iter()
-        .filter(|u| u.player != game.human)
+        .filter(|u| u.player != game.human && game.my_vision().visible(u.tile()))
         .map(|u| {
             let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
             (p.distance(world), u.id)
@@ -286,6 +288,7 @@ fn context_order(game: &mut Game, screen: Vec2) {
     }
     if let Some(building) = game.state.building_at(tile)
         && building.player != game.human
+        && building.tiles().any(|t| game.my_vision().visible(t))
     {
         let target = Target::Building(building.id);
         game.issue(Command::Attack { units, target });

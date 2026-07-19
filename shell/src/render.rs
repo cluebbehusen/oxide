@@ -28,11 +28,40 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     draw_buildings(game, sprites);
     draw_units(game, sprites, alpha);
     draw_fx(game);
-    draw_drag_rect(input);
+    // The debug overlay is deliberately omniscient; fog only draws without it.
     if game.overlay {
         draw_overlay(game, alpha);
+    } else {
+        draw_fog(game);
     }
+    draw_drag_rect(input);
     draw_hud(game);
+}
+
+const FOG_UNEXPLORED: Color = color_u8!(13, 13, 17, 255);
+const FOG_EXPLORED: Color = color_u8!(13, 13, 17, 130);
+
+/// Fog of war from the local player's perspective: unexplored is void,
+/// explored-but-unseen is dimmed.
+fn draw_fog(game: &Game) {
+    let vision = game.my_vision();
+    let zoom = game.camera.zoom;
+    let size = zoom.ceil() + 1.0;
+    let (min, max) = visible_tiles(game);
+    for y in min.y..max.y {
+        for x in min.x..max.x {
+            let tile = TilePos::new(x, y);
+            let cover = if !vision.explored(tile) {
+                FOG_UNEXPLORED
+            } else if !vision.visible(tile) {
+                FOG_EXPLORED
+            } else {
+                continue;
+            };
+            let screen = game.camera.to_screen(vec2(x as f32, y as f32));
+            draw_rectangle(screen.x.floor(), screen.y.floor(), size, size, cover);
+        }
+    }
 }
 
 fn visible_tiles(game: &Game) -> (TilePos, TilePos) {
@@ -84,6 +113,14 @@ fn draw_tiles(game: &Game, sprites: &Sprites) {
 fn draw_buildings(game: &Game, sprites: &Sprites) {
     let zoom = game.camera.zoom;
     for building in &game.state.buildings {
+        // Enemy buildings appear once their ground is explored (no ghost
+        // memory yet: an unwatched demolition removes them from view too).
+        if building.player != game.human
+            && !game.overlay
+            && !building.tiles().any(|t| game.my_vision().explored(t))
+        {
+            continue;
+        }
         let faction = game.state.player(building.player).faction;
         let screen = game
             .camera
@@ -132,6 +169,9 @@ fn draw_buildings(game: &Game, sprites: &Sprites) {
 fn draw_units(game: &Game, sprites: &Sprites, alpha: f32) {
     let zoom = game.camera.zoom;
     for unit in &game.state.units {
+        if unit.player != game.human && !game.overlay && !game.my_vision().visible(unit.tile()) {
+            continue;
+        }
         let faction = game.state.player(unit.player).faction;
         let pos = game.draw_pos(unit.id, unit.pos, alpha);
         let screen = game.camera.to_screen(pos);
@@ -183,6 +223,14 @@ fn hp_bar(x: f32, y: f32, w: f32, hp: u32, max_hp: u32) {
 
 fn draw_fx(game: &Game) {
     for fx in &game.fx {
+        let anchor = match fx.kind {
+            EffectKind::Laser { from, .. } => from,
+            EffectKind::Puff { at } => at,
+        };
+        let tile = TilePos::new(anchor.x.floor() as i32, anchor.y.floor() as i32);
+        if !game.overlay && !game.my_vision().visible(tile) {
+            continue;
+        }
         match fx.kind {
             EffectKind::Laser { from, to } => {
                 let a = game.camera.to_screen(from);

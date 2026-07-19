@@ -81,18 +81,22 @@ fn apply_attack(
     units: &[UnitId],
     target: Target,
 ) -> Result<(), RejectReason> {
-    // The target must exist and be an enemy's.
-    let (target_owner, target_tile) = match target {
+    // The target must exist, be an enemy's, and be visible to the issuer —
+    // fog of war means no sniping at things you cannot see.
+    let (target_owner, target_tile, seen) = match target {
         Target::Unit(id) => state
             .unit(id)
-            .map(|u| (u.player, u.tile()))
+            .map(|u| (u.player, u.tile(), state.can_see(player, u.tile())))
             .ok_or(RejectReason::InvalidTarget)?,
         Target::Building(id) => state
             .building(id)
-            .map(|b| (b.player, b.anchor))
+            .map(|b| {
+                let seen = b.tiles().any(|t| state.can_see(player, t));
+                (b.player, b.anchor, seen)
+            })
             .ok_or(RejectReason::InvalidTarget)?,
     };
-    if target_owner == player {
+    if target_owner == player || !seen {
         return Err(RejectReason::InvalidTarget);
     }
     // Units that can't fight walk to the target area instead.

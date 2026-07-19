@@ -14,7 +14,9 @@
 //! 5. **Collision** — overlapping bodies are pushed apart until they fit;
 //!    units are solid to each other but never block tiles.
 //! 6. **Cleanup** — entities at 0 hp are removed, with events.
-//! 7. **Victory** — a player with no buildings is out; last standing wins.
+//! 7. **Vision** — every player's fog-of-war visible set is rebuilt from
+//!    their surviving entities (explored only accumulates).
+//! 8. **Victory** — a player with no buildings is out; last standing wins.
 //!
 //! After [`GameResult`] is set the world freezes: ticks still count up (so
 //! timelines stay aligned) but nothing moves and commands are ignored.
@@ -45,6 +47,7 @@ impl State {
             movement::run(self);
             movement::resolve_collisions(self);
             cleanup(self, &mut events);
+            self.refresh_vision();
             victory(self, &mut events);
         }
         self.tick += 1;

@@ -161,6 +161,7 @@ impl Scenario {
             }
             state.spawn_unit(PlayerId(spec.player), spec.kind, tile.center());
         }
+        state.refresh_vision();
         Ok(state)
     }
 }
