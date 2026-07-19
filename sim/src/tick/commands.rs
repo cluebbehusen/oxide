@@ -177,7 +177,11 @@ fn apply_harvest(
     if !in_envelope(state, node) {
         return Err(RejectReason::OutOfBounds);
     }
-    if state.map.scrap_at(node) == 0 {
+    // A node counts if it exists *or* the issuer remembers it existing —
+    // ordering harvesters onto stale memory is legitimate play (they walk
+    // over, discover the truth, and retarget), and rejecting it would leak
+    // that an unseen node has been emptied.
+    if state.map.scrap_at(node) == 0 && state.vision(player).remembered_scrap(node) == 0 {
         return Err(RejectReason::NotANode);
     }
     let mut applied = 0;

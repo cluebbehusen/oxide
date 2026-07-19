@@ -20,6 +20,11 @@ use std::time::Duration;
 /// first (killed on exit, pass or fail).
 pub fn run(addr: &str, spawn: bool) -> Result<()> {
     let mut child = if spawn {
+        // Spawn on the port we'll actually connect to, not the default.
+        let port = addr
+            .rsplit(':')
+            .next()
+            .context("addr must look like host:port")?;
         Some(
             std::process::Command::new("cargo")
                 .args([
@@ -29,6 +34,8 @@ pub fn run(addr: &str, spawn: bool) -> Result<()> {
                     "--",
                     "--debug-server",
                     "--paused",
+                    "--port",
+                    port,
                 ])
                 .spawn()
                 .context("spawning oxide-shell via cargo")?,
@@ -85,7 +92,9 @@ fn execute(addr: &str, patient: bool) -> Result<()> {
         failures: Vec::new(),
     };
 
-    // Status and clock control.
+    // Status and clock control. Pause up front: tick-exact assertions
+    // against a free-running shell would race its wall clock. The previous
+    // pause state is restored on the way out.
     let Reply::Status(status) = client.call(Request::Status)? else {
         bail!("status returned the wrong reply kind");
     };
@@ -94,6 +103,8 @@ fn execute(addr: &str, patient: bool) -> Result<()> {
         !status.scenario.is_empty(),
         "empty scenario name",
     );
+    let was_running = !status.paused;
+    client.call(Request::Pause)?;
     let Reply::Hash(start) = client.call(Request::StateHash)? else {
         bail!("state_hash returned the wrong reply kind");
     };
@@ -161,8 +172,18 @@ fn execute(addr: &str, patient: bool) -> Result<()> {
         format!("{start_pos:?} -> {:?}", moved.pos),
     );
 
-    // Screenshot lands on disk with sane dimensions.
-    let Reply::Screenshot(shot) = client.call(Request::Screenshot { path: None })? else {
+    // Screenshot lands on disk, right side up. Absolute, per-process paths:
+    // the shell writes relative to ITS working directory, and parallel
+    // smoke runs must not clobber each other.
+    let pid = std::process::id();
+    let shot_path = std::env::current_dir()?
+        .join(format!("screenshots/smoke-{pid}.png"))
+        .to_string_lossy()
+        .into_owned();
+    let Reply::Screenshot(shot) = client.call(Request::Screenshot {
+        path: Some(shot_path.clone()),
+    })?
+    else {
         bail!("screenshot returned the wrong reply kind");
     };
     checks.note(
@@ -170,22 +191,43 @@ fn execute(addr: &str, patient: bool) -> Result<()> {
         shot.width > 0 && shot.height > 0,
         format!("{}x{}", shot.width, shot.height),
     );
-    let on_disk = std::fs::metadata(&shot.path).map(|m| m.len()).unwrap_or(0);
+    let png_bytes = std::fs::read(&shot.path).unwrap_or_default();
     checks.note(
         "screenshot file exists and is non-empty",
-        on_disk > 0,
-        format!("{} ({} bytes)", shot.path, on_disk),
+        !png_bytes.is_empty(),
+        format!("{} ({} bytes)", shot.path, png_bytes.len()),
+    );
+    // Content-aware orientation canary: we paused above, so the red
+    // "PAUSED" indicator must sit in the top HUD bar. An upside-down frame
+    // (a real shipped bug — GL readback is bottom-up) puts it at the
+    // bottom and fails this.
+    let oriented = tiny_skia::Pixmap::decode_png(&png_bytes)
+        .ok()
+        .is_some_and(|pixmap| {
+            pixmap
+                .pixels()
+                .iter()
+                .take(pixmap.width() as usize * 32)
+                .any(|px| px.red() > 180 && px.green() < 120 && px.blue() < 120)
+        });
+    checks.note(
+        "screenshot is right side up (PAUSED indicator in top bar)",
+        oriented,
+        "no red pause indicator found in the top 32 rows",
     );
 
     // The decisive check: the live session reproduces headless.
     let Reply::Hash(live) = client.call(Request::StateHash)? else {
         bail!("state_hash returned the wrong reply kind");
     };
-    let replay_path = "replays/smoke.json";
+    let replay_path = std::env::current_dir()?
+        .join(format!("replays/smoke-{pid}.json"))
+        .to_string_lossy()
+        .into_owned();
     client.call(Request::SaveReplay {
-        path: replay_path.into(),
+        path: replay_path.clone(),
     })?;
-    let replay = GameReplay::load(replay_path).context("reading saved replay")?;
+    let replay = GameReplay::load(&replay_path).context("reading saved replay")?;
     let replayed = runner::run_replay(&replay, Some(live.tick), false)?;
     checks.note(
         "saved replay reproduces the live session",
@@ -196,6 +238,30 @@ fn execute(addr: &str, patient: bool) -> Result<()> {
             oxide_protocol::hash_hex(replayed.hash())
         ),
     );
+
+    // Session resume: loading the replay we just saved must land on the
+    // same tick and hash, still recording.
+    let resumed = client.call(Request::LoadReplay {
+        path: replay_path.clone(),
+    })?;
+    let resumed_ok = matches!(&resumed, Reply::Status(s) if s.tick == live.tick);
+    checks.note(
+        "load-replay resumes at the recorded tick",
+        resumed_ok,
+        format!("reply {resumed:?}"),
+    );
+    let Reply::Hash(after_resume) = client.call(Request::StateHash)? else {
+        bail!("state_hash returned the wrong reply kind");
+    };
+    checks.note(
+        "resumed session matches the live hash",
+        after_resume.hash == live.hash,
+        format!("{} vs {}", after_resume.hash, live.hash),
+    );
+
+    if was_running {
+        client.call(Request::Resume)?;
+    }
 
     println!(
         "smoke: {} passed, {} failed",

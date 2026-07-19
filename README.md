@@ -32,9 +32,9 @@ asleep.
 |---|---|
 | Left click / drag | Select your units (click a Foundry to select it) |
 | Left click on minimap | Jump the camera there |
-| Right click | Contextual order: enemy → attack, scrap → harvest, ground → move |
+| Right click | Contextual order: enemy → attack, scrap → harvest, ground → **move engaging everything on the way** (fire at will is the only stance; combat units always defend themselves) |
+| Right click on minimap | Send the selection there, fighting through |
 | Right click (Foundry selected) | Set the rally point — rally a scrap node and fresh harvesters mine it; fresh Sentinels attack-move to it |
-| `A`, then click | Attack-move: march there, fighting everything on the way |
 | Mouse wheel | Zoom (toward the cursor) |
 | Arrow keys | Pan |
 | `H` / `S` | Train a Harvester (50) / Sentinel (75) |

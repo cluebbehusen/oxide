@@ -61,8 +61,19 @@ struct Args {
     paused: bool,
 
     /// Wall-clock speed multiplier.
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(long, default_value_t = 1.0, value_parser = parse_speed)]
     speed: f64,
+}
+
+/// Same envelope the debug socket enforces — the CLI shouldn't accept less
+/// sane values than the protocol does.
+fn parse_speed(s: &str) -> Result<f64, String> {
+    let v: f64 = s.parse().map_err(|err| format!("{err}"))?;
+    if v.is_finite() && (0.05..=64.0).contains(&v) {
+        Ok(v)
+    } else {
+        Err("speed must be a finite value within 0.05..=64".to_string())
+    }
 }
 
 fn window_conf() -> Conf {
@@ -235,14 +246,13 @@ async fn run() -> Result<()> {
             Mode::Playing => {
                 let had_selection =
                     !game.selection.units.is_empty() || game.selection.building.is_some();
-                let was_armed = input.armed_attack_move;
                 let escape_pressed = events
                     .iter()
                     .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
                 input::apply_events(&mut game, &mut input, &events);
                 input::update_held(&mut game, &input, dt);
-                // Escape walks outward: disarm, then deselect, then menu.
-                if escape_pressed && !had_selection && !was_armed {
+                // Escape walks outward: deselect first, then the menu.
+                if escape_pressed && !had_selection {
                     game.paused = true;
                     mode = Mode::PauseMenu;
                 }
@@ -354,8 +364,15 @@ fn write_png(image: &Image, path: &str) -> Result<(u32, u32)> {
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().context("writing png header")?;
+    // The GL framebuffer is bottom-up; PNG rows are top-down. Skipping this
+    // flip shipped upside-down screenshots once already.
+    let stride = usize::from(image.width) * 4;
+    let mut flipped = Vec::with_capacity(image.bytes.len());
+    for row in image.bytes.chunks_exact(stride).rev() {
+        flipped.extend_from_slice(row);
+    }
     writer
-        .write_image_data(&image.bytes)
+        .write_image_data(&flipped)
         .context("writing png data")?;
     Ok((u32::from(image.width), u32::from(image.height)))
 }

@@ -37,17 +37,6 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     draw_drag_rect(input);
     draw_hud(game);
     draw_minimap(game);
-    if input.armed_attack_move {
-        let text = "ATTACK-MOVE — click a destination (Esc cancels)";
-        let dims = measure_text(text, None, 22, 1.0);
-        draw_text(
-            text,
-            (screen_width() - dims.width) * 0.5,
-            56.0,
-            22.0,
-            DANGER,
-        );
-    }
 }
 
 const FOG_UNEXPLORED: Color = color_u8!(13, 13, 17, 255);
@@ -442,8 +431,7 @@ fn draw_hud(game: &Game) {
     }
 
     // Controls hint.
-    let hint =
-        "LMB select · RMB order · A attack-move · H/S train · arrows pan · Esc menu · F1 debug";
+    let hint = "LMB select · RMB move/engage · H/S train · arrows pan · Esc menu · F1 debug";
     let width = measure_text(hint, None, 16, 1.0).width;
     draw_text(
         hint,

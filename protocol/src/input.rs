@@ -113,7 +113,8 @@ pub enum Key {
     H,
     /// Train a Sentinel.
     S,
-    /// Arm attack-move: the next left-click orders it.
+    /// Reserved. Formerly armed attack-move; unmapped since right-click
+    /// ground orders became fire-at-will. Kept for wire compatibility.
     A,
     /// Pause / unpause.
     P,

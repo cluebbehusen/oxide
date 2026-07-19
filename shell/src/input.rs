@@ -26,9 +26,6 @@ pub struct InputState {
     pub mouse: Vec2,
     /// Where the current left-drag started, if any.
     pub drag_origin: Option<Vec2>,
-    /// `A` was pressed: the next left-click issues an attack-move instead
-    /// of selecting.
-    pub armed_attack_move: bool,
     held: HashSet<KeyOrd>,
 }
 
@@ -60,7 +57,6 @@ impl InputState {
         Self {
             mouse: vec2(0.0, 0.0),
             drag_origin: None,
-            armed_attack_move: false,
             held: HashSet::new(),
         }
     }
@@ -69,19 +65,18 @@ impl InputState {
         self.held.contains(&key_ord(key))
     }
 
-    /// Drops everything that assumes continuity — held keys, an open drag,
-    /// an armed attack-move — keeping only the cursor position. Called on
-    /// every mode transition: a menu eats the matching release events, and
-    /// stale held-state otherwise pans the camera forever (or fires a
-    /// phantom box-select) after resuming.
+    /// Drops everything that assumes continuity — held keys and any open
+    /// drag — keeping only the cursor position. Called on every mode
+    /// transition: a menu eats the matching release events, and stale
+    /// held-state otherwise pans the camera forever (or fires a phantom
+    /// box-select) after resuming.
     pub fn reset_transient(&mut self) {
         self.held.clear();
         self.drag_origin = None;
-        self.armed_attack_move = false;
     }
 }
 
-const KEY_MAP: [(Key, mq::KeyCode); 12] = [
+const KEY_MAP: [(Key, mq::KeyCode); 11] = [
     (Key::Up, mq::KeyCode::Up),
     (Key::Down, mq::KeyCode::Down),
     (Key::Left, mq::KeyCode::Left),
@@ -92,7 +87,6 @@ const KEY_MAP: [(Key, mq::KeyCode); 12] = [
     (Key::Escape, mq::KeyCode::Escape),
     (Key::Space, mq::KeyCode::Space),
     (Key::F1, mq::KeyCode::F1),
-    (Key::A, mq::KeyCode::A),
     (Key::Enter, mq::KeyCode::Enter),
 ];
 
@@ -106,9 +100,16 @@ pub fn poll_events(input: &InputState) -> Vec<RawEvent> {
     }
     let wheel = mq::mouse_wheel().1;
     if wheel != 0.0 {
-        // Normalize platform wheel scales into modest notch counts.
+        // Trackpads report small continuous deltas, discrete wheels big
+        // notchy ones (±120-ish); normalize both toward gentle notch
+        // counts. Heuristic — revisit if a device feels off.
+        let delta = if wheel.abs() >= 40.0 {
+            wheel / 120.0
+        } else {
+            wheel / 10.0
+        };
         events.push(RawEvent::Wheel {
-            delta: (wheel / 60.0).clamp(-3.0, 3.0),
+            delta: delta.clamp(-3.0, 3.0),
         });
     }
     for (button, mq_button) in [
@@ -153,21 +154,9 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 y,
             } => {
                 input.mouse = vec2(x, y);
-                // The minimap owns clicks landing on it: armed attack-moves
-                // resolve through its coordinates, plain clicks jump the
-                // camera. Either way, no drag-select starts there.
-                let minimap_world = crate::render::minimap_world_at(game, vec2(x, y));
-                if input.armed_attack_move {
-                    input.armed_attack_move = false;
-                    let world = minimap_world.unwrap_or_else(|| game.camera.to_world(vec2(x, y)));
-                    let units = game.selection.units.clone();
-                    if !units.is_empty() {
-                        game.issue(Command::AttackMove {
-                            units,
-                            goal: TilePos::new(world.x.floor() as i32, world.y.floor() as i32),
-                        });
-                    }
-                } else if let Some(world) = minimap_world {
+                // The minimap owns clicks landing on it: jump the camera,
+                // never start a drag-select there.
+                if let Some(world) = crate::render::minimap_world_at(game, vec2(x, y)) {
                     game.camera.center = world;
                     game.camera.pan(Vec2::ZERO); // re-clamp
                 } else {
@@ -195,8 +184,20 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 y,
             } => {
                 input.mouse = vec2(x, y);
-                input.armed_attack_move = false; // a direct order overrides
-                context_order(game, vec2(x, y));
+                // A right-click on the minimap orders to that world tile
+                // (ground semantics — entities can't be picked at that
+                // scale); anywhere else, full context ordering.
+                if let Some(world) = crate::render::minimap_world_at(game, vec2(x, y)) {
+                    let units = game.selection.units.clone();
+                    if !units.is_empty() {
+                        game.issue(Command::AttackMove {
+                            units,
+                            goal: TilePos::new(world.x.floor() as i32, world.y.floor() as i32),
+                        });
+                    }
+                } else {
+                    context_order(game, vec2(x, y));
+                }
             }
             RawEvent::MouseUp {
                 button: MouseButton::Right,
@@ -212,13 +213,6 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
             } => {}
             RawEvent::KeyDown { key } => {
                 input.held.insert(key_ord(key));
-                match key {
-                    Key::A if !game.selection.units.is_empty() => {
-                        input.armed_attack_move = true;
-                    }
-                    Key::Escape => input.armed_attack_move = false,
-                    _ => {}
-                }
                 key_action(game, key);
             }
             RawEvent::KeyUp { key } => {
@@ -357,11 +351,16 @@ fn context_order(game: &mut Game, screen: Vec2) {
             .unit(*id)
             .is_some_and(|u| u.kind == UnitKind::Harvester)
     });
-    if game.state.map.scrap_at(tile) > 0 && has_harvester {
+    // The harvest check reads the player's *memory*, not the live map —
+    // probing fog with right-clicks must not reveal hidden scrap.
+    if game.my_vision().remembered_scrap(tile) > 0 && has_harvester {
         game.issue(Command::Harvest { units, node: tile });
         return;
     }
-    game.issue(Command::Move { units, goal: tile });
+    // Fire at will: ground orders engage whatever shows up on the way.
+    // Combat units attack-move; the sim degrades harvesters to a plain
+    // walk. There is no hold-fire stance (yet — nothing to hide from).
+    game.issue(Command::AttackMove { units, goal: tile });
 }
 
 fn key_action(game: &mut Game, key: Key) {

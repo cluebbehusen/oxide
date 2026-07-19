@@ -113,6 +113,10 @@ pub struct Game {
     /// Clips queued by this frame's ticks; the main loop drains and plays.
     pub sounds_pending: Vec<SoundKind>,
     accum: f32,
+    /// True during bulk fast-forwards: presentation (fx, sounds, facing)
+    /// is skipped entirely instead of accumulated-then-discarded — a
+    /// million-tick advance must not buffer a million battles.
+    suppress_presentation: bool,
 }
 
 fn world_vec(pos: chassis::fx::Vec2Fx) -> Vec2 {
@@ -155,6 +159,7 @@ impl Game {
             fx: Vec::new(),
             sounds_pending: Vec::new(),
             accum: 0.0,
+            suppress_presentation: false,
         })
     }
 
@@ -224,22 +229,27 @@ impl Game {
         }
         let report = self.state.tick(&commands);
 
-        for unit in &self.state.units {
-            let now = world_vec(unit.pos);
-            if let Some(prev) = self.prev_pos.get(&unit.id.0) {
-                let delta = now - *prev;
-                if delta.length_squared() > 1e-6 {
-                    self.facing.insert(
-                        unit.id.0,
-                        delta.y.atan2(delta.x) + std::f32::consts::FRAC_PI_2,
-                    );
+        if !self.suppress_presentation {
+            for unit in &self.state.units {
+                let now = world_vec(unit.pos);
+                if let Some(prev) = self.prev_pos.get(&unit.id.0) {
+                    let delta = now - *prev;
+                    if delta.length_squared() > 1e-6 {
+                        self.facing.insert(
+                            unit.id.0,
+                            delta.y.atan2(delta.x) + std::f32::consts::FRAC_PI_2,
+                        );
+                    }
                 }
             }
+            self.spawn_fx(&report.events);
         }
-        self.spawn_fx(&report.events);
         self.selection
             .units
             .retain(|id| self.state.unit(*id).is_some());
+        let state = &self.state;
+        self.facing
+            .retain(|id, _| state.unit(UnitId(*id)).is_some());
         if let Some(b) = self.selection.building
             && self.state.building(b).is_none()
         {
@@ -269,12 +279,13 @@ impl Game {
     /// Fast-forwards `n` ticks immediately, pause state notwithstanding
     /// (the debug socket's driven-clock mode).
     pub fn advance_ticks(&mut self, n: u64) {
+        self.suppress_presentation = true;
         for _ in 0..n {
             self.do_tick();
         }
-        // No cross-jump interpolation after a bulk advance — and no sound
-        // barrage or wall of stacked lasers from replaying hours of battle
-        // in one frame.
+        self.suppress_presentation = false;
+        // No cross-jump interpolation after a bulk advance — and whatever
+        // presentation slipped in beforehand doesn't survive the jump.
         self.accum = 0.0;
         self.sounds_pending.clear();
         self.fx.clear();
@@ -342,28 +353,23 @@ impl Game {
         };
         for event in events {
             match event {
-                Event::AttackHit { attacker, target } => {
-                    let Some(from) = self.state.unit(*attacker).map(|u| u.pos) else {
-                        continue;
-                    };
-                    let to = match target {
-                        oxide_sim::Target::Unit(id) => self.state.unit(*id).map(|u| u.pos),
-                        oxide_sim::Target::Building(id) => {
-                            self.state.building(*id).map(|b| b.center())
-                        }
-                    };
-                    if let Some(to) = to {
-                        if sees(self, from) || sees(self, to) {
-                            self.sounds_pending.push(SoundKind::Laser);
-                        }
-                        self.fx.push(Effect {
-                            kind: EffectKind::Laser {
-                                from: world_vec(from),
-                                to: world_vec(to),
-                            },
-                            age: 0.0,
-                        });
+                Event::AttackHit {
+                    attacker_pos,
+                    target_pos,
+                    ..
+                } => {
+                    // Positions come from the event itself: resolving ids
+                    // here loses the beam whenever the hit was lethal.
+                    if sees(self, *attacker_pos) || sees(self, *target_pos) {
+                        self.sounds_pending.push(SoundKind::Laser);
                     }
+                    self.fx.push(Effect {
+                        kind: EffectKind::Laser {
+                            from: world_vec(*attacker_pos),
+                            to: world_vec(*target_pos),
+                        },
+                        age: 0.0,
+                    });
                 }
                 Event::UnitDied { pos, player, .. } => {
                     if *player == self.human || sees(self, *pos) {

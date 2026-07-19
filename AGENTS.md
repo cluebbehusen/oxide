@@ -147,9 +147,14 @@ and test fixtures inside crate `tests/` directories.
 - **Units are solid but never block tiles.** Collision is iterative pair
   relaxation after movement; pathfinding ignores units entirely, so crowds
   jostle but can't deadlock a corridor the way tile-reservation schemes do.
-- **Attack-move is the fighting stance**: `Order::AttackMove` acquires in
-  aggro range, fights via `Order::Attack { resume: Some(goal) }`, and picks
-  the march back up. Plain `Move` stays oblivious on purpose.
+- **Fire at will is the only stance.** The shell's right-click issues
+  `AttackMove` for ground orders: units engage in aggro range, fight via
+  `Order::Attack { resume: Some(goal) }`, and pick the march back up. Idle
+  units auto-acquire (attackers must close inside aggro to shoot, so
+  standing units always retaliate). Plain `Move` stays oblivious and
+  remains protocol/bot-only — it becomes a player verb again if stealth
+  or hold-fire ever exist. If a future unit outranges aggro, add
+  damage-triggered retaliation; today nothing does.
 - **Ghost memory lives in `Vision`**: enemy-building records refresh while
   their ground is visible and freeze when sight is lost; seeing the ground
   empty erases them. Scrap amounts get the same treatment via a per-player

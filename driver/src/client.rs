@@ -20,6 +20,15 @@ impl Client {
         let stream =
             TcpStream::connect(addr).with_context(|| format!("connecting to shell at {addr}"))?;
         stream.set_nodelay(true).ok();
+        // A peer that accepts and then stalls must not hang the client
+        // forever; thirty seconds comfortably covers a million-tick
+        // advance while still failing hung shells.
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+            .ok();
+        stream
+            .set_write_timeout(Some(std::time::Duration::from_secs(10)))
+            .ok();
         let reader = BufReader::new(stream.try_clone().context("cloning stream")?);
         Ok(Self {
             reader,

@@ -49,8 +49,10 @@ pub enum Request {
     QueryCamera,
     /// The canonical state fingerprint at the current tick.
     StateHash,
-    /// Run exactly `ticks` sim ticks now (bots included), regardless of
-    /// pause state, then report the resulting tick and hash.
+    /// Run sim ticks now (bots included), regardless of pause state, then
+    /// report the resulting tick and hash. Requests above one million
+    /// ticks are capped; the reply's `ticks` field reports what actually
+    /// ran.
     AdvanceTicks {
         /// How many ticks to run.
         ticks: u64,

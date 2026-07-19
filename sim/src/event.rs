@@ -47,12 +47,18 @@ pub enum Event {
         /// Its center (for shell effects).
         pos: Vec2Fx,
     },
-    /// An attack landed this tick.
+    /// An attack landed this tick. Positions ride along because the victim
+    /// may be gone by the time a renderer resolves the ids — a lethal hit
+    /// deserves its beam too.
     AttackHit {
         /// Who fired.
         attacker: UnitId,
         /// Who was hit.
         target: Target,
+        /// Muzzle position at fire time.
+        attacker_pos: Vec2Fx,
+        /// Impact point at fire time.
+        target_pos: Vec2Fx,
     },
     /// A harvester delivered its load.
     ScrapDeposited {

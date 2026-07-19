@@ -303,6 +303,8 @@ fn attack(
         events.push(Event::AttackHit {
             attacker: id,
             target,
+            attacker_pos: pos,
+            target_pos: aim_point,
         });
         return;
     }

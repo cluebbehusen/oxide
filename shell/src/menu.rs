@@ -118,7 +118,8 @@ impl Menu {
             draw_text(label, rect.x + 18.0, rect.y + rect.h * 0.68, 26.0, color);
         }
 
-        let hint = "↑↓ select · Enter confirm · or click";
+        // ASCII on purpose: the default font has no glyphs for arrows.
+        let hint = "Up/Down select - Enter confirm - or click";
         let hint_dims = measure_text(hint, None, 18, 1.0);
         draw_text(
             hint,

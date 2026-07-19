@@ -2,6 +2,7 @@
 name = "oxide-shell"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 publish.workspace = true
 description = "macroquad renderer and debug server for Oxide"
 
@@ -23,3 +24,6 @@ png = "0.17"
 # The workspace-wide disallowed-types list guards *sim* determinism. Shell
 # state (interpolation caches, input sets) is presentation and may hash.
 disallowed_types = "allow"
+
+[lints.rust]
+unsafe_code = "forbid"
