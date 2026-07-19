@@ -14,14 +14,42 @@
 
 use crate::ids::PlayerId;
 use crate::state::State;
+use crate::stats::BuildingKind;
 use chassis::grid::{Grid, TilePos};
 use serde::{Deserialize, Serialize};
+
+/// A remembered enemy building: what its ground looked like the last time
+/// this player saw it. Ghosts are beliefs, not facts — the building may be
+/// long gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GhostBuilding {
+    /// Building type as last seen.
+    pub kind: BuildingKind,
+    /// Whose building it was.
+    pub owner: PlayerId,
+    /// Footprint anchor.
+    pub anchor: TilePos,
+    /// Hit points at last sighting.
+    pub hp: u32,
+}
+
+impl GhostBuilding {
+    fn footprint(&self) -> impl Iterator<Item = TilePos> + use<> {
+        let (w, h) = self.kind.stats().size;
+        let anchor = self.anchor;
+        (0..h).flat_map(move |dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
+    }
+}
 
 /// One player's view of the map.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Vision {
     visible: Grid<bool>,
     explored: Grid<bool>,
+    /// Remembered enemy buildings, sorted by (anchor.y, anchor.x) — a
+    /// deterministic canonical order like everything else in the state.
+    #[serde(default)]
+    ghosts: Vec<GhostBuilding>,
 }
 
 impl Vision {
@@ -29,7 +57,16 @@ impl Vision {
         Self {
             visible: Grid::new(width, height, false),
             explored: Grid::new(width, height, false),
+            ghosts: Vec::new(),
         }
+    }
+
+    /// Enemy buildings as this player last saw them. While a building's
+    /// ground is visible its record simply mirrors live state; the record
+    /// earns the name "ghost" once sight is lost and it freezes. Renderers
+    /// should draw live state on visible ground and these everywhere else.
+    pub fn ghosts(&self) -> &[GhostBuilding] {
+        &self.ghosts
     }
 
     /// Whether the player currently sees `pos`.
@@ -60,7 +97,8 @@ impl Vision {
     }
 }
 
-/// Rebuilds every player's `visible` set from their live entities.
+/// Rebuilds every player's `visible` set from their live entities, then
+/// reconciles their building memory against what is now in sight.
 pub(crate) fn refresh(state: &mut State) {
     let mut vision = std::mem::take(&mut state.vision);
     for (index, view) in vision.iter_mut().enumerate() {
@@ -75,6 +113,26 @@ pub(crate) fn refresh(state: &mut State) {
                 view.stamp_disc(tile, radius);
             }
         }
+
+        // Memory reconciliation. Wherever we have sight, live state is the
+        // truth: drop every record on visible ground, then re-record every
+        // enemy building actually seen there (fresh hp). A building seen
+        // *gone* thus loses its record, and a record on unseen ground
+        // freezes at its last sighting.
+        let mut ghosts = std::mem::take(&mut view.ghosts);
+        ghosts.retain(|ghost| !ghost.footprint().any(|t| view.visible(t)));
+        for building in state.buildings.iter().filter(|b| b.player != player) {
+            if building.tiles().any(|t| view.visible(t)) {
+                ghosts.push(GhostBuilding {
+                    kind: building.kind,
+                    owner: building.player,
+                    anchor: building.anchor,
+                    hp: building.hp,
+                });
+            }
+        }
+        ghosts.sort_unstable_by_key(|g| (g.anchor.y, g.anchor.x, g.owner));
+        view.ghosts = ghosts;
     }
     state.vision = vision;
 }

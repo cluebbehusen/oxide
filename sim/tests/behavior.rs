@@ -556,6 +556,105 @@ fn fog_reveals_persists_and_gates_attacks() {
 }
 
 #[test]
+fn ghost_memory_survives_unseen_demolition_until_revisited() {
+    // Three players: p0 scouts p1's Foundry, walks home, then p2's
+    // sentinels (parked next door) demolish it while p0 isn't looking.
+    // p0's memory must keep the ghost until the ground is seen again.
+    let mut players = arena(vec![]).players;
+    players.push(PlayerSpec {
+        name: "Third".into(),
+        faction: Faction::Ferrous,
+        scrap: 0,
+        bot: false,
+    });
+    let scenario = Scenario {
+        name: "ghost-lab".into(),
+        seed: 7,
+        map: vec![
+            "################".into(),
+            "#1.............#".into(),
+            "#..............#".into(),
+            "#..............#".into(),
+            "#..............#".into(),
+            "#..............#".into(),
+            "#..............#".into(),
+            "#..............#".into(),
+            "#..............#".into(),
+            "#..............#".into(),
+            "#..3.....2.....#".into(),
+            "#..............#".into(),
+            "#..............#".into(),
+            "################".into(),
+        ],
+        players,
+        units: vec![
+            unit(0, UnitKind::Harvester, 4, 2),
+            unit(2, UnitKind::Sentinel, 7, 10),
+            unit(2, UnitKind::Sentinel, 7, 11),
+        ],
+    };
+    let mut state = scenario.build().unwrap();
+    let scout = state.units[0].id;
+    let victim_anchor = TilePos::new(9, 10);
+    let me = PlayerId(0);
+
+    // Scout down to see p1's Foundry (harvester vision 6).
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![scout],
+            goal: TilePos::new(9, 5),
+        },
+    )]);
+    run_until(&mut state, 300, |s, _| {
+        s.vision(me)
+            .ghosts()
+            .iter()
+            .any(|g| g.anchor == victim_anchor)
+    });
+
+    // Walk home, out of sight of that corner.
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![scout],
+            goal: TilePos::new(4, 2),
+        },
+    )]);
+    run_until(&mut state, 300, |s, _| {
+        s.unit(scout).unwrap().tile() == TilePos::new(4, 2)
+    });
+
+    // p2's sentinels raze the Foundry on their own (auto-acquire).
+    run_until(&mut state, 2000, |s, _| {
+        !s.buildings.iter().any(|b| b.player == PlayerId(1))
+    });
+    assert!(
+        state
+            .vision(me)
+            .ghosts()
+            .iter()
+            .any(|g| g.anchor == victim_anchor && g.owner == PlayerId(1)),
+        "p0 didn't see the demolition, so the ghost must persist"
+    );
+
+    // Revisit: seeing the empty ground erases the memory.
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![scout],
+            goal: TilePos::new(9, 5),
+        },
+    )]);
+    run_until(&mut state, 300, |s, _| {
+        !s.vision(me)
+            .ghosts()
+            .iter()
+            .any(|g| g.anchor == victim_anchor)
+    });
+}
+
+#[test]
 fn commanding_enemy_units_is_rejected() {
     let mut state = arena(vec![unit(1, UnitKind::Harvester, 8, 6)])
         .build()

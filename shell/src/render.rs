@@ -125,14 +125,41 @@ fn draw_tiles(game: &Game, sprites: &Sprites) {
     }
 }
 
+const GHOST_TINT: Color = color_u8!(150, 150, 165, 210);
+
 fn draw_buildings(game: &Game, sprites: &Sprites) {
     let zoom = game.camera.zoom;
+    // Live enemy buildings only where we have sight; remembered ghosts
+    // cover explored-but-unseen ground (skipped in the omniscient overlay).
+    if !game.overlay {
+        for ghost in game.my_vision().ghosts() {
+            let (w, h) = ghost.kind.stats().size;
+            let visible = (0..h)
+                .flat_map(|dy| (0..w).map(move |dx| ghost.anchor.offset(dx, dy)))
+                .any(|t| game.my_vision().visible(t));
+            if visible {
+                continue; // the live building (or its absence) is on show
+            }
+            let faction = game.state.player(ghost.owner).faction;
+            let screen = game
+                .camera
+                .to_screen(vec2(ghost.anchor.x as f32, ghost.anchor.y as f32));
+            draw_texture_ex(
+                sprites.foundry(faction),
+                screen.x,
+                screen.y,
+                GHOST_TINT,
+                DrawTextureParams {
+                    dest_size: Some(vec2(w as f32 * zoom, h as f32 * zoom)),
+                    ..Default::default()
+                },
+            );
+        }
+    }
     for building in &game.state.buildings {
-        // Enemy buildings appear once their ground is explored (no ghost
-        // memory yet: an unwatched demolition removes them from view too).
         if building.player != game.human
             && !game.overlay
-            && !building.tiles().any(|t| game.my_vision().explored(t))
+            && !building.tiles().any(|t| game.my_vision().visible(t))
         {
             continue;
         }

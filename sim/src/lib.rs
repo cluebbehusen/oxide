@@ -29,7 +29,7 @@ pub use ids::{BuildingId, PlayerId, Target, UnitId};
 pub use scenario::Scenario;
 pub use state::{Building, Faction, GameResult, Order, Player, State, Unit};
 pub use stats::{BuildingKind, UnitKind};
-pub use vision::Vision;
+pub use vision::{GhostBuilding, Vision};
 
 /// Version stamped into replays; a replay is only guaranteed to reproduce on
 /// the sim version that recorded it.
