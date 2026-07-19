@@ -1,0 +1,348 @@
+//! Layer-2 tests: headless scenarios asserting game behavior through the
+//! public API only — build a scenario, feed tick-stamped commands, watch
+//! events and state. No renderer anywhere near this file.
+
+use chassis::grid::TilePos;
+use oxide_sim::command::RejectReason;
+use oxide_sim::scenario::{PlayerSpec, UnitSpec};
+use oxide_sim::{
+    BuildingId, Command, Event, Faction, GameResult, Order, PlayerCommand, PlayerId, Scenario,
+    State, Target, UnitId, UnitKind,
+};
+
+/// A small arena: two Foundries in opposite corners, open ground between.
+fn arena(units: Vec<UnitSpec>) -> Scenario {
+    Scenario {
+        name: "test-arena".into(),
+        seed: 42,
+        map: vec![
+            "################".into(),
+            "#1.............#".into(),
+            "#..............#".into(),
+            "#.....##.......#".into(),
+            "#.....##...s...#".into(),
+            "#..........s...#".into(),
+            "#............2.#".into(),
+            "#..............#".into(),
+            "################".into(),
+        ],
+        players: vec![
+            PlayerSpec {
+                name: "Ferrous".into(),
+                faction: Faction::Ferrous,
+                scrap: 200,
+                bot: false,
+            },
+            PlayerSpec {
+                name: "Cupric".into(),
+                faction: Faction::Cupric,
+                scrap: 200,
+                bot: false,
+            },
+        ],
+        units,
+    }
+}
+
+fn unit(player: u8, kind: UnitKind, x: i32, y: i32) -> UnitSpec {
+    UnitSpec { player, kind, x, y }
+}
+
+fn cmd(player: u8, command: Command) -> PlayerCommand {
+    PlayerCommand {
+        player: PlayerId(player),
+        command,
+    }
+}
+
+/// Runs until `stop` returns true or `max_ticks` elapse, collecting every
+/// event. Panics if the condition never holds — behavior tests should state
+/// exactly how long something may take.
+fn run_until(
+    state: &mut State,
+    max_ticks: u64,
+    mut stop: impl FnMut(&State, &[Event]) -> bool,
+) -> Vec<Event> {
+    let mut all = Vec::new();
+    for _ in 0..max_ticks {
+        let report = state.tick(&[]);
+        let done = stop(state, &report.events);
+        all.extend(report.events);
+        if done {
+            return all;
+        }
+    }
+    panic!("condition not reached within {max_ticks} ticks");
+}
+
+#[test]
+fn move_command_walks_unit_to_goal_then_idles() {
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 4, 2)])
+        .build()
+        .unwrap();
+    let mover = state.units[0].id;
+    let goal = TilePos::new(13, 2);
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![mover],
+            goal,
+        },
+    )]);
+    run_until(&mut state, 200, |s, _| {
+        let u = s.unit(mover).unwrap();
+        u.tile() == goal && u.order == Order::Idle
+    });
+}
+
+#[test]
+fn move_routes_around_rock() {
+    // Goal sits directly behind the 2x2 rock at (6,3)-(7,4).
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 4, 4)])
+        .build()
+        .unwrap();
+    let mover = state.units[0].id;
+    let goal = TilePos::new(9, 4);
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![mover],
+            goal,
+        },
+    )]);
+    run_until(&mut state, 300, |s, _| {
+        s.unit(mover).unwrap().tile() == goal
+    });
+}
+
+#[test]
+fn move_goal_on_rock_snaps_to_nearby_ground() {
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 4, 2)])
+        .build()
+        .unwrap();
+    let mover = state.units[0].id;
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![mover],
+            goal: TilePos::new(6, 3), // rock
+        },
+    )]);
+    run_until(&mut state, 300, |s, _| {
+        let u = s.unit(mover).unwrap();
+        u.order == Order::Idle && u.tile().chebyshev(TilePos::new(6, 3)) <= 1
+    });
+}
+
+#[test]
+fn harvester_gathers_and_deposits() {
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 3, 2)])
+        .build()
+        .unwrap();
+    let worker = state.units[0].id;
+    let scrap_before = state.player(PlayerId(0)).scrap;
+    state.tick(&[cmd(
+        0,
+        Command::Harvest {
+            units: vec![worker],
+            node: TilePos::new(11, 4),
+        },
+    )]);
+    // Walk there (~10 tiles), extract 10 scrap (100 ticks), walk home, drop.
+    let events = run_until(&mut state, 600, |s, _| {
+        s.player(PlayerId(0)).scrap > scrap_before
+    });
+    assert!(events.iter().any(
+        |e| matches!(e, Event::ScrapDeposited { player: PlayerId(0), amount } if *amount > 0)
+    ));
+    // Still on the job: the node isn't empty, so back to work.
+    assert!(matches!(
+        state.unit(worker).unwrap().order,
+        Order::Harvest { .. }
+    ));
+}
+
+#[test]
+fn attack_command_kills_and_reports() {
+    let mut state = arena(vec![
+        unit(0, UnitKind::Sentinel, 4, 6),
+        unit(1, UnitKind::Harvester, 6, 6),
+    ])
+    .build()
+    .unwrap();
+    let (attacker, victim) = (state.units[0].id, state.units[1].id);
+    // The first hit can land on the command tick itself, so keep its events.
+    let mut events = state
+        .tick(&[cmd(
+            0,
+            Command::Attack {
+                units: vec![attacker],
+                target: Target::Unit(victim),
+            },
+        )])
+        .events;
+    // 60 hp / 10 damage at 1 hit per second → 6 hits, ~101 ticks + travel.
+    events.extend(run_until(&mut state, 200, |s, _| s.unit(victim).is_none()));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == victim))
+    );
+    assert!(
+        events
+            .iter()
+            .filter(|e| matches!(e, Event::AttackHit { .. }))
+            .count()
+            >= 6
+    );
+}
+
+#[test]
+fn idle_sentinel_auto_acquires_intruder() {
+    let mut state = arena(vec![
+        unit(0, UnitKind::Sentinel, 4, 6),
+        unit(1, UnitKind::Harvester, 8, 6), // 4 tiles away, inside aggro 5
+    ])
+    .build()
+    .unwrap();
+    let victim = state.units[1].id;
+    // No command at all: the sentinel should pick the fight itself.
+    run_until(&mut state, 300, |s, _| s.unit(victim).is_none());
+}
+
+#[test]
+fn train_costs_scrap_and_spawns_after_build_time() {
+    let mut state = arena(vec![]).build().unwrap();
+    let foundry = state.buildings[0].id;
+    let before = state.player(PlayerId(0)).scrap;
+    state.tick(&[cmd(
+        0,
+        Command::Train {
+            building: foundry,
+            kind: UnitKind::Harvester,
+        },
+    )]);
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        before - UnitKind::Harvester.stats().cost,
+        "cost is deducted on enqueue"
+    );
+    let events = run_until(&mut state, 105, |s, _| !s.units.is_empty());
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::UnitTrained {
+            kind: UnitKind::Harvester,
+            player: PlayerId(0),
+            ..
+        }
+    )));
+}
+
+#[test]
+fn train_rejects_poverty_and_foreign_buildings() {
+    let mut state = arena(vec![]).build().unwrap();
+    let (mine, theirs) = (state.buildings[0].id, state.buildings[1].id);
+
+    // Not my building.
+    let report = state.tick(&[cmd(
+        0,
+        Command::Train {
+            building: theirs,
+            kind: UnitKind::Sentinel,
+        },
+    )]);
+    assert!(report.events.contains(&Event::CommandRejected {
+        player: PlayerId(0),
+        reason: RejectReason::NotYourBuilding,
+    }));
+
+    // Not enough scrap: 200 banked, sentinels cost 75 → third fails.
+    for _ in 0..2 {
+        let r = state.tick(&[cmd(
+            0,
+            Command::Train {
+                building: mine,
+                kind: UnitKind::Sentinel,
+            },
+        )]);
+        assert!(
+            !r.events
+                .iter()
+                .any(|e| matches!(e, Event::CommandRejected { .. }))
+        );
+    }
+    let report = state.tick(&[cmd(
+        0,
+        Command::Train {
+            building: mine,
+            kind: UnitKind::Sentinel,
+        },
+    )]);
+    assert!(report.events.contains(&Event::CommandRejected {
+        player: PlayerId(0),
+        reason: RejectReason::NotEnoughScrap,
+    }));
+}
+
+#[test]
+fn commanding_enemy_units_is_rejected() {
+    let mut state = arena(vec![unit(1, UnitKind::Harvester, 8, 6)])
+        .build()
+        .unwrap();
+    let enemy_unit = state.units[0].id;
+    let report = state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![enemy_unit],
+            goal: TilePos::new(2, 2),
+        },
+    )]);
+    assert!(report.events.contains(&Event::CommandRejected {
+        player: PlayerId(0),
+        reason: RejectReason::NoValidUnits,
+    }));
+    assert_eq!(state.unit(enemy_unit).unwrap().order, Order::Idle);
+}
+
+#[test]
+fn destroying_the_last_foundry_wins_and_freezes() {
+    let mut state = arena(vec![
+        unit(0, UnitKind::Sentinel, 10, 6),
+        unit(0, UnitKind::Sentinel, 11, 6),
+        unit(0, UnitKind::Sentinel, 10, 5),
+    ])
+    .build()
+    .unwrap();
+    let ids: Vec<UnitId> = state.units.iter().map(|u| u.id).collect();
+    let enemy_foundry: BuildingId = state
+        .buildings
+        .iter()
+        .find(|b| b.player == PlayerId(1))
+        .unwrap()
+        .id;
+    state.tick(&[cmd(
+        0,
+        Command::Attack {
+            units: ids,
+            target: Target::Building(enemy_foundry),
+        },
+    )]);
+    // 800 hp / 30 dps → ~27 s ≈ 540 ticks, plus approach.
+    let events = run_until(&mut state, 800, |s, _| s.result.is_some());
+    assert_eq!(
+        state.result,
+        Some(GameResult::Victory {
+            winner: PlayerId(0)
+        })
+    );
+    assert!(events.iter().any(|e| matches!(e, Event::GameOver { .. })));
+
+    // Frozen: ticks advance, nothing else changes.
+    let hash_before = state.hash();
+    let tick_before = state.tick;
+    state.tick(&[]);
+    assert_eq!(state.tick, tick_before + 1);
+    let mut after = state.clone();
+    after.tick = tick_before;
+    assert_eq!(after.hash(), hash_before, "only the tick counter moved");
+}

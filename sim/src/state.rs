@@ -1,0 +1,387 @@
+//! The complete game state and its invariants.
+//!
+//! Everything that affects game outcomes lives in [`State`] and is
+//! serializable; [`State::hash`] fingerprints it canonically. Anything not
+//! in here (camera, selection, interpolation) is presentation and belongs to
+//! the shell.
+//!
+//! Invariants:
+//! - `units` and `buildings` stay sorted by id (ids are assigned
+//!   monotonically and entities are only ever appended or `retain`ed).
+//! - A dead entity (hp 0) survives at most until the cleanup phase of the
+//!   tick that killed it.
+//! - `result` is set at most once; once set, ticks are frozen no-ops.
+
+use crate::ids::{BuildingId, PlayerId, UnitId};
+use crate::map::Map;
+use crate::stats::{BuildingKind, UnitKind};
+use chassis::Tick;
+use chassis::fx::Vec2Fx;
+use chassis::grid::TilePos;
+use chassis::rng::Pcg32;
+use serde::{Deserialize, Serialize};
+
+/// Cosmetic allegiance — decides sprite tint, nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Faction {
+    /// Rust-orange machines.
+    Ferrous,
+    /// Patina-teal machines.
+    Cupric,
+}
+
+/// A participant in the match.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Player {
+    /// Display name.
+    pub name: String,
+    /// Sprite tint.
+    pub faction: Faction,
+    /// Scrap in the bank.
+    pub scrap: u32,
+}
+
+/// How the match ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum GameResult {
+    /// One player still has buildings.
+    Victory {
+        /// The survivor.
+        winner: PlayerId,
+    },
+    /// Everyone's buildings died on the same tick.
+    Draw,
+}
+
+/// A unit's current intent. The brain phase turns intent into paths,
+/// attacks, and extraction; commands only ever set intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "order", rename_all = "snake_case")]
+pub enum Order {
+    /// Stand around. Combat units auto-acquire targets in aggro range.
+    Idle,
+    /// Walk to a tile, then go idle.
+    Move {
+        /// Destination (always passable — commands snap it).
+        goal: TilePos,
+    },
+    /// Mine a node, hauling to the nearest Foundry, until it and its
+    /// neighborhood are exhausted.
+    Harvest {
+        /// The node tile being worked.
+        node: TilePos,
+    },
+    /// Chase and attack one target until it is gone.
+    Attack {
+        /// The victim.
+        target: crate::ids::Target,
+    },
+}
+
+/// An in-progress walk along an A* path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PathFollow {
+    /// Final tile, used to detect stale paths when intent changes.
+    pub goal: TilePos,
+    /// Remaining waypoints from A* (start tile excluded).
+    pub waypoints: Vec<TilePos>,
+    /// Index of the waypoint currently steered toward.
+    pub next: u32,
+}
+
+/// A mobile entity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unit {
+    /// Stable id; `units` is sorted by it.
+    pub id: UnitId,
+    /// Owner.
+    pub player: PlayerId,
+    /// What kind of machine this is.
+    pub kind: UnitKind,
+    /// World position (tile units).
+    pub pos: Vec2Fx,
+    /// Current hit points.
+    pub hp: u32,
+    /// Scrap on board (harvesters only).
+    pub carrying: u32,
+    /// Ticks until the next attack is allowed.
+    pub cooldown: u32,
+    /// Order-specific counter (extraction progress).
+    pub progress: u32,
+    /// Current intent.
+    pub order: Order,
+    /// Current walk, if any.
+    pub path: Option<PathFollow>,
+}
+
+impl Unit {
+    /// The tile this unit currently occupies.
+    pub fn tile(&self) -> TilePos {
+        TilePos::containing(self.pos)
+    }
+}
+
+/// A static entity occupying a rectangle of tiles.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Building {
+    /// Stable id; `buildings` is sorted by it.
+    pub id: BuildingId,
+    /// Owner.
+    pub player: PlayerId,
+    /// What kind of building.
+    pub kind: BuildingKind,
+    /// Top-left tile of the footprint.
+    pub anchor: TilePos,
+    /// Current hit points.
+    pub hp: u32,
+    /// Units waiting to be produced, front first.
+    pub queue: Vec<UnitKind>,
+    /// Ticks of progress on `queue[0]`.
+    pub progress: u32,
+}
+
+impl Building {
+    /// Iterates the footprint tiles row-major.
+    pub fn tiles(&self) -> impl Iterator<Item = TilePos> + use<> {
+        let (w, h) = self.kind.stats().size;
+        let anchor = self.anchor;
+        (0..h).flat_map(move |dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
+    }
+
+    /// Whether `pos` lies inside the footprint.
+    pub fn contains(&self, pos: TilePos) -> bool {
+        let (w, h) = self.kind.stats().size;
+        pos.x >= self.anchor.x
+            && pos.y >= self.anchor.y
+            && pos.x < self.anchor.x + w
+            && pos.y < self.anchor.y + h
+    }
+
+    /// Center of the footprint in world coordinates.
+    pub fn center(&self) -> Vec2Fx {
+        let (w, h) = self.kind.stats().size;
+        let far = self.anchor.offset(w - 1, h - 1);
+        (self.anchor.center() + far.center()) * chassis::fx::HALF
+    }
+
+    /// The point of the footprint rectangle closest to `from` — what range
+    /// checks measure against, so big buildings don't get phantom reach.
+    pub fn closest_point_to(&self, from: Vec2Fx) -> Vec2Fx {
+        let (w, h) = self.kind.stats().size;
+        let min = self.anchor.center() - Vec2Fx::new(chassis::fx::HALF, chassis::fx::HALF);
+        let max = min + Vec2Fx::new(chassis::fx::Fx::from_num(w), chassis::fx::Fx::from_num(h));
+        Vec2Fx::new(from.x.clamp(min.x, max.x), from.y.clamp(min.y, max.y))
+    }
+}
+
+/// The whole world. See module docs for invariants.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct State {
+    /// Ticks elapsed since scenario start.
+    pub tick: Tick,
+    /// The sim's only randomness source.
+    pub rng: Pcg32,
+    /// Terrain and scrap.
+    pub map: Map,
+    /// Players, indexed by [`PlayerId`].
+    pub players: Vec<Player>,
+    /// All living units, sorted by id.
+    pub units: Vec<Unit>,
+    /// All standing buildings, sorted by id.
+    pub buildings: Vec<Building>,
+    /// Set exactly once, when the match ends.
+    pub result: Option<GameResult>,
+    next_unit_id: u32,
+    next_building_id: u32,
+}
+
+impl State {
+    /// Assembles a state from parts; [`crate::Scenario::build`] is the public
+    /// entry point.
+    pub(crate) fn assemble(map: Map, players: Vec<Player>, seed: u64) -> Self {
+        Self {
+            tick: 0,
+            rng: Pcg32::new(seed, 0),
+            map,
+            players,
+            units: Vec::new(),
+            buildings: Vec::new(),
+            result: None,
+            next_unit_id: 0,
+            next_building_id: 0,
+        }
+    }
+
+    /// Canonical fingerprint of the entire state. Two states with equal
+    /// hashes evolved from the same inputs are the same state.
+    pub fn hash(&self) -> u64 {
+        chassis::hash::state_hash(self)
+    }
+
+    /// The player behind `id`. Panics on a foreign id — player ids come from
+    /// scenario setup and never dangle.
+    pub fn player(&self, id: PlayerId) -> &Player {
+        &self.players[id.0 as usize]
+    }
+
+    /// Mutable access to a player.
+    pub(crate) fn player_mut(&mut self, id: PlayerId) -> &mut Player {
+        &mut self.players[id.0 as usize]
+    }
+
+    /// Looks up a living unit.
+    pub fn unit(&self, id: UnitId) -> Option<&Unit> {
+        self.units
+            .binary_search_by_key(&id, |u| u.id)
+            .ok()
+            .map(|i| &self.units[i])
+    }
+
+    /// Mutable lookup of a living unit.
+    pub(crate) fn unit_mut(&mut self, id: UnitId) -> Option<&mut Unit> {
+        self.units
+            .binary_search_by_key(&id, |u| u.id)
+            .ok()
+            .map(|i| &mut self.units[i])
+    }
+
+    /// Looks up a standing building.
+    pub fn building(&self, id: BuildingId) -> Option<&Building> {
+        self.buildings
+            .binary_search_by_key(&id, |b| b.id)
+            .ok()
+            .map(|i| &self.buildings[i])
+    }
+
+    /// Mutable lookup of a standing building.
+    pub(crate) fn building_mut(&mut self, id: BuildingId) -> Option<&mut Building> {
+        self.buildings
+            .binary_search_by_key(&id, |b| b.id)
+            .ok()
+            .map(|i| &mut self.buildings[i])
+    }
+
+    /// The building whose footprint covers `pos`, if any.
+    pub fn building_at(&self, pos: TilePos) -> Option<&Building> {
+        self.buildings.iter().find(|b| b.contains(pos))
+    }
+
+    /// Whether a unit may stand on `pos`: ground terrain, no live scrap, no
+    /// building. Units never block tiles — overlap is resolved by the
+    /// separation phase instead.
+    pub fn passable(&self, pos: TilePos) -> bool {
+        self.map.terrain_passable(pos) && self.building_at(pos).is_none()
+    }
+
+    /// Spawns a unit at full health. Position is the caller's problem to
+    /// validate.
+    pub(crate) fn spawn_unit(&mut self, player: PlayerId, kind: UnitKind, pos: Vec2Fx) -> UnitId {
+        let id = UnitId(self.next_unit_id);
+        self.next_unit_id += 1;
+        self.units.push(Unit {
+            id,
+            player,
+            kind,
+            pos,
+            hp: kind.stats().max_hp,
+            carrying: 0,
+            cooldown: 0,
+            progress: 0,
+            order: Order::Idle,
+            path: None,
+        });
+        id
+    }
+
+    /// Places a building at full health. Footprint validity is the caller's
+    /// problem.
+    pub(crate) fn place_building(
+        &mut self,
+        player: PlayerId,
+        kind: BuildingKind,
+        anchor: TilePos,
+    ) -> BuildingId {
+        let id = BuildingId(self.next_building_id);
+        self.next_building_id += 1;
+        self.buildings.push(Building {
+            id,
+            player,
+            kind,
+            anchor,
+            hp: kind.stats().max_hp,
+            queue: Vec::new(),
+            progress: 0,
+        });
+        id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chassis::fx::Fx;
+
+    fn tiny_state() -> State {
+        let (map, _) = Map::parse(&["....", "....", "....", "...."]).unwrap();
+        State::assemble(
+            map,
+            vec![Player {
+                name: "p".into(),
+                faction: Faction::Ferrous,
+                scrap: 0,
+            }],
+            7,
+        )
+    }
+
+    #[test]
+    fn unit_lookup_by_id_uses_sorted_order() {
+        let mut state = tiny_state();
+        let a = state.spawn_unit(
+            PlayerId(0),
+            UnitKind::Harvester,
+            TilePos::new(0, 0).center(),
+        );
+        let b = state.spawn_unit(PlayerId(0), UnitKind::Sentinel, TilePos::new(1, 1).center());
+        assert_eq!(state.unit(a).unwrap().kind, UnitKind::Harvester);
+        assert_eq!(state.unit(b).unwrap().kind, UnitKind::Sentinel);
+        assert_eq!(state.unit(UnitId(99)), None);
+    }
+
+    #[test]
+    fn building_blocks_passability() {
+        let mut state = tiny_state();
+        state.place_building(PlayerId(0), BuildingKind::Foundry, TilePos::new(1, 1));
+        assert!(state.passable(TilePos::new(0, 0)));
+        for pos in [(1, 1), (2, 1), (1, 2), (2, 2)] {
+            assert!(!state.passable(TilePos::new(pos.0, pos.1)));
+        }
+        assert!(state.passable(TilePos::new(3, 3)));
+    }
+
+    #[test]
+    fn building_geometry() {
+        let mut state = tiny_state();
+        let id = state.place_building(PlayerId(0), BuildingKind::Foundry, TilePos::new(1, 1));
+        let b = state.building(id).unwrap();
+        assert_eq!(b.center(), Vec2Fx::new(Fx::from_num(2), Fx::from_num(2)));
+        // A point due west clamps to the footprint's west face.
+        let probe = Vec2Fx::new(Fx::ZERO, Fx::from_num(2));
+        assert_eq!(
+            b.closest_point_to(probe),
+            Vec2Fx::new(Fx::from_num(1), Fx::from_num(2))
+        );
+        assert_eq!(b.tiles().count(), 4);
+    }
+
+    #[test]
+    fn state_hash_changes_with_content() {
+        let mut a = tiny_state();
+        let b = tiny_state();
+        assert_eq!(a.hash(), b.hash());
+        a.spawn_unit(PlayerId(0), UnitKind::Harvester, Vec2Fx::ZERO);
+        assert_ne!(a.hash(), b.hash());
+    }
+}
