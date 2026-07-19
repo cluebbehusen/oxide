@@ -11,7 +11,8 @@
 //!    lands immediately, so lower ids shoot first; a unit at 0 hp no longer
 //!    acts. Deterministic, documented, and how classic lockstep RTSes do it.
 //! 4. **Movement** — units advance along their paths.
-//! 5. **Separation** — overlapping units get nudged apart.
+//! 5. **Collision** — overlapping bodies are pushed apart until they fit;
+//!    units are solid to each other but never block tiles.
 //! 6. **Cleanup** — entities at 0 hp are removed, with events.
 //! 7. **Victory** — a player with no buildings is out; last standing wins.
 //!
@@ -42,7 +43,7 @@ impl State {
             production::run(self, &mut events);
             brain::run(self, &mut events);
             movement::run(self);
-            movement::separate(self);
+            movement::resolve_collisions(self);
             cleanup(self, &mut events);
             victory(self, &mut events);
         }

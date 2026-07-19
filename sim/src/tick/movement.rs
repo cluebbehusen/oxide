@@ -1,17 +1,17 @@
-//! Phases 4–5: path following and separation.
+//! Phases 4–5: path following and collision resolution.
 //!
 //! Movement is pure per-unit work (paths never re-check passability because
 //! nothing dynamic blocks tiles: buildings are static in v1 and depleting
-//! scrap only ever *opens* tiles). Separation then softly pushes overlapping
-//! units apart so grouped units spread out instead of stacking into one
-//! sprite — cosmetic-feeling, but it runs inside the sim so it must be as
-//! deterministic as everything else.
+//! scrap only ever *opens* tiles). Collision resolution then pushes
+//! overlapping bodies apart until they fit — units are solid to each other,
+//! but tiles are only ever blocked by terrain and buildings, so pathfinding
+//! stays deadlock-free while crowds physically jostle.
 
 use crate::state::State;
 use chassis::fx::{Fx, Vec2Fx, sqrt};
 use chassis::grid::TilePos;
 
-use crate::stats::SEPARATION_MAX_PUSH;
+use crate::stats::{COLLISION_ITERATIONS, COLLISION_MAX_STEP};
 
 /// Advances every unit along its path by its speed, consuming waypoints
 /// exactly (positions land on tile centers, never near them).
@@ -58,13 +58,25 @@ const STACKED_DIRS: [Vec2Fx; 8] = [
     Vec2Fx::new(Fx::lit("0.7071"), Fx::lit("-0.7071")),
 ];
 
-/// Pushes overlapping unit pairs apart, half the overlap each, capped per
-/// tick. A push that would land in an impassable tile is discarded — rocks
-/// beat crowd pressure.
-pub(super) fn separate(state: &mut State) {
+/// Resolves unit-unit collisions: several deterministic relaxation passes
+/// push overlapping pairs apart, half the overlap each, so units cannot
+/// stack — grouped movers fan out and a body-blocked unit stays blocked. A
+/// push that would land in an impassable tile is discarded (rocks beat
+/// crowd pressure), and each pass caps per-unit displacement so packed
+/// crowds settle instead of exploding.
+pub(super) fn resolve_collisions(state: &mut State) {
+    for _ in 0..COLLISION_ITERATIONS {
+        if !relaxation_pass(state) {
+            break;
+        }
+    }
+}
+
+/// One pass; returns whether any overlap was found.
+fn relaxation_pass(state: &mut State) -> bool {
     let n = state.units.len();
     if n < 2 {
-        return;
+        return false;
     }
     // Tile buckets as a sorted list — no hash maps in sim code. Interaction
     // reach is under one tile (radii sum < 1), so 3x3 neighborhoods suffice.
@@ -85,6 +97,7 @@ pub(super) fn separate(state: &mut State) {
     };
 
     let mut pushes = vec![Vec2Fx::ZERO; n];
+    let mut any_overlap = false;
     for i in 0..n {
         let (pos_i, radius_i, id_i) = {
             let u = &state.units[i];
@@ -107,6 +120,7 @@ pub(super) fn separate(state: &mut State) {
                     if dist_sq >= min_dist * min_dist {
                         continue;
                     }
+                    any_overlap = true;
                     let dist = sqrt(dist_sq);
                     let (dir, overlap) = if dist == Fx::ZERO {
                         let pick = ((id_i.0 ^ id_j.0) % 8) as usize;
@@ -121,14 +135,17 @@ pub(super) fn separate(state: &mut State) {
             }
         }
     }
+    if !any_overlap {
+        return false;
+    }
 
     for (i, push) in pushes.into_iter().enumerate() {
         if push == Vec2Fx::ZERO {
             continue;
         }
         let len = push.length();
-        let push = if len > SEPARATION_MAX_PUSH {
-            push * (SEPARATION_MAX_PUSH / len)
+        let push = if len > COLLISION_MAX_STEP {
+            push * (COLLISION_MAX_STEP / len)
         } else {
             push
         };
@@ -137,4 +154,5 @@ pub(super) fn separate(state: &mut State) {
             state.units[i].pos = candidate;
         }
     }
+    true
 }

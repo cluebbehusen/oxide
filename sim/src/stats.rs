@@ -144,5 +144,10 @@ pub const RETARGET_RADIUS: i32 = 10;
 /// nearest passable tile within this radius (else the command is rejected).
 pub const GOAL_SNAP_RADIUS: i32 = 3;
 
-/// Furthest a single tick of separation may displace one unit, in tiles.
-pub const SEPARATION_MAX_PUSH: Fx = Fx::lit("0.06");
+/// Relaxation passes of collision resolution per tick. More passes settle
+/// dense crowds faster; each pass is a full pairwise sweep.
+pub const COLLISION_ITERATIONS: u32 = 3;
+
+/// Furthest one collision pass may displace one unit, in tiles. Keeps
+/// packed crowds settling smoothly instead of popping apart.
+pub const COLLISION_MAX_STEP: Fx = Fx::lit("0.12");

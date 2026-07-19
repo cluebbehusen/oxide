@@ -269,6 +269,80 @@ fn attack_move_with_only_harvesters_degrades_to_move() {
 }
 
 #[test]
+fn units_ordered_to_one_tile_do_not_stack() {
+    // Four harvesters converge on the same goal; collision resolution must
+    // keep every pair at least (r_a + r_b) apart once things settle.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 3, 2),
+        unit(0, UnitKind::Harvester, 12, 2),
+        unit(0, UnitKind::Harvester, 3, 6),
+        unit(0, UnitKind::Harvester, 12, 6),
+    ])
+    .build()
+    .unwrap();
+    let ids: Vec<UnitId> = state.units.iter().map(|u| u.id).collect();
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: ids,
+            goal: TilePos::new(8, 4),
+        },
+    )]);
+    for _ in 0..300 {
+        state.tick(&[]);
+    }
+    let min_gap = UnitKind::Harvester.stats().radius * 2;
+    // Allow a whisker of tolerance: the final relaxation pass may leave a
+    // sub-ulp of residual overlap.
+    let tolerance = min_gap * chassis::fx::Fx::lit("0.9");
+    for (i, a) in state.units.iter().enumerate() {
+        for b in state.units.iter().skip(i + 1) {
+            assert!(
+                a.pos.dist_sq(b.pos) >= tolerance * tolerance,
+                "{} and {} overlap: {:?} vs {:?}",
+                a.id,
+                b.id,
+                a.pos,
+                b.pos
+            );
+        }
+    }
+}
+
+#[test]
+fn collision_never_pushes_through_rock() {
+    // Two units squeezed against the rock at (6,3)-(7,4): however hard the
+    // crowd pushes, nobody ends up inside it.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 5, 3),
+        unit(0, UnitKind::Harvester, 5, 4),
+        unit(0, UnitKind::Harvester, 4, 3),
+        unit(0, UnitKind::Harvester, 4, 4),
+    ])
+    .build()
+    .unwrap();
+    let ids: Vec<UnitId> = state.units.iter().map(|u| u.id).collect();
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: ids,
+            goal: TilePos::new(5, 3),
+        },
+    )]);
+    for _ in 0..200 {
+        state.tick(&[]);
+        for u in &state.units {
+            assert!(
+                state.map.terrain_passable(u.tile()),
+                "{} was pushed into impassable {:?}",
+                u.id,
+                u.tile()
+            );
+        }
+    }
+}
+
+#[test]
 fn idle_sentinel_auto_acquires_intruder() {
     let mut state = arena(vec![
         unit(0, UnitKind::Sentinel, 4, 6),
