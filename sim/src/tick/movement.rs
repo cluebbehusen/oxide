@@ -73,6 +73,15 @@ pub(super) fn resolve_collisions(state: &mut State) {
 }
 
 /// One pass; returns whether any overlap was found.
+///
+/// Corrections apply *immediately*, pair by pair, in deterministic order
+/// (Gauss–Seidel, not Jacobi). Accumulating all pushes first looks tidier
+/// but admits frozen equilibria: symmetric arrangements — several full
+/// harvesters magnetized to one doorstep — cancel to exactly zero net
+/// correction while everything still overlaps, and the bot economy stalls
+/// forever. Sequential application cannot cancel, so jams always evolve.
+/// Dead units are skipped: a corpse should not shove the living on its
+/// removal tick.
 fn relaxation_pass(state: &mut State) -> bool {
     let n = state.units.len();
     if n < 2 {
@@ -80,36 +89,36 @@ fn relaxation_pass(state: &mut State) -> bool {
     }
     // Tile buckets as a sorted list — no hash maps in sim code. Interaction
     // reach is under one tile (radii sum < 1), so 3x3 neighborhoods suffice.
+    // Buckets are snapshotted at pass start; corrections are small enough
+    // (≤ COLLISION_MAX_STEP) that a newly-adjacent pair simply waits for
+    // the next pass.
     let mut by_tile: Vec<(TilePos, usize)> = state
         .units
         .iter()
         .enumerate()
+        .filter(|(_, u)| u.hp > 0)
         .map(|(i, u)| (u.tile(), i))
         .collect();
     by_tile.sort_unstable_by_key(|&(t, i)| (t.y, t.x, i));
 
-    let units_in_tile = |tile: TilePos| {
-        let start = by_tile.partition_point(|&(t, _)| (t.y, t.x) < (tile.y, tile.x));
-        by_tile[start..]
-            .iter()
-            .take_while(move |&&(t, _)| t == tile)
-            .map(|&(_, i)| i)
-    };
-
-    let mut pushes = vec![Vec2Fx::ZERO; n];
     let mut any_overlap = false;
     for i in 0..n {
-        let (pos_i, radius_i, id_i) = {
-            let u = &state.units[i];
-            (u.pos, u.kind.stats().radius, u.id)
-        };
+        if state.units[i].hp == 0 {
+            continue;
+        }
         let home = state.units[i].tile();
         for dy in -1..=1 {
             for dx in -1..=1 {
-                for j in units_in_tile(home.offset(dx, dy)) {
+                let tile = home.offset(dx, dy);
+                let start = by_tile.partition_point(|&(t, _)| (t.y, t.x) < (tile.y, tile.x));
+                for &(_, j) in by_tile[start..].iter().take_while(|&&(t, _)| t == tile) {
                     if j <= i {
                         continue; // each pair once, in (i, j) id order
                     }
+                    let (pos_i, radius_i, id_i) = {
+                        let u = &state.units[i];
+                        (u.pos, u.kind.stats().radius, u.id)
+                    };
                     let (pos_j, radius_j, id_j) = {
                         let u = &state.units[j];
                         (u.pos, u.kind.stats().radius, u.id)
@@ -128,31 +137,19 @@ fn relaxation_pass(state: &mut State) -> bool {
                     } else {
                         (delta / dist, min_dist - dist)
                     };
-                    let push = dir * (overlap * chassis::fx::HALF);
-                    pushes[j] += push;
-                    pushes[i] -= push;
+                    let step = (overlap * chassis::fx::HALF).min(COLLISION_MAX_STEP);
+                    let push = dir * step;
+                    let away_j = pos_j + push;
+                    if state.passable(TilePos::containing(away_j)) {
+                        state.units[j].pos = away_j;
+                    }
+                    let away_i = pos_i - push;
+                    if state.passable(TilePos::containing(away_i)) {
+                        state.units[i].pos = away_i;
+                    }
                 }
             }
         }
     }
-    if !any_overlap {
-        return false;
-    }
-
-    for (i, push) in pushes.into_iter().enumerate() {
-        if push == Vec2Fx::ZERO {
-            continue;
-        }
-        let len = push.length();
-        let push = if len > COLLISION_MAX_STEP {
-            push * (COLLISION_MAX_STEP / len)
-        } else {
-            push
-        };
-        let candidate = state.units[i].pos + push;
-        if state.passable(TilePos::containing(candidate)) {
-            state.units[i].pos = candidate;
-        }
-    }
-    true
+    any_overlap
 }

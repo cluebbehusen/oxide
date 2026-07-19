@@ -343,6 +343,87 @@ fn collision_never_pushes_through_rock() {
 }
 
 #[test]
+fn congested_harvesters_keep_depositing() {
+    // Six harvesters on one node, one Foundry: the deadlock regression.
+    // Symmetric collision cancellation once froze exactly this setup with
+    // full loads at the doorstep. Progress must continue, not just start.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 4, 2),
+        unit(0, UnitKind::Harvester, 5, 2),
+        unit(0, UnitKind::Harvester, 6, 2),
+        unit(0, UnitKind::Harvester, 4, 5),
+        unit(0, UnitKind::Harvester, 5, 5),
+        unit(0, UnitKind::Harvester, 5, 6),
+    ])
+    .build()
+    .unwrap();
+    let ids: Vec<UnitId> = state.units.iter().map(|u| u.id).collect();
+    state.tick(&[cmd(
+        0,
+        Command::Harvest {
+            units: ids,
+            node: TilePos::new(11, 4),
+        },
+    )]);
+
+    let mut deposited_first_half = 0u32;
+    let mut deposited_second_half = 0u32;
+    for tick in 0..3000u64 {
+        let report = state.tick(&[]);
+        for event in &report.events {
+            if let Event::ScrapDeposited { amount, .. } = event {
+                if tick < 1500 {
+                    deposited_first_half += amount;
+                } else {
+                    deposited_second_half += amount;
+                }
+            }
+        }
+    }
+    assert!(
+        deposited_first_half >= 60,
+        "economy never started: {deposited_first_half}"
+    );
+    assert!(
+        deposited_second_half >= 60,
+        "economy stalled after starting: {deposited_second_half}"
+    );
+}
+
+#[test]
+fn bot_economy_progresses_against_an_idle_opponent() {
+    // The exact configuration that froze pre-fix: shipped skirmish, human
+    // seat idle, Cupric bot alone. Its bank plus spending must exceed its
+    // starting stake — deposits happened — well before 12k ticks.
+    let scenario = Scenario::skirmish();
+    let mut state = scenario.build().unwrap();
+    let mut bots = oxide_sim::bot::Bot::for_scenario(&scenario);
+    assert_eq!(bots.len(), 1, "skirmish ships with exactly one bot seat");
+
+    let mut deposited = 0u32;
+    for _ in 0..12_000u64 {
+        let mut commands = Vec::new();
+        for bot in &mut bots {
+            commands.extend(bot.act(&state));
+        }
+        let report = state.tick(&commands);
+        for event in &report.events {
+            if let Event::ScrapDeposited {
+                player: PlayerId(1),
+                amount,
+            } = event
+            {
+                deposited += amount;
+            }
+        }
+        if deposited >= 300 {
+            return; // healthy economy, no need to run the rest
+        }
+    }
+    panic!("bot deposited only {deposited} scrap in 12k ticks — economy stalled");
+}
+
+#[test]
 fn idle_sentinel_auto_acquires_intruder() {
     let mut state = arena(vec![
         unit(0, UnitKind::Sentinel, 4, 6),

@@ -41,11 +41,20 @@ fn every_shipped_scenario_builds_and_plays() {
         for player in &mut scenario.players {
             player.bot = true;
         }
-        // Two thousand ticks of bot play without a panic proves the map is
-        // actually playable, not merely parseable.
-        let outcome = runner::run_scenario(&scenario, 2000, true, false)
+        // Playable means *alive*, not merely parseable: after 12k ticks of
+        // bot-vs-bot the match must either be decided or still producing —
+        // unit ids are monotonic, so a high id proves Foundries kept
+        // working. (Reaching the tick count alone once masked a total
+        // economy freeze.)
+        let outcome = runner::run_scenario(&scenario, 12_000, true, false)
             .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-        assert_eq!(outcome.state.tick, 2000, "{}", path.display());
+        assert_eq!(outcome.state.tick, 12_000, "{}", path.display());
+        let produced = outcome.state.units.iter().any(|u| u.id.0 >= 16);
+        assert!(
+            outcome.state.result.is_some() || produced,
+            "{}: no victory and no production after 12k ticks — the map stalled",
+            path.display()
+        );
     }
     assert!(checked >= 4, "expected the shipped maps, found {checked}");
 }

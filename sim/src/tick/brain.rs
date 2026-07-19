@@ -360,12 +360,20 @@ fn approach_rect(state: &mut State, id: UnitId, anchor: TilePos, size: (i32, i32
     if keep {
         return true;
     }
-    // Candidate doorsteps, nearest first; ties resolve row-major because
-    // that is the ring iteration order and the sort is stable.
+    // Candidate doorsteps, nearest first (stable sort, so ties stay in
+    // ring order). The nearest few are then rotated by unit id so a crowd
+    // heading for the same rectangle fans out across doorsteps instead of
+    // magnetizing onto one tile and jamming — the exact configuration that
+    // froze bot economies. Only the near face rotates: a lone unit never
+    // detours to the building's far side.
     let mut candidates: Vec<TilePos> = rect_adjacent_tiles(anchor, size)
         .filter(|&t| state.passable(t))
         .collect();
     candidates.sort_by_key(|t| t.chebyshev(tile));
+    let near = candidates.len().min(4);
+    if near > 1 {
+        candidates[..near].rotate_left(id.0 as usize % near);
+    }
     for goal in candidates {
         if let Some(waypoints) = astar_for(state, tile, goal) {
             let unit = state.unit_mut(id).expect("caller checked");
