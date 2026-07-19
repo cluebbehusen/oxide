@@ -117,6 +117,8 @@ pub struct Sounds {
     pub train_done: Sound,
     /// Menu activation.
     pub click: Sound,
+    /// An order was refused.
+    pub denied: Sound,
     /// You won.
     pub victory: Sound,
     /// You didn't.
@@ -140,6 +142,7 @@ impl Sounds {
             deposit: clip("deposit").await?,
             train_done: clip("train_done").await?,
             click: clip("click").await?,
+            denied: clip("denied").await?,
             victory: clip("victory").await?,
             defeat: clip("defeat").await?,
         })

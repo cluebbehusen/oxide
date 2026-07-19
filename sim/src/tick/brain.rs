@@ -28,10 +28,10 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         let order = state.unit(id).expect("just seen").order;
         match order {
             Order::Idle => idle(state, id),
-            Order::Move { goal } => walk(state, id, goal),
+            Order::Move { goal } => walk(state, id, goal, events),
             Order::Harvest { node } => harvest(state, id, node, events),
             Order::Attack { target, resume } => attack(state, id, target, resume, events),
-            Order::AttackMove { goal } => attack_move(state, id, goal),
+            Order::AttackMove { goal } => attack_move(state, id, goal, events),
         }
     }
 }
@@ -78,7 +78,7 @@ fn idle(state: &mut State, id: UnitId) {
 
 /// March toward the goal, but engage anything that shows up on the way;
 /// the attack order remembers the goal and hands it back afterwards.
-fn attack_move(state: &mut State, id: UnitId, goal: TilePos) {
+fn attack_move(state: &mut State, id: UnitId, goal: TilePos, events: &mut Vec<Event>) {
     if let Some(target) = acquire_target(state, id) {
         let unit = state.unit_mut(id).expect("caller checked");
         unit.order = Order::Attack {
@@ -88,14 +88,14 @@ fn attack_move(state: &mut State, id: UnitId, goal: TilePos) {
         unit.path = None;
         return;
     }
-    walk(state, id, goal);
+    walk(state, id, goal, events);
 }
 
 /// Walks toward an exact goal tile; going idle on arrival or when no route
 /// exists. A unit close to the goal that bumps into an already-settled
 /// arrival also counts as arrived — the whole group parks instead of
 /// churning around the click point forever.
-fn walk(state: &mut State, id: UnitId, goal: TilePos) {
+fn walk(state: &mut State, id: UnitId, goal: TilePos, events: &mut Vec<Event>) {
     let unit = state.unit(id).expect("caller checked");
     let tile = unit.tile();
     if tile == goal || touching_settled_arrival(state, id, goal) {
@@ -121,8 +121,14 @@ fn walk(state: &mut State, id: UnitId, goal: TilePos) {
             });
         }
         None => {
+            let (player, pos) = (unit.player, unit.pos);
             unit.order = Order::Idle;
             unit.path = None;
+            events.push(Event::OrderStalled {
+                unit: id,
+                player,
+                pos,
+            });
         }
     }
 }
@@ -167,7 +173,14 @@ fn harvest(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
         if tile_adjacent_to_rect(tile, node, (1, 1)) {
             extract(state, id, node, hstats.ticks_per_scrap, events);
         } else if !approach_rect(state, id, node, (1, 1)) {
-            state.unit_mut(id).expect("caller checked").order = Order::Idle;
+            let unit = state.unit_mut(id).expect("caller checked");
+            let (player, pos) = (unit.player, unit.pos);
+            unit.order = Order::Idle;
+            events.push(Event::OrderStalled {
+                unit: id,
+                player,
+                pos,
+            });
         }
     } else {
         // Node is dry. Find a replacement, else wrap up.
@@ -250,8 +263,14 @@ fn deliver(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
         }
     } else if !approach_rect(state, id, anchor, size) {
         let unit = state.unit_mut(id).expect("caller checked");
+        let (player, pos) = (unit.player, unit.pos);
         unit.order = Order::Idle;
         unit.path = None;
+        events.push(Event::OrderStalled {
+            unit: id,
+            player,
+            pos,
+        });
     }
 }
 
@@ -388,8 +407,14 @@ fn attack(
     };
     if !reached {
         let unit = state.unit_mut(id).expect("caller checked");
+        let (player, pos) = (unit.player, unit.pos);
         unit.order = Order::Idle;
         unit.path = None;
+        events.push(Event::OrderStalled {
+            unit: id,
+            player,
+            pos,
+        });
     }
 }
 

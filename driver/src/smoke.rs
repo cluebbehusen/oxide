@@ -204,10 +204,13 @@ fn execute(addr: &str, patient: bool) -> Result<()> {
     let oriented = tiny_skia::Pixmap::decode_png(&png_bytes)
         .ok()
         .is_some_and(|pixmap| {
+            // The HUD bar (holding the red PAUSED indicator) spans the top
+            // ~4% of the frame at any dpi scale; scan the top tenth.
+            let band = (pixmap.height() as usize / 10).max(32);
             pixmap
                 .pixels()
                 .iter()
-                .take(pixmap.width() as usize * 32)
+                .take(pixmap.width() as usize * band)
                 .any(|px| px.red() > 180 && px.green() < 120 && px.blue() < 120)
         });
     checks.note(

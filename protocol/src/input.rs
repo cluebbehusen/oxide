@@ -126,4 +126,18 @@ pub enum Key {
     Space,
     /// Toggle debug overlay.
     F1,
+    /// Modifier: additive selection (either physical shift key).
+    Shift,
+    /// Modifier: control-group assignment (either physical ctrl key).
+    Ctrl,
+    /// Control group 1 (recall; with Ctrl, assign).
+    Num1,
+    /// Control group 2.
+    Num2,
+    /// Control group 3.
+    Num3,
+    /// Control group 4.
+    Num4,
+    /// Control group 5.
+    Num5,
 }

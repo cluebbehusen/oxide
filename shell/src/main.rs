@@ -148,6 +148,7 @@ impl Mixer {
             SoundKind::Deposit => (&sounds.deposit, 0.25),
             SoundKind::TrainDone => (&sounds.train_done, 0.3),
             SoundKind::Click => (&sounds.click, 0.25),
+            SoundKind::Denied => (&sounds.denied, 0.3),
             SoundKind::Victory => (&sounds.victory, 0.6),
             SoundKind::Defeat => (&sounds.defeat, 0.6),
         };
@@ -205,9 +206,11 @@ async fn run() -> Result<()> {
     loop {
         let dt = get_frame_time();
         // The camera never queries the window itself; feed it the viewport
-        // once per frame (handles live resizes, keeps camera math pure).
+        // once per frame (handles live resizes, keeps camera math pure),
+        // then advance any zoom glide.
         game.camera
             .set_viewport(vec2(screen_width(), screen_height()));
+        game.camera.update(dt);
 
         if let Some(rx) = &debug_rx {
             while let Ok(incoming) = rx.try_recv() {

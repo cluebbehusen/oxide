@@ -107,6 +107,7 @@ def main() -> None:
     chime("deposit", [780.0, 1170.0], 0.06, 0.4)
     chime("train_done", [520.0, 660.0, 880.0], 0.05, 0.4)
     chime("click", [1100.0], 0.03, 0.35)
+    chime("denied", [233.08, 174.61], 0.09, 0.4, dark=True)
     chime("victory", [523.25, 659.25, 783.99, 1046.5], 0.16, 0.45)
     chime("defeat", [392.0, 329.63, 261.63, 196.0], 0.16, 0.45, dark=True)
     print("done")

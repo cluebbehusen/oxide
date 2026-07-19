@@ -58,10 +58,25 @@ pub enum SoundKind {
     TrainDone,
     /// Menu activation.
     Click,
+    /// An order was rejected.
+    Denied,
     /// The match ended in your favor.
     Victory,
     /// It did not.
     Defeat,
+}
+
+/// What an order-acknowledgment ping means (decides its color).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PingKind {
+    /// Move / attack-move destination.
+    Move,
+    /// Attack target.
+    Attack,
+    /// Harvest node.
+    Harvest,
+    /// Rally point.
+    Rally,
 }
 
 /// Effect shapes.
@@ -78,6 +93,21 @@ pub enum EffectKind {
         /// Center, world coords.
         at: Vec2,
     },
+    /// An order acknowledgment: a ring collapsing onto the ordered point.
+    Ping {
+        /// Center, world coords.
+        at: Vec2,
+        /// Color class.
+        kind: PingKind,
+    },
+}
+
+/// A transient HUD message (rejected orders, stalled units).
+pub struct Toast {
+    /// What to say.
+    pub text: String,
+    /// Seconds since raised.
+    pub age: f32,
 }
 
 /// One running session.
@@ -112,6 +142,13 @@ pub struct Game {
     pub fx: Vec<Effect>,
     /// Clips queued by this frame's ticks; the main loop drains and plays.
     pub sounds_pending: Vec<SoundKind>,
+    /// Transient HUD messages, newest last.
+    pub toasts: Vec<Toast>,
+    /// Session flags for the starter hint strip: cleared once the player
+    /// has trained something / sent fighters somewhere.
+    pub hinted_train: bool,
+    /// See [`Game::hinted_train`].
+    pub hinted_fight: bool,
     accum: f32,
     /// True during bulk fast-forwards: presentation (fx, sounds, facing)
     /// is skipped entirely instead of accumulated-then-discarded — a
@@ -167,6 +204,9 @@ impl Game {
             facing: HashMap::new(),
             fx: Vec::new(),
             sounds_pending: Vec::new(),
+            toasts: Vec::new(),
+            hinted_train: false,
+            hinted_fight: false,
             accum: 0.0,
             suppress_presentation: false,
         })
@@ -318,10 +358,34 @@ impl Game {
 
     /// Stages a command from the local player for the next tick.
     pub fn issue(&mut self, command: Command) {
+        match &command {
+            Command::Train { .. } => self.hinted_train = true,
+            Command::AttackMove { .. } | Command::Attack { .. } => self.hinted_fight = true,
+            _ => {}
+        }
         self.pending.push(PlayerCommand {
             player: self.human,
             command,
         });
+    }
+
+    /// Drops an order-acknowledgment ping at a world point.
+    pub fn ping(&mut self, at: Vec2, kind: PingKind) {
+        self.fx.push(Effect {
+            kind: EffectKind::Ping { at, kind },
+            age: 0.0,
+        });
+    }
+
+    /// Raises a transient HUD message (capped; oldest fall off).
+    pub fn toast(&mut self, text: impl Into<String>) {
+        self.toasts.push(Toast {
+            text: text.into(),
+            age: 0.0,
+        });
+        if self.toasts.len() > 3 {
+            self.toasts.remove(0);
+        }
     }
 
     /// The human's first Foundry (hotkey target, camera home).
@@ -342,7 +406,7 @@ impl Game {
         self.state.vision(self.human)
     }
 
-    /// Ages and prunes effects.
+    /// Ages and prunes effects and toasts.
     pub fn update_fx(&mut self, dt: f32) {
         for fx in &mut self.fx {
             fx.age += dt;
@@ -352,8 +416,13 @@ impl Game {
                 < match fx.kind {
                     EffectKind::Laser { .. } => 0.15,
                     EffectKind::Puff { .. } => 0.4,
+                    EffectKind::Ping { .. } => 0.5,
                 }
         });
+        for toast in &mut self.toasts {
+            toast.age += dt;
+        }
+        self.toasts.retain(|t| t.age < 2.5);
     }
 
     /// Turns a tick's events into flashes and queued clips. Sight rules
@@ -411,6 +480,33 @@ impl Game {
                 }
                 Event::UnitTrained { player, .. } if *player == self.human => {
                     self.sounds_pending.push(SoundKind::TrainDone);
+                }
+                Event::CommandRejected { player, reason } if *player == self.human => {
+                    let why = match reason {
+                        oxide_sim::command::RejectReason::NotEnoughScrap => "not enough scrap",
+                        oxide_sim::command::RejectReason::QueueFull => "queue is full",
+                        oxide_sim::command::RejectReason::UnreachableGoal => "can't reach that",
+                        oxide_sim::command::RejectReason::InvalidTarget => "can't target that",
+                        oxide_sim::command::RejectReason::NotANode => "nothing to mine there",
+                        oxide_sim::command::RejectReason::NotYourBuilding => "not your building",
+                        oxide_sim::command::RejectReason::NoValidUnits => {
+                            "nothing selected can do that"
+                        }
+                        oxide_sim::command::RejectReason::OutOfBounds => "outside the map",
+                        oxide_sim::command::RejectReason::Eliminated => "you are eliminated",
+                    };
+                    self.toast(why);
+                    self.sounds_pending.push(SoundKind::Denied);
+                }
+                Event::OrderStalled { player, pos, .. } if *player == self.human => {
+                    self.toast("a unit can't reach its order");
+                    self.fx.push(Effect {
+                        kind: EffectKind::Ping {
+                            at: world_vec(*pos),
+                            kind: PingKind::Attack,
+                        },
+                        age: 0.0,
+                    });
                 }
                 Event::GameOver { result } => {
                     let won = matches!(

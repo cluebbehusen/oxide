@@ -40,7 +40,7 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     } else {
         draw_fog(game);
     }
-    draw_drag_rect(input);
+    draw_drag_rect(game, input);
     draw_hud(game);
     draw_minimap(game);
 }
@@ -308,6 +308,9 @@ fn draw_fx(game: &Game) {
         let in_sight = match fx.kind {
             EffectKind::Laser { from, to } => sees(from) && sees(to),
             EffectKind::Puff { at } => sees(at),
+            // Own-order acknowledgments always show; fogged targets are
+            // already impossible to order onto.
+            EffectKind::Ping { .. } => true,
         };
         if !game.overlay && !in_sight {
             continue;
@@ -327,11 +330,25 @@ fn draw_fx(game: &Game) {
                 let color = Color::new(0.9, 0.88, 0.84, 0.7 * fade.clamp(0.0, 1.0));
                 draw_circle_lines(center.x, center.y, radius, 2.0, color);
             }
+            EffectKind::Ping { at, kind } => {
+                // A ring collapsing onto the ordered point.
+                let center = game.camera.to_screen(at);
+                let progress = (fx.age / 0.5).clamp(0.0, 1.0);
+                let radius = game.camera.zoom * (0.65 * (1.0 - progress) + 0.12);
+                let base = match kind {
+                    crate::game::PingKind::Move => color_u8!(120, 200, 130, 255),
+                    crate::game::PingKind::Attack => DANGER,
+                    crate::game::PingKind::Harvest => SCRAP_COLOR,
+                    crate::game::PingKind::Rally => BONE,
+                };
+                let color = Color::new(base.r, base.g, base.b, 1.0 - progress * 0.7);
+                draw_circle_lines(center.x, center.y, radius, 2.5, color);
+            }
         }
     }
 }
 
-fn draw_drag_rect(input: &InputState) {
+fn draw_drag_rect(game: &Game, input: &InputState) {
     if let Some(origin) = input.drag_origin {
         let now = input.mouse;
         if origin.distance(now) > crate::input::drag_threshold() {
@@ -345,6 +362,25 @@ fn draw_drag_rect(input: &InputState) {
                 size.y,
                 Color::new(0.9, 0.88, 0.84, 0.08),
             );
+            // Live preview: who would this select?
+            let a = game.camera.to_world(lo);
+            let b = game.camera.to_world(lo + size);
+            for unit in game.state.units() {
+                if unit.player != game.human {
+                    continue;
+                }
+                let p = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
+                if p.x >= a.x && p.x <= b.x && p.y >= a.y && p.y <= b.y {
+                    let screen = game.camera.to_screen(p);
+                    draw_circle_lines(
+                        screen.x,
+                        screen.y,
+                        unit.kind.stats().radius.to_num::<f32>() * game.camera.zoom + 3.0,
+                        1.5,
+                        BONE_FAINT,
+                    );
+                }
+            }
         }
     }
 }
@@ -471,6 +507,36 @@ fn draw_hud(game: &Game) {
         16.0 * s,
         BONE_FAINT,
     );
+
+    // Toasts: rejected orders and stalled units, newest at the bottom.
+    for (i, toast) in game.toasts.iter().rev().take(3).enumerate() {
+        let fade = (1.0 - (toast.age - 1.5).max(0.0)).clamp(0.0, 1.0);
+        let y = screen_height() - (60.0 + 24.0 * i as f32) * s;
+        let color = Color::new(0.92, 0.5, 0.45, fade);
+        draw_text(&toast.text, 12.0 * s, y, 20.0 * s, color);
+    }
+
+    // Starter hints, until the player has done each thing once.
+    let mut hint_y = 52.0 * s;
+    if !game.hinted_train {
+        draw_text(
+            "H trains a Harvester at your Foundry - keep scrap flowing",
+            12.0 * s,
+            hint_y,
+            18.0 * s,
+            BONE_FAINT,
+        );
+        hint_y += 22.0 * s;
+    }
+    if !game.hinted_fight {
+        draw_text(
+            "Right-click sends your machines - they fight whatever they meet",
+            12.0 * s,
+            hint_y,
+            18.0 * s,
+            BONE_FAINT,
+        );
+    }
 
     // Endgame banner.
     if let Some(result) = game.state.result() {

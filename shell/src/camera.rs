@@ -21,6 +21,9 @@ pub struct Camera {
     pub center: Vec2,
     /// Physical pixels per world unit.
     pub zoom: f32,
+    target_zoom: f32,
+    /// Cursor the current zoom glide is anchored on.
+    zoom_anchor: Option<Vec2>,
     zoom_min: f32,
     zoom_max: f32,
     viewport: Vec2,
@@ -35,6 +38,8 @@ impl Camera {
         let mut camera = Self {
             center: focus,
             zoom: ZOOM_DEFAULT * dpi_scale,
+            target_zoom: ZOOM_DEFAULT * dpi_scale,
+            zoom_anchor: None,
             zoom_min: ZOOM_MIN * dpi_scale,
             zoom_max: ZOOM_MAX * dpi_scale,
             viewport,
@@ -74,13 +79,32 @@ impl Camera {
         self.clamp();
     }
 
-    /// Zooms by wheel notches, keeping the world point under `cursor_px`
-    /// stationary — zoom goes where you're looking.
+    /// Requests a zoom by wheel notches; the camera glides there over the
+    /// next frames ([`Camera::update`]), keeping the world point under
+    /// `cursor_px` stationary the whole way — smooth for trackpads and
+    /// notchy wheels alike.
     pub fn zoom_at(&mut self, cursor_px: Vec2, notches: f32) {
-        let anchor = self.to_world(cursor_px);
-        self.zoom = (self.zoom * 1.15f32.powf(notches)).clamp(self.zoom_min, self.zoom_max);
-        let after = self.to_world(cursor_px);
-        self.center += anchor - after;
+        self.target_zoom =
+            (self.target_zoom * 1.15f32.powf(notches)).clamp(self.zoom_min, self.zoom_max);
+        self.zoom_anchor = Some(cursor_px);
+    }
+
+    /// Advances the zoom glide. Call once per frame.
+    pub fn update(&mut self, dt: f32) {
+        if self.zoom == self.target_zoom {
+            self.zoom_anchor = None;
+            return;
+        }
+        let anchor_px = self.zoom_anchor.unwrap_or(self.viewport * 0.5);
+        let anchor_world = self.to_world(anchor_px);
+        let t = (12.0 * dt).min(1.0);
+        self.zoom += (self.target_zoom - self.zoom) * t;
+        if (self.target_zoom - self.zoom).abs() < 0.01 {
+            self.zoom = self.target_zoom;
+            self.zoom_anchor = None;
+        }
+        let after = self.to_world(anchor_px);
+        self.center += anchor_world - after;
         self.clamp();
     }
 
@@ -124,6 +148,7 @@ mod tests {
         let cursor = vec2(300.0, 250.0);
         let before = cam.to_world(cursor);
         cam.zoom_at(cursor, 2.0);
+        cam.update(1.0); // saturated step: glide finishes instantly
         let after = cam.to_world(cursor);
         assert!(
             (after - before).length() < 1e-3,
@@ -136,8 +161,10 @@ mod tests {
     fn zoom_clamps_to_bounds() {
         let mut cam = camera();
         cam.zoom_at(vec2(0.0, 0.0), 100.0);
+        cam.update(1.0);
         assert_eq!(cam.zoom, ZOOM_MAX);
         cam.zoom_at(vec2(0.0, 0.0), -100.0);
+        cam.update(1.0);
         assert_eq!(cam.zoom, ZOOM_MIN);
     }
 

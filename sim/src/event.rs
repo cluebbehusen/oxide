@@ -79,6 +79,16 @@ pub enum Event {
         /// Why.
         reason: RejectReason,
     },
+    /// A unit silently gave up an order because no route exists. Fired so
+    /// shells can say so instead of leaving the player wondering.
+    OrderStalled {
+        /// The unit that gave up.
+        unit: UnitId,
+        /// Its owner (shells filter to the local player).
+        player: PlayerId,
+        /// Where it stood when it gave up.
+        pos: Vec2Fx,
+    },
     /// The match ended.
     GameOver {
         /// The final outcome.

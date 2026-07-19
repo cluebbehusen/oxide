@@ -370,6 +370,13 @@ fn parse_key(s: &str) -> Result<Key> {
         "escape" | "esc" => Key::Escape,
         "space" => Key::Space,
         "f1" => Key::F1,
+        "shift" => Key::Shift,
+        "ctrl" => Key::Ctrl,
+        "1" => Key::Num1,
+        "2" => Key::Num2,
+        "3" => Key::Num3,
+        "4" => Key::Num4,
+        "5" => Key::Num5,
         other => bail!("unknown key {other:?}"),
     })
 }
