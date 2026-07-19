@@ -152,6 +152,11 @@ pub struct Building {
     pub queue: Vec<UnitKind>,
     /// Ticks of progress on `queue[0]`.
     pub progress: u32,
+    /// Where finished units report: harvesters mine a rallied scrap node,
+    /// combat units attack-move there, everyone else walks. `None` means
+    /// stand at the doorstep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rally: Option<TilePos>,
 }
 
 impl Building {
@@ -349,6 +354,7 @@ impl State {
             hp: kind.stats().max_hp,
             queue: Vec::new(),
             progress: 0,
+            rally: None,
         });
         id
     }

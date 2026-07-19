@@ -62,6 +62,13 @@ pub enum Command {
         /// What to build.
         kind: UnitKind,
     },
+    /// Point a building's fresh units somewhere (`None` clears the rally).
+    SetRally {
+        /// The building.
+        building: BuildingId,
+        /// Rally tile, or `None` for the doorstep default.
+        rally: Option<TilePos>,
+    },
 }
 
 /// A command attributed to its issuing player. Ownership checks are made

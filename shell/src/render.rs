@@ -161,6 +161,9 @@ fn draw_buildings(game: &Game, sprites: &Sprites) {
                 3.0,
                 BONE,
             );
+            if let Some(rally) = building.rally {
+                draw_rally_flag(game, rally, zoom);
+            }
         }
         let max_hp = building.kind.stats().max_hp;
         if building.hp < max_hp {
@@ -227,6 +230,22 @@ fn draw_units(game: &Game, sprites: &Sprites, alpha: f32) {
             );
         }
     }
+}
+
+/// A little pennant marking a selected building's rally tile.
+fn draw_rally_flag(game: &Game, rally: TilePos, zoom: f32) {
+    let base = game
+        .camera
+        .to_screen(vec2(rally.x as f32 + 0.5, rally.y as f32 + 0.5));
+    let pole_top = base - vec2(0.0, zoom * 0.7);
+    draw_line(base.x, base.y, pole_top.x, pole_top.y, 2.0, BONE);
+    draw_triangle(
+        pole_top,
+        pole_top + vec2(zoom * 0.45, zoom * 0.15),
+        pole_top + vec2(0.0, zoom * 0.3),
+        SCRAP_COLOR,
+    );
+    draw_circle(base.x, base.y, 3.0, BONE);
 }
 
 fn hp_bar(x: f32, y: f32, w: f32, hp: u32, max_hp: u32) {

@@ -287,11 +287,23 @@ fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2) {
 /// attack, scrap → harvest, ground → move. The sim re-validates everything;
 /// this is only intent.
 fn context_order(game: &mut Game, screen: Vec2) {
-    if game.selection.units.is_empty() {
-        return;
-    }
     let world = game.camera.to_world(screen);
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    if game.selection.units.is_empty() {
+        // A selected own building takes right-clicks as its rally point.
+        if let Some(building) = game.selection.building
+            && game
+                .state
+                .building(building)
+                .is_some_and(|b| b.player == game.human)
+        {
+            game.issue(Command::SetRally {
+                building,
+                rally: Some(tile),
+            });
+        }
+        return;
+    }
     let units = game.selection.units.clone();
 
     // Fog rules what right-click may target: unseen enemies aren't there

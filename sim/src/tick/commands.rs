@@ -27,6 +27,9 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
             Command::Harvest { units, node } => apply_harvest(state, pc.player, units, *node),
             Command::Stop { units } => apply_stop(state, pc.player, units),
             Command::Train { building, kind } => apply_train(state, pc.player, *building, *kind),
+            Command::SetRally { building, rally } => {
+                apply_set_rally(state, pc.player, *building, *rally)
+            }
         };
         if let Err(reason) = outcome {
             events.push(Event::CommandRejected {
@@ -207,5 +210,23 @@ fn apply_train(
         .expect("checked above")
         .queue
         .push(kind);
+    Ok(())
+}
+
+fn apply_set_rally(
+    state: &mut State,
+    player: PlayerId,
+    building: crate::ids::BuildingId,
+    rally: Option<TilePos>,
+) -> Result<(), RejectReason> {
+    let b = state
+        .building_mut(building)
+        .ok_or(RejectReason::NotYourBuilding)?;
+    if b.player != player {
+        return Err(RejectReason::NotYourBuilding);
+    }
+    // Any tile is a legal rally — spawns snap to walkable ground later, and
+    // a scrap-node rally is exactly how auto-harvest is asked for.
+    b.rally = rally;
     Ok(())
 }

@@ -190,6 +190,20 @@ enum LiveCmd {
         #[arg(long)]
         kind: String,
     },
+    /// Set (or clear) a building's rally point.
+    Rally {
+        /// Acting player index.
+        player: u8,
+        /// The building id.
+        #[arg(long)]
+        building: u32,
+        /// Rally tile as "x,y" (omit with --clear).
+        #[arg(long, conflicts_with = "clear")]
+        tile: Option<String>,
+        /// Clear the rally instead.
+        #[arg(long)]
+        clear: bool,
+    },
     /// Halt units.
     Stop {
         /// Acting player index.
@@ -449,6 +463,25 @@ fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
             player: PlayerId(player),
             command: Command::Stop { units: units(ids) },
         },
+        LiveCmd::Rally {
+            player,
+            building,
+            tile,
+            clear,
+        } => {
+            let rally = match (tile, clear) {
+                (Some(t), _) => Some(parse_tile(&t)?),
+                (None, true) => None,
+                (None, false) => bail!("pass --tile x,y or --clear"),
+            };
+            Request::SendCommand {
+                player: PlayerId(player),
+                command: Command::SetRally {
+                    building: BuildingId(building),
+                    rally,
+                },
+            }
+        }
         LiveCmd::InjectWheel { delta } => Request::InjectEvent {
             event: RawEvent::Wheel { delta },
         },

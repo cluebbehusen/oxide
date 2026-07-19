@@ -114,6 +114,9 @@ pub struct BuildingView {
     /// Ticks until `queue[0]` finishes (absent when idle).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ticks_remaining: Option<u32>,
+    /// Rally tile `[x, y]`, if set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rally: Option<[i32; 2]>,
 }
 
 /// Shell status summary.
@@ -222,6 +225,7 @@ fn building_view(b: &Building) -> BuildingView {
             .queue
             .first()
             .map(|kind| kind.stats().train_ticks.saturating_sub(b.progress)),
+        rally: b.rally.map(|r| [r.x, r.y]),
     }
 }
 

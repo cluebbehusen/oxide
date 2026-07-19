@@ -384,6 +384,75 @@ fn train_costs_scrap_and_spawns_after_build_time() {
 }
 
 #[test]
+fn rally_routes_fresh_units_by_role() {
+    let mut state = arena(vec![]).build().unwrap();
+    let foundry = state.buildings[0].id;
+    // Rally onto the scrap node: fresh harvesters go straight to work.
+    state.tick(&[
+        cmd(
+            0,
+            Command::SetRally {
+                building: foundry,
+                rally: Some(TilePos::new(11, 4)),
+            },
+        ),
+        cmd(
+            0,
+            Command::Train {
+                building: foundry,
+                kind: UnitKind::Harvester,
+            },
+        ),
+    ]);
+    let scrap_before = state.player(PlayerId(0)).scrap;
+    run_until(&mut state, 700, |s, _| {
+        s.player(PlayerId(0)).scrap > scrap_before
+    });
+
+    // Rally onto open ground: fresh sentinels attack-move there.
+    state.tick(&[
+        cmd(
+            0,
+            Command::SetRally {
+                building: foundry,
+                rally: Some(TilePos::new(10, 6)),
+            },
+        ),
+        cmd(
+            0,
+            Command::Train {
+                building: foundry,
+                kind: UnitKind::Sentinel,
+            },
+        ),
+    ]);
+    run_until(&mut state, 300, |s, _| {
+        s.units.iter().any(|u| {
+            u.kind == UnitKind::Sentinel
+                && matches!(u.order, Order::AttackMove { .. } | Order::Attack { .. })
+        })
+    });
+}
+
+#[test]
+fn rally_on_foreign_building_is_rejected() {
+    let mut state = arena(vec![]).build().unwrap();
+    let theirs = state.buildings[1].id;
+    let report = state.tick(&[cmd(
+        0,
+        Command::SetRally {
+            building: theirs,
+            rally: Some(TilePos::new(5, 5)),
+        },
+    )]);
+    assert!(report.events.contains(&Event::CommandRejected {
+        player: PlayerId(0),
+        reason: RejectReason::NotYourBuilding,
+    }));
+    assert_eq!(state.building(theirs).unwrap().rally, None);
+}
+
+#[test]
 fn train_rejects_poverty_and_foreign_buildings() {
     let mut state = arena(vec![]).build().unwrap();
     let (mine, theirs) = (state.buildings[0].id, state.buildings[1].id);
