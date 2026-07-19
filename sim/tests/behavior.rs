@@ -803,6 +803,119 @@ fn remembered_scrap_freezes_when_sight_is_lost() {
 }
 
 #[test]
+fn hostile_coordinates_are_rejected_not_panicked() {
+    // Extreme i32 goals once overflowed the neighborhood scan's offset
+    // arithmetic (a debug-build panic from one malformed debug-socket
+    // command). Running this test in a debug profile IS the assertion.
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 4, 2)])
+        .build()
+        .unwrap();
+    let u = state.units[0].id;
+    let foundry = state.buildings[0].id;
+    for goal in [
+        TilePos::new(i32::MAX, 0),
+        TilePos::new(0, i32::MIN),
+        TilePos::new(i32::MAX, i32::MAX),
+    ] {
+        for command in [
+            Command::Move {
+                units: vec![u],
+                goal,
+            },
+            Command::AttackMove {
+                units: vec![u],
+                goal,
+            },
+            Command::Harvest {
+                units: vec![u],
+                node: goal,
+            },
+            Command::SetRally {
+                building: foundry,
+                rally: Some(goal),
+            },
+        ] {
+            let report = state.tick(&[cmd(0, command)]);
+            assert!(
+                report.events.contains(&Event::CommandRejected {
+                    player: PlayerId(0),
+                    reason: RejectReason::OutOfBounds,
+                }),
+                "goal {goal} must be rejected"
+            );
+        }
+    }
+    assert_eq!(state.unit(u).unwrap().order, Order::Idle);
+}
+
+#[test]
+fn eliminated_players_cannot_command_survivors() {
+    // Three players; p1's foundry falls while its harvester lives on.
+    let mut players = arena(vec![]).players;
+    players.push(PlayerSpec {
+        name: "Third".into(),
+        faction: Faction::Ferrous,
+        scrap: 0,
+        bot: false,
+    });
+    let scenario = Scenario {
+        name: "elimination".into(),
+        seed: 3,
+        map: vec![
+            "##############".into(),
+            "#1...........#".into(),
+            "#............#".into(),
+            "#..3.....2...#".into(),
+            "#............#".into(),
+            "#............#".into(),
+            "##############".into(),
+        ],
+        players,
+        units: vec![
+            unit(1, UnitKind::Harvester, 12, 1),
+            unit(2, UnitKind::Sentinel, 7, 3),
+            unit(2, UnitKind::Sentinel, 7, 4),
+        ],
+    };
+    let mut state = scenario.build().unwrap();
+    let survivor = state.units[0].id;
+    // p2's sentinels raze p1's foundry on their own.
+    run_until(&mut state, 3000, |s, _| {
+        !s.buildings.iter().any(|b| b.player == PlayerId(1))
+    });
+    assert!(state.result.is_none(), "two players remain — play on");
+    let report = state.tick(&[cmd(
+        1,
+        Command::Move {
+            units: vec![survivor],
+            goal: TilePos::new(5, 5),
+        },
+    )]);
+    assert!(report.events.contains(&Event::CommandRejected {
+        player: PlayerId(1),
+        reason: RejectReason::Eliminated,
+    }));
+}
+
+#[test]
+fn deposits_saturate_a_full_bank() {
+    let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 10, 3)]);
+    scenario.players[0].scrap = u32::MAX - 5;
+    let mut state = scenario.build().unwrap();
+    let worker = state.units[0].id;
+    state.tick(&[cmd(
+        0,
+        Command::Harvest {
+            units: vec![worker],
+            node: TilePos::new(11, 4),
+        },
+    )]);
+    run_until(&mut state, 800, |s, _| {
+        s.player(PlayerId(0)).scrap == u32::MAX
+    });
+}
+
+#[test]
 fn commanding_enemy_units_is_rejected() {
     let mut state = arena(vec![unit(1, UnitKind::Harvester, 8, 6)])
         .build()

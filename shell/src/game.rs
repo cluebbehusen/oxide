@@ -163,6 +163,12 @@ impl Game {
     /// onto the same log. In a deterministic sim a replay *is* a save file
     /// — this is "load game".
     pub fn from_replay(replay: GameReplay) -> Result<Self> {
+        // Untrusted file: enforce the invariants recording guarantees, and
+        // refuse cross-version saves outright — resuming one would keep
+        // recording onto a log that can no longer reproduce.
+        replay
+            .validate(Some(SIM_VERSION))
+            .map_err(|err| anyhow::anyhow!("{err}"))?;
         let scenario = replay.setup.clone();
         let mut state = scenario.build()?;
         let total = replay
@@ -178,6 +184,10 @@ impl Game {
                 .collect();
             state.tick(&commands);
         }
+        anyhow::ensure!(
+            cursor.is_finished(),
+            "replay duration metadata does not cover its own commands"
+        );
         let mut game = Self::new(scenario)?;
         game.state = state;
         game.recorder = replay;

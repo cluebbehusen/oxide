@@ -211,7 +211,9 @@ fn deliver(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
         unit.carrying = 0;
         unit.progress = 0;
         unit.path = None;
-        state.player_mut(me).scrap += carrying;
+        // Saturating: a hostile scenario can start a bank near u32::MAX.
+        let bank = &mut state.player_mut(me).scrap;
+        *bank = bank.saturating_add(carrying);
         events.push(Event::ScrapDeposited {
             player: me,
             amount: carrying,

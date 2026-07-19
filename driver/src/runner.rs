@@ -63,13 +63,24 @@ pub fn run_scenario(
 /// Re-executes a recorded run and returns the final state. With no override,
 /// the length comes from the replay's own metadata (falling back to the last
 /// command tick for hand-written files).
-pub fn run_replay(replay: &GameReplay, ticks_override: Option<u64>) -> Result<State> {
-    if replay.meta.sim_version != SIM_VERSION {
-        eprintln!(
-            "warning: replay was recorded on sim {} but this is {SIM_VERSION}; \
-             reproduction is not guaranteed",
-            replay.meta.sim_version
-        );
+///
+/// The replay is validated first — structure always, version too unless
+/// `allow_version_mismatch` (which downgrades the mismatch to a warning for
+/// deliberate archaeology). Playback that fails to consume every command is
+/// an error, not a shrug.
+pub fn run_replay(
+    replay: &GameReplay,
+    ticks_override: Option<u64>,
+    allow_version_mismatch: bool,
+) -> Result<State> {
+    match replay.validate(Some(SIM_VERSION)) {
+        Ok(()) => {}
+        Err(err @ chassis::replay::ReplayError::VersionMismatch { .. })
+            if allow_version_mismatch =>
+        {
+            eprintln!("warning: {err}; reproduction is not guaranteed");
+        }
+        Err(err) => return Err(err.into()),
     }
     let total = ticks_override
         .or(replay.meta.ticks)
@@ -83,6 +94,12 @@ pub fn run_replay(replay: &GameReplay, ticks_override: Option<u64>) -> Result<St
             .map(|t| t.command.clone())
             .collect();
         state.tick(&commands);
+    }
+    if !cursor.is_finished() {
+        anyhow::bail!(
+            "playback of {total} ticks left recorded commands unconsumed — \
+             the replay's duration metadata is wrong"
+        );
     }
     Ok(state)
 }

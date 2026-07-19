@@ -186,7 +186,7 @@ fn execute(addr: &str, patient: bool) -> Result<()> {
         path: replay_path.into(),
     })?;
     let replay = GameReplay::load(replay_path).context("reading saved replay")?;
-    let replayed = runner::run_replay(&replay, Some(live.tick))?;
+    let replayed = runner::run_replay(&replay, Some(live.tick), false)?;
     checks.note(
         "saved replay reproduces the live session",
         oxide_protocol::hash_hex(replayed.hash()) == live.hash,

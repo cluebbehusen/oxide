@@ -15,6 +15,9 @@ use crate::stats::SCRAP_NODE_AMOUNT;
 use chassis::grid::{Grid, TilePos};
 use serde::{Deserialize, Serialize};
 
+/// Largest supported map edge, in tiles.
+pub const MAX_MAP_EDGE: usize = 256;
+
 /// Base terrain of a tile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,6 +44,16 @@ pub enum MapError {
     /// The map had no rows or empty rows.
     #[error("map is empty")]
     Empty,
+    /// The map exceeds the supported envelope. The cap keeps fixed-point
+    /// squared distances and neighborhood scans comfortably inside their
+    /// numeric ranges.
+    #[error("map is {width}x{height}; the supported maximum is {MAX_MAP_EDGE} per side")]
+    TooLarge {
+        /// Parsed width.
+        width: usize,
+        /// Parsed height.
+        height: usize,
+    },
     /// Not all rows share one length.
     #[error("row {row} is {len} tiles wide, expected {expected}")]
     Ragged {
@@ -81,6 +94,12 @@ impl Map {
             return Err(MapError::Empty);
         }
         let expected = rows[0].as_ref().chars().count();
+        if rows.len() > MAX_MAP_EDGE || expected > MAX_MAP_EDGE {
+            return Err(MapError::TooLarge {
+                width: expected,
+                height: rows.len(),
+            });
+        }
         let mut cells = Vec::with_capacity(rows.len() * expected);
         let mut anchors: Vec<(PlayerId, TilePos)> = Vec::new();
 

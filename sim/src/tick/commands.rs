@@ -13,10 +13,27 @@ use crate::state::{Order, State};
 use crate::stats::{GOAL_SNAP_RADIUS, QUEUE_CAP};
 use chassis::grid::TilePos;
 
+/// Whether a commanded coordinate is sane: on the map or within snap
+/// distance of it. Rejecting here keeps hostile i32 extremes away from the
+/// neighborhood scans (whose offset arithmetic is unchecked by design).
+fn in_envelope(state: &State, pos: TilePos) -> bool {
+    let r = GOAL_SNAP_RADIUS;
+    pos.x >= -r && pos.y >= -r && pos.x < state.map.width() + r && pos.y < state.map.height() + r
+}
+
 pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut Vec<Event>) {
     for pc in commands {
         if (pc.player.0 as usize) >= state.players.len() {
             continue; // malformed traffic from outside the sim; nothing to attribute
+        }
+        // The eliminated don't give orders (matters in 3+ player games —
+        // two-player matches freeze on the result before this can bite).
+        if !state.buildings.iter().any(|b| b.player == pc.player) {
+            events.push(Event::CommandRejected {
+                player: pc.player,
+                reason: RejectReason::Eliminated,
+            });
+            continue;
         }
         let outcome = match &pc.command {
             Command::Move { units, goal } => apply_move(state, pc.player, units, *goal),
@@ -66,6 +83,9 @@ fn apply_move(
     units: &[UnitId],
     goal: TilePos,
 ) -> Result<(), RejectReason> {
+    if !in_envelope(state, goal) {
+        return Err(RejectReason::OutOfBounds);
+    }
     let goal =
         find_nearby_passable(state, goal, GOAL_SNAP_RADIUS).ok_or(RejectReason::UnreachableGoal)?;
     let applied = for_owned_units(state, player, units, |u| {
@@ -129,6 +149,9 @@ fn apply_attack_move(
     units: &[UnitId],
     goal: TilePos,
 ) -> Result<(), RejectReason> {
+    if !in_envelope(state, goal) {
+        return Err(RejectReason::OutOfBounds);
+    }
     let goal =
         find_nearby_passable(state, goal, GOAL_SNAP_RADIUS).ok_or(RejectReason::UnreachableGoal)?;
     let applied = for_owned_units(state, player, units, |u| {
@@ -151,6 +174,9 @@ fn apply_harvest(
     units: &[UnitId],
     node: TilePos,
 ) -> Result<(), RejectReason> {
+    if !in_envelope(state, node) {
+        return Err(RejectReason::OutOfBounds);
+    }
     if state.map.scrap_at(node) == 0 {
         return Err(RejectReason::NotANode);
     }
@@ -219,6 +245,11 @@ fn apply_set_rally(
     building: crate::ids::BuildingId,
     rally: Option<TilePos>,
 ) -> Result<(), RejectReason> {
+    if let Some(rally) = rally
+        && !in_envelope(state, rally)
+    {
+        return Err(RejectReason::OutOfBounds);
+    }
     let b = state
         .building_mut(building)
         .ok_or(RejectReason::NotYourBuilding)?;

@@ -48,7 +48,7 @@ pub struct TimedCommand<C> {
     pub command: C,
 }
 
-/// Errors from loading or saving replay files.
+/// Errors from loading, saving, or validating replay files.
 #[derive(Debug, thiserror::Error)]
 pub enum ReplayError {
     /// Filesystem failure.
@@ -57,6 +57,18 @@ pub enum ReplayError {
     /// Malformed replay file.
     #[error("replay format: {0}")]
     Format(#[from] serde_json::Error),
+    /// Structurally broken replay (recording invariants don't hold).
+    #[error("invalid replay: {0}")]
+    Invalid(String),
+    /// The replay was recorded on a different sim. Deterministic playback
+    /// is only guaranteed on the version that wrote it.
+    #[error("replay was recorded on sim {recorded}, this is {running}")]
+    VersionMismatch {
+        /// Version stamped in the file.
+        recorded: String,
+        /// Version doing the loading.
+        running: String,
+    },
 }
 
 impl<S, C> Replay<S, C> {
@@ -86,6 +98,42 @@ impl<S, C> Replay<S, C> {
         self.commands.push(TimedCommand { tick, command });
     }
 
+    /// Checks the invariants recording enforces but deserialization alone
+    /// does not — a file is untrusted input even when it parses.
+    ///
+    /// Verifies command ticks are nondecreasing, the recorded duration
+    /// covers every command, and (when `expected_version` is given) that
+    /// the file was written by this sim. Call before executing any loaded
+    /// replay; a log that fails these can silently produce a different
+    /// world, or panic the recorder later.
+    pub fn validate(&self, expected_version: Option<&str>) -> Result<(), ReplayError> {
+        if let Some(expected) = expected_version
+            && self.meta.sim_version != expected
+        {
+            return Err(ReplayError::VersionMismatch {
+                recorded: self.meta.sim_version.clone(),
+                running: expected.to_string(),
+            });
+        }
+        for pair in self.commands.windows(2) {
+            if pair[1].tick < pair[0].tick {
+                return Err(ReplayError::Invalid(format!(
+                    "commands out of order: tick {} follows {}",
+                    pair[1].tick, pair[0].tick
+                )));
+            }
+        }
+        if let (Some(ticks), Some(last)) = (self.meta.ticks, self.commands.last())
+            && ticks <= last.tick
+        {
+            return Err(ReplayError::Invalid(format!(
+                "recorded duration {ticks} does not cover the last command at tick {}",
+                last.tick
+            )));
+        }
+        Ok(())
+    }
+
     /// A cursor for feeding commands back into a sim tick by tick.
     pub fn cursor(&self) -> ReplayCursor<'_, C> {
         ReplayCursor {
@@ -94,14 +142,29 @@ impl<S, C> Replay<S, C> {
         }
     }
 
-    /// Writes the replay as pretty JSON.
+    /// Writes the replay as pretty JSON: parent directories are created,
+    /// the write is flushed, and the file lands atomically (tmp + rename)
+    /// so a crash mid-save can't leave a truncated log behind.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), ReplayError>
     where
         S: Serialize,
         C: Serialize,
     {
-        let file = std::fs::File::create(path)?;
-        serde_json::to_writer_pretty(std::io::BufWriter::new(file), self)?;
+        let path = path.as_ref();
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp = path.with_extension("tmp");
+        {
+            let file = std::fs::File::create(&tmp)?;
+            let mut writer = std::io::BufWriter::new(file);
+            serde_json::to_writer_pretty(&mut writer, self)?;
+            use std::io::Write as _;
+            writer.flush()?;
+        }
+        std::fs::rename(&tmp, path)?;
         Ok(())
     }
 
@@ -172,6 +235,66 @@ mod tests {
         let mut replay: Replay<(), u8> = Replay::new("0.0.0", ());
         replay.record(5, 1);
         replay.record(4, 2);
+    }
+
+    #[test]
+    fn validate_accepts_what_record_produces() {
+        let mut replay: Replay<(), u8> = Replay::new("1.0.0", ());
+        replay.record(3, 1);
+        replay.record(3, 2);
+        replay.record(9, 3);
+        replay.meta.ticks = Some(10);
+        assert!(replay.validate(Some("1.0.0")).is_ok());
+        assert!(replay.validate(None).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_tampered_files() {
+        // Hand-built (bypassing record) the way a corrupt file would be.
+        let mut replay: Replay<(), u8> = Replay::new("1.0.0", ());
+        replay.commands = vec![
+            TimedCommand {
+                tick: 9,
+                command: 1,
+            },
+            TimedCommand {
+                tick: 3,
+                command: 2,
+            },
+        ];
+        assert!(matches!(
+            replay.validate(None),
+            Err(ReplayError::Invalid(_))
+        ));
+
+        // Duration that doesn't cover its own commands.
+        let mut replay: Replay<(), u8> = Replay::new("1.0.0", ());
+        replay.record(9, 1);
+        replay.meta.ticks = Some(0);
+        assert!(matches!(
+            replay.validate(None),
+            Err(ReplayError::Invalid(_))
+        ));
+
+        // Wrong sim version.
+        let replay: Replay<(), u8> = Replay::new("0.9.9", ());
+        assert!(matches!(
+            replay.validate(Some("1.0.0")),
+            Err(ReplayError::VersionMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn save_creates_parent_directories() {
+        let dir = std::env::temp_dir()
+            .join("chassis-replay-test")
+            .join("deep")
+            .join("nested");
+        std::fs::remove_dir_all(&dir).ok();
+        let path = dir.join("out.json");
+        let replay: Replay<u8, u8> = Replay::new("1.0.0", 1);
+        replay.save(&path).unwrap();
+        assert!(path.exists());
     }
 
     #[test]

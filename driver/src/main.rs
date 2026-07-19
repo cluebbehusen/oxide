@@ -50,6 +50,10 @@ enum Cmd {
         /// Fail unless the final hash equals this (0x-prefixed hex).
         #[arg(long)]
         expect_hash: Option<String>,
+        /// Play a replay recorded on a different sim version anyway
+        /// (reproduction not guaranteed — archaeology only).
+        #[arg(long)]
+        allow_version_mismatch: bool,
     },
     /// Render a scenario state to a PNG (software rasterizer, no window).
     Render {
@@ -288,9 +292,10 @@ fn main() -> Result<()> {
             path,
             ticks,
             expect_hash,
+            allow_version_mismatch,
         } => {
             let replay = GameReplay::load(&path)?;
-            let state = runner::run_replay(&replay, ticks)?;
+            let state = runner::run_replay(&replay, ticks, allow_version_mismatch)?;
             let hash = hash_hex(state.hash());
             println!(
                 "{}",

@@ -93,6 +93,12 @@ pub enum RejectReason {
     InvalidTarget,
     /// The tile can't be walked to (no open tile near it).
     UnreachableGoal,
+    /// A coordinate lies outside the map's command envelope. Hostile or
+    /// corrupt input — honest clients clamp to the map.
+    OutOfBounds,
+    /// The issuer has been eliminated (no buildings left); spectators
+    /// don't give orders.
+    Eliminated,
     /// The named tile holds no scrap.
     NotANode,
     /// Not enough scrap banked.

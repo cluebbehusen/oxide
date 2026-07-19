@@ -21,7 +21,7 @@ fn recorded_scenario_run_reproduces_from_its_replay() {
     assert_eq!(replay.meta.ticks, Some(900));
     assert!(!replay.commands.is_empty());
 
-    let replayed = runner::run_replay(&replay, None).unwrap();
+    let replayed = runner::run_replay(&replay, None, false).unwrap();
     assert_eq!(replayed.tick, outcome.state.tick);
     assert_eq!(replayed.hash(), outcome.state.hash());
 }
