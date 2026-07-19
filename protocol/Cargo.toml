@@ -10,3 +10,6 @@ chassis = { workspace = true }
 oxide-sim = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[lints.rust]
+missing_docs = "warn"

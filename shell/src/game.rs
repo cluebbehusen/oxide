@@ -263,9 +263,11 @@ impl Game {
             self.do_tick();
         }
         // No cross-jump interpolation after a bulk advance — and no sound
-        // barrage from replaying hours of battle in one frame.
+        // barrage or wall of stacked lasers from replaying hours of battle
+        // in one frame.
         self.accum = 0.0;
         self.sounds_pending.clear();
+        self.fx.clear();
         self.prev_pos = self
             .state
             .units

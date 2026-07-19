@@ -40,7 +40,7 @@ asleep.
 | `H` / `S` | Train a Harvester (50) / Sentinel (75) |
 | `Space` | Jump to your Foundry |
 | `P` | Quick pause |
-| `Esc` | Deselect, then the pause menu (resume / restart / main menu) |
+| `Esc` | Deselect, then the pause menu (resume / restart / main menu / quit) |
 | `F1` | Debug overlay (grid, ids, paths — and no fog) |
 
 Fog of war is real: you see what your machines see, explored ground stays
@@ -131,8 +131,9 @@ via replays, and the agent tooling described above.
 Not yet: more unit and building types (the roster is deliberately tiny),
 formations and control groups, and the mobile ports — macroquad makes
 iOS/Android plausible, and `RawEvent` already carries touch variants, but
-nothing is wired. The sim freezes at game end; the pause menu's Restart
-is the rematch.
+nothing is wired. Scrap nodes under explored-but-unseen fog render their
+live amounts (buildings freeze into ghosts; scrap doesn't yet). The sim
+freezes at game end; the pause menu's Restart is the rematch.
 
 Built with [macroquad](https://macroquad.rs/); simulation math on the
 [`fixed`](https://crates.io/crates/fixed) crate; goldens via

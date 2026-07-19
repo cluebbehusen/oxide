@@ -14,6 +14,10 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 macroquad = "0.4"
+# Screenshots are encoded by hand: macroquad's Image::export_png unwraps
+# on write errors, which would let one bad debug-socket path kill the
+# whole session.
+png = "0.17"
 
 [lints.clippy]
 # The workspace-wide disallowed-types list guards *sim* determinism. Shell

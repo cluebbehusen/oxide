@@ -68,6 +68,17 @@ impl InputState {
     fn is_held(&self, key: Key) -> bool {
         self.held.contains(&key_ord(key))
     }
+
+    /// Drops everything that assumes continuity — held keys, an open drag,
+    /// an armed attack-move — keeping only the cursor position. Called on
+    /// every mode transition: a menu eats the matching release events, and
+    /// stale held-state otherwise pans the camera forever (or fires a
+    /// phantom box-select) after resuming.
+    pub fn reset_transient(&mut self) {
+        self.held.clear();
+        self.drag_origin = None;
+        self.armed_attack_move = false;
+    }
 }
 
 const KEY_MAP: [(Key, mq::KeyCode); 12] = [

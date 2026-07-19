@@ -284,13 +284,18 @@ fn hp_bar(x: f32, y: f32, w: f32, hp: u32, max_hp: u32) {
 }
 
 fn draw_fx(game: &Game) {
+    let sees = |p: Vec2| {
+        game.my_vision()
+            .visible(TilePos::new(p.x.floor() as i32, p.y.floor() as i32))
+    };
     for fx in &game.fx {
-        let anchor = match fx.kind {
-            EffectKind::Laser { from, .. } => from,
-            EffectKind::Puff { at } => at,
+        // A beam needs BOTH endpoints in sight: a half-fogged laser would
+        // pinpoint an unseen combatant at its far end.
+        let in_sight = match fx.kind {
+            EffectKind::Laser { from, to } => sees(from) && sees(to),
+            EffectKind::Puff { at } => sees(at),
         };
-        let tile = TilePos::new(anchor.x.floor() as i32, anchor.y.floor() as i32);
-        if !game.overlay && !game.my_vision().visible(tile) {
+        if !game.overlay && !in_sight {
             continue;
         }
         match fx.kind {

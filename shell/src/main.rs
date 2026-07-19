@@ -186,7 +186,7 @@ async fn run() -> Result<()> {
     };
     let mut input = input::InputState::new();
     let mut injected: Vec<RawEvent> = Vec::new();
-    let mut pending_shot: Option<PendingScreenshot> = None;
+    let mut pending_shots: Vec<PendingScreenshot> = Vec::new();
 
     loop {
         let dt = get_frame_time();
@@ -198,7 +198,7 @@ async fn run() -> Result<()> {
                     &mut game,
                     &mut mode,
                     &mut injected,
-                    &mut pending_shot,
+                    &mut pending_shots,
                 );
             }
         }
@@ -206,6 +206,7 @@ async fn run() -> Result<()> {
         let mut events = input::poll_events(&input);
         events.append(&mut injected);
 
+        let mode_before = std::mem::discriminant(&mode);
         match mode {
             Mode::MainMenu => {
                 let (menu, entries) = main_menu.get_or_insert_with(build_main_menu);
@@ -285,24 +286,32 @@ async fn run() -> Result<()> {
             }
         }
 
+        if std::mem::discriminant(&mode) != mode_before {
+            input.reset_transient();
+        }
+
         let queued: Vec<SoundKind> = game.sounds_pending.drain(..).collect();
         for kind in queued {
             mixer.play(&sounds, kind);
         }
 
-        if let Some(shot) = pending_shot.take() {
-            let response = match capture_screenshot(&shot.path) {
-                Ok((width, height)) => ResponseEnvelope::ok(
-                    shot.id,
-                    Reply::Screenshot(ScreenshotView {
-                        path: shot.path,
-                        width,
-                        height,
-                    }),
-                ),
-                Err(err) => ResponseEnvelope::err(shot.id, format!("screenshot: {err:#}")),
-            };
-            shot.reply.send(response).ok();
+        if !pending_shots.is_empty() {
+            // One readback serves every request that arrived this frame.
+            let image = get_screen_data();
+            for shot in pending_shots.drain(..) {
+                let response = match write_png(&image, &shot.path) {
+                    Ok((width, height)) => ResponseEnvelope::ok(
+                        shot.id,
+                        Reply::Screenshot(ScreenshotView {
+                            path: shot.path,
+                            width,
+                            height,
+                        }),
+                    ),
+                    Err(err) => ResponseEnvelope::err(shot.id, format!("screenshot: {err:#}")),
+                };
+                shot.reply.send(response).ok();
+            }
         }
         next_frame().await;
     }
@@ -327,14 +336,27 @@ fn veil() {
     );
 }
 
-fn capture_screenshot(path: &str) -> Result<(u32, u32)> {
+/// Writes a captured frame as PNG with real error handling — macroquad's
+/// own `export_png` unwraps on failure, which would let one malformed
+/// debug-socket path abort the entire session.
+fn write_png(image: &Image, path: &str) -> Result<(u32, u32)> {
     if let Some(parent) = std::path::Path::new(path).parent()
         && !parent.as_os_str().is_empty()
     {
         std::fs::create_dir_all(parent)?;
     }
-    let image = get_screen_data();
-    image.export_png(path);
+    let file = std::fs::File::create(path).with_context(|| format!("creating {path}"))?;
+    let mut encoder = png::Encoder::new(
+        std::io::BufWriter::new(file),
+        u32::from(image.width),
+        u32::from(image.height),
+    );
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().context("writing png header")?;
+    writer
+        .write_image_data(&image.bytes)
+        .context("writing png data")?;
     Ok((u32::from(image.width), u32::from(image.height)))
 }
 
@@ -345,7 +367,7 @@ fn handle_request(
     game: &mut Game,
     mode: &mut Mode,
     injected: &mut Vec<RawEvent>,
-    pending_shot: &mut Option<PendingScreenshot>,
+    pending_shots: &mut Vec<PendingScreenshot>,
 ) {
     let IncomingRequest { id, request, reply } = incoming;
     let outcome: Result<Reply, String> = match request {
@@ -411,7 +433,7 @@ fn handle_request(
         }
         Request::Screenshot { path } => {
             let path = path.unwrap_or_else(|| format!("screenshots/tick-{}.png", game.state.tick));
-            *pending_shot = Some(PendingScreenshot { id, path, reply });
+            pending_shots.push(PendingScreenshot { id, path, reply });
             return; // responds after the frame renders
         }
         Request::ToggleOverlay => {

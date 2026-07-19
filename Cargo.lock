@@ -511,6 +511,7 @@ dependencies = [
  "macroquad",
  "oxide-protocol",
  "oxide-sim",
+ "png",
  "serde",
  "serde_json",
 ]
