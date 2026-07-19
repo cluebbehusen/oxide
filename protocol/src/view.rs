@@ -271,8 +271,14 @@ mod tests {
         assert_eq!(full.buildings.len(), 2);
         let map = full.map.as_ref().unwrap();
         let flat: String = map.concat();
-        assert!(flat.contains('A') && flat.contains('B'), "both foundries drawn");
-        assert!(flat.contains('a') && flat.contains('b'), "both armies drawn");
+        assert!(
+            flat.contains('A') && flat.contains('B'),
+            "both foundries drawn"
+        );
+        assert!(
+            flat.contains('a') && flat.contains('b'),
+            "both armies drawn"
+        );
 
         let slim = StateView::capture(&state, StateFilter::default());
         assert!(slim.map.is_none());

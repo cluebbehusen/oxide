@@ -33,6 +33,10 @@ pub struct ReplayMeta {
     /// Free-form context (who played, what was being tested).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Total ticks the recorded session ran, so playback knows when the
+    /// run is fully reproduced (commands alone only bound it from below).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticks: Option<Tick>,
 }
 
 /// A command stamped with the tick it executes on.
@@ -62,6 +66,7 @@ impl<S, C> Replay<S, C> {
             meta: ReplayMeta {
                 sim_version: sim_version.into(),
                 description: None,
+                ticks: None,
             },
             setup,
             commands: Vec::new(),

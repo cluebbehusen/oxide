@@ -275,7 +275,10 @@ mod tests {
             request: Request::AdvanceTicks { ticks: 10 },
         })
         .unwrap();
-        assert_eq!(json, r#"{"id":1,"method":"advance_ticks","params":{"ticks":10}}"#);
+        assert_eq!(
+            json,
+            r#"{"id":1,"method":"advance_ticks","params":{"ticks":10}}"#
+        );
 
         let json = serde_json::to_string(&ResponseEnvelope::err(2, "unknown method")).unwrap();
         assert_eq!(json, r#"{"id":2,"err":"unknown method"}"#);
@@ -283,8 +286,7 @@ mod tests {
 
     #[test]
     fn unit_variant_requests_need_no_params() {
-        let req: RequestEnvelope =
-            serde_json::from_str(r#"{"id":5,"method":"status"}"#).unwrap();
+        let req: RequestEnvelope = serde_json::from_str(r#"{"id":5,"method":"status"}"#).unwrap();
         assert_eq!(req.request, Request::Status);
     }
 
