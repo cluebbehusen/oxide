@@ -27,6 +27,30 @@ fn recorded_scenario_run_reproduces_from_its_replay() {
 }
 
 #[test]
+fn every_shipped_scenario_builds_and_plays() {
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scenarios");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        checked += 1;
+        let mut scenario =
+            Scenario::load(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+        for player in &mut scenario.players {
+            player.bot = true;
+        }
+        // Two thousand ticks of bot play without a panic proves the map is
+        // actually playable, not merely parseable.
+        let outcome = runner::run_scenario(&scenario, 2000, true, false)
+            .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+        assert_eq!(outcome.state.tick, 2000, "{}", path.display());
+    }
+    assert!(checked >= 4, "expected the shipped maps, found {checked}");
+}
+
+#[test]
 fn run_without_bots_is_quiet_but_valid() {
     let outcome = runner::run_scenario(&Scenario::skirmish(), 100, false, true).unwrap();
     let replay = outcome.replay.unwrap();
