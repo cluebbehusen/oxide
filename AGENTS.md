@@ -152,7 +152,8 @@ and test fixtures inside crate `tests/` directories.
   the march back up. Plain `Move` stays oblivious on purpose.
 - **Ghost memory lives in `Vision`**: enemy-building records refresh while
   their ground is visible and freeze when sight is lost; seeing the ground
-  empty erases them. Renderers draw live state on visible ground, ghosts
+  empty erases them. Scrap amounts get the same treatment via a per-player
+  remembered grid. Renderers draw live state on visible ground, memories
   elsewhere — same rule on the minimap.
 - **Sound follows sight.** Positional clips require the event's tile to be
   visible to the human; own losses and milestones are always audible. The

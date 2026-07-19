@@ -655,6 +655,73 @@ fn ghost_memory_survives_unseen_demolition_until_revisited() {
 }
 
 #[test]
+fn remembered_scrap_freezes_when_sight_is_lost() {
+    // p0 scouts the node at (11,4), walks home; p1 mines it unseen. p0's
+    // memory must keep the full amount until the ground is re-seen.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 4, 2),
+        unit(1, UnitKind::Harvester, 13, 3),
+    ])
+    .build()
+    .unwrap();
+    let (scout, miner) = (state.units[0].id, state.units[1].id);
+    let node = TilePos::new(11, 4);
+    let me = PlayerId(0);
+    let full = oxide_sim::stats::SCRAP_NODE_AMOUNT;
+
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![scout],
+            goal: TilePos::new(9, 4),
+        },
+    )]);
+    run_until(&mut state, 300, |s, _| {
+        s.vision(me).remembered_scrap(node) == full
+    });
+
+    let home = TilePos::new(4, 2);
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![scout],
+            goal: home,
+        },
+    )]);
+    run_until(&mut state, 300, |s, _| {
+        s.unit(scout).unwrap().tile() == home && !s.can_see(me, node)
+    });
+
+    // Unseen mining: live amount drops, p0's memory doesn't.
+    state.tick(&[cmd(
+        1,
+        Command::Harvest {
+            units: vec![miner],
+            node,
+        },
+    )]);
+    run_until(&mut state, 600, |s, _| s.map.scrap_at(node) < full - 4);
+    assert_eq!(
+        state.vision(me).remembered_scrap(node),
+        full,
+        "memory must freeze at the last sighting"
+    );
+
+    // Re-scouting reconciles memory with reality.
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![scout],
+            goal: TilePos::new(9, 4),
+        },
+    )]);
+    run_until(&mut state, 300, |s, _| {
+        s.can_see(me, node) && s.vision(me).remembered_scrap(node) == s.map.scrap_at(node)
+    });
+    assert!(state.vision(me).remembered_scrap(node) < full);
+}
+
+#[test]
 fn commanding_enemy_units_is_rejected() {
     let mut state = arena(vec![unit(1, UnitKind::Harvester, 8, 6)])
         .build()

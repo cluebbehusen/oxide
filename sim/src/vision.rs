@@ -50,6 +50,9 @@ pub struct Vision {
     /// deterministic canonical order like everything else in the state.
     #[serde(default)]
     ghosts: Vec<GhostBuilding>,
+    /// Scrap per tile as this player last saw it. Only meaningful where
+    /// `explored`; frozen wherever sight is lost, exactly like ghosts.
+    remembered_scrap: Grid<u32>,
 }
 
 impl Vision {
@@ -58,6 +61,7 @@ impl Vision {
             visible: Grid::new(width, height, false),
             explored: Grid::new(width, height, false),
             ghosts: Vec::new(),
+            remembered_scrap: Grid::new(width, height, 0),
         }
     }
 
@@ -67,6 +71,13 @@ impl Vision {
     /// should draw live state on visible ground and these everywhere else.
     pub fn ghosts(&self) -> &[GhostBuilding] {
         &self.ghosts
+    }
+
+    /// Scrap at `pos` as last seen (zero where never seen or out of
+    /// bounds). Renderers should use live amounts on visible ground and
+    /// this everywhere else.
+    pub fn remembered_scrap(&self, pos: TilePos) -> u32 {
+        self.remembered_scrap.get(pos).copied().unwrap_or(0)
     }
 
     /// Whether the player currently sees `pos`.
@@ -133,6 +144,16 @@ pub(crate) fn refresh(state: &mut State) {
         }
         ghosts.sort_unstable_by_key(|g| (g.anchor.y, g.anchor.x, g.owner));
         view.ghosts = ghosts;
+
+        // Freeze-frame the economy the same way: wherever there is sight,
+        // remember the scrap; everywhere else the old number stands.
+        for (pos, tile) in state.map.iter() {
+            if view.visible(pos)
+                && let Some(cell) = view.remembered_scrap.get_mut(pos)
+            {
+                *cell = tile.scrap;
+            }
+        }
     }
     state.vision = vision;
 }

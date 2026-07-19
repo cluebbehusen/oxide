@@ -131,9 +131,8 @@ via replays, and the agent tooling described above.
 Not yet: more unit and building types (the roster is deliberately tiny),
 formations and control groups, and the mobile ports — macroquad makes
 iOS/Android plausible, and `RawEvent` already carries touch variants, but
-nothing is wired. Scrap nodes under explored-but-unseen fog render their
-live amounts (buildings freeze into ghosts; scrap doesn't yet). The sim
-freezes at game end; the pause menu's Restart is the rematch.
+nothing is wired. The sim freezes at game end; the pause menu's Restart
+is the rematch.
 
 Built with [macroquad](https://macroquad.rs/); simulation math on the
 [`fixed`](https://crates.io/crates/fixed) crate; goldens via

@@ -112,7 +112,15 @@ fn draw_tiles(game: &Game, sprites: &Sprites) {
                 WHITE,
                 params.clone(),
             );
-            let overlay = match (tile.terrain, tile.scrap) {
+            // Scrap draws at its live amount only in sight; unseen ground
+            // shows what the player remembers (frozen, like ghosts).
+            let pos = TilePos::new(x, y);
+            let scrap = if game.overlay || game.my_vision().visible(pos) {
+                tile.scrap
+            } else {
+                game.my_vision().remembered_scrap(pos)
+            };
+            let overlay = match (tile.terrain, scrap) {
                 (oxide_sim::map::Terrain::Rock, _) => Some(&sprites.rock),
                 (_, 0) => None,
                 (_, s) if s * 3 > SCRAP_NODE_AMOUNT * 2 => Some(&sprites.scrap_full),
@@ -542,7 +550,14 @@ fn draw_minimap(game: &Game) {
         let color = if !explored {
             MINI_VOID
         } else {
-            let base = match (tile.terrain, tile.scrap) {
+            // Same memory rule as the world view: live scrap in sight,
+            // last-seen scrap under the dim.
+            let scrap = if visible {
+                tile.scrap
+            } else {
+                vision.remembered_scrap(pos)
+            };
+            let base = match (tile.terrain, scrap) {
                 (oxide_sim::map::Terrain::Rock, _) => MINI_ROCK,
                 (_, 0) => MINI_GROUND,
                 (_, _) => SCRAP_COLOR,
