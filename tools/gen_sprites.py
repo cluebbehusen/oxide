@@ -18,6 +18,7 @@ heading.
 from __future__ import annotations
 
 import json
+import math
 import random
 from pathlib import Path
 
@@ -66,9 +67,27 @@ def canvas(px: int, color=(0, 0, 0, 0)) -> tuple[Image.Image, ImageDraw.ImageDra
 
 def finish(img: Image.Image, px: int, name: str) -> None:
     img = img.resize((px, px), Image.LANCZOS)
+    if name.startswith(("harvester", "sentinel")):
+        img = rim_light(img)
     img.save(OUT / f"{name}.png")
     REGISTRY[name] = img
     print(f"  {name}.png")
+
+
+def rim_light(img: Image.Image) -> Image.Image:
+    """A one-pixel warm edge along the top-left silhouette — keeps units
+    readable at small zoom against dark ground."""
+    from PIL import ImageChops, ImageFilter
+
+    alpha = img.split()[3]
+    grown = alpha.filter(ImageFilter.MaxFilter(3))
+    edge = ImageChops.subtract(grown, alpha)
+    shifted = ImageChops.subtract(edge, edge.transform(edge.size, Image.AFFINE, (1, 0, -1, 0, 1, -1)))
+    rim = Image.new("RGBA", img.size, (255, 244, 224, 0))
+    rim.putalpha(shifted.point(lambda v: min(v, 110)))
+    out = img.copy()
+    out.alpha_composite(rim)
+    return out
 
 
 def pack_atlas() -> None:
@@ -121,7 +140,11 @@ def s(v: float) -> int:
 
 def ground(variant: int) -> None:
     px = 64
-    img, d = canvas(px, (*GROUND, 255))
+    # Variants sweep a subtle brightness range so the field reads as varied
+    # terrain instead of a flat wash.
+    lift = [-6, -3, 0, 2, 4, 7][variant % 6]
+    base = tuple(max(0, c + lift) for c in GROUND)
+    img, d = canvas(px, (*base, 255))
     rng = random.Random(1000 + variant)
     # Sparse grit: a few darker and lighter flecks, nothing that tiles loudly.
     for _ in range(26):
@@ -140,10 +163,10 @@ def ground(variant: int) -> None:
     finish(img, px, f"ground_{variant}")
 
 
-def rock() -> None:
+def rock(variant: int) -> None:
     px = 64
     img, d = canvas(px)
-    rng = random.Random(7)
+    rng = random.Random(7 + variant * 31)
 
     def boulder(cx, cy, r, tone, dark, light):
         pts = []
@@ -151,8 +174,7 @@ def rock() -> None:
         for i in range(n):
             angle = i / n * 6.28318
             wobble = r * (0.78 + 0.22 * rng.random())
-            pts.append((cx + wobble * __import__("math").cos(angle),
-                        cy + wobble * __import__("math").sin(angle)))
+            pts.append((cx + wobble * math.cos(angle), cy + wobble * math.sin(angle)))
         d.polygon([(s(x), s(y)) for x, y in pts], fill=(*tone, 255))
         # Top-left facet catches light; bottom-right falls into shade.
         facet = [(s(x * 0.62 + cx * 0.38 - r * 0.12), s(y * 0.62 + cy * 0.38 - r * 0.12))
@@ -162,37 +184,70 @@ def rock() -> None:
                  for x, y in pts[4:9]]
         d.polygon(shade, fill=(*dark, 255))
 
-    boulder(30, 34, 24, ROCK, ROCK_DARK, ROCK_LIGHT)
-    boulder(46, 44, 12, ROCK, ROCK_DARK, ROCK_LIGHT)
-    boulder(16, 48, 8, ROCK_DARK, ROCK_DARK, ROCK)
-    finish(img, px, "rock")
+    layouts = [
+        [(30, 34, 24), (46, 44, 12), (16, 48, 8)],
+        [(34, 28, 22), (18, 40, 14), (46, 50, 9)],
+        [(26, 40, 26), (48, 24, 11)],
+        [(32, 32, 18), (14, 26, 10), (50, 46, 12), (20, 52, 7)],
+    ]
+    for i, (cx, cy, r) in enumerate(layouts[variant % 4]):
+        tone = ROCK if i < 2 else ROCK_DARK
+        boulder(cx, cy, r, tone, ROCK_DARK, ROCK_LIGHT if i < 2 else ROCK)
+    finish(img, px, f"rock_{variant}")
+
+
+def scrap_pile(name: str, seed: int, pieces: int, spread: float, lift: float) -> None:
+    """A mounded salvage heap: shadow base, center-biased shards piled so
+    they overlap into one mass, glints on the crown. `lift` raises the
+    crown for taller piles."""
+    px = 64
+    img, d = canvas(px)
+    rng = random.Random(seed)
+    base_r = spread + 5
+    d.ellipse(
+        [s(32 - base_r), s(36 - base_r * 0.6), s(32 + base_r), s(36 + base_r * 0.6)],
+        fill=(24, 20, 16, 120),
+    )
+    # Far pieces first so central ones stack on top.
+    placed = []
+    for _ in range(pieces):
+        angle = rng.uniform(0, 6.28318)
+        dist = spread * rng.random() ** 0.6
+        cx = 32 + dist * math.cos(angle)
+        cy = 34 + dist * math.sin(angle) * 0.65 - lift * (1 - dist / spread)
+        w = rng.uniform(6, 12) * (1.15 - 0.4 * dist / spread)
+        h = rng.uniform(4, 9) * (1.15 - 0.4 * dist / spread)
+        placed.append((dist, cx, cy, w, h))
+    placed.sort(key=lambda p: -p[0])
+    for dist, cx, cy, w, h in placed:
+        # Central pieces catch light; the fringe sits in shade.
+        tone = (
+            rng.choice((SCRAP, SCRAP_LIGHT))
+            if dist < spread * 0.45
+            else rng.choice((SCRAP, SCRAP_DARK, SCRAP_DARK))
+        )
+        dx = rng.uniform(-2.5, 2.5)
+        box = [
+            (cx - w / 2 - dx, cy - h / 2),
+            (cx + w / 2, cy - h / 2 + dx / 2),
+            (cx + w / 2 + dx, cy + h / 2),
+            (cx - w / 2, cy + h / 2 - dx / 2),
+        ]
+        d.polygon([(s(x), s(y)) for x, y in box], fill=(*tone, 255))
+    for _ in range(max(1, pieces // 6)):
+        cx, cy = 32 + rng.uniform(-6, 6), 32 - lift * 0.7 + rng.uniform(-4, 4)
+        d.ellipse([s(cx - 2), s(cy - 2), s(cx + 2), s(cy + 2)], fill=(*BONE, 255))
+    finish(img, px, name)
 
 
 def scrap(stage: str, fullness: float) -> None:
-    px = 64
-    img, d = canvas(px)
-    rng = random.Random(11)
-    pieces = int(16 * fullness) + 3
-    spread = 20 * fullness + 6
-    for _ in range(pieces):
-        cx = 32 + rng.uniform(-spread, spread)
-        cy = 32 + rng.uniform(-spread, spread)
-        w, h = rng.uniform(5, 12), rng.uniform(4, 9)
-        angle_steps = rng.choice((0, 1, 2, 3))
-        tone = rng.choice((SCRAP, SCRAP, SCRAP_DARK, SCRAP_LIGHT))
-        box = [
-            (cx - w / 2, cy - h / 2), (cx + w / 2, cy - h / 2),
-            (cx + w / 2, cy + h / 2), (cx - w / 2, cy + h / 2),
-        ]
-        if angle_steps:  # crude rotation by shearing corners — looks like junk, which it is
-            dx = rng.uniform(-2.5, 2.5)
-            box = [(x + (dx if i % 2 else -dx), y) for i, (x, y) in enumerate(box)]
-        d.polygon([(s(x), s(y)) for x, y in box], fill=(*tone, 255))
-    # A glinting bolt or two on top.
-    for _ in range(max(1, int(3 * fullness))):
-        cx, cy = 32 + rng.uniform(-10, 10), 32 + rng.uniform(-10, 10)
-        d.ellipse([s(cx - 2), s(cy - 2), s(cx + 2), s(cy + 2)], fill=(*BONE, 255))
-    finish(img, px, f"scrap_{stage}")
+    scrap_pile(
+        f"scrap_{stage}",
+        seed=11,
+        pieces=int(14 * fullness) + 4,
+        spread=10 * fullness + 6,
+        lift=3 * fullness,
+    )
 
 
 def foundry(faction: str) -> None:
@@ -271,12 +326,109 @@ def sentinel(faction: str) -> None:
     finish(img, px, f"sentinel_{faction}")
 
 
+def rock_skirt() -> None:
+    """A soft shadow cast from the top edge; rotated at draw time toward
+    whichever neighbor holds the rock."""
+    px = 64
+    img, d = canvas(px)
+    for row in range(20):
+        alpha = int(70 * (1.0 - row / 20) ** 1.6)
+        d.rectangle([0, s(row), s(64), s(row + 1)], fill=(10, 10, 14, alpha))
+    finish(img, px, "rock_skirt")
+
+
+def decal(name: str, seed: int, style: str) -> None:
+    px = 64
+    img, d = canvas(px)
+    rng = random.Random(seed)
+    if style == "crack":
+        x, y = rng.randrange(8, 24), rng.randrange(12, 52)
+        pts = [(x, y)]
+        for _ in range(rng.randrange(4, 6)):
+            x += rng.randrange(4, 12)
+            y += rng.randrange(-8, 9)
+            pts.append((x, y))
+        d.line([(s(a), s(b)) for a, b in pts], fill=(16, 16, 20, 160), width=SS)
+        for a, b in pts[1:-1]:
+            if rng.random() < 0.6:
+                d.line(
+                    [(s(a), s(b)), (s(a + rng.randrange(-6, 7)), s(b + rng.randrange(3, 9)))],
+                    fill=(16, 16, 20, 120),
+                    width=SS,
+                )
+    elif style == "plate":
+        x, y = rng.randrange(10, 26), rng.randrange(10, 26)
+        w, h = rng.randrange(18, 30), rng.randrange(14, 24)
+        d.rectangle([s(x), s(y), s(x + w), s(y + h)], outline=(70, 70, 82, 110), width=SS)
+        for cx, cy in [(x + 3, y + 3), (x + w - 3, y + 3), (x + 3, y + h - 3), (x + w - 3, y + h - 3)]:
+            d.ellipse([s(cx - 1), s(cy - 1), s(cx + 1), s(cy + 1)], fill=(70, 70, 82, 140))
+    elif style == "stain":
+        for _ in range(rng.randrange(3, 5)):
+            cx, cy = rng.randrange(16, 48), rng.randrange(16, 48)
+            r = rng.randrange(6, 14)
+            d.ellipse([s(cx - r), s(cy - r), s(cx + r), s(cy + r)], fill=(24, 20, 16, 60))
+    elif style == "wreck":
+        for _ in range(rng.randrange(4, 7)):
+            cx, cy = rng.randrange(12, 52), rng.randrange(12, 52)
+            w, h = rng.randrange(4, 10), rng.randrange(3, 7)
+            tone = rng.choice([(58, 58, 68), (44, 44, 52), (86, 64, 40)])
+            d.polygon(
+                [
+                    (s(cx), s(cy)),
+                    (s(cx + w), s(cy + rng.randrange(-2, 3))),
+                    (s(cx + w - rng.randrange(0, 3)), s(cy + h)),
+                    (s(cx - rng.randrange(0, 3)), s(cy + h - 1)),
+                ],
+                fill=(*tone, 150),
+            )
+    finish(img, px, name)
+
+
+def scrap_rich() -> None:
+    """A dense, tall heap — the 'S' legend's double-value node."""
+    scrap_pile("scrap_rich", seed=23, pieces=30, spread=19, lift=7)
+
+
+def muzzle_flash() -> None:
+    px = 32
+    img, d = canvas(px)
+    for r, alpha in [(11, 90), (7, 170), (4, 255)]:
+        d.ellipse([s(16 - r), s(16 - r), s(16 + r), s(16 + r)], fill=(255, 240, 200, alpha))
+    d.polygon([(s(16), s(2)), (s(19), s(13)), (s(13), s(13))], fill=(255, 240, 200, 220))
+    d.polygon([(s(16), s(30)), (s(19), s(19)), (s(13), s(19))], fill=(255, 240, 200, 220))
+    finish(img, px, "muzzle_flash")
+
+
+def scorch() -> None:
+    px = 128
+    img, d = canvas(px)
+    rng = random.Random(77)
+    for r, alpha in [(56, 60), (44, 90), (30, 120)]:
+        d.ellipse([s(64 - r), s(64 - r), s(64 + r), s(64 + r)], fill=(12, 10, 10, alpha))
+    for _ in range(14):
+        ang = rng.uniform(0, 6.28318)
+        import math as _m
+        fr = rng.uniform(30, 60)
+        x, y = 64 + fr * _m.cos(ang), 64 + fr * _m.sin(ang)
+        d.ellipse([s(x - 3), s(y - 3), s(x + 3), s(y + 3)], fill=(16, 14, 12, 90))
+    finish(img, px, "scorch")
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     print(f"writing {OUT}")
-    for i in range(3):
+    for i in range(6):
         ground(i)
-    rock()
+    for i in range(4):
+        rock(i)
+    rock_skirt()
+    decal("decal_crack", 41, "crack")
+    decal("decal_plate", 42, "plate")
+    decal("decal_stain", 43, "stain")
+    decal("decal_wreck", 44, "wreck")
+    scrap_rich()
+    muzzle_flash()
+    scorch()
     scrap("full", 1.0)
     scrap("mid", 0.55)
     scrap("low", 0.25)

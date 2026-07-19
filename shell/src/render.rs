@@ -31,9 +31,10 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     clear_background(OUTSIDE);
     let alpha = game.render_alpha();
     draw_tiles(game, sprites);
+    draw_scorches(game, sprites);
     draw_buildings(game, sprites);
     draw_units(game, sprites, alpha);
-    draw_fx(game);
+    draw_fx(game, sprites);
     // The debug overlay is deliberately omniscient; fog only draws without it.
     if game.overlay {
         draw_overlay(game, alpha);
@@ -46,7 +47,7 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
 }
 
 const FOG_UNEXPLORED: Color = color_u8!(13, 13, 17, 255);
-const FOG_EXPLORED: Color = color_u8!(13, 13, 17, 130);
+const FOG_EXPLORED: Color = color_u8!(22, 28, 44, 135);
 
 /// Fog of war from the local player's perspective: unexplored is void,
 /// explored-but-unseen is dimmed.
@@ -95,7 +96,9 @@ fn draw_tiles(game: &Game, sprites: &Sprites) {
                 continue;
             };
             let screen = game.camera.to_screen(vec2(x as f32, y as f32));
-            let variant = ((x * 7 + y * 13) % 3) as usize;
+            // Position hashes drive all variety: deterministic, no state.
+            let h = (x.wrapping_mul(31).wrapping_add(y.wrapping_mul(17))) as usize;
+            let variant = h % 6;
             draw_texture_ex(
                 sprites.texture(),
                 screen.x.floor(),
@@ -107,20 +110,16 @@ fn draw_tiles(game: &Game, sprites: &Sprites) {
                     ..Default::default()
                 },
             );
-            // Scrap draws at its live amount only in sight; unseen ground
-            // shows what the player remembers (frozen, like ghosts).
-            let pos = TilePos::new(x, y);
-            let scrap = if game.overlay || game.my_vision().visible(pos) {
-                tile.scrap
+            // Ground dressing: rubble tiles always get wreckage; plain
+            // ground gets a sparse scatter (~4%) of the smaller decals.
+            let decal = if tile.cosmetic == 1 {
+                Some(sprites.decal(3))
+            } else if tile.terrain == oxide_sim::map::Terrain::Ground && h.is_multiple_of(23) {
+                Some(sprites.decal(h / 23 % 3))
             } else {
-                game.my_vision().remembered_scrap(pos)
+                None
             };
-            let overlay = match (tile.terrain, scrap) {
-                (oxide_sim::map::Terrain::Rock, _) => Some(sprites.rock()),
-                (_, 0) => None,
-                (_, s) => Some(sprites.scrap(s, SCRAP_NODE_AMOUNT)),
-            };
-            if let Some(source) = overlay {
+            if let Some(source) = decal {
                 draw_texture_ex(
                     sprites.texture(),
                     screen.x.floor(),
@@ -133,11 +132,89 @@ fn draw_tiles(game: &Game, sprites: &Sprites) {
                     },
                 );
             }
+            // Rocks cast a soft skirt onto neighboring ground.
+            if tile.terrain == oxide_sim::map::Terrain::Ground {
+                for (dx, dy, rotation) in [
+                    (0, -1, 0.0f32),
+                    (1, 0, std::f32::consts::FRAC_PI_2),
+                    (0, 1, std::f32::consts::PI),
+                    (-1, 0, 3.0 * std::f32::consts::FRAC_PI_2),
+                ] {
+                    let neighbor = TilePos::new(x + dx, y + dy);
+                    let rocky = game
+                        .state
+                        .map()
+                        .tile(neighbor)
+                        .is_some_and(|t| t.terrain == oxide_sim::map::Terrain::Rock);
+                    if rocky {
+                        draw_texture_ex(
+                            sprites.texture(),
+                            screen.x.floor(),
+                            screen.y.floor(),
+                            WHITE,
+                            DrawTextureParams {
+                                dest_size: Some(vec2(size, size)),
+                                source: Some(sprites.rock_skirt()),
+                                rotation,
+                                ..Default::default()
+                            },
+                        );
+                    }
+                }
+            }
+            // Scrap draws at its live amount only in sight; unseen ground
+            // shows what the player remembers (frozen, like ghosts).
+            let pos = TilePos::new(x, y);
+            let scrap = if game.overlay || game.my_vision().visible(pos) {
+                tile.scrap
+            } else {
+                game.my_vision().remembered_scrap(pos)
+            };
+            let (overlay, flip) = match (tile.terrain, scrap) {
+                (oxide_sim::map::Terrain::Rock, _) => (Some(sprites.rock(h % 4)), h % 7 < 3),
+                (_, 0) => (None, false),
+                (_, s) => (Some(sprites.scrap(s, SCRAP_NODE_AMOUNT)), false),
+            };
+            if let Some(source) = overlay {
+                draw_texture_ex(
+                    sprites.texture(),
+                    screen.x.floor(),
+                    screen.y.floor(),
+                    WHITE,
+                    DrawTextureParams {
+                        dest_size: Some(vec2(size, size)),
+                        source: Some(source),
+                        flip_x: flip,
+                        ..Default::default()
+                    },
+                );
+            }
         }
     }
 }
 
 const GHOST_TINT: Color = color_u8!(150, 150, 165, 210);
+
+/// Battle scars: scorch decals where buildings died, fading over ~20s.
+fn draw_scorches(game: &Game, sprites: &Sprites) {
+    let zoom = game.camera.zoom;
+    for (at, age) in &game.scorches {
+        let alpha = (1.0 - age / 20.0).clamp(0.0, 1.0) * 0.85;
+        let size = zoom * 2.4;
+        let screen = game.camera.to_screen(*at);
+        draw_texture_ex(
+            sprites.texture(),
+            screen.x - size * 0.5,
+            screen.y - size * 0.5,
+            Color::new(1.0, 1.0, 1.0, alpha),
+            DrawTextureParams {
+                dest_size: Some(vec2(size, size)),
+                source: Some(sprites.scorch()),
+                ..Default::default()
+            },
+        );
+    }
+}
 
 fn draw_buildings(game: &Game, sprites: &Sprites) {
     let zoom = game.camera.zoom;
@@ -192,6 +269,18 @@ fn draw_buildings(game: &Game, sprites: &Sprites) {
                 source: Some(sprites.foundry(faction)),
                 ..Default::default()
             },
+        );
+        // The melt pool breathes: a soft faction-tinted pulse.
+        let pulse = ((get_time() * 2.6 + f64::from(building.id.0)).sin() * 0.5 + 0.5) as f32;
+        let glow = match faction {
+            oxide_sim::Faction::Ferrous => Color::new(0.97, 0.62, 0.45, 0.10 + 0.10 * pulse),
+            oxide_sim::Faction::Cupric => Color::new(0.55, 0.87, 0.78, 0.10 + 0.10 * pulse),
+        };
+        draw_circle(
+            screen.x + dest.x * 0.5,
+            screen.y + dest.y * 0.5,
+            dest.x * 0.22 * (1.0 + 0.08 * pulse),
+            glow,
         );
         if game.selection.building == Some(building.id) {
             draw_rectangle_lines(
@@ -297,7 +386,7 @@ fn hp_bar(x: f32, y: f32, w: f32, hp: u32, max_hp: u32) {
     draw_rectangle(x, y, w * fraction, 3.0, color);
 }
 
-fn draw_fx(game: &Game) {
+fn draw_fx(game: &Game, sprites: &Sprites) {
     let sees = |p: Vec2| {
         game.my_vision()
             .visible(TilePos::new(p.x.floor() as i32, p.y.floor() as i32))
@@ -319,9 +408,41 @@ fn draw_fx(game: &Game) {
             EffectKind::Laser { from, to } => {
                 let a = game.camera.to_screen(from);
                 let b = game.camera.to_screen(to);
-                let fade = 1.0 - fx.age / 0.15;
-                let color = Color::new(0.95, 0.9, 0.75, fade.clamp(0.0, 1.0));
-                draw_line(a.x, a.y, b.x, b.y, 2.5 * fade.max(0.2), color);
+                let fade = (1.0 - fx.age / 0.15).clamp(0.0, 1.0);
+                // Wide glow under a hot core.
+                draw_line(
+                    a.x,
+                    a.y,
+                    b.x,
+                    b.y,
+                    7.0 * fade.max(0.3),
+                    Color::new(0.95, 0.75, 0.5, 0.22 * fade),
+                );
+                draw_line(
+                    a.x,
+                    a.y,
+                    b.x,
+                    b.y,
+                    2.5 * fade.max(0.2),
+                    Color::new(0.98, 0.93, 0.8, fade),
+                );
+                if fx.age < 0.07 {
+                    let dir = b - a;
+                    let rotation = dir.y.atan2(dir.x) + std::f32::consts::FRAC_PI_2;
+                    let flash = game.camera.zoom * 0.5;
+                    draw_texture_ex(
+                        sprites.texture(),
+                        a.x - flash * 0.5,
+                        a.y - flash * 0.5,
+                        WHITE,
+                        DrawTextureParams {
+                            dest_size: Some(vec2(flash, flash)),
+                            source: Some(sprites.muzzle_flash()),
+                            rotation,
+                            ..Default::default()
+                        },
+                    );
+                }
             }
             EffectKind::Puff { at } => {
                 let center = game.camera.to_screen(at);
@@ -340,6 +461,7 @@ fn draw_fx(game: &Game) {
                     crate::game::PingKind::Attack => DANGER,
                     crate::game::PingKind::Harvest => SCRAP_COLOR,
                     crate::game::PingKind::Rally => BONE,
+                    crate::game::PingKind::Spawn => color_u8!(150, 210, 235, 255),
                 };
                 let color = Color::new(base.r, base.g, base.b, 1.0 - progress * 0.7);
                 draw_circle_lines(center.x, center.y, radius, 2.5, color);

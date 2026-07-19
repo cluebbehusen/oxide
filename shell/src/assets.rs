@@ -13,11 +13,16 @@ use oxide_sim::{Faction, UnitKind};
 /// on nearly every tile and halved the framerate zoomed out.
 pub struct Sprites {
     texture: Texture2D,
-    ground: [Rect; 3],
-    rock: Rect,
+    ground: [Rect; 6],
+    rock: [Rect; 4],
+    rock_skirt: Rect,
+    decals: [Rect; 4],
     scrap_full: Rect,
     scrap_mid: Rect,
     scrap_low: Rect,
+    scrap_rich: Rect,
+    muzzle_flash: Rect,
+    scorch: Rect,
     foundry: [Rect; 2],
     harvester: [Rect; 2],
     sentinel: [Rect; 2],
@@ -52,11 +57,33 @@ impl Sprites {
         };
         Ok(Self {
             texture,
-            ground: [rect("ground_0")?, rect("ground_1")?, rect("ground_2")?],
-            rock: rect("rock")?,
+            ground: [
+                rect("ground_0")?,
+                rect("ground_1")?,
+                rect("ground_2")?,
+                rect("ground_3")?,
+                rect("ground_4")?,
+                rect("ground_5")?,
+            ],
+            rock: [
+                rect("rock_0")?,
+                rect("rock_1")?,
+                rect("rock_2")?,
+                rect("rock_3")?,
+            ],
+            rock_skirt: rect("rock_skirt")?,
+            decals: [
+                rect("decal_crack")?,
+                rect("decal_plate")?,
+                rect("decal_stain")?,
+                rect("decal_wreck")?,
+            ],
             scrap_full: rect("scrap_full")?,
             scrap_mid: rect("scrap_mid")?,
             scrap_low: rect("scrap_low")?,
+            scrap_rich: rect("scrap_rich")?,
+            muzzle_flash: rect("muzzle_flash")?,
+            scorch: rect("scorch")?,
             foundry: [rect("foundry_ferrous")?, rect("foundry_cupric")?],
             harvester: [rect("harvester_ferrous")?, rect("harvester_cupric")?],
             sentinel: [rect("sentinel_ferrous")?, rect("sentinel_cupric")?],
@@ -73,20 +100,44 @@ impl Sprites {
         self.ground[variant % self.ground.len()]
     }
 
-    /// The rock overlay's atlas region.
-    pub fn rock(&self) -> Rect {
-        self.rock
+    /// A rock variant's atlas region.
+    pub fn rock(&self, variant: usize) -> Rect {
+        self.rock[variant % self.rock.len()]
     }
 
-    /// The scrap sprite region for a remaining amount (in thirds of full).
-    pub fn scrap(&self, amount: u32, full_amount: u32) -> Rect {
-        if amount * 3 > full_amount * 2 {
+    /// The soft shadow a rock casts on a neighboring ground tile
+    /// (authored falling from the top edge; rotate toward the rock).
+    pub fn rock_skirt(&self) -> Rect {
+        self.rock_skirt
+    }
+
+    /// A ground decal's atlas region.
+    pub fn decal(&self, variant: usize) -> Rect {
+        self.decals[variant % self.decals.len()]
+    }
+
+    /// The scrap sprite region for a remaining amount: anything above a
+    /// standard node renders as the rich pile, then thirds of standard.
+    pub fn scrap(&self, amount: u32, standard_amount: u32) -> Rect {
+        if amount > standard_amount {
+            self.scrap_rich
+        } else if amount * 3 > standard_amount * 2 {
             self.scrap_full
-        } else if amount * 3 > full_amount {
+        } else if amount * 3 > standard_amount {
             self.scrap_mid
         } else {
             self.scrap_low
         }
+    }
+
+    /// The muzzle-flash atlas region.
+    pub fn muzzle_flash(&self) -> Rect {
+        self.muzzle_flash
+    }
+
+    /// The building-death scorch decal region.
+    pub fn scorch(&self) -> Rect {
+        self.scorch
     }
 
     /// The building sprite region for a faction.

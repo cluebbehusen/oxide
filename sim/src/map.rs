@@ -11,7 +11,7 @@
 //! ```
 
 use crate::ids::PlayerId;
-use crate::stats::SCRAP_NODE_AMOUNT;
+use crate::stats::{RICH_SCRAP_NODE_AMOUNT, SCRAP_NODE_AMOUNT};
 use chassis::grid::{Grid, TilePos};
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +36,9 @@ pub struct Tile {
     /// Remaining scrap. A ground tile with scrap is a node: impassable and
     /// harvestable until it hits zero.
     pub scrap: u32,
+    /// Purely visual ground dressing (0 plain, 1 rubble). No gameplay
+    /// effect, but part of the map and therefore of the state hash.
+    pub cosmetic: u8,
 }
 
 /// Errors from [`Map::parse`].
@@ -119,14 +122,27 @@ impl Map {
                     '.' => Tile {
                         terrain: Terrain::Ground,
                         scrap: 0,
+                        cosmetic: 0,
+                    },
+                    ',' => Tile {
+                        terrain: Terrain::Ground,
+                        scrap: 0,
+                        cosmetic: 1,
                     },
                     '#' => Tile {
                         terrain: Terrain::Rock,
                         scrap: 0,
+                        cosmetic: 0,
                     },
                     's' => Tile {
                         terrain: Terrain::Ground,
                         scrap: SCRAP_NODE_AMOUNT,
+                        cosmetic: 0,
+                    },
+                    'S' => Tile {
+                        terrain: Terrain::Ground,
+                        scrap: RICH_SCRAP_NODE_AMOUNT,
+                        cosmetic: 0,
                     },
                     '1'..='8' => {
                         let player = PlayerId(c as u8 - b'1');
@@ -137,6 +153,7 @@ impl Map {
                         Tile {
                             terrain: Terrain::Ground,
                             scrap: 0,
+                            cosmetic: 0,
                         }
                     }
                     other => {
@@ -210,7 +227,9 @@ impl Map {
         for (pos, tile) in self.grid.iter() {
             let c = match (tile.terrain, tile.scrap) {
                 (Terrain::Rock, _) => '#',
+                (Terrain::Ground, 0) if tile.cosmetic == 1 => ',',
                 (Terrain::Ground, 0) => '.',
+                (Terrain::Ground, s) if s > SCRAP_NODE_AMOUNT => 'S',
                 (Terrain::Ground, _) => 's',
             };
             rows[pos.y as usize].push(c);
@@ -272,7 +291,7 @@ mod tests {
 
     #[test]
     fn ascii_roundtrip() {
-        let rows = ["#.s", "...", "s#."];
+        let rows = ["#.s", ",S.", "s#."];
         let (map, _) = Map::parse(&rows).unwrap();
         assert_eq!(map.ascii_rows(), rows);
     }

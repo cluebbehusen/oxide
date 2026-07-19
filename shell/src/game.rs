@@ -77,6 +77,8 @@ pub enum PingKind {
     Harvest,
     /// Rally point.
     Rally,
+    /// A unit left the Foundry.
+    Spawn,
 }
 
 /// Effect shapes.
@@ -144,6 +146,8 @@ pub struct Game {
     pub sounds_pending: Vec<SoundKind>,
     /// Transient HUD messages, newest last.
     pub toasts: Vec<Toast>,
+    /// Scorch decals where buildings died: (world pos, seconds old).
+    pub scorches: Vec<(Vec2, f32)>,
     /// Session flags for the starter hint strip: cleared once the player
     /// has trained something / sent fighters somewhere.
     pub hinted_train: bool,
@@ -205,6 +209,7 @@ impl Game {
             fx: Vec::new(),
             sounds_pending: Vec::new(),
             toasts: Vec::new(),
+            scorches: Vec::new(),
             hinted_train: false,
             hinted_fight: false,
             accum: 0.0,
@@ -423,6 +428,10 @@ impl Game {
             toast.age += dt;
         }
         self.toasts.retain(|t| t.age < 2.5);
+        for (_, age) in &mut self.scorches {
+            *age += dt;
+        }
+        self.scorches.retain(|(_, age)| *age < 20.0);
     }
 
     /// Turns a tick's events into flashes and queued clips. Sight rules
@@ -474,12 +483,26 @@ impl Game {
                         },
                         age: 0.0,
                     });
+                    // A permanent-feeling scar (capped; oldest fall off).
+                    self.scorches.push((world_vec(*pos), 0.0));
+                    if self.scorches.len() > 16 {
+                        self.scorches.remove(0);
+                    }
+                }
+                Event::UnitTrained { unit, player, .. } if *player == self.human => {
+                    self.sounds_pending.push(SoundKind::TrainDone);
+                    if let Some(u) = self.state.unit(*unit) {
+                        self.fx.push(Effect {
+                            kind: EffectKind::Ping {
+                                at: world_vec(u.pos),
+                                kind: PingKind::Spawn,
+                            },
+                            age: 0.0,
+                        });
+                    }
                 }
                 Event::ScrapDeposited { player, .. } if *player == self.human => {
                     self.sounds_pending.push(SoundKind::Deposit);
-                }
-                Event::UnitTrained { player, .. } if *player == self.human => {
-                    self.sounds_pending.push(SoundKind::TrainDone);
                 }
                 Event::CommandRejected { player, reason } if *player == self.human => {
                     let why = match reason {

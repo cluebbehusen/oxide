@@ -86,10 +86,15 @@ pub fn render_state(state: &State) -> Pixmap {
         let (x, y) = (pos.x as f32 * TILE_PX, pos.y as f32 * TILE_PX);
         match (tile.terrain, tile.scrap) {
             (Terrain::Rock, _) => fill_rect(&mut pixmap, x, y, TILE_PX, TILE_PX, ROCK),
+            // Rubble: a faint lightening so the goldens register it.
+            (Terrain::Ground, 0) if tile.cosmetic == 1 => {
+                fill_rect(&mut pixmap, x, y, TILE_PX, TILE_PX, 0x2C2C34);
+            }
             (Terrain::Ground, 0) => {}
             (Terrain::Ground, scrap) => {
-                // Nodes shrink and dim as they deplete.
-                let fraction = scrap as f32 / oxide_sim::stats::SCRAP_NODE_AMOUNT as f32;
+                // Nodes shrink and dim as they deplete; rich nodes render
+                // saturated at full size.
+                let fraction = (scrap as f32 / oxide_sim::stats::SCRAP_NODE_AMOUNT as f32).min(1.0);
                 let color = if fraction > 0.5 {
                     SCRAP_FULL
                 } else {

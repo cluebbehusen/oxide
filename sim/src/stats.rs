@@ -137,6 +137,9 @@ impl BuildingKind {
 /// Scrap contained in a freshly parsed node tile.
 pub const SCRAP_NODE_AMOUNT: u32 = 400;
 
+/// Scrap in a rich node (the `S` map legend) — a fought-over prize.
+pub const RICH_SCRAP_NODE_AMOUNT: u32 = 800;
+
 /// Maximum queued units per Foundry.
 pub const QUEUE_CAP: usize = 5;
 
