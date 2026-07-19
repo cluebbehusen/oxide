@@ -1,0 +1,12 @@
+[package]
+name = "oxide-protocol"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Debug protocol types shared by the shell and the driver"
+
+[dependencies]
+chassis = { workspace = true }
+oxide-sim = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
