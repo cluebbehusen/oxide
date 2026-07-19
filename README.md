@@ -31,7 +31,9 @@ asleep.
 | Input | Action |
 |---|---|
 | Left click / drag | Select your units (click a Foundry to select it) |
+| Left click on minimap | Jump the camera there |
 | Right click | Contextual order: enemy → attack, scrap → harvest, ground → move |
+| Right click (Foundry selected) | Set the rally point — rally a scrap node and fresh harvesters mine it; fresh Sentinels attack-move to it |
 | `A`, then click | Attack-move: march there, fighting everything on the way |
 | Mouse wheel | Zoom (toward the cursor) |
 | Arrow keys | Pan |
@@ -42,10 +44,14 @@ asleep.
 | `F1` | Debug overlay (grid, ids, paths — and no fog) |
 
 Fog of war is real: you see what your machines see, explored ground stays
-dimly remembered, and you cannot target what nobody is looking at. Units
-are solid — a chokepoint held by a wall of Sentinels is actually held.
-Scout early, keep the Foundry queue warm, and attack-move (never plain
-move) into territory you don't control.
+dimly remembered, and you cannot target what nobody is looking at. Enemy
+buildings you've scouted linger as gray ghosts until someone sees that
+ground again — a ghost is a belief, and beliefs go stale. The minimap
+(bottom-right) follows the same rules. Units are solid — a chokepoint held
+by a wall of Sentinels is actually held. Sound follows sight: you hear
+fights you can see, and your own losses always. Scout early, set a rally,
+keep the Foundry queue warm, and attack-move (never plain move) into
+territory you don't control.
 
 ## How it's put together
 
@@ -59,8 +65,8 @@ shell/      macroquad renderer, single input funnel, debug server. Disposable.
 driver/     CLI harness: headless runs, replay verification, byte-exact
             golden images (CPU-rendered), live-game client, smoke test
 scenarios/  match definitions with ASCII maps
-tools/      sprite generator (Python — uv run tools/gen_sprites.py)
-assets/     the generated sprites, committed
+tools/      sprite + sound generators (Python — uv run tools/gen_*.py)
+assets/     the generated sprites and sounds, committed
 ```
 
 The load-bearing rule: **same scenario + same command log ⇒ bit-identical
@@ -118,14 +124,15 @@ trade-off: replays only reproduce on the sim version that wrote them.
 ## Status and road ahead
 
 Working today: the full loop (harvest → train → fight → win) with fog of
-war, solid units, attack-move, four maps, menus, a competent skirmish bot,
-save/resume via replays, and the agent tooling described above.
+war and ghost memory, solid units, attack-move, rally points, a fog-aware
+minimap, sound, four maps, menus, a competent skirmish bot, save/resume
+via replays, and the agent tooling described above.
 
-Not yet: minimap, sound, ghost memory for enemy buildings seen then lost
-(explored buildings currently render live state), rally points, and the
-mobile ports — macroquad makes iOS/Android plausible, and `RawEvent`
-already carries touch variants, but nothing is wired. The sim freezes at
-game end rather than offering a rematch.
+Not yet: more unit and building types (the roster is deliberately tiny),
+formations and control groups, and the mobile ports — macroquad makes
+iOS/Android plausible, and `RawEvent` already carries touch variants, but
+nothing is wired. The sim freezes at game end; the pause menu's Restart
+is the rematch.
 
 Built with [macroquad](https://macroquad.rs/); simulation math on the
 [`fixed`](https://crates.io/crates/fixed) crate; goldens via

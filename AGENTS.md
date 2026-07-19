@@ -88,6 +88,7 @@ driver live status
 driver live state --map            # ASCII map with entities overlaid
 driver live harvest 0 --units 0,1,2 --node 7,2
 driver live attack-move 0 --units 3 --to 34,18
+driver live rally 0 --building 0 --tile 7,2   # or --clear
 driver live advance 300            # exactly 300 ticks, replies with hash
 driver live screenshot -o screenshots/check.png   # then READ the png
 driver live inject-wheel 2.0       # events enter the real input funnel
@@ -123,10 +124,11 @@ and test fixtures inside crate `tests/` directories.
   global signing key needs an interactive passphrase).
 - **Idiomatic Rust.** rustfmt defaults, clippy clean, `missing_docs` warns
   in the library crates. Comments state constraints, not narration.
-- **Sprites are generated.** Edit `tools/gen_sprites.py` (palette at the
-  top), run `uv run tools/gen_sprites.py`, commit script + PNGs together.
-  Same palette constants appear in `driver/src/render.rs` and
-  `shell/src/render.rs` — keep them in sync.
+- **Assets are generated.** Sprites: `tools/gen_sprites.py` (palette at
+  the top); sounds: `tools/gen_sounds.py` (stdlib-only synthesis). Run
+  with `uv run`, commit script + output together. The palette constants
+  also appear in `driver/src/render.rs` and `shell/src/render.rs` — keep
+  them in sync.
 - **Scenarios** are JSON with ASCII maps: `.` ground, `#` rock, `s` scrap
   node, `1`-`8` Foundry anchors (top-left of 2x2). `Scenario::skirmish()`
   embeds `scenarios/skirmish.json` at compile time.
@@ -148,9 +150,17 @@ and test fixtures inside crate `tests/` directories.
 - **Attack-move is the fighting stance**: `Order::AttackMove` acquires in
   aggro range, fights via `Order::Attack { resume: Some(goal) }`, and picks
   the march back up. Plain `Move` stays oblivious on purpose.
-- **Enemy buildings render from live state once explored** — no ghost
-  memory, so a building destroyed outside your vision disappears from your
-  view anyway. Known leak, noted in README's roadmap.
+- **Ghost memory lives in `Vision`**: enemy-building records refresh while
+  their ground is visible and freeze when sight is lost; seeing the ground
+  empty erases them. Renderers draw live state on visible ground, ghosts
+  elsewhere — same rule on the minimap.
+- **Sound follows sight.** Positional clips require the event's tile to be
+  visible to the human; own losses and milestones are always audible. The
+  queue is dropped after `advance_ticks` bulk jumps, and a per-kind rate
+  limiter keeps battles from clipping into noise.
+- **Rally points are role-aware**: a rallied scrap node sends fresh
+  harvesters straight to `Harvest`; combat units attack-move to the rally;
+  the goal snaps at spawn time, not set time.
 
 ## Gotchas learned the hard way
 
