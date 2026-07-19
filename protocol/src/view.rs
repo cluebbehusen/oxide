@@ -155,13 +155,13 @@ impl StateView {
     /// Captures a filtered snapshot of `state`.
     pub fn capture(state: &State, filter: StateFilter) -> Self {
         Self {
-            tick: state.tick,
+            tick: state.current_tick(),
             hash: crate::hash_hex(state.hash()),
-            result: state.result,
+            result: state.result(),
             players: if filter.players {
                 {
                     state
-                        .players
+                        .players()
                         .iter()
                         .enumerate()
                         .map(|(i, p)| PlayerView {
@@ -170,12 +170,12 @@ impl StateView {
                             faction: p.faction,
                             scrap: p.scrap,
                             units: state
-                                .units
+                                .units()
                                 .iter()
                                 .filter(|u| u.player.0 as usize == i)
                                 .count(),
                             buildings: state
-                                .buildings
+                                .buildings()
                                 .iter()
                                 .filter(|b| b.player.0 as usize == i)
                                 .count(),
@@ -186,12 +186,12 @@ impl StateView {
                 Default::default()
             },
             units: if filter.units {
-                state.units.iter().map(unit_view).collect()
+                state.units().iter().map(unit_view).collect()
             } else {
                 Default::default()
             },
             buildings: if filter.buildings {
-                state.buildings.iter().map(building_view).collect()
+                state.buildings().iter().map(building_view).collect()
             } else {
                 Default::default()
             },
@@ -220,10 +220,10 @@ fn building_view(b: &Building) -> BuildingView {
         kind: b.kind,
         anchor: [b.anchor.x, b.anchor.y],
         hp: b.hp,
-        queue: b.queue.clone(),
+        queue: b.queue.iter().copied().collect(),
         ticks_remaining: b
             .queue
-            .first()
+            .front()
             .map(|kind| kind.stats().train_ticks.saturating_sub(b.progress)),
         rally: b.rally.map(|r| [r.x, r.y]),
     }
@@ -234,7 +234,7 @@ fn building_view(b: &Building) -> BuildingView {
 /// moves).
 fn ascii_with_entities(state: &State) -> Vec<String> {
     let mut rows: Vec<Vec<char>> = state
-        .map
+        .map()
         .ascii_rows()
         .into_iter()
         .map(|r| r.chars().collect())
@@ -247,12 +247,12 @@ fn ascii_with_entities(state: &State) -> Vec<String> {
             *cell = c;
         }
     };
-    for b in &state.buildings {
+    for b in state.buildings() {
         for t in b.tiles() {
             put(t.x, t.y, (b'A' + b.player.0) as char);
         }
     }
-    for u in &state.units {
+    for u in state.units() {
         let t = u.tile();
         put(t.x, t.y, (b'a' + u.player.0) as char);
     }
@@ -296,7 +296,7 @@ mod tests {
     #[test]
     fn building_view_reports_remaining_train_time() {
         let mut state = oxide_sim::Scenario::skirmish().build().unwrap();
-        let foundry = state.buildings[0].id;
+        let foundry = state.buildings()[0].id;
         state.tick(&[oxide_sim::PlayerCommand {
             player: oxide_sim::PlayerId(0),
             command: oxide_sim::Command::Train {

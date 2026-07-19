@@ -251,7 +251,7 @@ fn click_select(game: &mut Game, screen: Vec2) {
     // Nearest own unit within pick range wins…
     let picked = game
         .state
-        .units
+        .units()
         .iter()
         .filter(|u| u.player == game.human)
         .map(|u| {
@@ -284,7 +284,7 @@ fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2) {
     game.selection.building = None;
     game.selection.units = game
         .state
-        .units
+        .units()
         .iter()
         .filter(|u| u.player == game.human)
         .filter(|u| {
@@ -322,7 +322,7 @@ fn context_order(game: &mut Game, screen: Vec2) {
     // as far as the player is concerned (the sim enforces this too).
     let enemy_unit = game
         .state
-        .units
+        .units()
         .iter()
         .filter(|u| u.player != game.human && game.my_vision().visible(u.tile()))
         .map(|u| {

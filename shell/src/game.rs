@@ -131,17 +131,25 @@ impl Game {
         let recorder = Replay::new(SIM_VERSION, scenario.clone());
         let human = PlayerId(0);
         let focus = state
-            .buildings
+            .buildings()
             .iter()
             .find(|b| b.player == human)
             .map(|b| world_vec(b.center()))
             .unwrap_or_else(|| {
                 vec2(
-                    state.map.width() as f32 * 0.5,
-                    state.map.height() as f32 * 0.5,
+                    state.map().width() as f32 * 0.5,
+                    state.map().height() as f32 * 0.5,
                 )
             });
-        let camera = Camera::new(focus, state.map.width(), state.map.height());
+        let camera = Camera::new(
+            focus,
+            state.map().width(),
+            state.map().height(),
+            macroquad::prelude::vec2(
+                macroquad::prelude::screen_width(),
+                macroquad::prelude::screen_height(),
+            ),
+        );
         Ok(Self {
             scenario,
             state,
@@ -183,7 +191,7 @@ impl Game {
         let mut cursor = replay.cursor();
         for _ in 0..total {
             let commands: Vec<PlayerCommand> = cursor
-                .take_tick(state.tick)
+                .take_tick(state.current_tick())
                 .iter()
                 .map(|t| t.command.clone())
                 .collect();
@@ -198,7 +206,7 @@ impl Game {
         game.recorder = replay;
         if let Some(focus) = game
             .state
-            .buildings
+            .buildings()
             .iter()
             .find(|b| b.player == game.human)
             .map(|b| world_vec(b.center()))
@@ -210,12 +218,12 @@ impl Game {
     }
 
     /// Runs exactly one tick: bots think, staged commands drain, everything
-    /// is recorded, presentation caches update. The only place `state.tick`
+    /// is recorded, presentation caches update. The only place `state.current_tick()`
     /// is called.
     pub fn do_tick(&mut self) {
         self.prev_pos = self
             .state
-            .units
+            .units()
             .iter()
             .map(|u| (u.id.0, world_vec(u.pos)))
             .collect();
@@ -225,12 +233,13 @@ impl Game {
             commands.extend(bot.act(&self.state));
         }
         for command in &commands {
-            self.recorder.record(self.state.tick, command.clone());
+            self.recorder
+                .record(self.state.current_tick(), command.clone());
         }
         let report = self.state.tick(&commands);
 
         if !self.suppress_presentation {
-            for unit in &self.state.units {
+            for unit in self.state.units() {
                 let now = world_vec(unit.pos);
                 if let Some(prev) = self.prev_pos.get(&unit.id.0) {
                     let delta = now - *prev;
@@ -291,7 +300,7 @@ impl Game {
         self.fx.clear();
         self.prev_pos = self
             .state
-            .units
+            .units()
             .iter()
             .map(|u| (u.id.0, world_vec(u.pos)))
             .collect();
@@ -316,7 +325,10 @@ impl Game {
 
     /// The human's first Foundry (hotkey target, camera home).
     pub fn home_foundry(&self) -> Option<&Building> {
-        self.state.buildings.iter().find(|b| b.player == self.human)
+        self.state
+            .buildings()
+            .iter()
+            .find(|b| b.player == self.human)
     }
 
     /// Current state fingerprint, protocol-formatted.

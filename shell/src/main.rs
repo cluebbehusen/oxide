@@ -201,6 +201,10 @@ async fn run() -> Result<()> {
 
     loop {
         let dt = get_frame_time();
+        // The camera never queries the window itself; feed it the viewport
+        // once per frame (handles live resizes, keeps camera math pure).
+        game.camera
+            .set_viewport(vec2(screen_width(), screen_height()));
 
         if let Some(rx) = &debug_rx {
             while let Ok(incoming) = rx.try_recv() {
@@ -408,7 +412,7 @@ fn handle_request(
             }))
         }
         Request::StateHash => Ok(Reply::Hash(HashView {
-            tick: game.state.tick,
+            tick: game.state.current_tick(),
             hash: game.hash_hex(),
         })),
         Request::AdvanceTicks { ticks } => {
@@ -416,7 +420,7 @@ fn handle_request(
             game.advance_ticks(ticks);
             Ok(Reply::Advanced(AdvancedView {
                 ticks,
-                tick: game.state.tick,
+                tick: game.state.current_tick(),
                 hash: game.hash_hex(),
             }))
         }
@@ -437,7 +441,7 @@ fn handle_request(
             }
         }
         Request::SendCommand { player, command } => {
-            if (player.0 as usize) < game.state.players.len() {
+            if (player.0 as usize) < game.state.players().len() {
                 game.pending.push(PlayerCommand { player, command });
                 Ok(Reply::Ok)
             } else {
@@ -449,7 +453,8 @@ fn handle_request(
             Ok(Reply::Ok)
         }
         Request::Screenshot { path } => {
-            let path = path.unwrap_or_else(|| format!("screenshots/tick-{}.png", game.state.tick));
+            let path = path
+                .unwrap_or_else(|| format!("screenshots/tick-{}.png", game.state.current_tick()));
             pending_shots.push(PendingScreenshot { id, path, reply });
             return; // responds after the frame renders
         }
@@ -480,7 +485,7 @@ fn handle_request(
                 Reply::Status(status_view(game))
             }),
         Request::SaveReplay { path } => {
-            game.recorder.meta.ticks = Some(game.state.tick);
+            game.recorder.meta.ticks = Some(game.state.current_tick());
             let parent = std::path::Path::new(&path).parent();
             if let Some(parent) = parent
                 && !parent.as_os_str().is_empty()
@@ -505,12 +510,12 @@ fn handle_request(
 
 fn status_view(game: &Game) -> StatusView {
     StatusView {
-        tick: game.state.tick,
+        tick: game.state.current_tick(),
         paused: game.paused,
         speed: game.speed,
         scenario: game.scenario.name.clone(),
         sim_version: SIM_VERSION.to_string(),
-        result: game.state.result,
+        result: game.state.result(),
         recorded_commands: game.recorder.commands.len(),
     }
 }

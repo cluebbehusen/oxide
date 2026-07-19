@@ -300,9 +300,9 @@ fn main() -> Result<()> {
             println!(
                 "{}",
                 serde_json::json!({
-                    "tick": state.tick,
+                    "tick": state.current_tick(),
                     "hash": hash,
-                    "result": state.result,
+                    "result": state.result(),
                     "commands": replay.commands.len(),
                 })
             );

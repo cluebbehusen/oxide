@@ -80,7 +80,7 @@ fn move_command_walks_unit_to_goal_then_idles() {
     let mut state = arena(vec![unit(0, UnitKind::Harvester, 4, 2)])
         .build()
         .unwrap();
-    let mover = state.units[0].id;
+    let mover = state.units()[0].id;
     let goal = TilePos::new(13, 2);
     state.tick(&[cmd(
         0,
@@ -101,7 +101,7 @@ fn move_routes_around_rock() {
     let mut state = arena(vec![unit(0, UnitKind::Harvester, 4, 4)])
         .build()
         .unwrap();
-    let mover = state.units[0].id;
+    let mover = state.units()[0].id;
     let goal = TilePos::new(9, 4);
     state.tick(&[cmd(
         0,
@@ -120,7 +120,7 @@ fn move_goal_on_rock_snaps_to_nearby_ground() {
     let mut state = arena(vec![unit(0, UnitKind::Harvester, 4, 2)])
         .build()
         .unwrap();
-    let mover = state.units[0].id;
+    let mover = state.units()[0].id;
     state.tick(&[cmd(
         0,
         Command::Move {
@@ -139,7 +139,7 @@ fn harvester_gathers_and_deposits() {
     let mut state = arena(vec![unit(0, UnitKind::Harvester, 3, 2)])
         .build()
         .unwrap();
-    let worker = state.units[0].id;
+    let worker = state.units()[0].id;
     let scrap_before = state.player(PlayerId(0)).scrap;
     state.tick(&[cmd(
         0,
@@ -170,7 +170,7 @@ fn attack_command_kills_and_reports() {
     ])
     .build()
     .unwrap();
-    let (attacker, victim) = (state.units[0].id, state.units[1].id);
+    let (attacker, victim) = (state.units()[0].id, state.units()[1].id);
     // The first hit can land on the command tick itself, so keep its events.
     let mut events = state
         .tick(&[cmd(
@@ -226,7 +226,7 @@ fn attack_move_engages_on_the_way_then_resumes() {
         ],
     };
     let mut state = scenario.build().unwrap();
-    let (marcher, bystander) = (state.units[0].id, state.units[1].id);
+    let (marcher, bystander) = (state.units()[0].id, state.units()[1].id);
     // The bystander starts outside aggro (~5.7 tiles) but sits ~2 tiles off
     // the route: the marcher must engage mid-march, kill it, then still
     // arrive and stand down.
@@ -250,7 +250,7 @@ fn attack_move_with_only_harvesters_degrades_to_move() {
     let mut state = arena(vec![unit(0, UnitKind::Harvester, 4, 2)])
         .build()
         .unwrap();
-    let mover = state.units[0].id;
+    let mover = state.units()[0].id;
     let goal = TilePos::new(10, 2);
     state.tick(&[cmd(
         0,
@@ -280,7 +280,7 @@ fn units_ordered_to_one_tile_do_not_stack() {
     ])
     .build()
     .unwrap();
-    let ids: Vec<UnitId> = state.units.iter().map(|u| u.id).collect();
+    let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
     state.tick(&[cmd(
         0,
         Command::Move {
@@ -295,8 +295,8 @@ fn units_ordered_to_one_tile_do_not_stack() {
     // Allow a whisker of tolerance: the final relaxation pass may leave a
     // sub-ulp of residual overlap.
     let tolerance = min_gap * chassis::fx::Fx::lit("0.9");
-    for (i, a) in state.units.iter().enumerate() {
-        for b in state.units.iter().skip(i + 1) {
+    for (i, a) in state.units().iter().enumerate() {
+        for b in state.units().iter().skip(i + 1) {
             assert!(
                 a.pos.dist_sq(b.pos) >= tolerance * tolerance,
                 "{} and {} overlap: {:?} vs {:?}",
@@ -321,7 +321,7 @@ fn collision_never_pushes_through_rock() {
     ])
     .build()
     .unwrap();
-    let ids: Vec<UnitId> = state.units.iter().map(|u| u.id).collect();
+    let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
     state.tick(&[cmd(
         0,
         Command::Move {
@@ -331,9 +331,9 @@ fn collision_never_pushes_through_rock() {
     )]);
     for _ in 0..200 {
         state.tick(&[]);
-        for u in &state.units {
+        for u in state.units() {
             assert!(
-                state.map.terrain_passable(u.tile()),
+                state.map().terrain_passable(u.tile()),
                 "{} was pushed into impassable {:?}",
                 u.id,
                 u.tile()
@@ -357,7 +357,7 @@ fn congested_harvesters_keep_depositing() {
     ])
     .build()
     .unwrap();
-    let ids: Vec<UnitId> = state.units.iter().map(|u| u.id).collect();
+    let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
     state.tick(&[cmd(
         0,
         Command::Harvest {
@@ -431,7 +431,7 @@ fn idle_sentinel_auto_acquires_intruder() {
     ])
     .build()
     .unwrap();
-    let victim = state.units[1].id;
+    let victim = state.units()[1].id;
     // No command at all: the sentinel should pick the fight itself.
     run_until(&mut state, 300, |s, _| s.unit(victim).is_none());
 }
@@ -439,7 +439,7 @@ fn idle_sentinel_auto_acquires_intruder() {
 #[test]
 fn train_costs_scrap_and_spawns_after_build_time() {
     let mut state = arena(vec![]).build().unwrap();
-    let foundry = state.buildings[0].id;
+    let foundry = state.buildings()[0].id;
     let before = state.player(PlayerId(0)).scrap;
     state.tick(&[cmd(
         0,
@@ -453,7 +453,7 @@ fn train_costs_scrap_and_spawns_after_build_time() {
         before - UnitKind::Harvester.stats().cost,
         "cost is deducted on enqueue"
     );
-    let events = run_until(&mut state, 105, |s, _| !s.units.is_empty());
+    let events = run_until(&mut state, 105, |s, _| !s.units().is_empty());
     assert!(events.iter().any(|e| matches!(
         e,
         Event::UnitTrained {
@@ -467,7 +467,7 @@ fn train_costs_scrap_and_spawns_after_build_time() {
 #[test]
 fn rally_routes_fresh_units_by_role() {
     let mut state = arena(vec![]).build().unwrap();
-    let foundry = state.buildings[0].id;
+    let foundry = state.buildings()[0].id;
     // Rally onto the scrap node: fresh harvesters go straight to work.
     state.tick(&[
         cmd(
@@ -508,7 +508,7 @@ fn rally_routes_fresh_units_by_role() {
         ),
     ]);
     run_until(&mut state, 300, |s, _| {
-        s.units.iter().any(|u| {
+        s.units().iter().any(|u| {
             u.kind == UnitKind::Sentinel
                 && matches!(u.order, Order::AttackMove { .. } | Order::Attack { .. })
         })
@@ -518,7 +518,7 @@ fn rally_routes_fresh_units_by_role() {
 #[test]
 fn rally_on_foreign_building_is_rejected() {
     let mut state = arena(vec![]).build().unwrap();
-    let theirs = state.buildings[1].id;
+    let theirs = state.buildings()[1].id;
     let report = state.tick(&[cmd(
         0,
         Command::SetRally {
@@ -536,7 +536,7 @@ fn rally_on_foreign_building_is_rejected() {
 #[test]
 fn train_rejects_poverty_and_foreign_buildings() {
     let mut state = arena(vec![]).build().unwrap();
-    let (mine, theirs) = (state.buildings[0].id, state.buildings[1].id);
+    let (mine, theirs) = (state.buildings()[0].id, state.buildings()[1].id);
 
     // Not my building.
     let report = state.tick(&[cmd(
@@ -590,7 +590,7 @@ fn fog_reveals_persists_and_gates_attacks() {
     ])
     .build()
     .unwrap();
-    let (scout, quarry) = (state.units[0].id, state.units[1].id);
+    let (scout, quarry) = (state.units()[0].id, state.units()[1].id);
     let quarry_tile = state.unit(quarry).unwrap().tile();
     assert!(
         !state.can_see(PlayerId(0), quarry_tile),
@@ -675,7 +675,7 @@ fn ghost_memory_survives_unseen_demolition_until_revisited() {
         ],
     };
     let mut state = scenario.build().unwrap();
-    let scout = state.units[0].id;
+    let scout = state.units()[0].id;
     let victim_anchor = TilePos::new(9, 10);
     let me = PlayerId(0);
 
@@ -708,7 +708,7 @@ fn ghost_memory_survives_unseen_demolition_until_revisited() {
 
     // p2's sentinels raze the Foundry on their own (auto-acquire).
     run_until(&mut state, 2000, |s, _| {
-        !s.buildings.iter().any(|b| b.player == PlayerId(1))
+        !s.buildings().iter().any(|b| b.player == PlayerId(1))
     });
     assert!(
         state
@@ -745,7 +745,7 @@ fn remembered_scrap_freezes_when_sight_is_lost() {
     ])
     .build()
     .unwrap();
-    let (scout, miner) = (state.units[0].id, state.units[1].id);
+    let (scout, miner) = (state.units()[0].id, state.units()[1].id);
     let node = TilePos::new(11, 4);
     let me = PlayerId(0);
     let full = oxide_sim::stats::SCRAP_NODE_AMOUNT;
@@ -781,7 +781,7 @@ fn remembered_scrap_freezes_when_sight_is_lost() {
             node,
         },
     )]);
-    run_until(&mut state, 600, |s, _| s.map.scrap_at(node) < full - 4);
+    run_until(&mut state, 600, |s, _| s.map().scrap_at(node) < full - 4);
     assert_eq!(
         state.vision(me).remembered_scrap(node),
         full,
@@ -797,7 +797,7 @@ fn remembered_scrap_freezes_when_sight_is_lost() {
         },
     )]);
     run_until(&mut state, 300, |s, _| {
-        s.can_see(me, node) && s.vision(me).remembered_scrap(node) == s.map.scrap_at(node)
+        s.can_see(me, node) && s.vision(me).remembered_scrap(node) == s.map().scrap_at(node)
     });
     assert!(state.vision(me).remembered_scrap(node) < full);
 }
@@ -810,8 +810,8 @@ fn hostile_coordinates_are_rejected_not_panicked() {
     let mut state = arena(vec![unit(0, UnitKind::Harvester, 4, 2)])
         .build()
         .unwrap();
-    let u = state.units[0].id;
-    let foundry = state.buildings[0].id;
+    let u = state.units()[0].id;
+    let foundry = state.buildings()[0].id;
     for goal in [
         TilePos::new(i32::MAX, 0),
         TilePos::new(0, i32::MIN),
@@ -878,12 +878,12 @@ fn eliminated_players_cannot_command_survivors() {
         ],
     };
     let mut state = scenario.build().unwrap();
-    let survivor = state.units[0].id;
+    let survivor = state.units()[0].id;
     // p2's sentinels raze p1's foundry on their own.
     run_until(&mut state, 3000, |s, _| {
-        !s.buildings.iter().any(|b| b.player == PlayerId(1))
+        !s.buildings().iter().any(|b| b.player == PlayerId(1))
     });
-    assert!(state.result.is_none(), "two players remain — play on");
+    assert!(state.result().is_none(), "two players remain — play on");
     let report = state.tick(&[cmd(
         1,
         Command::Move {
@@ -902,7 +902,7 @@ fn deposits_saturate_a_full_bank() {
     let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 10, 3)]);
     scenario.players[0].scrap = u32::MAX - 5;
     let mut state = scenario.build().unwrap();
-    let worker = state.units[0].id;
+    let worker = state.units()[0].id;
     state.tick(&[cmd(
         0,
         Command::Harvest {
@@ -920,7 +920,7 @@ fn commanding_enemy_units_is_rejected() {
     let mut state = arena(vec![unit(1, UnitKind::Harvester, 8, 6)])
         .build()
         .unwrap();
-    let enemy_unit = state.units[0].id;
+    let enemy_unit = state.units()[0].id;
     let report = state.tick(&[cmd(
         0,
         Command::Move {
@@ -944,9 +944,9 @@ fn destroying_the_last_foundry_wins_and_freezes() {
     ])
     .build()
     .unwrap();
-    let ids: Vec<UnitId> = state.units.iter().map(|u| u.id).collect();
+    let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
     let enemy_foundry: BuildingId = state
-        .buildings
+        .buildings()
         .iter()
         .find(|b| b.player == PlayerId(1))
         .unwrap()
@@ -959,21 +959,31 @@ fn destroying_the_last_foundry_wins_and_freezes() {
         },
     )]);
     // 800 hp / 30 dps → ~27 s ≈ 540 ticks, plus approach.
-    let events = run_until(&mut state, 800, |s, _| s.result.is_some());
+    let events = run_until(&mut state, 800, |s, _| s.result().is_some());
     assert_eq!(
-        state.result,
+        state.result(),
         Some(GameResult::Victory {
             winner: PlayerId(0)
         })
     );
     assert!(events.iter().any(|e| matches!(e, Event::GameOver { .. })));
 
-    // Frozen: ticks advance, nothing else changes.
-    let hash_before = state.hash();
-    let tick_before = state.tick;
+    // Frozen: ticks advance, nothing else changes. (State fields are
+    // private now, so compare the world piecewise instead of patching the
+    // tick counter and hashing.)
+    let tick_before = state.current_tick();
+    let units_before = state.units().to_vec();
+    let buildings_before = state.buildings().to_vec();
+    let players_before = state.players().to_vec();
     state.tick(&[]);
-    assert_eq!(state.tick, tick_before + 1);
-    let mut after = state.clone();
-    after.tick = tick_before;
-    assert_eq!(after.hash(), hash_before, "only the tick counter moved");
+    assert_eq!(state.current_tick(), tick_before + 1);
+    assert_eq!(state.units(), units_before.as_slice());
+    assert_eq!(state.buildings(), buildings_before.as_slice());
+    assert_eq!(state.players(), players_before.as_slice());
+    assert_eq!(
+        state.result(),
+        Some(GameResult::Victory {
+            winner: PlayerId(0)
+        })
+    );
 }

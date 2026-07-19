@@ -73,8 +73,8 @@ fn visible_tiles(game: &Game) -> (TilePos, TilePos) {
     let (lo, hi) = game.camera.world_rect();
     let min = TilePos::new((lo.x.floor() as i32).max(0), (lo.y.floor() as i32).max(0));
     let max = TilePos::new(
-        (hi.x.ceil() as i32).min(game.state.map.width()),
-        (hi.y.ceil() as i32).min(game.state.map.height()),
+        (hi.x.ceil() as i32).min(game.state.map().width()),
+        (hi.y.ceil() as i32).min(game.state.map().height()),
     );
     (min, max)
 }
@@ -85,7 +85,7 @@ fn draw_tiles(game: &Game, sprites: &Sprites) {
     let (min, max) = visible_tiles(game);
     for y in min.y..max.y {
         for x in min.x..max.x {
-            let Some(tile) = game.state.map.tile(TilePos::new(x, y)) else {
+            let Some(tile) = game.state.map().tile(TilePos::new(x, y)) else {
                 continue;
             };
             let screen = game.camera.to_screen(vec2(x as f32, y as f32));
@@ -154,7 +154,7 @@ fn draw_buildings(game: &Game, sprites: &Sprites) {
             );
         }
     }
-    for building in &game.state.buildings {
+    for building in game.state.buildings() {
         if building.player != game.human
             && !game.overlay
             && !building.tiles().any(|t| game.my_vision().visible(t))
@@ -195,7 +195,7 @@ fn draw_buildings(game: &Game, sprites: &Sprites) {
             hp_bar(screen.x, screen.y - 8.0, dest.x, building.hp, max_hp);
         }
         // Production progress, drawn under the works.
-        if let Some(kind) = building.queue.first() {
+        if let Some(kind) = building.queue.front() {
             let fraction = building.progress as f32 / kind.stats().train_ticks as f32;
             draw_rectangle(screen.x, screen.y + dest.y + 3.0, dest.x, 4.0, HP_BACK);
             draw_rectangle(
@@ -211,7 +211,7 @@ fn draw_buildings(game: &Game, sprites: &Sprites) {
 
 fn draw_units(game: &Game, sprites: &Sprites, alpha: f32) {
     let zoom = game.camera.zoom;
-    for unit in &game.state.units {
+    for unit in game.state.units() {
         if unit.player != game.human && !game.overlay && !game.my_vision().visible(unit.tile()) {
             continue;
         }
@@ -344,7 +344,7 @@ fn draw_overlay(game: &Game, alpha: f32) {
         let b = game.camera.to_screen(vec2(max.x as f32, y as f32));
         draw_line(a.x, a.y, b.x, b.y, 1.0, BONE_FAINT);
     }
-    for unit in &game.state.units {
+    for unit in game.state.units() {
         let pos = game.draw_pos(unit.id, unit.pos, alpha);
         let screen = game.camera.to_screen(pos);
         draw_text(
@@ -367,7 +367,7 @@ fn draw_overlay(game: &Game, alpha: f32) {
     }
     let info = format!(
         "tick {}  fps {}  zoom {:.0}  center ({:.1},{:.1})",
-        game.state.tick,
+        game.state.current_tick(),
         get_fps(),
         game.camera.zoom,
         game.camera.center.x,
@@ -382,14 +382,14 @@ fn draw_hud(game: &Game) {
     let me = game.state.player(game.human);
     let my_units = game
         .state
-        .units
+        .units()
         .iter()
         .filter(|u| u.player == game.human)
         .count();
     draw_text(format!("SCRAP {}", me.scrap), 12.0, 22.0, 22.0, SCRAP_COLOR);
     draw_text(format!("UNITS {my_units}"), 150.0, 22.0, 22.0, BONE);
     draw_text(
-        format!("TICK {}", game.state.tick),
+        format!("TICK {}", game.state.current_tick()),
         270.0,
         22.0,
         22.0,
@@ -442,7 +442,7 @@ fn draw_hud(game: &Game) {
     );
 
     // Endgame banner.
-    if let Some(result) = game.state.result {
+    if let Some(result) = game.state.result() {
         let text = match result {
             GameResult::Victory { winner } => {
                 format!("{} WINS", game.state.player(winner).name.to_uppercase())
@@ -490,13 +490,24 @@ fn mini_faction_color(faction: oxide_sim::Faction) -> Color {
     }
 }
 
-/// Where the minimap sits this frame (bottom-right, above the hint line).
-pub fn minimap_rect(game: &Game) -> Rect {
-    let mw = game.state.map.width() as f32;
-    let mh = game.state.map.height() as f32;
+/// Where the minimap sits (bottom-right, above the hint line) for a map of
+/// `map_w`×`map_h` tiles in a `viewport`-pixel window. Pure — shared with
+/// input hit-testing and unit tests.
+pub fn minimap_rect_for(map_w: i32, map_h: i32, viewport: Vec2) -> Rect {
+    let mw = map_w as f32;
+    let mh = map_h as f32;
     let scale = (MINIMAP_MAX.x / mw).min(MINIMAP_MAX.y / mh);
     let (w, h) = (mw * scale, mh * scale);
-    Rect::new(screen_width() - w - 12.0, screen_height() - h - 34.0, w, h)
+    Rect::new(viewport.x - w - 12.0, viewport.y - h - 34.0, w, h)
+}
+
+/// Where the minimap sits this frame.
+pub fn minimap_rect(game: &Game) -> Rect {
+    minimap_rect_for(
+        game.state.map().width(),
+        game.state.map().height(),
+        game.camera.viewport(),
+    )
 }
 
 /// The world point under a screen position, if it lies on the minimap —
@@ -506,7 +517,7 @@ pub fn minimap_world_at(game: &Game, screen: Vec2) -> Option<Vec2> {
     if !rect.contains(screen) {
         return None;
     }
-    let scale = rect.w / game.state.map.width() as f32;
+    let scale = rect.w / game.state.map().width() as f32;
     Some(vec2(
         (screen.x - rect.x) / scale,
         (screen.y - rect.y) / scale,
@@ -517,7 +528,7 @@ pub fn minimap_world_at(game: &Game, screen: Vec2) -> Option<Vec2> {
 /// (and, like everything else, omniscient while the F1 overlay is up).
 fn draw_minimap(game: &Game) {
     let rect = minimap_rect(game);
-    let scale = rect.w / game.state.map.width() as f32;
+    let scale = rect.w / game.state.map().width() as f32;
     let omniscient = game.overlay;
     let vision = game.my_vision();
     draw_rectangle(
@@ -529,7 +540,7 @@ fn draw_minimap(game: &Game) {
     );
 
     let cell = scale.ceil();
-    for (pos, tile) in game.state.map.iter() {
+    for (pos, tile) in game.state.map().iter() {
         let (explored, visible) = if omniscient {
             (true, true)
         } else {
@@ -574,7 +585,7 @@ fn draw_minimap(game: &Game) {
             );
         }
     }
-    for building in &game.state.buildings {
+    for building in game.state.buildings() {
         let seen = omniscient
             || building.player == game.human
             || building.tiles().any(|t| vision.visible(t));
@@ -590,7 +601,7 @@ fn draw_minimap(game: &Game) {
             mini_faction_color(game.state.player(building.player).faction),
         );
     }
-    for unit in &game.state.units {
+    for unit in game.state.units() {
         let seen = omniscient || unit.player == game.human || vision.visible(unit.tile());
         if !seen {
             continue;
@@ -609,7 +620,7 @@ fn draw_minimap(game: &Game) {
     let (lo, hi) = game.camera.world_rect();
     let x = rect.x + lo.x.max(0.0) * scale;
     let y = rect.y + lo.y.max(0.0) * scale;
-    let x2 = rect.x + hi.x.min(game.state.map.width() as f32) * scale;
-    let y2 = rect.y + hi.y.min(game.state.map.height() as f32) * scale;
+    let x2 = rect.x + hi.x.min(game.state.map().width() as f32) * scale;
+    let y2 = rect.y + hi.y.min(game.state.map().height() as f32) * scale;
     draw_rectangle_lines(x, y, (x2 - x).max(4.0), (y2 - y).max(4.0), 1.5, BONE);
 }

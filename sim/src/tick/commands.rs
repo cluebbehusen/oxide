@@ -239,7 +239,7 @@ fn apply_train(
         .building_mut(building)
         .expect("checked above")
         .queue
-        .push(kind);
+        .push_back(kind);
     Ok(())
 }
 

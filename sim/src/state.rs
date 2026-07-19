@@ -149,7 +149,7 @@ pub struct Building {
     /// Current hit points.
     pub hp: u32,
     /// Units waiting to be produced, front first.
-    pub queue: Vec<UnitKind>,
+    pub queue: std::collections::VecDeque<UnitKind>,
     /// Ticks of progress on `queue[0]`.
     pub progress: u32,
     /// Where finished units report: harvesters mine a rallied scrap node,
@@ -194,24 +194,22 @@ impl Building {
 }
 
 /// The whole world. See module docs for invariants.
+///
+/// Every field is crate-private: the only way anything outside the sim can
+/// change a `State` is [`State::tick`] with tick-stamped commands. That is
+/// the architecture's core promise, and here the compiler enforces it
+/// rather than a comment. Read access goes through the accessor methods
+/// below.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct State {
-    /// Ticks elapsed since scenario start.
-    pub tick: Tick,
-    /// The sim's only randomness source.
-    pub rng: Pcg32,
-    /// Terrain and scrap.
-    pub map: Map,
-    /// Players, indexed by [`PlayerId`].
-    pub players: Vec<Player>,
-    /// Per-player fog of war, indexed by [`PlayerId`].
-    pub vision: Vec<crate::vision::Vision>,
-    /// All living units, sorted by id.
-    pub units: Vec<Unit>,
-    /// All standing buildings, sorted by id.
-    pub buildings: Vec<Building>,
-    /// Set exactly once, when the match ends.
-    pub result: Option<GameResult>,
+    pub(crate) tick: Tick,
+    pub(crate) rng: Pcg32,
+    pub(crate) map: Map,
+    pub(crate) players: Vec<Player>,
+    pub(crate) vision: Vec<crate::vision::Vision>,
+    pub(crate) units: Vec<Unit>,
+    pub(crate) buildings: Vec<Building>,
+    pub(crate) result: Option<GameResult>,
     next_unit_id: u32,
     next_building_id: u32,
 }
@@ -242,6 +240,37 @@ impl State {
     /// hashes evolved from the same inputs are the same state.
     pub fn hash(&self) -> u64 {
         chassis::hash::state_hash(self)
+    }
+
+    /// Ticks elapsed since scenario start. (The mutating step is
+    /// [`State::tick`]; this is the counter it advances.)
+    pub fn current_tick(&self) -> Tick {
+        self.tick
+    }
+
+    /// Terrain and scrap.
+    pub fn map(&self) -> &Map {
+        &self.map
+    }
+
+    /// All players, indexed by [`PlayerId`].
+    pub fn players(&self) -> &[Player] {
+        &self.players
+    }
+
+    /// All living units, sorted by id.
+    pub fn units(&self) -> &[Unit] {
+        &self.units
+    }
+
+    /// All standing buildings, sorted by id.
+    pub fn buildings(&self) -> &[Building] {
+        &self.buildings
+    }
+
+    /// The match outcome, once decided.
+    pub fn result(&self) -> Option<GameResult> {
+        self.result
     }
 
     /// The player behind `id`. Panics on a foreign id — player ids come from
@@ -352,7 +381,7 @@ impl State {
             kind,
             anchor,
             hp: kind.stats().max_hp,
-            queue: Vec::new(),
+            queue: std::collections::VecDeque::new(),
             progress: 0,
             rally: None,
         });

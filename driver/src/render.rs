@@ -77,12 +77,12 @@ fn fill_circle(pixmap: &mut Pixmap, cx: f32, cy: f32, r: f32, color: u32) {
 
 /// Draws `state` to a fresh pixmap at [`TILE_PX`] resolution.
 pub fn render_state(state: &State) -> Pixmap {
-    let width = (state.map.width() as f32 * TILE_PX) as u32;
-    let height = (state.map.height() as f32 * TILE_PX) as u32;
+    let width = (state.map().width() as f32 * TILE_PX) as u32;
+    let height = (state.map().height() as f32 * TILE_PX) as u32;
     let mut pixmap = Pixmap::new(width, height).expect("nonzero map dimensions");
     pixmap.fill(rgb(GROUND));
 
-    for (pos, tile) in state.map.iter() {
+    for (pos, tile) in state.map().iter() {
         let (x, y) = (pos.x as f32 * TILE_PX, pos.y as f32 * TILE_PX);
         match (tile.terrain, tile.scrap) {
             (Terrain::Rock, _) => fill_rect(&mut pixmap, x, y, TILE_PX, TILE_PX, ROCK),
@@ -108,7 +108,7 @@ pub fn render_state(state: &State) -> Pixmap {
         }
     }
 
-    for building in &state.buildings {
+    for building in state.buildings() {
         let color = faction_color(state.player(building.player).faction);
         let (w, h) = building.kind.stats().size;
         let (x, y) = (
@@ -128,7 +128,7 @@ pub fn render_state(state: &State) -> Pixmap {
         );
     }
 
-    for unit in &state.units {
+    for unit in state.units() {
         let color = faction_color(state.player(unit.player).faction);
         let cx = unit.pos.x.to_num::<f32>() * TILE_PX;
         let cy = unit.pos.y.to_num::<f32>() * TILE_PX;

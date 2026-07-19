@@ -19,7 +19,7 @@ fn tick_with_bots(
     }
     if let Some(replay) = recorder {
         for command in &commands {
-            replay.record(state.tick, command.clone());
+            replay.record(state.current_tick(), command.clone());
         }
     }
     state.tick(&commands);
@@ -98,7 +98,7 @@ fn replay_reproduces_a_recorded_run() {
     let mut cursor = replay.cursor();
     for _ in 0..1500 {
         let commands: Vec<PlayerCommand> = cursor
-            .take_tick(replayed.tick)
+            .take_tick(replayed.current_tick())
             .iter()
             .map(|t| t.command.clone())
             .collect();
@@ -112,7 +112,7 @@ fn replay_reproduces_a_recorded_run() {
 fn bot_match_reaches_a_decisive_end() {
     let (_, mut state, mut bots) = bot_match();
     let mut ticks = 0u64;
-    while state.result.is_none() {
+    while state.result().is_none() {
         tick_with_bots(&mut state, &mut bots, &mut None);
         ticks += 1;
         assert!(
@@ -121,10 +121,10 @@ fn bot_match_reaches_a_decisive_end() {
         );
     }
     assert!(
-        matches!(state.result, Some(GameResult::Victory { .. })),
+        matches!(state.result(), Some(GameResult::Victory { .. })),
         "mirror bots must not draw: {:?}",
-        state.result
+        state.result()
     );
     // Sanity: a real game happened — armies were built beyond the 8 starters.
-    assert!(state.units.iter().any(|u| u.id.0 >= 8));
+    assert!(state.units().iter().any(|u| u.id.0 >= 8));
 }

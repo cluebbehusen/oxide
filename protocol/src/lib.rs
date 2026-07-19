@@ -190,17 +190,21 @@ pub struct RequestEnvelope {
     pub request: Request,
 }
 
-/// A response with its correlation id; exactly one of `ok`/`err` is set.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A response with its correlation id. Internally an enum, so "both ok and
+/// err" or "neither" are unrepresentable; on the wire it keeps the exact
+/// original shape (`{"id":…,"ok":{…}}` / `{"id":…,"err":"…"}`), which the
+/// `wire_shape_is_stable` test pins.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResponseEnvelope {
     /// Echo of the request id (0 when the request was unparseable).
     pub id: u64,
-    /// Success payload.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ok: Option<Reply>,
-    /// Failure message.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub err: Option<String>,
+    outcome: Outcome,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Outcome {
+    Ok(Reply),
+    Err(String),
 }
 
 impl ResponseEnvelope {
@@ -208,8 +212,7 @@ impl ResponseEnvelope {
     pub fn ok(id: u64, reply: Reply) -> Self {
         Self {
             id,
-            ok: Some(reply),
-            err: None,
+            outcome: Outcome::Ok(reply),
         }
     }
 
@@ -217,8 +220,48 @@ impl ResponseEnvelope {
     pub fn err(id: u64, message: impl Into<String>) -> Self {
         Self {
             id,
-            ok: None,
-            err: Some(message.into()),
+            outcome: Outcome::Err(message.into()),
+        }
+    }
+
+    /// Consumes the envelope into the reply or the error message.
+    pub fn into_result(self) -> Result<Reply, String> {
+        match self.outcome {
+            Outcome::Ok(reply) => Ok(reply),
+            Outcome::Err(message) => Err(message),
+        }
+    }
+}
+
+impl Serialize for ResponseEnvelope {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct as _;
+        let mut s = serializer.serialize_struct("ResponseEnvelope", 2)?;
+        s.serialize_field("id", &self.id)?;
+        match &self.outcome {
+            Outcome::Ok(reply) => s.serialize_field("ok", reply)?,
+            Outcome::Err(message) => s.serialize_field("err", message)?,
+        }
+        s.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for ResponseEnvelope {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            id: u64,
+            #[serde(default)]
+            ok: Option<Reply>,
+            #[serde(default)]
+            err: Option<String>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        match (raw.ok, raw.err) {
+            (Some(reply), None) => Ok(ResponseEnvelope::ok(raw.id, reply)),
+            (None, Some(message)) => Ok(ResponseEnvelope::err(raw.id, message)),
+            (Some(_), Some(_)) => Err(serde::de::Error::custom("response has both ok and err")),
+            (None, None) => Err(serde::de::Error::custom("response has neither ok nor err")),
         }
     }
 }

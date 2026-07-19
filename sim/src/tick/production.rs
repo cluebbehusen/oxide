@@ -17,7 +17,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         let Some(b) = state.building_mut(id) else {
             continue;
         };
-        let Some(&kind) = b.queue.first() else {
+        let Some(&kind) = b.queue.front() else {
             b.progress = 0;
             continue;
         };
@@ -40,7 +40,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
             newborn.order = order;
         }
         let b = state.building_mut(id).expect("still standing");
-        b.queue.remove(0);
+        b.queue.pop_front();
         b.progress = 0;
     }
 }

@@ -30,7 +30,7 @@ pub fn step(
     }
     if let Some(replay) = replay {
         for command in &commands {
-            replay.record(state.tick, command.clone());
+            replay.record(state.current_tick(), command.clone());
         }
     }
     state.tick(&commands)
@@ -55,7 +55,7 @@ pub fn run_scenario(
         step(&mut state, &mut bots, replay.as_mut());
     }
     if let Some(replay) = &mut replay {
-        replay.meta.ticks = Some(state.tick);
+        replay.meta.ticks = Some(state.current_tick());
     }
     Ok(RunOutcome { state, replay })
 }
@@ -89,7 +89,7 @@ pub fn run_replay(
     let mut cursor = replay.cursor();
     for _ in 0..total {
         let commands: Vec<PlayerCommand> = cursor
-            .take_tick(state.tick)
+            .take_tick(state.current_tick())
             .iter()
             .map(|t| t.command.clone())
             .collect();

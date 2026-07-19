@@ -22,7 +22,7 @@ fn recorded_scenario_run_reproduces_from_its_replay() {
     assert!(!replay.commands.is_empty());
 
     let replayed = runner::run_replay(&replay, None, false).unwrap();
-    assert_eq!(replayed.tick, outcome.state.tick);
+    assert_eq!(replayed.current_tick(), outcome.state.current_tick());
     assert_eq!(replayed.hash(), outcome.state.hash());
 }
 
@@ -48,10 +48,10 @@ fn every_shipped_scenario_builds_and_plays() {
         // economy freeze.)
         let outcome = runner::run_scenario(&scenario, 12_000, true, false)
             .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-        assert_eq!(outcome.state.tick, 12_000, "{}", path.display());
-        let produced = outcome.state.units.iter().any(|u| u.id.0 >= 16);
+        assert_eq!(outcome.state.current_tick(), 12_000, "{}", path.display());
+        let produced = outcome.state.units().iter().any(|u| u.id.0 >= 16);
         assert!(
-            outcome.state.result.is_some() || produced,
+            outcome.state.result().is_some() || produced,
             "{}: no victory and no production after 12k ticks — the map stalled",
             path.display()
         );
@@ -64,5 +64,5 @@ fn run_without_bots_is_quiet_but_valid() {
     let outcome = runner::run_scenario(&Scenario::skirmish(), 100, false, true).unwrap();
     let replay = outcome.replay.unwrap();
     assert!(replay.commands.is_empty(), "nobody issued commands");
-    assert_eq!(outcome.state.tick, 100);
+    assert_eq!(outcome.state.current_tick(), 100);
 }

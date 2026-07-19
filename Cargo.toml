@@ -19,3 +19,13 @@ thiserror = "2"
 chassis = { path = "chassis" }
 oxide-sim = { path = "sim" }
 oxide-protocol = { path = "protocol" }
+
+# `cargo run` is how the game is played day to day, and an unoptimized
+# `fixed`-point sim ticks ~25x slower than release — big battles would eat
+# the frame budget. Light optimization for our code, full for dependencies,
+# keeps debug builds honest without hurting incremental compiles.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

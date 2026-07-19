@@ -56,10 +56,8 @@ impl Client {
         if envelope.id != id {
             bail!("response id {} for request {id}", envelope.id);
         }
-        match (envelope.ok, envelope.err) {
-            (Some(reply), None) => Ok(reply),
-            (None, Some(message)) => bail!("shell error: {message}"),
-            _ => bail!("malformed response envelope"),
-        }
+        envelope
+            .into_result()
+            .map_err(|message| anyhow::anyhow!("shell error: {message}"))
     }
 }
