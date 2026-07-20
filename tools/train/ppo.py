@@ -32,9 +32,11 @@ def ppo_update(
     epochs=4,
     minibatch=1024,
     clip=0.2,
-    ent_coef=0.01,
+    ent_coef=0.002,
     kl_stop=0.03,
     value_only=False,
+    anchor=None,
+    anchor_coef=0.05,
 ):
     obs, mask, act, logp_old, adv, ret = (torch.as_tensor(x, device=device) for x in batch)
     adv = (adv - adv.mean()) / (adv.std() + 1e-8)
@@ -62,6 +64,17 @@ def ppo_update(
                 loss = 0.5 * v_loss
             else:
                 loss = pi_loss + 0.5 * v_loss - ent_coef * ent
+                if anchor is not None:
+                    # Stay near the prior that already plays the game:
+                    # a narrow behavior-cloned policy dissolves under
+                    # entropy pressure and off-distribution drift long
+                    # before PPO's own KL guard notices anything.
+                    with torch.no_grad():
+                        a_logits, _ = anchor(obs[mb], mask[mb])
+                    a_dist = torch.distributions.Categorical(logits=a_logits)
+                    loss = loss + anchor_coef * torch.distributions.kl_divergence(
+                        a_dist, dist
+                    ).mean()
             opt.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(policy.parameters(), 0.5)

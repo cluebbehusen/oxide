@@ -39,16 +39,19 @@ from ppo import gae, ppo_update
 
 TIERS = ["scrapheap", "standard", "veteran", "prime"]
 
-# Potential-based shaping: a small dense signal from the strength
-# differential (mine minus the larger of visible and remembered enemy
-# strength). Potential differences guide the value net through the
-# thousand-decision desert between terminal rewards without changing
-# what optimal play is.
+# Potential-based shaping: a small dense signal that guides the value
+# net through the thousand-decision desert between terminal rewards.
+# Own material only — an earlier version subtracted *known* enemy
+# strength, and under fog "known" is an information artifact: potential
+# dropped whenever the enemy came into view, so the shaping taught the
+# policy to stay blind and avoid contact. Never build a reward out of
+# what the agent happens to know about the enemy.
 SHAPE_K = 0.05
 
 
 def potential(raw: list[int]) -> float:
-    return (raw[20] - max(raw[22], raw[28])) / 500.0
+    my_strength, harvesters = raw[20], raw[2]
+    return (my_strength + 25 * harvesters) / 500.0
 
 # Rush teacher (indices into the raw feature vector; see gym.rs).
 IDLE, TRAIN_H, TRAIN_S, FORM, PUSH, SCOUT = 0, 1, 2, 7, 8, 10
@@ -300,6 +303,8 @@ def main():
     ap.add_argument("--pool-every", type=int, default=25)
     ap.add_argument("--eval-every", type=int, default=25)
     ap.add_argument("--resume", default=None)
+    ap.add_argument("--anchor", default="runs/bc.pt", help="KL anchor prior ('' disables)")
+    ap.add_argument("--anchor-coef", type=float, default=0.05)
     ap.add_argument(
         "--mix",
         default="self=0.45,past=0.20,tier=0.20,rusher=0.15",
@@ -321,6 +326,10 @@ def main():
         arch = args.arch
         policy = make_policy(arch)
     opt = torch.optim.Adam(policy.parameters(), lr=args.lr)
+    anchor = None
+    if args.anchor:
+        anchor, _ = load_policy(args.anchor, device)
+        anchor.eval()
     workers = [Worker(args.driver) for _ in range(args.workers)]
     rng = np.random.default_rng(0)
 
@@ -354,6 +363,8 @@ def main():
                 flat,
                 device,
                 value_only=update <= args.value_warmup,
+                anchor=anchor,
+                anchor_coef=args.anchor_coef,
             )
             entry = {
                 "update": update,
