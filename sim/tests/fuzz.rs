@@ -40,7 +40,7 @@ fn units(rng: &mut Pcg32) -> Vec<UnitId> {
 fn command(rng: &mut Pcg32) -> PlayerCommand {
     // Players 0-3 on a two-player map: half the issuers don't exist.
     let player = PlayerId(rng.next_below(4) as u8);
-    let command = match rng.next_below(8) {
+    let command = match rng.next_below(10) {
         0 => Command::Move {
             units: units(rng),
             goal: tile(rng),
@@ -69,6 +69,20 @@ fn command(rng: &mut Pcg32) -> PlayerCommand {
         7 => Command::Patrol {
             units: units(rng),
             waypoints: (0..rng.next_below(5)).map(|_| tile(rng)).collect(),
+        },
+        8 => Command::Build {
+            units: units(rng),
+            kind: if rng.next_below(3) == 0 {
+                oxide_sim::stats::BuildingKind::Fabricator
+            } else if rng.next_below(2) == 0 {
+                oxide_sim::stats::BuildingKind::Turret
+            } else {
+                oxide_sim::stats::BuildingKind::Foundry // must reject
+            },
+            anchor: tile(rng),
+        },
+        9 => Command::Cancel {
+            building: BuildingId(rng.next_below(12)),
         },
         5 => Command::Train {
             building: BuildingId(rng.next_below(8)),

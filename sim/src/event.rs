@@ -72,6 +72,37 @@ pub enum Event {
         /// The now-empty tile.
         pos: TilePos,
     },
+    /// A turret fired (positions carried for presentation, like
+    /// [`Event::AttackHit`]).
+    TurretFired {
+        /// The firing turret.
+        turret: crate::ids::BuildingId,
+        /// The unit hit.
+        target: crate::ids::UnitId,
+        /// Muzzle position.
+        turret_pos: chassis::fx::Vec2Fx,
+        /// Impact position.
+        target_pos: chassis::fx::Vec2Fx,
+    },
+    /// A construction site reached full function.
+    BuildingCompleted {
+        /// The finished building.
+        building: crate::ids::BuildingId,
+        /// Its owner.
+        player: crate::ids::PlayerId,
+        /// What it is.
+        kind: crate::stats::BuildingKind,
+    },
+    /// An unfinished site was scrapped; the owner salvaged part of the
+    /// price back.
+    BuildCancelled {
+        /// The removed site.
+        building: crate::ids::BuildingId,
+        /// Its owner.
+        player: crate::ids::PlayerId,
+        /// Scrap returned (cost x hp / max_hp at cancel time).
+        refund: u32,
+    },
     /// A command was dropped instead of applied.
     CommandRejected {
         /// The issuer.

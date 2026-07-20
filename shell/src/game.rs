@@ -494,6 +494,34 @@ impl Game {
                         age: 0.0,
                     });
                 }
+                Event::TurretFired {
+                    turret_pos,
+                    target_pos,
+                    ..
+                } => {
+                    if sees(self, *turret_pos) || sees(self, *target_pos) {
+                        self.sounds_pending.push(SoundKind::Laser);
+                    }
+                    self.fx.push(Effect {
+                        kind: EffectKind::Laser {
+                            heavy: false,
+                            from: world_vec(*turret_pos),
+                            to: world_vec(*target_pos),
+                        },
+                        age: 0.0,
+                    });
+                }
+                Event::BuildingCompleted { player, kind, .. } if *player == self.human => {
+                    self.sounds_pending.push(SoundKind::TrainDone);
+                    self.toast(match kind {
+                        oxide_sim::BuildingKind::Turret => "turret online",
+                        oxide_sim::BuildingKind::Fabricator => "fabricator online",
+                        oxide_sim::BuildingKind::Foundry => "foundry online",
+                    });
+                }
+                Event::BuildCancelled { player, refund, .. } if *player == self.human => {
+                    self.toast(format!("site salvaged (+{refund} scrap)"));
+                }
                 Event::UnitDied { pos, player, .. } => {
                     if *player == self.human || sees(self, *pos) {
                         self.sounds_pending.push(SoundKind::UnitDeath);
@@ -544,7 +572,10 @@ impl Game {
                         oxide_sim::command::RejectReason::InvalidTarget => "can't target that",
                         oxide_sim::command::RejectReason::NotANode => "nothing to mine there",
                         oxide_sim::command::RejectReason::NotYourBuilding => "not your building",
-                        oxide_sim::command::RejectReason::CannotProduce => "can't build that here",
+                        oxide_sim::command::RejectReason::CannotProduce => {
+                            "that factory can't make those"
+                        }
+                        oxide_sim::command::RejectReason::BadSite => "can't build there",
                         oxide_sim::command::RejectReason::NoValidUnits => {
                             "nothing selected can do that"
                         }

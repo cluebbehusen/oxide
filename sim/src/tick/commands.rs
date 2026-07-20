@@ -53,6 +53,12 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
             Command::Patrol { units, waypoints } => {
                 apply_patrol(state, pc.player, units, waypoints)
             }
+            Command::Build {
+                units,
+                kind,
+                anchor,
+            } => apply_build(state, pc.player, units, *kind, *anchor),
+            Command::Cancel { building } => apply_cancel(state, pc.player, *building, events),
             Command::Stop { units } => apply_stop(state, pc.player, units),
             Command::Train { building, kind } => apply_train(state, pc.player, *building, *kind),
             Command::SetRally { building, rally } => {
@@ -324,6 +330,86 @@ fn apply_patrol(
     Ok(())
 }
 
+/// Claims the site immediately (full price, footprint blocks) and sends
+/// the first accepted harvester to stand it up. Aiming at an existing own
+/// unfinished site resumes it instead — that's how a dead builder's work
+/// gets picked back up.
+fn apply_build(
+    state: &mut State,
+    player: PlayerId,
+    units: &[UnitId],
+    kind: crate::stats::BuildingKind,
+    anchor: TilePos,
+) -> Result<(), RejectReason> {
+    if !in_envelope(state, anchor) {
+        return Err(RejectReason::OutOfBounds);
+    }
+    let builder = accepted_units(state, player, units)
+        .into_iter()
+        .find(|id| {
+            state
+                .unit(*id)
+                .is_some_and(|u| u.kind.stats().harvest.is_some())
+        })
+        .ok_or(RejectReason::NoValidUnits)?;
+
+    // Resume an existing site of ours at this anchor?
+    let existing = state
+        .buildings
+        .iter()
+        .find(|b| b.anchor == anchor && b.kind == kind && b.player == player && !b.built)
+        .map(|b| b.id);
+    let site = match existing {
+        Some(site) => site,
+        None => {
+            let cost = kind.stats().construction.ok_or(RejectReason::BadSite)?.cost;
+            if !state.can_place(player, kind, anchor) {
+                return Err(RejectReason::BadSite);
+            }
+            let bank = &mut state.player_mut(player).scrap;
+            if *bank < cost {
+                return Err(RejectReason::NotEnoughScrap);
+            }
+            *bank -= cost;
+            state.place_site(player, kind, anchor)
+        }
+    };
+    let unit = state.unit_mut(builder).expect("filtered above");
+    assign(unit, Order::Build { site }, false);
+    Ok(())
+}
+
+/// Salvage an unfinished site: refund scales with its current health, so
+/// enemy fire on the scaffold burns the owner's money.
+fn apply_cancel(
+    state: &mut State,
+    player: PlayerId,
+    building: crate::ids::BuildingId,
+    events: &mut Vec<Event>,
+) -> Result<(), RejectReason> {
+    let b = state
+        .building(building)
+        .ok_or(RejectReason::NotYourBuilding)?;
+    if b.player != player {
+        return Err(RejectReason::NotYourBuilding);
+    }
+    if b.built {
+        return Err(RejectReason::BadSite);
+    }
+    let stats = b.kind.stats();
+    let cost = stats.construction.expect("sites are buildable kinds").cost;
+    let refund = cost * b.hp / stats.max_hp;
+    let bank = &mut state.player_mut(player).scrap;
+    *bank = bank.saturating_add(refund);
+    state.buildings.retain(|b| b.id != building);
+    events.push(Event::BuildCancelled {
+        building,
+        player,
+        refund,
+    });
+    Ok(())
+}
+
 fn apply_stop(state: &mut State, player: PlayerId, units: &[UnitId]) -> Result<(), RejectReason> {
     let applied = for_owned_units(state, player, units, |u| u.clear_program());
     (applied > 0)
@@ -345,7 +431,7 @@ fn apply_train(
         if b.player != player {
             return Err(RejectReason::NotYourBuilding);
         }
-        if !b.kind.stats().produces.contains(&kind) {
+        if !b.built || !b.kind.stats().produces.contains(&kind) {
             return Err(RejectReason::CannotProduce);
         }
         if b.queue.len() >= QUEUE_CAP {

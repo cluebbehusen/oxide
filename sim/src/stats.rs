@@ -29,6 +29,11 @@ pub enum UnitKind {
 pub enum BuildingKind {
     /// HQ, unit factory, and scrap drop-off. Lose all of them, lose the game.
     Foundry,
+    /// Static defense: fires on its own at anything in range and line of
+    /// sight. Holds ground; loses to patient siege.
+    Turret,
+    /// Second factory: trains the advanced roster. The tech gate.
+    Fabricator,
 }
 
 /// Combat parameters for units that can fight.
@@ -77,7 +82,7 @@ pub struct UnitStats {
 /// Static parameters of a building kind.
 #[derive(Debug, Clone, Copy)]
 pub struct BuildingStats {
-    /// Hit points at placement.
+    /// Hit points when fully built.
     pub max_hp: u32,
     /// Footprint in tiles (width, height), anchored top-left.
     pub size: (i32, i32),
@@ -85,6 +90,22 @@ pub struct BuildingStats {
     pub vision: i32,
     /// What this building can train. Empty for non-producers.
     pub produces: &'static [UnitKind],
+    /// Present iff the building fights on its own.
+    pub attack: Option<AttackStats>,
+    /// Present iff harvesters can build it. `None` marks the kinds only
+    /// scenarios place (the Foundry — win conditions stay authored).
+    pub construction: Option<ConstructionStats>,
+}
+
+/// Parameters of a buildable kind.
+#[derive(Debug, Clone, Copy)]
+pub struct ConstructionStats {
+    /// Scrap price, deducted when the site is placed. Cancelling refunds
+    /// `cost x hp / max_hp` — you salvage what actually got built, and
+    /// enemy fire burns the refund.
+    pub cost: u32,
+    /// Builder-adjacent ticks from site to standing building.
+    pub build_ticks: u32,
 }
 
 const HARVESTER: UnitStats = UnitStats {
@@ -154,6 +175,37 @@ const FOUNDRY: BuildingStats = BuildingStats {
     size: (2, 2),
     vision: 8,
     produces: &[UnitKind::Harvester, UnitKind::Sentinel],
+    attack: None,
+    construction: None,
+};
+
+const TURRET: BuildingStats = BuildingStats {
+    max_hp: 350,
+    size: (1, 1),
+    vision: 6,
+    produces: &[],
+    attack: Some(AttackStats {
+        damage: 12,
+        range: Fx::lit("4.5"), // outranged only by the Lancer's 5.5
+        cooldown_ticks: 25,
+        aggro_range: Fx::lit("4.5"), // a turret's aggro is its range
+    }),
+    construction: Some(ConstructionStats {
+        cost: 100,
+        build_ticks: 300, // 15 s of builder attention
+    }),
+};
+
+const FABRICATOR: BuildingStats = BuildingStats {
+    max_hp: 500,
+    size: (2, 2),
+    vision: 6,
+    produces: &[UnitKind::Scuttler, UnitKind::Lancer],
+    attack: None,
+    construction: Some(ConstructionStats {
+        cost: 150,
+        build_ticks: 400, // 20 s
+    }),
 };
 
 impl UnitKind {
@@ -173,6 +225,8 @@ impl BuildingKind {
     pub const fn stats(self) -> &'static BuildingStats {
         match self {
             BuildingKind::Foundry => &FOUNDRY,
+            BuildingKind::Turret => &TURRET,
+            BuildingKind::Fabricator => &FABRICATOR,
         }
     }
 }

@@ -220,6 +220,28 @@ enum LiveCmd {
         #[arg(long)]
         kind: String,
     },
+    /// Start a construction site with a harvester.
+    Build {
+        /// Acting player index.
+        player: u8,
+        /// Candidate builder unit ids, comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        units: Vec<u32>,
+        /// "turret" or "fabricator".
+        #[arg(long)]
+        kind: String,
+        /// Anchor tile as "x,y" (top-left of the footprint).
+        #[arg(long)]
+        at: String,
+    },
+    /// Scrap an own unfinished site for a partial refund.
+    Cancel {
+        /// Acting player index.
+        player: u8,
+        /// The site's building id.
+        #[arg(long)]
+        building: u32,
+    },
     /// Set (or clear) a building's rally point.
     Rally {
         /// Acting player index.
@@ -384,6 +406,14 @@ fn parse_kind(s: &str) -> Result<UnitKind> {
     }
 }
 
+fn parse_building_kind(s: &str) -> Result<oxide_sim::BuildingKind> {
+    Ok(match s.to_ascii_lowercase().as_str() {
+        "turret" => oxide_sim::BuildingKind::Turret,
+        "fabricator" => oxide_sim::BuildingKind::Fabricator,
+        other => bail!("unknown building kind {other:?} (foundries aren't buildable)"),
+    })
+}
+
 fn parse_key(s: &str) -> Result<Key> {
     Ok(match s.to_ascii_lowercase().as_str() {
         "up" => Key::Up,
@@ -527,6 +557,25 @@ fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
         LiveCmd::Stop { player, units: ids } => Request::SendCommand {
             player: PlayerId(player),
             command: Command::Stop { units: units(ids) },
+        },
+        LiveCmd::Build {
+            player,
+            units: ids,
+            kind,
+            at,
+        } => Request::SendCommand {
+            player: PlayerId(player),
+            command: Command::Build {
+                units: units(ids),
+                kind: parse_building_kind(&kind)?,
+                anchor: parse_tile(&at)?,
+            },
+        },
+        LiveCmd::Cancel { player, building } => Request::SendCommand {
+            player: PlayerId(player),
+            command: Command::Cancel {
+                building: BuildingId(building),
+            },
         },
         LiveCmd::Rally {
             player,

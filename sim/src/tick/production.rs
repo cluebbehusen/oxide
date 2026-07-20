@@ -18,6 +18,9 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         let Some(b) = state.building_mut(id) else {
             continue;
         };
+        if !b.built {
+            continue; // a site's progress belongs to its builder
+        }
         let Some(&kind) = b.queue.front() else {
             b.progress = 0;
             continue;

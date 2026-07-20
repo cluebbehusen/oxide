@@ -127,6 +127,23 @@ pub struct BuildingView {
     /// Rally tile `[x, y]`, if set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rally: Option<[i32; 2]>,
+    /// Whether construction has finished.
+    #[serde(
+        default = "default_true",
+        skip_serializing_if = "core::clone::Clone::clone"
+    )]
+    pub built: bool,
+    /// Construction or training progress ticks.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub progress: u32,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 /// Shell status summary.
@@ -238,6 +255,8 @@ fn building_view(b: &Building) -> BuildingView {
             .front()
             .map(|kind| kind.stats().train_ticks.saturating_sub(b.progress)),
         rally: b.rally.map(|r| [r.x, r.y]),
+        built: b.built,
+        progress: b.progress,
     }
 }
 

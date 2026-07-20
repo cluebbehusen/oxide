@@ -24,6 +24,8 @@ pub struct Sprites {
     muzzle_flash: Rect,
     scorch: Rect,
     foundry: [Rect; 2],
+    turret: [Rect; 2],
+    fabricator: [Rect; 2],
     harvester: [Rect; 2],
     scuttler: [Rect; 2],
     lancer: [Rect; 2],
@@ -87,6 +89,8 @@ impl Sprites {
             muzzle_flash: rect("muzzle_flash")?,
             scorch: rect("scorch")?,
             foundry: [rect("foundry_ferrous")?, rect("foundry_cupric")?],
+            turret: [rect("turret_ferrous")?, rect("turret_cupric")?],
+            fabricator: [rect("fabricator_ferrous")?, rect("fabricator_cupric")?],
             harvester: [rect("harvester_ferrous")?, rect("harvester_cupric")?],
             scuttler: [rect("scuttler_ferrous")?, rect("scuttler_cupric")?],
             lancer: [rect("lancer_ferrous")?, rect("lancer_cupric")?],
@@ -144,9 +148,13 @@ impl Sprites {
         self.scorch
     }
 
-    /// The building sprite region for a faction.
-    pub fn foundry(&self, faction: Faction) -> Rect {
-        self.foundry[faction_index(faction)]
+    /// The building sprite region for a kind and faction.
+    pub fn building(&self, kind: oxide_sim::BuildingKind, faction: Faction) -> Rect {
+        match kind {
+            oxide_sim::BuildingKind::Foundry => self.foundry[faction_index(faction)],
+            oxide_sim::BuildingKind::Turret => self.turret[faction_index(faction)],
+            oxide_sim::BuildingKind::Fabricator => self.fabricator[faction_index(faction)],
+        }
     }
 
     /// The unit sprite region for a kind and faction.

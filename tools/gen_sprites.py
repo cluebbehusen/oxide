@@ -326,6 +326,63 @@ def sentinel(faction: str) -> None:
     finish(img, px, f"sentinel_{faction}")
 
 
+def turret(faction: str) -> None:
+    """1x1 static defense: a broad bolted base under a swivel gun. Reads
+    as furniture, not a unit — no legs, no treads."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    # Foundation slab with corner bolts.
+    d.rounded_rectangle([s(6), s(6), s(58), s(58)], radius=s(8), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle([s(10), s(10), s(54), s(54)], radius=s(6), fill=(*IRON, 255))
+    for bx, by in ((13, 13), (51, 13), (13, 51), (51, 51)):
+        d.ellipse([s(bx - 3), s(by - 3), s(bx + 3), s(by + 3)], fill=(*IRON_DARK, 255))
+    # Rotor ring.
+    d.ellipse([s(16), s(16), s(48), s(48)], fill=(*pal["dark"], 255))
+    d.ellipse([s(20), s(20), s(44), s(44)], fill=(*pal["base"], 255))
+    # Gun housing pointing up (the shell doesn't rotate buildings; the
+    # barrel reads as "armed" at any angle).
+    d.rectangle([s(28), s(4), s(36), s(30)], fill=(*IRON_DARK, 255))
+    d.rectangle([s(30), s(4), s(34), s(28)], fill=(*IRON_LIGHT, 255))
+    d.ellipse([s(26), s(26), s(38), s(38)], fill=(*pal["light"], 255))
+    d.ellipse([s(29), s(29), s(35), s(35)], fill=(*IRON_DARK, 255))
+    finish(img, px, f"turret_{faction}")
+
+
+def fabricator(faction: str) -> None:
+    """2x2 second factory: an industrial gantry hall — long assembly bays
+    instead of the Foundry's melt pool."""
+    px = 128
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    d.rounded_rectangle([s(6), s(10), s(122), s(118)], radius=s(9), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle([s(12), s(16), s(116), s(112)], radius=s(7), fill=(*IRON, 255))
+    # Sawtooth roof: four slanted skylight bands.
+    for i in range(4):
+        x0 = 16 + i * 25
+        d.polygon(
+            [(s(x0), s(24)), (s(x0 + 18), s(24)), (s(x0 + 18), s(44)), (s(x0), s(36))],
+            fill=(*pal["dark"], 255),
+        )
+        d.polygon(
+            [(s(x0), s(24)), (s(x0 + 18), s(24)), (s(x0 + 18), s(30)), (s(x0), s(28))],
+            fill=(*pal["light"], 255),
+        )
+    # Twin assembly bays with door stripes at the bottom edge.
+    for bx in (20, 68):
+        d.rounded_rectangle([s(bx), s(56), s(bx + 40), s(104)], radius=s(4), fill=(*pal["base"], 255))
+        d.rounded_rectangle([s(bx + 5), s(61), s(bx + 35), s(99)], radius=s(3), fill=(*IRON_DARK, 255))
+        for stripe in range(3):
+            d.rectangle(
+                [s(bx + 7), s(92 - stripe * 9), s(bx + 33), s(95 - stripe * 9)],
+                fill=(*IRON_LIGHT, 255),
+            )
+    # Gantry crane spanning the bays.
+    d.rectangle([s(14), s(48), s(114), s(54)], fill=(*IRON_DARK, 255))
+    d.rectangle([s(58), s(46), s(70), s(56)], fill=(*pal["light"], 255))
+    finish(img, px, f"fabricator_{faction}")
+
+
 def scuttler(faction: str) -> None:
     """Low, wide, and mean: a six-legged shredder that reads as vermin
     next to the Sentinel's arrowhead."""
@@ -485,6 +542,8 @@ def main() -> None:
         sentinel(faction)
         scuttler(faction)
         lancer(faction)
+        turret(faction)
+        fabricator(faction)
     pack_atlas()
     print("done")
 

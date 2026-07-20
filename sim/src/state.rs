@@ -83,6 +83,11 @@ pub enum Order {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resume: Option<TilePos>,
     },
+    /// Walk to an unfinished own site and stand it up (harvesters only).
+    Build {
+        /// The site under construction.
+        site: crate::ids::BuildingId,
+    },
     /// March to a tile, engaging anything encountered on the way — the
     /// stance for actually fighting, as opposed to [`Order::Move`]'s
     /// oblivious walk.
@@ -190,6 +195,24 @@ pub struct Building {
     /// stand at the doorstep.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rally: Option<TilePos>,
+    /// Whether construction has finished. Sites (`false`) block ground and
+    /// take damage but don't see, fight, or produce.
+    #[serde(
+        default = "default_true",
+        skip_serializing_if = "core::clone::Clone::clone"
+    )]
+    pub built: bool,
+    /// Ticks until this building may fire again (turrets).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub cooldown: u32,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 impl Building {
@@ -419,8 +442,52 @@ impl State {
             queue: std::collections::VecDeque::new(),
             progress: 0,
             rally: None,
+            built: true,
+            cooldown: 0,
         });
         id
+    }
+
+    /// Claims ground for a construction site: blocks the footprint at once
+    /// but starts at a fifth of its hit points, unfinished. Site validity
+    /// is checked by [`State::can_place`] at the command layer.
+    pub(crate) fn place_site(
+        &mut self,
+        player: PlayerId,
+        kind: BuildingKind,
+        anchor: TilePos,
+    ) -> BuildingId {
+        let id = self.place_building(player, kind, anchor);
+        let b = self.building_mut(id).expect("just placed");
+        b.built = false;
+        b.hp = kind.stats().max_hp / 5;
+        id
+    }
+
+    /// Whether `player` may start `kind` at `anchor` right now: every
+    /// footprint tile explored by them, open ground, and free of buildings
+    /// and standing units. One predicate serves command validation and the
+    /// shell's placement preview — they must never disagree.
+    pub fn can_place(&self, player: PlayerId, kind: BuildingKind, anchor: TilePos) -> bool {
+        let (w, h) = kind.stats().size;
+        for dy in 0..h {
+            for dx in 0..w {
+                let t = anchor.offset(dx, dy);
+                if !self.vision(player).explored(t)
+                    || !self.map.terrain_passable(t)
+                    || self.building_at(t).is_some()
+                {
+                    return false;
+                }
+            }
+        }
+        // Standing machines hold their ground — no foundations under feet.
+        !self.units.iter().any(|u| {
+            u.hp > 0 && {
+                let t = u.tile();
+                t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h
+            }
+        })
     }
 }
 

@@ -32,7 +32,113 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
             Order::Harvest { node } => harvest(state, id, node, events),
             Order::Attack { target, resume } => attack(state, id, target, resume, events),
             Order::AttackMove { goal } => attack_move(state, id, goal, events),
+            Order::Build { site } => build(state, id, site, events),
         }
+    }
+    turret_fire(state, events);
+}
+
+/// Built turrets pick their own fights: nearest enemy unit in range with a
+/// clear line (buildings can't chase, so out-of-line targets are simply
+/// ignored until they move). Stateless — target choice re-evaluates every
+/// shot, in building-id order.
+fn turret_fire(state: &mut State, events: &mut Vec<Event>) {
+    let ids: Vec<crate::ids::BuildingId> = state.buildings.iter().map(|b| b.id).collect();
+    for id in ids {
+        let Some(b) = state.building(id) else {
+            continue;
+        };
+        let Some(atk) = b.kind.stats().attack else {
+            continue;
+        };
+        if !b.built || b.hp == 0 {
+            continue;
+        }
+        if b.cooldown > 0 {
+            state.building_mut(id).expect("just seen").cooldown -= 1;
+            continue;
+        }
+        let (me, center) = (b.player, b.center());
+        let range_sq = atk.range * atk.range;
+        let clear_shot = |t: TilePos| {
+            let terrain_open = state
+                .map
+                .tile(t)
+                .is_some_and(|tile| tile.terrain != crate::map::Terrain::Rock);
+            let building_open = state.building_at(t).is_none_or(|other| other.id == id);
+            terrain_open && building_open
+        };
+        let victim = state
+            .units
+            .iter()
+            .filter(|u| u.player != me && u.hp > 0)
+            .map(|u| (center.dist_sq(u.pos), u.id, u.pos))
+            .filter(|(d, _, _)| *d <= range_sq)
+            .filter(|(_, _, pos)| !chassis::path::line_blocked(center, *pos, clear_shot))
+            .min_by_key(|(d, uid, _)| (*d, *uid));
+        let Some((_, uid, upos)) = victim else {
+            continue;
+        };
+        let b = state.building_mut(id).expect("just seen");
+        b.cooldown = atk.cooldown_ticks;
+        let v = state.unit_mut(uid).expect("just found");
+        v.hp = v.hp.saturating_sub(atk.damage);
+        retaliate(state, uid, Target::Building(id));
+        events.push(Event::TurretFired {
+            turret: id,
+            target: uid,
+            turret_pos: center,
+            target_pos: upos,
+        });
+    }
+}
+
+/// Stand up an own unfinished site: walk adjacent, then feed it progress.
+/// One built tick raises hp along a linear ramp to full at completion
+/// (damage taken meanwhile is simply kept — nobody rebuilds for free).
+fn build(state: &mut State, id: UnitId, site: crate::ids::BuildingId, events: &mut Vec<Event>) {
+    let me = state.unit(id).expect("caller checked").player;
+    let Some(b) = state.building(site).filter(|b| b.player == me && !b.built) else {
+        // Finished, cancelled, or destroyed: the job is over either way.
+        state.unit_mut(id).expect("caller checked").advance_queue();
+        return;
+    };
+    let (anchor, kind) = (b.anchor, b.kind);
+    let stats = kind.stats();
+    let size = stats.size;
+    let build_ticks = stats
+        .construction
+        .expect("sites only exist for buildable kinds")
+        .build_ticks;
+    let tile = state.unit(id).expect("caller checked").tile();
+    if tile_adjacent_to_rect(tile, anchor, size) {
+        let start_hp = stats.max_hp / 5;
+        let ramp = stats.max_hp - start_hp;
+        let b = state.building_mut(site).expect("just seen");
+        let step = (ramp * (b.progress + 1) / build_ticks) - (ramp * b.progress / build_ticks);
+        b.progress += 1;
+        b.hp = (b.hp + step).min(stats.max_hp);
+        if b.progress >= build_ticks {
+            b.built = true;
+            b.progress = 0;
+            events.push(Event::BuildingCompleted {
+                building: site,
+                player: me,
+                kind,
+            });
+            state.unit_mut(id).expect("caller checked").advance_queue();
+        } else {
+            state.unit_mut(id).expect("caller checked").path = None;
+        }
+    } else if !approach_rect(state, id, anchor, size) {
+        let unit = state.unit_mut(id).expect("caller checked");
+        let (player, pos) = (unit.player, unit.pos);
+        unit.clear_program();
+        events.push(Event::OrderStalled {
+            unit: id,
+            player,
+            pos,
+        });
     }
 }
 
@@ -351,7 +457,7 @@ fn attack(
             Target::Unit(uid) => {
                 let victim = state.unit_mut(uid).expect("resolved above");
                 victim.hp = victim.hp.saturating_sub(atk.damage);
-                retaliate(state, uid, id);
+                retaliate(state, uid, Target::Unit(id));
             }
             Target::Building(bid) => {
                 let victim = state.building_mut(bid).expect("resolved above");
@@ -420,7 +526,7 @@ fn attack(
 /// already found the attacker). An attack-mover keeps its destination as
 /// the resume point. Brains run in id order, so the first hit of a tick
 /// picks the target deterministically.
-fn retaliate(state: &mut State, victim: UnitId, attacker: UnitId) {
+fn retaliate(state: &mut State, victim: UnitId, attacker: Target) {
     let Some(unit) = state.unit_mut(victim) else {
         return;
     };
@@ -433,7 +539,7 @@ fn retaliate(state: &mut State, victim: UnitId, attacker: UnitId) {
         _ => return, // already busy fighting or working
     };
     unit.order = Order::Attack {
-        target: Target::Unit(attacker),
+        target: attacker,
         resume,
     };
     unit.path = None;

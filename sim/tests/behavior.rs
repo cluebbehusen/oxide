@@ -1773,3 +1773,415 @@ fn scuttler_wins_the_matchups_it_should_and_loses_the_rest() {
     run_until(&mut state, 400, |s, _| s.unit(rat).is_none());
     assert!(state.unit(line).is_some(), "the sentinel holds the line");
 }
+
+#[test]
+fn construction_ramps_and_completes() {
+    use oxide_sim::stats::BuildingKind;
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 4, 6)])
+        .build()
+        .unwrap();
+    let builder = state.units()[0].id;
+    let anchor = TilePos::new(5, 6);
+    let scrap_before = state.player(PlayerId(0)).scrap;
+    let cost = BuildingKind::Turret.stats().construction.unwrap().cost;
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor,
+        },
+    )]);
+    // Site claimed instantly: paid in full, blocking, unfinished, partial hp.
+    assert_eq!(state.player(PlayerId(0)).scrap, scrap_before - cost);
+    let site = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == anchor)
+        .expect("site placed")
+        .id;
+    let b = state.building(site).unwrap();
+    assert!(!b.built);
+    assert_eq!(b.hp, BuildingKind::Turret.stats().max_hp / 5);
+    assert!(!state.passable(anchor), "sites block their footprint");
+
+    let events = run_until(&mut state, 600, |_, events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::BuildingCompleted { .. }))
+    });
+    assert!(!events.is_empty());
+    let b = state.building(site).unwrap();
+    assert!(b.built);
+    assert_eq!(b.hp, BuildingKind::Turret.stats().max_hp, "ramped to full");
+    assert_eq!(
+        state.unit(builder).unwrap().order,
+        Order::Idle,
+        "builder is done"
+    );
+}
+
+#[test]
+fn a_second_builder_resumes_a_dead_builders_site() {
+    use oxide_sim::stats::BuildingKind;
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 4, 6),
+        unit(0, UnitKind::Harvester, 3, 2),
+        unit(1, UnitKind::Scuttler, 6, 7),
+    ])
+    .build()
+    .unwrap();
+    let (first, second, killer) = (
+        state.units()[0].id,
+        state.units()[1].id,
+        state.units()[2].id,
+    );
+    let anchor = TilePos::new(5, 6);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![first],
+            kind: BuildingKind::Turret,
+            anchor,
+        },
+    )]);
+    // Let some progress land, then eat the builder.
+    for _ in 0..100 {
+        state.tick(&[]);
+    }
+    state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: vec![killer],
+            target: Target::Unit(first),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| s.unit(first).is_none());
+    // The killer leaves (oblivious walk), or it would eat the relief too.
+    state.tick(&[cmd(
+        1,
+        Command::Move {
+            units: vec![killer],
+            goal: TilePos::new(13, 2),
+            queue: false,
+        },
+    )]);
+    let site = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == anchor)
+        .expect("site survives its builder")
+        .id;
+    let progress_when_orphaned = state.building(site).unwrap().progress;
+    // Progress is frozen while nobody tends the site.
+    for _ in 0..60 {
+        state.tick(&[]);
+    }
+    assert_eq!(
+        state.building(site).unwrap().progress,
+        progress_when_orphaned
+    );
+    // Aiming a fresh Build at the same anchor resumes, not double-pays.
+    let scrap_before = state.player(PlayerId(0)).scrap;
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![second],
+            kind: BuildingKind::Turret,
+            anchor,
+        },
+    )]);
+    assert_eq!(state.player(PlayerId(0)).scrap, scrap_before);
+    run_until(&mut state, 900, |s, _| {
+        s.building(site).is_some_and(|b| b.built)
+    });
+}
+
+#[test]
+fn cancel_refunds_by_health_and_damage_burns_it() {
+    use oxide_sim::stats::BuildingKind;
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 4, 6),
+        unit(1, UnitKind::Scuttler, 9, 7),
+    ])
+    .build()
+    .unwrap();
+    let (builder, raider) = (state.units()[0].id, state.units()[1].id);
+    let anchor = TilePos::new(5, 6);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor,
+        },
+    )]);
+    let site = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == anchor)
+        .unwrap()
+        .id;
+    for _ in 0..120 {
+        state.tick(&[]);
+    }
+    // The raider chews the scaffold down before the cancel.
+    state.tick(&[
+        cmd(
+            0,
+            Command::Stop {
+                units: vec![builder],
+            },
+        ),
+        cmd(
+            1,
+            Command::Attack {
+                units: vec![raider],
+                target: Target::Building(site),
+                queue: false,
+            },
+        ),
+    ]);
+    for _ in 0..120 {
+        state.tick(&[]);
+    }
+    let stats = BuildingKind::Turret.stats();
+    let b = state.building(site).unwrap();
+    let expected = stats.construction.unwrap().cost * b.hp / stats.max_hp;
+    let scrap_before = state.player(PlayerId(0)).scrap;
+    let report = state.tick(&[cmd(0, Command::Cancel { building: site })]);
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::BuildCancelled { refund, .. } if *refund == expected))
+    );
+    assert_eq!(state.player(PlayerId(0)).scrap, scrap_before + expected);
+    assert!(state.building(site).is_none());
+    assert!(state.passable(anchor), "the ground is free again");
+}
+
+#[test]
+fn turret_holds_ground_and_dies_to_lancer_siege() {
+    use oxide_sim::stats::BuildingKind;
+    // A finished enemy turret vs a scuttler rush: the rush loses. Then a
+    // lancer sieges from beyond turret range and wins untouched.
+    let scenario = Scenario {
+        name: "turret-duel".into(),
+        seed: 42,
+        map: vec![
+            "####################".into(),
+            "#1.................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#................2.#".into(),
+            "#..................#".into(),
+            "####################".into(),
+        ],
+        players: arena(vec![]).players,
+        units: vec![
+            unit(0, UnitKind::Harvester, 3, 2),
+            unit(1, UnitKind::Scuttler, 16, 5),
+        ],
+    };
+    let mut state = scenario.build().unwrap();
+    let (builder, rat) = (state.units()[0].id, state.units()[1].id);
+    let anchor = TilePos::new(5, 5);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor,
+        },
+    )]);
+    let turret = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == anchor)
+        .unwrap()
+        .id;
+    run_until(&mut state, 600, |s, _| {
+        s.building(turret).is_some_and(|b| b.built)
+    });
+    // Builder clears the field so the duel is clean.
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![builder],
+            goal: TilePos::new(2, 1),
+            queue: false,
+        },
+    )]);
+    // Fog: the rat can't target what it hasn't seen — attack-move in
+    // and let fire-at-will find the turret.
+    state.tick(&[cmd(
+        1,
+        Command::AttackMove {
+            units: vec![rat],
+            goal: TilePos::new(6, 5),
+            queue: false,
+        },
+    )]);
+    let events = run_until(&mut state, 600, |s, _| s.unit(rat).is_none());
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::TurretFired { .. })),
+        "the turret did the killing"
+    );
+    assert!(state.building(turret).is_some_and(|b| b.hp > 0));
+
+    // Now the siege, in a fresh world: a lancer at range 5.5 > turret 4.5
+    // grinds it down without ever taking return fire.
+    let scenario = Scenario {
+        name: "lancer-siege".into(),
+        seed: 43,
+        map: vec![
+            "####################".into(),
+            "#1.................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#................2.#".into(),
+            "#..................#".into(),
+            "####################".into(),
+        ],
+        players: arena(vec![]).players,
+        units: vec![
+            unit(0, UnitKind::Harvester, 3, 2),
+            unit(1, UnitKind::Lancer, 16, 5),
+        ],
+    };
+    let mut state = scenario.build().unwrap();
+    let (builder, lancer) = (state.units()[0].id, state.units()[1].id);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor,
+        },
+    )]);
+    let turret = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == anchor)
+        .unwrap()
+        .id;
+    run_until(&mut state, 600, |s, _| {
+        s.building(turret).is_some_and(|b| b.built)
+    });
+    state.tick(&[
+        cmd(
+            0,
+            Command::Move {
+                units: vec![builder],
+                goal: TilePos::new(2, 1),
+                queue: false,
+            },
+        ),
+        cmd(
+            1,
+            Command::AttackMove {
+                units: vec![lancer],
+                goal: TilePos::new(6, 5),
+                queue: false,
+            },
+        ),
+    ]);
+    run_until(&mut state, 2000, |s, _| s.building(turret).is_none());
+    assert_eq!(
+        state.unit(lancer).unwrap().hp,
+        UnitKind::Lancer.stats().max_hp,
+        "the siege takes no return fire"
+    );
+}
+
+#[test]
+fn fabricator_gates_the_advanced_roster() {
+    use oxide_sim::stats::BuildingKind;
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 4, 6)])
+        .build()
+        .unwrap();
+    let builder = state.units()[0].id;
+    let anchor = TilePos::new(5, 5);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Fabricator,
+            anchor,
+        },
+    )]);
+    let fab = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == anchor)
+        .unwrap()
+        .id;
+    // Unfinished: no training yet.
+    let report = state.tick(&[cmd(
+        0,
+        Command::Train {
+            building: fab,
+            kind: UnitKind::Scuttler,
+        },
+    )]);
+    assert!(report.events.iter().any(|e| matches!(
+        e,
+        Event::CommandRejected {
+            reason: RejectReason::CannotProduce,
+            ..
+        }
+    )));
+    run_until(&mut state, 900, |s, _| {
+        s.building(fab).is_some_and(|b| b.built)
+    });
+    // Finished: scuttlers roll out; sentinels are still Foundry-only.
+    let report = state.tick(&[
+        cmd(
+            0,
+            Command::Train {
+                building: fab,
+                kind: UnitKind::Scuttler,
+            },
+        ),
+        cmd(
+            0,
+            Command::Train {
+                building: fab,
+                kind: UnitKind::Sentinel,
+            },
+        ),
+    ]);
+    assert!(report.events.iter().any(|e| matches!(
+        e,
+        Event::CommandRejected {
+            reason: RejectReason::CannotProduce,
+            ..
+        }
+    )));
+    run_until(&mut state, 200, |s, events| {
+        let _ = s;
+        events.iter().any(|e| {
+            matches!(
+                e,
+                Event::UnitTrained {
+                    kind: UnitKind::Scuttler,
+                    ..
+                }
+            )
+        })
+    });
+}

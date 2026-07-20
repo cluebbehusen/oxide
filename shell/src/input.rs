@@ -45,6 +45,8 @@ pub struct InputState {
     last_recall: Option<(usize, f64)>,
     /// Waypoints collected while arming a patrol (`R`), if any.
     pub(crate) patrol_route: Option<Vec<TilePos>>,
+    /// Building kind armed for placement (`B`/`N`), if any.
+    pub(crate) placing: Option<oxide_sim::BuildingKind>,
     held: HashSet<KeyOrd>,
 }
 
@@ -63,6 +65,8 @@ fn key_ord(key: Key) -> KeyOrd {
         Key::S => 5,
         Key::P => 6,
         Key::R => 19,
+        Key::B => 20,
+        Key::N => 21,
         Key::Escape => 7,
         Key::Space => 8,
         Key::F1 => 9,
@@ -88,6 +92,7 @@ impl InputState {
             last_click: None,
             last_recall: None,
             patrol_route: None,
+            placing: None,
             held: HashSet::new(),
         }
     }
@@ -105,6 +110,7 @@ impl InputState {
         self.held.clear();
         self.drag_origin = None;
         self.patrol_route = None;
+        self.placing = None;
     }
 
     /// Everything `reset_transient` drops, plus state that assumes the
@@ -120,7 +126,7 @@ impl InputState {
     }
 }
 
-const KEY_MAP: [(Key, mq::KeyCode); 12] = [
+const KEY_MAP: [(Key, mq::KeyCode); 14] = [
     (Key::Up, mq::KeyCode::Up),
     (Key::Down, mq::KeyCode::Down),
     (Key::Left, mq::KeyCode::Left),
@@ -129,6 +135,8 @@ const KEY_MAP: [(Key, mq::KeyCode); 12] = [
     (Key::S, mq::KeyCode::S),
     (Key::P, mq::KeyCode::P),
     (Key::R, mq::KeyCode::R),
+    (Key::B, mq::KeyCode::B),
+    (Key::N, mq::KeyCode::N),
     (Key::Escape, mq::KeyCode::Escape),
     (Key::Space, mq::KeyCode::Space),
     (Key::F1, mq::KeyCode::F1),
@@ -241,6 +249,21 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 y,
             } => {
                 input.mouse = vec2(x, y);
+                if let Some(kind) = input.placing {
+                    if !click_on_hud(game, vec2(x, y)) {
+                        let world = game.camera.to_world(vec2(x, y));
+                        let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+                        let units = game.selection.units.clone();
+                        game.issue(Command::Build {
+                            units,
+                            kind,
+                            anchor,
+                        });
+                        game.ping(world, PingKind::Rally);
+                        input.placing = None;
+                    }
+                    continue;
+                }
                 // The minimap owns clicks landing on it: jump the camera,
                 // never start a drag-select there. HUD chrome swallows
                 // clicks outright.
@@ -600,11 +623,44 @@ fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     game.ping(world, PingKind::Move);
 }
 
+fn building_name(kind: oxide_sim::BuildingKind) -> &'static str {
+    match kind {
+        oxide_sim::BuildingKind::Foundry => "foundry",
+        oxide_sim::BuildingKind::Turret => "turret",
+        oxide_sim::BuildingKind::Fabricator => "fabricator",
+    }
+}
+
 fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
     match key {
-        Key::H => train(game, UnitKind::Harvester),
-        Key::S => train(game, UnitKind::Sentinel),
+        Key::H => train(game, 0),
+        Key::S => train(game, 1),
         Key::P => game.paused = !game.paused,
+        Key::B | Key::N => {
+            let kind = if key == Key::B {
+                oxide_sim::BuildingKind::Turret
+            } else {
+                oxide_sim::BuildingKind::Fabricator
+            };
+            let has_builder = game.selection.units.iter().any(|id| {
+                game.state
+                    .unit(*id)
+                    .is_some_and(|u| u.kind == UnitKind::Harvester)
+            });
+            if input.placing == Some(kind) {
+                input.placing = None;
+            } else if has_builder {
+                input.placing = Some(kind);
+                let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
+                game.toast(format!(
+                    "placing {} ({} scrap): click to build, Esc to cancel",
+                    building_name(kind),
+                    cost
+                ));
+            } else {
+                game.toast("select a harvester to build");
+            }
+        }
         Key::R => {
             // First press arms a route; the second sends the circuit.
             match input.patrol_route.take() {
@@ -624,7 +680,11 @@ fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
         }
         Key::F1 => game.overlay = !game.overlay,
         Key::Escape => {
-            // Arming a patrol? Escape abandons that first.
+            // Arming something? Escape abandons that first.
+            if input.placing.take().is_some() {
+                game.toast("placement cancelled");
+                return;
+            }
             if input.patrol_route.take().is_some() {
                 game.toast("patrol cancelled");
                 return;
@@ -660,7 +720,10 @@ fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
 
 /// Train at the selected Foundry, falling back to the home one — so H/S
 /// work without fiddly building selection.
-fn train(game: &mut Game, kind: UnitKind) {
+/// `H`/`S` train the selected factory's first/second product — Foundry:
+/// harvester/sentinel, Fabricator: scuttler/lancer. No factory selected
+/// falls back to the home Foundry.
+fn train(game: &mut Game, slot: usize) {
     let building = game
         .selection
         .building
@@ -671,6 +734,13 @@ fn train(game: &mut Game, kind: UnitKind) {
         })
         .or_else(|| game.home_foundry().map(|b| b.id));
     if let Some(building) = building {
+        let Some(&kind) = game
+            .state
+            .building(building)
+            .and_then(|b| b.kind.stats().produces.get(slot))
+        else {
+            return;
+        };
         game.issue(Command::Train { building, kind });
     }
 }

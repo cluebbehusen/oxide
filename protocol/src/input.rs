@@ -120,6 +120,10 @@ pub enum Key {
     P,
     /// Arm a patrol route; pressed again, starts it.
     R,
+    /// Arm turret placement (harvester selected).
+    B,
+    /// Arm fabricator placement (harvester selected).
+    N,
     /// Activate the highlighted menu item.
     Enter,
     /// Deselect.

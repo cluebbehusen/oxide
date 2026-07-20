@@ -84,6 +84,23 @@ pub enum Command {
         /// What to build.
         kind: UnitKind,
     },
+    /// Start a construction site and send a harvester to stand it up.
+    /// The full price is paid on placement; cancelling salvages
+    /// `cost x hp / max_hp`.
+    Build {
+        /// Candidate builders (the first accepted harvester builds;
+        /// the rest are ignored).
+        units: Vec<UnitId>,
+        /// What to construct.
+        kind: crate::stats::BuildingKind,
+        /// Top-left tile of the footprint.
+        anchor: TilePos,
+    },
+    /// Scrap an own unfinished site for a partial refund.
+    Cancel {
+        /// The site to abandon.
+        building: BuildingId,
+    },
     /// Point a building's fresh units somewhere (`None` clears the rally).
     SetRally {
         /// The building.
@@ -115,8 +132,11 @@ pub enum RejectReason {
     InvalidTarget,
     /// The tile can't be walked to (no open tile near it).
     UnreachableGoal,
-    /// The building can't train that unit kind.
+    /// The building can't train that unit kind (or isn't finished yet).
     CannotProduce,
+    /// The footprint isn't fully explored, open, and unoccupied — or the
+    /// kind isn't buildable at all.
+    BadSite,
     /// A coordinate lies outside the map's command envelope. Hostile or
     /// corrupt input — honest clients clamp to the map.
     OutOfBounds,

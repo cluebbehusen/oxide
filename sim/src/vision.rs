@@ -118,7 +118,12 @@ pub(crate) fn refresh(state: &mut State) {
         for unit in state.units.iter().filter(|u| u.player == player) {
             view.stamp_disc(unit.tile(), unit.kind.stats().vision);
         }
-        for building in state.buildings.iter().filter(|b| b.player == player) {
+        // Sites don't see: a pile of parts has no sensors.
+        for building in state
+            .buildings
+            .iter()
+            .filter(|b| b.player == player && b.built)
+        {
             let radius = building.kind.stats().vision;
             for tile in building.tiles() {
                 view.stamp_disc(tile, radius);
