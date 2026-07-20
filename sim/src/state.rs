@@ -393,6 +393,15 @@ impl State {
         {
             return Err("building owned by a player outside the table".into());
         }
+        // Nested grids: derived Deserialize accepts any cell count, and a
+        // short one panics deep inside vision refresh instead of here.
+        if !self.map.is_consistent() {
+            return Err("map grid dimensions disagree with its cells".into());
+        }
+        let (w, h) = (self.map.width(), self.map.height());
+        if self.vision.iter().any(|v| !v.is_consistent(w, h)) {
+            return Err("a vision table disagrees with the map dimensions".into());
+        }
         Ok(())
     }
 
@@ -520,9 +529,13 @@ impl State {
     }
 
     /// Whether `player` may start `kind` at `anchor` right now: every
-    /// footprint tile explored by them, open ground, and free of buildings
-    /// and standing units. One predicate serves command validation and the
-    /// shell's placement preview — they must never disagree.
+    /// footprint tile *currently visible* to them, open ground, and free
+    /// of buildings and standing units. Visibility (not mere exploration)
+    /// is the fog-honest rule — the occupancy checks below read live
+    /// state, and a red ghost over explored-but-unseen ground would
+    /// otherwise leak hidden enemies. One predicate serves command
+    /// validation and the shell's placement preview — they must never
+    /// disagree.
     pub fn can_place(&self, player: PlayerId, kind: BuildingKind, anchor: TilePos) -> bool {
         if kind.stats().construction.is_none() {
             return false; // scenario-only kinds are never placeable
@@ -531,7 +544,7 @@ impl State {
         for dy in 0..h {
             for dx in 0..w {
                 let t = anchor.offset(dx, dy);
-                if !self.vision(player).explored(t)
+                if !self.vision(player).visible(t)
                     || !self.map.terrain_passable(t)
                     || self.building_at(t).is_some()
                 {

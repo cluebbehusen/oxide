@@ -470,13 +470,15 @@ impl Game {
                     target_pos,
                     ..
                 } => {
-                    // Positions come from the event itself: resolving ids
-                    // here loses the beam whenever the hit was lethal.
+                    // Kind rides in the event: the attacker itself may have
+                    // died later this same tick, and a rail shot deserves
+                    // its report either way.
                     let heavy = matches!(
                         event,
-                        Event::AttackHit { attacker, .. }
-                            if self.state.unit(*attacker)
-                                .is_some_and(|u| u.kind == oxide_sim::UnitKind::Lancer)
+                        Event::AttackHit {
+                            attacker_kind: oxide_sim::UnitKind::Lancer,
+                            ..
+                        }
                     );
                     if sees(self, *attacker_pos) || sees(self, *target_pos) {
                         self.sounds_pending.push(if heavy {

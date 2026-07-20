@@ -47,40 +47,7 @@ pub struct InputState {
     pub(crate) patrol_route: Option<Vec<TilePos>>,
     /// Building kind armed for placement (`B`/`N`), if any.
     pub(crate) placing: Option<oxide_sim::BuildingKind>,
-    held: HashSet<KeyOrd>,
-}
-
-/// `Key` wrapped for `HashSet` (the protocol enum keeps no Hash to stay
-/// serde-minimal).
-#[derive(PartialEq, Eq, Hash, Clone, Copy)]
-struct KeyOrd(u8);
-
-fn key_ord(key: Key) -> KeyOrd {
-    KeyOrd(match key {
-        Key::Up => 0,
-        Key::Down => 1,
-        Key::Left => 2,
-        Key::Right => 3,
-        Key::H => 4,
-        Key::S => 5,
-        Key::P => 6,
-        Key::R => 19,
-        Key::B => 20,
-        Key::N => 21,
-        Key::X => 22,
-        Key::Escape => 7,
-        Key::Space => 8,
-        Key::F1 => 9,
-        Key::A => 10,
-        Key::Enter => 11,
-        Key::Shift => 12,
-        Key::Ctrl => 13,
-        Key::Num1 => 14,
-        Key::Num2 => 15,
-        Key::Num3 => 16,
-        Key::Num4 => 17,
-        Key::Num5 => 18,
-    })
+    held: HashSet<Key>,
 }
 
 impl InputState {
@@ -99,7 +66,7 @@ impl InputState {
     }
 
     fn is_held(&self, key: Key) -> bool {
-        self.held.contains(&key_ord(key))
+        self.held.contains(&key)
     }
 
     /// Drops everything that assumes continuity — held keys and any open
@@ -317,8 +284,12 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 if let Some(world) = crate::render::minimap_world_at(game, vec2(x, y)) {
                     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
                     if let Some(route) = &mut input.patrol_route {
-                        route.push(tile);
-                        game.ping(vec2(world.x, world.y), PingKind::Rally);
+                        if route.len() >= oxide_sim::stats::ORDER_QUEUE_CAP {
+                            game.toast("patrol is full — R to start it");
+                        } else {
+                            route.push(tile);
+                            game.ping(vec2(world.x, world.y), PingKind::Rally);
+                        }
                     } else {
                         let units = game.selection.units.clone();
                         if !units.is_empty() {
@@ -333,8 +304,13 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 } else if !click_on_hud(game, vec2(x, y)) {
                     let world = game.camera.to_world(vec2(x, y));
                     if let Some(route) = &mut input.patrol_route {
-                        route.push(TilePos::new(world.x.floor() as i32, world.y.floor() as i32));
-                        game.ping(world, PingKind::Rally);
+                        if route.len() >= oxide_sim::stats::ORDER_QUEUE_CAP {
+                            game.toast("patrol is full — R to start it");
+                        } else {
+                            route
+                                .push(TilePos::new(world.x.floor() as i32, world.y.floor() as i32));
+                            game.ping(world, PingKind::Rally);
+                        }
                     } else {
                         context_order(game, vec2(x, y), queue);
                     }
@@ -353,7 +329,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 ..
             } => {}
             RawEvent::KeyDown { key } => {
-                input.held.insert(key_ord(key));
+                input.held.insert(key);
                 match key {
                     Key::Num1 => group_action(game, input, 0),
                     Key::Num2 => group_action(game, input, 1),
@@ -364,7 +340,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 }
             }
             RawEvent::KeyUp { key } => {
-                input.held.remove(&key_ord(key));
+                input.held.remove(&key);
             }
             // Desktop shell; the mobile shell will map these.
             RawEvent::TouchDown { .. } | RawEvent::TouchMove { .. } | RawEvent::TouchUp { .. } => {}
@@ -636,8 +612,12 @@ fn building_name(kind: oxide_sim::BuildingKind) -> &'static str {
 fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
     match key {
         Key::X => {
-            // Scrap the selected own unfinished site for its refund.
-            if let Some(id) = game.selection.building
+            // Contextual: units selected halt in place; a selected own
+            // unfinished site is scrapped for its refund.
+            if !game.selection.units.is_empty() {
+                let units = game.selection.units.clone();
+                game.issue(Command::Stop { units });
+            } else if let Some(id) = game.selection.building
                 && game
                     .state
                     .building(id)
@@ -768,6 +748,10 @@ fn train(game: &mut Game, slot: usize) {
 fn normalize_wheel(raw: f32) -> f32 {
     let delta = if raw.abs() >= 40.0 {
         raw / 120.0
+    } else if raw.abs() <= 3.0 && raw.fract() == 0.0 {
+        // X11-style discrete detents arrive as small whole numbers;
+        // trackpads produce fractional deltas. Exact integers are notches.
+        raw
     } else {
         raw / 10.0
     };
@@ -780,11 +764,16 @@ mod tests {
 
     #[test]
     fn wheel_notches_and_trackpad_swipes_land_in_the_same_range() {
-        // One mouse notch and a firm trackpad swipe both read as ~1 step.
+        // Windows notches (±120), X11 detents (±1), and a firm trackpad
+        // swipe all read as whole steps; small fractional trackpad deltas
+        // stay gentle.
         assert_eq!(normalize_wheel(120.0), 1.0);
         assert_eq!(normalize_wheel(-120.0), -1.0);
+        assert_eq!(normalize_wheel(1.0), 1.0);
+        assert_eq!(normalize_wheel(-1.0), -1.0);
+        assert_eq!(normalize_wheel(2.0), 2.0);
         assert_eq!(normalize_wheel(10.0), 1.0);
-        assert!(normalize_wheel(2.0) > 0.0 && normalize_wheel(2.0) < 0.5);
+        assert!(normalize_wheel(0.4) > 0.0 && normalize_wheel(0.4) < 0.1);
     }
 
     #[test]

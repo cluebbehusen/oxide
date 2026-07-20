@@ -84,6 +84,25 @@ impl Vision {
         &self.ghosts
     }
 
+    /// Whether the deserialized view holds together against the map it
+    /// claims to describe — see [`crate::State::validate_invariants`].
+    pub fn is_consistent(&self, width: i32, height: i32) -> bool {
+        let dims = |w: i32, h: i32, ok: bool| ok && w == width && h == height;
+        dims(
+            self.visible.width(),
+            self.visible.height(),
+            self.visible.is_consistent(),
+        ) && dims(
+            self.explored.width(),
+            self.explored.height(),
+            self.explored.is_consistent(),
+        ) && dims(
+            self.remembered_scrap.width(),
+            self.remembered_scrap.height(),
+            self.remembered_scrap.is_consistent(),
+        )
+    }
+
     /// Scrap at `pos` as last seen (zero where never seen or out of
     /// bounds). Renderers should use live amounts on visible ground and
     /// this everywhere else.

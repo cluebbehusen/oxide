@@ -54,6 +54,9 @@ enum Cmd {
         /// (reproduction not guaranteed — archaeology only).
         #[arg(long)]
         allow_version_mismatch: bool,
+        /// Run past the built-in length bound (marathon reproductions).
+        #[arg(long)]
+        allow_long: bool,
     },
     /// Render a scenario state to a PNG (software rasterizer, no window).
     Render {
@@ -341,9 +344,11 @@ fn main() -> Result<()> {
             ticks,
             expect_hash,
             allow_version_mismatch,
+            allow_long,
         } => {
             let replay = GameReplay::load(&path)?;
-            let state = runner::run_replay(&replay, ticks, allow_version_mismatch)?;
+            let state =
+                runner::run_replay_bounded(&replay, ticks, allow_version_mismatch, allow_long)?;
             let hash = hash_hex(state.hash());
             println!(
                 "{}",

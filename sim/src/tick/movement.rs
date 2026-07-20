@@ -1,11 +1,13 @@
 //! Phases 4–5: path following and collision resolution.
 //!
-//! Movement is pure per-unit work (paths never re-check passability because
-//! nothing dynamic blocks tiles: buildings are static in v1 and depleting
-//! scrap only ever *opens* tiles). Collision resolution then pushes
-//! overlapping bodies apart until they fit — units are solid to each other,
-//! but tiles are only ever blocked by terrain and buildings, so pathfinding
-//! stays deadlock-free while crowds physically jostle.
+//! Movement is per-unit work. Since 0.5, ground can close *during* a walk —
+//! a construction site claims its footprint the moment the command lands —
+//! so each step revalidates the waypoint it is about to move toward and
+//! drops the path when the ground has closed (the brain repaths around the
+//! new obstacle next tick). Collision resolution then pushes overlapping
+//! bodies apart until they fit — units are solid to each other, but tiles
+//! are only ever blocked by terrain and buildings, so pathfinding stays
+//! deadlock-free while crowds physically jostle.
 
 use crate::map::Map;
 use crate::state::{Order, State};
@@ -60,6 +62,15 @@ pub(super) fn run(state: &mut State) {
                 unit.path = None;
                 break;
             };
+            // Ground can close mid-walk (a site claims its footprint at
+            // command time): never step toward a waypoint that is no
+            // longer open — drop the path and let the brain repath.
+            let closed =
+                !map.terrain_passable(waypoint) || buildings.iter().any(|b| b.contains(waypoint));
+            if closed {
+                unit.path = None;
+                break;
+            }
             let center = waypoint.center();
             let dist = unit.pos.dist(center);
             if let Some(&next_wp) = path.waypoints.get(path.next as usize + 1)

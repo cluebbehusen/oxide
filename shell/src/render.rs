@@ -41,6 +41,10 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     } else {
         draw_fog(game);
     }
+    // Own-order acknowledgments and rally flags sit above the fog: they
+    // are the player's intent, not world intel.
+    draw_pings(game);
+    draw_rally_marker(game);
     draw_breadcrumbs(game, input);
     draw_placement_ghost(game, sprites, input);
     draw_drag_rect(game, input);
@@ -422,9 +426,6 @@ fn draw_buildings(game: &Game, sprites: &Sprites) {
                 3.0,
                 BONE,
             );
-            if let Some(rally) = building.rally {
-                draw_rally_flag(game, rally, zoom);
-            }
         }
         let max_hp = building.kind.stats().max_hp;
         if building.hp < max_hp {
@@ -583,22 +584,42 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
                 let color = Color::new(0.9, 0.88, 0.84, 0.7 * fade.clamp(0.0, 1.0));
                 draw_circle_lines(center.x, center.y, radius, 2.0, color);
             }
-            EffectKind::Ping { at, kind } => {
-                // A ring collapsing onto the ordered point.
-                let center = game.camera.to_screen(at);
-                let progress = (fx.age / 0.5).clamp(0.0, 1.0);
-                let radius = game.camera.zoom * (0.65 * (1.0 - progress) + 0.12);
-                let base = match kind {
-                    crate::game::PingKind::Move => color_u8!(120, 200, 130, 255),
-                    crate::game::PingKind::Attack => DANGER,
-                    crate::game::PingKind::Harvest => SCRAP_COLOR,
-                    crate::game::PingKind::Rally => BONE,
-                    crate::game::PingKind::Spawn => color_u8!(150, 210, 235, 255),
-                };
-                let color = Color::new(base.r, base.g, base.b, 1.0 - progress * 0.7);
-                draw_circle_lines(center.x, center.y, radius, 2.5, color);
-            }
+            EffectKind::Ping { .. } => {} // drawn above the fog, in draw_pings
         }
+    }
+}
+
+/// Order-acknowledgment rings, drawn above the fog: they are the player's
+/// own intent echoed back, not world intel to be hidden.
+fn draw_pings(game: &Game) {
+    for fx in &game.fx {
+        let EffectKind::Ping { at, kind } = fx.kind else {
+            continue;
+        };
+        let center = game.camera.to_screen(at);
+        let progress = (fx.age / 0.5).clamp(0.0, 1.0);
+        let radius = game.camera.zoom * (0.65 * (1.0 - progress) + 0.12);
+        let base = match kind {
+            crate::game::PingKind::Move => color_u8!(120, 200, 130, 255),
+            crate::game::PingKind::Attack => DANGER,
+            crate::game::PingKind::Harvest => SCRAP_COLOR,
+            crate::game::PingKind::Rally => BONE,
+            crate::game::PingKind::Spawn => color_u8!(150, 210, 235, 255),
+        };
+        let color = Color::new(base.r, base.g, base.b, 1.0 - progress * 0.7);
+        draw_circle_lines(center.x, center.y, radius, 2.5, color);
+    }
+}
+
+/// The selected own building's rally flag, above the fog for the same
+/// reason as pings.
+fn draw_rally_marker(game: &Game) {
+    if let Some(id) = game.selection.building
+        && let Some(building) = game.state.building(id)
+        && building.player == game.human
+        && let Some(rally) = building.rally
+    {
+        draw_rally_flag(game, rally, game.camera.zoom);
     }
 }
 
@@ -775,7 +796,19 @@ fn draw_hud(game: &Game) {
             panel_line(&line);
         }
     } else if !game.selection.units.is_empty() {
-        panel_line(&format!("{} unit(s) selected", game.selection.units.len()));
+        let has_builder = game.selection.units.iter().any(|id| {
+            game.state
+                .unit(*id)
+                .is_some_and(|u| u.kind == UnitKind::Harvester)
+        });
+        let mut line = format!(
+            "{} unit(s) selected   X: stop   R: patrol",
+            game.selection.units.len()
+        );
+        if has_builder {
+            line.push_str("   B: turret (100)   N: fabricator (150)");
+        }
+        panel_line(&line);
     }
 
     // Controls hint.

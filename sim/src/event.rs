@@ -53,6 +53,9 @@ pub enum Event {
     AttackHit {
         /// Who fired.
         attacker: UnitId,
+        /// What fired — carried in the event because presentation may run
+        /// after the attacker itself died this tick.
+        attacker_kind: crate::stats::UnitKind,
         /// Who was hit.
         target: Target,
         /// Muzzle position at fire time.

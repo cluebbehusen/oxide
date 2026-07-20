@@ -48,7 +48,8 @@ cancelling one refunds only what's still standing — damage burns salvage.
 | Right click | Contextual order: enemy → attack, scrap → harvest, ground → **move engaging everything on the way** (fire at will is the only stance; combat units always defend themselves) |
 | Shift + right click | Queue the order behind the current one |
 | `R` | Arm a patrol: right-click waypoints, `R` again to start the loop — patrollers engage everything met and never settle |
-| `B` / `N` | With a harvester selected: place a Turret / Fabricator (ghost shows validity; click commits, Esc cancels) |
+| `B` / `N` | With a harvester selected: place a Turret / Fabricator (ghost shows validity on ground you can currently see; click commits, Esc cancels) |
+| `X` | Units selected: stop in place. Construction site selected: scrap it for a partial refund |
 | Right click on minimap | Send the selection there, fighting through |
 | Right click (Foundry selected) | Set the rally point — rally a scrap node and fresh harvesters mine it; fresh Sentinels attack-move to it |
 | Mouse wheel | Zoom (toward the cursor) |

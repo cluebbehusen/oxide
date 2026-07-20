@@ -66,3 +66,14 @@ fn run_without_bots_is_quiet_but_valid() {
     assert!(replay.commands.is_empty(), "nobody issued commands");
     assert_eq!(outcome.state.current_tick(), 100);
 }
+
+#[test]
+fn forged_marathon_replays_are_refused() {
+    use chassis::replay::Replay;
+    use oxide_sim::{PlayerCommand, SIM_VERSION, Scenario};
+    let mut replay: Replay<Scenario, PlayerCommand> =
+        Replay::new(SIM_VERSION, Scenario::skirmish());
+    replay.meta.ticks = Some(u64::MAX - 1);
+    let err = runner::run_replay(&replay, None, false).unwrap_err();
+    assert!(err.to_string().contains("--allow-long"), "{err}");
+}

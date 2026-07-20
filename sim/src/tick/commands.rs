@@ -118,13 +118,16 @@ fn accepted_units(state: &State, player: PlayerId, ids: &[UnitId]) -> Vec<UnitId
 /// last tile if open ground runs out (they'll jostle; that's honest).
 /// Hands a unit its next order: replacing wipes any queued program;
 /// appending parks the order behind the current one (bounded — a hostile
-/// stream of appends must not grow memory forever).
-fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) {
+/// stream of appends must not grow memory forever). Returns whether the
+/// order actually landed — a full queue drops the append, and the caller
+/// reports it instead of pretending.
+fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) -> bool {
     if queue && !matches!(unit.order, Order::Idle) {
         if unit.queue.len() < ORDER_QUEUE_CAP {
             unit.queue.push_back(order);
+            return true;
         }
-        return;
+        return false;
     }
     if !queue {
         unit.queue.clear();
@@ -133,6 +136,7 @@ fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) {
     unit.order = order;
     unit.path = None;
     unit.progress = 0;
+    true
 }
 
 fn spread_goals(state: &State, center: TilePos, count: usize) -> Vec<TilePos> {
@@ -176,11 +180,14 @@ fn apply_move(
         return Err(RejectReason::NoValidUnits);
     }
     let goals = spread_goals(state, goal, accepted.len());
+    let mut landed = 0;
     for (id, goal) in accepted.into_iter().zip(goals) {
         let unit = state.unit_mut(id).expect("filtered above");
-        assign(unit, Order::Move { goal }, queue);
+        if assign(unit, Order::Move { goal }, queue) {
+            landed += 1;
+        }
     }
-    Ok(())
+    (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
 }
 
 fn apply_attack(
@@ -210,20 +217,28 @@ fn apply_attack(
     }
     // Units that can't fight walk to the target area instead.
     let walk_goal = find_nearby_passable(state, target_tile, GOAL_SNAP_RADIUS);
+    let mut landed = 0;
     let applied = for_owned_units(state, player, units, |u| {
         if u.kind.stats().attack.is_some() {
-            assign(
+            if assign(
                 u,
                 Order::Attack {
                     target,
                     resume: None,
                 },
                 queue,
-            );
-        } else if let Some(goal) = walk_goal {
-            assign(u, Order::Move { goal }, queue);
+            ) {
+                landed += 1;
+            }
+        } else if let Some(goal) = walk_goal
+            && assign(u, Order::Move { goal }, queue)
+        {
+            landed += 1;
         }
     });
+    if applied > 0 && landed == 0 {
+        return Err(RejectReason::QueueFull);
+    }
     (applied > 0)
         .then_some(())
         .ok_or(RejectReason::NoValidUnits)
@@ -246,6 +261,7 @@ fn apply_attack_move(
         return Err(RejectReason::NoValidUnits);
     }
     let goals = spread_goals(state, goal, accepted.len());
+    let mut landed = 0;
     for (id, goal) in accepted.into_iter().zip(goals) {
         let unit = state.unit_mut(id).expect("filtered above");
         let order = if unit.kind.stats().attack.is_some() {
@@ -253,9 +269,11 @@ fn apply_attack_move(
         } else {
             Order::Move { goal }
         };
-        assign(unit, order, queue);
+        if assign(unit, order, queue) {
+            landed += 1;
+        }
     }
-    Ok(())
+    (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
 }
 
 fn apply_harvest(
@@ -276,18 +294,22 @@ fn apply_harvest(
         return Err(RejectReason::NotANode);
     }
     let mut applied = 0;
+    let mut landed = 0;
     for &id in units {
         if let Some(unit) = state.unit_mut(id)
             && unit.player == player
             && unit.kind.stats().harvest.is_some()
         {
-            assign(unit, Order::Harvest { node }, queue);
+            if assign(unit, Order::Harvest { node }, queue) {
+                landed += 1;
+            }
             applied += 1;
         }
     }
-    (applied > 0)
-        .then_some(())
-        .ok_or(RejectReason::NoValidUnits)
+    if applied == 0 {
+        return Err(RejectReason::NoValidUnits);
+    }
+    (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
 }
 
 /// Walk a looping circuit: every waypoint must snap to open ground, and
@@ -371,12 +393,25 @@ fn apply_build(
             if !state.can_place(player, kind, anchor) {
                 return Err(RejectReason::BadSite);
             }
-            let bank = &mut state.player_mut(player).scrap;
-            if *bank < cost {
+            if state.player(player).scrap < cost {
                 return Err(RejectReason::NotEnoughScrap);
             }
-            *bank -= cost;
-            state.place_site(player, kind, anchor)
+            // Place first, then prove the builder can actually reach a
+            // doorstep *around the now-blocking footprint* — otherwise
+            // undo for free. Charging for a site nobody can ever touch
+            // would burn 80% of the price through the hp-scaled refund.
+            let site = state.place_site(player, kind, anchor);
+            let from = state.unit(builder).expect("filtered above").tile();
+            let size = kind.stats().size;
+            let reachable = super::rect_adjacent_tiles(anchor, size)
+                .filter(|&t| state.passable(t))
+                .any(|t| from == t || super::astar_for(state, from, t).is_some());
+            if !reachable {
+                state.buildings.retain(|b| b.id != site);
+                return Err(RejectReason::UnreachableGoal);
+            }
+            state.player_mut(player).scrap -= cost;
+            site
         }
     };
     let unit = state.unit_mut(builder).expect("filtered above");

@@ -102,7 +102,13 @@ fn turret_fire(state: &mut State, events: &mut Vec<Event>) {
 /// (damage taken meanwhile is simply kept — nobody rebuilds for free).
 fn build(state: &mut State, id: UnitId, site: crate::ids::BuildingId, events: &mut Vec<Event>) {
     let me = state.unit(id).expect("caller checked").player;
-    let Some(b) = state.building(site).filter(|b| b.player == me && !b.built) else {
+    // hp > 0 matters: an attacker earlier in this tick's id order may
+    // have zeroed the site, and cleanup hasn't swept it yet — building on
+    // it would resurrect the dead and swallow the destruction event.
+    let Some(b) = state
+        .building(site)
+        .filter(|b| b.player == me && !b.built && b.hp > 0)
+    else {
         // Finished, cancelled, or destroyed: the job is over either way.
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
@@ -474,6 +480,7 @@ fn attack(
         }
         events.push(Event::AttackHit {
             attacker: id,
+            attacker_kind: state.unit(id).expect("caller checked").kind,
             target,
             attacker_pos: pos,
             target_pos: aim_point,

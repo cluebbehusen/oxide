@@ -215,7 +215,11 @@ impl Bot {
 
         // Orphaned sites get a relief builder: a dead or reassigned
         // harvester must not strand paid-for progress (Build on an
-        // existing own site resumes it free of charge).
+        // existing own site resumes it free of charge). Harvesters already
+        // building — anywhere — are off limits, and each pick is reserved
+        // within this think, or one worker would be assigned to every
+        // orphan at once and oscillate between them forever.
+        let mut reserved: Vec<crate::ids::UnitId> = Vec::new();
         for b in state.buildings.iter() {
             if b.player != me || b.built {
                 continue;
@@ -225,7 +229,10 @@ impl Bot {
                     && u.hp > 0
                     && matches!(u.order, Order::Build { site } if site == b.id)
             });
-            if !attended && let Some(builder) = nearest_harvester(state, me, b.anchor) {
+            if !attended
+                && let Some(builder) = nearest_free_harvester(state, me, b.anchor, &reserved)
+            {
+                reserved.push(builder);
                 commands.push(self.cmd(Command::Build {
                     units: vec![builder],
                     kind: b.kind,
@@ -246,8 +253,9 @@ impl Bot {
                 crate::stats::BuildingKind::Fabricator,
                 home_center,
             )
-            && let Some(builder) = nearest_harvester(state, me, anchor)
+            && let Some(builder) = nearest_free_harvester(state, me, anchor, &reserved)
         {
+            reserved.push(builder);
             commands.push(self.cmd(Command::Build {
                 units: vec![builder],
                 kind: crate::stats::BuildingKind::Fabricator,
@@ -263,8 +271,9 @@ impl Bot {
                 nearest_scrap(state, TilePos::containing(home_center), &self.dead_nodes)
             && let Some(anchor) =
                 placement_near(state, me, crate::stats::BuildingKind::Turret, node.center())
-            && let Some(builder) = nearest_harvester(state, me, anchor)
+            && let Some(builder) = nearest_free_harvester(state, me, anchor, &reserved)
         {
+            reserved.push(builder);
             commands.push(self.cmd(Command::Build {
                 units: vec![builder],
                 kind: crate::stats::BuildingKind::Turret,
@@ -406,14 +415,27 @@ fn placement_near(
     None
 }
 
-/// The closest own harvester to `anchor`, ties to the lowest id. Pulling a
-/// working one is fine — it goes idle after the build and the economy loop
-/// re-hires it.
-fn nearest_harvester(state: &State, me: PlayerId, anchor: TilePos) -> Option<crate::ids::UnitId> {
+/// The closest own harvester to `anchor` that isn't already building
+/// somewhere or reserved this think, ties to the lowest id. Pulling a
+/// mining one is fine — it goes idle after the build and the economy loop
+/// re-hires it; pulling an active *builder* is not, that's how sites end
+/// up abandoned.
+fn nearest_free_harvester(
+    state: &State,
+    me: PlayerId,
+    anchor: TilePos,
+    reserved: &[crate::ids::UnitId],
+) -> Option<crate::ids::UnitId> {
     state
         .units
         .iter()
-        .filter(|u| u.player == me && u.kind == UnitKind::Harvester && u.hp > 0)
+        .filter(|u| {
+            u.player == me
+                && u.kind == UnitKind::Harvester
+                && u.hp > 0
+                && !matches!(u.order, Order::Build { .. })
+                && !reserved.contains(&u.id)
+        })
         .map(|u| (u.pos.dist_sq(anchor.center()), u.id))
         .min()
         .map(|(_, id)| id)

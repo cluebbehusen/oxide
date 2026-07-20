@@ -98,7 +98,7 @@ pub enum MouseButton {
 
 /// The keys the shell maps. Deliberately only what the game uses — extend
 /// alongside the input mapper.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Key {
     /// Pan up.

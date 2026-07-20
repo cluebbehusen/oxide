@@ -179,11 +179,20 @@ and test fixtures inside crate `tests/` directories.
 - **Damage answers back**: a hit unit that can fight and isn't already
   fighting turns on its attacker (units *and* turrets) — the counter to
   range beyond aggro. Inside aggro, auto-acquire already covered it.
-- **Construction claims ground instantly**: full price on placement, a
-  fifth of max hp standing, blind and inert until built. Progress needs
-  an adjacent builder; orphaned sites freeze and any own harvester can
-  resume them. Cancel refunds `cost × hp / max_hp`. One predicate —
-  `State::can_place` — serves sim validation and the shell's ghost.
+- **Construction claims ground instantly**: full price on placement
+  (refused — and refunded nothing — if no doorstep is reachable), a
+  fifth of max hp standing, blind and inert until built. Ground closing
+  mid-walk is real: movement revalidates each waypoint and repaths
+  around fresh sites. Progress needs an adjacent builder — **several
+  adjacent builders stack**, each contributing a tick, so two roughly
+  halve the build; deliberate, tested. Orphaned sites freeze and any own
+  harvester can resume them; a site zeroed by fire is dead even if its
+  builder acts later the same tick. Cancel (`X`) refunds
+  `cost × hp / max_hp`. One predicate — `State::can_place` — serves sim
+  validation and the shell's ghost, and it requires the footprint
+  *currently visible*: its occupancy checks read live state, and testing
+  explored-but-unseen ground would leak hidden enemies through the red
+  tint.
 - **Fog of war enforces exactly one thing in the sim**: targeted attacks
   need the issuer to *see* the victim. Rendering honors fog fully
   (unexplored void, explored dim, unseen enemies culled) but the debug

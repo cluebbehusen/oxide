@@ -2550,3 +2550,284 @@ fn bot_sends_a_relief_builder_to_an_orphaned_site() {
     }
     panic!("orphaned site was never resumed by the bot");
 }
+
+#[test]
+fn a_fresh_site_blocks_units_already_walking_through_it() {
+    use oxide_sim::stats::BuildingKind;
+    // The mover's cached path runs straight along row 6; a turret site
+    // lands on that row mid-walk. The mover must route around, never
+    // standing inside the footprint, and still arrive.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 2, 6),
+        unit(0, UnitKind::Harvester, 9, 5),
+    ])
+    .build()
+    .unwrap();
+    let (mover, builder) = (state.units()[0].id, state.units()[1].id);
+    let goal = TilePos::new(12, 6);
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![mover],
+            goal,
+            queue: false,
+        },
+    )]);
+    for _ in 0..20 {
+        state.tick(&[]); // mover under way, site not yet placed
+    }
+    let anchor = TilePos::new(9, 6);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor,
+        },
+    )]);
+    for _ in 0..400 {
+        state.tick(&[]);
+        let t = state.unit(mover).unwrap().tile();
+        assert_ne!(t, anchor, "walked through a standing construction site");
+        if t == goal {
+            return;
+        }
+    }
+    panic!("mover never arrived after the repath");
+}
+
+#[test]
+fn a_zeroed_site_cannot_be_revived_by_its_builder() {
+    use oxide_sim::stats::BuildingKind;
+    // Three lancers volley 90 damage — more than the fresh site's 70 hp —
+    // while the builder (highest id, acting last each tick) feeds it
+    // progress. Without the hp check, the builder revives the corpse
+    // every volley and the site eventually *completes*; with it, the
+    // first volley kills the site for good.
+    let mut state = arena(vec![
+        unit(1, UnitKind::Lancer, 8, 5),
+        unit(1, UnitKind::Lancer, 9, 6),
+        unit(1, UnitKind::Lancer, 8, 7),
+        unit(0, UnitKind::Harvester, 4, 6),
+    ])
+    .build()
+    .unwrap();
+    let lancers: Vec<UnitId> = state.units().iter().take(3).map(|u| u.id).collect();
+    let builder = state.units()[3].id;
+    let anchor = TilePos::new(5, 6);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor,
+        },
+    )]);
+    let site = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == anchor)
+        .unwrap()
+        .id;
+    // The first volley can land on the command tick itself — keep its
+    // report (the oldest gotcha in the book).
+    let mut events = state
+        .tick(&[cmd(
+            1,
+            Command::Attack {
+                units: lancers,
+                target: Target::Building(site),
+                queue: false,
+            },
+        )])
+        .events;
+    if state.building(site).is_some() {
+        events.extend(run_until(&mut state, 120, |s, _| {
+            s.building(site).is_none()
+        }));
+    }
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::BuildingDestroyed { .. })),
+        "destruction must be an event, not a silent tug-of-war"
+    );
+}
+#[test]
+fn queue_overflow_is_rejected_not_swallowed() {
+    use oxide_sim::stats::ORDER_QUEUE_CAP;
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 2, 6)])
+        .build()
+        .unwrap();
+    let mover = state.units()[0].id;
+    let mut rejected = 0;
+    for i in 0..(ORDER_QUEUE_CAP + 9) {
+        let goal = TilePos::new(3 + (i % 10) as i32, 2);
+        let report = state.tick(&[cmd(
+            0,
+            Command::Move {
+                units: vec![mover],
+                goal,
+                queue: true,
+            },
+        )]);
+        rejected += report
+            .events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Event::CommandRejected {
+                        reason: RejectReason::QueueFull,
+                        ..
+                    }
+                )
+            })
+            .count();
+    }
+    assert_eq!(state.unit(mover).unwrap().queue.len(), ORDER_QUEUE_CAP);
+    assert!(rejected > 0, "silent drops at the cap");
+}
+
+#[test]
+fn unreachable_sites_are_rejected_before_charging() {
+    use oxide_sim::stats::BuildingKind;
+    // The pocket interior is visible (vision is radius-based, rock does
+    // not block sight) but no builder can path to any doorstep.
+    let scenario = Scenario {
+        name: "sealed-doorstep".into(),
+        seed: 42,
+        map: vec![
+            "##############".into(),
+            "#1...........#".into(),
+            "#....###.....#".into(),
+            "#....#.#.....#".into(),
+            "#....###.....#".into(),
+            "#..........2.#".into(),
+            "#............#".into(),
+            "##############".into(),
+        ],
+        players: arena(vec![]).players,
+        units: vec![unit(0, UnitKind::Harvester, 4, 6)],
+    };
+    let mut state = scenario.build().unwrap();
+    let builder = state.units()[0].id;
+    let scrap_before = state.player(PlayerId(0)).scrap;
+    let report = state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor: TilePos::new(6, 3),
+        },
+    )]);
+    assert!(report.events.iter().any(|e| matches!(
+        e,
+        Event::CommandRejected {
+            reason: RejectReason::UnreachableGoal,
+            ..
+        }
+    )));
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        scrap_before,
+        "an impossible site must not cost anything"
+    );
+    assert!(
+        state
+            .buildings()
+            .iter()
+            .all(|b| b.anchor != TilePos::new(6, 3))
+    );
+}
+
+#[test]
+fn placement_requires_current_vision_not_mere_exploration() {
+    use oxide_sim::stats::BuildingKind;
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 12, 2)])
+        .build()
+        .unwrap();
+    let scout = state.units()[0].id;
+    let spot = TilePos::new(12, 1);
+    assert!(state.can_place(PlayerId(0), BuildingKind::Turret, spot));
+    // Walk home: the ground stays explored but drops out of sight.
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![scout],
+            goal: TilePos::new(2, 6),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| !s.can_see(PlayerId(0), spot));
+    assert!(state.vision(PlayerId(0)).explored(spot));
+    assert!(
+        !state.can_place(PlayerId(0), BuildingKind::Turret, spot),
+        "occupancy reads live state, so placement needs live sight"
+    );
+}
+
+#[test]
+fn extra_builders_accelerate_construction() {
+    use oxide_sim::stats::BuildingKind;
+    // Deliberate mechanic (documented in AGENTS): every adjacent builder
+    // contributes a progress tick, so two roughly halve the build.
+    let build_time = |extra_builder: bool| {
+        let mut units = vec![unit(0, UnitKind::Harvester, 4, 6)];
+        if extra_builder {
+            units.push(unit(0, UnitKind::Harvester, 6, 6));
+        }
+        let mut state = arena(units).build().unwrap();
+        let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
+        let anchor = TilePos::new(5, 6);
+        state.tick(&[cmd(
+            0,
+            Command::Build {
+                units: vec![ids[0]],
+                kind: BuildingKind::Turret,
+                anchor,
+            },
+        )]);
+        if extra_builder {
+            state.tick(&[cmd(
+                0,
+                Command::Build {
+                    units: vec![ids[1]],
+                    kind: BuildingKind::Turret,
+                    anchor,
+                },
+            )]);
+        }
+        let mut ticks = 0u32;
+        while !state
+            .buildings()
+            .iter()
+            .any(|b| b.anchor == anchor && b.built)
+        {
+            state.tick(&[]);
+            ticks += 1;
+            assert!(ticks < 700, "construction never finished");
+        }
+        ticks
+    };
+    let solo = build_time(false);
+    let pair = build_time(true);
+    assert!(
+        pair * 2 < solo * 3,
+        "two builders should be markedly faster: solo {solo}, pair {pair}"
+    );
+}
+
+#[test]
+fn validator_rejects_malformed_grids() {
+    let state = arena(vec![]).build().unwrap();
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+    // Truncate the first vision table's visible-cells array.
+    let cells = doc["vision"][0]["visible"]["cells"]
+        .as_array_mut()
+        .expect("vision grid serializes its cells");
+    cells.pop();
+    let tampered: State = serde_json::from_value(doc).unwrap();
+    assert!(tampered.validate_invariants().is_err());
+}

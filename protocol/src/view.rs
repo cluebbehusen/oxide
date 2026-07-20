@@ -94,16 +94,13 @@ pub struct UnitView {
     pub carrying: u32,
     /// Current intent, as the sim's own tagged serialization.
     pub order: Order,
-    /// Orders waiting behind the active one.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub queued: usize,
+    /// Orders waiting behind the active one, in execution order — agents
+    /// verify queues and patrol circuits from this, not just a count.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queue: Vec<Order>,
     /// Whether the queue loops (a patrol circuit).
     #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub patrolling: bool,
-}
-
-fn is_zero(n: &usize) -> bool {
-    *n == 0
 }
 
 /// One building.
@@ -237,7 +234,7 @@ fn unit_view(u: &Unit) -> UnitView {
         hp: u.hp,
         carrying: u.carrying,
         order: u.order,
-        queued: u.queue.len(),
+        queue: u.queue.iter().copied().collect(),
         patrolling: u.looping,
     }
 }
@@ -322,6 +319,27 @@ mod tests {
         assert!(slim.map.is_none());
         assert!(!slim.hash.is_empty() && slim.hash.starts_with("0x"));
         assert_eq!(slim.hash, full.hash, "views never perturb state");
+    }
+
+    #[test]
+    fn unit_view_exposes_queued_orders() {
+        let mut state = oxide_sim::Scenario::skirmish().build().unwrap();
+        let mover = state.units()[0].id;
+        state.tick(&[oxide_sim::PlayerCommand {
+            player: oxide_sim::PlayerId(0),
+            command: oxide_sim::Command::Patrol {
+                units: vec![mover],
+                waypoints: vec![
+                    chassis::grid::TilePos::new(10, 10),
+                    chassis::grid::TilePos::new(14, 6),
+                    chassis::grid::TilePos::new(8, 12),
+                ],
+            },
+        }]);
+        let view = StateView::capture(&state, StateFilter::default());
+        let u = view.units.iter().find(|u| u.id == mover.0).unwrap();
+        assert!(u.patrolling);
+        assert_eq!(u.queue.len(), 2, "the remaining circuit legs are visible");
     }
 
     #[test]

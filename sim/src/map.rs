@@ -176,6 +176,12 @@ impl Map {
         ))
     }
 
+    /// Whether the deserialized grid holds together (see
+    /// [`chassis::grid::Grid::is_consistent`]).
+    pub fn is_consistent(&self) -> bool {
+        self.grid.is_consistent()
+    }
+
     /// Map width in tiles.
     pub fn width(&self) -> i32 {
         self.grid.width()
