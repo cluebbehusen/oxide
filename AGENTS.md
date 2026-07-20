@@ -72,7 +72,9 @@ under `target/` for side-by-side inspection) plus `state-hashes.json`,
 bot-vs-bot hashes at tick 2,000 for every shipped scenario — the cheap
 tripwire that flags sim drift without image churn, and the fixture CI
 re-derives per-OS as the cross-platform determinism proof.
-`.github/workflows/ci.yml` is authored and dormant until a remote exists.
+`.github/workflows/ci.yml` runs the suite on three OSes plus an MSRV
+job on every push and PR; the hash-fixture step re-derives per-OS as the
+cross-platform determinism proof.
 
 ## Running and driving the game
 
@@ -123,9 +125,12 @@ and test fixtures inside crate `tests/` directories.
 
 ## Conventions
 
-- **Conventional commits** (`feat(sim): …`, `fix(shell): …`, `docs: …`),
-  trunk-based on `main`. Commit signing is disabled repo-locally (the
-  global signing key needs an interactive passphrase).
+- **Conventional commits** (`feat(sim): …`, `fix(shell): …`, `docs: …`).
+  Since 0.4.1 the repo lives at github.com/cluebbehusen/oxide and each
+  version is developed on a branch (`0.5`, `0.6`, …) merged to `main` by
+  PR; phase commits land on the version branch. Commits are signed (SSH
+  key via ssh-agent — run `ssh-add --apple-use-keychain` after a reboot
+  if signing starts failing).
 - **Idiomatic Rust.** rustfmt defaults, clippy clean, `missing_docs` warns
   in the library crates. Comments state constraints, not narration.
 - **Assets are generated.** Sprites: `tools/gen_sprites.py` (palette at

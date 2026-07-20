@@ -120,9 +120,9 @@ must never panic or diverge); headless scenario/determinism tests
 to a decisive end); golden images rendered by a CPU rasterizer and
 compared byte-for-byte, alongside fixed state-hash fixtures for every
 shipped map; and the live smoke drive. A full bot match simulates in well
-under a second. A CI workflow (`.github/workflows/ci.yml`) runs the suite
-on Linux/macOS/Windows and re-checks the hash fixtures on each — the
-cross-platform determinism proof — the day this repo grows a remote.
+under a second. CI (`.github/workflows/ci.yml`) runs the suite on
+Linux/macOS/Windows and re-checks the hash fixtures on each — the
+cross-platform determinism proof.
 
 ## Saving games
 

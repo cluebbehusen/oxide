@@ -1,10 +1,9 @@
 # Oxide CI: lint, test, and prove cross-platform determinism.
 #
-# Authored before the repo had a remote — it runs the day this lands on
-# GitHub. The determinism step is the important one: the state-hash
-# fixtures were blessed on one machine, and every OS in the matrix must
-# reproduce them bit-for-bit or the "same seed, same bits, every platform"
-# invariant is broken.
+# The determinism step is the important one: the state-hash fixtures were
+# blessed on one machine, and every OS in the matrix must reproduce them
+# bit-for-bit or the "same seed, same bits, every platform" invariant is
+# broken.
 
 name: ci
 
