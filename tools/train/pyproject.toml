@@ -1,0 +1,12 @@
+[project]
+name = "oxide-train"
+version = "0.1.0"
+description = "PPO self-play trainer for Oxide's gym interface"
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.4",
+    "numpy>=1.26",
+]
+
+[tool.uv]
+package = false
