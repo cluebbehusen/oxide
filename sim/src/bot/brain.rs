@@ -7,7 +7,7 @@
 //! allow, let the executive do its housekeeping, ask the policy for
 //! intents, lower them to commands.
 
-use super::executive::Executive;
+use super::executive::{Doctrine, Executive};
 use super::observation::Observation;
 use super::orient::Orientation;
 use super::utility::{Dials, UtilityPolicy};
@@ -30,7 +30,21 @@ impl Brain {
     /// Creates the brain for `player`. The scenario seed jitters the
     /// army-size threshold (±1) so mirror matches don't march in
     /// lockstep forever — the same trick the classic bot uses.
-    pub fn new(player: PlayerId, scenario_seed: u64, mut dials: Dials) -> Self {
+    pub fn new(player: PlayerId, scenario_seed: u64, dials: Dials) -> Self {
+        Self::with_doctrine(player, scenario_seed, dials, Doctrine::default())
+    }
+
+    /// Creates the brain for a difficulty tier.
+    pub fn for_tier(player: PlayerId, scenario_seed: u64, tier: super::Difficulty) -> Self {
+        Self::with_doctrine(player, scenario_seed, tier.dials(), tier.doctrine())
+    }
+
+    fn with_doctrine(
+        player: PlayerId,
+        scenario_seed: u64,
+        mut dials: Dials,
+        doctrine: Doctrine,
+    ) -> Self {
         let mut rng = Pcg32::new(scenario_seed, 2000 + u64::from(player.0));
         dials.army_size = (dials.army_size + rng.next_below(3))
             .saturating_sub(1)
@@ -39,7 +53,7 @@ impl Brain {
             player,
             dials,
             policy: UtilityPolicy::new(),
-            exec: Executive::default(),
+            exec: Executive::with_doctrine(doctrine),
         }
     }
 

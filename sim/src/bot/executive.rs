@@ -129,6 +129,25 @@ const ENGAGE_RADIUS: i32 = 8;
 /// A pushing army is engaged once enemies are inside this radius.
 const CONTACT_RADIUS: i32 = 6;
 
+/// Combat habits a tier can switch off. Fairness note: these change
+/// how well the executive fights, never the rules it fights under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Doctrine {
+    /// Concentrate army fire on one target while engaged.
+    pub focus_fire: bool,
+    /// Rotate members under 35% hp to the rear between fights.
+    pub pullback: bool,
+}
+
+impl Default for Doctrine {
+    fn default() -> Self {
+        Self {
+            focus_fire: true,
+            pullback: true,
+        }
+    }
+}
+
 /// The layer between policies and the sim. One per bot; carries across
 /// ticks (armies are memory, legitimately — a bot is a command source,
 /// not sim state).
@@ -139,12 +158,23 @@ pub struct Executive {
     /// Rear-line members rotated out for good (kept so re-drafts skip
     /// them; pruned when they die).
     rear: Vec<UnitId>,
+    /// Which combat habits this executive practices.
+    doctrine: Doctrine,
 }
 
 impl Executive {
-    /// Fresh, armyless.
+    /// Fresh, armyless, full doctrine.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Fresh with an explicit doctrine (how the difficulty tiers strip
+    /// combat habits from the lower rungs).
+    pub fn with_doctrine(doctrine: Doctrine) -> Self {
+        Self {
+            doctrine,
+            ..Self::default()
+        }
     }
 
     /// Read access for policies and tests.
@@ -304,6 +334,7 @@ impl Executive {
         rear: TilePos,
     ) -> Vec<PlayerCommand> {
         let mut out = Vec::new();
+        let doctrine = self.doctrine;
         let alive = |id: UnitId| obs.my_units.iter().any(|u| u.id == id);
         self.rear.retain(|id| alive(*id));
         for army in &mut self.armies {
@@ -317,7 +348,7 @@ impl Executive {
             // between fights. Mid-engagement a wounded machine still
             // deals full damage, and at equal speeds it cannot escape a
             // pursuer anyway; pulling it then just thins the line.
-            if !in_contact {
+            if doctrine.pullback && !in_contact {
                 let mut pulled: Vec<UnitId> = Vec::new();
                 army.members.retain(|id| {
                     let Some(u) = obs.my_units.iter().find(|u| u.id == *id) else {
@@ -407,7 +438,7 @@ impl Executive {
                                 queue: false,
                             },
                         });
-                    } else {
+                    } else if doctrine.focus_fire {
                         // Concentrate fire: everyone on the weakest gun
                         // in the fight (ties toward the centroid, then
                         // id). Candidates stay inside contact radius so
