@@ -263,6 +263,13 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         ),
     );
 
+    // Continuity setup: run the ORIGINAL session (bots with their genuine
+    // memory) past the save point before any reload touches it.
+    client.call(Request::AdvanceTicks { ticks: 200 })?;
+    let Reply::Hash(future_live) = client.call(Request::StateHash)? else {
+        bail!("state_hash returned the wrong reply kind");
+    };
+
     // Session resume: loading the replay we just saved must land on the
     // same tick and hash, still recording.
     let resumed = client.call(Request::LoadReplay {
@@ -281,6 +288,19 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         "resumed session matches the live hash",
         after_resume.hash == live.hash,
         format!("{} vs {}", after_resume.hash, live.hash),
+    );
+
+    // The continuity contract: a resumed session must continue exactly as
+    // the unsaved one would have — including the bots, whose memory is
+    // rebuilt by watching the replay during the fast-forward.
+    client.call(Request::AdvanceTicks { ticks: 200 })?;
+    let Reply::Hash(future_resumed) = client.call(Request::StateHash)? else {
+        bail!("state_hash returned the wrong reply kind");
+    };
+    checks.note(
+        "resumed session continues identically to the unsaved one",
+        future_resumed.hash == future_live.hash,
+        format!("{} vs {}", future_resumed.hash, future_live.hash),
     );
     Ok(())
 }

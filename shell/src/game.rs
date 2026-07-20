@@ -251,8 +251,17 @@ impl Game {
             "replay spans {total} ticks — beyond the {MAX_LOAD_TICKS}-tick interactive load limit \
              (the headless driver replays without one)"
         );
+        // Bots carry memory since 0.5 (raid flags, node blacklists), so
+        // the fast-forward must let them *watch* the session back: act()
+        // runs against every tick to rebuild that memory, and its outputs
+        // are discarded — the recorded commands are the truth. A resumed
+        // session then continues exactly as the unsaved one would have.
+        let mut bots = Bot::for_scenario(&scenario);
         let mut cursor = replay.cursor();
         for _ in 0..total {
+            for bot in &mut bots {
+                let _ = bot.act(&state);
+            }
             let commands: Vec<PlayerCommand> = cursor
                 .take_tick(state.current_tick())
                 .iter()
@@ -266,6 +275,7 @@ impl Game {
         );
         let mut game = Self::new(scenario)?;
         game.state = state;
+        game.bots = bots;
         game.recorder = replay;
         if let Some(focus) = game
             .state

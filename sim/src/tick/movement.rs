@@ -64,10 +64,18 @@ pub(super) fn run(state: &mut State) {
             };
             // Ground can close mid-walk (a site claims its footprint at
             // command time): never step toward a waypoint that is no
-            // longer open — drop the path and let the brain repath.
-            let closed =
-                !map.terrain_passable(waypoint) || buildings.iter().any(|b| b.contains(waypoint));
-            if closed {
+            // longer open — and never take a diagonal whose two flanking
+            // cardinals aren't both open either, the same no-corner-cut
+            // rule A* guaranteed when the path was computed. Drop the path
+            // and let the brain repath around whatever appeared.
+            let open =
+                |t: TilePos| map.terrain_passable(t) && !buildings.iter().any(|b| b.contains(t));
+            let here = TilePos::containing(unit.pos);
+            let (dx, dy) = (waypoint.x - here.x, waypoint.y - here.y);
+            let corner_cut = dx != 0
+                && dy != 0
+                && !(open(here.offset(dx.signum(), 0)) && open(here.offset(0, dy.signum())));
+            if !open(waypoint) || corner_cut {
                 unit.path = None;
                 break;
             }

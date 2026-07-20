@@ -112,10 +112,6 @@ fn accepted_units(state: &State, player: PlayerId, ids: &[UnitId]) -> Vec<UnitId
     accepted
 }
 
-/// The first `count` passable tiles ring-scanned outward from `center` —
-/// per-unit goals for a group order, so crowds fan out over an area
-/// instead of magnetizing onto a single tile. Falls back to repeating the
-/// last tile if open ground runs out (they'll jostle; that's honest).
 /// Hands a unit its next order: replacing wipes any queued program;
 /// appending parks the order behind the current one (bounded — a hostile
 /// stream of appends must not grow memory forever). Returns whether the
@@ -139,6 +135,10 @@ fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) -> bool {
     true
 }
 
+/// The first `count` passable tiles ring-scanned outward from `center` —
+/// per-unit goals for a group order, so crowds fan out over an area
+/// instead of magnetizing onto a single tile. Falls back to repeating the
+/// last tile if open ground runs out (they'll jostle; that's honest).
 fn spread_goals(state: &State, center: TilePos, count: usize) -> Vec<TilePos> {
     let mut out = Vec::with_capacity(count);
     'scan: for r in 0..=GOAL_SNAP_RADIUS + 3 {
@@ -407,7 +407,7 @@ fn apply_build(
                 .filter(|&t| state.passable(t))
                 .any(|t| from == t || super::astar_for(state, from, t).is_some());
             if !reachable {
-                state.buildings.retain(|b| b.id != site);
+                state.retract_site(site);
                 return Err(RejectReason::UnreachableGoal);
             }
             state.player_mut(player).scrap -= cost;

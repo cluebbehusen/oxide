@@ -528,6 +528,19 @@ impl State {
         id
     }
 
+    /// Undoes a just-placed site completely, id counter included — for
+    /// validation paths that must leave no trace on rejection (a rejected
+    /// command must not move the state hash).
+    pub(crate) fn retract_site(&mut self, id: BuildingId) {
+        debug_assert_eq!(
+            id.0 + 1,
+            self.next_building_id,
+            "only the newest site retracts"
+        );
+        self.buildings.retain(|b| b.id != id);
+        self.next_building_id = id.0;
+    }
+
     /// Whether `player` may start `kind` at `anchor` right now: every
     /// footprint tile *currently visible* to them, open ground, and free
     /// of buildings and standing units. Visibility (not mere exploration)

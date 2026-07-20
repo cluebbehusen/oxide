@@ -742,9 +742,8 @@ fn train(game: &mut Game, slot: usize) {
 /// Normalizes a raw wheel reading toward gentle notch counts. Trackpads
 /// report small continuous deltas, discrete wheels big notchy ones
 /// (±120-ish); both should zoom at a comparable, capped rate. Heuristic —
-/// revisit if a device feels off. TODO: X11-style ±1 detents land in the
-/// trackpad branch and zoom 10× weaker than ±120 detents; needs tuning
-/// on real Linux hardware before it's worth guessing at.
+/// revisit if a device feels off (small whole numbers — X11-style
+/// detents — count as full notches; fractional deltas are trackpads).
 fn normalize_wheel(raw: f32) -> f32 {
     let delta = if raw.abs() >= 40.0 {
         raw / 120.0

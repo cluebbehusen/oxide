@@ -2831,3 +2831,156 @@ fn validator_rejects_malformed_grids() {
     let tampered: State = serde_json::from_value(doc).unwrap();
     assert!(tampered.validate_invariants().is_err());
 }
+
+#[test]
+fn a_fresh_site_cannot_be_corner_cut_diagonally() {
+    use oxide_sim::stats::BuildingKind;
+    // The mover walks a diagonal staircase; a turret lands on one of the
+    // flanking cardinals of an upcoming diagonal step. The waypoint
+    // itself stays open — only the no-corner-cut invariant is at stake.
+    let scenario = Scenario {
+        name: "corner-cut".into(),
+        seed: 42,
+        map: vec![
+            "###############".into(),
+            "#1............#".into(),
+            "#.............#".into(),
+            "#.............#".into(),
+            "#.............#".into(),
+            "#.............#".into(),
+            "#.............#".into(),
+            "#.............#".into(),
+            "#.............#".into(),
+            "#..........2..#".into(),
+            "#.............#".into(),
+            "###############".into(),
+        ],
+        players: arena(vec![]).players,
+        units: vec![
+            unit(0, UnitKind::Harvester, 3, 2),
+            unit(0, UnitKind::Harvester, 6, 2),
+        ],
+    };
+    let mut state = scenario.build().unwrap();
+    let (mover, builder) = (state.units()[0].id, state.units()[1].id);
+    let goal = TilePos::new(11, 8);
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![mover],
+            goal,
+            queue: false,
+        },
+    )]);
+    for _ in 0..10 {
+        state.tick(&[]); // under way along the staircase
+    }
+    // Read the actual route and flank an upcoming diagonal step — the
+    // test adapts to whatever staircase A* chose.
+    let anchor = {
+        let path = state.unit(mover).unwrap().path.as_ref().expect("walking");
+        let next = path.next as usize;
+        let mut flank = None;
+        for w in path.waypoints[next..].windows(2) {
+            let (a, b) = (w[0], w[1]);
+            if a.x != b.x && a.y != b.y {
+                flank = Some(TilePos::new(b.x, a.y));
+                break;
+            }
+        }
+        flank.expect("the route has a diagonal step")
+    };
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor,
+        },
+    )]);
+    // Every step from here obeys the no-corner-cut rule around the site.
+    let mut prev = state.unit(mover).unwrap().tile();
+    for _ in 0..500 {
+        state.tick(&[]);
+        let now = state.unit(mover).unwrap().tile();
+        assert_ne!(now, anchor, "inside the site footprint");
+        let (dx, dy) = (now.x - prev.x, now.y - prev.y);
+        if dx != 0 && dy != 0 {
+            assert!(
+                TilePos::new(prev.x + dx, prev.y) != anchor
+                    && TilePos::new(prev.x, prev.y + dy) != anchor,
+                "diagonal step {prev:?} -> {now:?} cut the corner of {anchor:?}"
+            );
+        }
+        prev = now;
+        if now == goal {
+            return;
+        }
+    }
+    panic!("mover never arrived after the repath");
+}
+
+#[test]
+fn a_rejected_build_leaves_no_trace_on_the_hash() {
+    use oxide_sim::stats::BuildingKind;
+    let scenario = Scenario {
+        name: "sealed-doorstep".into(),
+        seed: 42,
+        map: vec![
+            "##############".into(),
+            "#1...........#".into(),
+            "#....###.....#".into(),
+            "#....#.#.....#".into(),
+            "#....###.....#".into(),
+            "#..........2.#".into(),
+            "#............#".into(),
+            "##############".into(),
+        ],
+        players: arena(vec![]).players,
+        units: vec![unit(0, UnitKind::Harvester, 4, 6)],
+    };
+    let mut with_reject = scenario.build().unwrap();
+    let mut pristine = scenario.build().unwrap();
+    let builder = with_reject.units()[0].id;
+    let report = with_reject.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor: TilePos::new(6, 3),
+        },
+    )]);
+    assert!(report.events.iter().any(|e| matches!(
+        e,
+        Event::CommandRejected {
+            reason: RejectReason::UnreachableGoal,
+            ..
+        }
+    )));
+    pristine.tick(&[]);
+    assert_eq!(
+        with_reject.hash(),
+        pristine.hash(),
+        "a rejected command must not move the state hash (id counter leak)"
+    );
+    // And the next building anywhere gets the same id in both worlds.
+    let a = with_reject.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor: TilePos::new(3, 4),
+        },
+    )]);
+    let _ = a;
+    let b = pristine.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor: TilePos::new(3, 4),
+        },
+    )]);
+    let _ = b;
+    assert_eq!(with_reject.hash(), pristine.hash());
+}

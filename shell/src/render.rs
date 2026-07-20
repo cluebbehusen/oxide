@@ -108,10 +108,16 @@ fn draw_breadcrumbs(game: &Game, input: &InputState) {
         let Some(unit) = game.state.unit(*id) else {
             continue;
         };
-        let goal_of = |order: &oxide_sim::Order| match order {
-            oxide_sim::Order::Move { goal } | oxide_sim::Order::AttackMove { goal } => Some(*goal),
-            oxide_sim::Order::Harvest { node } => Some(*node),
-            _ => None,
+        // Only explored targets draw: the harvest brain can retarget to a
+        // node the player has never seen, and a breadcrumb there would
+        // leak it through the fog.
+        let goal_of = |order: &oxide_sim::Order| {
+            let goal = match order {
+                oxide_sim::Order::Move { goal } | oxide_sim::Order::AttackMove { goal } => *goal,
+                oxide_sim::Order::Harvest { node } => *node,
+                _ => return None,
+            };
+            (game.overlay || game.my_vision().explored(goal)).then_some(goal)
         };
         let mut points: Vec<Vec2> = Vec::new();
         if let Some(g) = goal_of(&unit.order) {
