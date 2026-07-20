@@ -36,12 +36,14 @@ def wilson(wins: int, games: int, z: float = 1.96) -> tuple[float, float]:
     return (center - half, center + half)
 
 
-def play(policy, worker: Worker, opponent: str, seed: int, seat: int) -> tuple[bool | None, int]:
+def play(
+    policy, worker: Worker, opponent: str, seed: int, seat: int, scenario: str | None = None
+) -> tuple[bool | None, int]:
     """One greedy match; returns (won, ticks)."""
     if opponent == "rusher":
-        frame = worker.reset(seed, control=(0, 1))
+        frame = worker.reset(seed, control=(0, 1), scenario=scenario)
     else:
-        frame = worker.reset(seed, control=(seat,), tier=opponent)
+        frame = worker.reset(seed, control=(seat,), tier=opponent, scenario=scenario)
     while not frame.done:
         view = frame.seats[seat]
         with torch.no_grad():
@@ -65,6 +67,7 @@ def main():
     ap.add_argument("--driver", default="../../target/release/oxide-driver")
     ap.add_argument("--seeds", type=int, default=30)
     ap.add_argument("--opponents", default=",".join(TIERS + ["rusher"]))
+    ap.add_argument("--scenario", default=None, help="map (default: the built-in skirmish)")
     args = ap.parse_args()
 
     policy, blob = load_policy(args.ckpt)
@@ -77,7 +80,7 @@ def main():
             ticks = []
             for seed in range(3000, 3000 + args.seeds):
                 for seat in (0, 1):
-                    won, t = play(policy, worker, opponent, seed, seat)
+                    won, t = play(policy, worker, opponent, seed, seat, args.scenario)
                     games += 1
                     ticks.append(t)
                     if won is None:

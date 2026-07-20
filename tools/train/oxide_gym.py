@@ -108,18 +108,20 @@ class Worker:
         tier: str = "veteran",
         max_ticks: int = 40_000,
         cadence: int = CADENCE,
+        scenario: str | None = None,
     ) -> Frame:
         self.control = control
-        return self._rpc(
-            {
-                "cmd": "reset",
-                "seed": seed,
-                "control": list(control),
-                "tier": tier,
-                "max_ticks": max_ticks,
-                "cadence": cadence,
-            }
-        )
+        req = {
+            "cmd": "reset",
+            "seed": seed,
+            "control": list(control),
+            "tier": tier,
+            "max_ticks": max_ticks,
+            "cadence": cadence,
+        }
+        if scenario:
+            req["scenario"] = scenario
+        return self._rpc(req)
 
     def step(self, actions: dict[int, int]) -> Frame:
         """Actions keyed by seat (must cover every controlled seat)."""
