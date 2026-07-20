@@ -1,4 +1,6 @@
-//! The built-in skirmish bot.
+//! The 0.6 rule-cascade skirmish bot — kept intact as the benchmark
+//! opponent for the 0.7 brains (every new tier must beat it), and as the
+//! bot behind existing scenarios until the tiered brains land.
 //!
 //! Deliberately *outside* the sim's tick pipeline: a bot is just another
 //! command source, reading [`State`] and emitting [`PlayerCommand`]s exactly
