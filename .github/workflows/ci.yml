@@ -12,6 +12,11 @@ on:
     branches: [main]
   pull_request:
 
+# Stacked pushes to one ref supersede each other; don't run them all.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -24,8 +29,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      # Pinned by SHA, so the toolchain comes from the input, not the ref.
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+      # This action selects the toolchain from its @ref, except when the
+      # `toolchain` input is set — then the README prescribes the master
+      # revision. Pinned to a master-history commit (no version tags
+      # exist): master HEAD as of 2026-07-16.
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master 2026-07-16
         with:
           toolchain: stable
           components: rustfmt, clippy
@@ -60,9 +68,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master 2026-07-16
         with:
-          toolchain: "1.88"
+          toolchain: "1.93"
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
       - name: Install Linux system libraries
         run: |
