@@ -2250,3 +2250,303 @@ fn sealed_apart_scenarios_refuse_to_build() {
         Err(ScenarioError::Disconnected(..))
     ));
 }
+
+#[test]
+fn losing_the_last_foundry_ends_the_match_despite_other_buildings() {
+    use oxide_sim::stats::BuildingKind;
+    // Player 1 stands up a turret, then loses its Foundry. The turret
+    // must not keep it in the game — survival means a Foundry.
+    let mut state = arena(vec![
+        unit(1, UnitKind::Harvester, 12, 2),
+        unit(0, UnitKind::Sentinel, 4, 6),
+        unit(0, UnitKind::Sentinel, 5, 7),
+        unit(0, UnitKind::Sentinel, 4, 7),
+    ])
+    .build()
+    .unwrap();
+    let builder = state.units()[0].id;
+    let anchor = TilePos::new(12, 1);
+    state.tick(&[cmd(
+        1,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor,
+        },
+    )]);
+    run_until(&mut state, 700, |s, _| {
+        s.buildings().iter().any(|b| b.anchor == anchor && b.built)
+    });
+    // Raze the foundry (attack-move onto it; fire-at-will besieges).
+    let attackers: Vec<UnitId> = state
+        .units()
+        .iter()
+        .filter(|u| u.player == PlayerId(0) && u.kind == UnitKind::Sentinel)
+        .map(|u| u.id)
+        .collect();
+    let foundry = state
+        .buildings()
+        .iter()
+        .find(|b| b.player == PlayerId(1))
+        .filter(|b| b.kind == oxide_sim::BuildingKind::Foundry)
+        .unwrap()
+        .id;
+    state.tick(&[cmd(
+        0,
+        Command::AttackMove {
+            units: attackers,
+            goal: TilePos::new(13, 6),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 4000, |s, _| s.building(foundry).is_none());
+    assert_eq!(
+        state.result(),
+        Some(GameResult::Victory {
+            winner: PlayerId(0)
+        }),
+        "a standing turret must not keep an eliminated player alive"
+    );
+}
+
+#[test]
+fn harvesters_deposit_only_at_built_foundries() {
+    use oxide_sim::stats::BuildingKind;
+    // A turret sits right beside the node; the Foundry is far away. The
+    // hauler must walk the distance — turrets are not drop-offs.
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 10, 4)])
+        .build()
+        .unwrap();
+    let worker = state.units()[0].id;
+    let anchor = TilePos::new(10, 3); // touching the node at (11,4)
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![worker],
+            kind: BuildingKind::Turret,
+            anchor,
+        },
+    )]);
+    run_until(&mut state, 700, |s, _| {
+        s.buildings().iter().any(|b| b.anchor == anchor && b.built)
+    });
+    state.tick(&[cmd(
+        0,
+        Command::Harvest {
+            units: vec![worker],
+            node: TilePos::new(11, 4),
+            queue: false,
+        },
+    )]);
+    let foundry = state
+        .buildings()
+        .iter()
+        .find(|b| b.player == PlayerId(0) && b.kind == oxide_sim::BuildingKind::Foundry)
+        .unwrap();
+    let (f_anchor, f_size) = (foundry.anchor, foundry.kind.stats().size);
+    let mut deposit_tile = None;
+    for _ in 0..1200u32 {
+        let report = state.tick(&[]);
+        if report
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::ScrapDeposited { .. }))
+        {
+            deposit_tile = Some(state.unit(worker).unwrap().tile());
+            break;
+        }
+    }
+    let t = deposit_tile.expect("a deposit happened");
+    let adjacent_to_foundry = (t.x >= f_anchor.x - 1 && t.x <= f_anchor.x + f_size.0)
+        && (t.y >= f_anchor.y - 1 && t.y <= f_anchor.y + f_size.1);
+    assert!(
+        adjacent_to_foundry,
+        "deposit landed at {t:?}, not beside the foundry at {f_anchor:?}"
+    );
+}
+
+#[test]
+fn turret_fires_at_its_stated_cadence() {
+    use oxide_sim::stats::BuildingKind;
+    // Build in peace (the target waits far outside aggro), then walk the
+    // target into range and measure the shot interval.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 4, 6),
+        unit(1, UnitKind::Sentinel, 13, 1),
+    ])
+    .build()
+    .unwrap();
+    let (builder, target) = (state.units()[0].id, state.units()[1].id);
+    let anchor = TilePos::new(5, 6);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor,
+        },
+    )]);
+    run_until(&mut state, 700, |s, _| {
+        s.buildings().iter().any(|b| b.anchor == anchor && b.built)
+    });
+    // Builder clears out; the sentinel wanders in obliviously.
+    state.tick(&[
+        cmd(
+            0,
+            Command::Move {
+                units: vec![builder],
+                goal: TilePos::new(2, 2),
+                queue: false,
+            },
+        ),
+        cmd(
+            1,
+            Command::Move {
+                units: vec![target],
+                goal: TilePos::new(8, 6),
+                queue: false,
+            },
+        ),
+    ]);
+    let mut fire_ticks: Vec<u64> = Vec::new();
+    for _ in 0..600u32 {
+        let report = state.tick(&[]);
+        if report
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::TurretFired { .. }))
+        {
+            fire_ticks.push(state.current_tick());
+        }
+        if fire_ticks.len() >= 3 {
+            break;
+        }
+    }
+    let cooldown = u64::from(BuildingKind::Turret.stats().attack.unwrap().cooldown_ticks);
+    assert!(fire_ticks.len() >= 3, "not enough shots observed");
+    assert_eq!(
+        fire_ticks[1] - fire_ticks[0],
+        cooldown,
+        "interval must equal cooldown_ticks, not cooldown_ticks + 1"
+    );
+    assert_eq!(fire_ticks[2] - fire_ticks[1], cooldown);
+}
+
+#[test]
+fn can_place_refuses_foundries() {
+    use oxide_sim::stats::BuildingKind;
+    let state = arena(vec![]).build().unwrap();
+    assert!(!state.can_place(PlayerId(0), BuildingKind::Foundry, TilePos::new(5, 6)));
+    assert!(state.can_place(PlayerId(0), BuildingKind::Turret, TilePos::new(5, 6)));
+}
+
+#[test]
+fn validator_rejects_foreign_owners() {
+    let state = arena(vec![unit(0, UnitKind::Harvester, 4, 6)])
+        .build()
+        .unwrap();
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+    doc["units"][0]["player"] = serde_json::json!(9);
+    let tampered: State = serde_json::from_value(doc).unwrap();
+    assert!(tampered.validate_invariants().is_err());
+}
+
+#[test]
+fn scouted_sites_are_remembered_as_sites() {
+    use oxide_sim::stats::BuildingKind;
+    // P0's scout watches P1 start a turret, then leaves. The ghost must
+    // remember scaffolding, not a finished building.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 9, 2),
+        unit(1, UnitKind::Harvester, 12, 2),
+    ])
+    .build()
+    .unwrap();
+    let (scout, builder) = (state.units()[0].id, state.units()[1].id);
+    let anchor = TilePos::new(12, 1);
+    state.tick(&[cmd(
+        1,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor,
+        },
+    )]);
+    for _ in 0..30 {
+        state.tick(&[]);
+    }
+    assert!(state.can_see(PlayerId(0), anchor), "scout sees the site");
+    // Scout retreats out of sight; site keeps building behind the fog.
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![scout],
+            goal: TilePos::new(2, 6),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| !s.can_see(PlayerId(0), anchor));
+    run_until(&mut state, 700, |s, _| {
+        s.buildings().iter().any(|b| b.anchor == anchor && b.built)
+    });
+    let ghost = state
+        .vision(PlayerId(0))
+        .ghosts()
+        .iter()
+        .find(|g| g.anchor == anchor)
+        .expect("the site was scouted and left behind fog");
+    assert!(
+        !ghost.built,
+        "fog memory must freeze the last-seen construction state"
+    );
+}
+
+#[test]
+fn bot_sends_a_relief_builder_to_an_orphaned_site() {
+    use oxide_sim::bot::Bot;
+    use oxide_sim::stats::BuildingKind;
+    // Manufacture the orphan directly: a scripted Build, then Stop the
+    // builder on the spot. Hand the seat to a bot — its relief loop must
+    // finish the paid-for site (a pending site once suppressed fabricator
+    // logic forever instead).
+    let mut state = arena(vec![
+        unit(1, UnitKind::Harvester, 12, 2),
+        unit(1, UnitKind::Harvester, 13, 3),
+    ])
+    .build()
+    .unwrap();
+    let builder = state.units()[0].id;
+    let anchor = TilePos::new(12, 1);
+    state.tick(&[cmd(
+        1,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor,
+        },
+    )]);
+    state.tick(&[cmd(
+        1,
+        Command::Stop {
+            units: vec![builder],
+        },
+    )]);
+    let site = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == anchor)
+        .unwrap()
+        .id;
+    assert!(!state.building(site).unwrap().built);
+
+    let mut bot = Bot::new(PlayerId(1), 42);
+    for _ in 0..3000u32 {
+        let commands = bot.act(&state);
+        state.tick(&commands);
+        if state.building(site).is_some_and(|b| b.built) {
+            return;
+        }
+    }
+    panic!("orphaned site was never resumed by the bot");
+}

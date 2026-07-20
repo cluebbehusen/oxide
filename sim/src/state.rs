@@ -382,6 +382,17 @@ impl State {
         if self.vision.len() != self.players.len() {
             return Err("vision table does not match the player list".into());
         }
+        let players = self.players.len();
+        if self.units.iter().any(|u| (u.player.0 as usize) >= players) {
+            return Err("unit owned by a player outside the table".into());
+        }
+        if self
+            .buildings
+            .iter()
+            .any(|b| (b.player.0 as usize) >= players)
+        {
+            return Err("building owned by a player outside the table".into());
+        }
         Ok(())
     }
 
@@ -513,6 +524,9 @@ impl State {
     /// and standing units. One predicate serves command validation and the
     /// shell's placement preview — they must never disagree.
     pub fn can_place(&self, player: PlayerId, kind: BuildingKind, anchor: TilePos) -> bool {
+        if kind.stats().construction.is_none() {
+            return false; // scenario-only kinds are never placeable
+        }
         let (w, h) = kind.stats().size;
         for dy in 0..h {
             for dx in 0..w {

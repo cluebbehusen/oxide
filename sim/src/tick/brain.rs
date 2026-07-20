@@ -54,11 +54,15 @@ fn turret_fire(state: &mut State, events: &mut Vec<Event>) {
         if !b.built || b.hp == 0 {
             continue;
         }
-        if b.cooldown > 0 {
-            state.building_mut(id).expect("just seen").cooldown -= 1;
-            continue;
+        let (me, center, cooling) = (b.player, b.center(), b.cooldown > 0);
+        if cooling {
+            let b = state.building_mut(id).expect("just seen");
+            b.cooldown -= 1;
+            if b.cooldown > 0 {
+                continue;
+            }
+            // Reached zero this tick: fire now, like unit cooldowns do.
         }
-        let (me, center) = (b.player, b.center());
         let range_sq = atk.range * atk.range;
         let clear_shot = |t: TilePos| {
             let terrain_open = state
@@ -328,10 +332,14 @@ fn deliver(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
     let (tile, me, carrying) = (unit.tile(), unit.player, unit.carrying);
     let pos = unit.pos;
 
+    // Only a built Foundry takes deliveries — turrets and half-standing
+    // sites are not drop-offs, however conveniently they're placed.
     let nearest = state
         .buildings
         .iter()
-        .filter(|b| b.player == me && b.hp > 0)
+        .filter(|b| {
+            b.player == me && b.hp > 0 && b.built && b.kind == crate::stats::BuildingKind::Foundry
+        })
         .map(|b| (pos.dist_sq(b.center()), b.id))
         .min();
     let Some((_, foundry_id)) = nearest else {

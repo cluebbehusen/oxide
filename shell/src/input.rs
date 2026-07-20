@@ -67,6 +67,7 @@ fn key_ord(key: Key) -> KeyOrd {
         Key::R => 19,
         Key::B => 20,
         Key::N => 21,
+        Key::X => 22,
         Key::Escape => 7,
         Key::Space => 8,
         Key::F1 => 9,
@@ -126,7 +127,7 @@ impl InputState {
     }
 }
 
-const KEY_MAP: [(Key, mq::KeyCode); 14] = [
+const KEY_MAP: [(Key, mq::KeyCode); 15] = [
     (Key::Up, mq::KeyCode::Up),
     (Key::Down, mq::KeyCode::Down),
     (Key::Left, mq::KeyCode::Left),
@@ -137,6 +138,7 @@ const KEY_MAP: [(Key, mq::KeyCode); 14] = [
     (Key::R, mq::KeyCode::R),
     (Key::B, mq::KeyCode::B),
     (Key::N, mq::KeyCode::N),
+    (Key::X, mq::KeyCode::X),
     (Key::Escape, mq::KeyCode::Escape),
     (Key::Space, mq::KeyCode::Space),
     (Key::F1, mq::KeyCode::F1),
@@ -633,6 +635,18 @@ fn building_name(kind: oxide_sim::BuildingKind) -> &'static str {
 
 fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
     match key {
+        Key::X => {
+            // Scrap the selected own unfinished site for its refund.
+            if let Some(id) = game.selection.building
+                && game
+                    .state
+                    .building(id)
+                    .is_some_and(|b| b.player == game.human && !b.built)
+            {
+                game.issue(Command::Cancel { building: id });
+                game.selection.building = None;
+            }
+        }
         Key::H => train(game, 0),
         Key::S => train(game, 1),
         Key::P => game.paused = !game.paused,

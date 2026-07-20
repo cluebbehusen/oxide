@@ -28,7 +28,12 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
         }
         // The eliminated don't give orders (matters in 3+ player games —
         // two-player matches freeze on the result before this can bite).
-        if !state.buildings.iter().any(|b| b.player == pc.player) {
+        // Alive means a standing Foundry, matching the victory rule.
+        if !state
+            .buildings
+            .iter()
+            .any(|b| b.player == pc.player && b.kind == crate::stats::BuildingKind::Foundry)
+        {
             events.push(Event::CommandRejected {
                 player: pc.player,
                 reason: RejectReason::Eliminated,

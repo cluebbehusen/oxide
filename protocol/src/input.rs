@@ -124,6 +124,8 @@ pub enum Key {
     B,
     /// Arm fabricator placement (harvester selected).
     N,
+    /// Scrap the selected construction site (partial refund).
+    X,
     /// Activate the highlighted menu item.
     Enter,
     /// Deselect.

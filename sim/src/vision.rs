@@ -31,6 +31,17 @@ pub struct GhostBuilding {
     pub anchor: TilePos,
     /// Hit points at last sighting.
     pub hp: u32,
+    /// Whether construction had finished at last sighting — a scouted
+    /// scaffold stays a scaffold in memory until seen complete.
+    #[serde(
+        default = "ghost_built_default",
+        skip_serializing_if = "core::clone::Clone::clone"
+    )]
+    pub built: bool,
+}
+
+fn ghost_built_default() -> bool {
+    true
 }
 
 impl GhostBuilding {
@@ -144,6 +155,7 @@ pub(crate) fn refresh(state: &mut State) {
                     owner: building.player,
                     anchor: building.anchor,
                     hp: building.hp,
+                    built: building.built,
                 });
             }
         }

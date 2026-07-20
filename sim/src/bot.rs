@@ -50,6 +50,9 @@ pub struct Bot {
     last_sent: Vec<(crate::ids::UnitId, TilePos)>,
     /// Nodes that bounced a harvester back.
     dead_nodes: Vec<TilePos>,
+    /// Turret count at the last think; a new turret appearing is what
+    /// clears [`Bot::raided`] — not the (possibly rejected) command.
+    turrets_seen: usize,
 }
 
 impl Bot {
@@ -66,6 +69,7 @@ impl Bot {
             raided: false,
             last_sent: Vec::new(),
             dead_nodes: Vec::new(),
+            turrets_seen: 0,
         }
     }
 
@@ -96,7 +100,7 @@ impl Bot {
         let Some(home) = state
             .buildings
             .iter()
-            .filter(|b| b.player == me)
+            .filter(|b| b.player == me && b.kind == crate::stats::BuildingKind::Foundry)
             .min_by_key(|b| b.id)
         else {
             return Vec::new(); // eliminated; nothing to do but watch
@@ -170,12 +174,17 @@ impl Bot {
             }
         }
 
-        // A shrinking harvest line means raiders: remember it until the
-        // turret goes down.
+        // A shrinking harvest line means raiders: remember it until a
+        // turret actually appears — the build command can bounce off an
+        // empty bank, and clearing on emission would forget the raid.
         if harvesters_alive < self.harvesters_seen {
             self.raided = true;
         }
         self.harvesters_seen = harvesters_alive;
+        if my_turrets > self.turrets_seen {
+            self.raided = false;
+        }
+        self.turrets_seen = my_turrets;
 
         // Production: harvesters up to target, then a steady sentinel drip.
         let harvesters = harvesters_alive
@@ -200,6 +209,27 @@ impl Bot {
                 commands.push(self.cmd(Command::Train {
                     building: home_id,
                     kind: UnitKind::Sentinel,
+                }));
+            }
+        }
+
+        // Orphaned sites get a relief builder: a dead or reassigned
+        // harvester must not strand paid-for progress (Build on an
+        // existing own site resumes it free of charge).
+        for b in state.buildings.iter() {
+            if b.player != me || b.built {
+                continue;
+            }
+            let attended = state.units.iter().any(|u| {
+                u.player == me
+                    && u.hp > 0
+                    && matches!(u.order, Order::Build { site } if site == b.id)
+            });
+            if !attended && let Some(builder) = nearest_harvester(state, me, b.anchor) {
+                commands.push(self.cmd(Command::Build {
+                    units: vec![builder],
+                    kind: b.kind,
+                    anchor: b.anchor,
                 }));
             }
         }
@@ -240,7 +270,6 @@ impl Bot {
                 kind: crate::stats::BuildingKind::Turret,
                 anchor,
             }));
-            self.raided = false;
         }
 
         // Advanced roster from the Fabricator: lancers to crack turtles,

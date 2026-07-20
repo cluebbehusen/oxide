@@ -331,11 +331,18 @@ fn draw_buildings(game: &Game, sprites: &Sprites) {
             let screen = game
                 .camera
                 .to_screen(vec2(ghost.anchor.x as f32, ghost.anchor.y as f32));
+            // A remembered site stays translucent scaffolding until its
+            // completion has actually been observed.
+            let tint = if ghost.built {
+                GHOST_TINT
+            } else {
+                Color::new(GHOST_TINT.r, GHOST_TINT.g, GHOST_TINT.b, GHOST_TINT.a * 0.5)
+            };
             draw_texture_ex(
                 sprites.texture(),
                 screen.x,
                 screen.y,
-                GHOST_TINT,
+                tint,
                 DrawTextureParams {
                     dest_size: Some(vec2(w as f32 * zoom, h as f32 * zoom)),
                     source: Some(sprites.building(ghost.kind, faction)),
@@ -742,7 +749,7 @@ fn draw_hud(game: &Game) {
             };
             let mut line = format!("{name} {}/{} hp", building.hp, stats.max_hp);
             if !building.built {
-                line.push_str("   under construction");
+                line.push_str("   under construction   X: scrap site");
             } else if !stats.produces.is_empty() {
                 let keys = ["H", "S"];
                 let slots: Vec<String> = stats

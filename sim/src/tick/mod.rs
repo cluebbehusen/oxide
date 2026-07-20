@@ -79,13 +79,19 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
 
 /// Declares the result once at least one player has been eliminated.
 ///
-/// Elimination is building-based: no buildings, no comeback. A one-player
-/// scenario never self-declares victory (nobody has been eliminated).
+/// Elimination is Foundry-based: no Foundry, no comeback — turrets and
+/// factories left standing don't keep a player in the game (or 0.5's
+/// buildable kinds would have silently rewritten the victory rule).
 fn victory(state: &mut State, events: &mut Vec<Event>) {
     if state.result.is_some() {
         return;
     }
-    let alive = |p: usize| state.buildings.iter().any(|b| b.player.0 as usize == p);
+    let alive = |p: usize| {
+        state
+            .buildings
+            .iter()
+            .any(|b| b.player.0 as usize == p && b.kind == crate::stats::BuildingKind::Foundry)
+    };
     let survivors: Vec<usize> = (0..state.players.len()).filter(|&p| alive(p)).collect();
     if survivors.len() == state.players.len() {
         return;
