@@ -20,6 +20,10 @@ use chassis::rng::Pcg32;
 
 /// How many harvesters the bot wants alive or queued.
 const HARVESTER_TARGET: usize = 4;
+/// Bank level that triggers the Fabricator (cost plus a fighting reserve).
+const FABRICATOR_AT: u32 = 220;
+/// Most turrets the bot will pay for.
+const TURRET_CAP: usize = 2;
 /// Enemies inside this radius of home trigger a full defensive response.
 const DEFENSE_RADIUS: Fx = Fx::lit("8");
 /// The bot thinks every N ticks (staggered per player so two bots never act
@@ -33,6 +37,13 @@ pub struct Bot {
     #[expect(dead_code, reason = "reserved for future tactical variation")]
     rng: Pcg32,
     attack_threshold: usize,
+    /// Harvester count at the last think — a drop means someone is eating
+    /// the economy, which buys a turret. Bot-local memory is legitimate:
+    /// a bot is a command source, not sim state.
+    harvesters_seen: usize,
+    /// Set once a harvester died on this bot's watch; cleared when the
+    /// turret answer has been placed.
+    raided: bool,
 }
 
 impl Bot {
@@ -45,6 +56,8 @@ impl Bot {
             player,
             rng,
             attack_threshold,
+            harvesters_seen: 0,
+            raided: false,
         }
     }
 
@@ -98,12 +111,53 @@ impl Bot {
             }
         }
 
+        // Census for every decision below. The bot reads full state on
+        // purpose (classic cheating AI); its commands still validate.
+        let mut harvesters_alive = 0;
+        let (mut my_scuttlers, mut my_lancers) = (0, 0);
+        let (mut enemy_harvesters, mut enemy_turrets) = (0, 0);
+        for u in state.units.iter().filter(|u| u.hp > 0) {
+            if u.player == me {
+                match u.kind {
+                    UnitKind::Harvester => harvesters_alive += 1,
+                    UnitKind::Scuttler => my_scuttlers += 1,
+                    UnitKind::Lancer => my_lancers += 1,
+                    UnitKind::Sentinel => {}
+                }
+            } else if u.kind == UnitKind::Harvester {
+                enemy_harvesters += 1;
+            }
+        }
+        let mut fabricator: Option<crate::ids::BuildingId> = None;
+        let mut fabricator_pending = false;
+        let mut my_turrets = 0;
+        for b in state.buildings.iter() {
+            if b.player == me {
+                match b.kind {
+                    crate::stats::BuildingKind::Fabricator => {
+                        if b.built {
+                            fabricator = Some(b.id);
+                        } else {
+                            fabricator_pending = true;
+                        }
+                    }
+                    crate::stats::BuildingKind::Turret => my_turrets += 1,
+                    crate::stats::BuildingKind::Foundry => {}
+                }
+            } else if b.kind == crate::stats::BuildingKind::Turret && b.built {
+                enemy_turrets += 1;
+            }
+        }
+
+        // A shrinking harvest line means raiders: remember it until the
+        // turret goes down.
+        if harvesters_alive < self.harvesters_seen {
+            self.raided = true;
+        }
+        self.harvesters_seen = harvesters_alive;
+
         // Production: harvesters up to target, then a steady sentinel drip.
-        let harvesters = state
-            .units
-            .iter()
-            .filter(|u| u.player == me && u.kind == UnitKind::Harvester)
-            .count()
+        let harvesters = harvesters_alive
             + state
                 .buildings
                 .iter()
@@ -129,6 +183,70 @@ impl Bot {
             }
         }
 
+        // Tech: one Fabricator, once the economy stands and the bank can
+        // absorb it without starving the sentinel drip.
+        if fabricator.is_none()
+            && !fabricator_pending
+            && harvesters_alive >= HARVESTER_TARGET.min(3)
+            && bank >= FABRICATOR_AT
+            && let Some(anchor) = placement_near(
+                state,
+                me,
+                crate::stats::BuildingKind::Fabricator,
+                home_center,
+            )
+            && let Some(builder) = nearest_harvester(state, me, anchor)
+        {
+            commands.push(self.cmd(Command::Build {
+                units: vec![builder],
+                kind: crate::stats::BuildingKind::Fabricator,
+                anchor,
+            }));
+        }
+
+        // A raid buys a turret over the harvest line (up to the cap).
+        if self.raided
+            && my_turrets < TURRET_CAP
+            && bank >= 150
+            && let Some(node) = nearest_scrap(state, TilePos::containing(home_center))
+            && let Some(anchor) =
+                placement_near(state, me, crate::stats::BuildingKind::Turret, node.center())
+            && let Some(builder) = nearest_harvester(state, me, anchor)
+        {
+            commands.push(self.cmd(Command::Build {
+                units: vec![builder],
+                kind: crate::stats::BuildingKind::Turret,
+                anchor,
+            }));
+            self.raided = false;
+        }
+
+        // Advanced roster from the Fabricator: lancers to crack turtles,
+        // scuttlers to eat exposed harvest lines.
+        if let Some(fab) = fabricator
+            && state.building(fab).is_some_and(|b| b.queue.len() < 2)
+        {
+            if enemy_turrets > my_lancers && bank >= UnitKind::Lancer.stats().cost {
+                commands.push(self.cmd(Command::Train {
+                    building: fab,
+                    kind: UnitKind::Lancer,
+                }));
+            } else if my_scuttlers < 4
+                && enemy_harvesters >= 2
+                && bank >= UnitKind::Scuttler.stats().cost + UnitKind::Sentinel.stats().cost
+            {
+                commands.push(self.cmd(Command::Train {
+                    building: fab,
+                    kind: UnitKind::Scuttler,
+                }));
+            } else if bank >= UnitKind::Lancer.stats().cost + UnitKind::Sentinel.stats().cost {
+                commands.push(self.cmd(Command::Train {
+                    building: fab,
+                    kind: UnitKind::Lancer,
+                }));
+            }
+        }
+
         // Defense trumps everything: an enemy near home pulls every sentinel.
         let intruder = state
             .units
@@ -141,7 +259,9 @@ impl Bot {
         let my_sentinels: Vec<_> = state
             .units
             .iter()
-            .filter(|u| u.player == me && u.kind == UnitKind::Sentinel)
+            .filter(|u| {
+                u.player == me && u.kind != UnitKind::Harvester && u.kind.stats().attack.is_some()
+            })
             .collect();
         if let Some(intruder) = intruder {
             let defenders: Vec<_> = my_sentinels
@@ -165,7 +285,7 @@ impl Bot {
             return commands;
         }
 
-        // Offense: enough idle sentinels → attack-move at the nearest enemy
+        // Offense: enough idle fighters → attack-move at the nearest enemy
         // building (or their units, if they're homeless). Attack-move does
         // the fighting-on-the-way; no hand-holding needed.
         let idle_sentinels: Vec<_> = my_sentinels
@@ -207,6 +327,45 @@ impl Bot {
             command,
         }
     }
+}
+
+/// First legal anchor for `kind` ring-scanned outward from `near` (3..=7
+/// tiles) — deterministic, and honest: `can_place` applies the same rules
+/// players get, including own-fog exploration.
+fn placement_near(
+    state: &State,
+    me: PlayerId,
+    kind: crate::stats::BuildingKind,
+    near: chassis::fx::Vec2Fx,
+) -> Option<TilePos> {
+    let center = TilePos::containing(near);
+    for r in 3i32..=7 {
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs().max(dy.abs()) != r {
+                    continue;
+                }
+                let anchor = center.offset(dx, dy);
+                if state.can_place(me, kind, anchor) {
+                    return Some(anchor);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The closest own harvester to `anchor`, ties to the lowest id. Pulling a
+/// working one is fine — it goes idle after the build and the economy loop
+/// re-hires it.
+fn nearest_harvester(state: &State, me: PlayerId, anchor: TilePos) -> Option<crate::ids::UnitId> {
+    state
+        .units
+        .iter()
+        .filter(|u| u.player == me && u.kind == UnitKind::Harvester && u.hp > 0)
+        .map(|u| (u.pos.dist_sq(anchor.center()), u.id))
+        .min()
+        .map(|(_, id)| id)
 }
 
 /// Nearest tile holding scrap, keyed by (manhattan, y, x) for a unique pick.

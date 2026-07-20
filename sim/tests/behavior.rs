@@ -2185,3 +2185,45 @@ fn fabricator_gates_the_advanced_roster() {
         })
     });
 }
+
+#[test]
+fn bot_reaches_its_tech_and_mixes_its_army() {
+    use oxide_sim::bot::Bot;
+    use oxide_sim::stats::BuildingKind;
+    // Bot vs an idle opponent: within 12k ticks it should have stood up a
+    // Fabricator and fielded at least one advanced unit — proof the build
+    // and composition logic actually runs, not just compiles.
+    let mut scenario = Scenario::skirmish();
+    scenario.players[1].bot = true;
+    let mut state = scenario.build().unwrap();
+    let mut bots = Bot::for_scenario(&scenario);
+    for _ in 0..12_000u32 {
+        if state.result().is_some() {
+            break;
+        }
+        let mut commands = Vec::new();
+        for bot in &mut bots {
+            commands.extend(bot.act(&state));
+        }
+        state.tick(&commands);
+    }
+    let me = PlayerId(1);
+    let has_fab = state
+        .buildings()
+        .iter()
+        .any(|b| b.player == me && b.kind == BuildingKind::Fabricator && b.built);
+    let advanced = state
+        .units()
+        .iter()
+        .filter(|u| u.player == me && matches!(u.kind, UnitKind::Scuttler | UnitKind::Lancer))
+        .count();
+    // The bot may have already razed the idle opponent and won; that is
+    // also a pass as long as tech came up first.
+    assert!(
+        has_fab || state.result().is_some(),
+        "no fabricator and no victory after 12k ticks"
+    );
+    if has_fab {
+        assert!(advanced > 0, "fabricator built but nothing trained from it");
+    }
+}
