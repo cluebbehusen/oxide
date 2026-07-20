@@ -82,6 +82,22 @@ enum Cmd {
     },
     /// Serve training episodes over stdio (newline-delimited JSON).
     Gym,
+    /// Tournament a quantized policy artifact against the scripted
+    /// tiers (the promotion gate measures the shipped integer bot).
+    NeuralCup {
+        /// Exported weights JSON (tools/train/export.py).
+        #[arg(long)]
+        weights: PathBuf,
+        /// Seeds per matchup (each played from both seats).
+        #[arg(long, default_value_t = 30)]
+        seeds: u64,
+        /// Decision cadence the network trained at.
+        #[arg(long, default_value_t = 16)]
+        cadence: u64,
+        /// Scenario path, or "skirmish".
+        #[arg(long, default_value = "skirmish")]
+        scenario: String,
+    },
     /// Automated end-to-end check against a live shell.
     Smoke {
         /// Shell debug-server address.
@@ -392,6 +408,12 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Gym => oxide_driver::gym::serve()?,
+        Cmd::NeuralCup {
+            weights,
+            seeds,
+            cadence,
+            scenario,
+        } => oxide_driver::gym::neural_cup(&weights, seeds, cadence, &scenario)?,
         Cmd::Smoke { addr, spawn } => smoke::run(&addr, spawn)?,
     }
     Ok(())

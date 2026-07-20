@@ -232,3 +232,63 @@ pub fn serve() -> Result<()> {
     }
     Ok(())
 }
+
+/// Runs the promotion tournament for a quantized artifact: every
+/// scripted tier, `seeds` seeds x both seats, printed as JSON lines.
+/// This measures the shipped integer bot — the float checkpoint it
+/// came from is a different (unshippable) player.
+pub fn neural_cup(
+    weights: &std::path::Path,
+    seeds: u64,
+    cadence: u64,
+    scenario: &str,
+) -> Result<()> {
+    use oxide_sim::bot::{NeuralBot, QuantNet};
+    let json = std::fs::read_to_string(weights)
+        .with_context(|| format!("reading {}", weights.display()))?;
+    let net = QuantNet::from_json(&json).map_err(|e| anyhow::anyhow!(e))?;
+    for tier in [
+        Difficulty::Scrapheap,
+        Difficulty::Standard,
+        Difficulty::Veteran,
+        Difficulty::Prime,
+    ] {
+        let (mut wins, mut draws, mut ticks) = (0u64, 0u64, Vec::new());
+        for seed in 3000..3000 + seeds {
+            for seat in [0u8, 1] {
+                let mut sc = crate::runner::load_scenario(scenario)?;
+                sc.seed = seed;
+                let mut state = sc.build().context("scenario build")?;
+                let mut neural = NeuralBot::new(PlayerId(seat), cadence, net.clone());
+                let mut opponent = Brain::for_tier(PlayerId(1 - seat), seed, tier);
+                for _ in 0..40_000u32 {
+                    let mut commands = neural.act(&state);
+                    commands.extend(opponent.act(&state));
+                    state.tick(&commands);
+                    if state.result().is_some() {
+                        break;
+                    }
+                }
+                ticks.push(state.current_tick());
+                match state.result() {
+                    Some(GameResult::Victory { winner }) if winner == PlayerId(seat) => wins += 1,
+                    Some(GameResult::Victory { .. }) => {}
+                    _ => draws += 1,
+                }
+            }
+        }
+        ticks.sort_unstable();
+        let games = seeds * 2;
+        println!(
+            "{}",
+            serde_json::json!({
+                "opponent": format!("{tier:?}"),
+                "wins": wins,
+                "draws": draws,
+                "games": games,
+                "median_ticks": ticks[ticks.len() / 2],
+            })
+        );
+    }
+    Ok(())
+}
