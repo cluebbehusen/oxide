@@ -14,10 +14,14 @@
 //! The 0.6 rule-cascade bot survives as [`classic::Bot`], the benchmark
 //! opponent every new tier must beat.
 
+pub mod brain;
 pub mod classic;
 pub mod executive;
 pub mod observation;
+pub mod utility;
 
+pub use brain::Brain;
 pub use classic::Bot;
 pub use executive::{Army, ArmyId, ArmyState, Executive, Intent};
 pub use observation::{BuildingObs, Observation, UnitObs};
+pub use utility::{Dials, UtilityPolicy};

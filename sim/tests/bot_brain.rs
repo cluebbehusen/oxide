@@ -175,7 +175,7 @@ fn the_army_lifecycle_stages_pushes_engages_and_withdraws() {
     state.tick(&commands);
     for _ in 0..200 {
         let obs = think(&state);
-        let cmds = exec.maintain(me, &obs);
+        let cmds = exec.maintain(me, &obs, TilePos::new(2, 2));
         state.tick(&cmds);
     }
     assert_eq!(
@@ -198,7 +198,7 @@ fn the_army_lifecycle_stages_pushes_engages_and_withdraws() {
     let mut saw_withdrawing = false;
     for _ in 0..800 {
         let obs = think(&state);
-        let cmds = exec.maintain(me, &obs);
+        let cmds = exec.maintain(me, &obs, TilePos::new(2, 2));
         state.tick(&cmds);
         match exec.armies().first().map(|a| a.state) {
             Some(ArmyState::Engaging) => saw_engaging = true,
@@ -218,7 +218,7 @@ fn the_army_lifecycle_stages_pushes_engages_and_withdraws() {
     // re-stages (or died to the last machine trying).
     for _ in 0..600 {
         let obs = think(&state);
-        let cmds = exec.maintain(me, &obs);
+        let cmds = exec.maintain(me, &obs, TilePos::new(2, 2));
         state.tick(&cmds);
         if exec
             .armies()
@@ -233,82 +233,85 @@ fn the_army_lifecycle_stages_pushes_engages_and_withdraws() {
 
 #[test]
 fn wounded_members_rotate_to_the_rear_permanently() {
-    // One army member drops below the pullback threshold; the executive
-    // sends it home, drops it from the army, and never re-drafts it.
-    // Three lancers focus one sentinel: a single 3×30 volley from range
-    // 5.5 (outside sentinel aggro) takes it from 100 to 10 hp — below the
-    // 35% line but alive — and the next volley is a full cooldown away,
-    // leaving plenty of ticks to call the snipe off.
-    let mut units = vec![
-        unit(0, UnitKind::Sentinel, 3, 2),
-        unit(0, UnitKind::Sentinel, 4, 2),
-    ];
-    units.push(unit(1, UnitKind::Lancer, 9, 5));
-    units.push(unit(1, UnitKind::Lancer, 9, 6));
-    units.push(unit(1, UnitKind::Lancer, 10, 5));
-    let mut state = open_arena(units).build().unwrap();
-    let me = PlayerId(0);
-    let ids: Vec<_> = state.units().iter().map(|u| u.id).collect();
-    let (a, lancers) = (ids[0], vec![ids[2], ids[3], ids[4]]);
-    let mut exec = Executive::new();
+    // Executive semantics, pinned against a synthetic observation (the
+    // executive is a pure function of what it is shown): a member below
+    // the 35% pullback line and out of contact is Move-ordered to the
+    // rear, dropped from the army, and never re-drafted; a wounded
+    // member still in a fight is left in the line — the executive never
+    // thins a live engagement.
+    use oxide_sim::UnitId;
+    use oxide_sim::bot::UnitObs;
 
-    let commands = exec.apply(
+    let me = PlayerId(0);
+    let obs_with = |units: Vec<UnitObs>| Observation {
+        version: oxide_sim::bot::observation::OBSERVATION_VERSION,
+        tick: 0,
         me,
-        &Observation::omniscient(&state, me),
+        scrap: 0,
+        map_width: 24,
+        map_height: 13,
+        my_units: units,
+        my_buildings: Vec::new(),
+        my_queues: Vec::new(),
+        enemy_units: Vec::new(),
+        enemy_buildings: Vec::new(),
+        known_scrap: Vec::new(),
+        known_rock: Vec::new(),
+    };
+    let sentinel = |id: u32, player: u8, x: i32, y: i32, hp: u32| UnitObs {
+        id: UnitId(id),
+        player: PlayerId(player),
+        kind: UnitKind::Sentinel,
+        tile: TilePos::new(x, y),
+        hp,
+        idle: true,
+        carrying: 0,
+        site: None,
+    };
+
+    let mut exec = Executive::new();
+    let obs = obs_with(vec![sentinel(0, 0, 3, 2, 100), sentinel(1, 0, 4, 2, 100)]);
+    let _ = exec.apply(
+        me,
+        &obs,
         &[Intent::FormArmy {
             staging: TilePos::new(4, 3),
             size: 2,
         }],
     );
-    state.tick(&commands);
-    for _ in 0..60 {
-        state.tick(&[]); // let the army settle at its staging point
-    }
-    state.tick(&[cmd(
-        1,
-        Command::Attack {
-            units: lancers.clone(),
-            target: oxide_sim::Target::Unit(a),
-            queue: false,
-        },
-    )]);
-    let mut wounded = false;
-    for _ in 0..400 {
-        state.tick(&[]);
-        let hp = state.unit(a).map(|u| u.hp).unwrap_or(0);
-        if hp > 0 && hp * 100 < 100 * 35 {
-            wounded = true;
-            break;
-        }
-    }
+    assert_eq!(exec.armies()[0].members.len(), 2);
+
+    // Wounded but in contact: an armed enemy stands next to the line —
+    // no rotation happens mid-fight.
+    let mut contact = obs_with(vec![sentinel(0, 0, 4, 3, 10), sentinel(1, 0, 4, 2, 100)]);
+    contact.enemy_units.push(sentinel(9, 1, 6, 3, 100));
+    let _ = exec.maintain(me, &contact, TilePos::new(1, 1));
     assert!(
-        wounded,
-        "premise: the volley wounds `a` below the threshold"
+        exec.armies()[0].members.contains(&UnitId(0)),
+        "no pullback while the fight is live"
     );
-    // Call off the snipe before the next volley, then let the executive
-    // do its housekeeping.
-    state.tick(&[cmd(
-        1,
-        Command::Move {
-            units: lancers,
-            goal: TilePos::new(20, 2),
-            queue: false,
-        },
-    )]);
-    let obs = Observation::omniscient(&state, me);
-    let cmds = exec.maintain(me, &obs);
-    state.tick(&cmds);
-    let hp = state.unit(a).map(|u| u.hp).unwrap_or(0);
-    assert!(hp > 0 && hp < 35, "premise: wounded but alive (hp {hp})");
+
+    // Same wound, enemy gone: the rotation fires, with a Move to the
+    // rear tile — not to the army's staging point.
+    let calm = obs_with(vec![sentinel(0, 0, 4, 3, 10), sentinel(1, 0, 4, 2, 100)]);
+    let cmds = exec.maintain(me, &calm, TilePos::new(1, 1));
     assert!(
-        !exec.armies().is_empty() && !exec.armies()[0].members.contains(&a),
+        !exec.armies().is_empty() && !exec.armies()[0].members.contains(&UnitId(0)),
         "the wounded member left the army"
     );
-    // Re-drafting skips the rear line.
-    let obs = Observation::omniscient(&state, me);
+    assert!(
+        cmds.iter().any(|c| matches!(
+            &c.command,
+            Command::Move { units, goal, .. }
+                if units == &vec![UnitId(0)] && *goal == TilePos::new(1, 1)
+        )),
+        "the wounded member was sent to the rear"
+    );
+
+    // Re-drafting skips the rear line even though the unit reads idle.
     let _ = exec.apply(
         me,
-        &obs,
+        &calm,
         &[Intent::FormArmy {
             staging: TilePos::new(5, 3),
             size: 5,
@@ -316,7 +319,7 @@ fn wounded_members_rotate_to_the_rear_permanently() {
     );
     for army in exec.armies() {
         assert!(
-            !army.members.contains(&a),
+            !army.members.contains(&UnitId(0)),
             "the rear line stays the rear line"
         );
     }

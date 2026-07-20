@@ -46,6 +46,9 @@ pub struct UnitObs {
     pub idle: bool,
     /// Scrap carried (own harvesters; zero otherwise).
     pub carrying: u32,
+    /// The construction site this unit is building, if any (own units
+    /// only; always `None` for enemy observations).
+    pub site: Option<BuildingId>,
 }
 
 /// One building as a bot sees it. Enemy entries may be memories: `seen`
@@ -87,9 +90,9 @@ pub struct Observation {
     pub my_units: Vec<UnitObs>,
     /// Own buildings (queue lengths matter for production decisions).
     pub my_buildings: Vec<BuildingObs>,
-    /// Training queue depth per own building, aligned with
+    /// Training queue contents per own building, aligned with
     /// `my_buildings`.
-    pub my_queues: Vec<u32>,
+    pub my_queues: Vec<Vec<UnitKind>>,
     /// Enemy units this bot can currently justify knowing about.
     pub enemy_units: Vec<UnitObs>,
     /// Enemy buildings — live where seen, ghosts where remembered.
@@ -98,6 +101,11 @@ pub struct Observation {
     /// omniscient builder, remembered amounts under the fog-honest one.
     /// Sorted by (y, x).
     pub known_scrap: Vec<(TilePos, u32)>,
+    /// Rock tiles as known — all of them omnisciently, explored ground
+    /// only fog-honestly (rock is static, so once seen it is known
+    /// forever). What placement and staging decisions steer around;
+    /// sorted by (y, x).
+    pub known_rock: Vec<TilePos>,
 }
 
 impl Observation {
@@ -117,7 +125,7 @@ impl Observation {
         for b in state.buildings() {
             if b.player == me {
                 obs.my_buildings.push(own_building(b));
-                obs.my_queues.push(b.queue.len() as u32);
+                obs.my_queues.push(b.queue.iter().copied().collect());
             } else {
                 obs.enemy_buildings.push(BuildingObs {
                     id: b.id,
@@ -133,6 +141,9 @@ impl Observation {
         for (pos, tile) in state.map().iter() {
             if tile.scrap > 0 {
                 obs.known_scrap.push((pos, tile.scrap));
+            }
+            if tile.terrain == crate::map::Terrain::Rock {
+                obs.known_rock.push(pos);
             }
         }
         obs
@@ -157,7 +168,7 @@ impl Observation {
         for b in state.buildings() {
             if b.player == me {
                 obs.my_buildings.push(own_building(b));
-                obs.my_queues.push(b.queue.len() as u32);
+                obs.my_queues.push(b.queue.iter().copied().collect());
             } else if b.tiles().any(|t| vision.visible(t)) {
                 obs.enemy_buildings.push(BuildingObs {
                     id: b.id,
@@ -195,8 +206,9 @@ impl Observation {
         }
         obs.enemy_buildings
             .sort_by_key(|b| (b.anchor.y, b.anchor.x, b.player));
-        // Remembered scrap: what this player last saw, everywhere.
-        for (pos, _) in state.map().iter() {
+        // Remembered scrap: what this player last saw, everywhere. Rock
+        // is static, so explored is knowledge enough.
+        for (pos, tile) in state.map().iter() {
             let amount = if vision.visible(pos) {
                 state.map().scrap_at(pos)
             } else {
@@ -204,6 +216,9 @@ impl Observation {
             };
             if amount > 0 {
                 obs.known_scrap.push((pos, amount));
+            }
+            if tile.terrain == crate::map::Terrain::Rock && vision.explored(pos) {
+                obs.known_rock.push(pos);
             }
         }
         obs
@@ -223,6 +238,7 @@ impl Observation {
             enemy_units: Vec::new(),
             enemy_buildings: Vec::new(),
             known_scrap: Vec::new(),
+            known_rock: Vec::new(),
         }
     }
 }
@@ -236,6 +252,10 @@ fn own_unit(u: &crate::state::Unit) -> UnitObs {
         hp: u.hp,
         idle: u.order == Order::Idle,
         carrying: u.carrying,
+        site: match u.order {
+            Order::Build { site } => Some(site),
+            _ => None,
+        },
     }
 }
 
@@ -248,6 +268,7 @@ fn enemy_unit(u: &crate::state::Unit) -> UnitObs {
         hp: u.hp,
         idle: false, // enemy intent is not observable
         carrying: 0, // nor their cargo manifests
+        site: None,  // nor their work orders
     }
 }
 
