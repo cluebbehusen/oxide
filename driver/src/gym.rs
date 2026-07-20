@@ -32,6 +32,9 @@ enum Request {
         max_ticks: u64,
         #[serde(default)]
         scenario: Option<String>,
+        /// Decision stride in ticks (default 8).
+        #[serde(default = "default_cadence")]
+        cadence: u64,
     },
     Step {
         /// One action per controlled seat, in `control` order.
@@ -52,6 +55,10 @@ fn default_max_ticks() -> u64 {
     40_000
 }
 
+fn default_cadence() -> u64 {
+    8
+}
+
 struct Episode {
     state: State,
     gyms: Vec<GymBot>,
@@ -66,6 +73,7 @@ impl Episode {
         tier: Difficulty,
         max_ticks: u64,
         scenario: Option<&str>,
+        cadence: u64,
     ) -> Result<Self> {
         if control.is_empty() || control.len() > 2 {
             bail!("control must name one or two seats");
@@ -76,7 +84,10 @@ impl Episode {
         let mut scenario = crate::runner::load_scenario(scenario.unwrap_or("skirmish"))?;
         scenario.seed = seed;
         let state = scenario.build().context("scenario build")?;
-        let gyms: Vec<GymBot> = control.iter().map(|s| GymBot::new(PlayerId(*s))).collect();
+        let gyms: Vec<GymBot> = control
+            .iter()
+            .map(|s| GymBot::with_cadence(PlayerId(*s), cadence))
+            .collect();
         let opponent =
             (control.len() == 1).then(|| Brain::for_tier(PlayerId(1 - control[0]), seed, tier));
         Ok(Self {
@@ -189,7 +200,15 @@ pub fn serve() -> Result<()> {
                 tier,
                 max_ticks,
                 scenario,
-            }) => match Episode::new(seed, &control, tier, max_ticks, scenario.as_deref()) {
+                cadence,
+            }) => match Episode::new(
+                seed,
+                &control,
+                tier,
+                max_ticks,
+                scenario.as_deref(),
+                cadence,
+            ) {
                 Ok(mut e) => {
                     let reply = e.reply();
                     episode = Some(e);

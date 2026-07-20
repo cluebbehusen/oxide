@@ -22,6 +22,9 @@ GYM_VERSION = 2
 
 DRAW_REWARD = -0.3
 STEP_COST = 1e-4
+# Decision stride in sim ticks. 16 halves the credit-assignment horizon
+# relative to the bots' own 8 — macro decisions don't need finer.
+CADENCE = 16
 
 # Hand-set scales per feature index (see sim/src/bot/gym.rs for the
 # layout). Order: tick, scrap, my H/S/Sc/L, turrets, fab, foundry hp,
@@ -104,6 +107,7 @@ class Worker:
         control: tuple[int, ...] = (0,),
         tier: str = "veteran",
         max_ticks: int = 40_000,
+        cadence: int = CADENCE,
     ) -> Frame:
         self.control = control
         return self._rpc(
@@ -113,6 +117,7 @@ class Worker:
                 "control": list(control),
                 "tier": tier,
                 "max_ticks": max_ticks,
+                "cadence": cadence,
             }
         )
 

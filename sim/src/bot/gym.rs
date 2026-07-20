@@ -109,9 +109,19 @@ impl GymBot {
     /// A gym bot for `player`. Fog-honest, full doctrine, standard
     /// dials — the learned policy's job is choosing, not cheating.
     pub fn new(player: PlayerId) -> Self {
+        Self::with_cadence(player, Dials::full().cadence)
+    }
+
+    /// A gym bot deciding every `cadence` ticks (clamped 4..=64). A
+    /// longer stride halves the trainer's credit-assignment horizon;
+    /// macro decisions don't need 8-tick resolution.
+    pub fn with_cadence(player: PlayerId, cadence: u64) -> Self {
         Self {
             player,
-            dials: Dials::full(),
+            dials: Dials {
+                cadence: cadence.clamp(4, 64),
+                ..Dials::full()
+            },
             policy: UtilityPolicy::new(),
             exec: Executive::default(),
             seen_strength: 0,

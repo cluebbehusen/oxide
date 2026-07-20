@@ -39,6 +39,17 @@ from ppo import gae, ppo_update
 
 TIERS = ["scrapheap", "standard", "veteran", "prime"]
 
+# Potential-based shaping: a small dense signal from the strength
+# differential (mine minus the larger of visible and remembered enemy
+# strength). Potential differences guide the value net through the
+# thousand-decision desert between terminal rewards without changing
+# what optimal play is.
+SHAPE_K = 0.05
+
+
+def potential(raw: list[int]) -> float:
+    return (raw[20] - max(raw[22], raw[28])) / 500.0
+
 # Rush teacher (indices into the raw feature vector; see gym.rs).
 IDLE, TRAIN_H, TRAIN_S, FORM, PUSH, SCOUT = 0, 1, 2, 7, 8, 10
 
@@ -66,6 +77,7 @@ class Lane:
         self.seat = seat
         self.obs, self.mask, self.act = [], [], []
         self.logp, self.val, self.rew, self.done = [], [], [], []
+        self.last_pot = 0.0
 
 
 class Job:
@@ -151,6 +163,9 @@ def rollout(policy, jobs, seeds, steps, device):
     for j in jobs:
         if j.frame is None:
             j.reset(next(seeds))
+    for j in jobs:
+        for s in j.learner_seats:
+            lanes[(id(j), s)].last_pot = potential(j.frame.seats[s].raw)
 
     for _ in range(steps):
         views = []
@@ -194,12 +209,15 @@ def rollout(policy, jobs, seeds, steps, device):
                     lane.done.append(True)
                     finished_rewards.append(frame.reward(s))
                 j.reset(next(seeds))
+                for s in j.learner_seats:
+                    lanes[(id(j), s)].last_pot = potential(j.frame.seats[s].raw)
             else:
                 for s in j.learner_seats:
                     lane = lanes[(id(j), s)]
-                    lane.rew.append(-1e-4)
+                    pot = potential(frame.seats[s].raw)
+                    lane.rew.append(-1e-4 + SHAPE_K * (pot - lane.last_pot))
                     lane.done.append(False)
-            if not frame.done:
+                    lane.last_pot = pot
                 j.frame = frame
 
     # Bootstrap values for unfinished lanes.

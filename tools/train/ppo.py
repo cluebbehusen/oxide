@@ -32,7 +32,7 @@ def ppo_update(
     epochs=4,
     minibatch=1024,
     clip=0.2,
-    ent_coef=0.005,
+    ent_coef=0.01,
     kl_stop=0.03,
     value_only=False,
 ):
