@@ -28,11 +28,16 @@ struct PendingHit {
 /// A construction hp-gain decided this tick. Buffered like damage, and
 /// applied *after* it: the documented rule is that a site zeroed by fire
 /// is dead even if its builder acted the same tick — the shooter aimed at
-/// the start-of-tick world, where the hit was lethal.
+/// the start-of-tick world, where the hit was lethal. Completion buffers
+/// too: a site whose final tick coincides with a lethal volley must never
+/// come online — no free turret shot, no "online" fanfare before death.
 struct PendingBuild {
     site: crate::ids::BuildingId,
     step: u32,
     max_hp: u32,
+    completes: bool,
+    player: crate::ids::PlayerId,
+    kind: crate::stats::BuildingKind,
 }
 
 pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
@@ -67,7 +72,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         }
     }
     turret_fire(state, events, &mut hits);
-    resolve_hits(state, hits, builds);
+    resolve_hits(state, hits, builds, events);
 }
 
 /// The other half of simultaneity: buffered shots land now, in the order
@@ -76,7 +81,12 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
 /// nothing and a survivor answers its earliest attacker *that survived
 /// resolution*: turning to face a corpse would waste the answer and let a
 /// living shooter keep firing unopposed.
-fn resolve_hits(state: &mut State, hits: Vec<PendingHit>, builds: Vec<PendingBuild>) {
+fn resolve_hits(
+    state: &mut State,
+    hits: Vec<PendingHit>,
+    builds: Vec<PendingBuild>,
+    events: &mut Vec<Event>,
+) {
     for hit in &hits {
         match hit.victim {
             Target::Unit(uid) => {
@@ -91,12 +101,22 @@ fn resolve_hits(state: &mut State, hits: Vec<PendingHit>, builds: Vec<PendingBui
             }
         }
     }
-    // Construction gains land only on sites that survived the volley.
+    // Construction gains — and completions — land only on sites that
+    // survived the volley.
     for gain in &builds {
         if let Some(b) = state.building_mut(gain.site)
             && b.hp > 0
         {
             b.hp = (b.hp + gain.step).min(gain.max_hp);
+            if gain.completes {
+                b.built = true;
+                b.progress = 0;
+                events.push(Event::BuildingCompleted {
+                    building: gain.site,
+                    player: gain.player,
+                    kind: gain.kind,
+                });
+            }
         }
     }
     for hit in &hits {
@@ -205,27 +225,21 @@ fn build(
         let b = state.building_mut(site).expect("just seen");
         let step = (ramp * (b.progress + 1) / build_ticks) - (ramp * b.progress / build_ticks);
         b.progress += 1;
-        // The hp gain is buffered like damage and applied after it — see
-        // PendingBuild. Progress and completion are bookkeeping, not hp.
-        if step > 0 {
+        // Both the hp gain and the completion are buffered and applied
+        // after damage — see PendingBuild. The builder learns the site is
+        // done next tick, through the built-site branch above.
+        let completes = b.progress >= build_ticks;
+        if step > 0 || completes {
             builds.push(PendingBuild {
                 site,
                 step,
                 max_hp: stats.max_hp,
-            });
-        }
-        if b.progress >= build_ticks {
-            b.built = true;
-            b.progress = 0;
-            events.push(Event::BuildingCompleted {
-                building: site,
+                completes,
                 player: me,
                 kind,
             });
-            state.unit_mut(id).expect("caller checked").advance_queue();
-        } else {
-            state.unit_mut(id).expect("caller checked").path = None;
         }
+        state.unit_mut(id).expect("caller checked").path = None;
     } else if !approach_rect(state, id, anchor, size) {
         let unit = state.unit_mut(id).expect("caller checked");
         let (player, pos) = (unit.player, unit.pos);

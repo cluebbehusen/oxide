@@ -1814,6 +1814,9 @@ fn construction_ramps_and_completes() {
     let b = state.building(site).unwrap();
     assert!(b.built);
     assert_eq!(b.hp, BuildingKind::Turret.stats().max_hp, "ramped to full");
+    // Completion is buffered; the builder learns the site is done on the
+    // next tick, through the built-site branch.
+    state.tick(&[]);
     assert_eq!(
         state.unit(builder).unwrap().order,
         Order::Idle,
@@ -3286,4 +3289,126 @@ fn same_tick_construction_cannot_absorb_a_lethal_hit() {
             .any(|e| matches!(e, Event::BuildingDestroyed { .. })),
         "a lethal hit must kill the site regardless of same-tick building"
     );
+}
+
+#[test]
+fn a_doomed_site_never_comes_online() {
+    use oxide_sim::stats::BuildingKind;
+    // Two scuttlers chew the site throughout construction so its hp at
+    // the final progress tick sits well under the parked lancers' volley;
+    // the volley lands on exactly that tick. The site must die without
+    // ever completing: no online event, no free turret shot.
+    let scenario = Scenario {
+        name: "doomed-site".into(),
+        seed: 42,
+        map: vec![
+            "####################".into(),
+            "#1.................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#................2.#".into(),
+            "#..................#".into(),
+            "####################".into(),
+        ],
+        players: arena(vec![]).players,
+        units: vec![
+            unit(0, UnitKind::Harvester, 8, 5),
+            unit(1, UnitKind::Scuttler, 11, 3),
+            unit(1, UnitKind::Scuttler, 11, 8),
+            // Parked in the fire-but-no-aggro band around the site.
+            unit(1, UnitKind::Lancer, 15, 5),
+            unit(1, UnitKind::Lancer, 15, 6),
+            unit(1, UnitKind::Lancer, 14, 2),
+        ],
+    };
+    let mut state = scenario.build().unwrap();
+    let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
+    let (builder, s1, s2, l1, l2, l3) = (ids[0], ids[1], ids[2], ids[3], ids[4], ids[5]);
+    let anchor = TilePos::new(9, 5);
+    let build_ticks = BuildingKind::Turret
+        .stats()
+        .construction
+        .unwrap()
+        .build_ticks;
+
+    let mut all_events = Vec::new();
+    all_events.extend(
+        state
+            .tick(&[cmd(
+                0,
+                Command::Build {
+                    units: vec![builder],
+                    kind: BuildingKind::Turret,
+                    anchor,
+                },
+            )])
+            .events,
+    );
+    let site = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == anchor)
+        .unwrap()
+        .id;
+    all_events.extend(
+        state
+            .tick(&[cmd(
+                1,
+                Command::Attack {
+                    units: vec![s1, s2],
+                    target: Target::Building(site),
+                    queue: false,
+                },
+            )])
+            .events,
+    );
+    // Progress hit 1 on the build tick and 2 on the tick above; the final
+    // tick is build_ticks-2 empty ticks later. Fire the volley then.
+    for _ in 0..(build_ticks - 3) {
+        all_events.extend(state.tick(&[]).events);
+        assert!(
+            state.building(site).is_some_and(|b| !b.built && b.hp > 0),
+            "premise: the site survives, unfinished, until the final tick"
+        );
+    }
+    all_events.extend(
+        state
+            .tick(&[cmd(
+                1,
+                Command::Attack {
+                    units: vec![l1, l2, l3],
+                    target: Target::Building(site),
+                    queue: false,
+                },
+            )])
+            .events,
+    );
+    // Sweep a couple more ticks for the destruction event.
+    for _ in 0..3 {
+        all_events.extend(state.tick(&[]).events);
+    }
+    assert!(
+        !all_events
+            .iter()
+            .any(|e| matches!(e, Event::BuildingCompleted { .. })),
+        "a site killed on its final tick must never report completion"
+    );
+    assert!(
+        !all_events
+            .iter()
+            .any(|e| matches!(e, Event::TurretFired { .. })),
+        "a doomed turret gets no free shot"
+    );
+    assert!(
+        all_events
+            .iter()
+            .any(|e| matches!(e, Event::BuildingDestroyed { .. })),
+        "the volley killed it"
+    );
+    assert!(state.building(site).is_none());
 }
