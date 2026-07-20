@@ -219,7 +219,13 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
             } => {
                 input.mouse = vec2(x, y);
                 if let Some(kind) = input.placing {
-                    if !click_on_hud(game, vec2(x, y)) {
+                    // The minimap keeps its meaning while placing: jump
+                    // the camera, never misread the click as world ground
+                    // (that would spend scrap on a bogus tile).
+                    if let Some(world) = crate::render::minimap_world_at(game, vec2(x, y)) {
+                        game.camera.center = world;
+                        game.camera.pan(Vec2::ZERO); // re-clamp
+                    } else if !click_on_hud(game, vec2(x, y)) {
                         let world = game.camera.to_world(vec2(x, y));
                         let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
                         let units = game.selection.units.clone();
