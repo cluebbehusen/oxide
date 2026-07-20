@@ -459,7 +459,7 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
         // A beam needs BOTH endpoints in sight: a half-fogged laser would
         // pinpoint an unseen combatant at its far end.
         let in_sight = match fx.kind {
-            EffectKind::Laser { from, to } => sees(from) && sees(to),
+            EffectKind::Laser { from, to, .. } => sees(from) && sees(to),
             EffectKind::Puff { at } => sees(at),
             // Own-order acknowledgments always show; fogged targets are
             // already impossible to order onto.
@@ -469,17 +469,18 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
             continue;
         }
         match fx.kind {
-            EffectKind::Laser { from, to } => {
+            EffectKind::Laser { heavy, from, to } => {
                 let a = game.camera.to_screen(from);
                 let b = game.camera.to_screen(to);
                 let fade = (1.0 - fx.age / 0.15).clamp(0.0, 1.0);
+                let w = if heavy { 2.0 } else { 1.0 };
                 // Wide glow under a hot core.
                 draw_line(
                     a.x,
                     a.y,
                     b.x,
                     b.y,
-                    7.0 * fade.max(0.3),
+                    7.0 * w * fade.max(0.3),
                     Color::new(0.95, 0.75, 0.5, 0.22 * fade),
                 );
                 draw_line(
@@ -487,7 +488,7 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
                     a.y,
                     b.x,
                     b.y,
-                    2.5 * fade.max(0.2),
+                    2.5 * w * fade.max(0.2),
                     Color::new(0.98, 0.93, 0.8, fade),
                 );
                 if fx.age < 0.07 {
@@ -669,6 +670,8 @@ fn draw_hud(game: &Game) {
                 .map(|k| match k {
                     UnitKind::Harvester => "harvester",
                     UnitKind::Sentinel => "sentinel",
+                    UnitKind::Scuttler => "scuttler",
+                    UnitKind::Lancer => "lancer",
                 })
                 .collect();
             let line = format!(

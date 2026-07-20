@@ -351,6 +351,7 @@ fn attack(
             Target::Unit(uid) => {
                 let victim = state.unit_mut(uid).expect("resolved above");
                 victim.hp = victim.hp.saturating_sub(atk.damage);
+                retaliate(state, uid, id);
             }
             Target::Building(bid) => {
                 let victim = state.building_mut(bid).expect("resolved above");
@@ -411,6 +412,31 @@ fn attack(
             pos,
         });
     }
+}
+
+/// Damage answers back: a hit unit that can fight and isn't already
+/// fighting turns on its attacker — the counter to weapons that outrange
+/// aggro (nothing else ever gets this far: inside aggro, auto-acquire
+/// already found the attacker). An attack-mover keeps its destination as
+/// the resume point. Brains run in id order, so the first hit of a tick
+/// picks the target deterministically.
+fn retaliate(state: &mut State, victim: UnitId, attacker: UnitId) {
+    let Some(unit) = state.unit_mut(victim) else {
+        return;
+    };
+    if unit.hp == 0 || unit.kind.stats().attack.is_none() {
+        return;
+    }
+    let resume = match unit.order {
+        Order::Idle => None,
+        Order::AttackMove { goal } => Some(goal),
+        _ => return, // already busy fighting or working
+    };
+    unit.order = Order::Attack {
+        target: Target::Unit(attacker),
+        resume,
+    };
+    unit.path = None;
 }
 
 /// Ensures the unit is walking to some passable tile touching the rectangle.

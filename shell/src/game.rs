@@ -50,6 +50,8 @@ pub struct Effect {
 pub enum SoundKind {
     /// An attack landed somewhere you can see.
     Laser,
+    /// A Lancer's rail shot landed somewhere you can see.
+    RailFire,
     /// A unit died somewhere you can see.
     UnitDeath,
     /// A building fell (yours are always audible).
@@ -87,6 +89,8 @@ pub enum PingKind {
 pub enum EffectKind {
     /// An attack beam.
     Laser {
+        /// Rendered thicker and brighter — the Lancer's rail.
+        heavy: bool,
         /// Muzzle, world coords.
         from: Vec2,
         /// Impact, world coords.
@@ -468,11 +472,22 @@ impl Game {
                 } => {
                     // Positions come from the event itself: resolving ids
                     // here loses the beam whenever the hit was lethal.
+                    let heavy = matches!(
+                        event,
+                        Event::AttackHit { attacker, .. }
+                            if self.state.unit(*attacker)
+                                .is_some_and(|u| u.kind == oxide_sim::UnitKind::Lancer)
+                    );
                     if sees(self, *attacker_pos) || sees(self, *target_pos) {
-                        self.sounds_pending.push(SoundKind::Laser);
+                        self.sounds_pending.push(if heavy {
+                            SoundKind::RailFire
+                        } else {
+                            SoundKind::Laser
+                        });
                     }
                     self.fx.push(Effect {
                         kind: EffectKind::Laser {
+                            heavy,
                             from: world_vec(*attacker_pos),
                             to: world_vec(*target_pos),
                         },
@@ -529,6 +544,7 @@ impl Game {
                         oxide_sim::command::RejectReason::InvalidTarget => "can't target that",
                         oxide_sim::command::RejectReason::NotANode => "nothing to mine there",
                         oxide_sim::command::RejectReason::NotYourBuilding => "not your building",
+                        oxide_sim::command::RejectReason::CannotProduce => "can't build that here",
                         oxide_sim::command::RejectReason::NoValidUnits => {
                             "nothing selected can do that"
                         }

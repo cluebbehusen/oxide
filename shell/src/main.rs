@@ -134,6 +134,7 @@ impl Mixer {
         let now = get_time();
         let min_gap = match kind {
             SoundKind::Laser => 0.09,
+            SoundKind::RailFire => 0.15,
             SoundKind::UnitDeath => 0.12,
             _ => 0.05,
         };
@@ -143,6 +144,7 @@ impl Mixer {
         self.last_played.insert(kind, now);
         let (sound, volume) = match kind {
             SoundKind::Laser => (&sounds.laser, 0.18),
+            SoundKind::RailFire => (&sounds.rail_fire, 0.4),
             SoundKind::UnitDeath => (&sounds.unit_death, 0.35),
             SoundKind::BuildingBoom => (&sounds.building_boom, 0.6),
             SoundKind::Deposit => (&sounds.deposit, 0.25),

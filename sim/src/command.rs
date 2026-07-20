@@ -115,6 +115,8 @@ pub enum RejectReason {
     InvalidTarget,
     /// The tile can't be walked to (no open tile near it).
     UnreachableGoal,
+    /// The building can't train that unit kind.
+    CannotProduce,
     /// A coordinate lies outside the map's command envelope. Hostile or
     /// corrupt input — honest clients clamp to the map.
     OutOfBounds,

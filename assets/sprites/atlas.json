@@ -83,38 +83,50 @@
   64,
   64
  ],
- "muzzle_flash": [
-  70,
-  338,
-  32,
-  32
- ],
- "rock_0": [
+ "lancer_cupric": [
   274,
   202,
   64,
   64
  ],
- "rock_1": [
+ "lancer_ferrous": [
   342,
   202,
   64,
   64
  ],
- "rock_2": [
+ "muzzle_flash": [
+  342,
+  338,
+  32,
+  32
+ ],
+ "rock_0": [
   410,
   202,
   64,
   64
  ],
- "rock_3": [
+ "rock_1": [
   2,
   270,
   64,
   64
  ],
- "rock_skirt": [
+ "rock_2": [
   70,
+  270,
+  64,
+  64
+ ],
+ "rock_3": [
+  138,
+  270,
+  64,
+  64
+ ],
+ "rock_skirt": [
+  206,
   270,
   64,
   64
@@ -126,37 +138,49 @@
   128
  ],
  "scrap_full": [
-  138,
-  270,
-  64,
-  64
- ],
- "scrap_low": [
-  206,
-  270,
-  64,
-  64
- ],
- "scrap_mid": [
   274,
   270,
   64,
   64
  ],
- "scrap_rich": [
+ "scrap_low": [
   342,
   270,
   64,
   64
  ],
- "sentinel_cupric": [
+ "scrap_mid": [
   410,
   270,
   64,
   64
  ],
- "sentinel_ferrous": [
+ "scrap_rich": [
   2,
+  338,
+  64,
+  64
+ ],
+ "scuttler_cupric": [
+  70,
+  338,
+  64,
+  64
+ ],
+ "scuttler_ferrous": [
+  138,
+  338,
+  64,
+  64
+ ],
+ "sentinel_cupric": [
+  206,
+  338,
+  64,
+  64
+ ],
+ "sentinel_ferrous": [
+  274,
   338,
   64,
   64

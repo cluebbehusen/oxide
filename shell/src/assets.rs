@@ -25,6 +25,8 @@ pub struct Sprites {
     scorch: Rect,
     foundry: [Rect; 2],
     harvester: [Rect; 2],
+    scuttler: [Rect; 2],
+    lancer: [Rect; 2],
     sentinel: [Rect; 2],
 }
 
@@ -86,6 +88,8 @@ impl Sprites {
             scorch: rect("scorch")?,
             foundry: [rect("foundry_ferrous")?, rect("foundry_cupric")?],
             harvester: [rect("harvester_ferrous")?, rect("harvester_cupric")?],
+            scuttler: [rect("scuttler_ferrous")?, rect("scuttler_cupric")?],
+            lancer: [rect("lancer_ferrous")?, rect("lancer_cupric")?],
             sentinel: [rect("sentinel_ferrous")?, rect("sentinel_cupric")?],
         })
     }
@@ -150,6 +154,8 @@ impl Sprites {
         match kind {
             UnitKind::Harvester => self.harvester[faction_index(faction)],
             UnitKind::Sentinel => self.sentinel[faction_index(faction)],
+            UnitKind::Scuttler => self.scuttler[faction_index(faction)],
+            UnitKind::Lancer => self.lancer[faction_index(faction)],
         }
     }
 }
@@ -158,6 +164,8 @@ impl Sprites {
 pub struct Sounds {
     /// An attack landing.
     pub laser: Sound,
+    /// A Lancer's rail shot.
+    pub rail_fire: Sound,
     /// A unit popping.
     pub unit_death: Sound,
     /// A building coming down.
@@ -188,6 +196,7 @@ impl Sounds {
     pub async fn load() -> Result<Self> {
         Ok(Self {
             laser: clip("laser").await?,
+            rail_fire: clip("rail_fire").await?,
             unit_death: clip("unit_death").await?,
             building_boom: clip("building_boom").await?,
             deposit: clip("deposit").await?,

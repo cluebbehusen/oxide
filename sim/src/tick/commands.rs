@@ -345,6 +345,9 @@ fn apply_train(
         if b.player != player {
             return Err(RejectReason::NotYourBuilding);
         }
+        if !b.kind.stats().produces.contains(&kind) {
+            return Err(RejectReason::CannotProduce);
+        }
         if b.queue.len() >= QUEUE_CAP {
             return Err(RejectReason::QueueFull);
         }

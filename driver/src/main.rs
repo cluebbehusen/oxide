@@ -216,7 +216,7 @@ enum LiveCmd {
         /// Producing building id.
         #[arg(long)]
         building: u32,
-        /// "harvester" or "sentinel".
+        /// "harvester", "sentinel", "scuttler", or "lancer".
         #[arg(long)]
         kind: String,
     },
@@ -378,6 +378,8 @@ fn parse_kind(s: &str) -> Result<UnitKind> {
     match s {
         "harvester" => Ok(UnitKind::Harvester),
         "sentinel" => Ok(UnitKind::Sentinel),
+        "scuttler" => Ok(UnitKind::Scuttler),
+        "lancer" => Ok(UnitKind::Lancer),
         other => bail!("unknown unit kind {other:?}"),
     }
 }

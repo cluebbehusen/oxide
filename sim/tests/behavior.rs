@@ -1592,3 +1592,184 @@ fn stop_clears_a_patrol() {
     }
     assert_eq!(state.unit(mover).unwrap().tile(), parked);
 }
+
+#[test]
+fn foundry_refuses_kinds_it_cannot_produce() {
+    let mut state = arena(vec![]).build().unwrap();
+    let foundry = state.buildings()[0].id;
+    let report = state.tick(&[cmd(
+        0,
+        Command::Train {
+            building: foundry,
+            kind: UnitKind::Scuttler,
+        },
+    )]);
+    assert!(report.events.iter().any(|e| matches!(
+        e,
+        Event::CommandRejected {
+            reason: RejectReason::CannotProduce,
+            ..
+        }
+    )));
+    assert_eq!(state.player(PlayerId(0)).scrap, 200, "no scrap was taken");
+}
+
+#[test]
+fn lancer_outranges_aggro_and_retaliation_answers() {
+    // The lancer opens fire from 5.4 tiles — outside the sentinel's aggro
+    // (5), inside lancer range (5.5). Before 0.5 the sentinel would stand
+    // and die; the first hit now turns it on its attacker.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Sentinel, 3, 6),
+        unit(1, UnitKind::Lancer, 8, 4),
+    ])
+    .build()
+    .unwrap();
+    let (victim, lancer) = (state.units()[0].id, state.units()[1].id);
+    let d2 = {
+        let a = state.unit(victim).unwrap().pos;
+        let b = state.unit(lancer).unwrap().pos;
+        a.dist_sq(b)
+    };
+    let aggro = oxide_sim::stats::UnitKind::Sentinel
+        .stats()
+        .attack
+        .unwrap()
+        .aggro_range;
+    assert!(d2 > aggro * aggro, "test premise: outside sentinel aggro");
+
+    state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: vec![lancer],
+            target: Target::Unit(victim),
+            queue: false,
+        },
+    )]);
+    // The lancer needs no approach: the first hit lands within a tick or
+    // two, and the sentinel's answer must be immediate.
+    run_until(&mut state, 10, |s, _| {
+        s.unit(victim).unwrap().hp < UnitKind::Sentinel.stats().max_hp
+    });
+    assert!(
+        matches!(
+            state.unit(victim).unwrap().order,
+            Order::Attack { target: Target::Unit(t), .. } if t == lancer
+        ),
+        "the sentinel should turn on its attacker"
+    );
+    // And the fight resolves the right way: the sentinel closes and wins.
+    run_until(&mut state, 400, |s, _| s.unit(lancer).is_none());
+    assert!(
+        state.unit(victim).is_some(),
+        "sentinel survives the approach"
+    );
+}
+
+#[test]
+fn retaliation_keeps_an_attack_movers_destination() {
+    // An open lane: the lancer sits 5.4 tiles off the march route —
+    // outside the marcher's aggro, inside its own range — and opens fire
+    // as the marcher passes. The marcher must answer, win, and still
+    // finish the march.
+    let scenario = Scenario {
+        name: "retaliation-lane".into(),
+        seed: 42,
+        map: vec![
+            "####################".into(),
+            "#1.................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#................2.#".into(),
+            "#..................#".into(),
+            "####################".into(),
+        ],
+        players: arena(vec![]).players,
+        units: vec![
+            unit(0, UnitKind::Sentinel, 3, 2),
+            unit(1, UnitKind::Lancer, 9, 7),
+        ],
+    };
+    let mut state = scenario.build().unwrap();
+    let (marcher, lancer) = (state.units()[0].id, state.units()[1].id);
+    let goal = TilePos::new(16, 2);
+    state.tick(&[cmd(
+        0,
+        Command::AttackMove {
+            units: vec![marcher],
+            goal,
+            queue: false,
+        },
+    )]);
+    // Let the march reach the firing window (dist 5.39: in lancer range,
+    // outside sentinel aggro), then order the shot.
+    run_until(&mut state, 200, |s, _| {
+        s.unit(marcher).unwrap().tile() == TilePos::new(7, 2)
+    });
+    state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: vec![lancer],
+            target: Target::Unit(marcher),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 20, |s, _| {
+        matches!(
+            s.unit(marcher).unwrap().order,
+            Order::Attack { resume: Some(g), .. } if g == goal
+        )
+    });
+    // Kill confirmed, march resumed, goal reached.
+    run_until(&mut state, 600, |s, _| s.unit(lancer).is_none());
+    run_until(&mut state, 600, |s, _| {
+        let u = s.unit(marcher).unwrap();
+        u.tile() == goal && u.order == Order::Idle
+    });
+}
+
+#[test]
+fn scuttler_wins_the_matchups_it_should_and_loses_the_rest() {
+    // Scuttler vs harvester: quick shredding. Sentinel vs scuttler: the
+    // line unit holds. Both by explicit attack so positioning is fixed.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Scuttler, 4, 6),
+        unit(1, UnitKind::Harvester, 6, 6),
+    ])
+    .build()
+    .unwrap();
+    let (rat, prey) = (state.units()[0].id, state.units()[1].id);
+    state.tick(&[cmd(
+        0,
+        Command::Attack {
+            units: vec![rat],
+            target: Target::Unit(prey),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 200, |s, _| s.unit(prey).is_none());
+    assert!(state.unit(rat).is_some());
+
+    let mut state = arena(vec![
+        unit(0, UnitKind::Sentinel, 4, 6),
+        unit(1, UnitKind::Scuttler, 6, 6),
+    ])
+    .build()
+    .unwrap();
+    let (line, rat) = (state.units()[0].id, state.units()[1].id);
+    state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: vec![rat],
+            target: Target::Unit(line),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| s.unit(rat).is_none());
+    assert!(state.unit(line).is_some(), "the sentinel holds the line");
+}

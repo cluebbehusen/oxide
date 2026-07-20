@@ -54,6 +54,21 @@ def laser() -> None:
     write("laser", out)
 
 
+def rail_fire() -> None:
+    # The Lancer's shot: a deep falling square with a bass thud under it —
+    # unmistakably heavier than the standard zap.
+    n = int(0.16 * RATE)
+    phase = 0.0
+    out = []
+    for i in range(n):
+        freq = 620.0 - (420.0 * i / n)
+        phase += freq / RATE
+        square = 1.0 if (phase % 1.0) < 0.5 else -1.0
+        thud = math.sin(2 * math.pi * 55.0 * i / RATE)
+        out.append((0.42 * square + 0.4 * thud) * decay(i, n, 3.5))
+    write("rail_fire", out)
+
+
 def unit_death() -> None:
     # A crunchy noise pop with a thud underneath.
     rng = random.Random(3)
@@ -102,6 +117,7 @@ def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     print(f"writing {OUT}")
     laser()
+    rail_fire()
     unit_death()
     building_boom()
     chime("deposit", [780.0, 1170.0], 0.06, 0.4)

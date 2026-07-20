@@ -15,6 +15,12 @@ pub enum UnitKind {
     Harvester,
     /// The line combat unit: short-ranged, sturdy, expendable.
     Sentinel,
+    /// Fast, cheap, fragile raider: a contact-range shredder that eats
+    /// harvest lines and dies to anything that fights back in time.
+    Scuttler,
+    /// Slow long-range artillery: outranges everything (including its own
+    /// aggro), melts to anything that reaches it.
+    Lancer,
 }
 
 /// Every building type.
@@ -77,6 +83,8 @@ pub struct BuildingStats {
     pub size: (i32, i32),
     /// Fog-of-war reveal radius, in tiles (from each footprint tile).
     pub vision: i32,
+    /// What this building can train. Empty for non-producers.
+    pub produces: &'static [UnitKind],
 }
 
 const HARVESTER: UnitStats = UnitStats {
@@ -109,10 +117,43 @@ const SENTINEL: UnitStats = UnitStats {
     vision: 7, // strictly wider than aggro, so acquired targets are seen
 };
 
+const SCUTTLER: UnitStats = UnitStats {
+    max_hp: 40,
+    speed: Fx::lit("0.16"), // 3.2 tiles/s — outruns everything
+    radius: Fx::lit("0.28"),
+    cost: 40,
+    train_ticks: 80, // 4 s
+    attack: Some(AttackStats {
+        damage: 3,
+        range: Fx::lit("0.8"), // practically touching
+        cooldown_ticks: 6,     // a gnawing 10 dps
+        aggro_range: Fx::lit("5"),
+    }),
+    harvest: None,
+    vision: 6,
+};
+
+const LANCER: UnitStats = UnitStats {
+    max_hp: 50,
+    speed: Fx::lit("0.08"), // 1.6 tiles/s — the army protects it, not vice versa
+    radius: Fx::lit("0.35"),
+    cost: 110,
+    train_ticks: 200, // 10 s
+    attack: Some(AttackStats {
+        damage: 30,
+        range: Fx::lit("5.5"), // beyond aggro: it only uses this on orders
+        cooldown_ticks: 60,    // one heavy shot per 3 s
+        aggro_range: Fx::lit("5"),
+    }),
+    harvest: None,
+    vision: 7,
+};
+
 const FOUNDRY: BuildingStats = BuildingStats {
     max_hp: 800,
     size: (2, 2),
     vision: 8,
+    produces: &[UnitKind::Harvester, UnitKind::Sentinel],
 };
 
 impl UnitKind {
@@ -121,6 +162,8 @@ impl UnitKind {
         match self {
             UnitKind::Harvester => &HARVESTER,
             UnitKind::Sentinel => &SENTINEL,
+            UnitKind::Scuttler => &SCUTTLER,
+            UnitKind::Lancer => &LANCER,
         }
     }
 }

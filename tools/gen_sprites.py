@@ -67,7 +67,7 @@ def canvas(px: int, color=(0, 0, 0, 0)) -> tuple[Image.Image, ImageDraw.ImageDra
 
 def finish(img: Image.Image, px: int, name: str) -> None:
     img = img.resize((px, px), Image.LANCZOS)
-    if name.startswith(("harvester", "sentinel")):
+    if name.startswith(("harvester", "sentinel", "scuttler", "lancer")):
         img = rim_light(img)
     img.save(OUT / f"{name}.png")
     REGISTRY[name] = img
@@ -326,6 +326,53 @@ def sentinel(faction: str) -> None:
     finish(img, px, f"sentinel_{faction}")
 
 
+def scuttler(faction: str) -> None:
+    """Low, wide, and mean: a six-legged shredder that reads as vermin
+    next to the Sentinel's arrowhead."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    # Legs splay from under the carapace, three per side.
+    for side in (-1, 1):
+        for i, ly in enumerate((24, 34, 44)):
+            x0 = 32 + side * 12
+            x1 = 32 + side * (24 + 2 * i)
+            d.line([(s(x0), s(ly)), (s(x1), s(ly + 6))], fill=(*IRON_DARK, 255), width=s(3))
+    # Carapace: a squat oval, wider than tall.
+    d.ellipse([s(12), s(18), s(52), s(50)], fill=(*IRON, 255))
+    d.ellipse([s(16), s(21), s(48), s(46)], fill=(*pal["base"], 255))
+    d.ellipse([s(23), s(27), s(41), s(41)], fill=(*pal["dark"], 255))
+    # Cutter jaws, forward.
+    d.polygon([(s(24), s(20)), (s(30), s(8)), (s(32), s(18))], fill=(*IRON_LIGHT, 255))
+    d.polygon([(s(40), s(20)), (s(34), s(8)), (s(32), s(18))], fill=(*IRON_LIGHT, 255))
+    # A single hungry eye.
+    d.ellipse([s(29), s(24), s(35), s(30)], fill=(*pal["light"], 255))
+    finish(img, px, f"scuttler_{faction}")
+
+
+def lancer(faction: str) -> None:
+    """Artillery on legs: a narrow chassis dwarfed by its rail — the
+    barrel is the silhouette."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    # Braced stance: four stubby stabilizer feet.
+    for (fx, fy) in ((16, 34), (48, 34), (20, 52), (44, 52)):
+        d.ellipse([s(fx - 4), s(fy - 4), s(fx + 4), s(fy + 4)], fill=(*IRON_DARK, 255))
+    # Compact hull sitting low and back.
+    d.rounded_rectangle([s(20), s(30), s(44), s(56)], radius=s(5), fill=(*IRON, 255))
+    d.rounded_rectangle([s(23), s(33), s(41), s(53)], radius=s(4), fill=(*pal["base"], 255))
+    d.rounded_rectangle([s(27), s(40), s(37), s(50)], radius=s(3), fill=(*pal["dark"], 255))
+    # The rail: long, thin, unmistakable, reaching well past the hull.
+    d.rectangle([s(28), s(0), s(36), s(34)], fill=(*IRON_DARK, 255))
+    d.rectangle([s(30), s(0), s(34), s(32)], fill=(*IRON_LIGHT, 255))
+    d.rectangle([s(31), s(0), s(33), s(30)], fill=(*pal["light"], 255))
+    # Recoil shrouds flanking the rail base.
+    d.rectangle([s(24), s(26), s(28), s(38)], fill=(*IRON_DARK, 255))
+    d.rectangle([s(36), s(26), s(40), s(38)], fill=(*IRON_DARK, 255))
+    finish(img, px, f"lancer_{faction}")
+
+
 def rock_skirt() -> None:
     """A soft shadow cast from the top edge; rotated at draw time toward
     whichever neighbor holds the rock."""
@@ -436,6 +483,8 @@ def main() -> None:
         foundry(faction)
         harvester(faction)
         sentinel(faction)
+        scuttler(faction)
+        lancer(faction)
     pack_atlas()
     print("done")
 
