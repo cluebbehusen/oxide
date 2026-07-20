@@ -80,6 +80,8 @@ enum Cmd {
         #[command(subcommand)]
         cmd: LiveCmd,
     },
+    /// Serve training episodes over stdio (newline-delimited JSON).
+    Gym,
     /// Automated end-to-end check against a live shell.
     Smoke {
         /// Shell debug-server address.
@@ -389,6 +391,7 @@ fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&reply)?);
             }
         }
+        Cmd::Gym => oxide_driver::gym::serve()?,
         Cmd::Smoke { addr, spawn } => smoke::run(&addr, spawn)?,
     }
     Ok(())

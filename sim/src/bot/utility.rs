@@ -160,7 +160,7 @@ impl UtilityPolicy {
             .filter(|u| u.kind == UnitKind::Harvester)
             .count();
         if dials.scouting && harvesters >= dials.harvester_target as usize {
-            self.scouting(obs, home_tile, enlisted, &mut intents);
+            self.scouting(obs, home_tile, enlisted, false, &mut intents);
         }
         self.army(dials, obs, armies, home_tile, &mut intents);
         intents
@@ -168,7 +168,7 @@ impl UtilityPolicy {
 
     /// A harvester sent last think and idle again now bounced off an
     /// unreachable node — never ask twice.
-    fn audit_harvests(&mut self, obs: &Observation) {
+    pub(super) fn audit_harvests(&mut self, obs: &Observation) {
         for (id, node) in std::mem::take(&mut self.last_sent) {
             let bounced = obs
                 .my_units
@@ -182,7 +182,7 @@ impl UtilityPolicy {
 
     /// A site requested last think that never appeared was refused for a
     /// reason the observation can't see; stop asking for that anchor.
-    fn audit_sites(&mut self, obs: &Observation) {
+    pub(super) fn audit_sites(&mut self, obs: &Observation) {
         for anchor in std::mem::take(&mut self.pending_sites) {
             let appeared = obs.my_buildings.iter().any(|b| b.anchor == anchor);
             if !appeared && !self.dead_anchors.contains(&anchor) {
@@ -193,7 +193,7 @@ impl UtilityPolicy {
 
     /// A shrinking harvest line means raiders; remember until a turret
     /// actually stands.
-    fn audit_raids(&mut self, obs: &Observation) {
+    pub(super) fn audit_raids(&mut self, obs: &Observation) {
         let harvesters = obs
             .my_units
             .iter()
@@ -219,7 +219,7 @@ impl UtilityPolicy {
     /// it sits no deeper in their half than ours — a returning scout
     /// must not be "efficiently" assigned to mine at the enemy's
     /// doorstep.
-    fn economy(&mut self, obs: &Observation, home: TilePos, intents: &mut Vec<Intent>) {
+    pub(super) fn economy(&mut self, obs: &Observation, home: TilePos, intents: &mut Vec<Intent>) {
         let enemy_base = obs
             .enemy_buildings
             .iter()
@@ -432,11 +432,12 @@ impl UtilityPolicy {
     /// range every so often; between refreshes the scout is released
     /// back to the draft pool. A scout looks — it never parks in the
     /// enemy's aggro.
-    fn scouting(
+    pub(super) fn scouting(
         &mut self,
         obs: &Observation,
         home: TilePos,
         enlisted: &[UnitId],
+        force: bool,
         intents: &mut Vec<Intent>,
     ) {
         /// How far short of the objective a scout stops — inside a
@@ -450,7 +451,9 @@ impl UtilityPolicy {
             .map(|b| (b.anchor.manhattan(home), b.anchor.y, b.anchor.x))
             .min()
             .map(|(_, y, x)| TilePos::new(x, y));
-        let due = known_base.is_none() || obs.tick.saturating_sub(self.scouted_at) >= SCOUT_REFRESH;
+        let due = force
+            || known_base.is_none()
+            || obs.tick.saturating_sub(self.scouted_at) >= SCOUT_REFRESH;
 
         if let Some(id) = self.scout
             && !obs.my_units.iter().any(|u| u.id == id)
@@ -542,36 +545,12 @@ impl UtilityPolicy {
         home: TilePos,
         intents: &mut Vec<Intent>,
     ) {
-        // Rally: reinforce the army already staging (there is at most one
-        // in practice — FormArmy merges on the same tile); a fresh rally
-        // leans toward the enemy but stays within reach of home, where
-        // the defender's advantage lives — a mid-map rally sits on the
-        // enemy's march path and gets reinforcements killed piecemeal.
-        let enemy_site = obs
-            .enemy_buildings
-            .iter()
-            .map(|b| (b.anchor.manhattan(home), b.anchor.y, b.anchor.x))
-            .min()
-            .map(|(_, y, x)| TilePos::new(x, y))
-            .or_else(|| {
-                obs.enemy_units
-                    .iter()
-                    .map(|u| (u.tile.manhattan(home), u.tile.y, u.tile.x))
-                    .min()
-                    .map(|(_, y, x)| TilePos::new(x, y))
-            });
+        let enemy_site = Self::enemy_site(obs, home);
         let staging_army = armies
             .iter()
             .filter(|a| a.state == ArmyState::Staging)
             .min_by_key(|a| a.id);
-        let rally = staging_army.map(|a| a.staging).unwrap_or_else(|| {
-            let toward = enemy_site.unwrap_or(TilePos::new(obs.map_width / 2, obs.map_height / 2));
-            let lean = |from: i32, to: i32| from + ((to - from) / 3).clamp(-3, 3);
-            self.passable_near(
-                obs,
-                TilePos::new(lean(home.x, toward.x), lean(home.y, toward.y)),
-            )
-        });
+        let rally = self.rally_point(obs, staging_army, enemy_site, home);
 
         // Defense: an intruder near home turns every army on it. Fresh
         // fighters still muster at the rally — a body forms there and
@@ -674,8 +653,62 @@ impl UtilityPolicy {
         }
     }
 
+    /// The nearest known enemy presence — buildings (ghosts included)
+    /// before units — or None while the enemy is entirely unlocated.
+    pub(super) fn enemy_site(obs: &Observation, home: TilePos) -> Option<TilePos> {
+        obs.enemy_buildings
+            .iter()
+            .map(|b| (b.anchor.manhattan(home), b.anchor.y, b.anchor.x))
+            .min()
+            .map(|(_, y, x)| TilePos::new(x, y))
+            .or_else(|| {
+                obs.enemy_units
+                    .iter()
+                    .map(|u| (u.tile.manhattan(home), u.tile.y, u.tile.x))
+                    .min()
+                    .map(|(_, y, x)| TilePos::new(x, y))
+            })
+    }
+
+    /// Where armies gather: the staging army's rally if one exists, else
+    /// a fresh point leaning toward the enemy but within reach of home —
+    /// a mid-map rally sits on the enemy's march path and gets
+    /// reinforcements killed piecemeal.
+    pub(super) fn rally_point(
+        &self,
+        obs: &Observation,
+        staging_army: Option<&Army>,
+        enemy_site: Option<TilePos>,
+        home: TilePos,
+    ) -> TilePos {
+        staging_army.map(|a| a.staging).unwrap_or_else(|| {
+            let toward = enemy_site.unwrap_or(TilePos::new(obs.map_width / 2, obs.map_height / 2));
+            let lean = |from: i32, to: i32| from + ((to - from) / 3).clamp(-3, 3);
+            self.passable_near(
+                obs,
+                TilePos::new(lean(home.x, toward.x), lean(home.y, toward.y)),
+            )
+        })
+    }
+
+    /// Ticks since the last scout order toward a known enemy base
+    /// (u64::MAX before the first one) — the gym's intel-age feature.
+    pub(super) fn intel_age(&self, tick: u64) -> u64 {
+        if self.scouted_at == 0 {
+            u64::MAX
+        } else {
+            tick.saturating_sub(self.scouted_at)
+        }
+    }
+
+    /// Records a Build anchor requested this think, so the next audit
+    /// can blacklist it if the sim refuses the site.
+    pub(super) fn note_pending_site(&mut self, anchor: TilePos) {
+        self.pending_sites.push(anchor);
+    }
+
     /// Nearest known scrap by (manhattan, y, x), skipping bounced nodes.
-    fn nearest_scrap(&self, obs: &Observation, from: TilePos) -> Option<TilePos> {
+    pub(super) fn nearest_scrap(&self, obs: &Observation, from: TilePos) -> Option<TilePos> {
         obs.known_scrap
             .iter()
             .filter(|(pos, amount)| *amount > 0 && !self.dead_nodes.contains(pos))
@@ -688,7 +721,7 @@ impl UtilityPolicy {
     /// footprint and doorstep ring are clear of everything the
     /// observation knows about — the sim's `can_place` still has the
     /// final word, and refusals land in [`Self::dead_anchors`].
-    fn placement_near(
+    pub(super) fn placement_near(
         &self,
         obs: &Observation,
         kind: BuildingKind,
@@ -750,7 +783,7 @@ impl UtilityPolicy {
 
     /// The nearest known-open tile to `want` (spiral out to 3), for
     /// rally points that shouldn't sit inside a rock formation.
-    fn passable_near(&self, obs: &Observation, want: TilePos) -> TilePos {
+    pub(super) fn passable_near(&self, obs: &Observation, want: TilePos) -> TilePos {
         for r in 0i32..=3 {
             for dy in -r..=r {
                 for dx in -r..=r {

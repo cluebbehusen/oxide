@@ -17,6 +17,7 @@
 pub mod brain;
 pub mod classic;
 pub mod executive;
+pub mod gym;
 pub mod observation;
 pub mod orient;
 pub mod tiers;
@@ -25,6 +26,7 @@ pub mod utility;
 pub use brain::Brain;
 pub use classic::Bot;
 pub use executive::{Army, ArmyId, ArmyState, Doctrine, Executive, Intent};
+pub use gym::{ACTION_COUNT, Action, Decision, FEATURE_COUNT, GYM_VERSION, GymBot};
 pub use observation::{BuildingObs, Observation, UnitObs};
 pub use orient::Orientation;
 pub use tiers::Difficulty;
