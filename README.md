@@ -25,12 +25,16 @@ cargo run -p oxide-shell
 ```
 
 A menu lists the shipped maps — Skirmish Basin, Scrapyard Brawl, Rustbelt
-Canyon, Verdigris Fields. You're Ferrous; the bot is Cupric, and it is not
-asleep.
+Canyon, Verdigris Fields, Derelict Yard. You're Ferrous; the bot is Cupric,
+and it is not asleep.
 
 | Input | Action |
 |---|---|
 | Left click / drag | Select your units (click a Foundry to select it) |
+| Shift + click / drag | Add to (or remove from) the selection |
+| Double-click a unit | Select all visible units of that kind |
+| Ctrl + `1`-`5` | Assign the selection to a control group |
+| `1`-`5` | Recall the group — tap again to center the camera on it |
 | Left click on minimap | Jump the camera there |
 | Right click | Contextual order: enemy → attack, scrap → harvest, ground → **move engaging everything on the way** (fire at will is the only stance; combat units always defend themselves) |
 | Right click on minimap | Send the selection there, fighting through |
@@ -42,6 +46,12 @@ asleep.
 | `P` | Quick pause |
 | `Esc` | Deselect, then the pause menu (resume / restart / main menu / quit) |
 | `F1` | Debug overlay (grid, ids, paths — and no fog) |
+
+Ranged fire needs a clear line: rock (and buildings) block shots, so a
+Sentinel behind cover must step out to fire — and so must the one shooting
+at it. Every order answers back — a ground ping where it landed, a toast
+when it couldn't be done. Rich scrap nodes (the taller, denser piles)
+hold double the salvage and are usually worth fighting over.
 
 Fog of war is real: you see what your machines see, explored ground stays
 dimly remembered, and you cannot target what nobody is looking at. Enemy
@@ -104,11 +114,15 @@ BLESS=1 cargo test -p oxide-driver  # re-bless goldens after intended changes
 cargo run -p oxide-driver -- smoke --spawn   # live end-to-end (opens a window)
 ```
 
-Four layers: sim unit tests; headless scenario/determinism tests (identical
-runs, mid-run serde roundtrips, replay reproduction, bot-vs-bot to a
-decisive end); golden images rendered by a CPU rasterizer and compared
-byte-for-byte; and the live smoke drive. A full bot match simulates in well
-under a second.
+Four layers: sim unit tests plus a seeded command fuzzer (hostile input
+must never panic or diverge); headless scenario/determinism tests
+(identical runs, mid-run serde roundtrips, replay reproduction, bot-vs-bot
+to a decisive end); golden images rendered by a CPU rasterizer and
+compared byte-for-byte, alongside fixed state-hash fixtures for every
+shipped map; and the live smoke drive. A full bot match simulates in well
+under a second. A CI workflow (`.github/workflows/ci.yml`) runs the suite
+on Linux/macOS/Windows and re-checks the hash fixtures on each — the
+cross-platform determinism proof — the day this repo grows a remote.
 
 ## Saving games
 
@@ -124,12 +138,14 @@ trade-off: replays only reproduce on the sim version that wrote them.
 ## Status and road ahead
 
 Working today: the full loop (harvest → train → fight → win) with fog of
-war and ghost memory, solid units, attack-move, rally points, a fog-aware
-minimap, sound, four maps, menus, a competent skirmish bot, save/resume
-via replays, and the agent tooling described above.
+war and ghost memory, solid units that crowd without gridlocking,
+attack-move with line-of-sight fire, rally points, control groups,
+shift-select, order feedback, a fog-aware minimap, sound, five maps,
+menus, a competent skirmish bot, save/resume via replays, and the agent
+tooling described above.
 
 Not yet: more unit and building types (the roster is deliberately tiny),
-formations and control groups, and the mobile ports — macroquad makes
+shift-queued orders, formations, and the mobile ports — macroquad makes
 iOS/Android plausible, and `RawEvent` already carries touch variants, but
 nothing is wired. The sim freezes at game end; the pause menu's Restart
 is the rematch.

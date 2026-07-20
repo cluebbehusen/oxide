@@ -67,8 +67,12 @@ BLESS=1 cargo test -p oxide-driver   # regenerate goldens after intended change
 ```
 
 Before committing: fmt + clippy clean, tests green. Golden files live in
-`driver/tests/goldens/`; a mismatch writes the actual PNG under `target/`
-for side-by-side inspection.
+`driver/tests/goldens/`: byte-exact PNGs (a mismatch writes the actual
+under `target/` for side-by-side inspection) plus `state-hashes.json`,
+bot-vs-bot hashes at tick 2,000 for every shipped scenario — the cheap
+tripwire that flags sim drift without image churn, and the fixture CI
+re-derives per-OS as the cross-platform determinism proof.
+`.github/workflows/ci.yml` is authored and dormant until a remote exists.
 
 ## Running and driving the game
 
@@ -126,18 +130,41 @@ and test fixtures inside crate `tests/` directories.
   in the library crates. Comments state constraints, not narration.
 - **Assets are generated.** Sprites: `tools/gen_sprites.py` (palette at
   the top); sounds: `tools/gen_sounds.py` (stdlib-only synthesis). Run
-  with `uv run`, commit script + output together. The palette constants
-  also appear in `driver/src/render.rs` and `shell/src/render.rs` — keep
-  them in sync.
-- **Scenarios** are JSON with ASCII maps: `.` ground, `#` rock, `s` scrap
-  node, `1`-`8` Foundry anchors (top-left of 2x2). `Scenario::skirmish()`
-  embeds `scenarios/skirmish.json` at compile time.
+  with `uv run`, commit script + output together. The sprite script also
+  shelf-packs everything into `atlas.png` + `atlas.json`; the shell draws
+  exclusively from that one texture (source rects, 1px edge extrusion
+  against bleed) so the whole world batches into a handful of draw calls —
+  never load per-sprite textures in the shell. The palette constants also
+  appear in `driver/src/render.rs` and `shell/src/render.rs` — keep them
+  in sync.
+- **Scenarios** are JSON with ASCII maps: `.` ground, `,` rubble (cosmetic
+  ground; the byte is hashed but nothing else changes), `#` rock, `s` scrap
+  node, `S` rich node (double salvage), `1`-`8` Foundry anchors (top-left
+  of 2x2). Shipped maps are 180°-symmetric — author edits in mirrored
+  pairs. `Scenario::skirmish()` embeds `scenarios/skirmish.json` at
+  compile time.
 - **Balance numbers** all live in `sim/src/stats.rs`; expect hash churn
   when touching them.
 - Keep this file and README.md current when commands or behavior change.
 
 ## Design decisions worth knowing
 
+- **`State` fields are private; `State::tick` is the only mutator.** Read
+  through the accessors (`units()`, `buildings()`, `players()`, `map()`,
+  `current_tick()`, `result()`, `vision(id)`, `hash()`). If new code needs
+  a view the accessors can't give, add an accessor — never a `pub` field.
+- **Ranged fire traces line of sight** (`chassis::path::line_blocked`, a
+  fixed-point supercover walk): rock and non-target buildings block, scrap
+  and units don't, endpoints never do. In range but blocked → keep
+  approaching until range *and* line hold. Vision stays radius-based on
+  purpose — cover is a firing rule, not a stealth system.
+- **Movement feel is tuned, not emergent** (`sim/src/stats.rs`): waypoints
+  accept within `WAYPOINT_ACCEPT` (corner-safe), arrival propagates through
+  contact with settled neighbors near a shared goal (`ARRIVAL_NEAR`), group
+  orders fan out over a deterministic ring of per-unit goals, anchored
+  workers take `ANCHORED_PUSH_SHARE` of pair separation so crowds flow
+  around them, and collision applies pairs Gauss-Seidel-style in id order —
+  symmetric cancellation once froze the whole economy.
 - **Fog of war enforces exactly one thing in the sim**: targeted attacks
   need the issuer to *see* the victim. Rendering honors fog fully
   (unexplored void, explored dim, unseen enemies culled) but the debug
