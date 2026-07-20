@@ -82,9 +82,12 @@ pub fn run_replay(
         }
         Err(err) => return Err(err.into()),
     }
-    let total = ticks_override
-        .or(replay.meta.ticks)
-        .unwrap_or_else(|| replay.commands.last().map_or(0, |c| c.tick + 1));
+    let total = ticks_override.or(replay.meta.ticks).unwrap_or_else(|| {
+        replay
+            .commands
+            .last()
+            .map_or(0, |c| c.tick.saturating_add(1))
+    });
     let mut state = replay.setup.build().context("building replay setup")?;
     let mut cursor = replay.cursor();
     for _ in 0..total {

@@ -218,6 +218,7 @@ async fn run() -> Result<()> {
                     incoming,
                     &mut game,
                     &mut mode,
+                    &mut input,
                     &mut injected,
                     &mut pending_shots,
                 );
@@ -245,6 +246,7 @@ async fn run() -> Result<()> {
                     game = keep_flags(fresh, &game);
                     game.paused = false;
                     mode = Mode::Playing;
+                    input.reset_session();
                     main_menu = None;
                 }
                 render::draw(&game, &sprites, &input);
@@ -291,6 +293,7 @@ async fn run() -> Result<()> {
                         game = keep_flags(fresh, &game);
                         game.paused = false;
                         mode = Mode::Playing;
+                        input.reset_session();
                     }
                     Some(2) => {
                         main_menu = None;
@@ -393,6 +396,7 @@ fn handle_request(
     incoming: IncomingRequest,
     game: &mut Game,
     mode: &mut Mode,
+    input: &mut input::InputState,
     injected: &mut Vec<RawEvent>,
     pending_shots: &mut Vec<PendingScreenshot>,
 ) {
@@ -436,6 +440,12 @@ fn handle_request(
         }
         Request::Resume => {
             game.paused = false;
+            // Resuming implies gameplay: leave the pause menu too, or the
+            // sim runs behind a menu that still claims it is paused.
+            if matches!(mode, Mode::PauseMenu) {
+                *mode = Mode::Playing;
+                input.reset_transient();
+            }
             Ok(Reply::Ok)
         }
         Request::SetSpeed { multiplier } => {
@@ -478,6 +488,7 @@ fn handle_request(
             .map(|fresh| {
                 *game = keep_flags(fresh, game);
                 *mode = Mode::Playing;
+                input.reset_session();
                 Reply::Ok
             }),
         Request::LoadReplay { path } => GameReplay::load(&path)
@@ -488,6 +499,7 @@ fn handle_request(
             .map(|fresh| {
                 *game = keep_flags(fresh, game);
                 *mode = Mode::Playing;
+                input.reset_session();
                 Reply::Status(status_view(game))
             }),
         Request::SaveReplay { path } => {

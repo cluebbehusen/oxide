@@ -7,6 +7,7 @@
 
 use super::{find_nearby_passable, rect_adjacent_tiles};
 use crate::event::Event;
+use crate::ids::PlayerId;
 use crate::state::{Order, State};
 use crate::stats::{GOAL_SNAP_RADIUS, UnitKind};
 use chassis::grid::TilePos;
@@ -34,7 +35,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         let unit = state.spawn_unit(player, kind, tile.center());
         events.push(Event::UnitTrained { unit, kind, player });
         if let Some(rally) = rally
-            && let Some(order) = rally_order(state, kind, rally)
+            && let Some(order) = rally_order(state, player, kind, rally)
             && let Some(newborn) = state.unit_mut(unit)
         {
             newborn.order = order;
@@ -48,9 +49,15 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
 /// What a rally means to a fresh unit: harvesters mine a rallied node,
 /// fighters attack-move, everyone else walks. `None` (unwalkable rally
 /// area) leaves the unit idle at the doorstep.
-fn rally_order(state: &State, kind: UnitKind, rally: TilePos) -> Option<Order> {
+///
+/// "Node" is judged by the owner's *remembered* scrap, not the live map —
+/// it refreshes while the ground is visible and freezes when sight is
+/// lost, so a rally can neither probe unexplored tiles nor know a distant
+/// node ran dry. Stale beliefs resolve honestly: the newborn walks out
+/// and discovers.
+fn rally_order(state: &State, owner: PlayerId, kind: UnitKind, rally: TilePos) -> Option<Order> {
     let stats = kind.stats();
-    if stats.harvest.is_some() && state.map.scrap_at(rally) > 0 {
+    if stats.harvest.is_some() && state.vision(owner).remembered_scrap(rally) > 0 {
         return Some(Order::Harvest { node: rally });
     }
     let goal = find_nearby_passable(state, rally, GOAL_SNAP_RADIUS)?;

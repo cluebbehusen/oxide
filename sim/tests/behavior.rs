@@ -565,7 +565,11 @@ fn train_costs_scrap_and_spawns_after_build_time() {
 
 #[test]
 fn rally_routes_fresh_units_by_role() {
-    let mut state = arena(vec![]).build().unwrap();
+    // A bystander parked in sight of the node: rallies read the owner's
+    // remembered scrap, so somebody must have actually seen it.
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 8, 4)])
+        .build()
+        .unwrap();
     let foundry = state.buildings()[0].id;
     // Rally onto the scrap node: fresh harvesters go straight to work.
     state.tick(&[
@@ -1176,5 +1180,159 @@ fn congestion_survives_nonconsecutive_unit_ids() {
     assert!(
         deposited[1] >= 50,
         "economy stalled with gapped ids: {deposited:?}"
+    );
+}
+
+#[test]
+fn dense_stacks_respect_the_per_pass_displacement_cap() {
+    // 100 units spawned on one tile. Per-pair clamping once let a unit in
+    // k overlaps drift k × COLLISION_MAX_STEP in a single tick (measured
+    // 1.8+ tiles); the budget is per unit per pass, so one tick may move
+    // nobody farther than COLLISION_ITERATIONS × COLLISION_MAX_STEP.
+    let units = (0..100)
+        .map(|_| unit(0, UnitKind::Harvester, 8, 3))
+        .collect();
+    let mut state = arena(units).build().unwrap();
+    let before: Vec<_> = state.units().iter().map(|u| (u.id, u.pos)).collect();
+    state.tick(&[]);
+    let cap = oxide_sim::stats::COLLISION_MAX_STEP * 3; // COLLISION_ITERATIONS
+    for (id, start) in before {
+        let now = state.unit(id).unwrap().pos;
+        let moved = (now - start).length_sq();
+        assert!(
+            moved <= cap * cap,
+            "{id} moved {moved:?}² in one tick (cap {cap:?})"
+        );
+    }
+}
+
+#[test]
+fn rally_on_unexplored_scrap_does_not_probe_the_map() {
+    // The arena node at (11,4) sits outside the Foundry's vision and no
+    // unit has ever seen it. A rally there must read as plain ground —
+    // a harvesting newborn would leak that hidden scrap exists.
+    let mut state = arena(vec![]).build().unwrap();
+    let foundry = state.buildings()[0].id;
+    assert!(
+        !state.vision(PlayerId(0)).explored(TilePos::new(11, 4)),
+        "test premise: the rally tile must be unexplored"
+    );
+    state.tick(&[
+        cmd(
+            0,
+            Command::SetRally {
+                building: foundry,
+                rally: Some(TilePos::new(11, 4)),
+            },
+        ),
+        cmd(
+            0,
+            Command::Train {
+                building: foundry,
+                kind: UnitKind::Harvester,
+            },
+        ),
+    ]);
+    let events = run_until(&mut state, 200, |_, events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::UnitTrained { .. }))
+    });
+    let newborn = events
+        .iter()
+        .find_map(|e| match e {
+            Event::UnitTrained { unit, .. } => Some(*unit),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        matches!(state.unit(newborn).unwrap().order, Order::Move { .. }),
+        "newborn should walk to unexplored ground, not clairvoyantly harvest"
+    );
+}
+
+#[test]
+fn rally_trusts_remembered_scrap_even_when_it_is_stale() {
+    // Player 0 scouts the node, loses sight, and player 1 mines it dry.
+    // The rally still believes the memory: the newborn honestly walks out
+    // to harvest and will discover the truth on arrival.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 8, 4), // scout, sees (11,4)
+        unit(1, UnitKind::Harvester, 12, 5),
+    ])
+    .build()
+    .unwrap();
+    let (scout, miner) = (state.units()[0].id, state.units()[1].id);
+    let node = TilePos::new(11, 4);
+    assert!(state.vision(PlayerId(0)).remembered_scrap(node) > 0);
+    // Scout retreats out of sight; the enemy strips the node bare.
+    state.tick(&[
+        cmd(
+            0,
+            Command::Move {
+                units: vec![scout],
+                goal: TilePos::new(2, 3),
+            },
+        ),
+        cmd(
+            1,
+            Command::Harvest {
+                units: vec![miner],
+                node,
+            },
+        ),
+    ]);
+    run_until(&mut state, 12_000, |s, _| s.map().scrap_at(node) == 0);
+    assert!(
+        state.vision(PlayerId(0)).remembered_scrap(node) > 0,
+        "memory must have frozen before depletion"
+    );
+
+    let foundry = state.buildings()[0].id;
+    state.tick(&[
+        cmd(
+            0,
+            Command::SetRally {
+                building: foundry,
+                rally: Some(node),
+            },
+        ),
+        cmd(
+            0,
+            Command::Train {
+                building: foundry,
+                kind: UnitKind::Harvester,
+            },
+        ),
+    ]);
+    let events = run_until(&mut state, 200, |_, events| {
+        events.iter().any(|e| {
+            matches!(
+                e,
+                Event::UnitTrained {
+                    player: PlayerId(0),
+                    ..
+                }
+            )
+        })
+    });
+    let newborn = events
+        .iter()
+        .find_map(|e| match e {
+            Event::UnitTrained {
+                unit,
+                player: PlayerId(0),
+                ..
+            } => Some(*unit),
+            _ => None,
+        })
+        .unwrap();
+    // The rally honored the memory and issued Harvest. (The harvest brain
+    // may already have retargeted a neighboring node — its depleted-node
+    // replacement scan is a separate, order-wide behavior — but under the
+    // old live-map rule the newborn would have gotten a plain Move.)
+    assert!(
+        matches!(state.unit(newborn).unwrap().order, Order::Harvest { .. }),
+        "stale belief should be acted on honestly, not silently corrected"
     );
 }

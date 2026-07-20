@@ -193,7 +193,15 @@ and test fixtures inside crate `tests/` directories.
   limiter keeps battles from clipping into noise.
 - **Rally points are role-aware**: a rallied scrap node sends fresh
   harvesters straight to `Harvest`; combat units attack-move to the rally;
-  the goal snaps at spawn time, not set time.
+  the goal snaps at spawn time, not set time. Whether the rally counts as
+  "a node" is judged by the owner's *remembered* scrap, like harvest
+  validation — rallies can't probe unexplored ground.
+- **Eliminated players leave autonomous remnants — by design.** Losing
+  your last Foundry rejects your future commands, but units already in
+  the world keep executing their brains (idle ones still auto-acquire).
+  Masterless machines finishing their last orders fit the fiction; in
+  two-player games the question is moot (elimination ends the match), and
+  if FFA maps ever ship, revisit deliberately.
 
 ## Gotchas learned the hard way
 

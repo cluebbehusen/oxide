@@ -20,8 +20,10 @@ use std::collections::HashMap;
 
 /// Seconds per sim tick.
 pub const TICK_DT: f32 = 1.0 / TICKS_PER_SECOND as f32;
-/// Ticks a single frame may run before we let rendering catch up.
-const MAX_TICKS_PER_FRAME: u32 = 8;
+/// Ticks a single frame may run before we let rendering catch up. Sized
+/// so the advertised 64x speed cap is real at 60 fps (64 × 20 tps ÷ 60);
+/// ticks are cheap enough that a full frame of them costs well under 1 ms.
+const MAX_TICKS_PER_FRAME: u32 = 24;
 
 /// The concrete session replay type.
 pub type GameReplay = Replay<Scenario, PlayerCommand>;
@@ -230,10 +232,21 @@ impl Game {
             .map_err(|err| anyhow::anyhow!("{err}"))?;
         let scenario = replay.setup.clone();
         let mut state = scenario.build()?;
-        let total = replay
-            .meta
-            .ticks
-            .unwrap_or_else(|| replay.commands.last().map_or(0, |c| c.tick + 1));
+        let total = replay.meta.ticks.unwrap_or_else(|| {
+            replay
+                .commands
+                .last()
+                .map_or(0, |c| c.tick.saturating_add(1))
+        });
+        // Loading replays synchronously on the frame loop: a structurally
+        // valid file can still claim an absurd duration and freeze the UI
+        // for minutes. ~28 game-hours is beyond any honest session.
+        const MAX_LOAD_TICKS: u64 = 2_000_000;
+        anyhow::ensure!(
+            total <= MAX_LOAD_TICKS,
+            "replay spans {total} ticks — beyond the {MAX_LOAD_TICKS}-tick interactive load limit \
+             (the headless driver replays without one)"
+        );
         let mut cursor = replay.cursor();
         for _ in 0..total {
             let commands: Vec<PlayerCommand> = cursor
@@ -267,12 +280,16 @@ impl Game {
     /// is recorded, presentation caches update. The only place `state.current_tick()`
     /// is called.
     pub fn do_tick(&mut self) {
-        self.prev_pos = self
-            .state
-            .units()
-            .iter()
-            .map(|u| (u.id.0, world_vec(u.pos)))
-            .collect();
+        // Interpolation cache; pointless during suppressed bulk advances
+        // (advance_ticks rebuilds it once at the end).
+        if !self.suppress_presentation {
+            self.prev_pos = self
+                .state
+                .units()
+                .iter()
+                .map(|u| (u.id.0, world_vec(u.pos)))
+                .collect();
+        }
 
         let mut commands = std::mem::take(&mut self.pending);
         for bot in &mut self.bots {

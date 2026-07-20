@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["pillow"]
+# dependencies = ["pillow==12.3.0"]  # pinned: asset bytes must reproduce
 # ///
 """Generates every sprite in assets/sprites/.
 

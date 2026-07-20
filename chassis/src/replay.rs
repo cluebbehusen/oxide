@@ -101,20 +101,15 @@ impl<S, C> Replay<S, C> {
     /// Checks the invariants recording enforces but deserialization alone
     /// does not — a file is untrusted input even when it parses.
     ///
-    /// Verifies command ticks are nondecreasing, the recorded duration
-    /// covers every command, and (when `expected_version` is given) that
-    /// the file was written by this sim. Call before executing any loaded
+    /// Verifies command ticks are nondecreasing, that no tick sits at the
+    /// counter's ceiling, the recorded duration covers every command, and
+    /// (when `expected_version` is given) that the file was written by
+    /// this sim. Structure is checked *before* version: callers that
+    /// deliberately tolerate a [`ReplayError::VersionMismatch`] must never
+    /// thereby accept a malformed log. Call before executing any loaded
     /// replay; a log that fails these can silently produce a different
     /// world, or panic the recorder later.
     pub fn validate(&self, expected_version: Option<&str>) -> Result<(), ReplayError> {
-        if let Some(expected) = expected_version
-            && self.meta.sim_version != expected
-        {
-            return Err(ReplayError::VersionMismatch {
-                recorded: self.meta.sim_version.clone(),
-                running: expected.to_string(),
-            });
-        }
         for pair in self.commands.windows(2) {
             if pair[1].tick < pair[0].tick {
                 return Err(ReplayError::Invalid(format!(
@@ -123,13 +118,30 @@ impl<S, C> Replay<S, C> {
                 )));
             }
         }
-        if let (Some(ticks), Some(last)) = (self.meta.ticks, self.commands.last())
-            && ticks <= last.tick
+        if let Some(last) = self.commands.last() {
+            // Playback needs at least one tick after the final command;
+            // u64::MAX would overflow every "last + 1" downstream.
+            if last.tick == u64::MAX {
+                return Err(ReplayError::Invalid(
+                    "final command sits at the tick counter's ceiling".into(),
+                ));
+            }
+            if let Some(ticks) = self.meta.ticks
+                && ticks <= last.tick
+            {
+                return Err(ReplayError::Invalid(format!(
+                    "recorded duration {ticks} does not cover the last command at tick {}",
+                    last.tick
+                )));
+            }
+        }
+        if let Some(expected) = expected_version
+            && self.meta.sim_version != expected
         {
-            return Err(ReplayError::Invalid(format!(
-                "recorded duration {ticks} does not cover the last command at tick {}",
-                last.tick
-            )));
+            return Err(ReplayError::VersionMismatch {
+                recorded: self.meta.sim_version.clone(),
+                running: expected.to_string(),
+            });
         }
         Ok(())
     }
@@ -156,7 +168,9 @@ impl<S, C> Replay<S, C> {
         {
             std::fs::create_dir_all(parent)?;
         }
-        let tmp = path.with_extension("tmp");
+        // Process-unique temp name: two sessions saving the same stem
+        // concurrently must not clobber each other's half-written file.
+        let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
         {
             let file = std::fs::File::create(&tmp)?;
             let mut writer = std::io::BufWriter::new(file);
@@ -246,6 +260,43 @@ mod tests {
         replay.meta.ticks = Some(10);
         assert!(replay.validate(Some("1.0.0")).is_ok());
         assert!(replay.validate(None).is_ok());
+    }
+
+    #[test]
+    fn validate_checks_structure_before_version() {
+        // Callers may deliberately tolerate a version mismatch (replay
+        // archaeology); that tolerance must never smuggle in a malformed
+        // log. Both defects present -> the structural error wins.
+        let mut replay: Replay<(), u8> = Replay::new("0.9.0", ());
+        replay.commands = vec![
+            TimedCommand {
+                tick: 9,
+                command: 1,
+            },
+            TimedCommand {
+                tick: 3,
+                command: 2,
+            },
+        ];
+        assert!(matches!(
+            replay.validate(Some("1.0.0")),
+            Err(ReplayError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_a_command_at_the_tick_ceiling() {
+        // Playback computes "last tick + 1"; u64::MAX must die here, not
+        // overflow there.
+        let mut replay: Replay<(), u8> = Replay::new("1.0.0", ());
+        replay.commands = vec![TimedCommand {
+            tick: u64::MAX,
+            command: 1,
+        }];
+        assert!(matches!(
+            replay.validate(None),
+            Err(ReplayError::Invalid(_))
+        ));
     }
 
     #[test]

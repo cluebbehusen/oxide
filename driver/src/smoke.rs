@@ -105,6 +105,26 @@ fn execute(addr: &str, patient: bool) -> Result<()> {
     );
     let was_running = !status.paused;
     client.call(Request::Pause)?;
+    // The checks bail on protocol surprises; the shell's clock must be
+    // restored even then, or a failing smoke leaves a paused session.
+    let outcome = run_checks(&mut client, &mut checks);
+    if was_running {
+        client.call(Request::Resume).ok();
+    }
+    outcome?;
+
+    println!(
+        "smoke: {} passed, {} failed",
+        checks.passed,
+        checks.failures.len()
+    );
+    if !checks.failures.is_empty() {
+        bail!("smoke failures: {}", checks.failures.join(", "));
+    }
+    Ok(())
+}
+
+fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     let Reply::Hash(start) = client.call(Request::StateHash)? else {
         bail!("state_hash returned the wrong reply kind");
     };
@@ -261,18 +281,5 @@ fn execute(addr: &str, patient: bool) -> Result<()> {
         after_resume.hash == live.hash,
         format!("{} vs {}", after_resume.hash, live.hash),
     );
-
-    if was_running {
-        client.call(Request::Resume)?;
-    }
-
-    println!(
-        "smoke: {} passed, {} failed",
-        checks.passed,
-        checks.failures.len()
-    );
-    if !checks.failures.is_empty() {
-        bail!("smoke failures: {}", checks.failures.join(", "));
-    }
     Ok(())
 }

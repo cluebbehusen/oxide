@@ -251,11 +251,14 @@ fn deliver(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
         unit.progress = 0;
         unit.path = None;
         // Saturating: a hostile scenario can start a bank near u32::MAX.
+        // The event reports what was actually credited, not what was
+        // carried — at the ceiling those differ.
         let bank = &mut state.player_mut(me).scrap;
-        *bank = bank.saturating_add(carrying);
+        let credited = bank.saturating_add(carrying) - *bank;
+        *bank += credited;
         events.push(Event::ScrapDeposited {
             player: me,
-            amount: carrying,
+            amount: credited,
         });
         // Nothing left to go back to? Then we're done hauling.
         if state.map.scrap_at(node) == 0 && replacement_node(state, node, tile).is_none() {

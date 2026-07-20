@@ -52,3 +52,20 @@ jobs:
       # platform must reproduce exactly on every other.
       - name: Cross-platform determinism
         run: cargo test -p oxide-driver --test hashes -- --nocapture
+
+  # The declared rust-version is a promise; moving-stable alone never
+  # tests it.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
+      - name: Test on MSRV
+        run: cargo test --workspace

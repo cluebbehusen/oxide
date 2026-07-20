@@ -101,6 +101,18 @@ impl InputState {
         self.held.clear();
         self.drag_origin = None;
     }
+
+    /// Everything `reset_transient` drops, plus state that assumes the
+    /// *match* continues: control groups, double-click memory, recall
+    /// timing. Called whenever the `Game` is replaced (restart, new map,
+    /// replay load) — unit ids restart from zero there, and a stale group
+    /// would resolve to unrelated units in the new world.
+    pub fn reset_session(&mut self) {
+        self.reset_transient();
+        self.groups = Default::default();
+        self.last_click = None;
+        self.last_recall = None;
+    }
 }
 
 const KEY_MAP: [(Key, mq::KeyCode); 11] = [
@@ -446,10 +458,12 @@ fn group_action(game: &mut Game, input: &mut InputState, slot: usize) {
         input.groups[slot] = game.selection.units.clone();
         return;
     }
+    // Ownership, not mere existence: after a session change a stale id
+    // could name anyone's unit (belt to reset_session's suspenders).
     let alive: Vec<UnitId> = input.groups[slot]
         .iter()
         .copied()
-        .filter(|id| game.state.unit(*id).is_some())
+        .filter(|id| game.state.unit(*id).is_some_and(|u| u.player == game.human))
         .collect();
     input.groups[slot] = alive.clone();
     if alive.is_empty() {
@@ -607,7 +621,9 @@ fn train(game: &mut Game, kind: UnitKind) {
 /// Normalizes a raw wheel reading toward gentle notch counts. Trackpads
 /// report small continuous deltas, discrete wheels big notchy ones
 /// (±120-ish); both should zoom at a comparable, capped rate. Heuristic —
-/// revisit if a device feels off.
+/// revisit if a device feels off. TODO: X11-style ±1 detents land in the
+/// trackpad branch and zoom 10× weaker than ±120 detents; needs tuning
+/// on real Linux hardware before it's worth guessing at.
 fn normalize_wheel(raw: f32) -> f32 {
     let delta = if raw.abs() >= 40.0 {
         raw / 120.0

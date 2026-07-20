@@ -148,6 +148,11 @@ fn relaxation_pass(state: &mut State) -> bool {
     by_tile.sort_unstable_by_key(|&(t, i)| (t.y, t.x, i));
 
     let mut any_overlap = false;
+    // Per-unit displacement budget for this pass. Clamping only per pair
+    // lets a unit in k overlaps move k × the cap — dense stacks visibly
+    // exploded outward. Spent distance is tracked per unit instead, so the
+    // cap in stats.rs means what it says.
+    let mut spent = vec![Fx::ZERO; n];
     for i in 0..n {
         if state.units[i].hp == 0 {
             continue;
@@ -191,13 +196,21 @@ fn relaxation_pass(state: &mut State) -> bool {
                             (false, true) => (Fx::ONE - ANCHORED_PUSH_SHARE, ANCHORED_PUSH_SHARE),
                             _ => (chassis::fx::HALF, chassis::fx::HALF),
                         };
-                    let away_j = pos_j + dir * (overlap * share_j).min(COLLISION_MAX_STEP);
-                    if state.passable(TilePos::containing(away_j)) {
-                        state.units[j].pos = away_j;
+                    let step_j = (overlap * share_j).min(COLLISION_MAX_STEP - spent[j]);
+                    if step_j > Fx::ZERO {
+                        let away_j = pos_j + dir * step_j;
+                        if state.passable(TilePos::containing(away_j)) {
+                            state.units[j].pos = away_j;
+                            spent[j] += step_j;
+                        }
                     }
-                    let away_i = pos_i - dir * (overlap * share_i).min(COLLISION_MAX_STEP);
-                    if state.passable(TilePos::containing(away_i)) {
-                        state.units[i].pos = away_i;
+                    let step_i = (overlap * share_i).min(COLLISION_MAX_STEP - spent[i]);
+                    if step_i > Fx::ZERO {
+                        let away_i = pos_i - dir * step_i;
+                        if state.passable(TilePos::containing(away_i)) {
+                            state.units[i].pos = away_i;
+                            spent[i] += step_i;
+                        }
                     }
                 }
             }
