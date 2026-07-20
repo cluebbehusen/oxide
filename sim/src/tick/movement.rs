@@ -130,8 +130,11 @@ const STACKED_DIRS: [Vec2Fx; 8] = [
 /// crowd pressure), and each pass caps per-unit displacement so packed
 /// crowds settle instead of exploding.
 pub(super) fn resolve_collisions(state: &mut State) {
+    // Direction alternates by tick parity — Gauss-Seidel's sequential
+    // application must not always favor the same ids (see brain::run).
+    let reversed = state.tick % 2 == 1;
     for _ in 0..COLLISION_ITERATIONS {
-        if !relaxation_pass(state) {
+        if !relaxation_pass(state, reversed) {
             break;
         }
     }
@@ -147,7 +150,7 @@ pub(super) fn resolve_collisions(state: &mut State) {
 /// forever. Sequential application cannot cancel, so jams always evolve.
 /// Dead units are skipped: a corpse should not shove the living on its
 /// removal tick.
-fn relaxation_pass(state: &mut State) -> bool {
+fn relaxation_pass(state: &mut State, reversed: bool) -> bool {
     let n = state.units.len();
     if n < 2 {
         return false;
@@ -166,13 +169,18 @@ fn relaxation_pass(state: &mut State) -> bool {
         .collect();
     by_tile.sort_unstable_by_key(|&(t, i)| (t.y, t.x, i));
 
+    let order: Vec<usize> = if reversed {
+        (0..n).rev().collect()
+    } else {
+        (0..n).collect()
+    };
     let mut any_overlap = false;
     // Per-unit displacement budget for this pass. Clamping only per pair
     // lets a unit in k overlaps move k × the cap — dense stacks visibly
     // exploded outward. Spent distance is tracked per unit instead, so the
     // cap in stats.rs means what it says.
     let mut spent = vec![Fx::ZERO; n];
-    for i in 0..n {
+    for i in order {
         if state.units[i].hp == 0 {
             continue;
         }

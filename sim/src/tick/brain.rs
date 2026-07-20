@@ -1,11 +1,14 @@
 //! Phase 3: unit brains — intent becomes action.
 //!
-//! Units act strictly in id order. Damage lands the moment an attack
-//! resolves, so earlier ids shoot first and a unit reduced to 0 hp loses its
-//! action for the tick (it is removed later, in cleanup). Every selection a
-//! brain makes (targets, doorstep tiles, replacement nodes) is ordered by an
-//! explicit key ending in an id or a position, so there is exactly one
-//! possible choice.
+//! Units decide strictly in id order, but damage is *buffered*: every shot
+//! this tick is recorded and applied only after all brains (and turrets)
+//! have acted, so everyone decides against the same start-of-tick world.
+//! Two machines can kill each other in the same tick — that's the point:
+//! before 0.6, inline damage gave whichever seat held the higher unit ids
+//! a same-tick reaction edge that decided every mirror match. Every
+//! selection a brain makes (targets, doorstep tiles, replacement nodes) is
+//! ordered by an explicit key ending in an id or a position, so there is
+//! exactly one possible choice.
 
 use super::{astar_for, rect_adjacent_tiles, tile_adjacent_to_rect};
 use crate::event::Event;
@@ -15,12 +18,27 @@ use crate::stats::RETARGET_RADIUS;
 use chassis::fx::Vec2Fx;
 use chassis::grid::TilePos;
 
+/// A shot decided this tick, applied after every brain has acted.
+struct PendingHit {
+    attacker: Target,
+    victim: Target,
+    damage: u32,
+}
+
 pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
-    let ids: Vec<UnitId> = state.units.iter().map(|u| u.id).collect();
+    let mut hits: Vec<PendingHit> = Vec::new();
+    // Alternate direction by tick parity: sequential phases must not hand
+    // one seat a standing first-mover edge (with damage buffered, the
+    // remaining coupling is small — shared scrap, own-side order state —
+    // but in a zero-noise mirror match, any fixed order decides).
+    let mut ids: Vec<UnitId> = state.units.iter().map(|u| u.id).collect();
+    if state.tick % 2 == 1 {
+        ids.reverse();
+    }
     for id in ids {
         let Some(unit) = state.unit(id) else { continue };
         if unit.hp == 0 {
-            continue; // killed earlier this tick
+            continue; // dead since a previous tick but not yet swept
         }
         if let Some(unit) = state.unit_mut(id) {
             unit.cooldown = unit.cooldown.saturating_sub(1);
@@ -30,19 +48,48 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
             Order::Idle => idle(state, id),
             Order::Move { goal } => walk(state, id, goal, events),
             Order::Harvest { node } => harvest(state, id, node, events),
-            Order::Attack { target, resume } => attack(state, id, target, resume, events),
+            Order::Attack { target, resume } => {
+                attack(state, id, target, resume, events, &mut hits)
+            }
             Order::AttackMove { goal } => attack_move(state, id, goal, events),
             Order::Build { site } => build(state, id, site, events),
         }
     }
-    turret_fire(state, events);
+    turret_fire(state, events, &mut hits);
+    resolve_hits(state, hits);
+}
+
+/// The other half of simultaneity: buffered shots land now, in the order
+/// they were decided (unit-id order, then turret-id order). Damage first —
+/// all of it — then retaliation, so a machine that died this tick answers
+/// nothing and a survivor answers its earliest attacker.
+fn resolve_hits(state: &mut State, hits: Vec<PendingHit>) {
+    for hit in &hits {
+        match hit.victim {
+            Target::Unit(uid) => {
+                if let Some(v) = state.unit_mut(uid) {
+                    v.hp = v.hp.saturating_sub(hit.damage);
+                }
+            }
+            Target::Building(bid) => {
+                if let Some(b) = state.building_mut(bid) {
+                    b.hp = b.hp.saturating_sub(hit.damage);
+                }
+            }
+        }
+    }
+    for hit in &hits {
+        if let Target::Unit(uid) = hit.victim {
+            retaliate(state, uid, hit.attacker);
+        }
+    }
 }
 
 /// Built turrets pick their own fights: nearest enemy unit in range with a
 /// clear line (buildings can't chase, so out-of-line targets are simply
 /// ignored until they move). Stateless — target choice re-evaluates every
 /// shot, in building-id order.
-fn turret_fire(state: &mut State, events: &mut Vec<Event>) {
+fn turret_fire(state: &mut State, events: &mut Vec<Event>, hits: &mut Vec<PendingHit>) {
     let ids: Vec<crate::ids::BuildingId> = state.buildings.iter().map(|b| b.id).collect();
     for id in ids {
         let Some(b) = state.building(id) else {
@@ -85,9 +132,11 @@ fn turret_fire(state: &mut State, events: &mut Vec<Event>) {
         };
         let b = state.building_mut(id).expect("just seen");
         b.cooldown = atk.cooldown_ticks;
-        let v = state.unit_mut(uid).expect("just found");
-        v.hp = v.hp.saturating_sub(atk.damage);
-        retaliate(state, uid, Target::Building(id));
+        hits.push(PendingHit {
+            attacker: Target::Building(id),
+            victim: Target::Unit(uid),
+            damage: atk.damage,
+        });
         events.push(Event::TurretFired {
             turret: id,
             target: uid,
@@ -102,9 +151,9 @@ fn turret_fire(state: &mut State, events: &mut Vec<Event>) {
 /// (damage taken meanwhile is simply kept — nobody rebuilds for free).
 fn build(state: &mut State, id: UnitId, site: crate::ids::BuildingId, events: &mut Vec<Event>) {
     let me = state.unit(id).expect("caller checked").player;
-    // hp > 0 matters: an attacker earlier in this tick's id order may
-    // have zeroed the site, and cleanup hasn't swept it yet — building on
-    // it would resurrect the dead and swallow the destruction event.
+    // hp > 0 is defense in depth: with buffered damage nothing dies
+    // mid-brains anymore, but building on a corpse would resurrect it and
+    // swallow the destruction event, so the guard stays.
     let Some(b) = state
         .building(site)
         .filter(|b| b.player == me && !b.built && b.hp > 0)
@@ -397,6 +446,7 @@ fn attack(
     target: Target,
     resume: Option<TilePos>,
     events: &mut Vec<Event>,
+    hits: &mut Vec<PendingHit>,
 ) {
     let unit = state.unit(id).expect("caller checked");
     let Some(atk) = unit.kind.stats().attack else {
@@ -467,17 +517,11 @@ fn attack(
             return;
         }
         unit.cooldown = atk.cooldown_ticks;
-        match target {
-            Target::Unit(uid) => {
-                let victim = state.unit_mut(uid).expect("resolved above");
-                victim.hp = victim.hp.saturating_sub(atk.damage);
-                retaliate(state, uid, Target::Unit(id));
-            }
-            Target::Building(bid) => {
-                let victim = state.building_mut(bid).expect("resolved above");
-                victim.hp = victim.hp.saturating_sub(atk.damage);
-            }
-        }
+        hits.push(PendingHit {
+            attacker: Target::Unit(id),
+            victim: target,
+            damage: atk.damage,
+        });
         events.push(Event::AttackHit {
             attacker: id,
             attacker_kind: state.unit(id).expect("caller checked").kind,

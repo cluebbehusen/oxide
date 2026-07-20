@@ -176,9 +176,17 @@ and test fixtures inside crate `tests/` directories.
   plus a looping flag; completion pops (or rotates — that's patrol),
   stalls drop the whole program with `OrderStalled`, plain orders replace
   it wholesale. Patrol legs are attack-moves and never settle.
+- **Combat resolves simultaneously since 0.6**: brains decide in id
+  order (direction alternating by tick parity), but every shot is
+  buffered and applied only after all brains and turrets have acted —
+  everyone decides against the same start-of-tick world, identical
+  opponents annihilate mutually, and no seat gets a reaction edge from
+  id order. Bots think on the same tick for the same reason.
 - **Damage answers back**: a hit unit that can fight and isn't already
   fighting turns on its attacker (units *and* turrets) — the counter to
   range beyond aggro. Inside aggro, auto-acquire already covered it.
+  Retaliation resolves after all damage, in decision order: the earliest
+  surviving attacker gets the answer.
 - **Construction claims ground instantly**: full price on placement
   (refused — and refunded nothing — if no doorstep is reachable), a
   fifth of max hp standing, blind and inert until built. Ground closing
@@ -233,13 +241,22 @@ and test fixtures inside crate `tests/` directories.
 
 ## Known issues (tracked, deliberate)
 
-- **Seat 1 holds a structural combat edge.** Brains run in unit-id order,
-  so a victim with a higher id than its attacker reacts in the same tick,
-  while the mirror case reacts a tick late — bot-vs-bot on symmetric maps,
-  seat 1 wins every time. One tick of reflexes is invisible against a
-  human but decides mirror matches. The fix is simultaneous damage
-  resolution (buffer hits during brains, apply after) — a combat-semantics
-  change scheduled for 0.6, not a patch.
+- **Mirror bot matches still resolve 100% to seat 1 — root cause open.**
+  0.6 removed three real structural edges: damage is buffered and applied
+  after all brains (identical opponents now annihilate mutually — before,
+  the lower id won every mirror duel), bots think on the same tick (the
+  old stagger fed the later thinker fresher information every cycle), and
+  the sequential phases (brains, collision passes) alternate direction by
+  tick parity so no seat holds a standing first-mover slot. All three are
+  correct on their own merits — and the mirror outcome did not move:
+  seat 1 wins across every map, seed, and even with home positions
+  swapped, so the residual mechanism is seat-linked, not geometric. The
+  instrumented probe (`probe_mirror_divergence`, ignored test in
+  `sim/tests/behavior.rs`) shows symmetry already breaking at tick 0
+  through geometry-anchored doorstep selection; why the ensuing chaos
+  always favors seat 1 is the open question. The full twin-simulation
+  trace continues with the 0.7 bot rework — where per-difficulty
+  randomization will also drown structural micro-bias in practice.
 
 ## Gotchas learned the hard way
 

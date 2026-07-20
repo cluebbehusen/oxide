@@ -2448,8 +2448,9 @@ fn validator_rejects_foreign_owners() {
     let mut doc: serde_json::Value =
         serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
     doc["units"][0]["player"] = serde_json::json!(9);
-    let tampered: State = serde_json::from_value(doc).unwrap();
-    assert!(tampered.validate_invariants().is_err());
+    // Validation runs inside Deserialize since 0.6: the tamper never
+    // becomes a State at all.
+    assert!(serde_json::from_value::<State>(doc).is_err());
 }
 
 #[test]
@@ -2828,8 +2829,7 @@ fn validator_rejects_malformed_grids() {
         .as_array_mut()
         .expect("vision grid serializes its cells");
     cells.pop();
-    let tampered: State = serde_json::from_value(doc).unwrap();
-    assert!(tampered.validate_invariants().is_err());
+    assert!(serde_json::from_value::<State>(doc).is_err());
 }
 
 #[test]
@@ -2983,4 +2983,115 @@ fn a_rejected_build_leaves_no_trace_on_the_hash() {
     )]);
     let _ = b;
     assert_eq!(with_reject.hash(), pristine.hash());
+}
+
+#[test]
+#[ignore]
+fn probe_mirror_divergence() {
+    use oxide_sim::bot::Bot;
+    // Perfect mirror premise: symmetric map, same-tick thinking is NOT
+    // possible via public API (cadence is seat-staggered), so drive BOTH
+    // seats with the same bot logic manually mirrored... instead: run the
+    // real bots and report the first tick where unit multisets stop being
+    // 180-degree mirror images (position+kind+hp).
+    let mut scenario = Scenario::skirmish();
+    scenario.seed = 424242; // both thresholds roll 6
+    scenario.players[0].bot = true;
+    scenario.players[1].bot = true;
+    let mut state = scenario.build().unwrap();
+    let mut bots = Bot::for_scenario(&scenario);
+    let (w, h) = (state.map().width(), state.map().height());
+    for tick in 0..30_000u32 {
+        let mut commands = Vec::new();
+        for bot in &mut bots {
+            commands.extend(bot.act(&state));
+        }
+        state.tick(&commands);
+        // Mirror check: every p0 unit must have a p1 twin at the mirrored
+        // position with the same kind and hp.
+        let mut p1_units: Vec<(i64, i64, oxide_sim::UnitKind, u32)> = state
+            .units()
+            .iter()
+            .filter(|u| u.player == PlayerId(1))
+            .map(|u| {
+                (
+                    (chassis::fx::Fx::from_num(w) - u.pos.x).to_bits(),
+                    (chassis::fx::Fx::from_num(h) - u.pos.y).to_bits(),
+                    u.kind,
+                    u.hp,
+                )
+            })
+            .collect();
+        let mut asym = Vec::new();
+        for u in state.units().iter().filter(|u| u.player == PlayerId(0)) {
+            let key = (u.pos.x.to_bits(), u.pos.y.to_bits(), u.kind, u.hp);
+            if let Some(i) = p1_units.iter().position(|t| *t == key) {
+                p1_units.swap_remove(i);
+            } else {
+                asym.push((u.id, u.kind, u.tile(), u.hp));
+            }
+        }
+        if !asym.is_empty() || !p1_units.is_empty() {
+            println!("FIRST DIVERGENCE at tick {tick}");
+            println!("unmatched p0: {asym:?}");
+            println!("unmatched p1 (mirrored keys left): {}", p1_units.len());
+            for u in state.units() {
+                println!(
+                    "  u{} p{} {:?} {:?} hp{} order {:?}",
+                    u.id.0,
+                    u.player.0,
+                    u.kind,
+                    u.tile(),
+                    u.hp,
+                    u.order
+                );
+            }
+            return;
+        }
+        if state.result().is_some() {
+            println!("game ended at {tick} while still symmetric??");
+            return;
+        }
+    }
+    println!("fully symmetric for 30k ticks");
+}
+
+#[test]
+fn mirrored_duels_end_in_mutual_annihilation() {
+    // The observable core of simultaneous resolution: two identical
+    // sentinels ordered at each other die on the same tick. Before 0.6,
+    // inline damage let the lower id win every mirror duel with hp to
+    // spare — the same edge that decided every mirror match.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Sentinel, 4, 6),
+        unit(1, UnitKind::Sentinel, 11, 6),
+    ])
+    .build()
+    .unwrap();
+    let (a, b) = (state.units()[0].id, state.units()[1].id);
+    state.tick(&[
+        cmd(
+            0,
+            Command::Attack {
+                units: vec![a],
+                target: Target::Unit(b),
+                queue: false,
+            },
+        ),
+        cmd(
+            1,
+            Command::Attack {
+                units: vec![b],
+                target: Target::Unit(a),
+                queue: false,
+            },
+        ),
+    ]);
+    run_until(&mut state, 400, |s, _| {
+        s.unit(a).is_none() || s.unit(b).is_none()
+    });
+    assert!(
+        state.unit(a).is_none() && state.unit(b).is_none(),
+        "identical opponents must fall together, not by id order"
+    );
 }
