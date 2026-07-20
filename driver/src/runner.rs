@@ -60,9 +60,13 @@ pub fn run_scenario(
     Ok(RunOutcome { state, replay })
 }
 
+/// Longest replay the driver runs without an explicit override — a forged
+/// duration must not spin the process forever. ~28 game-hours.
+pub const MAX_REPLAY_TICKS: u64 = 2_000_000;
+
 /// Re-executes a recorded run and returns the final state. With no override,
 /// the length comes from the replay's own metadata (falling back to the last
-/// command tick for hand-written files).
+/// command tick for hand-written files), bounded by [`MAX_REPLAY_TICKS`].
 ///
 /// The replay is validated first — structure always, version too unless
 /// `allow_version_mismatch` (which downgrades the mismatch to a warning for
@@ -72,6 +76,17 @@ pub fn run_replay(
     replay: &GameReplay,
     ticks_override: Option<u64>,
     allow_version_mismatch: bool,
+) -> Result<State> {
+    run_replay_bounded(replay, ticks_override, allow_version_mismatch, false)
+}
+
+/// [`run_replay`] with the length bound overridable (`allow_long`) for
+/// deliberate marathon reproductions.
+pub fn run_replay_bounded(
+    replay: &GameReplay,
+    ticks_override: Option<u64>,
+    allow_version_mismatch: bool,
+    allow_long: bool,
 ) -> Result<State> {
     match replay.validate(Some(SIM_VERSION)) {
         Ok(()) => {}
@@ -88,6 +103,10 @@ pub fn run_replay(
             .last()
             .map_or(0, |c| c.tick.saturating_add(1))
     });
+    anyhow::ensure!(
+        allow_long || total <= MAX_REPLAY_TICKS,
+        "replay claims {total} ticks (limit {MAX_REPLAY_TICKS}) — pass --allow-long to run it anyway"
+    );
     let mut state = replay.setup.build().context("building replay setup")?;
     let mut cursor = replay.cursor();
     for _ in 0..total {

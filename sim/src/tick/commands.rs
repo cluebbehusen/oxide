@@ -10,7 +10,7 @@ use crate::command::{Command, PlayerCommand, RejectReason};
 use crate::event::Event;
 use crate::ids::{PlayerId, Target, UnitId};
 use crate::state::{Order, State};
-use crate::stats::{GOAL_SNAP_RADIUS, QUEUE_CAP};
+use crate::stats::{GOAL_SNAP_RADIUS, ORDER_QUEUE_CAP, QUEUE_CAP};
 use chassis::grid::TilePos;
 
 /// Whether a commanded coordinate is sane: on the map or within snap
@@ -28,7 +28,12 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
         }
         // The eliminated don't give orders (matters in 3+ player games —
         // two-player matches freeze on the result before this can bite).
-        if !state.buildings.iter().any(|b| b.player == pc.player) {
+        // Alive means a standing Foundry, matching the victory rule.
+        if !state
+            .buildings
+            .iter()
+            .any(|b| b.player == pc.player && b.kind == crate::stats::BuildingKind::Foundry)
+        {
             events.push(Event::CommandRejected {
                 player: pc.player,
                 reason: RejectReason::Eliminated,
@@ -36,12 +41,29 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
             continue;
         }
         let outcome = match &pc.command {
-            Command::Move { units, goal } => apply_move(state, pc.player, units, *goal),
-            Command::Attack { units, target } => apply_attack(state, pc.player, units, *target),
-            Command::AttackMove { units, goal } => {
-                apply_attack_move(state, pc.player, units, *goal)
+            Command::Move { units, goal, queue } => {
+                apply_move(state, pc.player, units, *goal, *queue)
             }
-            Command::Harvest { units, node } => apply_harvest(state, pc.player, units, *node),
+            Command::Attack {
+                units,
+                target,
+                queue,
+            } => apply_attack(state, pc.player, units, *target, *queue),
+            Command::AttackMove { units, goal, queue } => {
+                apply_attack_move(state, pc.player, units, *goal, *queue)
+            }
+            Command::Harvest { units, node, queue } => {
+                apply_harvest(state, pc.player, units, *node, *queue)
+            }
+            Command::Patrol { units, waypoints } => {
+                apply_patrol(state, pc.player, units, waypoints)
+            }
+            Command::Build {
+                units,
+                kind,
+                anchor,
+            } => apply_build(state, pc.player, units, *kind, *anchor),
+            Command::Cancel { building } => apply_cancel(state, pc.player, *building, events),
             Command::Stop { units } => apply_stop(state, pc.player, units),
             Command::Train { building, kind } => apply_train(state, pc.player, *building, *kind),
             Command::SetRally { building, rally } => {
@@ -90,6 +112,29 @@ fn accepted_units(state: &State, player: PlayerId, ids: &[UnitId]) -> Vec<UnitId
     accepted
 }
 
+/// Hands a unit its next order: replacing wipes any queued program;
+/// appending parks the order behind the current one (bounded — a hostile
+/// stream of appends must not grow memory forever). Returns whether the
+/// order actually landed — a full queue drops the append, and the caller
+/// reports it instead of pretending.
+fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) -> bool {
+    if queue && !matches!(unit.order, Order::Idle) {
+        if unit.queue.len() < ORDER_QUEUE_CAP {
+            unit.queue.push_back(order);
+            return true;
+        }
+        return false;
+    }
+    if !queue {
+        unit.queue.clear();
+        unit.looping = false;
+    }
+    unit.order = order;
+    unit.path = None;
+    unit.progress = 0;
+    true
+}
+
 /// The first `count` passable tiles ring-scanned outward from `center` —
 /// per-unit goals for a group order, so crowds fan out over an area
 /// instead of magnetizing onto a single tile. Falls back to repeating the
@@ -123,6 +168,7 @@ fn apply_move(
     player: PlayerId,
     units: &[UnitId],
     goal: TilePos,
+    queue: bool,
 ) -> Result<(), RejectReason> {
     if !in_envelope(state, goal) {
         return Err(RejectReason::OutOfBounds);
@@ -134,13 +180,14 @@ fn apply_move(
         return Err(RejectReason::NoValidUnits);
     }
     let goals = spread_goals(state, goal, accepted.len());
+    let mut landed = 0;
     for (id, goal) in accepted.into_iter().zip(goals) {
         let unit = state.unit_mut(id).expect("filtered above");
-        unit.order = Order::Move { goal };
-        unit.path = None;
-        unit.progress = 0;
+        if assign(unit, Order::Move { goal }, queue) {
+            landed += 1;
+        }
     }
-    Ok(())
+    (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
 }
 
 fn apply_attack(
@@ -148,6 +195,7 @@ fn apply_attack(
     player: PlayerId,
     units: &[UnitId],
     target: Target,
+    queue: bool,
 ) -> Result<(), RejectReason> {
     // The target must exist, be an enemy's, and be visible to the issuer —
     // fog of war means no sniping at things you cannot see.
@@ -169,20 +217,28 @@ fn apply_attack(
     }
     // Units that can't fight walk to the target area instead.
     let walk_goal = find_nearby_passable(state, target_tile, GOAL_SNAP_RADIUS);
+    let mut landed = 0;
     let applied = for_owned_units(state, player, units, |u| {
         if u.kind.stats().attack.is_some() {
-            u.order = Order::Attack {
-                target,
-                resume: None,
-            };
-            u.path = None;
-            u.progress = 0;
-        } else if let Some(goal) = walk_goal {
-            u.order = Order::Move { goal };
-            u.path = None;
-            u.progress = 0;
+            if assign(
+                u,
+                Order::Attack {
+                    target,
+                    resume: None,
+                },
+                queue,
+            ) {
+                landed += 1;
+            }
+        } else if let Some(goal) = walk_goal
+            && assign(u, Order::Move { goal }, queue)
+        {
+            landed += 1;
         }
     });
+    if applied > 0 && landed == 0 {
+        return Err(RejectReason::QueueFull);
+    }
     (applied > 0)
         .then_some(())
         .ok_or(RejectReason::NoValidUnits)
@@ -193,6 +249,7 @@ fn apply_attack_move(
     player: PlayerId,
     units: &[UnitId],
     goal: TilePos,
+    queue: bool,
 ) -> Result<(), RejectReason> {
     if !in_envelope(state, goal) {
         return Err(RejectReason::OutOfBounds);
@@ -204,17 +261,19 @@ fn apply_attack_move(
         return Err(RejectReason::NoValidUnits);
     }
     let goals = spread_goals(state, goal, accepted.len());
+    let mut landed = 0;
     for (id, goal) in accepted.into_iter().zip(goals) {
         let unit = state.unit_mut(id).expect("filtered above");
-        unit.order = if unit.kind.stats().attack.is_some() {
+        let order = if unit.kind.stats().attack.is_some() {
             Order::AttackMove { goal }
         } else {
             Order::Move { goal }
         };
-        unit.path = None;
-        unit.progress = 0;
+        if assign(unit, order, queue) {
+            landed += 1;
+        }
     }
-    Ok(())
+    (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
 }
 
 fn apply_harvest(
@@ -222,6 +281,7 @@ fn apply_harvest(
     player: PlayerId,
     units: &[UnitId],
     node: TilePos,
+    queue: bool,
 ) -> Result<(), RejectReason> {
     if !in_envelope(state, node) {
         return Err(RejectReason::OutOfBounds);
@@ -234,28 +294,164 @@ fn apply_harvest(
         return Err(RejectReason::NotANode);
     }
     let mut applied = 0;
+    let mut landed = 0;
     for &id in units {
         if let Some(unit) = state.unit_mut(id)
             && unit.player == player
             && unit.kind.stats().harvest.is_some()
         {
-            unit.order = Order::Harvest { node };
-            unit.path = None;
-            unit.progress = 0;
+            if assign(unit, Order::Harvest { node }, queue) {
+                landed += 1;
+            }
             applied += 1;
         }
     }
-    (applied > 0)
-        .then_some(())
-        .ok_or(RejectReason::NoValidUnits)
+    if applied == 0 {
+        return Err(RejectReason::NoValidUnits);
+    }
+    (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
+}
+
+/// Walk a looping circuit: every waypoint must snap to open ground, and
+/// the whole route is one program — combat units attack-move each leg,
+/// pacifists walk them obliviously.
+fn apply_patrol(
+    state: &mut State,
+    player: PlayerId,
+    units: &[UnitId],
+    waypoints: &[TilePos],
+) -> Result<(), RejectReason> {
+    if waypoints.is_empty() || waypoints.len() > ORDER_QUEUE_CAP {
+        return Err(RejectReason::UnreachableGoal);
+    }
+    if waypoints.iter().any(|w| !in_envelope(state, *w)) {
+        return Err(RejectReason::OutOfBounds);
+    }
+    let snapped: Vec<TilePos> = waypoints
+        .iter()
+        .filter_map(|w| find_nearby_passable(state, *w, GOAL_SNAP_RADIUS))
+        .collect();
+    if snapped.len() != waypoints.len() {
+        return Err(RejectReason::UnreachableGoal);
+    }
+    let accepted = accepted_units(state, player, units);
+    if accepted.is_empty() {
+        return Err(RejectReason::NoValidUnits);
+    }
+    for id in accepted {
+        let unit = state.unit_mut(id).expect("filtered above");
+        let can_fight = unit.kind.stats().attack.is_some();
+        let mut legs = snapped.iter().map(|&goal| {
+            if can_fight {
+                Order::AttackMove { goal }
+            } else {
+                Order::Move { goal }
+            }
+        });
+        unit.order = legs.next().expect("validated non-empty");
+        unit.queue = legs.collect();
+        unit.looping = true;
+        unit.path = None;
+        unit.progress = 0;
+    }
+    Ok(())
+}
+
+/// Claims the site immediately (full price, footprint blocks) and sends
+/// the first accepted harvester to stand it up. Aiming at an existing own
+/// unfinished site resumes it instead — that's how a dead builder's work
+/// gets picked back up.
+fn apply_build(
+    state: &mut State,
+    player: PlayerId,
+    units: &[UnitId],
+    kind: crate::stats::BuildingKind,
+    anchor: TilePos,
+) -> Result<(), RejectReason> {
+    if !in_envelope(state, anchor) {
+        return Err(RejectReason::OutOfBounds);
+    }
+    let builder = accepted_units(state, player, units)
+        .into_iter()
+        .find(|id| {
+            state
+                .unit(*id)
+                .is_some_and(|u| u.kind.stats().harvest.is_some())
+        })
+        .ok_or(RejectReason::NoValidUnits)?;
+
+    // Resume an existing site of ours at this anchor?
+    let existing = state
+        .buildings
+        .iter()
+        .find(|b| b.anchor == anchor && b.kind == kind && b.player == player && !b.built)
+        .map(|b| b.id);
+    let site = match existing {
+        Some(site) => site,
+        None => {
+            let cost = kind.stats().construction.ok_or(RejectReason::BadSite)?.cost;
+            if !state.can_place(player, kind, anchor) {
+                return Err(RejectReason::BadSite);
+            }
+            if state.player(player).scrap < cost {
+                return Err(RejectReason::NotEnoughScrap);
+            }
+            // Place first, then prove the builder can actually reach a
+            // doorstep *around the now-blocking footprint* — otherwise
+            // undo for free. Charging for a site nobody can ever touch
+            // would burn 80% of the price through the hp-scaled refund.
+            let site = state.place_site(player, kind, anchor);
+            let from = state.unit(builder).expect("filtered above").tile();
+            let size = kind.stats().size;
+            let reachable = super::rect_adjacent_tiles(anchor, size)
+                .filter(|&t| state.passable(t))
+                .any(|t| from == t || super::astar_for(state, from, t).is_some());
+            if !reachable {
+                state.retract_site(site);
+                return Err(RejectReason::UnreachableGoal);
+            }
+            state.player_mut(player).scrap -= cost;
+            site
+        }
+    };
+    let unit = state.unit_mut(builder).expect("filtered above");
+    assign(unit, Order::Build { site }, false);
+    Ok(())
+}
+
+/// Salvage an unfinished site: refund scales with its current health, so
+/// enemy fire on the scaffold burns the owner's money.
+fn apply_cancel(
+    state: &mut State,
+    player: PlayerId,
+    building: crate::ids::BuildingId,
+    events: &mut Vec<Event>,
+) -> Result<(), RejectReason> {
+    let b = state
+        .building(building)
+        .ok_or(RejectReason::NotYourBuilding)?;
+    if b.player != player {
+        return Err(RejectReason::NotYourBuilding);
+    }
+    if b.built {
+        return Err(RejectReason::BadSite);
+    }
+    let stats = b.kind.stats();
+    let cost = stats.construction.expect("sites are buildable kinds").cost;
+    let refund = cost * b.hp / stats.max_hp;
+    let bank = &mut state.player_mut(player).scrap;
+    *bank = bank.saturating_add(refund);
+    state.buildings.retain(|b| b.id != building);
+    events.push(Event::BuildCancelled {
+        building,
+        player,
+        refund,
+    });
+    Ok(())
 }
 
 fn apply_stop(state: &mut State, player: PlayerId, units: &[UnitId]) -> Result<(), RejectReason> {
-    let applied = for_owned_units(state, player, units, |u| {
-        u.order = Order::Idle;
-        u.path = None;
-        u.progress = 0;
-    });
+    let applied = for_owned_units(state, player, units, |u| u.clear_program());
     (applied > 0)
         .then_some(())
         .ok_or(RejectReason::NoValidUnits)
@@ -274,6 +470,9 @@ fn apply_train(
             .ok_or(RejectReason::NotYourBuilding)?;
         if b.player != player {
             return Err(RejectReason::NotYourBuilding);
+        }
+        if !b.built || !b.kind.stats().produces.contains(&kind) {
+            return Err(RejectReason::CannotProduce);
         }
         if b.queue.len() >= QUEUE_CAP {
             return Err(RejectReason::QueueFull);

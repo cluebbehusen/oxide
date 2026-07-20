@@ -43,36 +43,11 @@ pub struct InputState {
     last_click: Option<(f64, Vec2)>,
     /// Previous group recall, for double-tap camera centering.
     last_recall: Option<(usize, f64)>,
-    held: HashSet<KeyOrd>,
-}
-
-/// `Key` wrapped for `HashSet` (the protocol enum keeps no Hash to stay
-/// serde-minimal).
-#[derive(PartialEq, Eq, Hash, Clone, Copy)]
-struct KeyOrd(u8);
-
-fn key_ord(key: Key) -> KeyOrd {
-    KeyOrd(match key {
-        Key::Up => 0,
-        Key::Down => 1,
-        Key::Left => 2,
-        Key::Right => 3,
-        Key::H => 4,
-        Key::S => 5,
-        Key::P => 6,
-        Key::Escape => 7,
-        Key::Space => 8,
-        Key::F1 => 9,
-        Key::A => 10,
-        Key::Enter => 11,
-        Key::Shift => 12,
-        Key::Ctrl => 13,
-        Key::Num1 => 14,
-        Key::Num2 => 15,
-        Key::Num3 => 16,
-        Key::Num4 => 17,
-        Key::Num5 => 18,
-    })
+    /// Waypoints collected while arming a patrol (`R`), if any.
+    pub(crate) patrol_route: Option<Vec<TilePos>>,
+    /// Building kind armed for placement (`B`/`N`), if any.
+    pub(crate) placing: Option<oxide_sim::BuildingKind>,
+    held: HashSet<Key>,
 }
 
 impl InputState {
@@ -84,12 +59,14 @@ impl InputState {
             groups: Default::default(),
             last_click: None,
             last_recall: None,
+            patrol_route: None,
+            placing: None,
             held: HashSet::new(),
         }
     }
 
     fn is_held(&self, key: Key) -> bool {
-        self.held.contains(&key_ord(key))
+        self.held.contains(&key)
     }
 
     /// Drops everything that assumes continuity — held keys and any open
@@ -100,6 +77,8 @@ impl InputState {
     pub fn reset_transient(&mut self) {
         self.held.clear();
         self.drag_origin = None;
+        self.patrol_route = None;
+        self.placing = None;
     }
 
     /// Everything `reset_transient` drops, plus state that assumes the
@@ -115,7 +94,7 @@ impl InputState {
     }
 }
 
-const KEY_MAP: [(Key, mq::KeyCode); 11] = [
+const KEY_MAP: [(Key, mq::KeyCode); 15] = [
     (Key::Up, mq::KeyCode::Up),
     (Key::Down, mq::KeyCode::Down),
     (Key::Left, mq::KeyCode::Left),
@@ -123,6 +102,10 @@ const KEY_MAP: [(Key, mq::KeyCode); 11] = [
     (Key::H, mq::KeyCode::H),
     (Key::S, mq::KeyCode::S),
     (Key::P, mq::KeyCode::P),
+    (Key::R, mq::KeyCode::R),
+    (Key::B, mq::KeyCode::B),
+    (Key::N, mq::KeyCode::N),
+    (Key::X, mq::KeyCode::X),
     (Key::Escape, mq::KeyCode::Escape),
     (Key::Space, mq::KeyCode::Space),
     (Key::F1, mq::KeyCode::F1),
@@ -235,6 +218,27 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 y,
             } => {
                 input.mouse = vec2(x, y);
+                if let Some(kind) = input.placing {
+                    // The minimap keeps its meaning while placing: jump
+                    // the camera, never misread the click as world ground
+                    // (that would spend scrap on a bogus tile).
+                    if let Some(world) = crate::render::minimap_world_at(game, vec2(x, y)) {
+                        game.camera.center = world;
+                        game.camera.pan(Vec2::ZERO); // re-clamp
+                    } else if !click_on_hud(game, vec2(x, y)) {
+                        let world = game.camera.to_world(vec2(x, y));
+                        let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+                        let units = game.selection.units.clone();
+                        game.issue(Command::Build {
+                            units,
+                            kind,
+                            anchor,
+                        });
+                        game.ping(world, PingKind::Rally);
+                        input.placing = None;
+                    }
+                    continue;
+                }
                 // The minimap owns clicks landing on it: jump the camera,
                 // never start a drag-select there. HUD chrome swallows
                 // clicks outright.
@@ -282,15 +286,40 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // (ground semantics — entities can't be picked at that
                 // scale); anywhere else, full context ordering. HUD chrome
                 // swallows the click.
+                let queue = input.is_held(Key::Shift);
                 if let Some(world) = crate::render::minimap_world_at(game, vec2(x, y)) {
-                    let units = game.selection.units.clone();
-                    if !units.is_empty() {
-                        let goal = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-                        game.issue(Command::AttackMove { units, goal });
-                        game.ping(vec2(world.x, world.y), PingKind::Move);
+                    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+                    if let Some(route) = &mut input.patrol_route {
+                        if route.len() >= oxide_sim::stats::ORDER_QUEUE_CAP {
+                            game.toast("patrol is full — R to start it");
+                        } else {
+                            route.push(tile);
+                            game.ping(vec2(world.x, world.y), PingKind::Rally);
+                        }
+                    } else {
+                        let units = game.selection.units.clone();
+                        if !units.is_empty() {
+                            game.issue(Command::AttackMove {
+                                units,
+                                goal: tile,
+                                queue,
+                            });
+                            game.ping(vec2(world.x, world.y), PingKind::Move);
+                        }
                     }
                 } else if !click_on_hud(game, vec2(x, y)) {
-                    context_order(game, vec2(x, y));
+                    let world = game.camera.to_world(vec2(x, y));
+                    if let Some(route) = &mut input.patrol_route {
+                        if route.len() >= oxide_sim::stats::ORDER_QUEUE_CAP {
+                            game.toast("patrol is full — R to start it");
+                        } else {
+                            route
+                                .push(TilePos::new(world.x.floor() as i32, world.y.floor() as i32));
+                            game.ping(world, PingKind::Rally);
+                        }
+                    } else {
+                        context_order(game, vec2(x, y), queue);
+                    }
                 }
             }
             RawEvent::MouseUp {
@@ -306,18 +335,18 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 ..
             } => {}
             RawEvent::KeyDown { key } => {
-                input.held.insert(key_ord(key));
+                input.held.insert(key);
                 match key {
                     Key::Num1 => group_action(game, input, 0),
                     Key::Num2 => group_action(game, input, 1),
                     Key::Num3 => group_action(game, input, 2),
                     Key::Num4 => group_action(game, input, 3),
                     Key::Num5 => group_action(game, input, 4),
-                    _ => key_action(game, key),
+                    _ => key_action(game, input, key),
                 }
             }
             RawEvent::KeyUp { key } => {
-                input.held.remove(&key_ord(key));
+                input.held.remove(&key);
             }
             // Desktop shell; the mobile shell will map these.
             RawEvent::TouchDown { .. } | RawEvent::TouchMove { .. } | RawEvent::TouchUp { .. } => {}
@@ -490,7 +519,7 @@ fn group_action(game: &mut Game, input: &mut InputState, slot: usize) {
 /// Right-click: order the selection by what's under the cursor — enemy →
 /// attack, scrap → harvest, ground → move. The sim re-validates everything;
 /// this is only intent.
-fn context_order(game: &mut Game, screen: Vec2) {
+fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     let world = game.camera.to_world(screen);
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     if game.selection.units.is_empty() {
@@ -533,6 +562,7 @@ fn context_order(game: &mut Game, screen: Vec2) {
         game.issue(Command::Attack {
             units,
             target: Target::Unit(target),
+            queue,
         });
         game.ping(at, PingKind::Attack);
         return;
@@ -542,7 +572,11 @@ fn context_order(game: &mut Game, screen: Vec2) {
         && building.tiles().any(|t| game.my_vision().visible(t))
     {
         let target = Target::Building(building.id);
-        game.issue(Command::Attack { units, target });
+        game.issue(Command::Attack {
+            units,
+            target,
+            queue,
+        });
         game.ping(world, PingKind::Attack);
         return;
     }
@@ -554,24 +588,107 @@ fn context_order(game: &mut Game, screen: Vec2) {
     // The harvest check reads the player's *memory*, not the live map —
     // probing fog with right-clicks must not reveal hidden scrap.
     if game.my_vision().remembered_scrap(tile) > 0 && has_harvester {
-        game.issue(Command::Harvest { units, node: tile });
+        game.issue(Command::Harvest {
+            units,
+            node: tile,
+            queue,
+        });
         game.ping(world, PingKind::Harvest);
         return;
     }
     // Fire at will: ground orders engage whatever shows up on the way.
     // Combat units attack-move; the sim degrades harvesters to a plain
     // walk. There is no hold-fire stance (yet — nothing to hide from).
-    game.issue(Command::AttackMove { units, goal: tile });
+    game.issue(Command::AttackMove {
+        units,
+        goal: tile,
+        queue,
+    });
     game.ping(world, PingKind::Move);
 }
 
-fn key_action(game: &mut Game, key: Key) {
+fn building_name(kind: oxide_sim::BuildingKind) -> &'static str {
+    match kind {
+        oxide_sim::BuildingKind::Foundry => "foundry",
+        oxide_sim::BuildingKind::Turret => "turret",
+        oxide_sim::BuildingKind::Fabricator => "fabricator",
+    }
+}
+
+fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
     match key {
-        Key::H => train(game, UnitKind::Harvester),
-        Key::S => train(game, UnitKind::Sentinel),
+        Key::X => {
+            // Contextual: units selected halt in place; a selected own
+            // unfinished site is scrapped for its refund.
+            if !game.selection.units.is_empty() {
+                let units = game.selection.units.clone();
+                game.issue(Command::Stop { units });
+            } else if let Some(id) = game.selection.building
+                && game
+                    .state
+                    .building(id)
+                    .is_some_and(|b| b.player == game.human && !b.built)
+            {
+                game.issue(Command::Cancel { building: id });
+                game.selection.building = None;
+            }
+        }
+        Key::H => train(game, 0),
+        Key::S => train(game, 1),
         Key::P => game.paused = !game.paused,
+        Key::B | Key::N => {
+            let kind = if key == Key::B {
+                oxide_sim::BuildingKind::Turret
+            } else {
+                oxide_sim::BuildingKind::Fabricator
+            };
+            let has_builder = game.selection.units.iter().any(|id| {
+                game.state
+                    .unit(*id)
+                    .is_some_and(|u| u.kind == UnitKind::Harvester)
+            });
+            if input.placing == Some(kind) {
+                input.placing = None;
+            } else if has_builder {
+                input.placing = Some(kind);
+                let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
+                game.toast(format!(
+                    "placing {} ({} scrap): click to build, Esc to cancel",
+                    building_name(kind),
+                    cost
+                ));
+            } else {
+                game.toast("select a harvester to build");
+            }
+        }
+        Key::R => {
+            // First press arms a route; the second sends the circuit.
+            match input.patrol_route.take() {
+                None if !game.selection.units.is_empty() => {
+                    input.patrol_route = Some(Vec::new());
+                    game.toast("patrol: right-click waypoints, R to start");
+                }
+                None => {}
+                Some(route) if route.is_empty() => {
+                    game.toast("patrol cancelled");
+                }
+                Some(waypoints) => {
+                    let units = game.selection.units.clone();
+                    game.issue(Command::Patrol { units, waypoints });
+                }
+            }
+        }
         Key::F1 => game.overlay = !game.overlay,
         Key::Escape => {
+            // Arming something? Escape abandons that first.
+            if input.placing.take().is_some() {
+                game.toast("placement cancelled");
+                return;
+            }
+            if input.patrol_route.take().is_some() {
+                game.toast("patrol cancelled");
+                return;
+            }
             game.selection.units.clear();
             game.selection.building = None;
         }
@@ -603,7 +720,10 @@ fn key_action(game: &mut Game, key: Key) {
 
 /// Train at the selected Foundry, falling back to the home one — so H/S
 /// work without fiddly building selection.
-fn train(game: &mut Game, kind: UnitKind) {
+/// `H`/`S` train the selected factory's first/second product — Foundry:
+/// harvester/sentinel, Fabricator: scuttler/lancer. No factory selected
+/// falls back to the home Foundry.
+fn train(game: &mut Game, slot: usize) {
     let building = game
         .selection
         .building
@@ -614,6 +734,13 @@ fn train(game: &mut Game, kind: UnitKind) {
         })
         .or_else(|| game.home_foundry().map(|b| b.id));
     if let Some(building) = building {
+        let Some(&kind) = game
+            .state
+            .building(building)
+            .and_then(|b| b.kind.stats().produces.get(slot))
+        else {
+            return;
+        };
         game.issue(Command::Train { building, kind });
     }
 }
@@ -621,12 +748,15 @@ fn train(game: &mut Game, kind: UnitKind) {
 /// Normalizes a raw wheel reading toward gentle notch counts. Trackpads
 /// report small continuous deltas, discrete wheels big notchy ones
 /// (±120-ish); both should zoom at a comparable, capped rate. Heuristic —
-/// revisit if a device feels off. TODO: X11-style ±1 detents land in the
-/// trackpad branch and zoom 10× weaker than ±120 detents; needs tuning
-/// on real Linux hardware before it's worth guessing at.
+/// revisit if a device feels off (small whole numbers — X11-style
+/// detents — count as full notches; fractional deltas are trackpads).
 fn normalize_wheel(raw: f32) -> f32 {
     let delta = if raw.abs() >= 40.0 {
         raw / 120.0
+    } else if raw.abs() <= 3.0 && raw.fract() == 0.0 {
+        // X11-style discrete detents arrive as small whole numbers;
+        // trackpads produce fractional deltas. Exact integers are notches.
+        raw
     } else {
         raw / 10.0
     };
@@ -639,11 +769,16 @@ mod tests {
 
     #[test]
     fn wheel_notches_and_trackpad_swipes_land_in_the_same_range() {
-        // One mouse notch and a firm trackpad swipe both read as ~1 step.
+        // Windows notches (±120), X11 detents (±1), and a firm trackpad
+        // swipe all read as whole steps; small fractional trackpad deltas
+        // stay gentle.
         assert_eq!(normalize_wheel(120.0), 1.0);
         assert_eq!(normalize_wheel(-120.0), -1.0);
+        assert_eq!(normalize_wheel(1.0), 1.0);
+        assert_eq!(normalize_wheel(-1.0), -1.0);
+        assert_eq!(normalize_wheel(2.0), 2.0);
         assert_eq!(normalize_wheel(10.0), 1.0);
-        assert!(normalize_wheel(2.0) > 0.0 && normalize_wheel(2.0) < 0.5);
+        assert!(normalize_wheel(0.4) > 0.0 && normalize_wheel(0.4) < 0.1);
     }
 
     #[test]

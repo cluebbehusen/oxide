@@ -128,9 +128,11 @@ and test fixtures inside crate `tests/` directories.
 - **Conventional commits** (`feat(sim): …`, `fix(shell): …`, `docs: …`).
   Since 0.4.1 the repo lives at github.com/cluebbehusen/oxide and each
   version is developed on a branch (`0.5`, `0.6`, …) merged to `main` by
-  PR; phase commits land on the version branch. Commits are signed (SSH
-  key via ssh-agent — run `ssh-add --apple-use-keychain` after a reboot
-  if signing starts failing).
+  PR — **main takes no direct commits**. Commits are signed (SSH key via
+  ssh-agent — run `ssh-add --apple-use-keychain` after a reboot if
+  signing starts failing). GitHub Actions are pinned to full commit SHAs
+  with a version comment (`uses: owner/action@<sha> # vX.Y.Z`); resolve
+  tags with `gh api repos/OWNER/REPO/commits/TAG --jq .sha`.
 - **Idiomatic Rust.** rustfmt defaults, clippy clean, `missing_docs` warns
   in the library crates. Comments state constraints, not narration.
 - **Assets are generated.** Sprites: `tools/gen_sprites.py` (palette at
@@ -170,6 +172,27 @@ and test fixtures inside crate `tests/` directories.
   workers take `ANCHORED_PUSH_SHARE` of pair separation so crowds flow
   around them, and collision applies pairs Gauss-Seidel-style in id order —
   symmetric cancellation once froze the whole economy.
+- **Orders are programs since 0.5**: every unit carries a bounded queue
+  plus a looping flag; completion pops (or rotates — that's patrol),
+  stalls drop the whole program with `OrderStalled`, plain orders replace
+  it wholesale. Patrol legs are attack-moves and never settle.
+- **Damage answers back**: a hit unit that can fight and isn't already
+  fighting turns on its attacker (units *and* turrets) — the counter to
+  range beyond aggro. Inside aggro, auto-acquire already covered it.
+- **Construction claims ground instantly**: full price on placement
+  (refused — and refunded nothing — if no doorstep is reachable), a
+  fifth of max hp standing, blind and inert until built. Ground closing
+  mid-walk is real: movement revalidates each waypoint and repaths
+  around fresh sites. Progress needs an adjacent builder — **several
+  adjacent builders stack**, each contributing a tick, so two roughly
+  halve the build; deliberate, tested. Orphaned sites freeze and any own
+  harvester can resume them; a site zeroed by fire is dead even if its
+  builder acts later the same tick. Cancel (`X`) refunds
+  `cost × hp / max_hp`. One predicate — `State::can_place` — serves sim
+  validation and the shell's ghost, and it requires the footprint
+  *currently visible*: its occupancy checks read live state, and testing
+  explored-but-unseen ground would leak hidden enemies through the red
+  tint.
 - **Fog of war enforces exactly one thing in the sim**: targeted attacks
   need the issuer to *see* the victim. Rendering honors fog fully
   (unexplored void, explored dim, unseen enemies culled) but the debug
@@ -207,6 +230,16 @@ and test fixtures inside crate `tests/` directories.
   Masterless machines finishing their last orders fit the fiction; in
   two-player games the question is moot (elimination ends the match), and
   if FFA maps ever ship, revisit deliberately.
+
+## Known issues (tracked, deliberate)
+
+- **Seat 1 holds a structural combat edge.** Brains run in unit-id order,
+  so a victim with a higher id than its attacker reacts in the same tick,
+  while the mirror case reacts a tick late — bot-vs-bot on symmetric maps,
+  seat 1 wins every time. One tick of reflexes is invisible against a
+  human but decides mirror matches. The fix is simultaneous damage
+  resolution (buffer hits during brains, apply after) — a combat-semantics
+  change scheduled for 0.6, not a patch.
 
 ## Gotchas learned the hard way
 

@@ -122,7 +122,10 @@ pub fn render_state(state: &State) -> Pixmap {
         );
         let (pw, ph) = (w as f32 * TILE_PX, h as f32 * TILE_PX);
         fill_rect(&mut pixmap, x, y, pw, ph, darken(color));
-        fill_rect(&mut pixmap, x + 2.0, y + 2.0, pw - 4.0, ph - 4.0, color);
+        // Unfinished sites show only their dark frame — scaffolding.
+        if building.built {
+            fill_rect(&mut pixmap, x + 2.0, y + 2.0, pw - 4.0, ph - 4.0, color);
+        }
         draw_hp_bar(
             &mut pixmap,
             x,

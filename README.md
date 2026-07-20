@@ -25,8 +25,17 @@ cargo run -p oxide-shell
 ```
 
 A menu lists the shipped maps — Skirmish Basin, Scrapyard Brawl, Rustbelt
-Canyon, Verdigris Fields, Derelict Yard. You're Ferrous; the bot is Cupric,
-and it is not asleep.
+Canyon, Verdigris Fields, Derelict Yard, Slagline, Open Circuit, Meridian
+Scar. You're Ferrous; the bot is Cupric, and it is not asleep.
+
+Four machines and three buildings. **Harvesters** feed the economy and
+build; **Sentinels** hold the line; **Scuttlers** (fast, cheap, fragile)
+eat undefended harvest lines; **Lancers** outrange everything including
+turrets, and melt if anything reaches them. The **Foundry** trains the
+basics and anchors your defeat condition; the **Fabricator** (built by a
+harvester) unlocks the advanced pair; **Turrets** hold ground on their
+own. Construction sites are attackable from the first tick, and
+cancelling one refunds only what's still standing — damage burns salvage.
 
 | Input | Action |
 |---|---|
@@ -37,11 +46,15 @@ and it is not asleep.
 | `1`-`5` | Recall the group — tap again to center the camera on it |
 | Left click on minimap | Jump the camera there |
 | Right click | Contextual order: enemy → attack, scrap → harvest, ground → **move engaging everything on the way** (fire at will is the only stance; combat units always defend themselves) |
+| Shift + right click | Queue the order behind the current one |
+| `R` | Arm a patrol: right-click waypoints, `R` again to start the loop — patrollers engage everything met and never settle |
+| `B` / `N` | With a harvester selected: place a Turret / Fabricator (ghost shows validity on ground you can currently see; click commits, Esc cancels) |
+| `X` | Units selected: stop in place. Construction site selected: scrap it for a partial refund |
 | Right click on minimap | Send the selection there, fighting through |
 | Right click (Foundry selected) | Set the rally point — rally a scrap node and fresh harvesters mine it; fresh Sentinels attack-move to it |
 | Mouse wheel | Zoom (toward the cursor) |
 | Arrow keys | Pan |
-| `H` / `S` | Train a Harvester (50) / Sentinel (75) |
+| `H` / `S` | Train the selected factory's first / second unit (Foundry: harvester 50 / sentinel 75; Fabricator: scuttler 40 / lancer 110) |
 | `Space` | Jump to your Foundry |
 | `P` | Quick pause |
 | `Esc` | Deselect, then the pause menu (resume / restart / main menu / quit) |
@@ -138,17 +151,19 @@ trade-off: replays only reproduce on the sim version that wrote them.
 ## Status and road ahead
 
 Working today: the full loop (harvest → train → fight → win) with fog of
-war and ghost memory, solid units that crowd without gridlocking,
-attack-move with line-of-sight fire, rally points, control groups,
-shift-select, order feedback, a fog-aware minimap, sound, five maps,
-menus, a competent skirmish bot, save/resume via replays, and the agent
-tooling described above.
+war and ghost memory, a four-unit roster behind a build-your-tech gate,
+harvester-built turrets and factories, order queues and patrols, solid
+units that crowd without gridlocking, attack-move with line-of-sight
+fire, damage retaliation, rally points, control groups, shift-select,
+order feedback, a fog-aware minimap, sound, eight maps, menus, a skirmish
+bot that builds and mixes its army, save/resume via replays, and the
+agent tooling described above.
 
-Not yet: more unit and building types (the roster is deliberately tiny),
-shift-queued orders, formations, and the mobile ports — macroquad makes
-iOS/Android plausible, and `RawEvent` already carries touch variants, but
-nothing is wired. The sim freezes at game end; the pause menu's Restart
-is the rematch.
+Not yet: expansions (Foundries aren't buildable), formations, bot
+scouting (it reads full state, honestly labeled), and the mobile ports —
+macroquad makes iOS/Android plausible, and `RawEvent` already carries
+touch variants, but nothing is wired. The sim freezes at game end; the
+pause menu's Restart is the rematch.
 
 Built with [macroquad](https://macroquad.rs/); simulation math on the
 [`fixed`](https://crates.io/crates/fixed) crate; goldens via

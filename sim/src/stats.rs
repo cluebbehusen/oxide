@@ -15,6 +15,12 @@ pub enum UnitKind {
     Harvester,
     /// The line combat unit: short-ranged, sturdy, expendable.
     Sentinel,
+    /// Fast, cheap, fragile raider: a contact-range shredder that eats
+    /// harvest lines and dies to anything that fights back in time.
+    Scuttler,
+    /// Slow long-range artillery: outranges everything (including its own
+    /// aggro), melts to anything that reaches it.
+    Lancer,
 }
 
 /// Every building type.
@@ -23,6 +29,11 @@ pub enum UnitKind {
 pub enum BuildingKind {
     /// HQ, unit factory, and scrap drop-off. Lose all of them, lose the game.
     Foundry,
+    /// Static defense: fires on its own at anything in range and line of
+    /// sight. Holds ground; loses to patient siege.
+    Turret,
+    /// Second factory: trains the advanced roster. The tech gate.
+    Fabricator,
 }
 
 /// Combat parameters for units that can fight.
@@ -71,12 +82,30 @@ pub struct UnitStats {
 /// Static parameters of a building kind.
 #[derive(Debug, Clone, Copy)]
 pub struct BuildingStats {
-    /// Hit points at placement.
+    /// Hit points when fully built.
     pub max_hp: u32,
     /// Footprint in tiles (width, height), anchored top-left.
     pub size: (i32, i32),
     /// Fog-of-war reveal radius, in tiles (from each footprint tile).
     pub vision: i32,
+    /// What this building can train. Empty for non-producers.
+    pub produces: &'static [UnitKind],
+    /// Present iff the building fights on its own.
+    pub attack: Option<AttackStats>,
+    /// Present iff harvesters can build it. `None` marks the kinds only
+    /// scenarios place (the Foundry — win conditions stay authored).
+    pub construction: Option<ConstructionStats>,
+}
+
+/// Parameters of a buildable kind.
+#[derive(Debug, Clone, Copy)]
+pub struct ConstructionStats {
+    /// Scrap price, deducted when the site is placed. Cancelling refunds
+    /// `cost x hp / max_hp` — you salvage what actually got built, and
+    /// enemy fire burns the refund.
+    pub cost: u32,
+    /// Builder-adjacent ticks from site to standing building.
+    pub build_ticks: u32,
 }
 
 const HARVESTER: UnitStats = UnitStats {
@@ -109,10 +138,74 @@ const SENTINEL: UnitStats = UnitStats {
     vision: 7, // strictly wider than aggro, so acquired targets are seen
 };
 
+const SCUTTLER: UnitStats = UnitStats {
+    max_hp: 40,
+    speed: Fx::lit("0.16"), // 3.2 tiles/s — outruns everything
+    radius: Fx::lit("0.28"),
+    cost: 40,
+    train_ticks: 80, // 4 s
+    attack: Some(AttackStats {
+        damage: 3,
+        range: Fx::lit("0.8"), // practically touching
+        cooldown_ticks: 6,     // a gnawing 10 dps
+        aggro_range: Fx::lit("5"),
+    }),
+    harvest: None,
+    vision: 6,
+};
+
+const LANCER: UnitStats = UnitStats {
+    max_hp: 50,
+    speed: Fx::lit("0.08"), // 1.6 tiles/s — the army protects it, not vice versa
+    radius: Fx::lit("0.35"),
+    cost: 110,
+    train_ticks: 200, // 10 s
+    attack: Some(AttackStats {
+        damage: 30,
+        range: Fx::lit("5.5"), // beyond aggro: it only uses this on orders
+        cooldown_ticks: 60,    // one heavy shot per 3 s
+        aggro_range: Fx::lit("5"),
+    }),
+    harvest: None,
+    vision: 7,
+};
+
 const FOUNDRY: BuildingStats = BuildingStats {
     max_hp: 800,
     size: (2, 2),
     vision: 8,
+    produces: &[UnitKind::Harvester, UnitKind::Sentinel],
+    attack: None,
+    construction: None,
+};
+
+const TURRET: BuildingStats = BuildingStats {
+    max_hp: 350,
+    size: (1, 1),
+    vision: 6,
+    produces: &[],
+    attack: Some(AttackStats {
+        damage: 12,
+        range: Fx::lit("4.5"), // outranged only by the Lancer's 5.5
+        cooldown_ticks: 25,
+        aggro_range: Fx::lit("4.5"), // a turret's aggro is its range
+    }),
+    construction: Some(ConstructionStats {
+        cost: 100,
+        build_ticks: 300, // 15 s of builder attention
+    }),
+};
+
+const FABRICATOR: BuildingStats = BuildingStats {
+    max_hp: 500,
+    size: (2, 2),
+    vision: 6,
+    produces: &[UnitKind::Scuttler, UnitKind::Lancer],
+    attack: None,
+    construction: Some(ConstructionStats {
+        cost: 150,
+        build_ticks: 400, // 20 s
+    }),
 };
 
 impl UnitKind {
@@ -121,6 +214,8 @@ impl UnitKind {
         match self {
             UnitKind::Harvester => &HARVESTER,
             UnitKind::Sentinel => &SENTINEL,
+            UnitKind::Scuttler => &SCUTTLER,
+            UnitKind::Lancer => &LANCER,
         }
     }
 }
@@ -130,6 +225,8 @@ impl BuildingKind {
     pub const fn stats(self) -> &'static BuildingStats {
         match self {
             BuildingKind::Foundry => &FOUNDRY,
+            BuildingKind::Turret => &TURRET,
+            BuildingKind::Fabricator => &FABRICATOR,
         }
     }
 }
@@ -142,6 +239,10 @@ pub const RICH_SCRAP_NODE_AMOUNT: u32 = 800;
 
 /// Maximum queued units per Foundry.
 pub const QUEUE_CAP: usize = 5;
+
+/// Maximum orders (and patrol waypoints) queued per unit. Bounds what a
+/// hostile append stream can make a unit remember.
+pub const ORDER_QUEUE_CAP: usize = 32;
 
 /// A* expansion budget per query — bounds worst-case pathfinding work.
 pub const PATH_EXPANSION_CAP: u32 = 20_000;

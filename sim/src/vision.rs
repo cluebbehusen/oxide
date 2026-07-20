@@ -31,6 +31,17 @@ pub struct GhostBuilding {
     pub anchor: TilePos,
     /// Hit points at last sighting.
     pub hp: u32,
+    /// Whether construction had finished at last sighting — a scouted
+    /// scaffold stays a scaffold in memory until seen complete.
+    #[serde(
+        default = "ghost_built_default",
+        skip_serializing_if = "core::clone::Clone::clone"
+    )]
+    pub built: bool,
+}
+
+fn ghost_built_default() -> bool {
+    true
 }
 
 impl GhostBuilding {
@@ -71,6 +82,25 @@ impl Vision {
     /// should draw live state on visible ground and these everywhere else.
     pub fn ghosts(&self) -> &[GhostBuilding] {
         &self.ghosts
+    }
+
+    /// Whether the deserialized view holds together against the map it
+    /// claims to describe — see [`crate::State::validate_invariants`].
+    pub fn is_consistent(&self, width: i32, height: i32) -> bool {
+        let dims = |w: i32, h: i32, ok: bool| ok && w == width && h == height;
+        dims(
+            self.visible.width(),
+            self.visible.height(),
+            self.visible.is_consistent(),
+        ) && dims(
+            self.explored.width(),
+            self.explored.height(),
+            self.explored.is_consistent(),
+        ) && dims(
+            self.remembered_scrap.width(),
+            self.remembered_scrap.height(),
+            self.remembered_scrap.is_consistent(),
+        )
     }
 
     /// Scrap at `pos` as last seen (zero where never seen or out of
@@ -118,7 +148,12 @@ pub(crate) fn refresh(state: &mut State) {
         for unit in state.units.iter().filter(|u| u.player == player) {
             view.stamp_disc(unit.tile(), unit.kind.stats().vision);
         }
-        for building in state.buildings.iter().filter(|b| b.player == player) {
+        // Sites don't see: a pile of parts has no sensors.
+        for building in state
+            .buildings
+            .iter()
+            .filter(|b| b.player == player && b.built)
+        {
             let radius = building.kind.stats().vision;
             for tile in building.tiles() {
                 view.stamp_disc(tile, radius);
@@ -139,6 +174,7 @@ pub(crate) fn refresh(state: &mut State) {
                     owner: building.player,
                     anchor: building.anchor,
                     hp: building.hp,
+                    built: building.built,
                 });
             }
         }

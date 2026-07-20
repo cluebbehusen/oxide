@@ -50,6 +50,8 @@ pub struct Effect {
 pub enum SoundKind {
     /// An attack landed somewhere you can see.
     Laser,
+    /// A Lancer's rail shot landed somewhere you can see.
+    RailFire,
     /// A unit died somewhere you can see.
     UnitDeath,
     /// A building fell (yours are always audible).
@@ -87,6 +89,8 @@ pub enum PingKind {
 pub enum EffectKind {
     /// An attack beam.
     Laser {
+        /// Rendered thicker and brighter — the Lancer's rail.
+        heavy: bool,
         /// Muzzle, world coords.
         from: Vec2,
         /// Impact, world coords.
@@ -247,8 +251,17 @@ impl Game {
             "replay spans {total} ticks — beyond the {MAX_LOAD_TICKS}-tick interactive load limit \
              (the headless driver replays without one)"
         );
+        // Bots carry memory since 0.5 (raid flags, node blacklists), so
+        // the fast-forward must let them *watch* the session back: act()
+        // runs against every tick to rebuild that memory, and its outputs
+        // are discarded — the recorded commands are the truth. A resumed
+        // session then continues exactly as the unsaved one would have.
+        let mut bots = Bot::for_scenario(&scenario);
         let mut cursor = replay.cursor();
         for _ in 0..total {
+            for bot in &mut bots {
+                let _ = bot.act(&state);
+            }
             let commands: Vec<PlayerCommand> = cursor
                 .take_tick(state.current_tick())
                 .iter()
@@ -262,6 +275,7 @@ impl Game {
         );
         let mut game = Self::new(scenario)?;
         game.state = state;
+        game.bots = bots;
         game.recorder = replay;
         if let Some(focus) = game
             .state
@@ -466,18 +480,59 @@ impl Game {
                     target_pos,
                     ..
                 } => {
-                    // Positions come from the event itself: resolving ids
-                    // here loses the beam whenever the hit was lethal.
+                    // Kind rides in the event: the attacker itself may have
+                    // died later this same tick, and a rail shot deserves
+                    // its report either way.
+                    let heavy = matches!(
+                        event,
+                        Event::AttackHit {
+                            attacker_kind: oxide_sim::UnitKind::Lancer,
+                            ..
+                        }
+                    );
                     if sees(self, *attacker_pos) || sees(self, *target_pos) {
-                        self.sounds_pending.push(SoundKind::Laser);
+                        self.sounds_pending.push(if heavy {
+                            SoundKind::RailFire
+                        } else {
+                            SoundKind::Laser
+                        });
                     }
                     self.fx.push(Effect {
                         kind: EffectKind::Laser {
+                            heavy,
                             from: world_vec(*attacker_pos),
                             to: world_vec(*target_pos),
                         },
                         age: 0.0,
                     });
+                }
+                Event::TurretFired {
+                    turret_pos,
+                    target_pos,
+                    ..
+                } => {
+                    if sees(self, *turret_pos) || sees(self, *target_pos) {
+                        self.sounds_pending.push(SoundKind::Laser);
+                    }
+                    self.fx.push(Effect {
+                        kind: EffectKind::Laser {
+                            heavy: false,
+                            from: world_vec(*turret_pos),
+                            to: world_vec(*target_pos),
+                        },
+                        age: 0.0,
+                    });
+                }
+                Event::BuildingCompleted { player, kind, .. } if *player == self.human => {
+                    self.sounds_pending.push(SoundKind::TrainDone);
+                    self.toast(match kind {
+                        oxide_sim::BuildingKind::Turret => "turret online",
+                        oxide_sim::BuildingKind::Fabricator => "fabricator online",
+                        oxide_sim::BuildingKind::Foundry => "foundry online",
+                    });
+                }
+                Event::BuildCancelled { player, refund, .. } if *player == self.human => {
+                    self.toast(format!("site salvaged (+{refund} scrap)"));
                 }
                 Event::UnitDied { pos, player, .. } => {
                     if *player == self.human || sees(self, *pos) {
@@ -529,6 +584,10 @@ impl Game {
                         oxide_sim::command::RejectReason::InvalidTarget => "can't target that",
                         oxide_sim::command::RejectReason::NotANode => "nothing to mine there",
                         oxide_sim::command::RejectReason::NotYourBuilding => "not your building",
+                        oxide_sim::command::RejectReason::CannotProduce => {
+                            "that factory can't make those"
+                        }
+                        oxide_sim::command::RejectReason::BadSite => "can't build there",
                         oxide_sim::command::RejectReason::NoValidUnits => {
                             "nothing selected can do that"
                         }

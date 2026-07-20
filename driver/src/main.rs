@@ -54,6 +54,9 @@ enum Cmd {
         /// (reproduction not guaranteed — archaeology only).
         #[arg(long)]
         allow_version_mismatch: bool,
+        /// Run past the built-in length bound (marathon reproductions).
+        #[arg(long)]
+        allow_long: bool,
     },
     /// Render a scenario state to a PNG (software rasterizer, no window).
     Render {
@@ -133,6 +136,9 @@ enum LiveCmd {
         /// Goal as "x,y".
         #[arg(long)]
         to: String,
+        /// Append behind current orders instead of replacing them.
+        #[arg(long)]
+        queue: bool,
     },
     /// Resume a session from a replay file (fast-forwards, keeps recording).
     LoadReplay {
@@ -149,6 +155,20 @@ enum LiveCmd {
         /// Goal as "x,y".
         #[arg(long)]
         to: String,
+        /// Append behind current orders instead of replacing them.
+        #[arg(long)]
+        queue: bool,
+    },
+    /// Walk units on a looping circuit, engaging everything met.
+    Patrol {
+        /// Acting player index.
+        player: u8,
+        /// Unit ids, comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        units: Vec<u32>,
+        /// Waypoint as "x,y"; repeat for each stop on the circuit.
+        #[arg(long = "via")]
+        via: Vec<String>,
     },
     /// Attack an enemy unit.
     AttackUnit {
@@ -160,6 +180,9 @@ enum LiveCmd {
         /// Victim unit id.
         #[arg(long)]
         target: u32,
+        /// Append behind current orders instead of replacing them.
+        #[arg(long)]
+        queue: bool,
     },
     /// Attack an enemy building.
     AttackBuilding {
@@ -171,6 +194,9 @@ enum LiveCmd {
         /// Victim building id.
         #[arg(long)]
         target: u32,
+        /// Append behind current orders instead of replacing them.
+        #[arg(long)]
+        queue: bool,
     },
     /// Put harvesters on a scrap node.
     Harvest {
@@ -182,6 +208,9 @@ enum LiveCmd {
         /// Node tile as "x,y".
         #[arg(long)]
         node: String,
+        /// Append behind current orders instead of replacing them.
+        #[arg(long)]
+        queue: bool,
     },
     /// Queue a unit at a Foundry.
     Train {
@@ -190,9 +219,31 @@ enum LiveCmd {
         /// Producing building id.
         #[arg(long)]
         building: u32,
-        /// "harvester" or "sentinel".
+        /// "harvester", "sentinel", "scuttler", or "lancer".
         #[arg(long)]
         kind: String,
+    },
+    /// Start a construction site with a harvester.
+    Build {
+        /// Acting player index.
+        player: u8,
+        /// Candidate builder unit ids, comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        units: Vec<u32>,
+        /// "turret" or "fabricator".
+        #[arg(long)]
+        kind: String,
+        /// Anchor tile as "x,y" (top-left of the footprint).
+        #[arg(long)]
+        at: String,
+    },
+    /// Scrap an own unfinished site for a partial refund.
+    Cancel {
+        /// Acting player index.
+        player: u8,
+        /// The site's building id.
+        #[arg(long)]
+        building: u32,
     },
     /// Set (or clear) a building's rally point.
     Rally {
@@ -293,9 +344,11 @@ fn main() -> Result<()> {
             ticks,
             expect_hash,
             allow_version_mismatch,
+            allow_long,
         } => {
             let replay = GameReplay::load(&path)?;
-            let state = runner::run_replay(&replay, ticks, allow_version_mismatch)?;
+            let state =
+                runner::run_replay_bounded(&replay, ticks, allow_version_mismatch, allow_long)?;
             let hash = hash_hex(state.hash());
             println!(
                 "{}",
@@ -352,8 +405,18 @@ fn parse_kind(s: &str) -> Result<UnitKind> {
     match s {
         "harvester" => Ok(UnitKind::Harvester),
         "sentinel" => Ok(UnitKind::Sentinel),
+        "scuttler" => Ok(UnitKind::Scuttler),
+        "lancer" => Ok(UnitKind::Lancer),
         other => bail!("unknown unit kind {other:?}"),
     }
+}
+
+fn parse_building_kind(s: &str) -> Result<oxide_sim::BuildingKind> {
+    Ok(match s.to_ascii_lowercase().as_str() {
+        "turret" => oxide_sim::BuildingKind::Turret,
+        "fabricator" => oxide_sim::BuildingKind::Fabricator,
+        other => bail!("unknown building kind {other:?} (foundries aren't buildable)"),
+    })
 }
 
 fn parse_key(s: &str) -> Result<Key> {
@@ -366,6 +429,10 @@ fn parse_key(s: &str) -> Result<Key> {
         "s" => Key::S,
         "a" => Key::A,
         "p" => Key::P,
+        "r" => Key::R,
+        "b" => Key::B,
+        "n" => Key::N,
+        "x" => Key::X,
         "enter" | "return" => Key::Enter,
         "escape" | "esc" => Key::Escape,
         "space" => Key::Space,
@@ -408,22 +475,40 @@ fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
             player,
             units: ids,
             to,
+            queue,
         } => Request::SendCommand {
             player: PlayerId(player),
             command: Command::Move {
                 units: units(ids),
                 goal: parse_tile(&to)?,
+                queue,
+            },
+        },
+        LiveCmd::Patrol {
+            player,
+            units: ids,
+            via,
+        } => Request::SendCommand {
+            player: PlayerId(player),
+            command: Command::Patrol {
+                units: units(ids),
+                waypoints: via
+                    .iter()
+                    .map(|w| parse_tile(w))
+                    .collect::<Result<Vec<_>>>()?,
             },
         },
         LiveCmd::AttackMove {
             player,
             units: ids,
             to,
+            queue,
         } => Request::SendCommand {
             player: PlayerId(player),
             command: Command::AttackMove {
                 units: units(ids),
                 goal: parse_tile(&to)?,
+                queue,
             },
         },
         LiveCmd::LoadReplay { path } => Request::LoadReplay { path },
@@ -431,33 +516,39 @@ fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
             player,
             units: ids,
             target,
+            queue,
         } => Request::SendCommand {
             player: PlayerId(player),
             command: Command::Attack {
                 units: units(ids),
                 target: Target::Unit(UnitId(target)),
+                queue,
             },
         },
         LiveCmd::AttackBuilding {
             player,
             units: ids,
             target,
+            queue,
         } => Request::SendCommand {
             player: PlayerId(player),
             command: Command::Attack {
                 units: units(ids),
                 target: Target::Building(BuildingId(target)),
+                queue,
             },
         },
         LiveCmd::Harvest {
             player,
             units: ids,
             node,
+            queue,
         } => Request::SendCommand {
             player: PlayerId(player),
             command: Command::Harvest {
                 units: units(ids),
                 node: parse_tile(&node)?,
+                queue,
             },
         },
         LiveCmd::Train {
@@ -474,6 +565,25 @@ fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
         LiveCmd::Stop { player, units: ids } => Request::SendCommand {
             player: PlayerId(player),
             command: Command::Stop { units: units(ids) },
+        },
+        LiveCmd::Build {
+            player,
+            units: ids,
+            kind,
+            at,
+        } => Request::SendCommand {
+            player: PlayerId(player),
+            command: Command::Build {
+                units: units(ids),
+                kind: parse_building_kind(&kind)?,
+                anchor: parse_tile(&at)?,
+            },
+        },
+        LiveCmd::Cancel { player, building } => Request::SendCommand {
+            player: PlayerId(player),
+            command: Command::Cancel {
+                building: BuildingId(building),
+            },
         },
         LiveCmd::Rally {
             player,

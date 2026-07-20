@@ -168,9 +168,11 @@ impl<S, C> Replay<S, C> {
         {
             std::fs::create_dir_all(parent)?;
         }
-        // Process-unique temp name: two sessions saving the same stem
-        // concurrently must not clobber each other's half-written file.
-        let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+        // Unique temp name: two sessions (or two threads of one) saving
+        // the same stem concurrently must not clobber each other.
+        static SAVE_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let nonce = SAVE_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = path.with_extension(format!("tmp.{}.{nonce}", std::process::id()));
         {
             let file = std::fs::File::create(&tmp)?;
             let mut writer = std::io::BufWriter::new(file);

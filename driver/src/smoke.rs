@@ -170,6 +170,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     client.call(Request::SendCommand {
         player: PlayerId(0),
         command: Command::Move {
+            queue: false,
             units: vec![UnitId(id)],
             goal: chassis::grid::TilePos::new(mover.tile[0] + 3, mover.tile[1] + 2),
         },
@@ -262,6 +263,13 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         ),
     );
 
+    // Continuity setup: run the ORIGINAL session (bots with their genuine
+    // memory) past the save point before any reload touches it.
+    client.call(Request::AdvanceTicks { ticks: 200 })?;
+    let Reply::Hash(future_live) = client.call(Request::StateHash)? else {
+        bail!("state_hash returned the wrong reply kind");
+    };
+
     // Session resume: loading the replay we just saved must land on the
     // same tick and hash, still recording.
     let resumed = client.call(Request::LoadReplay {
@@ -281,5 +289,123 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         after_resume.hash == live.hash,
         format!("{} vs {}", after_resume.hash, live.hash),
     );
+
+    // The continuity contract: a resumed session must continue exactly as
+    // the unsaved one would have — including the bots, whose memory is
+    // rebuilt by watching the replay during the fast-forward.
+    client.call(Request::AdvanceTicks { ticks: 200 })?;
+    let Reply::Hash(future_resumed) = client.call(Request::StateHash)? else {
+        bail!("state_hash returned the wrong reply kind");
+    };
+    checks.note(
+        "resumed session continues identically to the unsaved one",
+        future_resumed.hash == future_live.hash,
+        format!("{} vs {}", future_resumed.hash, future_live.hash),
+    );
+
+    // Armed placement must not misread a minimap click as world ground —
+    // that once spent scrap on a bogus tile. Reproduce the exact input
+    // sequence through the real funnel: select a harvester, arm a turret,
+    // click the minimap; the camera must jump and the bank must not move.
+    let Reply::State(view) = client.call(Request::QueryState {
+        filter: StateFilter {
+            map: true,
+            ..StateFilter::default()
+        },
+    })?
+    else {
+        bail!("query_state returned the wrong reply kind");
+    };
+    let scrap_before = view.players[0].scrap;
+    let rows = view.map.as_ref().context("asked for the map")?;
+    let (map_w, map_h) = (rows[0].chars().count() as f64, rows.len() as f64);
+    let harvester = view
+        .units
+        .iter()
+        .find(|u| u.player == 0 && u.kind == UnitKind::Harvester)
+        .context("no harvester to select")?;
+    let Reply::Camera(cam) = client.call(Request::QueryCamera)? else {
+        bail!("query_camera returned the wrong reply kind");
+    };
+    let [lo_x, lo_y, hi_x, hi_y] = cam.world_rect;
+    let to_screen = |wx: f64, wy: f64| {
+        (
+            ((wx - lo_x) / (hi_x - lo_x) * cam.viewport[0]) as f32,
+            ((wy - lo_y) / (hi_y - lo_y) * cam.viewport[1]) as f32,
+        )
+    };
+    let (hx, hy) = to_screen(harvester.pos[0], harvester.pos[1]);
+    for event in [
+        RawEvent::MouseDown {
+            button: oxide_protocol::MouseButton::Left,
+            x: hx,
+            y: hy,
+        },
+        RawEvent::MouseUp {
+            button: oxide_protocol::MouseButton::Left,
+            x: hx,
+            y: hy,
+        },
+        RawEvent::KeyDown {
+            key: oxide_protocol::Key::B,
+        },
+        RawEvent::KeyUp {
+            key: oxide_protocol::Key::B,
+        },
+    ] {
+        client.call(Request::InjectEvent { event })?;
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    // The minimap's viewport rect mirrors the shell's own formula
+    // (bottom-right, MINIMAP_MAX scaled by dpi = physical/logical width).
+    let dpi = (f64::from(shot.width) / cam.viewport[0]).max(1.0);
+    let map_aspect_scale = (220.0 * dpi / map_w).min(150.0 * dpi / map_h);
+    let (mm_w, mm_h) = (map_w * map_aspect_scale, map_h * map_aspect_scale);
+    let mm_x = cam.viewport[0] - mm_w - 12.0 * dpi;
+    let mm_y = cam.viewport[1] - mm_h - 34.0 * dpi;
+    let (cx, cy) = ((mm_x + mm_w * 0.8) as f32, (mm_y + mm_h * 0.8) as f32);
+    for event in [
+        RawEvent::MouseDown {
+            button: oxide_protocol::MouseButton::Left,
+            x: cx,
+            y: cy,
+        },
+        RawEvent::MouseUp {
+            button: oxide_protocol::MouseButton::Left,
+            x: cx,
+            y: cy,
+        },
+    ] {
+        client.call(Request::InjectEvent { event })?;
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    let Reply::Camera(cam_after) = client.call(Request::QueryCamera)? else {
+        bail!("query_camera returned the wrong reply kind");
+    };
+    let Reply::State(view_after) = client.call(Request::QueryState {
+        filter: StateFilter::default(),
+    })?
+    else {
+        bail!("query_state returned the wrong reply kind");
+    };
+    checks.note(
+        "minimap click while placing jumps the camera and spends nothing",
+        view_after.players[0].scrap == scrap_before && cam_after.center != cam.center,
+        format!(
+            "scrap {} -> {}, center {:?} -> {:?}",
+            scrap_before, view_after.players[0].scrap, cam.center, cam_after.center
+        ),
+    );
+    // Disarm placement so nothing lingers.
+    for event in [
+        RawEvent::KeyDown {
+            key: oxide_protocol::Key::Escape,
+        },
+        RawEvent::KeyUp {
+            key: oxide_protocol::Key::Escape,
+        },
+    ] {
+        client.call(Request::InjectEvent { event })?;
+    }
     Ok(())
 }

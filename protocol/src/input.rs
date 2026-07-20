@@ -98,7 +98,7 @@ pub enum MouseButton {
 
 /// The keys the shell maps. Deliberately only what the game uses — extend
 /// alongside the input mapper.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Key {
     /// Pan up.
@@ -118,6 +118,14 @@ pub enum Key {
     A,
     /// Pause / unpause.
     P,
+    /// Arm a patrol route; pressed again, starts it.
+    R,
+    /// Arm turret placement (harvester selected).
+    B,
+    /// Arm fabricator placement (harvester selected).
+    N,
+    /// Scrap the selected construction site (partial refund).
+    X,
     /// Activate the highlighted menu item.
     Enter,
     /// Deselect.

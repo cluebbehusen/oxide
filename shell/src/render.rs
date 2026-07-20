@@ -41,9 +41,117 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     } else {
         draw_fog(game);
     }
+    // Own-order acknowledgments and rally flags sit above the fog: they
+    // are the player's intent, not world intel.
+    draw_pings(game);
+    draw_rally_marker(game);
+    draw_breadcrumbs(game, input);
+    draw_placement_ghost(game, sprites, input);
     draw_drag_rect(game, input);
     draw_hud(game);
     draw_minimap(game);
+}
+
+/// The armed building follows the cursor as a translucent footprint,
+/// green-lit where the sim would accept it — the tint and the command
+/// share `State::can_place`, so what looks legal is legal.
+fn draw_placement_ghost(game: &Game, sprites: &Sprites, input: &InputState) {
+    let Some(kind) = input.placing else { return };
+    let world = game.camera.to_world(input.mouse);
+    let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    let zoom = game.camera.zoom;
+    let (w, h) = kind.stats().size;
+    let ok = game.state.can_place(game.human, kind, anchor);
+    let screen = game
+        .camera
+        .to_screen(vec2(anchor.x as f32, anchor.y as f32));
+    let dest = vec2(w as f32 * zoom, h as f32 * zoom);
+    let faction = game.state.player(game.human).faction;
+    let tint = if ok {
+        Color::new(0.7, 1.0, 0.75, 0.55)
+    } else {
+        Color::new(1.0, 0.45, 0.4, 0.55)
+    };
+    draw_texture_ex(
+        sprites.texture(),
+        screen.x,
+        screen.y,
+        tint,
+        DrawTextureParams {
+            dest_size: Some(dest),
+            source: Some(sprites.building(kind, faction)),
+            ..Default::default()
+        },
+    );
+}
+
+/// Queued waypoints of the selection, drawn as a faint chain; a patrol
+/// closes the loop. While arming a patrol (`R`), the collected route
+/// draws in scrap-amber instead.
+fn draw_breadcrumbs(game: &Game, input: &InputState) {
+    let dot = |p: Vec2, color: Color| draw_circle(p.x, p.y, 3.0, color);
+    if let Some(route) = &input.patrol_route {
+        let mut prev: Option<Vec2> = None;
+        for tile in route {
+            let p = game
+                .camera
+                .to_screen(vec2(tile.x as f32 + 0.5, tile.y as f32 + 0.5));
+            if let Some(a) = prev {
+                draw_line(a.x, a.y, p.x, p.y, 1.5, SCRAP_COLOR);
+            }
+            dot(p, SCRAP_COLOR);
+            prev = Some(p);
+        }
+        return;
+    }
+    for id in &game.selection.units {
+        let Some(unit) = game.state.unit(*id) else {
+            continue;
+        };
+        // Only explored targets draw: the harvest brain can retarget to a
+        // node the player has never seen, and a breadcrumb there would
+        // leak it through the fog.
+        let goal_of = |order: &oxide_sim::Order| {
+            let goal = match order {
+                oxide_sim::Order::Move { goal } | oxide_sim::Order::AttackMove { goal } => *goal,
+                oxide_sim::Order::Harvest { node } => *node,
+                _ => return None,
+            };
+            (game.overlay || game.my_vision().explored(goal)).then_some(goal)
+        };
+        let mut points: Vec<Vec2> = Vec::new();
+        if let Some(g) = goal_of(&unit.order) {
+            points.push(
+                game.camera
+                    .to_screen(vec2(g.x as f32 + 0.5, g.y as f32 + 0.5)),
+            );
+        }
+        for order in &unit.queue {
+            if let Some(g) = goal_of(order) {
+                points.push(
+                    game.camera
+                        .to_screen(vec2(g.x as f32 + 0.5, g.y as f32 + 0.5)),
+                );
+            }
+        }
+        if points.is_empty() {
+            continue;
+        }
+        let start = game
+            .camera
+            .to_screen(vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>()));
+        let mut prev = start;
+        for p in &points {
+            draw_line(prev.x, prev.y, p.x, p.y, 1.0, BONE_FAINT);
+            dot(*p, BONE_FAINT);
+            prev = *p;
+        }
+        // A patrol is a circuit: close it.
+        if unit.looping && points.len() > 1 {
+            let first = points[0];
+            draw_line(prev.x, prev.y, first.x, first.y, 1.0, BONE_FAINT);
+        }
+    }
 }
 
 const FOG_UNEXPLORED: Color = color_u8!(13, 13, 17, 255);
@@ -233,14 +341,21 @@ fn draw_buildings(game: &Game, sprites: &Sprites) {
             let screen = game
                 .camera
                 .to_screen(vec2(ghost.anchor.x as f32, ghost.anchor.y as f32));
+            // A remembered site stays translucent scaffolding until its
+            // completion has actually been observed.
+            let tint = if ghost.built {
+                GHOST_TINT
+            } else {
+                Color::new(GHOST_TINT.r, GHOST_TINT.g, GHOST_TINT.b, GHOST_TINT.a * 0.5)
+            };
             draw_texture_ex(
                 sprites.texture(),
                 screen.x,
                 screen.y,
-                GHOST_TINT,
+                tint,
                 DrawTextureParams {
                     dest_size: Some(vec2(w as f32 * zoom, h as f32 * zoom)),
-                    source: Some(sprites.foundry(faction)),
+                    source: Some(sprites.building(ghost.kind, faction)),
                     ..Default::default()
                 },
             );
@@ -259,29 +374,55 @@ fn draw_buildings(game: &Game, sprites: &Sprites) {
             .to_screen(vec2(building.anchor.x as f32, building.anchor.y as f32));
         let (w, h) = building.kind.stats().size;
         let dest = vec2(w as f32 * zoom, h as f32 * zoom);
+        // Sites render translucent — scaffolding, not structure.
+        let tint = if building.built {
+            WHITE
+        } else {
+            Color::new(1.0, 1.0, 1.0, 0.45)
+        };
         draw_texture_ex(
             sprites.texture(),
             screen.x,
             screen.y,
-            WHITE,
+            tint,
             DrawTextureParams {
                 dest_size: Some(dest),
-                source: Some(sprites.foundry(faction)),
+                source: Some(sprites.building(building.kind, faction)),
                 ..Default::default()
             },
         );
-        // The melt pool breathes: a soft faction-tinted pulse.
-        let pulse = ((get_time() * 2.6 + f64::from(building.id.0)).sin() * 0.5 + 0.5) as f32;
-        let glow = match faction {
-            oxide_sim::Faction::Ferrous => Color::new(0.97, 0.62, 0.45, 0.10 + 0.10 * pulse),
-            oxide_sim::Faction::Cupric => Color::new(0.55, 0.87, 0.78, 0.10 + 0.10 * pulse),
-        };
-        draw_circle(
-            screen.x + dest.x * 0.5,
-            screen.y + dest.y * 0.5,
-            dest.x * 0.22 * (1.0 + 0.08 * pulse),
-            glow,
-        );
+        if building.built && building.kind == oxide_sim::BuildingKind::Foundry {
+            // The melt pool breathes: a soft faction-tinted pulse.
+            let pulse = ((get_time() * 2.6 + f64::from(building.id.0)).sin() * 0.5 + 0.5) as f32;
+            let glow = match faction {
+                oxide_sim::Faction::Ferrous => Color::new(0.97, 0.62, 0.45, 0.10 + 0.10 * pulse),
+                oxide_sim::Faction::Cupric => Color::new(0.55, 0.87, 0.78, 0.10 + 0.10 * pulse),
+            };
+            draw_circle(
+                screen.x + dest.x * 0.5,
+                screen.y + dest.y * 0.5,
+                dest.x * 0.22 * (1.0 + 0.08 * pulse),
+                glow,
+            );
+        }
+        if !building.built {
+            // Construction progress in bone, distinct from training amber.
+            let ticks = building
+                .kind
+                .stats()
+                .construction
+                .map(|c| c.build_ticks)
+                .unwrap_or(1);
+            let fraction = building.progress as f32 / ticks as f32;
+            draw_rectangle(screen.x, screen.y + dest.y + 3.0, dest.x, 4.0, HP_BACK);
+            draw_rectangle(
+                screen.x,
+                screen.y + dest.y + 3.0,
+                dest.x * fraction,
+                4.0,
+                BONE,
+            );
+        }
         if game.selection.building == Some(building.id) {
             draw_rectangle_lines(
                 screen.x - 2.0,
@@ -291,9 +432,6 @@ fn draw_buildings(game: &Game, sprites: &Sprites) {
                 3.0,
                 BONE,
             );
-            if let Some(rally) = building.rally {
-                draw_rally_flag(game, rally, zoom);
-            }
         }
         let max_hp = building.kind.stats().max_hp;
         if building.hp < max_hp {
@@ -395,7 +533,7 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
         // A beam needs BOTH endpoints in sight: a half-fogged laser would
         // pinpoint an unseen combatant at its far end.
         let in_sight = match fx.kind {
-            EffectKind::Laser { from, to } => sees(from) && sees(to),
+            EffectKind::Laser { from, to, .. } => sees(from) && sees(to),
             EffectKind::Puff { at } => sees(at),
             // Own-order acknowledgments always show; fogged targets are
             // already impossible to order onto.
@@ -405,17 +543,18 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
             continue;
         }
         match fx.kind {
-            EffectKind::Laser { from, to } => {
+            EffectKind::Laser { heavy, from, to } => {
                 let a = game.camera.to_screen(from);
                 let b = game.camera.to_screen(to);
                 let fade = (1.0 - fx.age / 0.15).clamp(0.0, 1.0);
+                let w = if heavy { 2.0 } else { 1.0 };
                 // Wide glow under a hot core.
                 draw_line(
                     a.x,
                     a.y,
                     b.x,
                     b.y,
-                    7.0 * fade.max(0.3),
+                    7.0 * w * fade.max(0.3),
                     Color::new(0.95, 0.75, 0.5, 0.22 * fade),
                 );
                 draw_line(
@@ -423,7 +562,7 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
                     a.y,
                     b.x,
                     b.y,
-                    2.5 * fade.max(0.2),
+                    2.5 * w * fade.max(0.2),
                     Color::new(0.98, 0.93, 0.8, fade),
                 );
                 if fx.age < 0.07 {
@@ -451,22 +590,42 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
                 let color = Color::new(0.9, 0.88, 0.84, 0.7 * fade.clamp(0.0, 1.0));
                 draw_circle_lines(center.x, center.y, radius, 2.0, color);
             }
-            EffectKind::Ping { at, kind } => {
-                // A ring collapsing onto the ordered point.
-                let center = game.camera.to_screen(at);
-                let progress = (fx.age / 0.5).clamp(0.0, 1.0);
-                let radius = game.camera.zoom * (0.65 * (1.0 - progress) + 0.12);
-                let base = match kind {
-                    crate::game::PingKind::Move => color_u8!(120, 200, 130, 255),
-                    crate::game::PingKind::Attack => DANGER,
-                    crate::game::PingKind::Harvest => SCRAP_COLOR,
-                    crate::game::PingKind::Rally => BONE,
-                    crate::game::PingKind::Spawn => color_u8!(150, 210, 235, 255),
-                };
-                let color = Color::new(base.r, base.g, base.b, 1.0 - progress * 0.7);
-                draw_circle_lines(center.x, center.y, radius, 2.5, color);
-            }
+            EffectKind::Ping { .. } => {} // drawn above the fog, in draw_pings
         }
+    }
+}
+
+/// Order-acknowledgment rings, drawn above the fog: they are the player's
+/// own intent echoed back, not world intel to be hidden.
+fn draw_pings(game: &Game) {
+    for fx in &game.fx {
+        let EffectKind::Ping { at, kind } = fx.kind else {
+            continue;
+        };
+        let center = game.camera.to_screen(at);
+        let progress = (fx.age / 0.5).clamp(0.0, 1.0);
+        let radius = game.camera.zoom * (0.65 * (1.0 - progress) + 0.12);
+        let base = match kind {
+            crate::game::PingKind::Move => color_u8!(120, 200, 130, 255),
+            crate::game::PingKind::Attack => DANGER,
+            crate::game::PingKind::Harvest => SCRAP_COLOR,
+            crate::game::PingKind::Rally => BONE,
+            crate::game::PingKind::Spawn => color_u8!(150, 210, 235, 255),
+        };
+        let color = Color::new(base.r, base.g, base.b, 1.0 - progress * 0.7);
+        draw_circle_lines(center.x, center.y, radius, 2.5, color);
+    }
+}
+
+/// The selected own building's rally flag, above the fog for the same
+/// reason as pings.
+fn draw_rally_marker(game: &Game) {
+    if let Some(id) = game.selection.building
+        && let Some(building) = game.state.building(id)
+        && building.player == game.human
+        && let Some(rally) = building.rally
+    {
+        draw_rally_flag(game, rally, game.camera.zoom);
     }
 }
 
@@ -605,18 +764,57 @@ fn draw_hud(game: &Game) {
                 .map(|k| match k {
                     UnitKind::Harvester => "harvester",
                     UnitKind::Sentinel => "sentinel",
+                    UnitKind::Scuttler => "scuttler",
+                    UnitKind::Lancer => "lancer",
                 })
                 .collect();
-            let line = format!(
-                "FOUNDRY {}/{} hp   queue [{}]   H: harvester (50)   S: sentinel (75)",
-                building.hp,
-                building.kind.stats().max_hp,
-                queue.join(", "),
-            );
+            let stats = building.kind.stats();
+            let name = match building.kind {
+                oxide_sim::BuildingKind::Foundry => "FOUNDRY",
+                oxide_sim::BuildingKind::Turret => "TURRET",
+                oxide_sim::BuildingKind::Fabricator => "FABRICATOR",
+            };
+            let mut line = format!("{name} {}/{} hp", building.hp, stats.max_hp);
+            if !building.built {
+                line.push_str("   under construction   X: scrap site");
+            } else if !stats.produces.is_empty() {
+                let keys = ["H", "S"];
+                let slots: Vec<String> = stats
+                    .produces
+                    .iter()
+                    .zip(keys)
+                    .map(|(k, key)| {
+                        let n = match k {
+                            UnitKind::Harvester => "harvester",
+                            UnitKind::Sentinel => "sentinel",
+                            UnitKind::Scuttler => "scuttler",
+                            UnitKind::Lancer => "lancer",
+                        };
+                        format!("{key}: {n} ({})", k.stats().cost)
+                    })
+                    .collect();
+                line.push_str(&format!(
+                    "   queue [{}]   {}",
+                    queue.join(", "),
+                    slots.join("   ")
+                ));
+            }
             panel_line(&line);
         }
     } else if !game.selection.units.is_empty() {
-        panel_line(&format!("{} unit(s) selected", game.selection.units.len()));
+        let has_builder = game.selection.units.iter().any(|id| {
+            game.state
+                .unit(*id)
+                .is_some_and(|u| u.kind == UnitKind::Harvester)
+        });
+        let mut line = format!(
+            "{} unit(s) selected   X: stop   R: patrol",
+            game.selection.units.len()
+        );
+        if has_builder {
+            line.push_str("   B: turret (100)   N: fabricator (150)");
+        }
+        panel_line(&line);
     }
 
     // Controls hint.

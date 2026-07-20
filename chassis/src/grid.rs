@@ -71,6 +71,15 @@ pub struct Grid<T> {
 }
 
 impl<T> Grid<T> {
+    /// Whether the deserialized shape holds together: positive dimensions
+    /// and a cell vector of exactly `width x height`. Derived `Deserialize`
+    /// can't check this — anything loading grids from untrusted bytes must.
+    pub fn is_consistent(&self) -> bool {
+        self.width > 0
+            && self.height > 0
+            && self.cells.len() == (self.width as usize) * (self.height as usize)
+    }
+
     /// Builds a grid filled with clones of `fill`.
     pub fn new(width: i32, height: i32, fill: T) -> Self
     where

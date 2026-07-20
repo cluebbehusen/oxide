@@ -83,6 +83,11 @@ pub enum Order {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resume: Option<TilePos>,
     },
+    /// Walk to an unfinished own site and stand it up (harvesters only).
+    Build {
+        /// The site under construction.
+        site: crate::ids::BuildingId,
+    },
     /// March to a tile, engaging anything encountered on the way — the
     /// stance for actually fighting, as opposed to [`Order::Move`]'s
     /// oblivious walk.
@@ -124,6 +129,14 @@ pub struct Unit {
     pub progress: u32,
     /// Current intent.
     pub order: Order,
+    /// Orders waiting behind the active one; completing the active order
+    /// pops the front. With [`Unit::looping`] set, the finished order
+    /// rotates to the back instead — that cycle is a patrol.
+    #[serde(default, skip_serializing_if = "std::collections::VecDeque::is_empty")]
+    pub queue: std::collections::VecDeque<Order>,
+    /// Whether the queue cycles (patrol) instead of draining.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub looping: bool,
     /// Current walk, if any.
     pub path: Option<PathFollow>,
 }
@@ -132,6 +145,31 @@ impl Unit {
     /// The tile this unit currently occupies.
     pub fn tile(&self) -> TilePos {
         TilePos::containing(self.pos)
+    }
+
+    /// Ends the active order cleanly: a looping program rotates it to the
+    /// back (patrol), a plain queue drains, an empty queue idles.
+    pub(crate) fn advance_queue(&mut self) {
+        let finished = std::mem::replace(&mut self.order, Order::Idle);
+        if self.looping {
+            self.queue.push_back(finished);
+        }
+        match self.queue.pop_front() {
+            Some(next) => self.order = next,
+            None => self.looping = false,
+        }
+        self.path = None;
+        self.progress = 0;
+    }
+
+    /// Abandons the whole program: a stalled or overridden order never
+    /// half-continues its queue.
+    pub(crate) fn clear_program(&mut self) {
+        self.order = Order::Idle;
+        self.queue.clear();
+        self.looping = false;
+        self.path = None;
+        self.progress = 0;
     }
 }
 
@@ -157,6 +195,24 @@ pub struct Building {
     /// stand at the doorstep.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rally: Option<TilePos>,
+    /// Whether construction has finished. Sites (`false`) block ground and
+    /// take damage but don't see, fight, or produce.
+    #[serde(
+        default = "default_true",
+        skip_serializing_if = "core::clone::Clone::clone"
+    )]
+    pub built: bool,
+    /// Ticks until this building may fire again (turrets).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub cooldown: u32,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 impl Building {
@@ -279,10 +335,74 @@ impl State {
         &self.players[id.0 as usize]
     }
 
+    /// Fallible sibling of [`State::player`], for callers holding ids from
+    /// outside the sim (protocol traffic, tooling).
+    pub fn try_player(&self, id: PlayerId) -> Option<&Player> {
+        self.players.get(id.0 as usize)
+    }
+
     /// A player's fog-of-war view. Panics on a foreign id, like
     /// [`State::player`].
     pub fn vision(&self, id: PlayerId) -> &crate::vision::Vision {
         &self.vision[id.0 as usize]
+    }
+
+    /// Fallible sibling of [`State::vision`].
+    pub fn try_vision(&self, id: PlayerId) -> Option<&crate::vision::Vision> {
+        self.vision.get(id.0 as usize)
+    }
+
+    /// Checks the structural invariants deserialization alone cannot: unit
+    /// and building lists sorted by id with the id counters ahead of every
+    /// live id, and per-player tables sized to the player list. `State`
+    /// implements `Deserialize` for tooling and tests; anything loading a
+    /// snapshot from outside the sim must call this before ticking it —
+    /// a hand-edited snapshot that skips it can violate every invariant
+    /// the tick pipeline assumes.
+    pub fn validate_invariants(&self) -> Result<(), String> {
+        if self.players.is_empty() {
+            return Err("no players".into());
+        }
+        if !self.units.windows(2).all(|w| w[0].id < w[1].id) {
+            return Err("units not strictly sorted by id".into());
+        }
+        if !self.buildings.windows(2).all(|w| w[0].id < w[1].id) {
+            return Err("buildings not strictly sorted by id".into());
+        }
+        if let Some(u) = self.units.last()
+            && u.id.0 >= self.next_unit_id
+        {
+            return Err("unit id counter behind a live unit".into());
+        }
+        if let Some(b) = self.buildings.last()
+            && b.id.0 >= self.next_building_id
+        {
+            return Err("building id counter behind a live building".into());
+        }
+        if self.vision.len() != self.players.len() {
+            return Err("vision table does not match the player list".into());
+        }
+        let players = self.players.len();
+        if self.units.iter().any(|u| (u.player.0 as usize) >= players) {
+            return Err("unit owned by a player outside the table".into());
+        }
+        if self
+            .buildings
+            .iter()
+            .any(|b| (b.player.0 as usize) >= players)
+        {
+            return Err("building owned by a player outside the table".into());
+        }
+        // Nested grids: derived Deserialize accepts any cell count, and a
+        // short one panics deep inside vision refresh instead of here.
+        if !self.map.is_consistent() {
+            return Err("map grid dimensions disagree with its cells".into());
+        }
+        let (w, h) = (self.map.width(), self.map.height());
+        if self.vision.iter().any(|v| !v.is_consistent(w, h)) {
+            return Err("a vision table disagrees with the map dimensions".into());
+        }
+        Ok(())
     }
 
     /// Whether `player` currently sees `pos`.
@@ -360,6 +480,8 @@ impl State {
             cooldown: 0,
             progress: 0,
             order: Order::Idle,
+            queue: std::collections::VecDeque::new(),
+            looping: false,
             path: None,
         });
         id
@@ -384,8 +506,72 @@ impl State {
             queue: std::collections::VecDeque::new(),
             progress: 0,
             rally: None,
+            built: true,
+            cooldown: 0,
         });
         id
+    }
+
+    /// Claims ground for a construction site: blocks the footprint at once
+    /// but starts at a fifth of its hit points, unfinished. Site validity
+    /// is checked by [`State::can_place`] at the command layer.
+    pub(crate) fn place_site(
+        &mut self,
+        player: PlayerId,
+        kind: BuildingKind,
+        anchor: TilePos,
+    ) -> BuildingId {
+        let id = self.place_building(player, kind, anchor);
+        let b = self.building_mut(id).expect("just placed");
+        b.built = false;
+        b.hp = kind.stats().max_hp / 5;
+        id
+    }
+
+    /// Undoes a just-placed site completely, id counter included — for
+    /// validation paths that must leave no trace on rejection (a rejected
+    /// command must not move the state hash).
+    pub(crate) fn retract_site(&mut self, id: BuildingId) {
+        debug_assert_eq!(
+            id.0 + 1,
+            self.next_building_id,
+            "only the newest site retracts"
+        );
+        self.buildings.retain(|b| b.id != id);
+        self.next_building_id = id.0;
+    }
+
+    /// Whether `player` may start `kind` at `anchor` right now: every
+    /// footprint tile *currently visible* to them, open ground, and free
+    /// of buildings and standing units. Visibility (not mere exploration)
+    /// is the fog-honest rule — the occupancy checks below read live
+    /// state, and a red ghost over explored-but-unseen ground would
+    /// otherwise leak hidden enemies. One predicate serves command
+    /// validation and the shell's placement preview — they must never
+    /// disagree.
+    pub fn can_place(&self, player: PlayerId, kind: BuildingKind, anchor: TilePos) -> bool {
+        if kind.stats().construction.is_none() {
+            return false; // scenario-only kinds are never placeable
+        }
+        let (w, h) = kind.stats().size;
+        for dy in 0..h {
+            for dx in 0..w {
+                let t = anchor.offset(dx, dy);
+                if !self.vision(player).visible(t)
+                    || !self.map.terrain_passable(t)
+                    || self.building_at(t).is_some()
+                {
+                    return false;
+                }
+            }
+        }
+        // Standing machines hold their ground — no foundations under feet.
+        !self.units.iter().any(|u| {
+            u.hp > 0 && {
+                let t = u.tile();
+                t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h
+            }
+        })
     }
 }
 
