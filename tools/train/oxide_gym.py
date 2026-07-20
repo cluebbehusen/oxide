@@ -50,6 +50,7 @@ class StepResult:
     done: bool
     win: bool | None
     ticks: int
+    raw: list[int] | None = None
 
 
 class Worker:
@@ -98,6 +99,7 @@ class Worker:
             False,
             None,
             reply["tick"],
+            raw=reply["features"],
         )
 
     def close(self):
