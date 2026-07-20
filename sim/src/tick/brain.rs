@@ -25,8 +25,19 @@ struct PendingHit {
     damage: u32,
 }
 
+/// A construction hp-gain decided this tick. Buffered like damage, and
+/// applied *after* it: the documented rule is that a site zeroed by fire
+/// is dead even if its builder acted the same tick — the shooter aimed at
+/// the start-of-tick world, where the hit was lethal.
+struct PendingBuild {
+    site: crate::ids::BuildingId,
+    step: u32,
+    max_hp: u32,
+}
+
 pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
     let mut hits: Vec<PendingHit> = Vec::new();
+    let mut builds: Vec<PendingBuild> = Vec::new();
     // Alternate direction by tick parity: sequential phases must not hand
     // one seat a standing first-mover edge (with damage buffered, the
     // remaining coupling is small — shared scrap, own-side order state —
@@ -52,11 +63,11 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
                 attack(state, id, target, resume, events, &mut hits)
             }
             Order::AttackMove { goal } => attack_move(state, id, goal, events),
-            Order::Build { site } => build(state, id, site, events),
+            Order::Build { site } => build(state, id, site, events, &mut builds),
         }
     }
     turret_fire(state, events, &mut hits);
-    resolve_hits(state, hits);
+    resolve_hits(state, hits, builds);
 }
 
 /// The other half of simultaneity: buffered shots land now, in the order
@@ -65,7 +76,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
 /// nothing and a survivor answers its earliest attacker *that survived
 /// resolution*: turning to face a corpse would waste the answer and let a
 /// living shooter keep firing unopposed.
-fn resolve_hits(state: &mut State, hits: Vec<PendingHit>) {
+fn resolve_hits(state: &mut State, hits: Vec<PendingHit>, builds: Vec<PendingBuild>) {
     for hit in &hits {
         match hit.victim {
             Target::Unit(uid) => {
@@ -80,15 +91,19 @@ fn resolve_hits(state: &mut State, hits: Vec<PendingHit>) {
             }
         }
     }
+    // Construction gains land only on sites that survived the volley.
+    for gain in &builds {
+        if let Some(b) = state.building_mut(gain.site)
+            && b.hp > 0
+        {
+            b.hp = (b.hp + gain.step).min(gain.max_hp);
+        }
+    }
     for hit in &hits {
-        if let Target::Unit(uid) = hit.victim {
-            let attacker_standing = match hit.attacker {
-                Target::Unit(a) => state.unit(a).is_some_and(|u| u.hp > 0),
-                Target::Building(b) => state.building(b).is_some_and(|b| b.hp > 0),
-            };
-            if attacker_standing {
-                retaliate(state, uid, hit.attacker);
-            }
+        if let Target::Unit(uid) = hit.victim
+            && target_standing(state, hit.attacker)
+        {
+            retaliate(state, uid, hit.attacker);
         }
     }
 }
@@ -157,7 +172,13 @@ fn turret_fire(state: &mut State, events: &mut Vec<Event>, hits: &mut Vec<Pendin
 /// Stand up an own unfinished site: walk adjacent, then feed it progress.
 /// One built tick raises hp along a linear ramp to full at completion
 /// (damage taken meanwhile is simply kept — nobody rebuilds for free).
-fn build(state: &mut State, id: UnitId, site: crate::ids::BuildingId, events: &mut Vec<Event>) {
+fn build(
+    state: &mut State,
+    id: UnitId,
+    site: crate::ids::BuildingId,
+    events: &mut Vec<Event>,
+    builds: &mut Vec<PendingBuild>,
+) {
     let me = state.unit(id).expect("caller checked").player;
     // hp > 0 is defense in depth: with buffered damage nothing dies
     // mid-brains anymore, but building on a corpse would resurrect it and
@@ -184,7 +205,15 @@ fn build(state: &mut State, id: UnitId, site: crate::ids::BuildingId, events: &m
         let b = state.building_mut(site).expect("just seen");
         let step = (ramp * (b.progress + 1) / build_ticks) - (ramp * b.progress / build_ticks);
         b.progress += 1;
-        b.hp = (b.hp + step).min(stats.max_hp);
+        // The hp gain is buffered like damage and applied after it — see
+        // PendingBuild. Progress and completion are bookkeeping, not hp.
+        if step > 0 {
+            builds.push(PendingBuild {
+                site,
+                step,
+                max_hp: stats.max_hp,
+            });
+        }
         if b.progress >= build_ticks {
             b.built = true;
             b.progress = 0;
@@ -594,7 +623,7 @@ fn attack(
 /// the resume point. Brains run in id order, so the first hit of a tick
 /// picks the target deterministically.
 fn retaliate(state: &mut State, victim: UnitId, attacker: Target) {
-    let Some(unit) = state.unit_mut(victim) else {
+    let Some(unit) = state.unit(victim) else {
         return;
     };
     if unit.hp == 0 || unit.kind.stats().attack.is_none() {
@@ -603,13 +632,28 @@ fn retaliate(state: &mut State, victim: UnitId, attacker: Target) {
     let resume = match unit.order {
         Order::Idle => None,
         Order::AttackMove { goal } => Some(goal),
+        // An attack aimed at something that just died in resolution is no
+        // engagement — a victim auto-acquired a neighbor this tick, the
+        // neighbor fell in the volley, and without this arm the busy-guard
+        // would let a surviving out-of-aggro shooter fire unanswered for
+        // another full cooldown. Live targets stay protected.
+        Order::Attack { target, resume } if !target_standing(state, target) => resume,
         _ => return, // already busy fighting or working
     };
+    let unit = state.unit_mut(victim).expect("checked above");
     unit.order = Order::Attack {
         target: attacker,
         resume,
     };
     unit.path = None;
+}
+
+/// Whether a target is still on the field with hit points.
+fn target_standing(state: &State, target: Target) -> bool {
+    match target {
+        Target::Unit(u) => state.unit(u).is_some_and(|u| u.hp > 0),
+        Target::Building(b) => state.building(b).is_some_and(|b| b.hp > 0),
+    }
 }
 
 /// Ensures the unit is walking to some passable tile touching the rectangle.

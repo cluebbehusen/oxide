@@ -195,7 +195,8 @@ and test fixtures inside crate `tests/` directories.
   adjacent builders stack**, each contributing a tick, so two roughly
   halve the build; deliberate, tested. Orphaned sites freeze and any own
   harvester can resume them; a site zeroed by fire is dead even if its
-  builder acts later the same tick. Cancel (`X`) refunds
+  builder acts the same tick — construction hp-gains buffer like damage
+  and resolve after it, so fire wins ties. Cancel (`X`) refunds
   `cost × hp / max_hp`. One predicate — `State::can_place` — serves sim
   validation and the shell's ghost, and it requires the footprint
   *currently visible*: its occupancy checks read live state, and testing

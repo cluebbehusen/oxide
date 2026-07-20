@@ -3146,3 +3146,144 @@ fn retaliation_picks_the_earliest_surviving_attacker() {
         state.unit(v).unwrap().order
     );
 }
+
+#[test]
+fn retaliation_interrupts_an_attack_on_a_corpse() {
+    // The victim auto-acquires the adjacent scuttler during its own brain
+    // step; the scuttler dies in the same volley that an out-of-aggro
+    // lancer lands on the victim. The victim's attack order points at a
+    // corpse — it must interrupt and answer the survivor, not stand mute
+    // through the lancer's next cooldown.
+    let mut state = arena(vec![
+        unit(1, UnitKind::Scuttler, 5, 6), // id 0: bait, dies this tick
+        unit(1, UnitKind::Lancer, 9, 4),   // id 1: the real threat
+        unit(0, UnitKind::Lancer, 9, 7),   // id 2: executioner
+        unit(0, UnitKind::Lancer, 10, 6),  // id 3: executioner
+        unit(0, UnitKind::Sentinel, 4, 6), // id 4: the victim
+    ])
+    .build()
+    .unwrap();
+    let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
+    let (bait, sniper, c1, c2, v) = (ids[0], ids[1], ids[2], ids[3], ids[4]);
+    state.tick(&[
+        cmd(
+            1,
+            Command::Attack {
+                units: vec![sniper],
+                target: Target::Unit(v),
+                queue: false,
+            },
+        ),
+        cmd(
+            0,
+            Command::Attack {
+                units: vec![c1, c2],
+                target: Target::Unit(bait),
+                queue: false,
+            },
+        ),
+    ]);
+    assert!(state.unit(bait).is_none(), "the bait died in the volley");
+    assert!(
+        matches!(
+            state.unit(v).unwrap().order,
+            Order::Attack { target: Target::Unit(t), .. } if t == sniper
+        ),
+        "the victim must abandon the corpse and answer the sniper, got {:?}",
+        state.unit(v).unwrap().order
+    );
+}
+
+#[test]
+fn same_tick_construction_cannot_absorb_a_lethal_hit() {
+    use oxide_sim::stats::BuildingKind;
+    // Chew a turret site to exactly the lancer's damage, then land the
+    // builder's resume and the lancer's shot on the same tick. The
+    // shooter aimed at a 30 hp site; one point of same-tick construction
+    // must not rescue it.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 4, 6),
+        unit(1, UnitKind::Sentinel, 12, 2),
+        // Parked at exactly 5.5 from the site's closest point: in firing
+        // range, outside auto-acquire — it must not chew early.
+        unit(1, UnitKind::Lancer, 11, 6),
+    ])
+    .build()
+    .unwrap();
+    let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
+    let (builder, chewer, sniper) = (ids[0], ids[1], ids[2]);
+    let anchor = TilePos::new(5, 6);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor,
+        },
+    )]);
+    let site = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == anchor)
+        .unwrap()
+        .id;
+    // Freeze construction at exactly 70 hp (the first ramp step is zero).
+    state.tick(&[cmd(
+        0,
+        Command::Stop {
+            units: vec![builder],
+        },
+    )]);
+    assert_eq!(state.building(site).unwrap().hp, 70);
+    // Four sentinel hits take it to exactly 30.
+    state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: vec![chewer],
+            target: Target::Building(site),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| {
+        s.building(site).is_some_and(|b| b.hp <= 30)
+    });
+    assert_eq!(state.building(site).unwrap().hp, 30, "clean 10s from 70");
+    state.tick(&[cmd(
+        1,
+        Command::Move {
+            units: vec![chewer],
+            goal: TilePos::new(13, 1),
+            queue: false,
+        },
+    )]);
+    // The finale: builder resumes and the lancer fires, same tick.
+    let mut events = state
+        .tick(&[
+            cmd(
+                0,
+                Command::Build {
+                    units: vec![builder],
+                    kind: BuildingKind::Turret,
+                    anchor,
+                },
+            ),
+            cmd(
+                1,
+                Command::Attack {
+                    units: vec![sniper],
+                    target: Target::Building(site),
+                    queue: false,
+                },
+            ),
+        ])
+        .events;
+    if state.building(site).is_some() {
+        events.extend(run_until(&mut state, 5, |s, _| s.building(site).is_none()));
+    }
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::BuildingDestroyed { .. })),
+        "a lethal hit must kill the site regardless of same-tick building"
+    );
+}
