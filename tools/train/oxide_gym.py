@@ -1,24 +1,24 @@
-"""Vectorized wrapper over `oxide-driver gym` subprocesses.
+"""Wrapper over `oxide-driver gym` subprocesses (protocol v2).
 
 Each worker is one driver process serving sequential episodes over
-stdio. Features arrive as raw integers (the Rust side is the source of
-truth for their meaning); `normalize` scales them to roughly [-1, 1]
-for the network. Rewards are terminal: +1 win, -1 loss, DRAW_REWARD at
-the tick cap — plus a tiny per-decision cost so faster wins score
-better.
+stdio. `control` picks the externally-driven seats: `(0,)` against a
+scripted tier, or `(0, 1)` for self-play/league — each frame then
+carries features and a mask per controlled seat. Features arrive as
+raw integers (the Rust side is the source of truth for their meaning);
+`normalize` scales them to roughly [-1, 1] for the network.
 """
 
 from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
-FEATURES = 28
+FEATURES = 32
 ACTIONS = 11
-GYM_VERSION = 1
+GYM_VERSION = 2
 
 DRAW_REWARD = -0.3
 STEP_COST = 1e-4
@@ -27,11 +27,13 @@ STEP_COST = 1e-4
 # layout). Order: tick, scrap, my H/S/Sc/L, turrets, fab, foundry hp,
 # idle fighters, armies, staging size, army state, enemy H/S/Sc/L,
 # enemy buildings, enemy turrets, enemy foundry known, my strength,
-# army strength, enemy strength, home x/y, enemy x/y, intel age.
+# army strength, enemy strength, home x/y, enemy x/y, intel age,
+# remembered enemy strength, ticks since enemy seen, last seen x/y.
 SCALES = np.array(
     [
         40_000, 500, 8, 20, 10, 10, 4, 1, 800, 20, 4, 20, 4,
         8, 20, 10, 10, 8, 4, 1, 500, 500, 500, 48, 32, 48, 32, 10_000,
+        500, 10_000, 48, 32,
     ],
     dtype=np.float32,
 )
@@ -43,14 +45,24 @@ def normalize(features: list[int]) -> np.ndarray:
 
 
 @dataclass
-class StepResult:
-    obs: np.ndarray | None
-    mask: np.ndarray | None
-    reward: float
+class SeatView:
+    obs: np.ndarray
+    mask: np.ndarray
+    raw: list[int]
+
+
+@dataclass
+class Frame:
     done: bool
-    win: bool | None
-    ticks: int
-    raw: list[int] | None = None
+    tick: int
+    winner: int | None = None  # seat number, or None for a draw/cap
+    seats: dict[int, SeatView] = field(default_factory=dict)
+
+    def reward(self, seat: int) -> float:
+        """Terminal reward for `seat` (call when done)."""
+        if self.winner is None:
+            return DRAW_REWARD
+        return 1.0 if self.winner == seat else -1.0
 
 
 class Worker:
@@ -70,37 +82,44 @@ class Worker:
         if hello["version"] != GYM_VERSION or hello["features"] != FEATURES:
             raise RuntimeError(f"gym contract mismatch: {hello}")
 
-    def _rpc(self, request: dict) -> dict:
+    def _rpc(self, request: dict) -> Frame:
         self.proc.stdin.write(json.dumps(request) + "\n")
         reply = json.loads(self.proc.stdout.readline())
         if "error" in reply:
             raise RuntimeError(reply["error"])
-        return reply
-
-    def reset(self, seed: int, seat: int, tier: str, max_ticks: int = 40_000) -> StepResult:
-        reply = self._rpc(
-            {"cmd": "reset", "seed": seed, "seat": seat, "tier": tier, "max_ticks": max_ticks}
-        )
-        return self._wrap(reply)
-
-    def step(self, action: int) -> StepResult:
-        return self._wrap(self._rpc({"cmd": "step", "action": int(action)}))
-
-    @staticmethod
-    def _wrap(reply: dict) -> StepResult:
         if reply["done"]:
-            win = reply["win"]
-            reward = 1.0 if win is True else -1.0 if win is False else DRAW_REWARD
-            return StepResult(None, None, reward, True, win, reply["tick"])
-        return StepResult(
-            normalize(reply["features"]),
-            np.asarray(reply["mask"], dtype=bool),
-            -STEP_COST,
-            False,
-            None,
-            reply["tick"],
-            raw=reply["features"],
+            return Frame(True, reply["tick"], reply["winner"])
+        frame = Frame(False, reply["tick"])
+        for s in reply["seats"]:
+            frame.seats[s["seat"]] = SeatView(
+                normalize(s["features"]),
+                np.asarray(s["mask"], dtype=bool),
+                s["features"],
+            )
+        return frame
+
+    def reset(
+        self,
+        seed: int,
+        control: tuple[int, ...] = (0,),
+        tier: str = "veteran",
+        max_ticks: int = 40_000,
+    ) -> Frame:
+        self.control = control
+        return self._rpc(
+            {
+                "cmd": "reset",
+                "seed": seed,
+                "control": list(control),
+                "tier": tier,
+                "max_ticks": max_ticks,
+            }
         )
+
+    def step(self, actions: dict[int, int]) -> Frame:
+        """Actions keyed by seat (must cover every controlled seat)."""
+        ordered = [int(actions[s]) for s in self.control]
+        return self._rpc({"cmd": "step", "actions": ordered})
 
     def close(self):
         try:

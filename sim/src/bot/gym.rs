@@ -24,7 +24,7 @@ use chassis::grid::TilePos;
 
 /// Bump when actions or features change shape — recorded checkpoints
 /// and shipped weights must refuse mismatched worlds.
-pub const GYM_VERSION: u32 = 1;
+pub const GYM_VERSION: u32 = 2;
 
 /// The macro menu, one action per think.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,7 +58,7 @@ pub enum Action {
 pub const ACTION_COUNT: usize = 11;
 
 /// Number of entries in the feature vector.
-pub const FEATURE_COUNT: usize = 28;
+pub const FEATURE_COUNT: usize = 32;
 
 impl Action {
     /// Decodes a policy's choice; out-of-range folds to Idle (the
@@ -88,6 +88,12 @@ pub struct GymBot {
     dials: Dials,
     policy: UtilityPolicy,
     exec: Executive,
+    /// Fog memory (bot-local, legitimate): the last enemy army this bot
+    /// actually saw. Without it a policy forgets an army the moment it
+    /// breaks line of sight — no reactive play survives that amnesia.
+    seen_strength: u64,
+    seen_at: u64,
+    seen_pos: Option<TilePos>,
 }
 
 /// What the world looks like at a decision point.
@@ -108,6 +114,9 @@ impl GymBot {
             dials: Dials::full(),
             policy: UtilityPolicy::new(),
             exec: Executive::default(),
+            seen_strength: 0,
+            seen_at: 0,
+            seen_pos: None,
         }
     }
 
@@ -116,9 +125,16 @@ impl GymBot {
         self.dials.cadence
     }
 
-    /// Features and action mask at the current tick, oriented.
-    pub fn decision(&self, state: &State) -> Decision {
+    /// The player this bot drives.
+    pub fn player(&self) -> PlayerId {
+        self.player
+    }
+
+    /// Features and action mask at the current tick, oriented. Also
+    /// refreshes the fog memory (idempotent at a given tick).
+    pub fn decision(&mut self, state: &State) -> Decision {
         let (obs, orientation) = self.observe(state);
+        self.remember(&obs);
         let obs = orientation.observe(&obs);
         let home = home_tile(&obs);
         let armies: Vec<_> = self
@@ -185,6 +201,12 @@ impl GymBot {
                 .sum::<u64>()) as i64
             / 100;
         let intel_age = self.policy.intel_age(obs.tick).min(10_000) as i64;
+        let seen_pos = self.seen_pos.map(|p| orientation.tile(p));
+        let seen_age: i64 = if self.seen_at == 0 && self.seen_strength == 0 {
+            10_000
+        } else {
+            obs.tick.saturating_sub(self.seen_at).min(10_000) as i64
+        };
 
         let features: [i64; FEATURE_COUNT] = [
             obs.tick as i64,
@@ -230,6 +252,10 @@ impl GymBot {
             enemy_site.map_or(-1, |s| i64::from(s.x)),
             enemy_site.map_or(-1, |s| i64::from(s.y)),
             intel_age,
+            (self.seen_strength / 100) as i64,
+            seen_age,
+            seen_pos.map_or(-1, |p| i64::from(p.x)),
+            seen_pos.map_or(-1, |p| i64::from(p.y)),
         ];
 
         let mut mask = [false; ACTION_COUNT];
@@ -429,6 +455,31 @@ impl GymBot {
                 kind,
             });
         }
+    }
+
+    /// Updates fog memory from a world-space observation: while any
+    /// enemy fighter is visible, the remembered army is what's visible
+    /// now (strength and centroid tile); the timestamp freezes when
+    /// sight is lost.
+    fn remember(&mut self, world: &Observation) {
+        let fighters: Vec<_> = world
+            .enemy_units
+            .iter()
+            .filter(|u| u.kind.stats().attack.is_some())
+            .collect();
+        if fighters.is_empty() {
+            return;
+        }
+        self.seen_strength = fighters
+            .iter()
+            .map(|u| super::executive::unit_strength(u))
+            .sum();
+        self.seen_at = world.tick;
+        let n = fighters.len() as i64;
+        let (sx, sy) = fighters.iter().fold((0i64, 0i64), |(sx, sy), u| {
+            (sx + i64::from(u.tile.x), sy + i64::from(u.tile.y))
+        });
+        self.seen_pos = Some(TilePos::new((sx / n) as i32, (sy / n) as i32));
     }
 
     fn observe(&self, state: &State) -> (Observation, Orientation) {

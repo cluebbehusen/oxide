@@ -20,8 +20,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from models import make_policy, save_policy
 from oxide_gym import Worker
-from train import Policy
 
 # Action indices (see sim/src/bot/gym.rs).
 IDLE, TRAIN_H, TRAIN_S = 0, 1, 2
@@ -49,6 +49,7 @@ def main():
     ap.add_argument("--episodes", type=int, default=40)
     ap.add_argument("--tier", default="scrapheap")
     ap.add_argument("--epochs", type=int, default=20)
+    ap.add_argument("--arch", default="mlp")
     ap.add_argument("--out", default="runs/bc.pt")
     args = ap.parse_args()
 
@@ -58,14 +59,15 @@ def main():
     try:
         for ep in range(args.episodes):
             seat = ep % 2
-            r = worker.reset(20_000 + ep, seat, args.tier)
-            while not r.done:
-                a = teacher(r.raw, r.mask, r.ticks)
-                obs_all.append(r.obs)
-                mask_all.append(r.mask)
+            frame = worker.reset(20_000 + ep, control=(seat,), tier=args.tier)
+            while not frame.done:
+                view = frame.seats[seat]
+                a = teacher(view.raw, view.mask, frame.tick)
+                obs_all.append(view.obs)
+                mask_all.append(view.mask)
                 act_all.append(a)
-                r = worker.step(a)
-            wins += 1 if r.win else 0
+                frame = worker.step({seat: a})
+            wins += 1 if frame.winner == seat else 0
         print(f"teacher: {wins}/{args.episodes} wins vs {args.tier}")
     finally:
         worker.close()
@@ -73,7 +75,7 @@ def main():
     obs = torch.as_tensor(np.stack(obs_all))
     mask = torch.as_tensor(np.stack(mask_all))
     act = torch.as_tensor(np.asarray(act_all))
-    policy = Policy()
+    policy = make_policy(args.arch)
     opt = torch.optim.Adam(policy.parameters(), lr=1e-3)
     n = len(act)
     for epoch in range(args.epochs):
@@ -89,7 +91,7 @@ def main():
             total += float(loss.detach()) * len(mb)
         print(f"epoch {epoch}: loss {total / n:.4f}")
     pathlib.Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    torch.save(policy.state_dict(), args.out)
+    save_policy(policy, args.arch, args.out)
     print(f"saved {args.out} ({n} samples)")
 
 
