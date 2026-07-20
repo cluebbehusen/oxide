@@ -18,10 +18,12 @@ pub mod brain;
 pub mod classic;
 pub mod executive;
 pub mod observation;
+pub mod orient;
 pub mod utility;
 
 pub use brain::Brain;
 pub use classic::Bot;
 pub use executive::{Army, ArmyId, ArmyState, Executive, Intent};
 pub use observation::{BuildingObs, Observation, UnitObs};
+pub use orient::Orientation;
 pub use utility::{Dials, UtilityPolicy};

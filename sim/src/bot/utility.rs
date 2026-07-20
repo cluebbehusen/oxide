@@ -17,7 +17,7 @@
 //! Deterministic given (dials, observation, executive): every selection
 //! orders by an explicit key ending in an id or (y, x).
 
-use super::executive::{ArmyState, Executive, Intent};
+use super::executive::{Army, ArmyState, Intent};
 use super::observation::{Observation, UnitObs};
 use crate::ids::UnitId;
 use crate::stats::{BuildingKind, UnitKind};
@@ -121,8 +121,16 @@ impl UtilityPolicy {
 
     /// One think: intents for this observation, in lowering order
     /// (economy, production, construction, scouting, army — scouts are
-    /// claimed before the draft can grab them).
-    pub fn think(&mut self, dials: &Dials, obs: &Observation, exec: &Executive) -> Vec<Intent> {
+    /// claimed before the draft can grab them). `armies` and `enlisted`
+    /// are the executive's bookkeeping, pre-oriented by the caller when
+    /// the policy thinks in flipped space.
+    pub fn think(
+        &mut self,
+        dials: &Dials,
+        obs: &Observation,
+        armies: &[Army],
+        enlisted: &[UnitId],
+    ) -> Vec<Intent> {
         let mut intents = Vec::new();
         let mut budget = obs.scrap;
 
@@ -139,7 +147,6 @@ impl UtilityPolicy {
         self.audit_harvests(obs);
         self.audit_sites(obs);
         self.audit_raids(obs);
-        let enlisted: Vec<UnitId> = exec.enlisted().collect();
 
         self.economy(obs, home_tile, &mut intents);
         self.production(dials, obs, &mut budget, &mut intents);
@@ -153,9 +160,9 @@ impl UtilityPolicy {
             .filter(|u| u.kind == UnitKind::Harvester)
             .count();
         if dials.scouting && harvesters >= dials.harvester_target as usize {
-            self.scouting(obs, home_tile, &enlisted, &mut intents);
+            self.scouting(obs, home_tile, enlisted, &mut intents);
         }
-        self.army(dials, obs, exec, home_tile, &enlisted, &mut intents);
+        self.army(dials, obs, armies, home_tile, &mut intents);
         intents
     }
 
@@ -531,9 +538,8 @@ impl UtilityPolicy {
         &mut self,
         dials: &Dials,
         obs: &Observation,
-        exec: &Executive,
+        armies: &[Army],
         home: TilePos,
-        _enlisted: &[UnitId],
         intents: &mut Vec<Intent>,
     ) {
         // Rally: reinforce the army already staging (there is at most one
@@ -554,8 +560,7 @@ impl UtilityPolicy {
                     .min()
                     .map(|(_, y, x)| TilePos::new(x, y))
             });
-        let staging_army = exec
-            .armies()
+        let staging_army = armies
             .iter()
             .filter(|a| a.state == ArmyState::Staging)
             .min_by_key(|a| a.id);
@@ -580,7 +585,7 @@ impl UtilityPolicy {
             .min()
             .map(|(_, y, x, _)| TilePos::new(x, y));
         if let Some(threat) = intruder {
-            for army in exec.armies() {
+            for army in armies {
                 // Re-target only when the threat has really moved: churning
                 // fresh attack-moves every think as it shifts a tile keeps
                 // interrupting members mid-swing — auto-acquire handles
@@ -636,7 +641,13 @@ impl UtilityPolicy {
         let sentinel_worth = u64::from(sentinel.max_hp)
             * (u64::from(atk.damage) * 100 / u64::from(atk.cooldown_ticks));
         let floor = if intel_fresh { 2 } else { 5 } * sentinel_worth;
-        let gate_open = army_strength >= enemy_strength.max(floor) * 2;
+        // Patience decays the demanded margin from 2.0× down to 1.0×
+        // over the match: two flawless defenders would otherwise wait
+        // forever for an edge neither can get, and a fair fight taken
+        // late beats a stalemate never resolved.
+        let patience = (obs.tick / 4000).min(4);
+        let (margin_num, margin_den) = (8 - patience, 4u64);
+        let gate_open = army_strength * margin_den >= enemy_strength.max(floor) * margin_num;
 
         let members = staging_army.map(|a| a.members.len()).unwrap_or(0);
         let target_size = if gate_open {

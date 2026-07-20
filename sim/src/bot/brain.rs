@@ -9,6 +9,7 @@
 
 use super::executive::Executive;
 use super::observation::Observation;
+use super::orient::Orientation;
 use super::utility::{Dials, UtilityPolicy};
 use crate::command::PlayerCommand;
 use crate::ids::PlayerId;
@@ -78,7 +79,22 @@ impl Brain {
             .map(|b| b.anchor)
             .unwrap_or(TilePos::new(0, 0));
         let mut commands = self.exec.maintain(self.player, &obs, rear);
-        let intents = self.policy.think(&self.dials, &obs, &self.exec);
+        // The policy thinks in seat-oriented space (see [`Orientation`]):
+        // the same logic runs for both seats, so its compass-flavored
+        // tie-breaks cannot systematically favor either one.
+        let orientation = Orientation::for_home(&obs, rear);
+        let oriented = orientation.observe(&obs);
+        let armies: Vec<_> = self
+            .exec
+            .armies()
+            .iter()
+            .map(|a| orientation.army(a.clone()))
+            .collect();
+        let enlisted: Vec<_> = self.exec.enlisted().collect();
+        let intents = self
+            .policy
+            .think(&self.dials, &oriented, &armies, &enlisted);
+        let intents = orientation.emit(intents);
         commands.extend(self.exec.apply(self.player, &obs, &intents));
         commands
     }
