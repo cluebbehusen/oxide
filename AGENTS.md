@@ -128,9 +128,11 @@ and test fixtures inside crate `tests/` directories.
 - **Conventional commits** (`feat(sim): …`, `fix(shell): …`, `docs: …`).
   Since 0.4.1 the repo lives at github.com/cluebbehusen/oxide and each
   version is developed on a branch (`0.5`, `0.6`, …) merged to `main` by
-  PR; phase commits land on the version branch. Commits are signed (SSH
-  key via ssh-agent — run `ssh-add --apple-use-keychain` after a reboot
-  if signing starts failing).
+  PR — **main takes no direct commits**. Commits are signed (SSH key via
+  ssh-agent — run `ssh-add --apple-use-keychain` after a reboot if
+  signing starts failing). GitHub Actions are pinned to full commit SHAs
+  with a version comment (`uses: owner/action@<sha> # vX.Y.Z`); resolve
+  tags with `gh api repos/OWNER/REPO/commits/TAG --jq .sha`.
 - **Idiomatic Rust.** rustfmt defaults, clippy clean, `missing_docs` warns
   in the library crates. Comments state constraints, not narration.
 - **Assets are generated.** Sprites: `tools/gen_sprites.py` (palette at
@@ -170,6 +172,18 @@ and test fixtures inside crate `tests/` directories.
   workers take `ANCHORED_PUSH_SHARE` of pair separation so crowds flow
   around them, and collision applies pairs Gauss-Seidel-style in id order —
   symmetric cancellation once froze the whole economy.
+- **Orders are programs since 0.5**: every unit carries a bounded queue
+  plus a looping flag; completion pops (or rotates — that's patrol),
+  stalls drop the whole program with `OrderStalled`, plain orders replace
+  it wholesale. Patrol legs are attack-moves and never settle.
+- **Damage answers back**: a hit unit that can fight and isn't already
+  fighting turns on its attacker (units *and* turrets) — the counter to
+  range beyond aggro. Inside aggro, auto-acquire already covered it.
+- **Construction claims ground instantly**: full price on placement, a
+  fifth of max hp standing, blind and inert until built. Progress needs
+  an adjacent builder; orphaned sites freeze and any own harvester can
+  resume them. Cancel refunds `cost × hp / max_hp`. One predicate —
+  `State::can_place` — serves sim validation and the shell's ghost.
 - **Fog of war enforces exactly one thing in the sim**: targeted attacks
   need the issuer to *see* the victim. Rendering honors fog fully
   (unexplored void, explored dim, unseen enemies culled) but the debug

@@ -60,6 +60,9 @@ fn serde_roundtrip_mid_run_continues_identically() {
     // Snapshot through JSON — the same path a debug-socket save would take.
     let json = serde_json::to_string(&original).unwrap();
     let mut restored: State = serde_json::from_str(&json).unwrap();
+    restored
+        .validate_invariants()
+        .expect("snapshot is coherent");
     assert_eq!(
         original.hash(),
         restored.hash(),

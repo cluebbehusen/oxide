@@ -335,10 +335,54 @@ impl State {
         &self.players[id.0 as usize]
     }
 
+    /// Fallible sibling of [`State::player`], for callers holding ids from
+    /// outside the sim (protocol traffic, tooling).
+    pub fn try_player(&self, id: PlayerId) -> Option<&Player> {
+        self.players.get(id.0 as usize)
+    }
+
     /// A player's fog-of-war view. Panics on a foreign id, like
     /// [`State::player`].
     pub fn vision(&self, id: PlayerId) -> &crate::vision::Vision {
         &self.vision[id.0 as usize]
+    }
+
+    /// Fallible sibling of [`State::vision`].
+    pub fn try_vision(&self, id: PlayerId) -> Option<&crate::vision::Vision> {
+        self.vision.get(id.0 as usize)
+    }
+
+    /// Checks the structural invariants deserialization alone cannot: unit
+    /// and building lists sorted by id with the id counters ahead of every
+    /// live id, and per-player tables sized to the player list. `State`
+    /// implements `Deserialize` for tooling and tests; anything loading a
+    /// snapshot from outside the sim must call this before ticking it —
+    /// a hand-edited snapshot that skips it can violate every invariant
+    /// the tick pipeline assumes.
+    pub fn validate_invariants(&self) -> Result<(), String> {
+        if self.players.is_empty() {
+            return Err("no players".into());
+        }
+        if !self.units.windows(2).all(|w| w[0].id < w[1].id) {
+            return Err("units not strictly sorted by id".into());
+        }
+        if !self.buildings.windows(2).all(|w| w[0].id < w[1].id) {
+            return Err("buildings not strictly sorted by id".into());
+        }
+        if let Some(u) = self.units.last()
+            && u.id.0 >= self.next_unit_id
+        {
+            return Err("unit id counter behind a live unit".into());
+        }
+        if let Some(b) = self.buildings.last()
+            && b.id.0 >= self.next_building_id
+        {
+            return Err("building id counter behind a live building".into());
+        }
+        if self.vision.len() != self.players.len() {
+            return Err("vision table does not match the player list".into());
+        }
+        Ok(())
     }
 
     /// Whether `player` currently sees `pos`.
