@@ -44,21 +44,15 @@ fn ladder_rung(
     (hi_wins, lo_wins, draws)
 }
 
-/// The cheap always-on gate: two seeds, both seats — the omniscient
-/// rungs must order strictly. Prime's rung is deliberately absent: at
-/// equal scripted skill, honest eyes lose to omniscience (measured
-/// 4-16 vs Standard, 3-17 vs Veteran over ten seat-swapped seed pairs),
-/// because seeing true totals means timing every push perfectly. How
-/// the ladder's top should be shaped around that finding is an open
-/// 0.7 design question — the ignored measurement below keeps the
-/// numbers honest meanwhile.
+/// The cheap always-on gate: two seeds, both seats, every adjacent
+/// rung — the higher tier must win strictly more than it loses. With
+/// every tier fog-honest this holds all the way up (the full ten-seed
+/// measurement below reads 20-0 per rung); mixing honest and
+/// omniscient rungs is what used to break it.
 #[test]
-fn the_ladder_relations_hold() {
-    let rungs = [
-        (Difficulty::Standard, Difficulty::Scrapheap),
-        (Difficulty::Veteran, Difficulty::Standard),
-    ];
-    for (hi, lo) in rungs {
+fn each_tier_beats_the_one_below() {
+    for pair in Difficulty::LADDER.windows(2) {
+        let (lo, hi) = (pair[0], pair[1]);
         let (hi_wins, lo_wins, draws) = ladder_rung(hi, lo, 1..=2);
         assert!(
             hi_wins > lo_wins,
@@ -71,13 +65,8 @@ fn the_ladder_relations_hold() {
 #[test]
 #[ignore]
 fn measure_tier_ladder() {
-    let rungs = [
-        (Difficulty::Standard, Difficulty::Scrapheap),
-        (Difficulty::Veteran, Difficulty::Standard),
-        (Difficulty::Prime, Difficulty::Standard),
-        (Difficulty::Prime, Difficulty::Veteran),
-    ];
-    for (hi, lo) in rungs {
+    for pair in Difficulty::LADDER.windows(2) {
+        let (lo, hi) = (pair[0], pair[1]);
         let (hi_wins, lo_wins, draws) = ladder_rung(hi, lo, 1..=10);
         println!("{hi:?} vs {lo:?}: {hi_wins}-{lo_wins}, {draws} draws");
     }
