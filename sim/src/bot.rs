@@ -93,6 +93,7 @@ impl Bot {
                 commands.push(self.cmd(Command::Harvest {
                     units: vec![unit.id],
                     node,
+                    queue: false,
                 }));
             }
         }
@@ -158,6 +159,7 @@ impl Bot {
                 commands.push(self.cmd(Command::Attack {
                     units: defenders,
                     target: Target::Unit(intruder),
+                    queue: false,
                 }));
             }
             return commands;
@@ -192,6 +194,7 @@ impl Bot {
                 commands.push(self.cmd(Command::AttackMove {
                     units: idle_sentinels,
                     goal,
+                    queue: false,
                 }));
             }
         }

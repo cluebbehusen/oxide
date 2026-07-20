@@ -128,3 +128,36 @@ fn bot_match_reaches_a_decisive_end() {
     // Sanity: a real game happened — armies were built beyond the 8 starters.
     assert!(state.units().iter().any(|u| u.id.0 >= 8));
 }
+
+#[test]
+fn serde_roundtrip_preserves_queued_programs() {
+    // Non-empty queues serialize through skip-if-default fields — a shape
+    // no 0.4 state ever had. A mid-patrol snapshot must survive losslessly
+    // and keep ticking identically.
+    use chassis::grid::TilePos;
+    use oxide_sim::{Command, PlayerCommand, PlayerId};
+    let mut state = Scenario::skirmish().build().unwrap();
+    let movers: Vec<_> = state.units().iter().map(|u| u.id).collect();
+    state.tick(&[PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Patrol {
+            units: movers,
+            waypoints: vec![TilePos::new(10, 10), TilePos::new(14, 6)],
+        },
+    }]);
+    for _ in 0..100 {
+        state.tick(&[]);
+    }
+    assert!(
+        state.units().iter().any(|u| u.looping),
+        "test premise: someone is patrolling"
+    );
+    let json = serde_json::to_string(&state).unwrap();
+    let mut restored: State = serde_json::from_str(&json).unwrap();
+    assert_eq!(state.hash(), restored.hash(), "roundtrip must be lossless");
+    for _ in 0..100 {
+        state.tick(&[]);
+        restored.tick(&[]);
+    }
+    assert_eq!(state.hash(), restored.hash());
+}

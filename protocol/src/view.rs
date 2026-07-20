@@ -94,6 +94,16 @@ pub struct UnitView {
     pub carrying: u32,
     /// Current intent, as the sim's own tagged serialization.
     pub order: Order,
+    /// Orders waiting behind the active one.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub queued: usize,
+    /// Whether the queue loops (a patrol circuit).
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub patrolling: bool,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// One building.
@@ -210,6 +220,8 @@ fn unit_view(u: &Unit) -> UnitView {
         hp: u.hp,
         carrying: u.carrying,
         order: u.order,
+        queued: u.queue.len(),
+        patrolling: u.looping,
     }
 }
 

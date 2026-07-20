@@ -133,6 +133,9 @@ enum LiveCmd {
         /// Goal as "x,y".
         #[arg(long)]
         to: String,
+        /// Append behind current orders instead of replacing them.
+        #[arg(long)]
+        queue: bool,
     },
     /// Resume a session from a replay file (fast-forwards, keeps recording).
     LoadReplay {
@@ -149,6 +152,20 @@ enum LiveCmd {
         /// Goal as "x,y".
         #[arg(long)]
         to: String,
+        /// Append behind current orders instead of replacing them.
+        #[arg(long)]
+        queue: bool,
+    },
+    /// Walk units on a looping circuit, engaging everything met.
+    Patrol {
+        /// Acting player index.
+        player: u8,
+        /// Unit ids, comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        units: Vec<u32>,
+        /// Waypoint as "x,y"; repeat for each stop on the circuit.
+        #[arg(long = "via")]
+        via: Vec<String>,
     },
     /// Attack an enemy unit.
     AttackUnit {
@@ -160,6 +177,9 @@ enum LiveCmd {
         /// Victim unit id.
         #[arg(long)]
         target: u32,
+        /// Append behind current orders instead of replacing them.
+        #[arg(long)]
+        queue: bool,
     },
     /// Attack an enemy building.
     AttackBuilding {
@@ -171,6 +191,9 @@ enum LiveCmd {
         /// Victim building id.
         #[arg(long)]
         target: u32,
+        /// Append behind current orders instead of replacing them.
+        #[arg(long)]
+        queue: bool,
     },
     /// Put harvesters on a scrap node.
     Harvest {
@@ -182,6 +205,9 @@ enum LiveCmd {
         /// Node tile as "x,y".
         #[arg(long)]
         node: String,
+        /// Append behind current orders instead of replacing them.
+        #[arg(long)]
+        queue: bool,
     },
     /// Queue a unit at a Foundry.
     Train {
@@ -366,6 +392,7 @@ fn parse_key(s: &str) -> Result<Key> {
         "s" => Key::S,
         "a" => Key::A,
         "p" => Key::P,
+        "r" => Key::R,
         "enter" | "return" => Key::Enter,
         "escape" | "esc" => Key::Escape,
         "space" => Key::Space,
@@ -408,22 +435,40 @@ fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
             player,
             units: ids,
             to,
+            queue,
         } => Request::SendCommand {
             player: PlayerId(player),
             command: Command::Move {
                 units: units(ids),
                 goal: parse_tile(&to)?,
+                queue,
+            },
+        },
+        LiveCmd::Patrol {
+            player,
+            units: ids,
+            via,
+        } => Request::SendCommand {
+            player: PlayerId(player),
+            command: Command::Patrol {
+                units: units(ids),
+                waypoints: via
+                    .iter()
+                    .map(|w| parse_tile(w))
+                    .collect::<Result<Vec<_>>>()?,
             },
         },
         LiveCmd::AttackMove {
             player,
             units: ids,
             to,
+            queue,
         } => Request::SendCommand {
             player: PlayerId(player),
             command: Command::AttackMove {
                 units: units(ids),
                 goal: parse_tile(&to)?,
+                queue,
             },
         },
         LiveCmd::LoadReplay { path } => Request::LoadReplay { path },
@@ -431,33 +476,39 @@ fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
             player,
             units: ids,
             target,
+            queue,
         } => Request::SendCommand {
             player: PlayerId(player),
             command: Command::Attack {
                 units: units(ids),
                 target: Target::Unit(UnitId(target)),
+                queue,
             },
         },
         LiveCmd::AttackBuilding {
             player,
             units: ids,
             target,
+            queue,
         } => Request::SendCommand {
             player: PlayerId(player),
             command: Command::Attack {
                 units: units(ids),
                 target: Target::Building(BuildingId(target)),
+                queue,
             },
         },
         LiveCmd::Harvest {
             player,
             units: ids,
             node,
+            queue,
         } => Request::SendCommand {
             player: PlayerId(player),
             command: Command::Harvest {
                 units: units(ids),
                 node: parse_tile(&node)?,
+                queue,
             },
         },
         LiveCmd::Train {

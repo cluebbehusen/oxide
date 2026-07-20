@@ -124,6 +124,14 @@ pub struct Unit {
     pub progress: u32,
     /// Current intent.
     pub order: Order,
+    /// Orders waiting behind the active one; completing the active order
+    /// pops the front. With [`Unit::looping`] set, the finished order
+    /// rotates to the back instead — that cycle is a patrol.
+    #[serde(default, skip_serializing_if = "std::collections::VecDeque::is_empty")]
+    pub queue: std::collections::VecDeque<Order>,
+    /// Whether the queue cycles (patrol) instead of draining.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub looping: bool,
     /// Current walk, if any.
     pub path: Option<PathFollow>,
 }
@@ -132,6 +140,31 @@ impl Unit {
     /// The tile this unit currently occupies.
     pub fn tile(&self) -> TilePos {
         TilePos::containing(self.pos)
+    }
+
+    /// Ends the active order cleanly: a looping program rotates it to the
+    /// back (patrol), a plain queue drains, an empty queue idles.
+    pub(crate) fn advance_queue(&mut self) {
+        let finished = std::mem::replace(&mut self.order, Order::Idle);
+        if self.looping {
+            self.queue.push_back(finished);
+        }
+        match self.queue.pop_front() {
+            Some(next) => self.order = next,
+            None => self.looping = false,
+        }
+        self.path = None;
+        self.progress = 0;
+    }
+
+    /// Abandons the whole program: a stalled or overridden order never
+    /// half-continues its queue.
+    pub(crate) fn clear_program(&mut self) {
+        self.order = Order::Idle;
+        self.queue.clear();
+        self.looping = false;
+        self.path = None;
+        self.progress = 0;
     }
 }
 
@@ -360,6 +393,8 @@ impl State {
             cooldown: 0,
             progress: 0,
             order: Order::Idle,
+            queue: std::collections::VecDeque::new(),
+            looping: false,
             path: None,
         });
         id

@@ -143,6 +143,10 @@ pub const RICH_SCRAP_NODE_AMOUNT: u32 = 800;
 /// Maximum queued units per Foundry.
 pub const QUEUE_CAP: usize = 5;
 
+/// Maximum orders (and patrol waypoints) queued per unit. Bounds what a
+/// hostile append stream can make a unit remember.
+pub const ORDER_QUEUE_CAP: usize = 32;
+
 /// A* expansion budget per query — bounds worst-case pathfinding work.
 pub const PATH_EXPANSION_CAP: u32 = 20_000;
 

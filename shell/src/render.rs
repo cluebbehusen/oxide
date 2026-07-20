@@ -41,9 +41,73 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     } else {
         draw_fog(game);
     }
+    draw_breadcrumbs(game, input);
     draw_drag_rect(game, input);
     draw_hud(game);
     draw_minimap(game);
+}
+
+/// Queued waypoints of the selection, drawn as a faint chain; a patrol
+/// closes the loop. While arming a patrol (`R`), the collected route
+/// draws in scrap-amber instead.
+fn draw_breadcrumbs(game: &Game, input: &InputState) {
+    let dot = |p: Vec2, color: Color| draw_circle(p.x, p.y, 3.0, color);
+    if let Some(route) = &input.patrol_route {
+        let mut prev: Option<Vec2> = None;
+        for tile in route {
+            let p = game
+                .camera
+                .to_screen(vec2(tile.x as f32 + 0.5, tile.y as f32 + 0.5));
+            if let Some(a) = prev {
+                draw_line(a.x, a.y, p.x, p.y, 1.5, SCRAP_COLOR);
+            }
+            dot(p, SCRAP_COLOR);
+            prev = Some(p);
+        }
+        return;
+    }
+    for id in &game.selection.units {
+        let Some(unit) = game.state.unit(*id) else {
+            continue;
+        };
+        let goal_of = |order: &oxide_sim::Order| match order {
+            oxide_sim::Order::Move { goal } | oxide_sim::Order::AttackMove { goal } => Some(*goal),
+            oxide_sim::Order::Harvest { node } => Some(*node),
+            _ => None,
+        };
+        let mut points: Vec<Vec2> = Vec::new();
+        if let Some(g) = goal_of(&unit.order) {
+            points.push(
+                game.camera
+                    .to_screen(vec2(g.x as f32 + 0.5, g.y as f32 + 0.5)),
+            );
+        }
+        for order in &unit.queue {
+            if let Some(g) = goal_of(order) {
+                points.push(
+                    game.camera
+                        .to_screen(vec2(g.x as f32 + 0.5, g.y as f32 + 0.5)),
+                );
+            }
+        }
+        if points.is_empty() {
+            continue;
+        }
+        let start = game
+            .camera
+            .to_screen(vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>()));
+        let mut prev = start;
+        for p in &points {
+            draw_line(prev.x, prev.y, p.x, p.y, 1.0, BONE_FAINT);
+            dot(*p, BONE_FAINT);
+            prev = *p;
+        }
+        // A patrol is a circuit: close it.
+        if unit.looping && points.len() > 1 {
+            let first = points[0];
+            draw_line(prev.x, prev.y, first.x, first.y, 1.0, BONE_FAINT);
+        }
+    }
 }
 
 const FOG_UNEXPLORED: Color = color_u8!(13, 13, 17, 255);

@@ -87,6 +87,7 @@ fn move_command_walks_unit_to_goal_then_idles() {
         Command::Move {
             units: vec![mover],
             goal,
+            queue: false,
         },
     )]);
     run_until(&mut state, 200, |s, _| {
@@ -108,6 +109,7 @@ fn move_routes_around_rock() {
         Command::Move {
             units: vec![mover],
             goal,
+            queue: false,
         },
     )]);
     run_until(&mut state, 300, |s, _| {
@@ -126,6 +128,7 @@ fn move_goal_on_rock_snaps_to_nearby_ground() {
         Command::Move {
             units: vec![mover],
             goal: TilePos::new(6, 3), // rock
+            queue: false,
         },
     )]);
     run_until(&mut state, 300, |s, _| {
@@ -146,6 +149,7 @@ fn harvester_gathers_and_deposits() {
         Command::Harvest {
             units: vec![worker],
             node: TilePos::new(11, 4),
+            queue: false,
         },
     )]);
     // Walk there (~10 tiles), extract 10 scrap (100 ticks), walk home, drop.
@@ -178,6 +182,7 @@ fn attack_command_kills_and_reports() {
             Command::Attack {
                 units: vec![attacker],
                 target: Target::Unit(victim),
+                queue: false,
             },
         )])
         .events;
@@ -236,6 +241,7 @@ fn attack_move_engages_on_the_way_then_resumes() {
         Command::AttackMove {
             units: vec![marcher],
             goal,
+            queue: false,
         },
     )]);
     run_until(&mut state, 400, |s, _| s.unit(bystander).is_none());
@@ -257,6 +263,7 @@ fn attack_move_with_only_harvesters_degrades_to_move() {
         Command::AttackMove {
             units: vec![mover],
             goal,
+            queue: false,
         },
     )]);
     assert!(matches!(
@@ -286,6 +293,7 @@ fn units_ordered_to_one_tile_do_not_stack() {
         Command::Move {
             units: ids,
             goal: TilePos::new(8, 4),
+            queue: false,
         },
     )]);
     for _ in 0..300 {
@@ -327,6 +335,7 @@ fn collision_never_pushes_through_rock() {
         Command::Move {
             units: ids,
             goal: TilePos::new(5, 3),
+            queue: false,
         },
     )]);
     for _ in 0..200 {
@@ -363,6 +372,7 @@ fn congested_harvesters_keep_depositing() {
         Command::Harvest {
             units: ids,
             node: TilePos::new(11, 4),
+            queue: false,
         },
     )]);
 
@@ -458,6 +468,7 @@ fn rock_is_cover_until_the_attacker_repositions() {
             Command::Attack {
                 units: vec![attacker],
                 target: Target::Unit(victim),
+                queue: false,
             },
         )])
         .events;
@@ -495,6 +506,7 @@ fn group_moves_fan_out_over_distinct_tiles() {
         Command::Move {
             units: ids.clone(),
             goal: TilePos::new(10, 4),
+            queue: false,
         },
     )]);
     for _ in 0..400 {
@@ -706,6 +718,7 @@ fn fog_reveals_persists_and_gates_attacks() {
         Command::Attack {
             units: vec![scout],
             target: Target::Unit(quarry),
+            queue: false,
         },
     )]);
     assert!(report.events.contains(&Event::CommandRejected {
@@ -719,6 +732,7 @@ fn fog_reveals_persists_and_gates_attacks() {
         Command::Move {
             units: vec![scout],
             goal: TilePos::new(9, 3),
+            queue: false,
         },
     )]);
     run_until(&mut state, 300, |s, _| s.can_see(PlayerId(0), quarry_tile));
@@ -730,6 +744,7 @@ fn fog_reveals_persists_and_gates_attacks() {
         Command::Move {
             units: vec![scout],
             goal: home,
+            queue: false,
         },
     )]);
     run_until(&mut state, 400, |s, _| {
@@ -788,6 +803,7 @@ fn ghost_memory_survives_unseen_demolition_until_revisited() {
         Command::Move {
             units: vec![scout],
             goal: TilePos::new(9, 5),
+            queue: false,
         },
     )]);
     run_until(&mut state, 300, |s, _| {
@@ -803,6 +819,7 @@ fn ghost_memory_survives_unseen_demolition_until_revisited() {
         Command::Move {
             units: vec![scout],
             goal: TilePos::new(4, 2),
+            queue: false,
         },
     )]);
     run_until(&mut state, 300, |s, _| {
@@ -828,6 +845,7 @@ fn ghost_memory_survives_unseen_demolition_until_revisited() {
         Command::Move {
             units: vec![scout],
             goal: TilePos::new(9, 5),
+            queue: false,
         },
     )]);
     run_until(&mut state, 300, |s, _| {
@@ -858,6 +876,7 @@ fn remembered_scrap_freezes_when_sight_is_lost() {
         Command::Move {
             units: vec![scout],
             goal: TilePos::new(9, 4),
+            queue: false,
         },
     )]);
     run_until(&mut state, 300, |s, _| {
@@ -870,6 +889,7 @@ fn remembered_scrap_freezes_when_sight_is_lost() {
         Command::Move {
             units: vec![scout],
             goal: home,
+            queue: false,
         },
     )]);
     run_until(&mut state, 300, |s, _| {
@@ -882,6 +902,7 @@ fn remembered_scrap_freezes_when_sight_is_lost() {
         Command::Harvest {
             units: vec![miner],
             node,
+            queue: false,
         },
     )]);
     run_until(&mut state, 600, |s, _| s.map().scrap_at(node) < full - 4);
@@ -897,6 +918,7 @@ fn remembered_scrap_freezes_when_sight_is_lost() {
         Command::Move {
             units: vec![scout],
             goal: TilePos::new(9, 4),
+            queue: false,
         },
     )]);
     run_until(&mut state, 300, |s, _| {
@@ -924,14 +946,17 @@ fn hostile_coordinates_are_rejected_not_panicked() {
             Command::Move {
                 units: vec![u],
                 goal,
+                queue: false,
             },
             Command::AttackMove {
                 units: vec![u],
                 goal,
+                queue: false,
             },
             Command::Harvest {
                 units: vec![u],
                 node: goal,
+                queue: false,
             },
             Command::SetRally {
                 building: foundry,
@@ -992,6 +1017,7 @@ fn eliminated_players_cannot_command_survivors() {
         Command::Move {
             units: vec![survivor],
             goal: TilePos::new(5, 5),
+            queue: false,
         },
     )]);
     assert!(report.events.contains(&Event::CommandRejected {
@@ -1011,6 +1037,7 @@ fn deposits_saturate_a_full_bank() {
         Command::Harvest {
             units: vec![worker],
             node: TilePos::new(11, 4),
+            queue: false,
         },
     )]);
     run_until(&mut state, 800, |s, _| {
@@ -1029,6 +1056,7 @@ fn commanding_enemy_units_is_rejected() {
         Command::Move {
             units: vec![enemy_unit],
             goal: TilePos::new(2, 2),
+            queue: false,
         },
     )]);
     assert!(report.events.contains(&Event::CommandRejected {
@@ -1059,6 +1087,7 @@ fn destroying_the_last_foundry_wins_and_freezes() {
         Command::Attack {
             units: ids,
             target: Target::Building(enemy_foundry),
+            queue: false,
         },
     )]);
     // 800 hp / 30 dps → ~27 s ≈ 540 ticks, plus approach.
@@ -1165,6 +1194,7 @@ fn congestion_survives_nonconsecutive_unit_ids() {
         Command::Harvest {
             units: survivors,
             node: TilePos::new(12, 1),
+            queue: false,
         },
     )]);
     let mut deposited = [0u32; 2];
@@ -1272,6 +1302,7 @@ fn rally_trusts_remembered_scrap_even_when_it_is_stale() {
             Command::Move {
                 units: vec![scout],
                 goal: TilePos::new(2, 3),
+                queue: false,
             },
         ),
         cmd(
@@ -1279,6 +1310,7 @@ fn rally_trusts_remembered_scrap_even_when_it_is_stale() {
             Command::Harvest {
                 units: vec![miner],
                 node,
+                queue: false,
             },
         ),
     ]);
@@ -1335,4 +1367,228 @@ fn rally_trusts_remembered_scrap_even_when_it_is_stale() {
         matches!(state.unit(newborn).unwrap().order, Order::Harvest { .. }),
         "stale belief should be acted on honestly, not silently corrected"
     );
+}
+
+#[test]
+fn queued_orders_execute_in_sequence() {
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 2, 6)])
+        .build()
+        .unwrap();
+    let mover = state.units()[0].id;
+    let (a, b) = (TilePos::new(9, 6), TilePos::new(9, 2));
+    state.tick(&[
+        cmd(
+            0,
+            Command::Move {
+                units: vec![mover],
+                goal: a,
+                queue: false,
+            },
+        ),
+        cmd(
+            0,
+            Command::Move {
+                units: vec![mover],
+                goal: b,
+                queue: true,
+            },
+        ),
+    ]);
+    // First leg: arrive at A while B still waits in the queue.
+    run_until(&mut state, 300, |s, _| s.unit(mover).unwrap().tile() == a);
+    assert_eq!(state.unit(mover).unwrap().queue.len(), 1);
+    // Second leg: end idle at B with nothing queued.
+    run_until(&mut state, 300, |s, _| {
+        let u = s.unit(mover).unwrap();
+        u.tile() == b && u.order == Order::Idle && u.queue.is_empty()
+    });
+}
+
+#[test]
+fn direct_order_replaces_the_whole_queue() {
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 2, 6)])
+        .build()
+        .unwrap();
+    let mover = state.units()[0].id;
+    state.tick(&[
+        cmd(
+            0,
+            Command::Move {
+                units: vec![mover],
+                goal: TilePos::new(13, 6),
+                queue: false,
+            },
+        ),
+        cmd(
+            0,
+            Command::Move {
+                units: vec![mover],
+                goal: TilePos::new(13, 2),
+                queue: true,
+            },
+        ),
+    ]);
+    // A fresh unqueued order wipes the program mid-walk.
+    for _ in 0..20 {
+        state.tick(&[]);
+    }
+    let d = TilePos::new(4, 2);
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![mover],
+            goal: d,
+            queue: false,
+        },
+    )]);
+    assert!(state.unit(mover).unwrap().queue.is_empty());
+    run_until(&mut state, 300, |s, _| {
+        let u = s.unit(mover).unwrap();
+        u.tile() == d && u.order == Order::Idle
+    });
+}
+
+#[test]
+fn patrol_cycles_waypoints_and_never_settles() {
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 2, 6)])
+        .build()
+        .unwrap();
+    let mover = state.units()[0].id;
+    let (a, b) = (TilePos::new(4, 6), TilePos::new(11, 6));
+    state.tick(&[cmd(
+        0,
+        Command::Patrol {
+            units: vec![mover],
+            waypoints: vec![a, b],
+        },
+    )]);
+    // Expect the circuit to visit a, b, then a again — proof of the loop.
+    let mut expected = [a, b, a].into_iter();
+    let mut next = expected.next();
+    for _ in 0..2000u32 {
+        let u = state.unit(mover).unwrap();
+        assert_ne!(u.order, Order::Idle, "a patrol never settles");
+        if Some(u.tile()) == next {
+            next = expected.next();
+            if next.is_none() {
+                break;
+            }
+        }
+        state.tick(&[]);
+    }
+    assert_eq!(next, None, "circuit did not complete a full loop");
+    assert!(state.unit(mover).unwrap().looping);
+}
+
+#[test]
+fn patrol_engages_on_the_way_and_resumes_the_circuit() {
+    // A sentinel patrols the top lane; an enemy harvester sits just off
+    // it, inside aggro. The patroller must break off, kill it, and pick
+    // the circuit back up. Waypoints stay >5 tiles from the enemy Foundry
+    // so the patrol never besieges it mid-test.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Sentinel, 3, 2),
+        unit(1, UnitKind::Harvester, 5, 4),
+    ])
+    .build()
+    .unwrap();
+    let (patroller, victim) = (state.units()[0].id, state.units()[1].id);
+    let (a, b) = (TilePos::new(3, 2), TilePos::new(8, 2));
+    state.tick(&[cmd(
+        0,
+        Command::Patrol {
+            units: vec![patroller],
+            waypoints: vec![a, b],
+        },
+    )]);
+    run_until(&mut state, 600, |s, _| s.unit(victim).is_none());
+    // Back on the beat: both waypoints get visited again after the kill.
+    for goal in [b, a] {
+        run_until(&mut state, 600, |s, _| {
+            s.unit(patroller).unwrap().tile() == goal
+        });
+    }
+    assert!(state.unit(patroller).unwrap().looping);
+}
+
+#[test]
+fn stalled_leg_drops_the_whole_program() {
+    // The queued second leg targets a sealed pocket: no route. The stall
+    // must abandon the entire program, not limp to the next leg.
+    let scenario = Scenario {
+        name: "sealed-pocket".into(),
+        seed: 42,
+        map: vec![
+            "##############".into(),
+            "#1...........#".into(),
+            "#....###.....#".into(),
+            "#....#.#.....#".into(),
+            "#....###.....#".into(),
+            "#............#".into(),
+            "#.........2..#".into(),
+            "#............#".into(),
+            "##############".into(),
+        ],
+        players: arena(vec![]).players,
+        units: vec![unit(0, UnitKind::Harvester, 3, 1)],
+    };
+    let mut state = scenario.build().unwrap();
+    let mover = state.units()[0].id;
+    let reachable = TilePos::new(10, 1);
+    let pocket = TilePos::new(6, 3);
+    state.tick(&[
+        cmd(
+            0,
+            Command::Move {
+                units: vec![mover],
+                goal: reachable,
+                queue: false,
+            },
+        ),
+        cmd(
+            0,
+            Command::Move {
+                units: vec![mover],
+                goal: pocket,
+                queue: true,
+            },
+        ),
+    ]);
+    let events = run_until(&mut state, 600, |_, events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::OrderStalled { unit, .. } if *unit == mover))
+    });
+    assert!(!events.is_empty());
+    let u = state.unit(mover).unwrap();
+    assert_eq!(u.order, Order::Idle);
+    assert!(u.queue.is_empty() && !u.looping);
+    assert_eq!(u.tile(), reachable, "stall happens after the first leg");
+}
+
+#[test]
+fn stop_clears_a_patrol() {
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 2, 6)])
+        .build()
+        .unwrap();
+    let mover = state.units()[0].id;
+    state.tick(&[cmd(
+        0,
+        Command::Patrol {
+            units: vec![mover],
+            waypoints: vec![TilePos::new(4, 6), TilePos::new(11, 6)],
+        },
+    )]);
+    for _ in 0..30 {
+        state.tick(&[]);
+    }
+    state.tick(&[cmd(0, Command::Stop { units: vec![mover] })]);
+    let u = state.unit(mover).unwrap();
+    assert_eq!(u.order, Order::Idle);
+    assert!(u.queue.is_empty() && !u.looping);
+    let parked = u.tile();
+    for _ in 0..60 {
+        state.tick(&[]);
+    }
+    assert_eq!(state.unit(mover).unwrap().tile(), parked);
 }

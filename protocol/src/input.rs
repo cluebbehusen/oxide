@@ -118,6 +118,8 @@ pub enum Key {
     A,
     /// Pause / unpause.
     P,
+    /// Arm a patrol route; pressed again, starts it.
+    R,
     /// Activate the highlighted menu item.
     Enter,
     /// Deselect.

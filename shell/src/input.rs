@@ -43,6 +43,8 @@ pub struct InputState {
     last_click: Option<(f64, Vec2)>,
     /// Previous group recall, for double-tap camera centering.
     last_recall: Option<(usize, f64)>,
+    /// Waypoints collected while arming a patrol (`R`), if any.
+    pub(crate) patrol_route: Option<Vec<TilePos>>,
     held: HashSet<KeyOrd>,
 }
 
@@ -60,6 +62,7 @@ fn key_ord(key: Key) -> KeyOrd {
         Key::H => 4,
         Key::S => 5,
         Key::P => 6,
+        Key::R => 19,
         Key::Escape => 7,
         Key::Space => 8,
         Key::F1 => 9,
@@ -84,6 +87,7 @@ impl InputState {
             groups: Default::default(),
             last_click: None,
             last_recall: None,
+            patrol_route: None,
             held: HashSet::new(),
         }
     }
@@ -100,6 +104,7 @@ impl InputState {
     pub fn reset_transient(&mut self) {
         self.held.clear();
         self.drag_origin = None;
+        self.patrol_route = None;
     }
 
     /// Everything `reset_transient` drops, plus state that assumes the
@@ -115,7 +120,7 @@ impl InputState {
     }
 }
 
-const KEY_MAP: [(Key, mq::KeyCode); 11] = [
+const KEY_MAP: [(Key, mq::KeyCode); 12] = [
     (Key::Up, mq::KeyCode::Up),
     (Key::Down, mq::KeyCode::Down),
     (Key::Left, mq::KeyCode::Left),
@@ -123,6 +128,7 @@ const KEY_MAP: [(Key, mq::KeyCode); 11] = [
     (Key::H, mq::KeyCode::H),
     (Key::S, mq::KeyCode::S),
     (Key::P, mq::KeyCode::P),
+    (Key::R, mq::KeyCode::R),
     (Key::Escape, mq::KeyCode::Escape),
     (Key::Space, mq::KeyCode::Space),
     (Key::F1, mq::KeyCode::F1),
@@ -282,15 +288,31 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // (ground semantics — entities can't be picked at that
                 // scale); anywhere else, full context ordering. HUD chrome
                 // swallows the click.
+                let queue = input.is_held(Key::Shift);
                 if let Some(world) = crate::render::minimap_world_at(game, vec2(x, y)) {
-                    let units = game.selection.units.clone();
-                    if !units.is_empty() {
-                        let goal = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-                        game.issue(Command::AttackMove { units, goal });
-                        game.ping(vec2(world.x, world.y), PingKind::Move);
+                    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+                    if let Some(route) = &mut input.patrol_route {
+                        route.push(tile);
+                        game.ping(vec2(world.x, world.y), PingKind::Rally);
+                    } else {
+                        let units = game.selection.units.clone();
+                        if !units.is_empty() {
+                            game.issue(Command::AttackMove {
+                                units,
+                                goal: tile,
+                                queue,
+                            });
+                            game.ping(vec2(world.x, world.y), PingKind::Move);
+                        }
                     }
                 } else if !click_on_hud(game, vec2(x, y)) {
-                    context_order(game, vec2(x, y));
+                    let world = game.camera.to_world(vec2(x, y));
+                    if let Some(route) = &mut input.patrol_route {
+                        route.push(TilePos::new(world.x.floor() as i32, world.y.floor() as i32));
+                        game.ping(world, PingKind::Rally);
+                    } else {
+                        context_order(game, vec2(x, y), queue);
+                    }
                 }
             }
             RawEvent::MouseUp {
@@ -313,7 +335,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     Key::Num3 => group_action(game, input, 2),
                     Key::Num4 => group_action(game, input, 3),
                     Key::Num5 => group_action(game, input, 4),
-                    _ => key_action(game, key),
+                    _ => key_action(game, input, key),
                 }
             }
             RawEvent::KeyUp { key } => {
@@ -490,7 +512,7 @@ fn group_action(game: &mut Game, input: &mut InputState, slot: usize) {
 /// Right-click: order the selection by what's under the cursor — enemy →
 /// attack, scrap → harvest, ground → move. The sim re-validates everything;
 /// this is only intent.
-fn context_order(game: &mut Game, screen: Vec2) {
+fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     let world = game.camera.to_world(screen);
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     if game.selection.units.is_empty() {
@@ -533,6 +555,7 @@ fn context_order(game: &mut Game, screen: Vec2) {
         game.issue(Command::Attack {
             units,
             target: Target::Unit(target),
+            queue,
         });
         game.ping(at, PingKind::Attack);
         return;
@@ -542,7 +565,11 @@ fn context_order(game: &mut Game, screen: Vec2) {
         && building.tiles().any(|t| game.my_vision().visible(t))
     {
         let target = Target::Building(building.id);
-        game.issue(Command::Attack { units, target });
+        game.issue(Command::Attack {
+            units,
+            target,
+            queue,
+        });
         game.ping(world, PingKind::Attack);
         return;
     }
@@ -554,24 +581,54 @@ fn context_order(game: &mut Game, screen: Vec2) {
     // The harvest check reads the player's *memory*, not the live map —
     // probing fog with right-clicks must not reveal hidden scrap.
     if game.my_vision().remembered_scrap(tile) > 0 && has_harvester {
-        game.issue(Command::Harvest { units, node: tile });
+        game.issue(Command::Harvest {
+            units,
+            node: tile,
+            queue,
+        });
         game.ping(world, PingKind::Harvest);
         return;
     }
     // Fire at will: ground orders engage whatever shows up on the way.
     // Combat units attack-move; the sim degrades harvesters to a plain
     // walk. There is no hold-fire stance (yet — nothing to hide from).
-    game.issue(Command::AttackMove { units, goal: tile });
+    game.issue(Command::AttackMove {
+        units,
+        goal: tile,
+        queue,
+    });
     game.ping(world, PingKind::Move);
 }
 
-fn key_action(game: &mut Game, key: Key) {
+fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
     match key {
         Key::H => train(game, UnitKind::Harvester),
         Key::S => train(game, UnitKind::Sentinel),
         Key::P => game.paused = !game.paused,
+        Key::R => {
+            // First press arms a route; the second sends the circuit.
+            match input.patrol_route.take() {
+                None if !game.selection.units.is_empty() => {
+                    input.patrol_route = Some(Vec::new());
+                    game.toast("patrol: right-click waypoints, R to start");
+                }
+                None => {}
+                Some(route) if route.is_empty() => {
+                    game.toast("patrol cancelled");
+                }
+                Some(waypoints) => {
+                    let units = game.selection.units.clone();
+                    game.issue(Command::Patrol { units, waypoints });
+                }
+            }
+        }
         Key::F1 => game.overlay = !game.overlay,
         Key::Escape => {
+            // Arming a patrol? Escape abandons that first.
+            if input.patrol_route.take().is_some() {
+                game.toast("patrol cancelled");
+                return;
+            }
             game.selection.units.clear();
             game.selection.building = None;
         }

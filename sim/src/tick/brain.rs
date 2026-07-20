@@ -99,9 +99,7 @@ fn walk(state: &mut State, id: UnitId, goal: TilePos, events: &mut Vec<Event>) {
     let unit = state.unit(id).expect("caller checked");
     let tile = unit.tile();
     if tile == goal || touching_settled_arrival(state, id, goal) {
-        let unit = state.unit_mut(id).expect("caller checked");
-        unit.order = Order::Idle;
-        unit.path = None;
+        state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     }
     let unit = state.unit(id).expect("caller checked");
@@ -122,8 +120,7 @@ fn walk(state: &mut State, id: UnitId, goal: TilePos, events: &mut Vec<Event>) {
         }
         None => {
             let (player, pos) = (unit.player, unit.pos);
-            unit.order = Order::Idle;
-            unit.path = None;
+            unit.clear_program();
             events.push(Event::OrderStalled {
                 unit: id,
                 player,
@@ -161,7 +158,7 @@ fn harvest(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
     let unit = state.unit(id).expect("caller checked");
     let Some(hstats) = unit.kind.stats().harvest else {
         // Only harvesters ever get this order; be defensive anyway.
-        state.unit_mut(id).expect("caller checked").order = Order::Idle;
+        state.unit_mut(id).expect("caller checked").clear_program();
         return;
     };
     let (tile, carrying) = (unit.tile(), unit.carrying);
@@ -175,7 +172,7 @@ fn harvest(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
         } else if !approach_rect(state, id, node, (1, 1)) {
             let unit = state.unit_mut(id).expect("caller checked");
             let (player, pos) = (unit.player, unit.pos);
-            unit.order = Order::Idle;
+            unit.clear_program();
             events.push(Event::OrderStalled {
                 unit: id,
                 player,
@@ -192,11 +189,7 @@ fn harvest(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
                 unit.progress = 0;
             }
             None if carrying > 0 => deliver(state, id, node, events),
-            None => {
-                let unit = state.unit_mut(id).expect("caller checked");
-                unit.order = Order::Idle;
-                unit.path = None;
-            }
+            None => state.unit_mut(id).expect("caller checked").advance_queue(),
         }
     }
 }
@@ -236,10 +229,9 @@ fn deliver(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
         .map(|b| (pos.dist_sq(b.center()), b.id))
         .min();
     let Some((_, foundry_id)) = nearest else {
-        // Homeless: hold the scrap and stand down.
-        let unit = state.unit_mut(id).expect("caller checked");
-        unit.order = Order::Idle;
-        unit.path = None;
+        // Homeless: hold the scrap; the harvest is over, but a queued
+        // program can still go on.
+        state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     };
     let foundry = state.building(foundry_id).expect("just found");
@@ -262,13 +254,12 @@ fn deliver(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
         });
         // Nothing left to go back to? Then we're done hauling.
         if state.map.scrap_at(node) == 0 && replacement_node(state, node, tile).is_none() {
-            state.unit_mut(id).expect("caller checked").order = Order::Idle;
+            state.unit_mut(id).expect("caller checked").advance_queue();
         }
     } else if !approach_rect(state, id, anchor, size) {
         let unit = state.unit_mut(id).expect("caller checked");
         let (player, pos) = (unit.player, unit.pos);
-        unit.order = Order::Idle;
-        unit.path = None;
+        unit.clear_program();
         events.push(Event::OrderStalled {
             unit: id,
             player,
@@ -289,7 +280,7 @@ fn attack(
 ) {
     let unit = state.unit(id).expect("caller checked");
     let Some(atk) = unit.kind.stats().attack else {
-        state.unit_mut(id).expect("caller checked").order = Order::Idle;
+        state.unit_mut(id).expect("caller checked").clear_program();
         return;
     };
     let (pos, tile, cooldown) = (unit.pos, unit.tile(), unit.cooldown);
@@ -323,11 +314,13 @@ fn attack(
     };
     let Some((aim_point, target_tile)) = target_info else {
         let unit = state.unit_mut(id).expect("caller checked");
-        unit.order = match resume {
-            Some(goal) => Order::AttackMove { goal },
-            None => Order::Idle,
-        };
-        unit.path = None;
+        match resume {
+            Some(goal) => {
+                unit.order = Order::AttackMove { goal };
+                unit.path = None;
+            }
+            None => unit.advance_queue(),
+        }
         return;
     };
 
@@ -411,8 +404,7 @@ fn attack(
     if !reached {
         let unit = state.unit_mut(id).expect("caller checked");
         let (player, pos) = (unit.player, unit.pos);
-        unit.order = Order::Idle;
-        unit.path = None;
+        unit.clear_program();
         events.push(Event::OrderStalled {
             unit: id,
             player,
