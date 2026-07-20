@@ -62,7 +62,9 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
 /// The other half of simultaneity: buffered shots land now, in the order
 /// they were decided (unit-id order, then turret-id order). Damage first —
 /// all of it — then retaliation, so a machine that died this tick answers
-/// nothing and a survivor answers its earliest attacker.
+/// nothing and a survivor answers its earliest attacker *that survived
+/// resolution*: turning to face a corpse would waste the answer and let a
+/// living shooter keep firing unopposed.
 fn resolve_hits(state: &mut State, hits: Vec<PendingHit>) {
     for hit in &hits {
         match hit.victim {
@@ -80,7 +82,13 @@ fn resolve_hits(state: &mut State, hits: Vec<PendingHit>) {
     }
     for hit in &hits {
         if let Target::Unit(uid) = hit.victim {
-            retaliate(state, uid, hit.attacker);
+            let attacker_standing = match hit.attacker {
+                Target::Unit(a) => state.unit(a).is_some_and(|u| u.hp > 0),
+                Target::Building(b) => state.building(b).is_some_and(|b| b.hp > 0),
+            };
+            if attacker_standing {
+                retaliate(state, uid, hit.attacker);
+            }
         }
     }
 }

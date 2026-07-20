@@ -256,11 +256,7 @@ impl Building {
 /// the architecture's core promise, and here the compiler enforces it
 /// rather than a comment. Read access goes through the accessor methods
 /// below.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-// `remote = "Self"` turns the derives into inherent methods; the trait
-// impls below forward to them, and Deserialize validates on the way in —
-// an invalid snapshot is unrepresentable rather than merely checkable.
-#[serde(remote = "Self")]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct State {
     pub(crate) tick: Tick,
     pub(crate) rng: Pcg32,
@@ -683,15 +679,60 @@ pub enum StateIntegrityError {
     MalformedVisionGrid,
 }
 
-impl Serialize for State {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        State::serialize(self, serializer)
+/// The wire shape of [`State`]: a private mirror that derives the actual
+/// field-level `Deserialize`, so the only path from bytes to a `State`
+/// runs through [`State::validate_invariants`] — there is no public
+/// unvalidated constructor to call by accident. The exhaustive `From`
+/// below keeps the mirror honest: if `State` grows or loses a field, this
+/// module stops compiling instead of silently desyncing.
+#[derive(Deserialize)]
+#[serde(rename = "State")]
+struct StateWire {
+    tick: Tick,
+    rng: Pcg32,
+    map: Map,
+    players: Vec<Player>,
+    vision: Vec<crate::vision::Vision>,
+    units: Vec<Unit>,
+    buildings: Vec<Building>,
+    result: Option<GameResult>,
+    next_unit_id: u32,
+    next_building_id: u32,
+}
+
+impl From<StateWire> for State {
+    fn from(w: StateWire) -> Self {
+        // Every field named on both sides: drift breaks the build.
+        let StateWire {
+            tick,
+            rng,
+            map,
+            players,
+            vision,
+            units,
+            buildings,
+            result,
+            next_unit_id,
+            next_building_id,
+        } = w;
+        State {
+            tick,
+            rng,
+            map,
+            players,
+            vision,
+            units,
+            buildings,
+            result,
+            next_unit_id,
+            next_building_id,
+        }
     }
 }
 
 impl<'de> Deserialize<'de> for State {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let state = State::deserialize(deserializer)?;
+        let state: State = StateWire::deserialize(deserializer)?.into();
         state
             .validate_invariants()
             .map_err(serde::de::Error::custom)?;

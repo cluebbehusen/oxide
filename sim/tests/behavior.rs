@@ -3095,3 +3095,54 @@ fn mirrored_duels_end_in_mutual_annihilation() {
         "identical opponents must fall together, not by id order"
     );
 }
+
+#[test]
+fn retaliation_picks_the_earliest_surviving_attacker() {
+    // Two lancers volley the sentinel from beyond its aggro while the
+    // sentinel's own lancers kill the first of them in the same buffered
+    // resolution. The answer must go to the survivor — locking onto the
+    // corpse would leave the second shooter firing unopposed.
+    let mut state = arena(vec![
+        unit(1, UnitKind::Lancer, 8, 4),   // id 0: dies this tick
+        unit(1, UnitKind::Lancer, 8, 7),   // id 1: survives
+        unit(0, UnitKind::Lancer, 10, 1),  // id 2: executioner
+        unit(0, UnitKind::Lancer, 12, 4),  // id 3: executioner
+        unit(0, UnitKind::Sentinel, 3, 6), // id 4: the victim
+    ])
+    .build()
+    .unwrap();
+    let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
+    let (a, b, c1, c2, v) = (ids[0], ids[1], ids[2], ids[3], ids[4]);
+    let report = state.tick(&[
+        cmd(
+            1,
+            Command::Attack {
+                units: vec![a, b],
+                target: Target::Unit(v),
+                queue: false,
+            },
+        ),
+        cmd(
+            0,
+            Command::Attack {
+                units: vec![c1, c2],
+                target: Target::Unit(a),
+                queue: false,
+            },
+        ),
+    ]);
+    let _ = report;
+    // The whole exchange lands on the command tick (everyone in range).
+    assert!(
+        state.unit(a).is_none(),
+        "the first attacker died in the volley"
+    );
+    assert!(
+        matches!(
+            state.unit(v).unwrap().order,
+            Order::Attack { target: Target::Unit(t), .. } if t == b
+        ),
+        "the victim must answer the surviving attacker, got {:?}",
+        state.unit(v).unwrap().order
+    );
+}
