@@ -91,6 +91,9 @@ pub enum ScenarioError {
     /// A starting unit is misplaced or mis-owned.
     #[error("starting unit #{0} is invalid (owner in range? tile passable?)")]
     BadUnit(usize),
+    /// Two Foundries can't reach each other: the match could never end.
+    #[error("players {0} and {1} are sealed apart — no ground route between their foundries")]
+    Disconnected(PlayerId, PlayerId),
 }
 
 impl Scenario {
@@ -160,6 +163,48 @@ impl Scenario {
                 return Err(ScenarioError::BadUnit(index));
             }
             state.spawn_unit(PlayerId(spec.player), spec.kind, tile.center());
+        }
+
+        // Authoring tripwire: every pair of Foundries must share a ground
+        // route, or the victory condition is unreachable by construction.
+        // Flood from the first anchor over terrain (scrap mines out, so
+        // nodes count as eventually-open; buildings placed above are only
+        // the foundries themselves, whose ring must connect anyway).
+        if let Some((first, rest)) = anchors.split_first() {
+            let map = &self.map;
+            let _ = map;
+            let mut open = std::collections::VecDeque::new();
+            let width = state.map().width();
+            let height = state.map().height();
+            let idx = |t: TilePos| (t.y * width + t.x) as usize;
+            let mut seen = vec![false; (width * height) as usize];
+            let walkable = |t: TilePos, state: &State| {
+                t.x >= 0
+                    && t.y >= 0
+                    && t.x < width
+                    && t.y < height
+                    && state
+                        .map()
+                        .tile(t)
+                        .is_some_and(|tile| tile.terrain == crate::map::Terrain::Ground)
+            };
+            let seed = first.1;
+            seen[idx(seed)] = true;
+            open.push_back(seed);
+            while let Some(t) = open.pop_front() {
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let n = t.offset(dx, dy);
+                    if walkable(n, &state) && !seen[idx(n)] {
+                        seen[idx(n)] = true;
+                        open.push_back(n);
+                    }
+                }
+            }
+            for (player, anchor) in rest {
+                if !seen[idx(*anchor)] {
+                    return Err(ScenarioError::Disconnected(first.0, *player));
+                }
+            }
         }
         state.refresh_vision();
         Ok(state)

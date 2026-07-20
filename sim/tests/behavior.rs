@@ -2227,3 +2227,26 @@ fn bot_reaches_its_tech_and_mixes_its_army() {
         assert!(advanced > 0, "fabricator built but nothing trained from it");
     }
 }
+
+#[test]
+fn sealed_apart_scenarios_refuse_to_build() {
+    use oxide_sim::scenario::ScenarioError;
+    let scenario = Scenario {
+        name: "sealed".into(),
+        seed: 1,
+        map: vec![
+            "############".into(),
+            "#1...#.....#".into(),
+            "#....#.....#".into(),
+            "#....#..2..#".into(),
+            "#....#.....#".into(),
+            "############".into(),
+        ],
+        players: arena(vec![]).players,
+        units: vec![],
+    };
+    assert!(matches!(
+        scenario.build(),
+        Err(ScenarioError::Disconnected(..))
+    ));
+}

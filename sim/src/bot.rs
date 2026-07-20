@@ -44,6 +44,12 @@ pub struct Bot {
     /// Set once a harvester died on this bot's watch; cleared when the
     /// turret answer has been placed.
     raided: bool,
+    /// Harvest assignments from the last think: a unit idle again right
+    /// after being sent means the node is unreachable — blacklist it
+    /// instead of re-ordering forever.
+    last_sent: Vec<(crate::ids::UnitId, TilePos)>,
+    /// Nodes that bounced a harvester back.
+    dead_nodes: Vec<TilePos>,
 }
 
 impl Bot {
@@ -58,6 +64,8 @@ impl Bot {
             attack_threshold,
             harvesters_seen: 0,
             raided: false,
+            last_sent: Vec::new(),
+            dead_nodes: Vec::new(),
         }
     }
 
@@ -96,18 +104,31 @@ impl Bot {
         let home_center = home.center();
         let home_id = home.id;
 
+        // Retry damping: a harvester sent last think and idle again now
+        // bounced off an unreachable node — never ask twice.
+        for (id, node) in std::mem::take(&mut self.last_sent) {
+            if state
+                .unit(id)
+                .is_some_and(|u| u.order == Order::Idle && u.hp > 0)
+                && !self.dead_nodes.contains(&node)
+            {
+                self.dead_nodes.push(node);
+            }
+        }
+
         // Economy: idle harvesters back to work.
         for unit in state
             .units
             .iter()
             .filter(|u| u.player == me && u.kind == UnitKind::Harvester && u.order == Order::Idle)
         {
-            if let Some(node) = nearest_scrap(state, unit.tile()) {
+            if let Some(node) = nearest_scrap(state, unit.tile(), &self.dead_nodes) {
                 commands.push(self.cmd(Command::Harvest {
                     units: vec![unit.id],
                     node,
                     queue: false,
                 }));
+                self.last_sent.push((unit.id, node));
             }
         }
 
@@ -208,7 +229,8 @@ impl Bot {
         if self.raided
             && my_turrets < TURRET_CAP
             && bank >= 150
-            && let Some(node) = nearest_scrap(state, TilePos::containing(home_center))
+            && let Some(node) =
+                nearest_scrap(state, TilePos::containing(home_center), &self.dead_nodes)
             && let Some(anchor) =
                 placement_near(state, me, crate::stats::BuildingKind::Turret, node.center())
             && let Some(builder) = nearest_harvester(state, me, anchor)
@@ -368,12 +390,13 @@ fn nearest_harvester(state: &State, me: PlayerId, anchor: TilePos) -> Option<cra
         .map(|(_, id)| id)
 }
 
-/// Nearest tile holding scrap, keyed by (manhattan, y, x) for a unique pick.
-fn nearest_scrap(state: &State, from: TilePos) -> Option<TilePos> {
+/// Nearest tile holding scrap, keyed by (manhattan, y, x) for a unique
+/// pick; `avoid` lists nodes that already bounced a harvester.
+fn nearest_scrap(state: &State, from: TilePos, avoid: &[TilePos]) -> Option<TilePos> {
     state
         .map
         .iter()
-        .filter(|(_, tile)| tile.scrap > 0)
+        .filter(|(pos, tile)| tile.scrap > 0 && !avoid.contains(pos))
         .map(|(pos, _)| (pos.manhattan(from), pos.y, pos.x))
         .min()
         .map(|(_, y, x)| TilePos::new(x, y))

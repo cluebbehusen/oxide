@@ -208,6 +208,16 @@ and test fixtures inside crate `tests/` directories.
   two-player games the question is moot (elimination ends the match), and
   if FFA maps ever ship, revisit deliberately.
 
+## Known issues (tracked, deliberate)
+
+- **Seat 1 holds a structural combat edge.** Brains run in unit-id order,
+  so a victim with a higher id than its attacker reacts in the same tick,
+  while the mirror case reacts a tick late — bot-vs-bot on symmetric maps,
+  seat 1 wins every time. One tick of reflexes is invisible against a
+  human but decides mirror matches. The fix is simultaneous damage
+  resolution (buffer hits during brains, apply after) — a combat-semantics
+  change scheduled for 0.6, not a patch.
+
 ## Gotchas learned the hard way
 
 - tiny-skia's anti-aliased path asserts on sub-pixel rects — AA stays off
