@@ -219,9 +219,9 @@ enum LiveCmd {
         /// Producing building id.
         #[arg(long)]
         building: u32,
-        /// "harvester", "sentinel", "scuttler", or "lancer".
-        #[arg(long)]
-        kind: String,
+        /// What to train.
+        #[arg(long, value_enum)]
+        kind: UnitKindArg,
     },
     /// Start a construction site with a harvester.
     Build {
@@ -230,9 +230,9 @@ enum LiveCmd {
         /// Candidate builder unit ids, comma-separated.
         #[arg(long, value_delimiter = ',')]
         units: Vec<u32>,
-        /// "turret" or "fabricator".
-        #[arg(long)]
-        kind: String,
+        /// What to construct.
+        #[arg(long, value_enum)]
+        kind: BuildingKindArg,
         /// Anchor tile as "x,y" (top-left of the footprint).
         #[arg(long)]
         at: String,
@@ -377,9 +377,12 @@ fn main() -> Result<()> {
             eprintln!("wrote {}", out.display());
         }
         Cmd::Live { addr, cmd } => {
+            // Parse everything before touching the socket: a typo'd tile
+            // should fail fast, not after connecting to a live game.
+            let requests = live_requests(cmd)?;
             let mut client = Client::connect(&addr)?;
             let mut last: Option<Reply> = None;
-            for request in live_requests(cmd)? {
+            for request in requests {
                 last = Some(client.call(request)?);
             }
             if let Some(reply) = last {
@@ -401,22 +404,42 @@ fn parse_tile(s: &str) -> Result<chassis::grid::TilePos> {
     ))
 }
 
-fn parse_kind(s: &str) -> Result<UnitKind> {
-    match s {
-        "harvester" => Ok(UnitKind::Harvester),
-        "sentinel" => Ok(UnitKind::Sentinel),
-        "scuttler" => Ok(UnitKind::Scuttler),
-        "lancer" => Ok(UnitKind::Lancer),
-        other => bail!("unknown unit kind {other:?}"),
+/// Clap-native unit kinds — typos die in argument parsing with the full
+/// list of choices, before anything touches the socket.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum UnitKindArg {
+    Harvester,
+    Sentinel,
+    Scuttler,
+    Lancer,
+}
+
+impl From<UnitKindArg> for UnitKind {
+    fn from(k: UnitKindArg) -> Self {
+        match k {
+            UnitKindArg::Harvester => UnitKind::Harvester,
+            UnitKindArg::Sentinel => UnitKind::Sentinel,
+            UnitKindArg::Scuttler => UnitKind::Scuttler,
+            UnitKindArg::Lancer => UnitKind::Lancer,
+        }
     }
 }
 
-fn parse_building_kind(s: &str) -> Result<oxide_sim::BuildingKind> {
-    Ok(match s.to_ascii_lowercase().as_str() {
-        "turret" => oxide_sim::BuildingKind::Turret,
-        "fabricator" => oxide_sim::BuildingKind::Fabricator,
-        other => bail!("unknown building kind {other:?} (foundries aren't buildable)"),
-    })
+/// Buildable kinds only — the Foundry is scenario-authored and rejecting
+/// it at the parser teaches that faster than a sim rejection would.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum BuildingKindArg {
+    Turret,
+    Fabricator,
+}
+
+impl From<BuildingKindArg> for oxide_sim::BuildingKind {
+    fn from(k: BuildingKindArg) -> Self {
+        match k {
+            BuildingKindArg::Turret => oxide_sim::BuildingKind::Turret,
+            BuildingKindArg::Fabricator => oxide_sim::BuildingKind::Fabricator,
+        }
+    }
 }
 
 fn parse_key(s: &str) -> Result<Key> {
@@ -559,7 +582,7 @@ fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
             player: PlayerId(player),
             command: Command::Train {
                 building: BuildingId(building),
-                kind: parse_kind(&kind)?,
+                kind: kind.into(),
             },
         },
         LiveCmd::Stop { player, units: ids } => Request::SendCommand {
@@ -575,7 +598,7 @@ fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
             player: PlayerId(player),
             command: Command::Build {
                 units: units(ids),
-                kind: parse_building_kind(&kind)?,
+                kind: kind.into(),
                 anchor: parse_tile(&at)?,
             },
         },

@@ -256,7 +256,7 @@ impl Building {
 /// the architecture's core promise, and here the compiler enforces it
 /// rather than a comment. Read access goes through the accessor methods
 /// below.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct State {
     pub(crate) tick: Tick,
     pub(crate) rng: Pcg32,
@@ -352,55 +352,55 @@ impl State {
         self.vision.get(id.0 as usize)
     }
 
-    /// Checks the structural invariants deserialization alone cannot: unit
-    /// and building lists sorted by id with the id counters ahead of every
-    /// live id, and per-player tables sized to the player list. `State`
-    /// implements `Deserialize` for tooling and tests; anything loading a
-    /// snapshot from outside the sim must call this before ticking it —
-    /// a hand-edited snapshot that skips it can violate every invariant
-    /// the tick pipeline assumes.
-    pub fn validate_invariants(&self) -> Result<(), String> {
+    /// Checks the structural invariants field-level deserialization alone
+    /// cannot: sorted id lists, id counters ahead of every live id,
+    /// per-player tables sized to the player list, entity owners inside
+    /// it, and nested grids that hold together. Called automatically by
+    /// [`State`]'s `Deserialize` impl, so a snapshot that parses is a
+    /// snapshot that holds together; public for tooling that wants to
+    /// re-check after mutating one by hand.
+    pub fn validate_invariants(&self) -> Result<(), StateIntegrityError> {
         if self.players.is_empty() {
-            return Err("no players".into());
+            return Err(StateIntegrityError::NoPlayers);
         }
         if !self.units.windows(2).all(|w| w[0].id < w[1].id) {
-            return Err("units not strictly sorted by id".into());
+            return Err(StateIntegrityError::UnsortedUnits);
         }
         if !self.buildings.windows(2).all(|w| w[0].id < w[1].id) {
-            return Err("buildings not strictly sorted by id".into());
+            return Err(StateIntegrityError::UnsortedBuildings);
         }
         if let Some(u) = self.units.last()
             && u.id.0 >= self.next_unit_id
         {
-            return Err("unit id counter behind a live unit".into());
+            return Err(StateIntegrityError::StaleUnitCounter);
         }
         if let Some(b) = self.buildings.last()
             && b.id.0 >= self.next_building_id
         {
-            return Err("building id counter behind a live building".into());
+            return Err(StateIntegrityError::StaleBuildingCounter);
         }
         if self.vision.len() != self.players.len() {
-            return Err("vision table does not match the player list".into());
+            return Err(StateIntegrityError::VisionTableMismatch);
         }
         let players = self.players.len();
         if self.units.iter().any(|u| (u.player.0 as usize) >= players) {
-            return Err("unit owned by a player outside the table".into());
+            return Err(StateIntegrityError::ForeignUnitOwner);
         }
         if self
             .buildings
             .iter()
             .any(|b| (b.player.0 as usize) >= players)
         {
-            return Err("building owned by a player outside the table".into());
+            return Err(StateIntegrityError::ForeignBuildingOwner);
         }
         // Nested grids: derived Deserialize accepts any cell count, and a
         // short one panics deep inside vision refresh instead of here.
         if !self.map.is_consistent() {
-            return Err("map grid dimensions disagree with its cells".into());
+            return Err(StateIntegrityError::MalformedMapGrid);
         }
         let (w, h) = (self.map.width(), self.map.height());
         if self.vision.iter().any(|v| !v.is_consistent(w, h)) {
-            return Err("a vision table disagrees with the map dimensions".into());
+            return Err(StateIntegrityError::MalformedVisionGrid);
         }
         Ok(())
     }
@@ -640,5 +640,102 @@ mod tests {
         assert_eq!(a.hash(), b.hash());
         a.spawn_unit(PlayerId(0), UnitKind::Harvester, Vec2Fx::ZERO);
         assert_ne!(a.hash(), b.hash());
+    }
+}
+
+/// Why a deserialized snapshot was refused. Every variant is a structural
+/// contradiction the tick pipeline is entitled to assume away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum StateIntegrityError {
+    /// The player table is empty.
+    #[error("no players")]
+    NoPlayers,
+    /// Units are not strictly sorted by id.
+    #[error("units not strictly sorted by id")]
+    UnsortedUnits,
+    /// Buildings are not strictly sorted by id.
+    #[error("buildings not strictly sorted by id")]
+    UnsortedBuildings,
+    /// The unit id counter sits behind a live unit.
+    #[error("unit id counter behind a live unit")]
+    StaleUnitCounter,
+    /// The building id counter sits behind a live building.
+    #[error("building id counter behind a live building")]
+    StaleBuildingCounter,
+    /// The vision table does not match the player list.
+    #[error("vision table does not match the player list")]
+    VisionTableMismatch,
+    /// A unit is owned by a player outside the table.
+    #[error("unit owned by a player outside the table")]
+    ForeignUnitOwner,
+    /// A building is owned by a player outside the table.
+    #[error("building owned by a player outside the table")]
+    ForeignBuildingOwner,
+    /// The map grid's dimensions disagree with its cells.
+    #[error("map grid dimensions disagree with its cells")]
+    MalformedMapGrid,
+    /// A vision grid disagrees with the map dimensions.
+    #[error("a vision table disagrees with the map dimensions")]
+    MalformedVisionGrid,
+}
+
+/// The wire shape of [`State`]: a private mirror that derives the actual
+/// field-level `Deserialize`, so the only path from bytes to a `State`
+/// runs through [`State::validate_invariants`] — there is no public
+/// unvalidated constructor to call by accident. The exhaustive `From`
+/// below keeps the mirror honest: if `State` grows or loses a field, this
+/// module stops compiling instead of silently desyncing.
+#[derive(Deserialize)]
+#[serde(rename = "State")]
+struct StateWire {
+    tick: Tick,
+    rng: Pcg32,
+    map: Map,
+    players: Vec<Player>,
+    vision: Vec<crate::vision::Vision>,
+    units: Vec<Unit>,
+    buildings: Vec<Building>,
+    result: Option<GameResult>,
+    next_unit_id: u32,
+    next_building_id: u32,
+}
+
+impl From<StateWire> for State {
+    fn from(w: StateWire) -> Self {
+        // Every field named on both sides: drift breaks the build.
+        let StateWire {
+            tick,
+            rng,
+            map,
+            players,
+            vision,
+            units,
+            buildings,
+            result,
+            next_unit_id,
+            next_building_id,
+        } = w;
+        State {
+            tick,
+            rng,
+            map,
+            players,
+            vision,
+            units,
+            buildings,
+            result,
+            next_unit_id,
+            next_building_id,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for State {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let state: State = StateWire::deserialize(deserializer)?.into();
+        state
+            .validate_invariants()
+            .map_err(serde::de::Error::custom)?;
+        Ok(state)
     }
 }

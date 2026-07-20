@@ -7,16 +7,19 @@
 //! 2. **Production** — Foundries advance queues and spawn finished units
 //!    (before brains, so a fresh unit acts on its birth tick).
 //! 3. **Brains** — each unit, in id order, turns intent into action:
-//!    acquiring targets, pathing, attacking, extracting, depositing. Damage
-//!    lands immediately, so lower ids shoot first; a unit at 0 hp no longer
-//!    acts. Deterministic, documented, and how classic lockstep RTSes do it.
-//! 4. **Movement** — units advance along their paths.
-//! 5. **Collision** — overlapping bodies are pushed apart until they fit;
+//!    acquiring targets, pathing, attacking, extracting, depositing. Shots
+//!    are *buffered*, not applied — every machine decides against the same
+//!    start-of-tick world, so seat order grants no reaction edge and
+//!    mutual kills are possible.
+//! 4. **Resolution** — buffered damage lands (decision order), then
+//!    surviving victims retaliate against their earliest attacker.
+//! 5. **Movement** — units advance along their paths.
+//! 6. **Collision** — overlapping bodies are pushed apart until they fit;
 //!    units are solid to each other but never block tiles.
-//! 6. **Cleanup** — entities at 0 hp are removed, with events.
-//! 7. **Vision** — every player's fog-of-war visible set is rebuilt from
+//! 7. **Cleanup** — entities at 0 hp are removed, with events.
+//! 8. **Vision** — every player's fog-of-war visible set is rebuilt from
 //!    their surviving entities (explored only accumulates).
-//! 8. **Victory** — a player with no buildings is out; last standing wins.
+//! 9. **Victory** — a player with no Foundry is out; last standing wins.
 //!
 //! After [`GameResult`] is set the world freezes: ticks still count up (so
 //! timelines stay aligned) but nothing moves and commands are ignored.

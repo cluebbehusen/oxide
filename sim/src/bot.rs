@@ -26,8 +26,10 @@ const FABRICATOR_AT: u32 = 220;
 const TURRET_CAP: usize = 2;
 /// Enemies inside this radius of home trigger a full defensive response.
 const DEFENSE_RADIUS: Fx = Fx::lit("8");
-/// The bot thinks every N ticks (staggered per player so two bots never act
-/// on the same tick).
+/// The bot thinks every N ticks. All bots think on the same tick since
+/// 0.6: commands have no cross-player coupling at application, and the
+/// old per-seat stagger handed the later thinker one tick of fresher
+/// information every cycle.
 const CADENCE: u64 = 8;
 
 /// One bot, driving one player.
@@ -91,7 +93,7 @@ impl Bot {
 
     /// Commands for this tick (usually none — the bot thinks on a cadence).
     pub fn act(&mut self, state: &State) -> Vec<PlayerCommand> {
-        if state.result.is_some() || state.tick % CADENCE != u64::from(self.player.0) {
+        if state.result.is_some() || !state.tick.is_multiple_of(CADENCE) {
             return Vec::new();
         }
         let me = self.player;

@@ -1814,6 +1814,9 @@ fn construction_ramps_and_completes() {
     let b = state.building(site).unwrap();
     assert!(b.built);
     assert_eq!(b.hp, BuildingKind::Turret.stats().max_hp, "ramped to full");
+    // Completion is buffered; the builder learns the site is done on the
+    // next tick, through the built-site branch.
+    state.tick(&[]);
     assert_eq!(
         state.unit(builder).unwrap().order,
         Order::Idle,
@@ -2448,8 +2451,9 @@ fn validator_rejects_foreign_owners() {
     let mut doc: serde_json::Value =
         serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
     doc["units"][0]["player"] = serde_json::json!(9);
-    let tampered: State = serde_json::from_value(doc).unwrap();
-    assert!(tampered.validate_invariants().is_err());
+    // Validation runs inside Deserialize since 0.6: the tamper never
+    // becomes a State at all.
+    assert!(serde_json::from_value::<State>(doc).is_err());
 }
 
 #[test]
@@ -2828,8 +2832,7 @@ fn validator_rejects_malformed_grids() {
         .as_array_mut()
         .expect("vision grid serializes its cells");
     cells.pop();
-    let tampered: State = serde_json::from_value(doc).unwrap();
-    assert!(tampered.validate_invariants().is_err());
+    assert!(serde_json::from_value::<State>(doc).is_err());
 }
 
 #[test]
@@ -2983,4 +2986,429 @@ fn a_rejected_build_leaves_no_trace_on_the_hash() {
     )]);
     let _ = b;
     assert_eq!(with_reject.hash(), pristine.hash());
+}
+
+#[test]
+#[ignore]
+fn probe_mirror_divergence() {
+    use oxide_sim::bot::Bot;
+    // Perfect mirror premise: symmetric map, same-tick thinking is NOT
+    // possible via public API (cadence is seat-staggered), so drive BOTH
+    // seats with the same bot logic manually mirrored... instead: run the
+    // real bots and report the first tick where unit multisets stop being
+    // 180-degree mirror images (position+kind+hp).
+    let mut scenario = Scenario::skirmish();
+    scenario.seed = 424242; // both thresholds roll 6
+    scenario.players[0].bot = true;
+    scenario.players[1].bot = true;
+    let mut state = scenario.build().unwrap();
+    let mut bots = Bot::for_scenario(&scenario);
+    let (w, h) = (state.map().width(), state.map().height());
+    for tick in 0..30_000u32 {
+        let mut commands = Vec::new();
+        for bot in &mut bots {
+            commands.extend(bot.act(&state));
+        }
+        state.tick(&commands);
+        // Mirror check: every p0 unit must have a p1 twin at the mirrored
+        // position with the same kind and hp.
+        let mut p1_units: Vec<(i64, i64, oxide_sim::UnitKind, u32)> = state
+            .units()
+            .iter()
+            .filter(|u| u.player == PlayerId(1))
+            .map(|u| {
+                (
+                    (chassis::fx::Fx::from_num(w) - u.pos.x).to_bits(),
+                    (chassis::fx::Fx::from_num(h) - u.pos.y).to_bits(),
+                    u.kind,
+                    u.hp,
+                )
+            })
+            .collect();
+        let mut asym = Vec::new();
+        for u in state.units().iter().filter(|u| u.player == PlayerId(0)) {
+            let key = (u.pos.x.to_bits(), u.pos.y.to_bits(), u.kind, u.hp);
+            if let Some(i) = p1_units.iter().position(|t| *t == key) {
+                p1_units.swap_remove(i);
+            } else {
+                asym.push((u.id, u.kind, u.tile(), u.hp));
+            }
+        }
+        if !asym.is_empty() || !p1_units.is_empty() {
+            println!("FIRST DIVERGENCE at tick {tick}");
+            println!("unmatched p0: {asym:?}");
+            println!("unmatched p1 (mirrored keys left): {}", p1_units.len());
+            for u in state.units() {
+                println!(
+                    "  u{} p{} {:?} {:?} hp{} order {:?}",
+                    u.id.0,
+                    u.player.0,
+                    u.kind,
+                    u.tile(),
+                    u.hp,
+                    u.order
+                );
+            }
+            return;
+        }
+        if state.result().is_some() {
+            println!("game ended at {tick} while still symmetric??");
+            return;
+        }
+    }
+    println!("fully symmetric for 30k ticks");
+}
+
+#[test]
+fn mirrored_duels_end_in_mutual_annihilation() {
+    // The observable core of simultaneous resolution: two identical
+    // sentinels ordered at each other die on the same tick. Before 0.6,
+    // inline damage let the lower id win every mirror duel with hp to
+    // spare — the same edge that decided every mirror match.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Sentinel, 4, 6),
+        unit(1, UnitKind::Sentinel, 11, 6),
+    ])
+    .build()
+    .unwrap();
+    let (a, b) = (state.units()[0].id, state.units()[1].id);
+    state.tick(&[
+        cmd(
+            0,
+            Command::Attack {
+                units: vec![a],
+                target: Target::Unit(b),
+                queue: false,
+            },
+        ),
+        cmd(
+            1,
+            Command::Attack {
+                units: vec![b],
+                target: Target::Unit(a),
+                queue: false,
+            },
+        ),
+    ]);
+    run_until(&mut state, 400, |s, _| {
+        s.unit(a).is_none() || s.unit(b).is_none()
+    });
+    assert!(
+        state.unit(a).is_none() && state.unit(b).is_none(),
+        "identical opponents must fall together, not by id order"
+    );
+}
+
+#[test]
+fn retaliation_picks_the_earliest_surviving_attacker() {
+    // Two lancers volley the sentinel from beyond its aggro while the
+    // sentinel's own lancers kill the first of them in the same buffered
+    // resolution. The answer must go to the survivor — locking onto the
+    // corpse would leave the second shooter firing unopposed.
+    let mut state = arena(vec![
+        unit(1, UnitKind::Lancer, 8, 4),   // id 0: dies this tick
+        unit(1, UnitKind::Lancer, 8, 7),   // id 1: survives
+        unit(0, UnitKind::Lancer, 10, 1),  // id 2: executioner
+        unit(0, UnitKind::Lancer, 12, 4),  // id 3: executioner
+        unit(0, UnitKind::Sentinel, 3, 6), // id 4: the victim
+    ])
+    .build()
+    .unwrap();
+    let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
+    let (a, b, c1, c2, v) = (ids[0], ids[1], ids[2], ids[3], ids[4]);
+    let report = state.tick(&[
+        cmd(
+            1,
+            Command::Attack {
+                units: vec![a, b],
+                target: Target::Unit(v),
+                queue: false,
+            },
+        ),
+        cmd(
+            0,
+            Command::Attack {
+                units: vec![c1, c2],
+                target: Target::Unit(a),
+                queue: false,
+            },
+        ),
+    ]);
+    let _ = report;
+    // The whole exchange lands on the command tick (everyone in range).
+    assert!(
+        state.unit(a).is_none(),
+        "the first attacker died in the volley"
+    );
+    assert!(
+        matches!(
+            state.unit(v).unwrap().order,
+            Order::Attack { target: Target::Unit(t), .. } if t == b
+        ),
+        "the victim must answer the surviving attacker, got {:?}",
+        state.unit(v).unwrap().order
+    );
+}
+
+#[test]
+fn retaliation_interrupts_an_attack_on_a_corpse() {
+    // The victim auto-acquires the adjacent scuttler during its own brain
+    // step; the scuttler dies in the same volley that an out-of-aggro
+    // lancer lands on the victim. The victim's attack order points at a
+    // corpse — it must interrupt and answer the survivor, not stand mute
+    // through the lancer's next cooldown.
+    let mut state = arena(vec![
+        unit(1, UnitKind::Scuttler, 5, 6), // id 0: bait, dies this tick
+        unit(1, UnitKind::Lancer, 9, 4),   // id 1: the real threat
+        unit(0, UnitKind::Lancer, 9, 7),   // id 2: executioner
+        unit(0, UnitKind::Lancer, 10, 6),  // id 3: executioner
+        unit(0, UnitKind::Sentinel, 4, 6), // id 4: the victim
+    ])
+    .build()
+    .unwrap();
+    let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
+    let (bait, sniper, c1, c2, v) = (ids[0], ids[1], ids[2], ids[3], ids[4]);
+    state.tick(&[
+        cmd(
+            1,
+            Command::Attack {
+                units: vec![sniper],
+                target: Target::Unit(v),
+                queue: false,
+            },
+        ),
+        cmd(
+            0,
+            Command::Attack {
+                units: vec![c1, c2],
+                target: Target::Unit(bait),
+                queue: false,
+            },
+        ),
+    ]);
+    assert!(state.unit(bait).is_none(), "the bait died in the volley");
+    assert!(
+        matches!(
+            state.unit(v).unwrap().order,
+            Order::Attack { target: Target::Unit(t), .. } if t == sniper
+        ),
+        "the victim must abandon the corpse and answer the sniper, got {:?}",
+        state.unit(v).unwrap().order
+    );
+}
+
+#[test]
+fn same_tick_construction_cannot_absorb_a_lethal_hit() {
+    use oxide_sim::stats::BuildingKind;
+    // Chew a turret site to exactly the lancer's damage, then land the
+    // builder's resume and the lancer's shot on the same tick. The
+    // shooter aimed at a 30 hp site; one point of same-tick construction
+    // must not rescue it.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 4, 6),
+        unit(1, UnitKind::Sentinel, 12, 2),
+        // Parked at exactly 5.5 from the site's closest point: in firing
+        // range, outside auto-acquire — it must not chew early.
+        unit(1, UnitKind::Lancer, 11, 6),
+    ])
+    .build()
+    .unwrap();
+    let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
+    let (builder, chewer, sniper) = (ids[0], ids[1], ids[2]);
+    let anchor = TilePos::new(5, 6);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor,
+        },
+    )]);
+    let site = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == anchor)
+        .unwrap()
+        .id;
+    // Freeze construction at exactly 70 hp (the first ramp step is zero).
+    state.tick(&[cmd(
+        0,
+        Command::Stop {
+            units: vec![builder],
+        },
+    )]);
+    assert_eq!(state.building(site).unwrap().hp, 70);
+    // Four sentinel hits take it to exactly 30.
+    state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: vec![chewer],
+            target: Target::Building(site),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| {
+        s.building(site).is_some_and(|b| b.hp <= 30)
+    });
+    assert_eq!(state.building(site).unwrap().hp, 30, "clean 10s from 70");
+    state.tick(&[cmd(
+        1,
+        Command::Move {
+            units: vec![chewer],
+            goal: TilePos::new(13, 1),
+            queue: false,
+        },
+    )]);
+    // The finale: builder resumes and the lancer fires, same tick.
+    let mut events = state
+        .tick(&[
+            cmd(
+                0,
+                Command::Build {
+                    units: vec![builder],
+                    kind: BuildingKind::Turret,
+                    anchor,
+                },
+            ),
+            cmd(
+                1,
+                Command::Attack {
+                    units: vec![sniper],
+                    target: Target::Building(site),
+                    queue: false,
+                },
+            ),
+        ])
+        .events;
+    if state.building(site).is_some() {
+        events.extend(run_until(&mut state, 5, |s, _| s.building(site).is_none()));
+    }
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::BuildingDestroyed { .. })),
+        "a lethal hit must kill the site regardless of same-tick building"
+    );
+}
+
+#[test]
+fn a_doomed_site_never_comes_online() {
+    use oxide_sim::stats::BuildingKind;
+    // Two scuttlers chew the site throughout construction so its hp at
+    // the final progress tick sits well under the parked lancers' volley;
+    // the volley lands on exactly that tick. The site must die without
+    // ever completing: no online event, no free turret shot.
+    let scenario = Scenario {
+        name: "doomed-site".into(),
+        seed: 42,
+        map: vec![
+            "####################".into(),
+            "#1.................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#................2.#".into(),
+            "#..................#".into(),
+            "####################".into(),
+        ],
+        players: arena(vec![]).players,
+        units: vec![
+            unit(0, UnitKind::Harvester, 8, 5),
+            unit(1, UnitKind::Scuttler, 11, 3),
+            unit(1, UnitKind::Scuttler, 11, 8),
+            // Parked in the fire-but-no-aggro band around the site.
+            unit(1, UnitKind::Lancer, 15, 5),
+            unit(1, UnitKind::Lancer, 15, 6),
+            unit(1, UnitKind::Lancer, 14, 2),
+        ],
+    };
+    let mut state = scenario.build().unwrap();
+    let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
+    let (builder, s1, s2, l1, l2, l3) = (ids[0], ids[1], ids[2], ids[3], ids[4], ids[5]);
+    let anchor = TilePos::new(9, 5);
+    let build_ticks = BuildingKind::Turret
+        .stats()
+        .construction
+        .unwrap()
+        .build_ticks;
+
+    let mut all_events = Vec::new();
+    all_events.extend(
+        state
+            .tick(&[cmd(
+                0,
+                Command::Build {
+                    units: vec![builder],
+                    kind: BuildingKind::Turret,
+                    anchor,
+                },
+            )])
+            .events,
+    );
+    let site = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == anchor)
+        .unwrap()
+        .id;
+    all_events.extend(
+        state
+            .tick(&[cmd(
+                1,
+                Command::Attack {
+                    units: vec![s1, s2],
+                    target: Target::Building(site),
+                    queue: false,
+                },
+            )])
+            .events,
+    );
+    // Progress hit 1 on the build tick and 2 on the tick above; the final
+    // tick is build_ticks-2 empty ticks later. Fire the volley then.
+    for _ in 0..(build_ticks - 3) {
+        all_events.extend(state.tick(&[]).events);
+        assert!(
+            state.building(site).is_some_and(|b| !b.built && b.hp > 0),
+            "premise: the site survives, unfinished, until the final tick"
+        );
+    }
+    all_events.extend(
+        state
+            .tick(&[cmd(
+                1,
+                Command::Attack {
+                    units: vec![l1, l2, l3],
+                    target: Target::Building(site),
+                    queue: false,
+                },
+            )])
+            .events,
+    );
+    // Sweep a couple more ticks for the destruction event.
+    for _ in 0..3 {
+        all_events.extend(state.tick(&[]).events);
+    }
+    assert!(
+        !all_events
+            .iter()
+            .any(|e| matches!(e, Event::BuildingCompleted { .. })),
+        "a site killed on its final tick must never report completion"
+    );
+    assert!(
+        !all_events
+            .iter()
+            .any(|e| matches!(e, Event::TurretFired { .. })),
+        "a doomed turret gets no free shot"
+    );
+    assert!(
+        all_events
+            .iter()
+            .any(|e| matches!(e, Event::BuildingDestroyed { .. })),
+        "the volley killed it"
+    );
+    assert!(state.building(site).is_none());
 }
