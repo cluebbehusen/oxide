@@ -122,6 +122,20 @@ pub(crate) fn astar_for(state: &State, from: TilePos, to: TilePos) -> Option<Vec
     )
 }
 
+/// A route for a unit of the given kind: ground units A* around the
+/// world, air units fly the straight line — one waypoint, landed exactly.
+pub(crate) fn route_for(
+    state: &State,
+    kind: crate::stats::UnitKind,
+    from: TilePos,
+    to: TilePos,
+) -> Option<Vec<TilePos>> {
+    match kind.stats().domain {
+        crate::stats::Domain::Ground => astar_for(state, from, to),
+        crate::stats::Domain::Air => Some(vec![to]),
+    }
+}
+
 /// The ring of tiles surrounding a rectangle, row-major (deterministic).
 pub(crate) fn rect_adjacent_tiles(
     anchor: TilePos,
@@ -154,6 +168,25 @@ pub(crate) fn tile_adjacent_to_rect(tile: TilePos, anchor: TilePos, size: (i32, 
         && tile.y >= anchor.y - 1
         && tile.x <= anchor.x + w
         && tile.y <= anchor.y + h
+}
+
+/// The tile a commanded goal actually means to one movement domain:
+/// ground snaps to the nearest walkable tile, air clamps onto the map —
+/// any tile flies, rock included.
+pub(crate) fn domain_goal(
+    state: &State,
+    goal: TilePos,
+    domain: crate::stats::Domain,
+) -> Option<TilePos> {
+    match domain {
+        crate::stats::Domain::Ground => {
+            find_nearby_passable(state, goal, crate::stats::GOAL_SNAP_RADIUS)
+        }
+        crate::stats::Domain::Air => Some(TilePos::new(
+            goal.x.clamp(0, state.map.width() - 1),
+            goal.y.clamp(0, state.map.height() - 1),
+        )),
+    }
 }
 
 /// The nearest passable tile to `goal` within `radius`, scanning rings

@@ -5,11 +5,11 @@
 //! ring is fully blocked the unit waits at 100% until a tile opens up. A
 //! rally point, when set, hands the newborn its first order.
 
-use super::{find_nearby_passable, rect_adjacent_tiles};
+use super::rect_adjacent_tiles;
 use crate::event::Event;
 use crate::ids::PlayerId;
 use crate::state::{Order, State};
-use crate::stats::{GOAL_SNAP_RADIUS, UnitKind};
+use crate::stats::UnitKind;
 use chassis::grid::TilePos;
 
 pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
@@ -29,9 +29,11 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         if b.progress < kind.stats().train_ticks {
             continue;
         }
-        // Ready — look for a doorstep tile.
+        // Ready — look for a doorstep tile (any in-bounds tile serves a
+        // flyer; the ground ring can be walled shut).
         let (anchor, size, player, rally) = (b.anchor, b.kind.stats().size, b.player, b.rally);
-        let spawn = rect_adjacent_tiles(anchor, size).find(|&t| state.passable(t));
+        let domain = kind.stats().domain;
+        let spawn = rect_adjacent_tiles(anchor, size).find(|&t| state.passable_for(domain, t));
         let Some(tile) = spawn else {
             continue; // fully walled in; retry next tick
         };
@@ -63,7 +65,7 @@ fn rally_order(state: &State, owner: PlayerId, kind: UnitKind, rally: TilePos) -
     if stats.harvest.is_some() && state.vision(owner).remembered_scrap(rally) > 0 {
         return Some(Order::Harvest { node: rally });
     }
-    let goal = find_nearby_passable(state, rally, GOAL_SNAP_RADIUS)?;
+    let goal = super::domain_goal(state, rally, stats.domain)?;
     Some(if stats.can_fight() {
         Order::AttackMove { goal }
     } else {

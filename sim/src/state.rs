@@ -123,8 +123,9 @@ pub struct Unit {
     pub hp: u32,
     /// Scrap on board (harvesters only).
     pub carrying: u32,
-    /// Ticks until the next attack is allowed.
-    pub cooldown: u32,
+    /// Ticks until each weapon may fire again, indexed like
+    /// `kind.stats().weapons` (unused slots stay zero).
+    pub cooldowns: [u32; crate::stats::MAX_WEAPONS],
     /// Order-specific counter (extraction progress).
     pub progress: u32,
     /// Current intent.
@@ -465,6 +466,16 @@ impl State {
         self.map.terrain_passable(pos) && self.building_at(pos).is_none()
     }
 
+    /// Whether a unit of the given movement domain may stand on `pos`.
+    /// Ground units need open terrain and no building; air units only need
+    /// the map itself — rock, scrap, and roofs mean nothing up there.
+    pub fn passable_for(&self, domain: crate::stats::Domain, pos: TilePos) -> bool {
+        match domain {
+            crate::stats::Domain::Ground => self.passable(pos),
+            crate::stats::Domain::Air => self.map.tile(pos).is_some(),
+        }
+    }
+
     /// Spawns a unit at full health. Position is the caller's problem to
     /// validate.
     pub(crate) fn spawn_unit(&mut self, player: PlayerId, kind: UnitKind, pos: Vec2Fx) -> UnitId {
@@ -477,7 +488,7 @@ impl State {
             pos,
             hp: kind.stats().max_hp,
             carrying: 0,
-            cooldown: 0,
+            cooldowns: [0; crate::stats::MAX_WEAPONS],
             progress: 0,
             order: Order::Idle,
             queue: std::collections::VecDeque::new(),
@@ -566,8 +577,9 @@ impl State {
             }
         }
         // Standing machines hold their ground — no foundations under feet.
+        // A flyer passing overhead blocks nothing.
         !self.units.iter().any(|u| {
-            u.hp > 0 && {
+            u.hp > 0 && u.kind.stats().domain == crate::stats::Domain::Ground && {
                 let t = u.tile();
                 t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h
             }

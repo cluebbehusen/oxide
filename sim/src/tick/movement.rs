@@ -55,7 +55,9 @@ pub(super) fn run(state: &mut State) {
         if unit.hp == 0 {
             continue;
         }
-        let mut budget = unit.kind.stats().speed;
+        let stats = unit.kind.stats();
+        let airborne = stats.domain == crate::stats::Domain::Air;
+        let mut budget = stats.speed;
         while budget > Fx::ZERO {
             let Some(path) = &mut unit.path else { break };
             let Some(&waypoint) = path.waypoints.get(path.next as usize) else {
@@ -67,23 +69,27 @@ pub(super) fn run(state: &mut State) {
             // longer open — and never take a diagonal whose two flanking
             // cardinals aren't both open either, the same no-corner-cut
             // rule A* guaranteed when the path was computed. Drop the path
-            // and let the brain repath around whatever appeared.
-            let open =
-                |t: TilePos| map.terrain_passable(t) && !buildings.iter().any(|b| b.contains(t));
-            let here = TilePos::containing(unit.pos);
-            let (dx, dy) = (waypoint.x - here.x, waypoint.y - here.y);
-            let corner_cut = dx != 0
-                && dy != 0
-                && !(open(here.offset(dx.signum(), 0)) && open(here.offset(0, dy.signum())));
-            if !open(waypoint) || corner_cut {
-                unit.path = None;
-                break;
+            // and let the brain repath around whatever appeared. None of
+            // it binds a flyer: air routes never close.
+            if !airborne {
+                let open = |t: TilePos| {
+                    map.terrain_passable(t) && !buildings.iter().any(|b| b.contains(t))
+                };
+                let here = TilePos::containing(unit.pos);
+                let (dx, dy) = (waypoint.x - here.x, waypoint.y - here.y);
+                let corner_cut = dx != 0
+                    && dy != 0
+                    && !(open(here.offset(dx.signum(), 0)) && open(here.offset(0, dy.signum())));
+                if !open(waypoint) || corner_cut {
+                    unit.path = None;
+                    break;
+                }
             }
             let center = waypoint.center();
             let dist = unit.pos.dist(center);
             if let Some(&next_wp) = path.waypoints.get(path.next as usize + 1)
                 && dist <= WAYPOINT_ACCEPT
-                && early_advance_safe(waypoint, next_wp, map, buildings)
+                && (airborne || early_advance_safe(waypoint, next_wp, map, buildings))
             {
                 path.next += 1;
                 continue; // spend the budget on the next leg instead
@@ -193,14 +199,19 @@ fn relaxation_pass(state: &mut State, reversed: bool) -> bool {
                     if j <= i {
                         continue; // each pair once, in (i, j) id order
                     }
-                    let (pos_i, radius_i, id_i) = {
+                    let (pos_i, radius_i, id_i, dom_i) = {
                         let u = &state.units[i];
-                        (u.pos, u.kind.stats().radius, u.id)
+                        (u.pos, u.kind.stats().radius, u.id, u.kind.stats().domain)
                     };
-                    let (pos_j, radius_j, id_j) = {
+                    let (pos_j, radius_j, id_j, dom_j) = {
                         let u = &state.units[j];
-                        (u.pos, u.kind.stats().radius, u.id)
+                        (u.pos, u.kind.stats().radius, u.id, u.kind.stats().domain)
                     };
+                    // Bodies only collide within their own layer: a flyer
+                    // and a crawler occupy the same tile without touching.
+                    if dom_i != dom_j {
+                        continue;
+                    }
                     let min_dist = radius_i + radius_j;
                     let delta = pos_j - pos_i;
                     let dist_sq = delta.length_sq();
@@ -226,7 +237,7 @@ fn relaxation_pass(state: &mut State, reversed: bool) -> bool {
                     let step_j = (overlap * share_j).min(COLLISION_MAX_STEP - spent[j]);
                     if step_j > Fx::ZERO {
                         let away_j = pos_j + dir * step_j;
-                        if state.passable(TilePos::containing(away_j)) {
+                        if state.passable_for(dom_j, TilePos::containing(away_j)) {
                             state.units[j].pos = away_j;
                             spent[j] += step_j;
                         }
@@ -234,7 +245,7 @@ fn relaxation_pass(state: &mut State, reversed: bool) -> bool {
                     let step_i = (overlap * share_i).min(COLLISION_MAX_STEP - spent[i]);
                     if step_i > Fx::ZERO {
                         let away_i = pos_i - dir * step_i;
-                        if state.passable(TilePos::containing(away_i)) {
+                        if state.passable_for(dom_i, TilePos::containing(away_i)) {
                             state.units[i].pos = away_i;
                             spent[i] += step_i;
                         }
