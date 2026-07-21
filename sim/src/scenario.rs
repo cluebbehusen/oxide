@@ -35,8 +35,13 @@ pub struct Scenario {
 pub struct PlayerSpec {
     /// Display name.
     pub name: String,
-    /// Sprite tint.
+    /// Which roster this seat runs (and its sprite tint).
     pub faction: Faction,
+    /// Team index; seats sharing one stand and fall together. `None`
+    /// puts the seat on its own team (every pre-team scenario is a
+    /// free-for-all of one-player teams).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<u8>,
     /// Starting scrap.
     #[serde(default = "default_scrap")]
     pub scrap: u32,
@@ -113,6 +118,9 @@ pub enum ScenarioError {
     /// Two Foundries can't reach each other: the match could never end.
     #[error("players {0} and {1} are sealed apart — no ground route between their foundries")]
     Disconnected(PlayerId, PlayerId),
+    /// Every seat on one team: nobody to fight, no way to win.
+    #[error("all players share one team — the match could never end")]
+    OneTeam,
 }
 
 impl Scenario {
@@ -148,15 +156,23 @@ impl Scenario {
         {
             return Err(ScenarioError::ExtraAnchor(*player, self.players.len()));
         }
-        let players = self
+        let players: Vec<Player> = self
             .players
             .iter()
-            .map(|spec| Player {
+            .enumerate()
+            .map(|(index, spec)| Player {
                 name: spec.name.clone(),
                 faction: spec.faction,
+                team: spec.team.unwrap_or(index as u8),
                 scrap: spec.scrap,
             })
             .collect();
+        if self.players.len() > 1 {
+            let first = players[0].team;
+            if players.iter().all(|p| p.team == first) {
+                return Err(ScenarioError::OneTeam);
+            }
+        }
         let mut state = State::assemble(map, players, self.seed);
 
         for index in 0..self.players.len() {
@@ -252,6 +268,7 @@ mod tests {
         scenario.players.push(PlayerSpec {
             name: "third".into(),
             faction: Faction::Ferrous,
+            team: None,
             scrap: 0,
             bot: false,
             bot_config: None,

@@ -29,6 +29,7 @@ fn open_arena(units: Vec<UnitSpec>) -> Scenario {
             PlayerSpec {
                 name: "Ferrous".into(),
                 faction: Faction::Ferrous,
+                team: None,
                 scrap: 500,
                 bot: false,
                 bot_config: None,
@@ -36,6 +37,7 @@ fn open_arena(units: Vec<UnitSpec>) -> Scenario {
             PlayerSpec {
                 name: "Cupric".into(),
                 faction: Faction::Cupric,
+                team: None,
                 scrap: 500,
                 bot: false,
                 bot_config: None,
@@ -255,6 +257,8 @@ fn wounded_members_rotate_to_the_rear_permanently() {
         my_units: units,
         my_buildings: Vec::new(),
         my_queues: Vec::new(),
+        ally_units: Vec::new(),
+        ally_buildings: Vec::new(),
         enemy_units: Vec::new(),
         enemy_buildings: Vec::new(),
         known_scrap: Vec::new(),

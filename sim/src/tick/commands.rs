@@ -234,7 +234,8 @@ fn apply_attack(
             })
             .ok_or(RejectReason::InvalidTarget)?,
     };
-    if target_owner == player || !seen {
+    // Teammates (and yourself) are not targets.
+    if !state.hostile(player, target_owner) || !seen {
         return Err(RejectReason::InvalidTarget);
     }
     // Units that can't fight — or whose weapons can't cover the target's

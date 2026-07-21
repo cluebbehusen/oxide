@@ -19,8 +19,8 @@ fn classic_mirror(seed: u64) -> Option<PlayerId> {
             commands.extend(bot.act(&state));
         }
         state.tick(&commands);
-        if let Some(GameResult::Victory { winner }) = state.result() {
-            return Some(winner);
+        if let Some(GameResult::Victory { team }) = state.result() {
+            return Some(PlayerId(team));
         }
     }
     None
@@ -36,8 +36,8 @@ fn brain_mirror(seed: u64) -> Option<PlayerId> {
         let mut commands = b0.act(&state);
         commands.extend(b1.act(&state));
         state.tick(&commands);
-        if let Some(GameResult::Victory { winner }) = state.result() {
-            return Some(winner);
+        if let Some(GameResult::Victory { team }) = state.result() {
+            return Some(PlayerId(team));
         }
     }
     None

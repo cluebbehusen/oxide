@@ -171,7 +171,7 @@ fn buffer_shot(
     let radius_sq = radius * radius;
     for u in state.units.iter() {
         if u.hp == 0
-            || u.player == attacker_owner
+            || !state.hostile(attacker_owner, u.player)
             || Target::Unit(u.id) == victim
             || !weapon.targets.covers(u.kind.stats().domain)
             || u.pos.dist_sq(aim) > radius_sq
@@ -225,7 +225,9 @@ fn turret_fire(state: &mut State, events: &mut Vec<Event>, hits: &mut Vec<Pendin
         let victim = state
             .units
             .iter()
-            .filter(|u| u.player != me && u.hp > 0 && atk.targets.covers(u.kind.stats().domain))
+            .filter(|u| {
+                state.hostile(me, u.player) && u.hp > 0 && atk.targets.covers(u.kind.stats().domain)
+            })
             .filter(|u| state.can_see(me, u.tile()))
             .map(|u| (center.dist_sq(u.pos), u.id, u.pos, u.kind.stats().domain))
             .filter(|(d, _, _, _)| *d <= range_sq)
@@ -414,7 +416,9 @@ fn acquire_target(state: &State, id: UnitId) -> Option<Target> {
     let unit_target = state
         .units
         .iter()
-        .filter(|u| u.player != me && u.hp > 0 && stats.can_target(u.kind.stats().domain))
+        .filter(|u| {
+            state.hostile(me, u.player) && u.hp > 0 && stats.can_target(u.kind.stats().domain)
+        })
         .map(|u| (pos.dist_sq(u.pos), u.id))
         .filter(|(d, _)| *d <= aggro_sq)
         .min();
@@ -427,7 +431,7 @@ fn acquire_target(state: &State, id: UnitId) -> Option<Target> {
     state
         .buildings
         .iter()
-        .filter(|b| b.player != me && b.hp > 0)
+        .filter(|b| state.hostile(me, b.player) && b.hp > 0)
         .map(|b| (pos.dist_sq(b.closest_point_to(pos)), b.id))
         .filter(|(d, _)| *d <= aggro_sq)
         .min()
@@ -904,7 +908,11 @@ fn fire_sidearms(
         let victim = state
             .units
             .iter()
-            .filter(|u| u.player != me && u.hp > 0 && weapon.targets.covers(u.kind.stats().domain))
+            .filter(|u| {
+                state.hostile(me, u.player)
+                    && u.hp > 0
+                    && weapon.targets.covers(u.kind.stats().domain)
+            })
             .filter(|u| state.can_see(me, u.tile()))
             .map(|u| (pos.dist_sq(u.pos), u.id, u.pos, u.kind.stats().domain))
             .filter(|(d, _, _, _)| *d <= range_sq)

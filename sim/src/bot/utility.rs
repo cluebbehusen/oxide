@@ -774,7 +774,9 @@ impl UtilityPolicy {
             let (w, h) = b.kind.stats().size;
             t.x >= b.anchor.x && t.x < b.anchor.x + w && t.y >= b.anchor.y && t.y < b.anchor.y + h
         };
-        !obs.my_buildings.iter().any(covered) && !obs.enemy_buildings.iter().any(covered)
+        !obs.my_buildings.iter().any(covered)
+            && !obs.ally_buildings.iter().any(covered)
+            && !obs.enemy_buildings.iter().any(covered)
     }
 
     fn rock_at(&self, obs: &Observation, t: TilePos) -> bool {

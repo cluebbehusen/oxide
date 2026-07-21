@@ -90,12 +90,18 @@ impl Orientation {
             return obs.clone();
         }
         let mut o = obs.clone();
-        for u in o.my_units.iter_mut().chain(o.enemy_units.iter_mut()) {
+        for u in o
+            .my_units
+            .iter_mut()
+            .chain(o.ally_units.iter_mut())
+            .chain(o.enemy_units.iter_mut())
+        {
             u.tile = self.tile(u.tile);
         }
         for b in o
             .my_buildings
             .iter_mut()
+            .chain(o.ally_buildings.iter_mut())
             .chain(o.enemy_buildings.iter_mut())
         {
             b.anchor = self.anchor(b.anchor, {

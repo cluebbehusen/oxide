@@ -168,16 +168,18 @@ impl Vision {
 pub(crate) fn refresh(state: &mut State) {
     let mut vision = std::mem::take(&mut state.vision);
     for (index, view) in vision.iter_mut().enumerate() {
-        let player = PlayerId(index as u8);
+        let my_team = state.players[index].team;
+        let allied = |p: PlayerId| state.players[p.0 as usize].team == my_team;
         view.visible.fill(false);
-        for unit in state.units.iter().filter(|u| u.player == player) {
+        // Team sight: every teammate's eyes stamp into this view.
+        for unit in state.units.iter().filter(|u| allied(u.player)) {
             view.stamp_disc(unit.tile(), unit.kind.stats().vision);
         }
         // Sites don't see: a pile of parts has no sensors.
         for building in state
             .buildings
             .iter()
-            .filter(|b| b.player == player && b.built)
+            .filter(|b| allied(b.player) && b.built)
         {
             let radius = building.kind.stats().vision;
             for tile in building.tiles() {
@@ -192,7 +194,7 @@ pub(crate) fn refresh(state: &mut State) {
         // freezes at its last sighting.
         let mut ghosts = std::mem::take(&mut view.ghosts);
         ghosts.retain(|ghost| !ghost.footprint().any(|t| view.visible(t)));
-        for building in state.buildings.iter().filter(|b| b.player != player) {
+        for building in state.buildings.iter().filter(|b| !allied(b.player)) {
             if building.tiles().any(|t| view.visible(t)) {
                 ghosts.push(GhostBuilding {
                     kind: building.kind,
@@ -227,12 +229,12 @@ pub(crate) fn refresh(state: &mut State) {
         let masts: Vec<TilePos> = state
             .buildings
             .iter()
-            .filter(|b| b.player == player && b.built && b.kind == BuildingKind::Array)
+            .filter(|b| allied(b.player) && b.built && b.kind == BuildingKind::Array)
             .map(|b| b.anchor)
             .collect();
         if !masts.is_empty() {
             let r = crate::stats::RADAR_DETECT_RADIUS;
-            for u in state.units.iter().filter(|u| u.player != player) {
+            for u in state.units.iter().filter(|u| !allied(u.player)) {
                 let t = u.tile();
                 if view.visible(t) {
                     continue;

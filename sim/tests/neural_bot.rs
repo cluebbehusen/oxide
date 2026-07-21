@@ -115,9 +115,7 @@ fn exported_weights_play_a_deterministic_match() {
     println!("result: {r1:?}");
     assert_eq!(
         r1,
-        Some(GameResult::Victory {
-            winner: PlayerId(0)
-        }),
+        Some(GameResult::Victory { team: 0 }),
         "the exported policy should beat Veteran"
     );
 }

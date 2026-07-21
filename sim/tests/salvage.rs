@@ -28,6 +28,7 @@ fn arena(units: Vec<UnitSpec>) -> Scenario {
             PlayerSpec {
                 name: "Ferrous".into(),
                 faction: Faction::Ferrous,
+                team: None,
                 scrap: 200,
                 bot: false,
                 bot_config: None,
@@ -35,6 +36,7 @@ fn arena(units: Vec<UnitSpec>) -> Scenario {
             PlayerSpec {
                 name: "Cupric".into(),
                 faction: Faction::Cupric,
+                team: None,
                 scrap: 200,
                 bot: false,
                 bot_config: None,

@@ -17,8 +17,8 @@ fn duel(brain_seat: u8, dials: Dials) -> Option<PlayerId> {
         let mut commands = brain.act(&state);
         commands.extend(classic.act(&state));
         state.tick(&commands);
-        if let Some(GameResult::Victory { winner }) = state.result() {
-            return Some(winner);
+        if let Some(GameResult::Victory { team }) = state.result() {
+            return Some(PlayerId(team));
         }
     }
     None

@@ -948,8 +948,15 @@ fn draw_hud(game: &Game, input: &InputState) {
     // Endgame banner.
     if let Some(result) = game.state.result() {
         let text = match result {
-            GameResult::Victory { winner } => {
-                format!("{} WINS", game.state.player(winner).name.to_uppercase())
+            GameResult::Victory { .. } => {
+                // Name the winners: one seat by name, a team by roster.
+                let names: Vec<String> = game
+                    .state
+                    .winners()
+                    .into_iter()
+                    .map(|p| game.state.player(p).name.to_uppercase())
+                    .collect();
+                format!("{} WINS", names.join(" & "))
             }
             GameResult::Draw => "MUTUAL DESTRUCTION".to_string(),
         };
@@ -995,6 +1002,23 @@ const MINIMAP_MAX: Vec2 = vec2(220.0, 150.0);
 const MINI_VOID: Color = color_u8!(10, 10, 13, 255);
 const MINI_GROUND: Color = color_u8!(44, 44, 52, 255);
 const MINI_ROCK: Color = color_u8!(84, 84, 96, 255);
+
+/// Minimap allegiance color: faction color, lifted toward white for
+/// teammates — "friendly, not yours" at a glance (a 2v2 fields the same
+/// faction on both sides, so tint alone can't say friend or foe).
+fn mini_entity_color(game: &Game, owner: oxide_sim::PlayerId) -> Color {
+    let base = mini_faction_color(game.state.player(owner).faction);
+    if owner != game.human && !game.state.hostile(game.human, owner) {
+        Color::new(
+            base.r * 0.45 + 0.55,
+            base.g * 0.45 + 0.55,
+            base.b * 0.45 + 0.55,
+            base.a,
+        )
+    } else {
+        base
+    }
+}
 
 fn dim(color: Color) -> Color {
     Color::new(color.r * 0.55, color.g * 0.55, color.b * 0.55, color.a)
@@ -1124,7 +1148,7 @@ fn draw_minimap(game: &Game) {
             rect.y + building.anchor.y as f32 * scale,
             w as f32 * scale,
             h as f32 * scale,
-            mini_faction_color(game.state.player(building.player).faction),
+            mini_entity_color(game, building.player),
         );
     }
     for unit in game.state.units() {
@@ -1138,7 +1162,7 @@ fn draw_minimap(game: &Game) {
             rect.y + unit.pos.y.to_num::<f32>() * scale - dot * 0.5,
             dot,
             dot,
-            mini_faction_color(game.state.player(unit.player).faction),
+            mini_entity_color(game, unit.player),
         );
     }
 

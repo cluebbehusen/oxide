@@ -107,31 +107,36 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
     }
 }
 
-/// Declares the result once at least one player has been eliminated.
+/// Declares the result once at least one team has been eliminated.
 ///
-/// Elimination is Foundry-based: no Foundry, no comeback — turrets and
-/// factories left standing don't keep a player in the game (or 0.5's
+/// Elimination is Foundry-based: a team lives while *any* of its seats
+/// holds a Foundry — no Foundry anywhere, no comeback; turrets and
+/// factories left standing don't keep a team in the game (or 0.5's
 /// buildable kinds would have silently rewritten the victory rule).
+/// The per-seat command gate in `commands::apply` deliberately stays
+/// player-scoped: a foundry-less seat on a living team spectates while
+/// its team plays on.
 fn victory(state: &mut State, events: &mut Vec<Event>) {
     if state.result.is_some() {
         return;
     }
-    let alive = |p: usize| {
-        state
-            .buildings
-            .iter()
-            .any(|b| b.player.0 as usize == p && b.kind == crate::stats::BuildingKind::Foundry)
+    let mut teams: Vec<u8> = state.players.iter().map(|p| p.team).collect();
+    teams.sort_unstable();
+    teams.dedup();
+    let alive = |team: u8| {
+        state.buildings.iter().any(|b| {
+            b.kind == crate::stats::BuildingKind::Foundry
+                && state.players[b.player.0 as usize].team == team
+        })
     };
-    let survivors: Vec<usize> = (0..state.players.len()).filter(|&p| alive(p)).collect();
-    if survivors.len() == state.players.len() {
+    let survivors: Vec<u8> = teams.iter().copied().filter(|&t| alive(t)).collect();
+    if survivors.len() == teams.len() {
         return;
     }
     let result = match survivors.as_slice() {
         [] => GameResult::Draw,
-        [winner] => GameResult::Victory {
-            winner: crate::ids::PlayerId(*winner as u8),
-        },
-        _ => return, // multiple survivors — play on
+        [team] => GameResult::Victory { team: *team },
+        _ => return, // multiple teams standing — play on
     };
     state.result = Some(result);
     events.push(Event::GameOver { result });

@@ -21,7 +21,7 @@ use chassis::grid::TilePos;
 use chassis::rng::Pcg32;
 use serde::{Deserialize, Serialize};
 
-/// Cosmetic allegiance — decides sprite tint, nothing else.
+/// A seat's allegiance: which roster it runs, and its sprite tint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Faction {
@@ -36,8 +36,11 @@ pub enum Faction {
 pub struct Player {
     /// Display name.
     pub name: String,
-    /// Sprite tint.
+    /// Which roster this seat runs (and its sprite tint).
     pub faction: Faction,
+    /// Team index: seats sharing one share vision, never fight each
+    /// other, and stand or fall together.
+    pub team: u8,
     /// Scrap in the bank.
     pub scrap: u32,
 }
@@ -46,12 +49,13 @@ pub struct Player {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum GameResult {
-    /// One player still has buildings.
+    /// One team still holds a Foundry.
     Victory {
-        /// The survivor.
-        winner: PlayerId,
+        /// The surviving team (see [`crate::State::winners`] for its
+        /// seats).
+        team: u8,
     },
-    /// Everyone's buildings died on the same tick.
+    /// Every team's last Foundry died on the same tick.
     Draw,
 }
 
@@ -417,6 +421,25 @@ impl State {
         self.vision(player).visible(pos)
     }
 
+    /// Whether two seats are enemies. Every combat, targeting, and
+    /// detection decision routes through this — teammates are never
+    /// valid victims, and a seat is never hostile to itself.
+    pub fn hostile(&self, a: PlayerId, b: PlayerId) -> bool {
+        self.players[a.0 as usize].team != self.players[b.0 as usize].team
+    }
+
+    /// The seats on the winning team, in id order — empty until a
+    /// victory is declared.
+    pub fn winners(&self) -> Vec<PlayerId> {
+        match self.result {
+            Some(GameResult::Victory { team }) => (0..self.players.len())
+                .filter(|&i| self.players[i].team == team)
+                .map(|i| PlayerId(i as u8))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Rebuilds every player's visible set; runs each tick and once at
     /// scenario build so tick 0 already has sight.
     pub(crate) fn refresh_vision(&mut self) {
@@ -605,6 +628,7 @@ mod tests {
             vec![Player {
                 name: "p".into(),
                 faction: Faction::Ferrous,
+                team: 0,
                 scrap: 0,
             }],
             7,

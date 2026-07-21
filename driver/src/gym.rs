@@ -114,14 +114,15 @@ impl Episode {
             .any(|b| b.player == seat && b.kind == oxide_sim::BuildingKind::Foundry)
     }
 
-    /// True while the match is live, every controlled seat stands, and
-    /// the tick cap is unmet. Any controlled elimination ends the
-    /// episode: per-seat trajectory continuation is a team-training
-    /// concern, deferred until teams exist.
+    /// True while the match is live, *any* controlled seat stands, and
+    /// the tick cap is unmet. A dead learner drops out of the per-frame
+    /// `seats` list (its `alive` flag goes false) while surviving
+    /// teammates play on — per-seat trajectory truncation is the
+    /// trainer's bookkeeping.
     fn live(&self) -> bool {
         self.state.result().is_none()
             && self.state.current_tick() < self.max_ticks
-            && self.gyms.iter().all(|g| self.seat_alive(g.player()))
+            && self.gyms.iter().any(|g| self.seat_alive(g.player()))
     }
 
     fn cadence(&self) -> u64 {
@@ -131,16 +132,21 @@ impl Episode {
     /// Applies the trainer's actions at the current decision tick, then
     /// advances to the next decision tick (or the end).
     fn step(&mut self, actions: &[usize]) -> Result<()> {
-        if actions.len() != self.gyms.len() {
+        // One action per *living* controlled seat, in seat order — dead
+        // learners dropped out of the frame's seats list and send none.
+        let live: Vec<usize> = (0..self.gyms.len())
+            .filter(|&i| self.seat_alive(self.gyms[i].player()))
+            .collect();
+        if actions.len() != live.len() {
             bail!(
-                "expected {} actions (one per controlled seat), got {}",
-                self.gyms.len(),
+                "expected {} actions (one per living controlled seat), got {}",
+                live.len(),
                 actions.len()
             );
         }
         let mut commands = Vec::new();
-        for (gym, action) in self.gyms.iter_mut().zip(actions) {
-            commands.extend(gym.step(&self.state, Action::from_index(*action)));
+        for (&idx, action) in live.iter().zip(actions) {
+            commands.extend(self.gyms[idx].step(&self.state, Action::from_index(*action)));
         }
         for op in self.opponents.iter_mut() {
             commands.extend(op.act(&self.state));
@@ -157,11 +163,30 @@ impl Episode {
     }
 
     fn reply(&mut self) -> serde_json::Value {
+        let alive: Vec<u8> = self
+            .gyms
+            .iter()
+            .map(|g| g.player())
+            .filter(|p| self.seat_alive(*p))
+            .map(|p| p.0)
+            .collect();
         if self.live() {
             let state = &self.state;
+            let live_seats: Vec<PlayerId> = self
+                .gyms
+                .iter()
+                .map(|g| g.player())
+                .filter(|p| {
+                    state
+                        .buildings()
+                        .iter()
+                        .any(|b| b.player == *p && b.kind == oxide_sim::BuildingKind::Foundry)
+                })
+                .collect();
             let seats: Vec<_> = self
                 .gyms
                 .iter_mut()
+                .filter(|g| live_seats.contains(&g.player()))
                 .map(|gym| {
                     let d = gym.decision(state);
                     serde_json::json!({
@@ -175,23 +200,21 @@ impl Episode {
                 "done": false,
                 "tick": self.state.current_tick(),
                 "seats": seats,
+                "alive": alive,
             })
         } else {
+            // `winner` is the surviving *team*; in a 1v1 (where every
+            // seat defaults to its own team) that is also the seat index.
             let winner = match self.state.result() {
-                Some(GameResult::Victory { winner }) => Some(winner.0),
+                Some(GameResult::Victory { team }) => Some(team),
                 _ => None,
             };
-            let alive: Vec<u8> = self
-                .gyms
-                .iter()
-                .map(|g| g.player())
-                .filter(|p| self.seat_alive(*p))
-                .map(|p| p.0)
-                .collect();
+            let winners: Vec<u8> = self.state.winners().into_iter().map(|p| p.0).collect();
             serde_json::json!({
                 "done": true,
                 "tick": self.state.current_tick(),
                 "winner": winner,
+                "winners": winners,
                 "alive": alive,
             })
         }
@@ -310,7 +333,7 @@ pub fn neural_cup(
                 }
                 ticks.push(state.current_tick());
                 match state.result() {
-                    Some(GameResult::Victory { winner }) if winner == PlayerId(seat) => wins += 1,
+                    Some(GameResult::Victory { team }) if team == seat => wins += 1,
                     Some(GameResult::Victory { .. }) => {}
                     _ => draws += 1,
                 }

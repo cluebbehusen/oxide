@@ -645,7 +645,8 @@ impl Game {
                 Event::GameOver { result } => {
                     let won = matches!(
                         result,
-                        oxide_sim::GameResult::Victory { winner } if *winner == self.human
+                        oxide_sim::GameResult::Victory { team }
+                            if *team == self.state.player(self.human).team
                     );
                     self.sounds_pending.push(if won {
                         SoundKind::Victory

@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 /// Observation schema version — bump when the shape changes so recorded
 /// training data and shipped policies can refuse mismatched worlds.
-pub const OBSERVATION_VERSION: u32 = 2;
+pub const OBSERVATION_VERSION: u32 = 3;
 
 /// One unit as a bot sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +93,12 @@ pub struct Observation {
     /// Training queue contents per own building, aligned with
     /// `my_buildings`.
     pub my_queues: Vec<Vec<UnitKind>>,
+    /// Teammates' units — always in team sight, never commandable.
+    /// Their intent is as opaque as an enemy's: allies coordinate by
+    /// position, not telepathy.
+    pub ally_units: Vec<UnitObs>,
+    /// Teammates' buildings.
+    pub ally_buildings: Vec<BuildingObs>,
     /// Enemy units this bot can currently justify knowing about.
     pub enemy_units: Vec<UnitObs>,
     /// Enemy buildings — live where seen, ghosts where remembered.
@@ -130,6 +136,8 @@ impl Observation {
             }
             if u.player == me {
                 obs.my_units.push(own_unit(u));
+            } else if !state.hostile(me, u.player) {
+                obs.ally_units.push(enemy_unit(u));
             } else {
                 obs.enemy_units.push(enemy_unit(u));
             }
@@ -138,6 +146,16 @@ impl Observation {
             if b.player == me {
                 obs.my_buildings.push(own_building(b));
                 obs.my_queues.push(b.queue.iter().copied().collect());
+            } else if !state.hostile(me, b.player) {
+                obs.ally_buildings.push(BuildingObs {
+                    id: b.id,
+                    player: b.player,
+                    kind: b.kind,
+                    anchor: b.anchor,
+                    hp: b.hp,
+                    built: b.built,
+                    seen: true,
+                });
             } else {
                 obs.enemy_buildings.push(BuildingObs {
                     id: b.id,
@@ -176,6 +194,10 @@ impl Observation {
             }
             if u.player == me {
                 obs.my_units.push(own_unit(u));
+            } else if !state.hostile(me, u.player) {
+                // Teammates stamp this player's vision, so they are
+                // always in sight by construction.
+                obs.ally_units.push(enemy_unit(u));
             } else if vision.visible(u.tile()) {
                 obs.enemy_units.push(enemy_unit(u));
             }
@@ -184,6 +206,16 @@ impl Observation {
             if b.player == me {
                 obs.my_buildings.push(own_building(b));
                 obs.my_queues.push(b.queue.iter().copied().collect());
+            } else if !state.hostile(me, b.player) {
+                obs.ally_buildings.push(BuildingObs {
+                    id: b.id,
+                    player: b.player,
+                    kind: b.kind,
+                    anchor: b.anchor,
+                    hp: b.hp,
+                    built: b.built,
+                    seen: true,
+                });
             } else if b.tiles().any(|t| vision.visible(t)) {
                 obs.enemy_buildings.push(BuildingObs {
                     id: b.id,
@@ -260,6 +292,8 @@ impl Observation {
             my_units: Vec::new(),
             my_buildings: Vec::new(),
             my_queues: Vec::new(),
+            ally_units: Vec::new(),
+            ally_buildings: Vec::new(),
             enemy_units: Vec::new(),
             enemy_buildings: Vec::new(),
             known_scrap: Vec::new(),

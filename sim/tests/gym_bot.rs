@@ -83,9 +83,9 @@ fn the_mask_supports_playing_an_actual_game() {
         }
         commands.extend(opponent.act(&state));
         state.tick(&commands);
-        if let Some(GameResult::Victory { winner }) = state.result() {
+        if let Some(GameResult::Victory { team }) = state.result() {
             assert_eq!(
-                winner,
+                PlayerId(team),
                 PlayerId(0),
                 "the scripted gym line should beat Scrapheap"
             );
