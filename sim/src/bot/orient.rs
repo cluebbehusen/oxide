@@ -162,7 +162,16 @@ impl Orientation {
                     unit,
                     to: self.tile(to),
                 },
-                keep @ (Intent::TrainAt { .. } | Intent::RecallArmy { .. }) => keep,
+                Intent::RaidAir { target } => Intent::RaidAir {
+                    target: self.tile(target),
+                },
+                // Positionless intents pass through — and the match stays
+                // exhaustive on purpose: a new positioned intent that
+                // slips through unflipped is a silent seat-bias
+                // regression, so adding a variant must break this match.
+                keep @ (Intent::TrainAt { .. }
+                | Intent::RecallArmy { .. }
+                | Intent::Repair { .. }) => keep,
             })
             .collect()
     }

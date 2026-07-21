@@ -54,11 +54,24 @@ impl Difficulty {
                 army_size: 4,
                 tech: false,
                 turret_response: false,
+                // No tech means none of the advanced doctrine either.
+                aa_response: false,
+                radar: false,
+                reclaimers: false,
+                repair: false,
+                air_harass: false,
                 ..Dials::full()
             },
             Difficulty::Standard => Dials {
                 cadence: 24,
                 turret_response: false,
+                // Standard fields the advanced roster but not the
+                // reactive layers: no flak scramble, no welding, no
+                // raids — it fights the war in front of it.
+                aa_response: false,
+                radar: false,
+                repair: false,
+                air_harass: false,
                 ..Dials::full()
             },
             Difficulty::Veteran => Dials::full(),
