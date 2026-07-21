@@ -19,6 +19,12 @@ import numpy as np
 FEATURES = 32
 ACTIONS = 11
 GYM_VERSION = 2
+# Conditioning dims appended to the gym features as network input:
+# skill (0-1000; 1000 = full strength) and aggression (0-1000; 500 =
+# balanced). The world features come from Rust; the knobs are the
+# bot's own configuration, so the wrapper appends them.
+CONDITION_DIMS = 2
+NET_FEATURES = FEATURES + CONDITION_DIMS
 
 DRAW_REWARD = -0.3
 STEP_COST = 1e-4
@@ -47,6 +53,12 @@ def normalize(features: list[int]) -> np.ndarray:
     return np.asarray(features, dtype=np.float32) / SCALES
 
 
+def with_condition(obs: np.ndarray, condition: tuple[int, int]) -> np.ndarray:
+    """Appends normalized (skill, aggression) knobs to a feature row."""
+    knobs = np.asarray(condition, dtype=np.float32) / 1000.0
+    return np.concatenate([obs, knobs])
+
+
 @dataclass
 class SeatView:
     obs: np.ndarray
@@ -72,6 +84,7 @@ class Worker:
     """One driver process, one live episode at a time."""
 
     def __init__(self, driver_bin: str):
+        self.conditions: dict[int, tuple[int, int]] = {}
         self.proc = subprocess.Popen(
             [driver_bin, "gym"],
             stdin=subprocess.PIPE,
@@ -94,8 +107,13 @@ class Worker:
             return Frame(True, reply["tick"], reply["winner"])
         frame = Frame(False, reply["tick"])
         for s in reply["seats"]:
-            frame.seats[s["seat"]] = SeatView(
-                normalize(s["features"]),
+            seat = s["seat"]
+            obs = normalize(s["features"])
+            cond = self.conditions.get(seat)
+            if cond is not None:
+                obs = with_condition(obs, cond)
+            frame.seats[seat] = SeatView(
+                obs,
                 np.asarray(s["mask"], dtype=bool),
                 s["features"],
             )
@@ -109,8 +127,10 @@ class Worker:
         max_ticks: int = 40_000,
         cadence: int = CADENCE,
         scenario: str | None = None,
+        conditions: dict[int, tuple[int, int]] | None = None,
     ) -> Frame:
         self.control = control
+        self.conditions = conditions or {}
         req = {
             "cmd": "reset",
             "seed": seed,

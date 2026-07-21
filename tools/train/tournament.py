@@ -37,13 +37,22 @@ def wilson(wins: int, games: int, z: float = 1.96) -> tuple[float, float]:
 
 
 def play(
-    policy, worker: Worker, opponent: str, seed: int, seat: int, scenario: str | None = None
+    policy,
+    worker: Worker,
+    opponent: str,
+    seed: int,
+    seat: int,
+    scenario: str | None = None,
+    condition: tuple[int, int] = (1000, 500),
 ) -> tuple[bool | None, int]:
     """One greedy match; returns (won, ticks)."""
+    conds = {0: condition, 1: condition}
     if opponent == "rusher":
-        frame = worker.reset(seed, control=(0, 1), scenario=scenario)
+        frame = worker.reset(seed, control=(0, 1), scenario=scenario, conditions=conds)
     else:
-        frame = worker.reset(seed, control=(seat,), tier=opponent, scenario=scenario)
+        frame = worker.reset(
+            seed, control=(seat,), tier=opponent, scenario=scenario, conditions=conds
+        )
     while not frame.done:
         view = frame.seats[seat]
         with torch.no_grad():
@@ -68,6 +77,8 @@ def main():
     ap.add_argument("--seeds", type=int, default=30)
     ap.add_argument("--opponents", default=",".join(TIERS + ["rusher"]))
     ap.add_argument("--scenario", default=None, help="map (default: the built-in skirmish)")
+    ap.add_argument("--skill", type=int, default=1000)
+    ap.add_argument("--aggression", type=int, default=500)
     args = ap.parse_args()
 
     policy, blob = load_policy(args.ckpt)
@@ -80,7 +91,15 @@ def main():
             ticks = []
             for seed in range(3000, 3000 + args.seeds):
                 for seat in (0, 1):
-                    won, t = play(policy, worker, opponent, seed, seat, args.scenario)
+                    won, t = play(
+                        policy,
+                        worker,
+                        opponent,
+                        seed,
+                        seat,
+                        args.scenario,
+                        (args.skill, args.aggression),
+                    )
                     games += 1
                     ticks.append(t)
                     if won is None:

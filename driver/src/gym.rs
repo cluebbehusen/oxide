@@ -242,6 +242,7 @@ pub fn neural_cup(
     seeds: u64,
     cadence: u64,
     scenario: &str,
+    blunder: u32,
 ) -> Result<()> {
     use oxide_sim::bot::{NeuralBot, QuantNet};
     let json = std::fs::read_to_string(weights)
@@ -259,7 +260,8 @@ pub fn neural_cup(
                 let mut sc = crate::runner::load_scenario(scenario)?;
                 sc.seed = seed;
                 let mut state = sc.build().context("scenario build")?;
-                let mut neural = NeuralBot::new(PlayerId(seat), cadence, net.clone());
+                let mut neural =
+                    NeuralBot::with_blunder(PlayerId(seat), cadence, net.clone(), blunder, seed);
                 let mut opponent = Brain::for_tier(PlayerId(1 - seat), seed, tier);
                 for _ in 0..40_000u32 {
                     let mut commands = neural.act(&state);

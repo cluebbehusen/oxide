@@ -7,7 +7,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from oxide_gym import ACTIONS, FEATURES
+from oxide_gym import ACTIONS, NET_FEATURES
 
 
 class Mlp(nn.Module):
@@ -16,7 +16,7 @@ class Mlp(nn.Module):
     def __init__(self, hidden: int = 128, depth: int = 2):
         super().__init__()
         layers: list[nn.Module] = []
-        last = FEATURES
+        last = NET_FEATURES
         for _ in range(depth):
             layers += [nn.Linear(last, hidden), nn.Tanh()]
             last = hidden

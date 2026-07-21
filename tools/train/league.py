@@ -34,7 +34,7 @@ import numpy as np
 import torch
 
 from models import load_policy, make_policy, save_policy
-from oxide_gym import ACTIONS, FEATURES, GYM_VERSION, Frame, Worker
+from oxide_gym import ACTIONS, GYM_VERSION, NET_FEATURES, Frame, Worker
 from ppo import gae, ppo_update
 
 TIERS = ["scrapheap", "standard", "veteran", "prime"]
@@ -48,10 +48,43 @@ TIERS = ["scrapheap", "standard", "veteran", "prime"]
 # what the agent happens to know about the enemy.
 SHAPE_K = 0.05
 
+# Style shaping: a small per-step nudge that makes the aggression knob
+# mean something. Aggressive settings are paid for being out fighting
+# (army state Pushing/Engaging); turtle settings for standing home
+# defense. Tiny relative to the terminal reward — flavor, not goal.
+STYLE_K = 0.0004
+
 
 def potential(raw: list[int]) -> float:
     my_strength, harvesters = raw[20], raw[2]
     return (my_strength + 25 * harvesters) / 500.0
+
+
+def style_reward(raw: list[int], aggression: int) -> float:
+    lean = (aggression - 500) / 500.0
+    out_fighting = 1.0 if raw[12] in (2, 3) else -1.0
+    return STYLE_K * lean * out_fighting
+
+
+def sample_condition(rng) -> tuple[int, int]:
+    """Per-episode knobs: skill favors the strong end (that end must
+    stay sharpest) but visits the whole range; aggression is uniform."""
+    skill = int(rng.choice([1000, 1000, 850, 700, 550, 400]))
+    return skill, int(rng.integers(0, 1001))
+
+
+def maybe_blunder(action: int, logits, mask, skill: int, rng) -> int:
+    """Env-noise blunders, sticky-actions style: the executed action is
+    degraded, the policy trains on what it intended. Near-best picks —
+    a blunder is a plausible mistake, not madness."""
+    eps = (1000 - skill) / 2000.0  # skill 400 -> 30% blunders
+    if eps <= 0 or rng.random() >= eps:
+        return action
+    order = np.argsort(-logits)
+    legal = [int(i) for i in order if mask[i]]
+    if len(legal) < 2:
+        return action
+    return int(rng.choice(legal[1 : min(3, len(legal))]))
 
 # Rush teacher (indices into the raw feature vector; see gym.rs).
 IDLE, TRAIN_H, TRAIN_S, FORM, PUSH, SCOUT = 0, 1, 2, 7, 8, 10
@@ -97,6 +130,7 @@ class Job:
         self.device = device
         self.detail = None  # tier name | frozen policy
         self.frame: Frame | None = None
+        self.conditions: dict[int, tuple[int, int]] = {}
         if kind == "self":
             self.learner_seats = [0, 1]
             self.opp_seat = None
@@ -108,10 +142,14 @@ class Job:
             self.opp_seat = 1 - seat
 
     def reset(self, seed: int):
+        self.conditions = {s: sample_condition(self.rng) for s in self.learner_seats}
         if self.kind == "tier":
             self.detail = TIERS[int(self.rng.integers(len(TIERS)))]
             self.frame = self.worker.reset(
-                seed, control=(self.learner_seats[0],), tier=self.detail
+                seed,
+                control=(self.learner_seats[0],),
+                tier=self.detail,
+                conditions=self.conditions,
             )
             return
         if self.kind == "past":
@@ -122,7 +160,10 @@ class Job:
                 self.detail.eval()
             else:
                 self.detail = None  # empty pool: play the rusher instead
-        self.frame = self.worker.reset(seed, control=(0, 1))
+        all_conds = dict(self.conditions)
+        if self.opp_seat is not None:
+            all_conds[self.opp_seat] = (1000, 500)  # frozen opponents play straight
+        self.frame = self.worker.reset(seed, control=(0, 1), conditions=all_conds)
 
     def opponent_action(self, policy_device) -> dict[int, int]:
         """Actions for locally-driven seats (empty for self/tier)."""
@@ -188,6 +229,7 @@ def rollout(policy, jobs, seeds, steps, device):
             dist = torch.distributions.Categorical(logits=logits)
             action = dist.sample()
             logp = dist.log_prob(action).cpu().numpy()
+        logits_np = logits.cpu().numpy()
         action = action.cpu().numpy()
         value = value.cpu().numpy()
 
@@ -199,9 +241,16 @@ def rollout(policy, jobs, seeds, steps, device):
             lane.logp.append(logp[k])
             lane.val.append(value[k])
 
+        row = {key: k for k, key in enumerate(keys)}
+        py_rng = np.random.default_rng(int(action.sum()) + len(finished_rewards))
         cursor = 0
         for j in jobs:
-            acts = {s: int(action[cursor + i]) for i, s in enumerate(j.learner_seats)}
+            acts = {}
+            for s in j.learner_seats:
+                k = row[(id(j), s)]
+                acts[s] = maybe_blunder(
+                    int(action[k]), logits_np[k], mask[k], j.conditions[s][0], py_rng
+                )
             cursor += len(j.learner_seats)
             acts.update(j.opponent_action(device))
             frame = j.worker.step(acts)
@@ -217,8 +266,13 @@ def rollout(policy, jobs, seeds, steps, device):
             else:
                 for s in j.learner_seats:
                     lane = lanes[(id(j), s)]
-                    pot = potential(frame.seats[s].raw)
-                    lane.rew.append(-1e-4 + SHAPE_K * (pot - lane.last_pot))
+                    raw = frame.seats[s].raw
+                    pot = potential(raw)
+                    lane.rew.append(
+                        -1e-4
+                        + SHAPE_K * (pot - lane.last_pot)
+                        + style_reward(raw, j.conditions[s][1])
+                    )
                     lane.done.append(False)
                     lane.last_pot = pot
                 j.frame = frame
@@ -260,10 +314,11 @@ def evaluate(policy, workers, device, opponent: str, seeds=range(1000, 1010)) ->
         live = []
         for i, (seed, seat) in enumerate(chunk):
             w = workers[i]
+            straight = {0: (1000, 500), 1: (1000, 500)}
             if opponent == "rusher":
-                frame = w.reset(seed, control=(0, 1))
+                frame = w.reset(seed, control=(0, 1), conditions=straight)
             else:
-                frame = w.reset(seed, control=(seat,), tier=opponent)
+                frame = w.reset(seed, control=(seat,), tier=opponent, conditions=straight)
             live.append((i, seat, frame))
         while live:
             still = []
@@ -350,7 +405,7 @@ def main():
             obs_b, mask_b, act_b, logp_b, val_b, rew_b, done_b = batch
             adv, ret = gae(rew_b, done_b, val_b, last_val)
             flat = (
-                obs_b.reshape(-1, FEATURES),
+                obs_b.reshape(-1, NET_FEATURES),
                 mask_b.reshape(-1, ACTIONS),
                 act_b.reshape(-1),
                 logp_b.reshape(-1),

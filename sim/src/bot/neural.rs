@@ -14,6 +14,7 @@ use super::gym::{ACTION_COUNT, Action, Decision, FEATURE_COUNT, GYM_VERSION, Gym
 use crate::command::PlayerCommand;
 use crate::ids::PlayerId;
 use crate::state::State;
+use chassis::rng::Pcg32;
 use serde::Deserialize;
 
 /// Fractional bits of the fixed-point format.
@@ -151,19 +152,43 @@ impl QuantNet {
 
 /// A trained policy as a command source: [`GymBot`] chores and
 /// executive, network decisions. Deterministic end to end.
+///
+/// Difficulty is a play-time dial, not a different network: with
+/// probability `blunder` (per mille) a decision is a uniformly random
+/// *legal* action instead of the network's best. The mistakes stay
+/// human-shaped — the bot still builds, defends, and attacks, it just
+/// misjudges — and the dial is continuous, which is what a dynamic
+/// difficulty needs. Fair by construction: it changes thinking, never
+/// income or vision.
 #[derive(Debug, Clone)]
 pub struct NeuralBot {
     gym: GymBot,
     net: QuantNet,
+    blunder_permille: u32,
+    rng: Pcg32,
 }
 
 impl NeuralBot {
-    /// A neural bot for `player` deciding every `cadence` ticks (use
-    /// the cadence the network trained at).
+    /// A full-strength neural bot for `player` deciding every `cadence`
+    /// ticks (use the cadence the network trained at).
     pub fn new(player: PlayerId, cadence: u64, net: QuantNet) -> Self {
+        Self::with_blunder(player, cadence, net, 0, 0)
+    }
+
+    /// A dialed-down bot: `blunder_permille` in 0..=1000. The rng is
+    /// seeded from the scenario like every other bot — replays hold.
+    pub fn with_blunder(
+        player: PlayerId,
+        cadence: u64,
+        net: QuantNet,
+        blunder_permille: u32,
+        scenario_seed: u64,
+    ) -> Self {
         Self {
             gym: GymBot::with_cadence(player, cadence),
             net,
+            blunder_permille: blunder_permille.min(1000),
+            rng: Pcg32::new(scenario_seed, 3000 + u64::from(player.0)),
         }
     }
 
@@ -178,7 +203,28 @@ impl NeuralBot {
             return Vec::new();
         }
         let decision = self.gym.decision(state);
-        let action = self.net.act(&decision);
+        let mut action = self.net.act(&decision);
+        if self.blunder_permille > 0 && self.rng.next_below(1000) < self.blunder_permille {
+            // A blunder is a *plausible* mistake — the second- or
+            // third-best idea, not a uniformly random legal action. In a
+            // macro action space one mad decision loses a game outright,
+            // and uniform blunders turn the dial into a cliff; near-best
+            // blunders make it a slope.
+            let logits = self.net.logits(&decision.features);
+            let mut ranked: Vec<(i64, usize)> = decision
+                .mask
+                .iter()
+                .enumerate()
+                .filter(|(_, ok)| **ok)
+                .map(|(i, _)| (logits[i], i))
+                .collect();
+            ranked.sort_unstable_by_key(|(v, i)| (-*v, *i));
+            if ranked.len() > 1 {
+                let alternates = (ranked.len() - 1).min(2) as u32;
+                let pick = ranked[1 + self.rng.next_below(alternates) as usize].1;
+                action = Action::from_index(pick);
+            }
+        }
         self.gym.step(state, action)
     }
 }

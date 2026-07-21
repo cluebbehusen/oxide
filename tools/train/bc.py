@@ -21,7 +21,7 @@ import torch
 import torch.nn as nn
 
 from models import make_policy, save_policy
-from oxide_gym import Worker
+from oxide_gym import Worker, with_condition
 
 # Action indices (see sim/src/bot/gym.rs).
 IDLE, TRAIN_H, TRAIN_S = 0, 1, 2
@@ -60,12 +60,18 @@ def main():
         for ep in range(args.episodes):
             seat = ep % 2
             frame = worker.reset(20_000 + ep, control=(seat,), tier=args.tier)
+            rng = np.random.default_rng(ep)
             while not frame.done:
                 view = frame.seats[seat]
                 a = teacher(view.raw, view.mask, frame.tick)
-                obs_all.append(view.obs)
-                mask_all.append(view.mask)
-                act_all.append(a)
+                # The teacher ignores the knobs, so the prior is defined
+                # across the whole conditioning space: replicate each
+                # sample at several random knob settings.
+                for _ in range(3):
+                    cond = (int(rng.integers(300, 1001)), int(rng.integers(0, 1001)))
+                    obs_all.append(with_condition(view.obs, cond))
+                    mask_all.append(view.mask)
+                    act_all.append(a)
                 frame = worker.step({seat: a})
             wins += 1 if frame.winner == seat else 0
         print(f"teacher: {wins}/{args.episodes} wins vs {args.tier}")
