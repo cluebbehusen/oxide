@@ -231,28 +231,28 @@ fn weapon_masks_gate_acquisition_both_ways() {
 fn ground_only_weapons_cannot_answer_air() {
     let mut state = arena(vec![
         unit(0, UnitKind::Darter, 4, 2),
-        unit(1, UnitKind::Sentinel, 6, 2),
+        unit(1, UnitKind::Scuttler, 6, 2),
     ])
     .build()
     .unwrap();
-    let (darter, sentinel) = (state.units()[0].id, state.units()[1].id);
+    let (darter, scuttler) = (state.units()[0].id, state.units()[1].id);
     state.tick(&[cmd(
         0,
         Command::Attack {
             units: vec![darter],
-            target: Target::Unit(sentinel),
+            target: Target::Unit(scuttler),
             queue: false,
         },
     )]);
     run_until(&mut state, 400, |_, events| {
         events
             .iter()
-            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == sentinel))
+            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == scuttler))
     });
     assert_eq!(
         state.unit(darter).unwrap().hp,
         UnitKind::Darter.stats().max_hp,
-        "the sentinel has no gun that reaches the sky"
+        "the scuttler has no gun that reaches the sky"
     );
 }
 
@@ -488,5 +488,120 @@ fn hovering_machines_do_not_block_foundations() {
             .iter()
             .any(|b| b.kind == BuildingKind::Turret && b.anchor == TilePos::new(5, 5)),
         "a flyer overhead is not a foundation problem"
+    );
+}
+
+#[test]
+fn training_is_gated_to_the_seats_faction() {
+    let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 4, 2)]);
+    scenario.players[0].scrap = 600; // fabricator + one of each test kind
+    let mut state = scenario.build().unwrap();
+    let builder = state.units()[0].id;
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Fabricator,
+            anchor: TilePos::new(5, 1),
+        },
+    )]);
+    run_until(&mut state, 500, |_, events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::BuildingCompleted { .. }))
+    });
+    let fab = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == BuildingKind::Fabricator)
+        .unwrap()
+        .id;
+
+    // Ferrous may not train the Cupric anti-air variant...
+    let report = state.tick(&[cmd(
+        0,
+        Command::Train {
+            building: fab,
+            kind: UnitKind::Stinger,
+        },
+    )]);
+    assert!(
+        report.events.iter().any(|e| matches!(
+            e,
+            Event::CommandRejected {
+                reason: oxide_sim::command::RejectReason::WrongFaction,
+                ..
+            }
+        )),
+        "cross-faction training must bounce"
+    );
+
+    // ...but its own variant and the shared Bombard queue fine.
+    for kind in [UnitKind::Flakhound, UnitKind::Bombard] {
+        let report = state.tick(&[cmd(
+            0,
+            Command::Train {
+                building: fab,
+                kind,
+            },
+        )]);
+        assert!(
+            !report
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::CommandRejected { .. })),
+            "{kind:?} belongs to (or is shared with) Ferrous"
+        );
+    }
+}
+
+#[test]
+fn the_sidearm_fights_its_own_war_alongside_the_main_gun() {
+    // A sentinel slugging it out on the ground keeps its skyward poke
+    // busy against a hovering darter — two weapons, two wars, two
+    // independent cooldowns.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Sentinel, 4, 2),
+        unit(1, UnitKind::Sentinel, 6, 2),
+        unit(1, UnitKind::Darter, 5, 2),
+    ])
+    .build()
+    .unwrap();
+    let (mine, foe, darter) = (
+        state.units()[0].id,
+        state.units()[1].id,
+        state.units()[2].id,
+    );
+    state.tick(&[cmd(
+        0,
+        Command::Attack {
+            units: vec![mine],
+            target: Target::Unit(foe),
+            queue: false,
+        },
+    )]);
+    let (mut ground_hits, mut air_hits) = (0, 0);
+    for _ in 0..100 {
+        let report = state.tick(&[]);
+        for e in &report.events {
+            if let Event::AttackHit {
+                attacker, target, ..
+            } = e
+                && *attacker == mine
+            {
+                match target {
+                    Target::Unit(uid) if *uid == foe => ground_hits += 1,
+                    Target::Unit(uid) if *uid == darter => air_hits += 1,
+                    _ => {}
+                }
+            }
+        }
+        if ground_hits >= 2 && air_hits >= 2 {
+            break;
+        }
+    }
+    assert!(
+        ground_hits >= 2 && air_hits >= 2,
+        "both weapons must cycle (ground {ground_hits}, air {air_hits})"
     );
 }

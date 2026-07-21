@@ -575,6 +575,9 @@ impl Game {
                 Event::CommandRejected { player, reason } if *player == self.human => {
                     let why = match reason {
                         oxide_sim::command::RejectReason::NotEnoughScrap => "not enough scrap",
+                        oxide_sim::command::RejectReason::WrongFaction => {
+                            "that machine belongs to the other faction"
+                        }
                         oxide_sim::command::RejectReason::QueueFull => "queue is full",
                         oxide_sim::command::RejectReason::UnreachableGoal => "can't reach that",
                         oxide_sim::command::RejectReason::InvalidTarget => "can't target that",

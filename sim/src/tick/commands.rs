@@ -527,6 +527,13 @@ fn apply_train(
         if !b.built || !b.kind.stats().produces.contains(&kind) {
             return Err(RejectReason::CannotProduce);
         }
+        // The produces lists carry every faction's variant of a role; the
+        // seat's faction decides which of them it may actually train.
+        if let Some(faction) = kind.faction()
+            && faction != state.player(player).faction
+        {
+            return Err(RejectReason::WrongFaction);
+        }
         if b.queue.len() >= QUEUE_CAP {
             return Err(RejectReason::QueueFull);
         }

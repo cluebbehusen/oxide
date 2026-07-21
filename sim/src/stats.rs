@@ -348,14 +348,26 @@ const SENTINEL: UnitStats = UnitStats {
     cost: 75,
     train_ticks: 160, // 8 s
     domain: Domain::Ground,
-    weapons: &[WeaponStats {
-        damage: 10,
-        range: Fx::lit("2.5"),
-        cooldown_ticks: 20, // 1 hit/s
-        targets: DomainMask::GROUND,
-        splash: None,
-        indirect: false,
-    }],
+    weapons: &[
+        WeaponStats {
+            damage: 10,
+            range: Fx::lit("2.5"),
+            cooldown_ticks: 20, // 1 hit/s
+            targets: DomainMask::GROUND,
+            splash: None,
+            indirect: false,
+        },
+        // A weak skyward poke: the tier-0 reason a pure air ball cannot
+        // blank the core army — dedicated anti-air still hard-counters.
+        WeaponStats {
+            damage: 4,
+            range: Fx::lit("3"),
+            cooldown_ticks: 30,
+            targets: DomainMask::AIR,
+            splash: None,
+            indirect: false,
+        },
+    ],
     aggro_range: Fx::lit("5"),
     harvest: None,
     vision: 7, // strictly wider than aggro, so acquired targets are seen
@@ -573,7 +585,19 @@ const FABRICATOR: BuildingStats = BuildingStats {
     max_hp: 500,
     size: (2, 2),
     vision: 6,
-    produces: &[UnitKind::Scuttler, UnitKind::Lancer],
+    // Both factions' variants are listed; the train gate deals each seat
+    // only its own. Order groups the roles for the HUD's slot labels.
+    produces: &[
+        UnitKind::Scuttler,
+        UnitKind::Lancer,
+        UnitKind::Bombard,
+        UnitKind::Flakhound,
+        UnitKind::Stinger,
+        UnitKind::Buzzard,
+        UnitKind::Darter,
+        UnitKind::Talon,
+        UnitKind::Wisp,
+    ],
     weapons: &[],
     construction: Some(ConstructionStats {
         cost: 150,

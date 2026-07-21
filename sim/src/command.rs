@@ -149,4 +149,6 @@ pub enum RejectReason {
     NotEnoughScrap,
     /// The production queue is at capacity.
     QueueFull,
+    /// The unit kind belongs to the other faction's roster.
+    WrongFaction,
 }
