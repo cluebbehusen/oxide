@@ -419,12 +419,15 @@ fn keep_flags(mut fresh: Game, old: &Game) -> Game {
 
 /// Dark translucent layer between the world and a menu.
 fn veil() {
+    // Dark enough that the game behind reads as backdrop texture, not
+    // as competing UI — the HUD's own text lines must not fight the
+    // menu's.
     draw_rectangle(
         0.0,
         0.0,
         screen_width(),
         screen_height(),
-        Color::new(0.05, 0.05, 0.07, 0.75),
+        Color::new(0.05, 0.05, 0.07, 0.92),
     );
 }
 
