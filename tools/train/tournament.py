@@ -87,6 +87,12 @@ def main():
     ap.add_argument("--scenario", default=None, help="map (default: the built-in skirmish)")
     ap.add_argument("--skill", type=int, default=1000)
     ap.add_argument("--aggression", type=int, default=500)
+    ap.add_argument(
+        "--random-maps",
+        type=int,
+        default=0,
+        help="evaluate across N generated maps instead of seed variations",
+    )
     args = ap.parse_args()
 
     policy, blob = load_policy(args.ckpt)
@@ -94,10 +100,20 @@ def main():
     worker = Worker(args.driver)
     print(f"# {args.ckpt} (arch {blob.get('arch')}, update {blob.get('update', '?')})")
     try:
+        jobs: list[tuple[int, str | None]]
+        if args.random_maps:
+            from mapgen import generate
+
+            jobs = [
+                (9000 + i, generate(9000 + i, "/tmp/oxide-maps"))
+                for i in range(args.random_maps)
+            ]
+        else:
+            jobs = [(seed, args.scenario) for seed in range(3000, 3000 + args.seeds)]
         for opponent in args.opponents.split(","):
             wins = draws = games = 0
             ticks = []
-            for seed in range(3000, 3000 + args.seeds):
+            for seed, scenario in jobs:
                 for seat in (0, 1):
                     won, t = play(
                         policy,
@@ -105,7 +121,7 @@ def main():
                         opponent,
                         seed,
                         seat,
-                        args.scenario,
+                        scenario,
                         (args.skill, args.aggression),
                     )
                     games += 1

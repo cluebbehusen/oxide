@@ -124,12 +124,13 @@ class Job:
     and a trajectory stream has to stay contiguous. What varies per
     episode is the detail: which tier, which past checkpoint."""
 
-    def __init__(self, worker: Worker, kind: str, seat: int, pool_dir, rng, device):
+    def __init__(self, worker: Worker, kind: str, seat: int, pool_dir, rng, device, maps="fixed"):
         self.worker = worker
         self.kind = kind
         self.pool_dir = pool_dir
         self.rng = rng
         self.device = device
+        self.maps = maps
         self.detail = None  # tier name | frozen policy
         self.frame: Frame | None = None
         self.conditions: dict[int, tuple[int, int]] = {}
@@ -145,6 +146,11 @@ class Job:
 
     def reset(self, seed: int):
         self.conditions = {s: sample_condition(self.rng) for s in self.learner_seats}
+        scenario = None
+        if self.maps == "random":
+            from mapgen import generate
+
+            scenario = generate(seed % 100_000, "/tmp/oxide-maps-train")
         if self.kind == "tier":
             self.detail = TIERS[int(self.rng.integers(len(TIERS)))]
             self.frame = self.worker.reset(
@@ -152,6 +158,7 @@ class Job:
                 control=(self.learner_seats[0],),
                 tier=self.detail,
                 conditions=self.conditions,
+                scenario=scenario,
             )
             return
         if self.kind == "past":
@@ -165,7 +172,9 @@ class Job:
         all_conds = dict(self.conditions)
         if self.opp_seat is not None:
             all_conds[self.opp_seat] = (1000, 500)  # frozen opponents play straight
-        self.frame = self.worker.reset(seed, control=(0, 1), conditions=all_conds)
+        self.frame = self.worker.reset(
+            seed, control=(0, 1), conditions=all_conds, scenario=scenario
+        )
 
     def opponent_action(self, policy_device) -> dict[int, int]:
         """Actions for locally-driven seats (empty for self/tier)."""
@@ -184,7 +193,7 @@ class Job:
         return {self.opp_seat: int(a)}
 
 
-def assign_roles(workers, mix, pool_dir, rng, device):
+def assign_roles(workers, mix, pool_dir, rng, device, maps="fixed"):
     """Splits the worker fleet by the mix (largest remainder), seats
     alternating; the assignment is permanent for the run."""
     kinds = list(mix)
@@ -198,7 +207,7 @@ def assign_roles(workers, mix, pool_dir, rng, device):
     i = 0
     for kind, count in zip(kinds, counts):
         for k in range(count):
-            jobs.append(Job(workers[i], kind, k % 2, pool_dir, rng, device))
+            jobs.append(Job(workers[i], kind, k % 2, pool_dir, rng, device, maps))
             i += 1
     return jobs
 
@@ -362,6 +371,7 @@ def main():
     ap.add_argument("--resume", default=None)
     ap.add_argument("--anchor", default="runs/bc.pt", help="KL anchor prior ('' disables)")
     ap.add_argument("--anchor-coef", type=float, default=0.05)
+    ap.add_argument("--maps", default="fixed", help="fixed | random (fresh map per episode)")
     ap.add_argument(
         "--mix",
         default="self=0.45,past=0.20,tier=0.20,rusher=0.15",
@@ -400,7 +410,7 @@ def main():
     log = (run_dir / "log.jsonl").open("a")
 
     try:
-        jobs = assign_roles(workers, mix, pool_dir, rng, device)
+        jobs = assign_roles(workers, mix, pool_dir, rng, device, args.maps)
         for update in range(1, args.updates + 1):
             t0 = time.time()
             batch, last_val, finals = rollout(policy, jobs, seeds, args.steps, device)
