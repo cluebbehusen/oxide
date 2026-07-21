@@ -68,6 +68,10 @@ pub enum SoundKind {
     Victory,
     /// It did not.
     Defeat,
+    /// Flak bursting against the sky.
+    Flak,
+    /// An artillery shell landing.
+    Artillery,
 }
 
 /// What an order-acknowledgment ping means (decides its color).
@@ -107,6 +111,13 @@ pub enum EffectKind {
         at: Vec2,
         /// Color class.
         kind: PingKind,
+    },
+    /// A splash detonation blooming over its radius.
+    Burst {
+        /// Impact center, world coords.
+        at: Vec2,
+        /// Splash radius, tiles.
+        radius: f32,
     },
 }
 
@@ -453,6 +464,7 @@ impl Game {
                     EffectKind::Laser { .. } => 0.15,
                     EffectKind::Puff { .. } => 0.4,
                     EffectKind::Ping { .. } => 0.5,
+                    EffectKind::Burst { .. } => 0.35,
                 }
         });
         for toast in &mut self.toasts {
@@ -476,26 +488,26 @@ impl Game {
         for event in events {
             match event {
                 Event::AttackHit {
+                    attacker_kind,
                     attacker_pos,
                     target_pos,
                     ..
                 } => {
                     // Kind rides in the event: the attacker itself may have
                     // died later this same tick, and a rail shot deserves
-                    // its report either way.
-                    let heavy = matches!(
-                        event,
-                        Event::AttackHit {
-                            attacker_kind: oxide_sim::UnitKind::Lancer,
-                            ..
+                    // its report either way. The weapon's character decides
+                    // the report and whether the impact blooms.
+                    let heard = sees(self, *attacker_pos) || sees(self, *target_pos);
+                    let (sound, heavy, splash) = match attacker_kind {
+                        oxide_sim::UnitKind::Lancer => (SoundKind::RailFire, true, None),
+                        oxide_sim::UnitKind::Bombard => (SoundKind::Artillery, true, Some(1.4)),
+                        oxide_sim::UnitKind::Flakhound | oxide_sim::UnitKind::Stinger => {
+                            (SoundKind::Flak, false, Some(1.2))
                         }
-                    );
-                    if sees(self, *attacker_pos) || sees(self, *target_pos) {
-                        self.sounds_pending.push(if heavy {
-                            SoundKind::RailFire
-                        } else {
-                            SoundKind::Laser
-                        });
+                        _ => (SoundKind::Laser, false, None),
+                    };
+                    if heard {
+                        self.sounds_pending.push(sound);
                     }
                     self.fx.push(Effect {
                         kind: EffectKind::Laser {
@@ -505,23 +517,47 @@ impl Game {
                         },
                         age: 0.0,
                     });
+                    if let Some(radius) = splash {
+                        self.fx.push(Effect {
+                            kind: EffectKind::Burst {
+                                at: world_vec(*target_pos),
+                                radius,
+                            },
+                            age: 0.0,
+                        });
+                    }
                 }
                 Event::TurretFired {
+                    turret,
                     turret_pos,
                     target_pos,
                     ..
                 } => {
+                    let (sound, splash) = match self.state.building(*turret).map(|b| b.kind) {
+                        Some(oxide_sim::BuildingKind::Bastion) => (SoundKind::Artillery, Some(1.3)),
+                        Some(oxide_sim::BuildingKind::FlakTurret) => (SoundKind::Flak, Some(1.2)),
+                        _ => (SoundKind::Laser, None),
+                    };
                     if sees(self, *turret_pos) || sees(self, *target_pos) {
-                        self.sounds_pending.push(SoundKind::Laser);
+                        self.sounds_pending.push(sound);
                     }
                     self.fx.push(Effect {
                         kind: EffectKind::Laser {
-                            heavy: false,
+                            heavy: splash.is_some(),
                             from: world_vec(*turret_pos),
                             to: world_vec(*target_pos),
                         },
                         age: 0.0,
                     });
+                    if let Some(radius) = splash {
+                        self.fx.push(Effect {
+                            kind: EffectKind::Burst {
+                                at: world_vec(*target_pos),
+                                radius,
+                            },
+                            age: 0.0,
+                        });
+                    }
                 }
                 Event::BuildingCompleted { player, kind, .. } if *player == self.human => {
                     self.sounds_pending.push(SoundKind::TrainDone);

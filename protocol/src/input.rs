@@ -120,9 +120,10 @@ pub enum Key {
     P,
     /// Arm a patrol route; pressed again, starts it.
     R,
-    /// Arm turret placement (harvester selected).
+    /// Open the build palette (harvester selected).
     B,
-    /// Arm fabricator placement (harvester selected).
+    /// Reserved. Formerly armed fabricator placement; the build palette
+    /// superseded it. Kept for wire compatibility.
     N,
     /// Scrap the selected construction site (partial refund).
     X,
@@ -148,4 +149,13 @@ pub enum Key {
     Num4,
     /// Control group 5.
     Num5,
+    /// Sixth contextual digit (build palette / production slots; no
+    /// control group behind it).
+    Num6,
+    /// Seventh contextual digit.
+    Num7,
+    /// Eighth contextual digit.
+    Num8,
+    /// Ninth contextual digit.
+    Num9,
 }

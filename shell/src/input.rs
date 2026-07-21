@@ -45,10 +45,23 @@ pub struct InputState {
     last_recall: Option<(usize, f64)>,
     /// Waypoints collected while arming a patrol (`R`), if any.
     pub(crate) patrol_route: Option<Vec<TilePos>>,
-    /// Building kind armed for placement (`B`/`N`), if any.
+    /// Building kind armed for placement, if any.
     pub(crate) placing: Option<oxide_sim::BuildingKind>,
+    /// Whether the build palette is open (`B`; digits pick a structure).
+    pub(crate) build_menu: bool,
     held: HashSet<Key>,
 }
+
+/// Everything a harvester can put in the ground, in palette order — the
+/// digit keys index straight into this.
+pub(crate) const BUILD_PALETTE: [oxide_sim::BuildingKind; 6] = [
+    oxide_sim::BuildingKind::Turret,
+    oxide_sim::BuildingKind::FlakTurret,
+    oxide_sim::BuildingKind::Bastion,
+    oxide_sim::BuildingKind::Array,
+    oxide_sim::BuildingKind::Reclaimer,
+    oxide_sim::BuildingKind::Fabricator,
+];
 
 impl InputState {
     /// Fresh input state.
@@ -61,6 +74,7 @@ impl InputState {
             last_recall: None,
             patrol_route: None,
             placing: None,
+            build_menu: false,
             held: HashSet::new(),
         }
     }
@@ -79,6 +93,7 @@ impl InputState {
         self.drag_origin = None;
         self.patrol_route = None;
         self.placing = None;
+        self.build_menu = false;
     }
 
     /// Everything `reset_transient` drops, plus state that assumes the
@@ -177,6 +192,10 @@ pub fn poll_events(input: &InputState) -> Vec<RawEvent> {
         (Key::Num3, mq::KeyCode::Key3),
         (Key::Num4, mq::KeyCode::Key4),
         (Key::Num5, mq::KeyCode::Key5),
+        (Key::Num6, mq::KeyCode::Key6),
+        (Key::Num7, mq::KeyCode::Key7),
+        (Key::Num8, mq::KeyCode::Key8),
+        (Key::Num9, mq::KeyCode::Key9),
     ] {
         if mq::is_key_pressed(code) {
             events.push(RawEvent::KeyDown { key });
@@ -337,11 +356,15 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
             RawEvent::KeyDown { key } => {
                 input.held.insert(key);
                 match key {
-                    Key::Num1 => group_action(game, input, 0),
-                    Key::Num2 => group_action(game, input, 1),
-                    Key::Num3 => group_action(game, input, 2),
-                    Key::Num4 => group_action(game, input, 3),
-                    Key::Num5 => group_action(game, input, 4),
+                    Key::Num1 => digit_action(game, input, 0),
+                    Key::Num2 => digit_action(game, input, 1),
+                    Key::Num3 => digit_action(game, input, 2),
+                    Key::Num4 => digit_action(game, input, 3),
+                    Key::Num5 => digit_action(game, input, 4),
+                    Key::Num6 => digit_action(game, input, 5),
+                    Key::Num7 => digit_action(game, input, 6),
+                    Key::Num8 => digit_action(game, input, 7),
+                    Key::Num9 => digit_action(game, input, 8),
                     _ => key_action(game, input, key),
                 }
             }
@@ -480,6 +503,37 @@ fn select_all_of_kind_on_screen(game: &mut Game, screen: Vec2) {
         .collect();
 }
 
+/// Digits are contextual: an open build palette spends them on
+/// structures, a selected own factory spends them on production, and
+/// otherwise the first five are control groups.
+fn digit_action(game: &mut Game, input: &mut InputState, slot: usize) {
+    if input.build_menu {
+        if let Some(&kind) = BUILD_PALETTE.get(slot) {
+            input.build_menu = false;
+            input.placing = Some(kind);
+            let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
+            game.toast(format!(
+                "placing {} ({} scrap): click to build, Esc to cancel",
+                kind.name(),
+                cost
+            ));
+        }
+        return;
+    }
+    let producing = game.selection.building.is_some_and(|id| {
+        game.state.building(id).is_some_and(|b| {
+            b.player == game.human && b.built && !b.kind.stats().produces.is_empty()
+        })
+    });
+    if producing {
+        train(game, slot);
+        return;
+    }
+    if slot < 5 {
+        group_action(game, input, slot);
+    }
+}
+
 /// Recall (or with Ctrl, assign) a control group; a quick double-tap on
 /// the same slot centers the camera on the group.
 fn group_action(game: &mut Game, input: &mut InputState, slot: usize) {
@@ -585,9 +639,26 @@ fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
             .unit(*id)
             .is_some_and(|u| u.kind == UnitKind::Harvester)
     });
+    // A wounded own building under the cursor puts harvesters to welding.
+    if has_harvester
+        && let Some(building) = game.state.building_at(tile)
+        && building.player == game.human
+        && building.built
+        && building.hp < building.kind.stats().max_hp
+    {
+        game.issue(Command::Repair {
+            units,
+            building: building.id,
+        });
+        game.ping(world, PingKind::Harvest);
+        return;
+    }
     // The harvest check reads the player's *memory*, not the live map —
-    // probing fog with right-clicks must not reveal hidden scrap.
-    if game.my_vision().remembered_scrap(tile) > 0 && has_harvester {
+    // probing fog with right-clicks must not reveal hidden scrap. Wreck
+    // memory counts the same as node memory.
+    if (game.my_vision().remembered_scrap(tile) > 0 || game.my_vision().remembered_wreck(tile) > 0)
+        && has_harvester
+    {
         game.issue(Command::Harvest {
             units,
             node: tile,
@@ -605,10 +676,6 @@ fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         queue,
     });
     game.ping(world, PingKind::Move);
-}
-
-fn building_name(kind: oxide_sim::BuildingKind) -> &'static str {
-    kind.name()
 }
 
 fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
@@ -632,27 +699,19 @@ fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
         Key::H => train(game, 0),
         Key::S => train(game, 1),
         Key::P => game.paused = !game.paused,
-        Key::B | Key::N => {
-            let kind = if key == Key::B {
-                oxide_sim::BuildingKind::Turret
-            } else {
-                oxide_sim::BuildingKind::Fabricator
-            };
+        Key::B => {
+            if input.build_menu {
+                input.build_menu = false;
+                return;
+            }
             let has_builder = game.selection.units.iter().any(|id| {
                 game.state
                     .unit(*id)
                     .is_some_and(|u| u.kind == UnitKind::Harvester)
             });
-            if input.placing == Some(kind) {
+            if has_builder {
+                input.build_menu = true;
                 input.placing = None;
-            } else if has_builder {
-                input.placing = Some(kind);
-                let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
-                game.toast(format!(
-                    "placing {} ({} scrap): click to build, Esc to cancel",
-                    building_name(kind),
-                    cost
-                ));
             } else {
                 game.toast("select a harvester to build");
             }
@@ -677,6 +736,10 @@ fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
         Key::F1 => game.overlay = !game.overlay,
         Key::Escape => {
             // Arming something? Escape abandons that first.
+            if input.build_menu {
+                input.build_menu = false;
+                return;
+            }
             if input.placing.take().is_some() {
                 game.toast("placement cancelled");
                 return;
@@ -703,6 +766,7 @@ fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
         | Key::Left
         | Key::Right
         | Key::A
+        | Key::N
         | Key::Enter
         | Key::Shift
         | Key::Ctrl
@@ -710,15 +774,17 @@ fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
         | Key::Num2
         | Key::Num3
         | Key::Num4
-        | Key::Num5 => {}
+        | Key::Num5
+        | Key::Num6
+        | Key::Num7
+        | Key::Num8
+        | Key::Num9 => {}
     }
 }
 
-/// Train at the selected Foundry, falling back to the home one — so H/S
-/// work without fiddly building selection.
-/// `H`/`S` train the selected factory's first/second product — Foundry:
-/// harvester/sentinel, Fabricator: scuttler/lancer. No factory selected
-/// falls back to the home Foundry.
+/// Train the selected factory's Nth product (the seat's own roster —
+/// the other faction's variants are skipped). `H`/`S` alias the first
+/// two slots; no factory selected falls back to the home Foundry.
 fn train(game: &mut Game, slot: usize) {
     let building = game
         .selection
@@ -730,11 +796,15 @@ fn train(game: &mut Game, slot: usize) {
         })
         .or_else(|| game.home_foundry().map(|b| b.id));
     if let Some(building) = building {
-        let Some(&kind) = game
-            .state
-            .building(building)
-            .and_then(|b| b.kind.stats().produces.get(slot))
-        else {
+        let faction = game.state.player(game.human).faction;
+        let Some(&kind) = game.state.building(building).and_then(|b| {
+            b.kind
+                .stats()
+                .produces
+                .iter()
+                .filter(|k| k.faction().is_none_or(|f| f == faction))
+                .nth(slot)
+        }) else {
             return;
         };
         game.issue(Command::Train { building, kind });

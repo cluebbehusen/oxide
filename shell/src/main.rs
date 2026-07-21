@@ -112,6 +112,15 @@ enum Mode {
         /// The chosen ladder level.
         level: oxide_sim::bot::Level,
     },
+    /// Faction picker (after personality) — which roster the human plays.
+    FactionMenu {
+        /// The scenario about to start.
+        scenario: Box<Scenario>,
+        /// The chosen ladder level.
+        level: oxide_sim::bot::Level,
+        /// The chosen personality knob.
+        aggression: Option<u32>,
+    },
     /// The game proper.
     Playing,
     /// Game visible but veiled; the pause menu owns input.
@@ -120,6 +129,7 @@ enum Mode {
 
 const DIFFICULTY_ITEMS: [&str; 4] = ["Easy", "Medium", "Hard", "Expert"];
 const PERSONALITY_ITEMS: [&str; 4] = ["Surprise me", "Turtle", "Balanced", "Aggressive"];
+const FACTION_ITEMS: [&str; 3] = ["Ferrous", "Cupric", "Surprise me"];
 
 fn personality_knob(choice: usize) -> Option<u32> {
     match choice {
@@ -160,6 +170,8 @@ impl Mixer {
             SoundKind::Laser => 0.09,
             SoundKind::RailFire => 0.15,
             SoundKind::UnitDeath => 0.12,
+            SoundKind::Flak => 0.12,
+            SoundKind::Artillery => 0.2,
             _ => 0.05,
         };
         if now - self.last_played.get(&kind).copied().unwrap_or(f64::MIN) < min_gap {
@@ -177,6 +189,8 @@ impl Mixer {
             SoundKind::Denied => (&sounds.denied, 0.3),
             SoundKind::Victory => (&sounds.victory, 0.6),
             SoundKind::Defeat => (&sounds.defeat, 0.6),
+            SoundKind::Flak => (&sounds.flak, 0.3),
+            SoundKind::Artillery => (&sounds.artillery_boom, 0.5),
         };
         play_sound(
             sound,
@@ -327,13 +341,58 @@ async fn run() -> Result<()> {
                     mode = Mode::DifficultyMenu { scenario };
                 } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
                     game.sounds_pending.push(SoundKind::Click);
-                    let mut scenario = (**scenario).clone();
-                    let config = oxide_sim::scenario::BotConfig {
+                    let scenario = scenario.clone();
+                    let aggression = personality_knob(choice);
+                    sub_menu = Menu::new(
+                        "FACTION",
+                        FACTION_ITEMS.iter().map(|s| s.to_string()).collect(),
+                    );
+                    mode = Mode::FactionMenu {
+                        scenario,
                         level,
-                        aggression: personality_knob(choice),
+                        aggression,
                     };
+                }
+                render::draw(&game, &sprites, &input);
+                veil();
+                sub_menu.draw("every one is the same mind, dialed differently");
+            }
+            Mode::FactionMenu {
+                ref scenario,
+                level,
+                aggression,
+            } => {
+                let escaped = events
+                    .iter()
+                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
+                if escaped {
+                    let scenario = scenario.clone();
+                    sub_menu = Menu::new(
+                        "OPPONENT",
+                        PERSONALITY_ITEMS.iter().map(|s| s.to_string()).collect(),
+                    );
+                    mode = Mode::PersonalityMenu { scenario, level };
+                } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
+                    game.sounds_pending.push(SoundKind::Click);
+                    let mut scenario = (**scenario).clone();
+                    let config = oxide_sim::scenario::BotConfig { level, aggression };
                     for player in scenario.players.iter_mut().filter(|p| p.bot) {
                         player.bot_config = Some(config);
+                    }
+                    // The human seat plays the chosen roster; "surprise"
+                    // lets the scenario seed pick.
+                    let faction = match choice {
+                        0 => Some(oxide_sim::Faction::Ferrous),
+                        1 => Some(oxide_sim::Faction::Cupric),
+                        _ => match scenario.seed % 2 {
+                            0 => Some(oxide_sim::Faction::Ferrous),
+                            _ => Some(oxide_sim::Faction::Cupric),
+                        },
+                    };
+                    if let (Some(f), Some(human)) =
+                        (faction, scenario.players.iter_mut().find(|p| !p.bot))
+                    {
+                        human.faction = f;
                     }
                     let fresh = Game::new(scenario)?;
                     game = keep_flags(fresh, &game);
@@ -343,7 +402,7 @@ async fn run() -> Result<()> {
                 }
                 render::draw(&game, &sprites, &input);
                 veil();
-                sub_menu.draw("every one is the same mind, dialed differently");
+                sub_menu.draw("which roster do your machines run?");
             }
             Mode::Playing => {
                 let had_selection =

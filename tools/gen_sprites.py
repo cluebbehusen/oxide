@@ -65,7 +65,21 @@ def canvas(px: int, color=(0, 0, 0, 0)) -> tuple[Image.Image, ImageDraw.ImageDra
 
 def finish(img: Image.Image, px: int, name: str) -> None:
     img = img.resize((px, px), Image.LANCZOS)
-    if name.startswith(("harvester", "sentinel", "scuttler", "lancer")):
+    if name.startswith(
+        (
+            "harvester",
+            "sentinel",
+            "scuttler",
+            "lancer",
+            "bombard",
+            "flakhound",
+            "stinger",
+            "buzzard",
+            "darter",
+            "talon",
+            "wisp",
+        )
+    ):
         img = rim_light(img)
     img.save(OUT / f"{name}.png")
     REGISTRY[name] = img
@@ -428,6 +442,307 @@ def lancer(faction: str) -> None:
     finish(img, px, f"lancer_{faction}")
 
 
+def bombard(faction: str) -> None:
+    """Heavy siege mortar: a broad braced platform under one fat, short
+    tube — the anti-silhouette of the Lancer's needle rail."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    # Recoil spades splayed at the rear corners.
+    for sx in (14, 50):
+        d.polygon(
+            [(s(sx), s(46)), (s(sx - 6 if sx < 32 else sx + 6), s(58)), (s(sx + 4 if sx < 32 else sx - 4), s(56))],
+            fill=(*IRON_DARK, 255),
+        )
+    # Wide low hull.
+    d.rounded_rectangle([s(14), s(26), s(50), s(56)], radius=s(6), fill=(*IRON, 255))
+    d.rounded_rectangle([s(18), s(30), s(46), s(52)], radius=s(5), fill=(*pal["base"], 255))
+    # Base ring for the tube.
+    d.ellipse([s(20), s(18), s(44), s(42)], fill=(*IRON_DARK, 255))
+    d.ellipse([s(24), s(22), s(40), s(38)], fill=(*pal["dark"], 255))
+    # The mortar tube: short, fat, forward, with a gaping muzzle.
+    d.rectangle([s(26), s(6), s(38), s(30)], fill=(*IRON_DARK, 255))
+    d.rectangle([s(28), s(6), s(36), s(28)], fill=(*IRON_LIGHT, 255))
+    d.ellipse([s(25), s(2), s(39), s(14)], fill=(*IRON_DARK, 255))
+    d.ellipse([s(28), s(5), s(36), s(11)], fill=(*pal["light"], 255))
+    finish(img, px, f"bombard_{faction}")
+
+
+def flakhound(faction: str) -> None:
+    """Ferrous-pattern anti-air crawler: a fat tracked slab carrying a
+    quad flak battery — four skyward muzzles read as four rings."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    # Broad treads.
+    d.rounded_rectangle([s(10), s(12), s(22), s(54)], radius=s(4), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle([s(42), s(12), s(54), s(54)], radius=s(4), fill=(*IRON_DARK, 255))
+    for y in range(16, 52, 6):
+        d.rectangle([s(11), s(y), s(21), s(y + 2)], fill=(*IRON, 255))
+        d.rectangle([s(43), s(y), s(53), s(y + 2)], fill=(*IRON, 255))
+    # Armored hull.
+    d.rounded_rectangle([s(18), s(14), s(46), s(54)], radius=s(6), fill=(*IRON, 255))
+    d.rounded_rectangle([s(21), s(17), s(43), s(51)], radius=s(5), fill=(*pal["base"], 255))
+    # Quad flak battery: four upward muzzles.
+    for cx, cy in ((26, 26), (38, 26), (26, 40), (38, 40)):
+        d.ellipse([s(cx - 5), s(cy - 5), s(cx + 5), s(cy + 5)], fill=(*IRON_DARK, 255))
+        d.ellipse([s(cx - 3), s(cy - 3), s(cx + 3), s(cy + 3)], fill=(*IRON_LIGHT, 255))
+        d.ellipse([s(cx - 1), s(cy - 1), s(cx + 1), s(cy + 1)], fill=(*pal["light"], 255))
+    finish(img, px, f"flakhound_{faction}")
+
+
+def stinger(faction: str) -> None:
+    """Cupric-pattern anti-air skiff: light chassis under a three-rocket
+    rack — cheap, quick, and pointing at the sky."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    # Three splayed wheel-legs.
+    for (x0, y0, x1, y1) in ((24, 40, 14, 52), (40, 40, 50, 52), (32, 44, 32, 58)):
+        d.line([(s(x0), s(y0)), (s(x1), s(y1))], fill=(*IRON_DARK, 255), width=s(3))
+    # Slim triangular chassis.
+    d.polygon([(s(32), s(14)), (s(46), s(46)), (s(18), s(46))], fill=(*IRON, 255))
+    d.polygon([(s(32), s(20)), (s(42), s(43)), (s(22), s(43))], fill=(*pal["base"], 255))
+    # Rocket rack: three tubes seen end-on, stacked forward.
+    for i, cy in enumerate((22, 30, 38)):
+        tip = pal["light"] if i == 0 else IRON_LIGHT
+        d.ellipse([s(28), s(cy - 3), s(36), s(cy + 5)], fill=(*IRON_DARK, 255))
+        d.ellipse([s(30), s(cy - 1), s(34), s(cy + 3)], fill=(*tip, 255))
+    finish(img, px, f"stinger_{faction}")
+
+
+def buzzard(faction: str) -> None:
+    """Ferrous-pattern ground-attack flyer: a heavy delta wing with twin
+    engine pods — slow, blunt, loaded."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    # Delta wing.
+    d.polygon([(s(32), s(4)), (s(58), s(50)), (s(6), s(50))], fill=(*IRON, 255))
+    d.polygon([(s(32), s(12)), (s(52), s(46)), (s(12), s(46))], fill=(*pal["base"], 255))
+    d.polygon([(s(32), s(24)), (s(44), s(43)), (s(20), s(43))], fill=(*pal["dark"], 255))
+    # Engine pods at the trailing corners.
+    for cx in (16, 48):
+        d.rounded_rectangle([s(cx - 5), s(40), s(cx + 5), s(58)], radius=s(4), fill=(*IRON_DARK, 255))
+        d.ellipse([s(cx - 3), s(52), s(cx + 3), s(58)], fill=(*pal["light"], 255))
+    # Chin cannon along the nose.
+    d.rectangle([s(30), s(8), s(34), s(30)], fill=(*IRON_DARK, 255))
+    d.ellipse([s(29), s(26), s(35), s(32)], fill=(*IRON_LIGHT, 255))
+    finish(img, px, f"buzzard_{faction}")
+
+
+def darter(faction: str) -> None:
+    """Cupric-pattern strafer: a slim swept dart, all speed and spite."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    # Needle fuselage.
+    d.polygon([(s(32), s(2)), (s(38), s(34)), (s(32), s(56)), (s(26), s(34))], fill=(*IRON, 255))
+    d.polygon([(s(32), s(8)), (s(36), s(33)), (s(32), s(50)), (s(28), s(33))], fill=(*pal["base"], 255))
+    # Swept blades.
+    d.polygon([(s(30), s(26)), (s(8), s(44)), (s(28), s(38))], fill=(*pal["dark"], 255))
+    d.polygon([(s(34), s(26)), (s(56), s(44)), (s(36), s(38))], fill=(*pal["dark"], 255))
+    # Tail vanes.
+    d.polygon([(s(30), s(48)), (s(20), s(60)), (s(31), s(54))], fill=(*IRON_DARK, 255))
+    d.polygon([(s(34), s(48)), (s(44), s(60)), (s(33), s(54))], fill=(*IRON_DARK, 255))
+    # Cockpit eye.
+    d.ellipse([s(29), s(16), s(35), s(24)], fill=(*pal["light"], 255))
+    finish(img, px, f"darter_{faction}")
+
+
+def talon(faction: str) -> None:
+    """Ferrous-pattern air-superiority fighter: cruciform, canarded, a
+    hunter of other wings."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    # Main wings, straight and wide.
+    d.polygon([(s(32), s(20)), (s(60), s(36)), (s(56), s(42)), (s(32), s(34))], fill=(*pal["dark"], 255))
+    d.polygon([(s(32), s(20)), (s(4), s(36)), (s(8), s(42)), (s(32), s(34))], fill=(*pal["dark"], 255))
+    # Canards near the nose.
+    d.polygon([(s(32), s(10)), (s(46), s(18)), (s(32), s(20))], fill=(*IRON, 255))
+    d.polygon([(s(32), s(10)), (s(18), s(18)), (s(32), s(20))], fill=(*IRON, 255))
+    # Fuselage.
+    d.polygon([(s(32), s(2)), (s(37), s(30)), (s(35), s(58)), (s(29), s(58)), (s(27), s(30))], fill=(*IRON, 255))
+    d.polygon([(s(32), s(8)), (s(35), s(30)), (s(34), s(52)), (s(30), s(52)), (s(29), s(30))], fill=(*pal["base"], 255))
+    # Twin tail.
+    d.polygon([(s(29), s(50)), (s(20), s(62)), (s(30), s(56))], fill=(*pal["dark"], 255))
+    d.polygon([(s(35), s(50)), (s(44), s(62)), (s(34), s(56))], fill=(*pal["dark"], 255))
+    d.ellipse([s(29), s(14), s(35), s(22)], fill=(*pal["light"], 255))
+    finish(img, px, f"talon_{faction}")
+
+
+def wisp(faction: str) -> None:
+    """Cupric-pattern swarm wing: a tiny pod on stub wings — one is a
+    joke, a dozen are a problem."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    # Stub wings.
+    d.polygon([(s(30), s(28)), (s(12), s(38)), (s(28), s(40))], fill=(*pal["dark"], 255))
+    d.polygon([(s(34), s(28)), (s(52), s(38)), (s(36), s(40))], fill=(*pal["dark"], 255))
+    # Round pod body.
+    d.ellipse([s(22), s(16), s(42), s(44)], fill=(*IRON, 255))
+    d.ellipse([s(25), s(19), s(39), s(41)], fill=(*pal["base"], 255))
+    # Single rotor ring hint on top.
+    d.ellipse([s(27), s(21), s(37), s(31)], fill=(*pal["light"], 255))
+    d.ellipse([s(30), s(24), s(34), s(28)], fill=(*IRON_DARK, 255))
+    # Tail needle.
+    d.rectangle([s(31), s(42), s(33), s(54)], fill=(*IRON_DARK, 255))
+    finish(img, px, f"wisp_{faction}")
+
+
+def flak_turret(faction: str) -> None:
+    """1x1 anti-air emplacement: the ground turret's slab, but the gun is
+    a quad battery aimed at the ceiling — no forward barrel at all."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    d.rounded_rectangle([s(6), s(6), s(58), s(58)], radius=s(8), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle([s(10), s(10), s(54), s(54)], radius=s(6), fill=(*IRON, 255))
+    for bx, by in ((13, 13), (51, 13), (13, 51), (51, 51)):
+        d.ellipse([s(bx - 3), s(by - 3), s(bx + 3), s(by + 3)], fill=(*IRON_DARK, 255))
+    d.ellipse([s(14), s(14), s(50), s(50)], fill=(*pal["dark"], 255))
+    d.ellipse([s(18), s(18), s(46), s(46)], fill=(*pal["base"], 255))
+    # Quad skyward muzzles.
+    for cx, cy in ((25, 25), (39, 25), (25, 39), (39, 39)):
+        d.ellipse([s(cx - 6), s(cy - 6), s(cx + 6), s(cy + 6)], fill=(*IRON_DARK, 255))
+        d.ellipse([s(cx - 4), s(cy - 4), s(cx + 4), s(cy + 4)], fill=(*IRON_LIGHT, 255))
+        d.ellipse([s(cx - 1.5), s(cy - 1.5), s(cx + 1.5), s(cy + 1.5)], fill=(*pal["light"], 255))
+    finish(img, px, f"flak_turret_{faction}")
+
+
+def bastion(faction: str) -> None:
+    """2x2 artillery emplacement: a fortress ring around one enormous
+    mortar throat — the gun that shells what it cannot see."""
+    px = 128
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    # Octagonal rampart.
+    oct_pts = [(40, 8), (88, 8), (120, 40), (120, 88), (88, 120), (40, 120), (8, 88), (8, 40)]
+    d.polygon([(s(x), s(y)) for x, y in oct_pts], fill=(*IRON_DARK, 255))
+    inner = [(46, 16), (82, 16), (112, 46), (112, 82), (82, 112), (46, 112), (16, 82), (16, 46)]
+    d.polygon([(s(x), s(y)) for x, y in inner], fill=(*IRON, 255))
+    # Faction rampart wedges.
+    d.polygon([(s(46), s(16)), (s(82), s(16)), (s(64), s(40))], fill=(*pal["dark"], 255))
+    d.polygon([(s(46), s(112)), (s(82), s(112)), (s(64), s(88))], fill=(*pal["dark"], 255))
+    # The pit and the throat.
+    d.ellipse([s(28), s(28), s(100), s(100)], fill=(*pal["base"], 255))
+    d.ellipse([s(38), s(38), s(90), s(90)], fill=(*IRON_DARK, 255))
+    d.ellipse([s(46), s(46), s(82), s(82)], fill=(*IRON_LIGHT, 255))
+    d.ellipse([s(54), s(54), s(74), s(74)], fill=(*pal["dark"], 255))
+    d.ellipse([s(60), s(60), s(68), s(68)], fill=(12, 10, 10, 255))
+    # Shell racks on two corners.
+    for cx, cy in ((26, 100), (100, 26)):
+        for i in range(3):
+            d.ellipse(
+                [s(cx - 8 + i * 7), s(cy - 3), s(cx - 2 + i * 7), s(cy + 3)],
+                fill=(*SCRAP_DARK, 255),
+            )
+    finish(img, px, f"bastion_{faction}")
+
+
+def array(faction: str) -> None:
+    """1x1 radar mast: a lattice tower under a wide dish — the eyes that
+    make long guns matter."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    d.rounded_rectangle([s(10), s(10), s(54), s(54)], radius=s(7), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle([s(14), s(14), s(50), s(50)], radius=s(5), fill=(*IRON, 255))
+    # Lattice cross-braces.
+    for (x0, y0, x1, y1) in ((18, 18, 46, 46), (46, 18, 18, 46)):
+        d.line([(s(x0), s(y0)), (s(x1), s(y1))], fill=(*IRON_DARK, 255), width=s(2))
+    # The dish, slightly off-center as if mid-sweep.
+    d.ellipse([s(16), s(14), s(52), s(50)], fill=(*pal["dark"], 255))
+    d.ellipse([s(20), s(18), s(48), s(46)], fill=(*pal["base"], 255))
+    d.ellipse([s(24), s(22), s(44), s(42)], fill=(*pal["dark"], 255))
+    d.arc([s(20), s(18), s(48), s(46)], 300, 60, fill=(*pal["light"], 255), width=s(2))
+    # Feed horn and its shadow.
+    d.line([(s(34), s(32)), (s(44), s(22))], fill=(*IRON_LIGHT, 255), width=s(2))
+    d.ellipse([s(31), s(29), s(37), s(35)], fill=(*BONE, 255))
+    finish(img, px, f"array_{faction}")
+
+
+def reclaimer(faction: str) -> None:
+    """1x1 debris grinder: hopper, drum, and a chute stained amber by
+    everything it has ever eaten."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    d.rounded_rectangle([s(6), s(8), s(58), s(56)], radius=s(7), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle([s(10), s(12), s(54), s(52)], radius=s(5), fill=(*IRON, 255))
+    # Intake hopper: a funnel mouth at the top.
+    d.polygon([(s(14), s(12)), (s(50), s(12)), (s(42), s(28)), (s(22), s(28))], fill=(*pal["dark"], 255))
+    d.polygon([(s(18), s(14)), (s(46), s(14)), (s(40), s(24)), (s(24), s(24))], fill=(12, 10, 10, 255))
+    # Grinder drum with teeth.
+    d.ellipse([s(18), s(26), s(46), s(48)], fill=(*pal["base"], 255))
+    for i in range(6):
+        ang = i / 6 * 6.28318
+        cx, cy = 32 + 10 * math.cos(ang), 37 + 9 * math.sin(ang)
+        d.ellipse([s(cx - 2), s(cy - 2), s(cx + 2), s(cy + 2)], fill=(*IRON_LIGHT, 255))
+    d.ellipse([s(27), s(32), s(37), s(42)], fill=(*pal["dark"], 255))
+    # Output chute, amber-stained.
+    d.rectangle([s(24), s(48), s(40), s(58)], fill=(*IRON_DARK, 255))
+    d.rectangle([s(27), s(50), s(37), s(56)], fill=(*SCRAP_DARK, 255))
+    d.rectangle([s(30), s(52), s(34), s(56)], fill=(*SCRAP, 255))
+    finish(img, px, f"reclaimer_{faction}")
+
+
+def wreck_pile() -> None:
+    """Battlefield salvage on open ground: like a scrap heap but in dead
+    machine tones with only a few amber glints — walkable junk, not a
+    node."""
+    px = 64
+    img, d = canvas(px)
+    rng = random.Random(53)
+    d.ellipse([s(14), s(28), s(50), s(46)], fill=(24, 20, 16, 110))
+    for _ in range(11):
+        angle = rng.uniform(0, 6.28318)
+        dist = 11 * rng.random() ** 0.6
+        cx = 32 + dist * math.cos(angle)
+        cy = 35 + dist * math.sin(angle) * 0.6 - 2 * (1 - dist / 11)
+        w = rng.uniform(5, 10)
+        h = rng.uniform(4, 7)
+        tone = rng.choice([(58, 58, 68), (44, 44, 52), (86, 64, 40), (72, 72, 84)])
+        dx = rng.uniform(-2, 2)
+        d.polygon(
+            [
+                (s(cx - w / 2 - dx), s(cy - h / 2)),
+                (s(cx + w / 2), s(cy - h / 2 + dx / 2)),
+                (s(cx + w / 2 + dx), s(cy + h / 2)),
+                (s(cx - w / 2), s(cy + h / 2 - dx / 2)),
+            ],
+            fill=(*tone, 255),
+        )
+    for _ in range(3):
+        cx, cy = 32 + rng.uniform(-6, 6), 34 + rng.uniform(-4, 4)
+        d.ellipse([s(cx - 1.5), s(cy - 1.5), s(cx + 1.5), s(cy + 1.5)], fill=(*SCRAP, 255))
+    finish(img, px, "wreck_pile")
+
+
+def air_shadow() -> None:
+    """The soft blob a flyer casts on the ground — drawn separately and
+    offset by the shell so altitude reads at a glance."""
+    px = 64
+    img, d = canvas(px)
+    for r, alpha in [(22, 40), (16, 60), (10, 80)]:
+        d.ellipse([s(32 - r), s(36 - r * 0.6), s(32 + r), s(36 + r * 0.6)], fill=(8, 8, 12, alpha))
+    finish(img, px, "air_shadow")
+
+
+def burst() -> None:
+    """One frame of splash detonation: bright core, hot ring — the shell
+    scales and fades it over the effect's life."""
+    px = 64
+    img, d = canvas(px)
+    d.ellipse([s(10), s(10), s(54), s(54)], fill=(255, 200, 120, 60))
+    d.ellipse([s(16), s(16), s(48), s(48)], outline=(255, 220, 150, 200), width=s(3))
+    d.ellipse([s(24), s(24), s(40), s(40)], fill=(255, 240, 200, 200))
+    d.ellipse([s(28), s(28), s(36), s(36)], fill=(255, 255, 240, 255))
+    finish(img, px, "burst")
+
+
 def rock_skirt() -> None:
     """A soft shadow cast from the top edge; rotated at draw time toward
     whichever neighbor holds the rock."""
@@ -534,14 +849,28 @@ def main() -> None:
     scrap("full", 1.0)
     scrap("mid", 0.55)
     scrap("low", 0.25)
+    wreck_pile()
+    air_shadow()
+    burst()
     for faction in FACTIONS:
         foundry(faction)
         harvester(faction)
         sentinel(faction)
         scuttler(faction)
         lancer(faction)
+        bombard(faction)
+        flakhound(faction)
+        stinger(faction)
+        buzzard(faction)
+        darter(faction)
+        talon(faction)
+        wisp(faction)
         turret(faction)
         fabricator(faction)
+        flak_turret(faction)
+        bastion(faction)
+        array(faction)
+        reclaimer(faction)
     pack_atlas()
     print("done")
 

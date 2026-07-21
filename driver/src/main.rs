@@ -264,6 +264,17 @@ enum LiveCmd {
         #[arg(long)]
         at: String,
     },
+    /// Send harvesters to weld a damaged own built building.
+    Repair {
+        /// Acting player index.
+        player: u8,
+        /// Welder unit ids, comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        units: Vec<u32>,
+        /// The building to weld.
+        #[arg(long)]
+        building: u32,
+    },
     /// Scrap an own unfinished site for a partial refund.
     Cancel {
         /// Acting player index.
@@ -451,6 +462,13 @@ enum UnitKindArg {
     Sentinel,
     Scuttler,
     Lancer,
+    Bombard,
+    Flakhound,
+    Stinger,
+    Buzzard,
+    Darter,
+    Talon,
+    Wisp,
 }
 
 impl From<UnitKindArg> for UnitKind {
@@ -460,6 +478,13 @@ impl From<UnitKindArg> for UnitKind {
             UnitKindArg::Sentinel => UnitKind::Sentinel,
             UnitKindArg::Scuttler => UnitKind::Scuttler,
             UnitKindArg::Lancer => UnitKind::Lancer,
+            UnitKindArg::Bombard => UnitKind::Bombard,
+            UnitKindArg::Flakhound => UnitKind::Flakhound,
+            UnitKindArg::Stinger => UnitKind::Stinger,
+            UnitKindArg::Buzzard => UnitKind::Buzzard,
+            UnitKindArg::Darter => UnitKind::Darter,
+            UnitKindArg::Talon => UnitKind::Talon,
+            UnitKindArg::Wisp => UnitKind::Wisp,
         }
     }
 }
@@ -470,6 +495,10 @@ impl From<UnitKindArg> for UnitKind {
 enum BuildingKindArg {
     Turret,
     Fabricator,
+    FlakTurret,
+    Bastion,
+    Array,
+    Reclaimer,
 }
 
 impl From<BuildingKindArg> for oxide_sim::BuildingKind {
@@ -477,6 +506,10 @@ impl From<BuildingKindArg> for oxide_sim::BuildingKind {
         match k {
             BuildingKindArg::Turret => oxide_sim::BuildingKind::Turret,
             BuildingKindArg::Fabricator => oxide_sim::BuildingKind::Fabricator,
+            BuildingKindArg::FlakTurret => oxide_sim::BuildingKind::FlakTurret,
+            BuildingKindArg::Bastion => oxide_sim::BuildingKind::Bastion,
+            BuildingKindArg::Array => oxide_sim::BuildingKind::Array,
+            BuildingKindArg::Reclaimer => oxide_sim::BuildingKind::Reclaimer,
         }
     }
 }
@@ -506,6 +539,10 @@ fn parse_key(s: &str) -> Result<Key> {
         "3" => Key::Num3,
         "4" => Key::Num4,
         "5" => Key::Num5,
+        "6" => Key::Num6,
+        "7" => Key::Num7,
+        "8" => Key::Num8,
+        "9" => Key::Num9,
         other => bail!("unknown key {other:?}"),
     })
 }
@@ -639,6 +676,17 @@ fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
                 units: units(ids),
                 kind: kind.into(),
                 anchor: parse_tile(&at)?,
+            },
+        },
+        LiveCmd::Repair {
+            player,
+            units: ids,
+            building,
+        } => Request::SendCommand {
+            player: PlayerId(player),
+            command: Command::Repair {
+                units: units(ids),
+                building: BuildingId(building),
             },
         },
         LiveCmd::Cancel { player, building } => Request::SendCommand {

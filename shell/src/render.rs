@@ -41,14 +41,15 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     } else {
         draw_fog(game);
     }
-    // Own-order acknowledgments and rally flags sit above the fog: they
-    // are the player's intent, not world intel.
+    // Own-order acknowledgments, rally flags, and radar blips sit above
+    // the fog: they are the player's intent and intel, not world state.
     draw_pings(game);
+    draw_blips(game);
     draw_rally_marker(game);
     draw_breadcrumbs(game, input);
     draw_placement_ghost(game, sprites, input);
     draw_drag_rect(game, input);
-    draw_hud(game);
+    draw_hud(game, input);
     draw_minimap(game);
 }
 
@@ -278,8 +279,16 @@ fn draw_tiles(game: &Game, sprites: &Sprites) {
             } else {
                 game.my_vision().remembered_scrap(pos)
             };
+            // Wrecks follow the same sight rule; a live node or rock
+            // outranks the junk visually.
+            let wreck = if game.overlay || game.my_vision().visible(pos) {
+                tile.wreck
+            } else {
+                game.my_vision().remembered_wreck(pos)
+            };
             let (overlay, flip) = match (tile.terrain, scrap) {
                 (oxide_sim::map::Terrain::Rock, _) => (Some(sprites.rock(h % 4)), h % 7 < 3),
+                (_, 0) if wreck > 0 => (Some(sprites.wreck_pile()), h % 5 < 2),
                 (_, 0) => (None, false),
                 (_, s) => (Some(sprites.scrap(s, SCRAP_NODE_AMOUNT)), false),
             };
@@ -453,15 +462,43 @@ fn draw_buildings(game: &Game, sprites: &Sprites) {
 }
 
 fn draw_units(game: &Game, sprites: &Sprites, alpha: f32) {
+    // Two passes: ground bodies first, then everything airborne above
+    // them — each flyer casts an offset shadow so altitude reads even
+    // when nothing overlaps.
+    draw_unit_pass(game, sprites, alpha, oxide_sim::stats::Domain::Ground);
+    draw_unit_pass(game, sprites, alpha, oxide_sim::stats::Domain::Air);
+}
+
+fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim::stats::Domain) {
     let zoom = game.camera.zoom;
+    let airborne = domain == oxide_sim::stats::Domain::Air;
     for unit in game.state.units() {
+        if unit.kind.stats().domain != domain {
+            continue;
+        }
         if unit.player != game.human && !game.overlay && !game.my_vision().visible(unit.tile()) {
             continue;
         }
         let faction = game.state.player(unit.player).faction;
         let pos = game.draw_pos(unit.id, unit.pos, alpha);
-        let screen = game.camera.to_screen(pos);
+        let mut screen = game.camera.to_screen(pos);
         let dest = zoom * 1.05;
+        if airborne {
+            let shadow = zoom * 0.9;
+            draw_texture_ex(
+                sprites.texture(),
+                screen.x - shadow * 0.5 + zoom * 0.16,
+                screen.y - shadow * 0.5 + zoom * 0.26,
+                WHITE,
+                DrawTextureParams {
+                    dest_size: Some(vec2(shadow, shadow)),
+                    source: Some(sprites.air_shadow()),
+                    ..Default::default()
+                },
+            );
+            // The body rides visibly above its shadow.
+            screen.y -= zoom * 0.18;
+        }
         let selected = game.selection.units.contains(&unit.id);
         if selected {
             draw_circle_lines(
@@ -535,6 +572,7 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
         let in_sight = match fx.kind {
             EffectKind::Laser { from, to, .. } => sees(from) && sees(to),
             EffectKind::Puff { at } => sees(at),
+            EffectKind::Burst { at, .. } => sees(at),
             // Own-order acknowledgments always show; fogged targets are
             // already impossible to order onto.
             EffectKind::Ping { .. } => true,
@@ -590,8 +628,56 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
                 let color = Color::new(0.9, 0.88, 0.84, 0.7 * fade.clamp(0.0, 1.0));
                 draw_circle_lines(center.x, center.y, radius, 2.0, color);
             }
+            EffectKind::Burst { at, radius } => {
+                // The bloom grows toward the splash radius and fades —
+                // the player reads exactly the area that just got hit.
+                let center = game.camera.to_screen(at);
+                let progress = (fx.age / 0.35).clamp(0.0, 1.0);
+                let size = game.camera.zoom * radius * 2.0 * (0.4 + 0.6 * progress);
+                let alpha = 1.0 - progress;
+                draw_texture_ex(
+                    sprites.texture(),
+                    center.x - size * 0.5,
+                    center.y - size * 0.5,
+                    Color::new(1.0, 1.0, 1.0, alpha),
+                    DrawTextureParams {
+                        dest_size: Some(vec2(size, size)),
+                        source: Some(sprites.burst()),
+                        ..Default::default()
+                    },
+                );
+            }
             EffectKind::Ping { .. } => {} // drawn above the fog, in draw_pings
         }
+    }
+}
+
+/// Radar blips, drawn above the fog: contacts without identity from the
+/// Array's outer ring — the player's own intel, like pings.
+fn draw_blips(game: &Game) {
+    if game.overlay {
+        return; // the omniscient overlay already shows the real machines
+    }
+    let zoom = game.camera.zoom;
+    for &tile in game.my_vision().contacts() {
+        let center = game
+            .camera
+            .to_screen(vec2(tile.x as f32 + 0.5, tile.y as f32 + 0.5));
+        let r = zoom * 0.3;
+        // A hollow diamond: unmistakably "something", deliberately not
+        // any faction's shape or color.
+        let pts = [
+            vec2(center.x, center.y - r),
+            vec2(center.x + r, center.y),
+            vec2(center.x, center.y + r),
+            vec2(center.x - r, center.y),
+        ];
+        for i in 0..4 {
+            let a = pts[i];
+            let b = pts[(i + 1) % 4];
+            draw_line(a.x, a.y, b.x, b.y, 2.0, BONE_FAINT);
+        }
+        draw_circle(center.x, center.y, 2.0, BONE_FAINT);
     }
 }
 
@@ -711,7 +797,7 @@ fn draw_overlay(game: &Game, alpha: f32) {
     draw_text(&info, screen_width() - 420.0 * s, 54.0 * s, 18.0 * s, BONE);
 }
 
-fn draw_hud(game: &Game) {
+fn draw_hud(game: &Game, input: &InputState) {
     let s = ui_scale();
     // Top bar.
     draw_rectangle(0.0, 0.0, screen_width(), 32.0 * s, PANEL);
@@ -765,21 +851,24 @@ fn draw_hud(game: &Game) {
             let mut line = format!("{name} {}/{} hp", building.hp, stats.max_hp);
             if !building.built {
                 line.push_str("   under construction   X: scrap site");
+                panel_line(&line);
             } else if !stats.produces.is_empty() {
-                let keys = ["H", "S"];
+                // Number keys train; the list is the seat's own roster
+                // (the other faction's variants never show).
+                let faction = game.state.player(game.human).faction;
                 let slots: Vec<String> = stats
                     .produces
                     .iter()
-                    .zip(keys)
-                    .map(|(k, key)| format!("{key}: {} ({})", k.name(), k.stats().cost))
+                    .filter(|k| k.faction().is_none_or(|f| f == faction))
+                    .enumerate()
+                    .map(|(i, k)| format!("{}: {} ({})", i + 1, k.name(), k.stats().cost))
                     .collect();
-                line.push_str(&format!(
-                    "   queue [{}]   {}",
-                    queue.join(", "),
-                    slots.join("   ")
-                ));
+                line.push_str(&format!("   queue [{}]", queue.join(", ")));
+                panel_row(&slots.join("   "), 0);
+                panel_row(&line, 1);
+            } else {
+                panel_line(&line);
             }
-            panel_line(&line);
             panel_shown = true;
         }
     } else if !game.selection.units.is_empty() {
@@ -788,14 +877,25 @@ fn draw_hud(game: &Game) {
                 .unit(*id)
                 .is_some_and(|u| u.kind == UnitKind::Harvester)
         });
-        let mut line = format!(
-            "{} unit(s) selected   X: stop   R: patrol",
-            game.selection.units.len()
+        let line = format!(
+            "{} unit(s) selected   X: stop   R: patrol{}",
+            game.selection.units.len(),
+            if has_builder { "   B: build" } else { "" }
         );
-        if has_builder {
-            line.push_str("   B: turret (100)   N: fabricator (150)");
+        if input.build_menu {
+            let palette: Vec<String> = crate::input::BUILD_PALETTE
+                .iter()
+                .enumerate()
+                .map(|(i, k)| {
+                    let cost = k.stats().construction.map(|c| c.cost).unwrap_or(0);
+                    format!("{}: {} ({})", i + 1, k.name(), cost)
+                })
+                .collect();
+            panel_row(&palette.join("   "), 0);
+            panel_row(&line, 1);
+        } else {
+            panel_line(&line);
         }
-        panel_line(&line);
         panel_shown = true;
     }
 
@@ -803,7 +903,8 @@ fn draw_hud(game: &Game) {
     // panel, so it yields whenever a panel is up (the panel carries its
     // own key prompts).
     if !panel_shown {
-        let hint = "LMB select · RMB move/engage · H/S train · arrows pan · Esc menu · F1 debug";
+        let hint =
+            "LMB select · RMB move/engage · 1-9 train · B build · arrows pan · Esc menu · F1 debug";
         let width = measure_text(hint, None, (16.0 * s) as u16, 1.0).width;
         draw_text(
             hint,
@@ -877,15 +978,15 @@ fn draw_hud(game: &Game) {
 }
 
 fn panel_line(text: &str) {
+    panel_row(text, 0);
+}
+
+/// A bottom panel band; `row` 0 is the lowest, higher rows stack above.
+fn panel_row(text: &str, row: usize) {
     let s = ui_scale();
-    draw_rectangle(
-        0.0,
-        screen_height() - 36.0 * s,
-        screen_width(),
-        36.0 * s,
-        PANEL,
-    );
-    draw_text(text, 12.0 * s, screen_height() - 12.0 * s, 20.0 * s, BONE);
+    let base = screen_height() - 36.0 * s * (row as f32 + 1.0);
+    draw_rectangle(0.0, base, screen_width(), 36.0 * s, PANEL);
+    draw_text(text, 12.0 * s, base + 24.0 * s, 20.0 * s, BONE);
 }
 
 // --- Minimap ------------------------------------------------------------
