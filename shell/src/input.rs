@@ -608,11 +608,7 @@ fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
 }
 
 fn building_name(kind: oxide_sim::BuildingKind) -> &'static str {
-    match kind {
-        oxide_sim::BuildingKind::Foundry => "foundry",
-        oxide_sim::BuildingKind::Turret => "turret",
-        oxide_sim::BuildingKind::Fabricator => "fabricator",
-    }
+    kind.name()
 }
 
 fn key_action(game: &mut Game, input: &mut InputState, key: Key) {

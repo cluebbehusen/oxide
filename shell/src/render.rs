@@ -759,22 +759,9 @@ fn draw_hud(game: &Game) {
     // Selection panel.
     if let Some(id) = game.selection.building {
         if let Some(building) = game.state.building(id) {
-            let queue: Vec<&str> = building
-                .queue
-                .iter()
-                .map(|k| match k {
-                    UnitKind::Harvester => "harvester",
-                    UnitKind::Sentinel => "sentinel",
-                    UnitKind::Scuttler => "scuttler",
-                    UnitKind::Lancer => "lancer",
-                })
-                .collect();
+            let queue: Vec<&str> = building.queue.iter().map(|k| k.name()).collect();
             let stats = building.kind.stats();
-            let name = match building.kind {
-                oxide_sim::BuildingKind::Foundry => "FOUNDRY",
-                oxide_sim::BuildingKind::Turret => "TURRET",
-                oxide_sim::BuildingKind::Fabricator => "FABRICATOR",
-            };
+            let name = building.kind.name().to_uppercase();
             let mut line = format!("{name} {}/{} hp", building.hp, stats.max_hp);
             if !building.built {
                 line.push_str("   under construction   X: scrap site");
@@ -784,15 +771,7 @@ fn draw_hud(game: &Game) {
                     .produces
                     .iter()
                     .zip(keys)
-                    .map(|(k, key)| {
-                        let n = match k {
-                            UnitKind::Harvester => "harvester",
-                            UnitKind::Sentinel => "sentinel",
-                            UnitKind::Scuttler => "scuttler",
-                            UnitKind::Lancer => "lancer",
-                        };
-                        format!("{key}: {n} ({})", k.stats().cost)
-                    })
+                    .map(|(k, key)| format!("{key}: {} ({})", k.name(), k.stats().cost))
                     .collect();
                 line.push_str(&format!(
                     "   queue [{}]   {}",

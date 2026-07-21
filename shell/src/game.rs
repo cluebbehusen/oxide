@@ -525,11 +525,7 @@ impl Game {
                 }
                 Event::BuildingCompleted { player, kind, .. } if *player == self.human => {
                     self.sounds_pending.push(SoundKind::TrainDone);
-                    self.toast(match kind {
-                        oxide_sim::BuildingKind::Turret => "turret online",
-                        oxide_sim::BuildingKind::Fabricator => "fabricator online",
-                        oxide_sim::BuildingKind::Foundry => "foundry online",
-                    });
+                    self.toast(format!("{} online", kind.name()));
                 }
                 Event::BuildCancelled { player, refund, .. } if *player == self.human => {
                     self.toast(format!("site salvaged (+{refund} scrap)"));

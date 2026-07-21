@@ -154,6 +154,12 @@ impl Sprites {
             oxide_sim::BuildingKind::Foundry => self.foundry[faction_index(faction)],
             oxide_sim::BuildingKind::Turret => self.turret[faction_index(faction)],
             oxide_sim::BuildingKind::Fabricator => self.fabricator[faction_index(faction)],
+            // Placeholder silhouettes: these kinds have no atlas art yet
+            // and borrow a sprite of matching footprint until they do.
+            oxide_sim::BuildingKind::FlakTurret
+            | oxide_sim::BuildingKind::Array
+            | oxide_sim::BuildingKind::Reclaimer => self.turret[faction_index(faction)],
+            oxide_sim::BuildingKind::Bastion => self.fabricator[faction_index(faction)],
         }
     }
 
@@ -163,7 +169,12 @@ impl Sprites {
             UnitKind::Harvester => self.harvester[faction_index(faction)],
             UnitKind::Sentinel => self.sentinel[faction_index(faction)],
             UnitKind::Scuttler => self.scuttler[faction_index(faction)],
-            UnitKind::Lancer => self.lancer[faction_index(faction)],
+            UnitKind::Lancer | UnitKind::Bombard => self.lancer[faction_index(faction)],
+            // Placeholder silhouettes until the atlas grows the new roster.
+            UnitKind::Flakhound | UnitKind::Stinger => self.sentinel[faction_index(faction)],
+            UnitKind::Buzzard | UnitKind::Darter | UnitKind::Talon | UnitKind::Wisp => {
+                self.scuttler[faction_index(faction)]
+            }
         }
     }
 }

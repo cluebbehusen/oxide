@@ -179,7 +179,7 @@ impl GymBot {
         let idle_fighters = obs
             .my_units
             .iter()
-            .filter(|u| u.kind.stats().attack.is_some() && u.idle && !enlisted.contains(&u.id))
+            .filter(|u| u.kind.stats().can_fight() && u.idle && !enlisted.contains(&u.id))
             .count() as i64;
         let staging = armies
             .iter()
@@ -332,8 +332,7 @@ impl GymBot {
             mask[Action::Scout as usize] = obs.my_units.iter().any(|u| {
                 !enlisted.contains(&u.id)
                     && u.site.is_none()
-                    && (u.kind == UnitKind::Harvester
-                        || (u.idle && u.kind.stats().attack.is_some()))
+                    && (u.kind == UnitKind::Harvester || (u.idle && u.kind.stats().can_fight()))
             });
         }
         Decision { features, mask }
@@ -498,7 +497,7 @@ impl GymBot {
         let fighters: Vec<_> = world
             .enemy_units
             .iter()
-            .filter(|u| u.kind.stats().attack.is_some())
+            .filter(|u| u.kind.stats().can_fight())
             .collect();
         if fighters.is_empty() {
             return;

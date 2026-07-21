@@ -1637,11 +1637,7 @@ fn lancer_outranges_aggro_and_retaliation_answers() {
         let b = state.unit(lancer).unwrap().pos;
         a.dist_sq(b)
     };
-    let aggro = oxide_sim::stats::UnitKind::Sentinel
-        .stats()
-        .attack
-        .unwrap()
-        .aggro_range;
+    let aggro = oxide_sim::stats::UnitKind::Sentinel.stats().aggro_range;
     assert!(d2 > aggro * aggro, "test premise: outside sentinel aggro");
 
     state.tick(&[cmd(
@@ -2431,7 +2427,7 @@ fn turret_fires_at_its_stated_cadence() {
             break;
         }
     }
-    let cooldown = u64::from(BuildingKind::Turret.stats().attack.unwrap().cooldown_ticks);
+    let cooldown = u64::from(BuildingKind::Turret.stats().weapons[0].cooldown_ticks);
     assert!(fire_ticks.len() >= 3, "not enough shots observed");
     assert_eq!(
         fire_ticks[1] - fire_ticks[0],

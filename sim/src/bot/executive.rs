@@ -467,7 +467,7 @@ impl Executive {
                             .enemy_units
                             .iter()
                             .filter(|u| {
-                                near(u.tile) <= CONTACT_RADIUS && u.kind.stats().attack.is_some()
+                                near(u.tile) <= CONTACT_RADIUS && u.kind.stats().can_fight()
                             })
                             .map(|u| (u.hp, near(u.tile), u.id))
                             .min()
@@ -535,7 +535,7 @@ impl Executive {
             .my_units
             .iter()
             .filter(|u| {
-                u.kind.stats().attack.is_some()
+                u.kind.stats().can_fight()
                     && u.idle
                     && !enlisted.contains(&u.id)
                     && !claimed.contains(&u.id)
@@ -579,7 +579,7 @@ fn enemies_near(obs: &Observation, members: &[UnitId], radius: i32) -> bool {
         .filter(|m| {
             obs.enemy_units
                 .iter()
-                .any(|e| e.kind.stats().attack.is_some() && m.tile.chebyshev(e.tile) <= radius)
+                .any(|e| e.kind.stats().can_fight() && m.tile.chebyshev(e.tile) <= radius)
         })
         .count();
     touched > 0 && touched * 3 >= members.len()
@@ -588,23 +588,32 @@ fn enemies_near(obs: &Observation, members: &[UnitId], radius: i32) -> bool {
 /// hp-weighted dps of one unit — the shared coin every fight estimate is
 /// priced in. Damage per 100 ticks keeps it in integers (cooldowns divide
 /// 100 unevenly — close enough for margin calls that carry hysteresis).
+/// Prices the ground battle: weapons that can only look up contribute
+/// nothing here, so an anti-air escort never inflates a push estimate.
 pub fn unit_strength(u: &UnitObs) -> u64 {
-    let Some(atk) = u.kind.stats().attack else {
-        return 0;
-    };
-    let dps100 = u64::from(atk.damage) * 100 / u64::from(atk.cooldown_ticks);
+    let stats = u.kind.stats();
+    let dps100: u64 = stats
+        .weapons
+        .iter()
+        .filter(|w| w.targets.ground)
+        .map(|w| u64::from(w.damage) * 100 / u64::from(w.cooldown_ticks))
+        .sum();
     u64::from(u.hp) * dps100
 }
 
 /// Same coin for a standing building (turrets; zero for the unarmed).
 pub fn building_strength(b: &super::observation::BuildingObs) -> u64 {
-    let Some(atk) = b.kind.stats().attack else {
-        return 0;
-    };
     if !b.built {
         return 0;
     }
-    let dps100 = u64::from(atk.damage) * 100 / u64::from(atk.cooldown_ticks);
+    let dps100: u64 = b
+        .kind
+        .stats()
+        .weapons
+        .iter()
+        .filter(|w| w.targets.ground)
+        .map(|w| u64::from(w.damage) * 100 / u64::from(w.cooldown_ticks))
+        .sum();
     u64::from(b.hp) * dps100
 }
 
@@ -627,9 +636,9 @@ fn local_strength(obs: &Observation, members: &[UnitId]) -> (u64, u64) {
         .iter()
         .filter(|u| members.contains(&u.id))
         .filter(|m| {
-            obs.enemy_units.iter().any(|e| {
-                e.kind.stats().attack.is_some() && m.tile.chebyshev(e.tile) <= CONTACT_RADIUS
-            })
+            obs.enemy_units
+                .iter()
+                .any(|e| e.kind.stats().can_fight() && m.tile.chebyshev(e.tile) <= CONTACT_RADIUS)
         })
         .map(|m| m.tile)
         .collect();

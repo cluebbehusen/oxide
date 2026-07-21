@@ -616,7 +616,7 @@ impl UtilityPolicy {
             || (self.scouted_at > 0
                 && obs.tick.saturating_sub(self.scouted_at) < 2 * SCOUT_REFRESH);
         let sentinel = UnitKind::Sentinel.stats();
-        let atk = sentinel.attack.expect("sentinels fight");
+        let atk = sentinel.weapons.first().expect("sentinels fight");
         let sentinel_worth = u64::from(sentinel.max_hp)
             * (u64::from(atk.damage) * 100 / u64::from(atk.cooldown_ticks));
         let floor = if intel_fresh { 2 } else { 5 } * sentinel_worth;
@@ -809,5 +809,5 @@ impl UtilityPolicy {
 /// Convenience for tests and future tiers: whether a unit observation
 /// can fight.
 pub fn is_fighter(u: &UnitObs) -> bool {
-    u.kind.stats().attack.is_some()
+    u.kind.stats().can_fight()
 }

@@ -138,7 +138,7 @@ fn turret_fire(state: &mut State, events: &mut Vec<Event>, hits: &mut Vec<Pendin
         let Some(b) = state.building(id) else {
             continue;
         };
-        let Some(atk) = b.kind.stats().attack else {
+        let Some(atk) = b.kind.stats().weapons.first() else {
             continue;
         };
         if !b.built || b.hp == 0 {
@@ -256,9 +256,12 @@ fn build(
 /// ties to the lowest id. `None` for pacifists and empty horizons.
 fn acquire_target(state: &State, id: UnitId) -> Option<Target> {
     let unit = state.unit(id).expect("caller checked");
-    let atk = unit.kind.stats().attack?;
+    let stats = unit.kind.stats();
+    if !stats.can_fight() {
+        return None;
+    }
     let (pos, me) = (unit.pos, unit.player);
-    let aggro_sq = atk.aggro_range * atk.aggro_range;
+    let aggro_sq = stats.aggro_range * stats.aggro_range;
 
     let unit_target = state
         .units
@@ -500,7 +503,7 @@ fn attack(
     hits: &mut Vec<PendingHit>,
 ) {
     let unit = state.unit(id).expect("caller checked");
-    let Some(atk) = unit.kind.stats().attack else {
+    let Some(atk) = unit.kind.stats().weapons.first() else {
         state.unit_mut(id).expect("caller checked").clear_program();
         return;
     };
@@ -640,7 +643,7 @@ fn retaliate(state: &mut State, victim: UnitId, attacker: Target) {
     let Some(unit) = state.unit(victim) else {
         return;
     };
-    if unit.hp == 0 || unit.kind.stats().attack.is_none() {
+    if unit.hp == 0 || !unit.kind.stats().can_fight() {
         return;
     }
     let resume = match unit.order {

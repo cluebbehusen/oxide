@@ -64,7 +64,7 @@ fn rally_order(state: &State, owner: PlayerId, kind: UnitKind, rally: TilePos) -
         return Some(Order::Harvest { node: rally });
     }
     let goal = find_nearby_passable(state, rally, GOAL_SNAP_RADIUS)?;
-    Some(if stats.attack.is_some() {
+    Some(if stats.can_fight() {
         Order::AttackMove { goal }
     } else {
         Order::Move { goal }

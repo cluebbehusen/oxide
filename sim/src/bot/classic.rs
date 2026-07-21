@@ -151,7 +151,9 @@ impl Bot {
                     UnitKind::Harvester => harvesters_alive += 1,
                     UnitKind::Scuttler => my_scuttlers += 1,
                     UnitKind::Lancer => my_lancers += 1,
-                    UnitKind::Sentinel => {}
+                    // The frozen legacy bot predates the wider roster; it
+                    // counts only the kinds its rules ever reason about.
+                    _ => {}
                 }
             } else if u.kind == UnitKind::Harvester {
                 enemy_harvesters += 1;
@@ -171,7 +173,7 @@ impl Bot {
                         }
                     }
                     crate::stats::BuildingKind::Turret => my_turrets += 1,
-                    crate::stats::BuildingKind::Foundry => {}
+                    _ => {}
                 }
             } else if b.kind == crate::stats::BuildingKind::Turret && b.built {
                 enemy_turrets += 1;
@@ -324,7 +326,7 @@ impl Bot {
             .units
             .iter()
             .filter(|u| {
-                u.player == me && u.kind != UnitKind::Harvester && u.kind.stats().attack.is_some()
+                u.player == me && u.kind != UnitKind::Harvester && u.kind.stats().can_fight()
             })
             .collect();
         if let Some(intruder) = intruder {

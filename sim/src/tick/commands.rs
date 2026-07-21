@@ -219,7 +219,7 @@ fn apply_attack(
     let walk_goal = find_nearby_passable(state, target_tile, GOAL_SNAP_RADIUS);
     let mut landed = 0;
     let applied = for_owned_units(state, player, units, |u| {
-        if u.kind.stats().attack.is_some() {
+        if u.kind.stats().can_fight() {
             if assign(
                 u,
                 Order::Attack {
@@ -264,7 +264,7 @@ fn apply_attack_move(
     let mut landed = 0;
     for (id, goal) in accepted.into_iter().zip(goals) {
         let unit = state.unit_mut(id).expect("filtered above");
-        let order = if unit.kind.stats().attack.is_some() {
+        let order = if unit.kind.stats().can_fight() {
             Order::AttackMove { goal }
         } else {
             Order::Move { goal }
@@ -340,7 +340,7 @@ fn apply_patrol(
     }
     for id in accepted {
         let unit = state.unit_mut(id).expect("filtered above");
-        let can_fight = unit.kind.stats().attack.is_some();
+        let can_fight = unit.kind.stats().can_fight();
         let mut legs = snapped.iter().map(|&goal| {
             if can_fight {
                 Order::AttackMove { goal }
