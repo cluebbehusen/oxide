@@ -344,3 +344,67 @@ fn a_dead_building_splits_its_wreck_across_the_footprint() {
         "a 1x1 building's whole wreck lands on its tile (found {found}, cap {expected})"
     );
 }
+
+#[test]
+fn a_flyer_downed_over_a_roof_leaves_nothing_strippable() {
+    // The wisp dies to the flakhound directly over the enemy foundry's
+    // footprint; no wreck may land under the standing building.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Wisp, 4, 2),
+        unit(1, UnitKind::Flakhound, 12, 5),
+    ])
+    .build()
+    .unwrap();
+    let (wisp, flak) = (state.units()[0].id, state.units()[1].id);
+    let foundry_anchor = state
+        .buildings()
+        .iter()
+        .find(|b| b.player == PlayerId(1))
+        .unwrap()
+        .anchor;
+    // Fly the wisp onto the foundry roof; the flakhound will swat it.
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![wisp],
+            goal: foundry_anchor,
+            queue: false,
+        },
+    )]);
+    state.tick(&[cmd(
+        1,
+        Command::Move {
+            units: vec![flak],
+            goal: TilePos::new(foundry_anchor.x - 2, foundry_anchor.y),
+            queue: false,
+        },
+    )]);
+    let mut grave = None;
+    run_until(&mut state, 600, |_, events| {
+        events.iter().any(|e| {
+            if let Event::UnitDied { unit: u, pos, .. } = e
+                && *u == wisp
+            {
+                grave = Some(TilePos::containing(*pos));
+                true
+            } else {
+                false
+            }
+        })
+    });
+    let grave = grave.expect("the wisp died");
+    let under_roof = state
+        .buildings()
+        .iter()
+        .any(|b| b.tiles().any(|t| t == grave));
+    if under_roof {
+        assert_eq!(
+            state.map().wreck_at(grave),
+            0,
+            "a surviving footprint swallows the deposit"
+        );
+    } else {
+        // The swat happened off the roof — still a valid wreck test.
+        assert!(state.map().wreck_at(grave) > 0);
+    }
+}

@@ -53,7 +53,8 @@ pub struct PlayerSpec {
     /// the legacy rule-cascade bot — which is also what keeps replays
     /// recorded before bot configs existed reproducing, since the
     /// scenario (and therefore
-    /// this config) rides inside every replay.
+    /// this config) rides inside every replay. The legacy bot is
+    /// team-blind: a seat with a `team` must set a config.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bot_config: Option<BotConfig>,
 }

@@ -103,6 +103,15 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
     state.buildings.retain(|b| b.hp > 0);
 
     for (tile, value) in deposits {
+        // A tile under a surviving building swallows its deposit — a
+        // flyer downed over a roof leaves nothing strippable, and wreck
+        // must never coexist with a standing footprint (harvesters
+        // cannot reach it, and the building's own eventual wreck would
+        // double-stack). Buildings that died this tick are already gone
+        // from the vec, so their footprints take deposits normally.
+        if state.buildings.iter().any(|b| b.contains(tile)) {
+            continue;
+        }
         state.map.add_wreck(tile, value);
     }
 }

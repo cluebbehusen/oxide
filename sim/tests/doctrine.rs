@@ -288,3 +288,30 @@ fn a_pushed_army_holds_its_artillery_at_standoff() {
         "the Bombard holds a standoff short of the target: {goals:?}"
     );
 }
+
+#[test]
+fn the_army_draft_never_conscripts_the_air_wing() {
+    use oxide_sim::bot::Executive;
+    let mut obs = obs_base();
+    obs.my_units = vec![
+        unit_obs(0, 0, UnitKind::Sentinel, 3, 3),
+        unit_obs(1, 0, UnitKind::Buzzard, 4, 3),
+        unit_obs(2, 0, UnitKind::Talon, 3, 4),
+        unit_obs(3, 0, UnitKind::Sentinel, 5, 3),
+    ];
+    let mut exec = Executive::new();
+    let _ = exec.apply(
+        PlayerId(0),
+        &obs,
+        &[Intent::FormArmy {
+            staging: TilePos::new(4, 4),
+            size: 4,
+        }],
+    );
+    let members = &exec.armies()[0].members;
+    assert_eq!(
+        members.as_slice(),
+        &[UnitId(0), UnitId(3)],
+        "armies are ground bodies; wings stay free for the raid channel"
+    );
+}

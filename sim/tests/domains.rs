@@ -697,3 +697,63 @@ fn radar_blips_detect_without_identifying_or_authorizing() {
         "seen contacts are sightings, not blips"
     );
 }
+
+#[test]
+fn splash_hits_the_unseen_but_reveals_nothing() {
+    // The fire gate governs choosing a victim; a shell in flight chooses
+    // nothing. An unseen bystander in the blast takes damage silently:
+    // no event names it, and it never chases a shooter it cannot see.
+    // The spotter's disc (vision 6) grazes the victim at distance
+    // sqrt(32) but misses the bystander one tile deeper at sqrt(41);
+    // the gun itself (vision 5, range 9.5) sits exactly 9 tiles out.
+    let mut scenario = arena(vec![
+        unit(0, UnitKind::Bombard, 4, 5),
+        unit(0, UnitKind::Scuttler, 9, 1),
+        unit(1, UnitKind::Harvester, 13, 5),
+        unit(1, UnitKind::Sentinel, 13, 6),
+    ]);
+    scenario.map = vec![
+        "################".into(),
+        "#1......#....2.#".into(),
+        "#.......#......#".into(),
+        "#.......#......#".into(),
+        "#.......#......#".into(),
+        "#.......#......#".into(),
+        "#..............#".into(),
+        "#..............#".into(),
+        "################".into(),
+    ];
+    let mut state = scenario.build().unwrap();
+    let (bombard, victim, bystander) = (
+        state.units()[0].id,
+        state.units()[2].id,
+        state.units()[3].id,
+    );
+    // Premise: the aimed victim is seen (spotter), the bystander is not.
+    assert!(state.can_see(PlayerId(0), state.unit(victim).unwrap().tile()));
+    assert!(!state.can_see(PlayerId(0), state.unit(bystander).unwrap().tile()));
+    let report = state.tick(&[cmd(
+        0,
+        Command::Attack {
+            units: vec![bombard],
+            target: Target::Unit(victim),
+            queue: false,
+        },
+    )]);
+    assert!(
+        state.unit(bystander).unwrap().hp < UnitKind::Sentinel.stats().max_hp,
+        "the blast does not check papers"
+    );
+    assert!(
+        !report.events.iter().any(
+            |e| matches!(e, Event::AttackHit { target: Target::Unit(u), .. } if *u == bystander)
+        ),
+        "no event names the unseen bystander"
+    );
+    state.tick(&[]);
+    assert_eq!(
+        state.unit(bystander).unwrap().order,
+        Order::Idle,
+        "it cannot chase a shooter it never saw"
+    );
+}

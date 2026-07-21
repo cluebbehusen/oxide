@@ -578,7 +578,13 @@ impl Executive {
             .my_units
             .iter()
             .filter(|u| {
-                u.kind.stats().can_fight()
+                let stats = u.kind.stats();
+                // Armies are ground bodies: the lifecycle's centroids,
+                // standoffs, and focus picks are all ground-shaped, and
+                // enlisting wings here would starve the raid channel of
+                // the very units it was bought for.
+                stats.can_fight()
+                    && stats.domain == crate::stats::Domain::Ground
                     && u.idle
                     && !enlisted.contains(&u.id)
                     && !claimed.contains(&u.id)

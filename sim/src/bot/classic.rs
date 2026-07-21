@@ -11,6 +11,13 @@
 //! the scenario seed — and intentionally beatable: keep the economy going,
 //! mass a squad, defend home, push. Mirror matches don't stalemate because
 //! the attack threshold varies per player.
+//!
+//! Team-blind by design: this bot predates teams and reads allegiance
+//! as `player != me`, so on a team scenario it would flag allies as
+//! intruders and waste its commands on them (the sim rejects ally
+//! attacks, so no friendly fire is possible — the seat just plays
+//! badly). Every scenario that seats it must be a plain free-for-all;
+//! team seats belong to the neural ladder via `bot_config`.
 
 use crate::command::{Command, PlayerCommand};
 use crate::ids::{PlayerId, Target};

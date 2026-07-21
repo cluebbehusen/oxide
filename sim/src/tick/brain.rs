@@ -153,6 +153,14 @@ fn traces_terrain(weapon: &WeaponStats, shooter: Domain, victim: Domain) -> bool
 /// every other hostile unit inside the radius that the weapon can cover.
 /// Victims are chosen against the start-of-tick world like every other
 /// decision this phase makes; buildings only ever take the direct hit.
+///
+/// Splash deliberately skips the owner-sight fire gate the aimed paths
+/// enforce: the gate governs *choosing* a victim, and a shell in flight
+/// chooses nothing — whatever stands in the blast is hit, seen or not.
+/// No information leaks through the hole: the only emitted event names
+/// the aimed victim, and retaliation stays gated on the sufferer seeing
+/// the shooter, so an unseen bystander takes damage silently and nobody
+/// learns anything they could not already see.
 fn buffer_shot(
     state: &State,
     attacker: Target,
