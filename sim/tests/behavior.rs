@@ -32,12 +32,14 @@ fn arena(units: Vec<UnitSpec>) -> Scenario {
                 faction: Faction::Ferrous,
                 scrap: 200,
                 bot: false,
+                bot_config: None,
             },
             PlayerSpec {
                 name: "Cupric".into(),
                 faction: Faction::Cupric,
                 scrap: 200,
                 bot: false,
+                bot_config: None,
             },
         ],
         units,
@@ -765,6 +767,7 @@ fn ghost_memory_survives_unseen_demolition_until_revisited() {
         faction: Faction::Ferrous,
         scrap: 0,
         bot: false,
+        bot_config: None,
     });
     let scenario = Scenario {
         name: "ghost-lab".into(),
@@ -985,6 +988,7 @@ fn eliminated_players_cannot_command_survivors() {
         faction: Faction::Ferrous,
         scrap: 0,
         bot: false,
+        bot_config: None,
     });
     let scenario = Scenario {
         name: "elimination".into(),
@@ -1147,12 +1151,14 @@ fn congestion_survives_nonconsecutive_unit_ids() {
                 faction: Faction::Ferrous,
                 scrap: 0,
                 bot: false,
+                bot_config: None,
             },
             PlayerSpec {
                 name: "Cupric".into(),
                 faction: Faction::Cupric,
                 scrap: 0,
                 bot: false,
+                bot_config: None,
             },
         ],
         units: vec![

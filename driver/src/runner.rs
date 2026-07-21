@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use chassis::replay::Replay;
-use oxide_sim::bot::Bot;
+use oxide_sim::bot::{SeatBot, seat_bots};
 use oxide_sim::{PlayerCommand, SIM_VERSION, Scenario, State};
 
 /// The concrete replay type for Oxide sessions.
@@ -21,7 +21,7 @@ pub struct RunOutcome {
 /// look like this.
 pub fn step(
     state: &mut State,
-    bots: &mut [Bot],
+    bots: &mut [SeatBot],
     replay: Option<&mut GameReplay>,
 ) -> oxide_sim::TickReport {
     let mut commands: Vec<PlayerCommand> = Vec::new();
@@ -46,7 +46,7 @@ pub fn run_scenario(
 ) -> Result<RunOutcome> {
     let mut state = scenario.build().context("building scenario")?;
     let mut bots = if with_bots {
-        Bot::for_scenario(scenario)
+        seat_bots(scenario)
     } else {
         Vec::new()
     };

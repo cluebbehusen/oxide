@@ -27,6 +27,14 @@ fn compute_hashes() -> BTreeMap<String, String> {
             Scenario::load(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
         for player in &mut scenario.players {
             player.bot = true;
+            // The fixtures pin the *shipped* opponent: the neural ladder
+            // at full strength, personalities dealt from the map seed.
+            // Weight changes now trip the tripwire, exactly like rule
+            // changes — the network is part of the sim's behavior.
+            player.bot_config = Some(oxide_sim::scenario::BotConfig {
+                level: oxide_sim::bot::Level::Expert,
+                aggression: None,
+            });
         }
         let outcome = runner::run_scenario(&scenario, FIXTURE_TICKS, true, false)
             .unwrap_or_else(|err| panic!("{}: {err}", path.display()));

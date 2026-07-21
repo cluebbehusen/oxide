@@ -15,7 +15,44 @@ use crate::command::PlayerCommand;
 use crate::ids::PlayerId;
 use crate::state::State;
 use chassis::rng::Pcg32;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
+
+/// The decision cadence the shipped ladder network trained at.
+pub const LADDER_CADENCE: u64 = 16;
+
+/// The shipped difficulty ladder: one trained network, four skill-knob
+/// settings calibrated against the scripted tiers (Easy loses to even
+/// the gentlest scripted bot; Expert sweeps them all). Difficulty is a
+/// dial into one mind, not four different minds — mistakes stay
+/// human-shaped at every rung.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Level {
+    /// Beatable while learning the controls.
+    Easy,
+    /// A fair first fight.
+    Medium,
+    /// Wins against casual play.
+    Hard,
+    /// The full network, no handicap.
+    Expert,
+}
+
+impl Level {
+    /// All levels, gentlest first.
+    pub const LADDER: [Level; 4] = [Level::Easy, Level::Medium, Level::Hard, Level::Expert];
+
+    /// The skill-knob setting this level plays at.
+    pub fn skill(self) -> u32 {
+        match self {
+            Level::Easy => 780,
+            Level::Medium => 880,
+            Level::Hard => 950,
+            Level::Expert => 1000,
+        }
+    }
+}
 
 /// Fractional bits of the fixed-point format.
 const Q: u32 = 12;
@@ -55,6 +92,19 @@ pub struct QuantNet {
 }
 
 impl QuantNet {
+    /// The embedded ladder network (parsed once, shared).
+    ///
+    /// # Panics
+    /// If the embedded artifact doesn't match this build's gym
+    /// contract — a build error surfaced at first use, caught by tests.
+    pub fn ladder() -> &'static QuantNet {
+        static NET: OnceLock<QuantNet> = OnceLock::new();
+        NET.get_or_init(|| {
+            QuantNet::from_json(include_str!("ladder_weights.json"))
+                .expect("embedded ladder weights match the gym contract")
+        })
+    }
+
     /// Parses an exported artifact, refusing shape or version drift.
     pub fn from_json(json: &str) -> Result<Self, String> {
         let dto: ArtifactDto = serde_json::from_str(json).map_err(|e| e.to_string())?;
@@ -219,6 +269,30 @@ impl NeuralBot {
             blunder_permille: blunder,
             rng: Pcg32::new(scenario_seed, 3000 + u64::from(player.0)),
         }
+    }
+
+    /// The shipped ladder bot: embedded weights, a named difficulty,
+    /// and a personality — `aggression` in 0..=1000, or `None` to let
+    /// the scenario seed pick one (deterministically: same seed, same
+    /// personality).
+    pub fn ladder(
+        player: PlayerId,
+        scenario_seed: u64,
+        level: Level,
+        aggression: Option<u32>,
+    ) -> Self {
+        let aggression = aggression.unwrap_or_else(|| {
+            Pcg32::new(scenario_seed, 4000 + u64::from(player.0)).next_below(1001)
+        });
+        Self::with_profile(
+            player,
+            LADDER_CADENCE,
+            QuantNet::ladder().clone(),
+            level.skill(),
+            aggression,
+            0,
+            scenario_seed,
+        )
     }
 
     /// Back-compat constructor: an explicit blunder dial, straight knobs.

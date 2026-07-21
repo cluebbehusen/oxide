@@ -28,8 +28,60 @@ pub use brain::Brain;
 pub use classic::Bot;
 pub use executive::{Army, ArmyId, ArmyState, Doctrine, Executive, Intent};
 pub use gym::{ACTION_COUNT, Action, Decision, FEATURE_COUNT, GYM_VERSION, GymBot};
-pub use neural::{NeuralBot, QuantNet};
+pub use neural::{LADDER_CADENCE, Level, NeuralBot, QuantNet};
 pub use observation::{BuildingObs, Observation, UnitObs};
 pub use orient::Orientation;
 pub use tiers::Difficulty;
 pub use utility::{Dials, UtilityPolicy};
+
+/// A bot seat as the shell and driver run it: the shipped neural
+/// ladder when the scenario configures one, the classic 0.6 rule
+/// cascade otherwise (which is what keeps pre-0.7 replays and
+/// fixtures reproducing).
+#[derive(Debug, Clone)]
+pub enum SeatBot {
+    /// The 0.6 benchmark bot.
+    Classic(Box<Bot>),
+    /// The shipped ladder network.
+    Neural(Box<NeuralBot>),
+}
+
+impl SeatBot {
+    /// Commands for this tick.
+    pub fn act(&mut self, state: &crate::state::State) -> Vec<crate::command::PlayerCommand> {
+        match self {
+            SeatBot::Classic(b) => b.act(state),
+            SeatBot::Neural(b) => b.act(state),
+        }
+    }
+
+    /// The player this bot drives.
+    pub fn player(&self) -> crate::ids::PlayerId {
+        match self {
+            SeatBot::Classic(b) => b.player(),
+            SeatBot::Neural(b) => b.player(),
+        }
+    }
+}
+
+/// Every bot a scenario asks for, honoring each seat's `bot_config`.
+pub fn seat_bots(scenario: &crate::Scenario) -> Vec<SeatBot> {
+    scenario
+        .players
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.bot)
+        .map(|(i, p)| {
+            let player = crate::ids::PlayerId(i as u8);
+            match p.bot_config {
+                Some(config) => SeatBot::Neural(Box::new(NeuralBot::ladder(
+                    player,
+                    scenario.seed,
+                    config.level,
+                    config.aggression,
+                ))),
+                None => SeatBot::Classic(Box::new(Bot::new(player, scenario.seed))),
+            }
+        })
+        .collect()
+}

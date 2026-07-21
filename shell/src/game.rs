@@ -11,7 +11,7 @@ use anyhow::Result;
 use chassis::replay::Replay;
 use macroquad::prelude::{Vec2, vec2};
 use oxide_protocol::hash_hex;
-use oxide_sim::bot::Bot;
+use oxide_sim::bot::{SeatBot, seat_bots};
 use oxide_sim::{
     Building, BuildingId, Command, Event, PlayerCommand, PlayerId, SIM_VERSION, Scenario, State,
     TICKS_PER_SECOND, UnitId,
@@ -125,7 +125,7 @@ pub struct Game {
     /// The sim. Touch only through [`Game::do_tick`].
     pub state: State,
     /// Command sources for bot-flagged players.
-    pub bots: Vec<Bot>,
+    pub bots: Vec<SeatBot>,
     /// Every command of the session, tick-stamped — always recording.
     pub recorder: GameReplay,
     /// Commands staged for the next tick (human + debug socket).
@@ -174,7 +174,7 @@ impl Game {
     /// Starts a session from a scenario.
     pub fn new(scenario: Scenario) -> Result<Self> {
         let state = scenario.build()?;
-        let bots = Bot::for_scenario(&scenario);
+        let bots = seat_bots(&scenario);
         let recorder = Replay::new(SIM_VERSION, scenario.clone());
         let human = PlayerId(0);
         let focus = state
@@ -256,7 +256,7 @@ impl Game {
         // runs against every tick to rebuild that memory, and its outputs
         // are discarded — the recorded commands are the truth. A resumed
         // session then continues exactly as the unsaved one would have.
-        let mut bots = Bot::for_scenario(&scenario);
+        let mut bots = seat_bots(&scenario);
         let mut cursor = replay.cursor();
         for _ in 0..total {
             for bot in &mut bots {
