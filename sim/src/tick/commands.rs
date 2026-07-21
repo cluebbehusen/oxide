@@ -329,11 +329,14 @@ fn apply_harvest(
     if !in_envelope(state, node) {
         return Err(RejectReason::OutOfBounds);
     }
-    // A node counts if it exists *or* the issuer remembers it existing —
+    // A source counts if it exists *or* the issuer remembers it existing —
     // ordering harvesters onto stale memory is legitimate play (they walk
     // over, discover the truth, and retarget), and rejecting it would leak
-    // that an unseen node has been emptied.
-    if state.map.scrap_at(node) == 0 && state.vision(player).remembered_scrap(node) == 0 {
+    // that an unseen node or wreck has been emptied.
+    let live = state.map.scrap_at(node) > 0 || state.map.wreck_at(node) > 0;
+    let remembered = state.vision(player).remembered_scrap(node) > 0
+        || state.vision(player).remembered_wreck(node) > 0;
+    if !live && !remembered {
         return Err(RejectReason::NotANode);
     }
     let mut applied = 0;
@@ -464,6 +467,14 @@ fn apply_build(
                 return Err(RejectReason::UnreachableGoal);
             }
             state.player_mut(player).scrap -= cost;
+            // The accepted foundation buries whatever wreck salvage lay
+            // there (only now — a rejected site must leave no trace).
+            let size = kind.stats().size;
+            for dy in 0..size.1 {
+                for dx in 0..size.0 {
+                    state.map.clear_wreck(anchor.offset(dx, dy));
+                }
+            }
             site
         }
     };

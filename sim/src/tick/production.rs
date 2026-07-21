@@ -62,7 +62,10 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
 /// and discovers.
 fn rally_order(state: &State, owner: PlayerId, kind: UnitKind, rally: TilePos) -> Option<Order> {
     let stats = kind.stats();
-    if stats.harvest.is_some() && state.vision(owner).remembered_scrap(rally) > 0 {
+    if stats.harvest.is_some()
+        && (state.vision(owner).remembered_scrap(rally) > 0
+            || state.vision(owner).remembered_wreck(rally) > 0)
+    {
         return Some(Order::Harvest { node: rally });
     }
     let goal = super::domain_goal(state, rally, stats.domain)?;

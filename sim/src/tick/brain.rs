@@ -446,8 +446,11 @@ fn touching_settled_arrival(state: &State, id: UnitId, goal: TilePos) -> bool {
     })
 }
 
-/// The harvest loop: walk to node, extract to capacity, haul to the nearest
-/// Foundry, repeat; when the node dies, hop to a neighbor node or go idle.
+/// The harvest loop: walk to the salvage, extract to capacity, haul to
+/// the nearest Foundry, repeat; when the source dies, hop to a neighbor
+/// source or go idle. Nodes are worked from an adjacent tile (they block
+/// ground); wrecks are worked standing *on* the tile — they are junk on
+/// open ground.
 fn harvest(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>) {
     let unit = state.unit(id).expect("caller checked");
     let Some(hstats) = unit.kind.stats().harvest else {
@@ -455,8 +458,9 @@ fn harvest(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
         state.unit_mut(id).expect("caller checked").clear_program();
         return;
     };
-    let (tile, carrying) = (unit.tile(), unit.carrying);
+    let (tile, kind, carrying) = (unit.tile(), unit.kind, unit.carrying);
     let node_scrap = state.map.scrap_at(node);
+    let node_wreck = state.map.wreck_at(node);
 
     if carrying >= hstats.capacity {
         deliver(state, id, node, events);
@@ -473,8 +477,41 @@ fn harvest(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
                 pos,
             });
         }
+    } else if node_wreck > 0 {
+        if tile == node {
+            extract_wreck(state, id, node, hstats.ticks_per_scrap);
+        } else {
+            let keep = state
+                .unit(id)
+                .expect("caller checked")
+                .path
+                .as_ref()
+                .is_some_and(|p| p.goal == node);
+            if !keep {
+                let path = route_for(state, kind, tile, node);
+                let unit = state.unit_mut(id).expect("caller checked");
+                match path {
+                    Some(waypoints) => {
+                        unit.path = Some(PathFollow {
+                            goal: node,
+                            waypoints,
+                            next: 0,
+                        });
+                    }
+                    None => {
+                        let (player, pos) = (unit.player, unit.pos);
+                        unit.clear_program();
+                        events.push(Event::OrderStalled {
+                            unit: id,
+                            player,
+                            pos,
+                        });
+                    }
+                }
+            }
+        }
     } else {
-        // Node is dry. Find a replacement, else wrap up.
+        // Dry. Find a replacement source, else wrap up.
         match replacement_node(state, node, tile) {
             Some(next) => {
                 let unit = state.unit_mut(id).expect("caller checked");
@@ -485,6 +522,21 @@ fn harvest(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
             None if carrying > 0 => deliver(state, id, node, events),
             None => state.unit_mut(id).expect("caller checked").advance_queue(),
         }
+    }
+}
+
+/// Stand on the wreck and strip it. Decay can beat the stripper to the
+/// last piece — the dry-source branch above handles the morning after.
+fn extract_wreck(state: &mut State, id: UnitId, node: TilePos, ticks_per_scrap: u32) {
+    let unit = state.unit_mut(id).expect("caller checked");
+    unit.path = None;
+    unit.progress += 1;
+    if unit.progress < ticks_per_scrap {
+        return;
+    }
+    unit.progress = 0;
+    if state.map.extract_wreck(node).is_some() {
+        state.unit_mut(id).expect("caller checked").carrying += 1;
     }
 }
 
@@ -551,7 +603,10 @@ fn deliver(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
             amount: credited,
         });
         // Nothing left to go back to? Then we're done hauling.
-        if state.map.scrap_at(node) == 0 && replacement_node(state, node, tile).is_none() {
+        if state.map.scrap_at(node) == 0
+            && state.map.wreck_at(node) == 0
+            && replacement_node(state, node, tile).is_none()
+        {
             state.unit_mut(id).expect("caller checked").advance_queue();
         }
     } else if !approach_rect(state, id, anchor, size) {
@@ -902,14 +957,15 @@ fn approach_rect(state: &mut State, id: UnitId, anchor: TilePos, size: (i32, i32
     false
 }
 
-/// The nearest tile still holding scrap within [`RETARGET_RADIUS`] of a dead
-/// node — keyed by (distance from the unit, y, x) so the pick is unique.
+/// The nearest tile still holding salvage — node scrap or wreck — within
+/// [`RETARGET_RADIUS`] of a dead source, keyed by (distance from the
+/// unit, y, x) so the pick is unique.
 fn replacement_node(state: &State, around: TilePos, unit_tile: TilePos) -> Option<TilePos> {
     let mut best: Option<(i32, i32, i32)> = None;
     for dy in -RETARGET_RADIUS..=RETARGET_RADIUS {
         for dx in -RETARGET_RADIUS..=RETARGET_RADIUS {
             let t = around.offset(dx, dy);
-            if state.map.scrap_at(t) == 0 {
+            if state.map.scrap_at(t) == 0 && state.map.wreck_at(t) == 0 {
                 continue;
             }
             let key = (t.manhattan(unit_tile), t.y, t.x);

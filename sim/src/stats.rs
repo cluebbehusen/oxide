@@ -717,6 +717,21 @@ impl BuildingKind {
 /// Scrap contained in a freshly parsed node tile.
 pub const SCRAP_NODE_AMOUNT: u32 = 400;
 
+/// Fraction of a destroyed machine's price left on the field as wreck
+/// salvage: losing an army literally feeds the other side's harvesters.
+pub const WRECK_VALUE_NUM: u32 = 45;
+/// Denominator of the wreck-value fraction.
+pub const WRECK_VALUE_DEN: u32 = 100;
+
+/// The Foundry is never bought, so its wreck value is authored: a prize
+/// worth fighting over where a base used to stand.
+pub const FOUNDRY_WRECK_VALUE: u32 = 300;
+
+/// Ticks between global wreck-decay steps (every wreck tile loses one
+/// salvage per step). Battlefield scrap is a fresh-battle prize, not a
+/// bank.
+pub const WRECK_DECAY_TICKS: u64 = 40;
+
 /// Scrap in a rich node (the `S` map legend) — a fought-over prize.
 pub const RICH_SCRAP_NODE_AMOUNT: u32 = 800;
 

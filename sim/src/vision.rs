@@ -64,6 +64,10 @@ pub struct Vision {
     /// Scrap per tile as this player last saw it. Only meaningful where
     /// `explored`; frozen wherever sight is lost, exactly like ghosts.
     remembered_scrap: Grid<u32>,
+    /// Wreck salvage per tile as last seen — same freeze-frame rule. Kept
+    /// apart from scrap memory because renderers draw them differently
+    /// and the harvest brain approaches them differently.
+    remembered_wreck: Grid<u32>,
 }
 
 impl Vision {
@@ -73,6 +77,7 @@ impl Vision {
             explored: Grid::new(width, height, false),
             ghosts: Vec::new(),
             remembered_scrap: Grid::new(width, height, 0),
+            remembered_wreck: Grid::new(width, height, 0),
         }
     }
 
@@ -100,6 +105,10 @@ impl Vision {
             self.remembered_scrap.width(),
             self.remembered_scrap.height(),
             self.remembered_scrap.is_consistent(),
+        ) && dims(
+            self.remembered_wreck.width(),
+            self.remembered_wreck.height(),
+            self.remembered_wreck.is_consistent(),
         )
     }
 
@@ -108,6 +117,12 @@ impl Vision {
     /// this everywhere else.
     pub fn remembered_scrap(&self, pos: TilePos) -> u32 {
         self.remembered_scrap.get(pos).copied().unwrap_or(0)
+    }
+
+    /// Wreck salvage at `pos` as last seen (zero where never seen or out
+    /// of bounds). Decay keeps running in the fog — this is a belief.
+    pub fn remembered_wreck(&self, pos: TilePos) -> u32 {
+        self.remembered_wreck.get(pos).copied().unwrap_or(0)
     }
 
     /// Whether the player currently sees `pos`.
@@ -182,12 +197,15 @@ pub(crate) fn refresh(state: &mut State) {
         view.ghosts = ghosts;
 
         // Freeze-frame the economy the same way: wherever there is sight,
-        // remember the scrap; everywhere else the old number stands.
+        // remember the salvage; everywhere else the old numbers stand.
         for (pos, tile) in state.map.iter() {
-            if view.visible(pos)
-                && let Some(cell) = view.remembered_scrap.get_mut(pos)
-            {
-                *cell = tile.scrap;
+            if view.visible(pos) {
+                if let Some(cell) = view.remembered_scrap.get_mut(pos) {
+                    *cell = tile.scrap;
+                }
+                if let Some(cell) = view.remembered_wreck.get_mut(pos) {
+                    *cell = tile.wreck;
+                }
             }
         }
     }

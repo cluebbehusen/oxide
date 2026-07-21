@@ -157,6 +157,16 @@ impl<T> Grid<T> {
             (TilePos::new(x, y), cell)
         })
     }
+
+    /// Iterates all cells mutably with their positions, row-major.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (TilePos, &mut T)> {
+        let width = self.width as usize;
+        self.cells.iter_mut().enumerate().map(move |(i, cell)| {
+            let x = (i % width) as i32;
+            let y = (i / width) as i32;
+            (TilePos::new(x, y), cell)
+        })
+    }
 }
 
 #[cfg(test)]

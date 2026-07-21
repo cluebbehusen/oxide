@@ -16,10 +16,14 @@
 //! 5. **Movement** — units advance along their paths.
 //! 6. **Collision** — overlapping bodies are pushed apart until they fit;
 //!    units are solid to each other but never block tiles.
-//! 7. **Cleanup** — entities at 0 hp are removed, with events.
-//! 8. **Vision** — every player's fog-of-war visible set is rebuilt from
+//! 7. **Cleanup** — entities at 0 hp are removed, with events; every
+//!    death deposits wreck salvage on its ground.
+//! 8. **Decay** — on its global cadence, every wreck tile loses one
+//!    salvage (deposits land first, so a fresh wreck survives its birth
+//!    tick).
+//! 9. **Vision** — every player's fog-of-war visible set is rebuilt from
 //!    their surviving entities (explored only accumulates).
-//! 9. **Victory** — a player with no Foundry is out; last standing wins.
+//! 10. **Victory** — a player with no Foundry is out; last standing wins.
 //!
 //! After [`GameResult`] is set the world freezes: ticks still count up (so
 //! timelines stay aligned) but nothing moves and commands are ignored.
@@ -50,6 +54,9 @@ impl State {
             movement::run(self);
             movement::resolve_collisions(self);
             cleanup(self, &mut events);
+            if self.tick.is_multiple_of(crate::stats::WRECK_DECAY_TICKS) {
+                self.map.decay_wrecks();
+            }
             self.refresh_vision();
             victory(self, &mut events);
         }
@@ -58,8 +65,12 @@ impl State {
     }
 }
 
-/// Removes entities that hit 0 hp this tick, reporting each.
+/// Removes entities that hit 0 hp this tick, reporting each — and leaves
+/// their price on the ground: a fraction of every destroyed machine's
+/// cost lands as wreck salvage (buildings split theirs across the
+/// footprint). Battles literally feed the salvagers.
 fn cleanup(state: &mut State, events: &mut Vec<Event>) {
+    let mut deposits: Vec<(TilePos, u32)> = Vec::new();
     for unit in state.units.iter().filter(|u| u.hp == 0) {
         events.push(Event::UnitDied {
             unit: unit.id,
@@ -67,6 +78,9 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
             player: unit.player,
             pos: unit.pos,
         });
+        let value =
+            unit.kind.stats().cost * crate::stats::WRECK_VALUE_NUM / crate::stats::WRECK_VALUE_DEN;
+        deposits.push((unit.tile(), value));
     }
     state.units.retain(|u| u.hp > 0);
 
@@ -76,8 +90,21 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
             player: building.player,
             pos: building.center(),
         });
+        let stats = building.kind.stats();
+        let price = stats
+            .construction
+            .map_or(crate::stats::FOUNDRY_WRECK_VALUE, |c| c.cost);
+        let value = price * crate::stats::WRECK_VALUE_NUM / crate::stats::WRECK_VALUE_DEN;
+        let tiles = (stats.size.0 * stats.size.1) as u32;
+        for tile in building.tiles() {
+            deposits.push((tile, value / tiles));
+        }
     }
     state.buildings.retain(|b| b.hp > 0);
+
+    for (tile, value) in deposits {
+        state.map.add_wreck(tile, value);
+    }
 }
 
 /// Declares the result once at least one player has been eliminated.
