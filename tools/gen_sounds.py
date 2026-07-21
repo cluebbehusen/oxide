@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.14"
 # ///
 """Generates every sound in assets/sounds/.
 
@@ -11,8 +11,6 @@ The palette is chunky 8-bit-adjacent synthesis: square-wave zaps, noise
 bursts, and little sine chimes. Mono, 22050 Hz, 16-bit — a few dozen KB for
 the whole set.
 """
-
-from __future__ import annotations
 
 import math
 import random

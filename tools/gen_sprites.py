@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.14"
 # dependencies = ["pillow==12.3.0"]  # pinned: asset bytes must reproduce
 # ///
 """Generates every sprite in assets/sprites/.
@@ -14,8 +14,6 @@ share silhouettes and differ only in accent color — Ferrous rusts orange,
 Cupric corrodes teal. Units face up; the shell rotates them toward their
 heading.
 """
-
-from __future__ import annotations
 
 import json
 import math
