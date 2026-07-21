@@ -20,7 +20,12 @@ def gae(rew, done, val, last_val, gamma=0.999, lam=0.95):
         delta = rew[t] + gamma * next_val * nonterminal - val[t]
         running = delta + gamma * lam * nonterminal * running
         adv[t] = running
-        next_val = np.where(done[t], 0.0, val[t])
+        # done[t] describes the transition *after* state t; V(s_t) is
+        # still the bootstrap the preceding step needs. The nonterminal
+        # mask above is what cuts credit across episode boundaries —
+        # zeroing here instead robbed every penultimate step of
+        # gamma * V(s_t).
+        next_val = val[t]
     return adv, adv + val
 
 

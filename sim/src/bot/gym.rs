@@ -147,11 +147,23 @@ impl GymBot {
         self.remember(&obs);
         let obs = orientation.observe(&obs);
         let home = home_tile(&obs);
+        // The executive reconciles in `step` (its transitions emit
+        // commands, which a read path must not). But deaths since the
+        // last step must not leak into what the policy observes: filter
+        // members against the living before deriving any army feature
+        // or mask. Lifecycle state can lag one cadence; membership
+        // cannot.
         let armies: Vec<_> = self
             .exec
             .armies()
             .iter()
-            .map(|a| orientation.army(a.clone()))
+            .map(|a| {
+                let mut a = orientation.army(a.clone());
+                a.members
+                    .retain(|id| obs.my_units.iter().any(|u| u.id == *id));
+                a
+            })
+            .filter(|a| !a.members.is_empty())
             .collect();
         let enlisted: Vec<_> = self.exec.enlisted().collect();
 
@@ -284,7 +296,13 @@ impl GymBot {
             mask[Action::TrainLancer as usize] = fab_open && cost(UnitKind::Lancer);
             let build_cost =
                 |k: BuildingKind| k.stats().construction.is_some_and(|c| obs.scrap >= c.cost);
-            mask[Action::BuildFabricator as usize] = build_cost(BuildingKind::Fabricator)
+            // A build without a builder lowers to nothing — and worse,
+            // the silent no-op gets the anchor blacklisted as refused.
+            let builder_free = obs.my_units.iter().any(|u| {
+                u.kind == UnitKind::Harvester && u.site.is_none() && !enlisted.contains(&u.id)
+            });
+            mask[Action::BuildFabricator as usize] = builder_free
+                && build_cost(BuildingKind::Fabricator)
                 && !obs
                     .my_buildings
                     .iter()
@@ -293,7 +311,8 @@ impl GymBot {
                     .policy
                     .placement_near(&obs, BuildingKind::Fabricator, h)
                     .is_some();
-            mask[Action::BuildTurret as usize] = build_cost(BuildingKind::Turret)
+            mask[Action::BuildTurret as usize] = builder_free
+                && build_cost(BuildingKind::Turret)
                 && self.policy.nearest_scrap(&obs, h).is_some_and(|node| {
                     self.policy
                         .placement_near(&obs, BuildingKind::Turret, node)
@@ -344,20 +363,11 @@ impl GymBot {
         self.policy.audit_sites(&obs);
         self.policy.audit_raids(&obs);
 
+        // The chosen action's intent is lowered FIRST: intents claim
+        // units in order, so chores must not grab the action's builder
+        // or scout out from under it (the AssignHarvest chore skips
+        // already-claimed units).
         let mut intents = Vec::new();
-        self.policy.economy(&obs, home, &mut intents);
-        // Orphan relief is a chore too: paid-for progress must not strand.
-        if let Some(site) = obs
-            .my_buildings
-            .iter()
-            .filter(|b| !b.built && !obs.my_units.iter().any(|u| u.site == Some(b.id)))
-            .min_by_key(|b| (b.anchor.y, b.anchor.x))
-        {
-            intents.push(Intent::Build {
-                kind: site.kind,
-                anchor: site.anchor,
-            });
-        }
 
         let staging = armies
             .iter()
@@ -439,6 +449,21 @@ impl GymBot {
                 self.policy
                     .scouting(&obs, home, &enlisted, true, &mut intents);
             }
+        }
+
+        // Chores after the action: idle harvesters to work, orphaned
+        // sites resumed (paid-for progress must not strand).
+        self.policy.economy(&obs, home, &mut intents);
+        if let Some(site) = obs
+            .my_buildings
+            .iter()
+            .filter(|b| !b.built && !obs.my_units.iter().any(|u| u.site == Some(b.id)))
+            .min_by_key(|b| (b.anchor.y, b.anchor.x))
+        {
+            intents.push(Intent::Build {
+                kind: site.kind,
+                anchor: site.anchor,
+            });
         }
 
         let intents = orientation.emit(intents);

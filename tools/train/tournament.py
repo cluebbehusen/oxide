@@ -44,11 +44,20 @@ def play(
     seat: int,
     scenario: str | None = None,
     condition: tuple[int, int] = (1000, 500),
+    seats: int = 2,
 ) -> tuple[bool | None, int]:
-    """One greedy match; returns (won, ticks)."""
+    """One greedy match; returns (won, ticks). `won` is None only for a
+    true draw (tick cap with the learner standing) — elimination in a
+    multiplayer game is a loss even while others fight on."""
     conds = {s: condition for s in range(8)}
+    rusher_seat = None
     if opponent == "rusher":
-        frame = worker.reset(seed, control=(0, 1), scenario=scenario, conditions=conds)
+        # The rusher is driven locally, so its seat must be controlled
+        # too — whichever seat the learner isn't (any of them in FFA).
+        rusher_seat = (seat + 1) % seats
+        frame = worker.reset(
+            seed, control=(seat, rusher_seat), scenario=scenario, conditions=conds
+        )
     else:
         frame = worker.reset(
             seed, control=(seat,), tier=opponent, scenario=scenario, conditions=conds
@@ -69,9 +78,9 @@ def play(
                 intended, logits[0].numpy(), view.mask, condition[0], rng
             )
         }
-        if opponent == "rusher":
-            ov = frame.seats[1 - seat]
-            acts[1 - seat] = rusher(ov.raw, ov.mask, frame.tick)
+        if rusher_seat is not None:
+            ov = frame.seats[rusher_seat]
+            acts[rusher_seat] = rusher(ov.raw, ov.mask, frame.tick)
         frame = worker.step(acts)
     if frame.winner is None:
         return None, frame.tick
@@ -137,6 +146,7 @@ def main():
                         seat,
                         scenario,
                         (args.skill, args.aggression),
+                        seats=4 if ffa else 2,
                     )
                     games += 1
                     ticks.append(t)

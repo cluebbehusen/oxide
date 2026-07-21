@@ -296,15 +296,19 @@ impl Executive {
                     }
                 }
                 Intent::AssignHarvest { unit, node } => {
-                    claimed.push(*unit);
-                    out.push(PlayerCommand {
-                        player: me,
-                        command: Command::Harvest {
-                            units: vec![*unit],
-                            node: *node,
-                            queue: false,
-                        },
-                    });
+                    // A unit an earlier intent claimed (a chosen builder,
+                    // a scout) must not be re-tasked by a chore.
+                    if !claimed.contains(unit) {
+                        claimed.push(*unit);
+                        out.push(PlayerCommand {
+                            player: me,
+                            command: Command::Harvest {
+                                units: vec![*unit],
+                                node: *node,
+                                queue: false,
+                            },
+                        });
+                    }
                 }
                 Intent::Scout { unit, to } => {
                     claimed.push(*unit);
@@ -508,6 +512,7 @@ impl Executive {
             .iter()
             .filter(|u| {
                 u.kind == UnitKind::Harvester
+                    && u.site.is_none()
                     && !enlisted.contains(&u.id)
                     && !claimed.contains(&u.id)
             })

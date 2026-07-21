@@ -83,14 +83,19 @@ impl Menu {
     /// Feeds a frame of events through the menu; returns the activated row,
     /// if any. Mouse position updates come along in the same events.
     pub fn handle(&mut self, events: &[RawEvent], mouse: &mut Vec2) -> Option<usize> {
+        // Hit-testing uses one frozen snapshot of the row layout: when
+        // the list scrolls, the layout depends on the selection, so
+        // mutating the selection mid-scan would shift rows under the
+        // pointer and let one coordinate match several of them.
+        let rects: Vec<Option<Rect>> = (0..self.items.len()).map(|i| self.item_rect(i)).collect();
         for event in events {
             match *event {
                 RawEvent::MouseMove { x, y } => {
                     *mouse = vec2(x, y);
-                    for index in 0..self.items.len() {
-                        if self.item_rect(index).is_some_and(|r| r.contains(*mouse)) {
-                            self.selected = index;
-                        }
+                    if let Some(index) = (0..self.items.len())
+                        .find(|i| rects[*i].is_some_and(|r| r.contains(*mouse)))
+                    {
+                        self.selected = index;
                     }
                 }
                 RawEvent::MouseDown {
@@ -99,10 +104,10 @@ impl Menu {
                     y,
                 } => {
                     let click = vec2(x, y);
-                    for index in 0..self.items.len() {
-                        if self.item_rect(index).is_some_and(|r| r.contains(click)) {
-                            return Some(index);
-                        }
+                    if let Some(index) =
+                        (0..self.items.len()).find(|i| rects[*i].is_some_and(|r| r.contains(click)))
+                    {
+                        return Some(index);
                     }
                 }
                 RawEvent::KeyDown { key: Key::Up } => {

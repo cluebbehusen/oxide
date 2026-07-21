@@ -401,9 +401,14 @@ def main():
     pool_dir.mkdir(parents=True, exist_ok=True)
     mix = {k: float(v) for k, v in (kv.split("=") for kv in args.mix.split(","))}
 
+    start_update = 0
     if args.resume:
         policy, blob = load_policy(args.resume, device)
         arch = blob.get("arch", "mlp")
+        # Continue the run's clock: pool numbering, value warm-up, and
+        # anchor annealing all key off the absolute update, so resuming
+        # must not rewind them (or overwrite pool history).
+        start_update = int(blob.get("update", 0) or 0)
     else:
         arch = args.arch
         policy = make_policy(arch)
@@ -426,7 +431,7 @@ def main():
 
     try:
         jobs = assign_roles(workers, mix, pool_dir, rng, device, args.maps)
-        for update in range(1, args.updates + 1):
+        for update in range(start_update + 1, start_update + args.updates + 1):
             t0 = time.time()
             batch, last_val, finals = rollout(policy, jobs, seeds, args.steps, device)
             obs_b, mask_b, act_b, logp_b, val_b, rew_b, done_b = batch
