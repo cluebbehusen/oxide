@@ -25,10 +25,11 @@ from oxide_gym import Worker, with_condition
 
 # Action indices (see sim/src/bot/gym.rs).
 IDLE, TRAIN_H, TRAIN_S = 0, 1, 2
-FORM, PUSH, SCOUT = 7, 8, 10
+BUILD_TURRET, FORM, PUSH, SCOUT = 6, 7, 8, 10
 
 
-def teacher(raw: list[int], mask: np.ndarray, tick: int) -> int:
+def rusher(raw: list[int], mask: np.ndarray, tick: int) -> int:
+    """The aggressive teacher: economy to four, pressure forever."""
     harvesters, staging_size = raw[2], raw[11]
     if harvesters < 4 and mask[TRAIN_H]:
         return TRAIN_H
@@ -39,6 +40,24 @@ def teacher(raw: list[int], mask: np.ndarray, tick: int) -> int:
     if mask[TRAIN_S]:
         return TRAIN_S
     if mask[SCOUT] and tick % 1024 == 0:
+        return SCOUT
+    return IDLE
+
+
+def turtle(raw: list[int], mask: np.ndarray, tick: int) -> int:
+    """The defensive teacher: deep economy, turrets, one late hammer."""
+    harvesters, turrets, staging_size = raw[2], raw[6], raw[11]
+    if harvesters < 5 and mask[TRAIN_H]:
+        return TRAIN_H
+    if turrets < 3 and mask[BUILD_TURRET]:
+        return BUILD_TURRET
+    if mask[PUSH] and staging_size >= 10:
+        return PUSH
+    if mask[FORM]:
+        return FORM
+    if mask[TRAIN_S]:
+        return TRAIN_S
+    if mask[SCOUT] and tick % 2048 == 0:
         return SCOUT
     return IDLE
 
@@ -57,23 +76,33 @@ def main():
     obs_all, mask_all, act_all = [], [], []
     wins = 0
     try:
+        style_wins = {"rusher": 0, "turtle": 0}
         for ep in range(args.episodes):
             seat = ep % 2
+            style = "rusher" if (ep // 2) % 2 == 0 else "turtle"
+            teach = rusher if style == "rusher" else turtle
             frame = worker.reset(20_000 + ep, control=(seat,), tier=args.tier)
             rng = np.random.default_rng(ep)
             while not frame.done:
                 view = frame.seats[seat]
-                a = teacher(view.raw, view.mask, frame.tick)
-                # The teacher ignores the knobs, so the prior is defined
-                # across the whole conditioning space: replicate each
-                # sample at several random knob settings.
+                a = teach(view.raw, view.mask, frame.tick)
+                # Aggression is labeled to match the teacher who produced
+                # the sample — the prior is style-conditional from day
+                # one. Skill stays randomized (teachers don't model it).
                 for _ in range(3):
-                    cond = (int(rng.integers(300, 1001)), int(rng.integers(0, 1001)))
+                    agg_lo, agg_hi = (600, 1001) if style == "rusher" else (0, 401)
+                    cond = (
+                        int(rng.integers(300, 1001)),
+                        int(rng.integers(agg_lo, agg_hi)),
+                    )
                     obs_all.append(with_condition(view.obs, cond))
                     mask_all.append(view.mask)
                     act_all.append(a)
                 frame = worker.step({seat: a})
-            wins += 1 if frame.winner == seat else 0
+            if frame.winner == seat:
+                wins += 1
+                style_wins[style] += 1
+        print(f"per-style wins: {style_wins}")
         print(f"teacher: {wins}/{args.episodes} wins vs {args.tier}")
     finally:
         worker.close()
