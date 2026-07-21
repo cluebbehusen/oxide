@@ -25,10 +25,12 @@ import pathlib
 import numpy as np
 
 
-def _carve(seed: int) -> dict:
+def _carve(seed: int, players: int = 2) -> dict:
     rng = np.random.default_rng(seed)
     w = int(rng.integers(30, 46))
     h = int(rng.integers(18, 28))
+    if players == 4:
+        return _carve4(rng, seed, w, h)
     grid = [["." for _ in range(w)] for _ in range(h)]
 
     def mirror(x: int, y: int) -> tuple[int, int]:
@@ -126,12 +128,102 @@ def _carve(seed: int) -> dict:
     }
 
 
-def generate(seed: int, out_dir: str) -> str:
+def _carve4(rng, seed: int, w: int, h: int) -> dict:
+    """Four-player maps by double mirroring: author the top-left
+    quadrant, reflect across both axes — every corner seat plays the
+    same quadrant. Anchor characters 1-4; spawn lists are emitted in
+    the same reflected order per seat."""
+    grid = [["." for _ in range(w)] for _ in range(h)]
+
+    def images(x: int, y: int):
+        return [
+            (x, y),
+            (w - 1 - x, y),
+            (x, h - 1 - y),
+            (w - 1 - x, h - 1 - y),
+        ]
+
+    def set_all(x: int, y: int, ch: str):
+        for ix, iy in images(x, y):
+            grid[iy][ix] = ch
+
+    for x in range(w):
+        set_all(x, 0, "#")
+    for y in range(h):
+        set_all(0, y, "#")
+
+    ax = int(rng.integers(3, max(4, w // 4)))
+    ay = int(rng.integers(3, max(4, h // 4)))
+    # Anchors are top-left of a 2x2, so each reflected image shifts.
+    grid[ay][ax] = "1"
+    grid[ay][w - 2 - ax] = "2"
+    grid[h - 2 - ay][ax] = "3"
+    grid[h - 2 - ay][w - 2 - ax] = "4"
+
+    for _ in range(int(rng.integers(2, 5))):
+        cx = int(rng.integers(2, w // 2))
+        cy = int(rng.integers(2, h // 2))
+        if abs(cx - ax) + abs(cy - ay) < 6:
+            continue
+        for _ in range(int(rng.integers(3, 9))):
+            dx, dy = int(rng.integers(-2, 3)), int(rng.integers(-1, 2))
+            x, y = cx + dx, cy + dy
+            if 1 < x < w - 2 and 1 < y < h - 2 and grid[y][x] == ".":
+                set_all(x, y, "#")
+
+    placed = 0
+    for _ in range(40):
+        if placed >= 3:
+            break
+        dx, dy = int(rng.integers(-4, 5)), int(rng.integers(-4, 5))
+        x, y = ax + 1 + dx, ay + 1 + dy
+        if 1 < x < w - 2 and 1 < y < h - 2 and grid[y][x] == "." and abs(dx) + abs(dy) >= 2:
+            set_all(x, y, "s")
+            placed += 1
+    cx, cy = w // 2, h // 2
+    if grid[cy][cx] == ".":
+        set_all(cx, cy, "S")
+
+    spots = []
+    for _ in range(60):
+        if len(spots) >= 4:
+            break
+        dx, dy = int(rng.integers(-3, 5)), int(rng.integers(-3, 5))
+        x, y = ax + 1 + dx, ay + 1 + dy
+        if (
+            1 < x < w // 2 - 1
+            and 1 < y < h // 2 - 1
+            and grid[y][x] == "."
+            and not (ax - 1 <= x <= ax + 2 and ay - 1 <= y <= ay + 2)
+            and (x, y) not in spots
+        ):
+            spots.append((x, y))
+    kinds = ["harvester", "harvester", "harvester", "sentinel"]
+    units = []
+    for player in range(4):
+        for (x, y), kind in zip(spots, kinds):
+            ix, iy = images(x, y)[player]
+            units.append({"player": player, "kind": kind, "x": ix, "y": iy})
+
+    factions = ["ferrous", "cupric", "ferrous", "cupric"]
+    return {
+        "name": f"generated4-{seed}",
+        "seed": seed,
+        "map": ["".join(row) for row in grid],
+        "players": [
+            {"name": f"Seat{p}", "faction": factions[p], "scrap": 150, "bot": False}
+            for p in range(4)
+        ],
+        "units": units,
+    }
+
+
+def generate(seed: int, out_dir: str, players: int = 2) -> str:
     """Writes a scenario for `seed` and returns its path. Same seed,
     same file."""
     out = pathlib.Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    path = out / f"gen-{seed}.json"
+    path = out / f"gen{players if players != 2 else ''}-{seed}.json"
     if not path.exists():
-        path.write_text(json.dumps(_carve(seed)))
+        path.write_text(json.dumps(_carve(seed, players)))
     return str(path)

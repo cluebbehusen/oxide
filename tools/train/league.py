@@ -125,6 +125,7 @@ class Job:
     episode is the detail: which tier, which past checkpoint."""
 
     def __init__(self, worker: Worker, kind: str, seat: int, pool_dir, rng, device, maps="fixed"):
+        # seat: 0/1 for duel kinds; 0..3 for ffa.
         self.worker = worker
         self.kind = kind
         self.pool_dir = pool_dir
@@ -137,7 +138,7 @@ class Job:
         if kind == "self":
             self.learner_seats = [0, 1]
             self.opp_seat = None
-        elif kind == "tier":
+        elif kind in ("tier", "ffa"):
             self.learner_seats = [seat]
             self.opp_seat = None
         else:  # past | rusher: both seats controlled, one driven locally
@@ -151,6 +152,19 @@ class Job:
             from mapgen import generate
 
             scenario = generate(seed % 100_000, "/tmp/oxide-maps-train")
+        if self.kind == "ffa":
+            from mapgen import generate
+
+            scenario = generate(seed % 100_000, "/tmp/oxide-maps-train4", players=4)
+            self.detail = TIERS[int(self.rng.integers(len(TIERS)))]
+            self.frame = self.worker.reset(
+                seed,
+                control=(self.learner_seats[0],),
+                tier=self.detail,
+                conditions=self.conditions,
+                scenario=scenario,
+            )
+            return
         if self.kind == "tier":
             self.detail = TIERS[int(self.rng.integers(len(TIERS)))]
             self.frame = self.worker.reset(
@@ -206,8 +220,9 @@ def assign_roles(workers, mix, pool_dir, rng, device, maps="fixed"):
     jobs = []
     i = 0
     for kind, count in zip(kinds, counts):
+        seats = 4 if kind == "ffa" else 2
         for k in range(count):
-            jobs.append(Job(workers[i], kind, k % 2, pool_dir, rng, device, maps))
+            jobs.append(Job(workers[i], kind, k % seats, pool_dir, rng, device, maps))
             i += 1
     return jobs
 

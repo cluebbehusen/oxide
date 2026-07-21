@@ -62,7 +62,7 @@ fn default_cadence() -> u64 {
 struct Episode {
     state: State,
     gyms: Vec<GymBot>,
-    opponent: Option<Brain>,
+    opponents: Vec<Brain>,
     max_ticks: u64,
 }
 
@@ -75,32 +75,51 @@ impl Episode {
         scenario: Option<&str>,
         cadence: u64,
     ) -> Result<Self> {
-        if control.is_empty() || control.len() > 2 {
-            bail!("control must name one or two seats");
-        }
-        if control.iter().any(|s| *s > 1) || (control.len() == 2 && control[0] == control[1]) {
-            bail!("controlled seats must be distinct 0/1");
-        }
         let mut scenario = crate::runner::load_scenario(scenario.unwrap_or("skirmish"))?;
         scenario.seed = seed;
+        let players = scenario.players.len() as u8;
+        if control.is_empty() || control.len() > players as usize {
+            bail!("control must name 1..={players} seats");
+        }
+        let mut seen = control.to_vec();
+        seen.sort_unstable();
+        seen.dedup();
+        if seen.len() != control.len() || control.iter().any(|s| *s >= players) {
+            bail!("controlled seats must be distinct and < {players}");
+        }
         let state = scenario.build().context("scenario build")?;
         let gyms: Vec<GymBot> = control
             .iter()
             .map(|s| GymBot::with_cadence(PlayerId(*s), cadence))
             .collect();
-        let opponent =
-            (control.len() == 1).then(|| Brain::for_tier(PlayerId(1 - control[0]), seed, tier));
+        let opponents: Vec<Brain> = (0..players)
+            .filter(|s| !control.contains(s))
+            .map(|s| Brain::for_tier(PlayerId(s), seed, tier))
+            .collect();
         Ok(Self {
             state,
             gyms,
-            opponent,
+            opponents,
             max_ticks,
         })
     }
 
-    /// True while the match is live and under the tick cap.
+    /// Whether a controlled seat still holds a Foundry. An eliminated
+    /// learner's remnants keep fighting (sim rule), but its episode is
+    /// over — spectating to the tick cap teaches nothing.
+    fn seat_alive(&self, seat: PlayerId) -> bool {
+        self.state
+            .buildings()
+            .iter()
+            .any(|b| b.player == seat && b.kind == oxide_sim::BuildingKind::Foundry)
+    }
+
+    /// True while the match is live, a controlled seat stands, and the
+    /// tick cap is unmet.
     fn live(&self) -> bool {
-        self.state.result().is_none() && self.state.current_tick() < self.max_ticks
+        self.state.result().is_none()
+            && self.state.current_tick() < self.max_ticks
+            && self.gyms.iter().any(|g| self.seat_alive(g.player()))
     }
 
     fn cadence(&self) -> u64 {
@@ -121,16 +140,15 @@ impl Episode {
         for (gym, action) in self.gyms.iter_mut().zip(actions) {
             commands.extend(gym.step(&self.state, Action::from_index(*action)));
         }
-        if let Some(op) = self.opponent.as_mut() {
+        for op in self.opponents.iter_mut() {
             commands.extend(op.act(&self.state));
         }
         self.state.tick(&commands);
         while self.live() && !self.state.current_tick().is_multiple_of(self.cadence()) {
-            let commands = self
-                .opponent
-                .as_mut()
-                .map(|op| op.act(&self.state))
-                .unwrap_or_default();
+            let mut commands = Vec::new();
+            for op in self.opponents.iter_mut() {
+                commands.extend(op.act(&self.state));
+            }
             self.state.tick(&commands);
         }
         Ok(())
@@ -161,10 +179,18 @@ impl Episode {
                 Some(GameResult::Victory { winner }) => Some(winner.0),
                 _ => None,
             };
+            let alive: Vec<u8> = self
+                .gyms
+                .iter()
+                .map(|g| g.player())
+                .filter(|p| self.seat_alive(*p))
+                .map(|p| p.0)
+                .collect();
             serde_json::json!({
                 "done": true,
                 "tick": self.state.current_tick(),
                 "winner": winner,
+                "alive": alive,
             })
         }
     }

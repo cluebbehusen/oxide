@@ -33,6 +33,7 @@ class Mlp(nn.Module):
 ARCHS = {
     "mlp": lambda: Mlp(128, 2),
     "wide": lambda: Mlp(256, 3),
+    "deep": lambda: Mlp(384, 3),
 }
 
 

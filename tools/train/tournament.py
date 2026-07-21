@@ -46,7 +46,7 @@ def play(
     condition: tuple[int, int] = (1000, 500),
 ) -> tuple[bool | None, int]:
     """One greedy match; returns (won, ticks)."""
-    conds = {0: condition, 1: condition}
+    conds = {s: condition for s in range(8)}
     if opponent == "rusher":
         frame = worker.reset(seed, control=(0, 1), scenario=scenario, conditions=conds)
     else:
@@ -93,6 +93,12 @@ def main():
         default=0,
         help="evaluate across N generated maps instead of seed variations",
     )
+    ap.add_argument(
+        "--ffa-maps",
+        type=int,
+        default=0,
+        help="evaluate as 1-of-4 on N generated FFA maps (seat rotates)",
+    )
     args = ap.parse_args()
 
     policy, blob = load_policy(args.ckpt)
@@ -101,7 +107,15 @@ def main():
     print(f"# {args.ckpt} (arch {blob.get('arch')}, update {blob.get('update', '?')})")
     try:
         jobs: list[tuple[int, str | None]]
-        if args.random_maps:
+        ffa = args.ffa_maps > 0
+        if ffa:
+            from mapgen import generate
+
+            jobs = [
+                (9500 + i, generate(9500 + i, "/tmp/oxide-maps4", players=4))
+                for i in range(args.ffa_maps)
+            ]
+        elif args.random_maps:
             from mapgen import generate
 
             jobs = [
@@ -114,7 +128,7 @@ def main():
             wins = draws = games = 0
             ticks = []
             for seed, scenario in jobs:
-                for seat in (0, 1):
+                for seat in (0, 1) if not ffa else (seed % 4,):
                     won, t = play(
                         policy,
                         worker,

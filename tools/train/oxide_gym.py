@@ -71,13 +71,17 @@ class Frame:
     done: bool
     tick: int
     winner: int | None = None  # seat number, or None for a draw/cap
+    alive: list[int] | None = None  # controlled seats still standing
     seats: dict[int, SeatView] = field(default_factory=dict)
 
     def reward(self, seat: int) -> float:
-        """Terminal reward for `seat` (call when done)."""
-        if self.winner is None:
-            return DRAW_REWARD
-        return 1.0 if self.winner == seat else -1.0
+        """Terminal reward for `seat` (call when done). Elimination in a
+        multiplayer game is a loss even if the game rages on."""
+        if self.winner is not None:
+            return 1.0 if self.winner == seat else -1.0
+        if self.alive is not None and seat not in self.alive:
+            return -1.0
+        return DRAW_REWARD
 
 
 class Worker:
@@ -104,7 +108,7 @@ class Worker:
         if "error" in reply:
             raise RuntimeError(reply["error"])
         if reply["done"]:
-            return Frame(True, reply["tick"], reply["winner"])
+            return Frame(True, reply["tick"], reply["winner"], reply.get("alive"))
         frame = Frame(False, reply["tick"])
         for s in reply["seats"]:
             seat = s["seat"]
