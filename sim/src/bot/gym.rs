@@ -324,6 +324,11 @@ impl GymBot {
             // and an action the policy observed as legal must not
             // no-op on that one-cadence transition.
             mask[Action::Push as usize] = !armies.is_empty() && enemy_site.is_some();
+            // The mask shows Recall when armies are out (what the
+            // policy trained with — widening it feeds Recall's untrained
+            // logits to the blunder picker and yo-yos low-skill armies);
+            // the LOWERING is total, so if an army re-stages between
+            // decisions the action still emits, idempotently.
             mask[Action::Recall as usize] = armies
                 .iter()
                 .any(|a| matches!(a.state, ArmyState::Pushing | ArmyState::Engaging));
@@ -444,9 +449,7 @@ impl GymBot {
             }
             Action::Recall => {
                 for a in &armies {
-                    if matches!(a.state, ArmyState::Pushing | ArmyState::Engaging) {
-                        intents.push(Intent::RecallArmy { army: a.id });
-                    }
+                    intents.push(Intent::RecallArmy { army: a.id });
                 }
             }
             Action::Scout => {
