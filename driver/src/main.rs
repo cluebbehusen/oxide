@@ -97,9 +97,15 @@ enum Cmd {
         /// Scenario path, or "skirmish".
         #[arg(long, default_value = "skirmish")]
         scenario: String,
-        /// Blunder rate per mille (0 = full strength).
+        /// Blunder rate per mille (0 = derive from skill).
         #[arg(long, default_value_t = 0)]
         blunder: u32,
+        /// Skill knob 0-1000 (conditioning input + derived blunders).
+        #[arg(long, default_value_t = 1000)]
+        skill: u32,
+        /// Aggression knob 0-1000 (personality conditioning input).
+        #[arg(long, default_value_t = 500)]
+        aggression: u32,
     },
     /// Automated end-to-end check against a live shell.
     Smoke {
@@ -417,7 +423,11 @@ fn main() -> Result<()> {
             cadence,
             scenario,
             blunder,
-        } => oxide_driver::gym::neural_cup(&weights, seeds, cadence, &scenario, blunder)?,
+            skill,
+            aggression,
+        } => oxide_driver::gym::neural_cup(
+            &weights, seeds, cadence, &scenario, blunder, skill, aggression,
+        )?,
         Cmd::Smoke { addr, spawn } => smoke::run(&addr, spawn)?,
     }
     Ok(())

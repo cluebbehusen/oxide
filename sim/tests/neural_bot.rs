@@ -57,17 +57,17 @@ fn masked_argmax_is_exact_and_deterministic() {
     features[2] = 3;
     let mut mask = [true; ACTION_COUNT];
     let d = Decision { features, mask };
-    assert_eq!(net.act(&d), Action::TrainSentinel); // index 2
+    assert_eq!(net.act(&d, &[]), Action::TrainSentinel); // index 2
     // Masking index 2 falls back to the next best, index 1.
     mask[2] = false;
     let d = Decision { features, mask };
-    assert_eq!(net.act(&d), Action::TrainHarvester);
+    assert_eq!(net.act(&d, &[]), Action::TrainHarvester);
     // Nothing legal → Idle, not a panic.
     let d = Decision {
         features,
         mask: [false; ACTION_COUNT],
     };
-    assert_eq!(net.act(&d), Action::Idle);
+    assert_eq!(net.act(&d, &[]), Action::Idle);
 }
 
 #[test]

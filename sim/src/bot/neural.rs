@@ -33,6 +33,10 @@ struct ArtifactDto {
     gym_version: u32,
     q_bits: u32,
     features: usize,
+    /// Conditioning knobs appended after the gym features (skill,
+    /// aggression — 0 for unconditioned artifacts).
+    #[serde(default)]
+    conditioning: usize,
     actions: usize,
     recips: Vec<i64>,
     tanh_lut: Vec<i32>,
@@ -43,6 +47,7 @@ struct ArtifactDto {
 /// A quantized policy network: trunk of tanh layers plus a logit head.
 #[derive(Debug, Clone)]
 pub struct QuantNet {
+    conditioning: usize,
     recips: Vec<i64>,
     tanh_lut: Vec<i32>,
     layers: Vec<(Vec<Vec<i32>>, Vec<i32>)>,
@@ -65,10 +70,11 @@ impl QuantNet {
         if dto.features != FEATURE_COUNT || dto.actions != ACTION_COUNT {
             return Err("feature/action shape mismatch".into());
         }
-        if dto.recips.len() != FEATURE_COUNT || dto.tanh_lut.len() != 513 {
+        let input_width = FEATURE_COUNT + dto.conditioning;
+        if dto.recips.len() != input_width || dto.tanh_lut.len() != 513 {
             return Err("scale or lut shape mismatch".into());
         }
-        let mut width = FEATURE_COUNT;
+        let mut width = input_width;
         for (i, l) in dto
             .layers
             .iter()
@@ -85,6 +91,7 @@ impl QuantNet {
             return Err("head does not produce one logit per action".into());
         }
         Ok(Self {
+            conditioning: dto.conditioning,
             recips: dto.recips,
             tanh_lut: dto.tanh_lut,
             layers: dto.layers.into_iter().map(|l| (l.w, l.b)).collect(),
@@ -117,13 +124,21 @@ impl QuantNet {
             .collect()
     }
 
-    /// Q12 logits for a raw integer feature vector.
-    pub fn logits(&self, features: &[i64; FEATURE_COUNT]) -> Vec<i64> {
+    /// Number of conditioning knobs this artifact expects.
+    pub fn conditioning(&self) -> usize {
+        self.conditioning
+    }
+
+    /// Q12 logits for gym features plus conditioning knobs (in 0..=1000;
+    /// empty for unconditioned artifacts).
+    pub fn logits(&self, features: &[i64; FEATURE_COUNT], knobs: &[i64]) -> Vec<i64> {
         let mut act: Vec<i64> = features
             .iter()
+            .chain(knobs.iter().take(self.conditioning))
             .zip(&self.recips)
             .map(|(f, r)| (f * r) >> Q)
             .collect();
+        act.resize(self.recips.len(), 0);
         for (w, b) in &self.layers {
             act = Self::affine(w, b, &act)
                 .into_iter()
@@ -135,8 +150,8 @@ impl QuantNet {
 
     /// Greedy masked action: the highest-logit legal action, ties to
     /// the lowest index; Idle if somehow nothing is legal.
-    pub fn act(&self, decision: &Decision) -> Action {
-        let logits = self.logits(&decision.features);
+    pub fn act(&self, decision: &Decision, knobs: &[i64]) -> Action {
+        let logits = self.logits(&decision.features, knobs);
         let mut best: Option<(i64, usize)> = None;
         for (i, legal) in decision.mask.iter().enumerate() {
             if !legal {
@@ -164,6 +179,7 @@ impl QuantNet {
 pub struct NeuralBot {
     gym: GymBot,
     net: QuantNet,
+    knobs: Vec<i64>,
     blunder_permille: u32,
     rng: Pcg32,
 }
@@ -172,11 +188,40 @@ impl NeuralBot {
     /// A full-strength neural bot for `player` deciding every `cadence`
     /// ticks (use the cadence the network trained at).
     pub fn new(player: PlayerId, cadence: u64, net: QuantNet) -> Self {
-        Self::with_blunder(player, cadence, net, 0, 0)
+        Self::with_profile(player, cadence, net, 1000, 500, 0, 0)
     }
 
-    /// A dialed-down bot: `blunder_permille` in 0..=1000. The rng is
-    /// seeded from the scenario like every other bot — replays hold.
+    /// A profiled bot: `skill` and `aggression` in 0..=1000 feed the
+    /// network's conditioning inputs (ignored by unconditioned
+    /// artifacts); skill also derives the forced-blunder rate unless
+    /// `blunder_permille` overrides it (nonzero). The rng is seeded
+    /// from the scenario like every other bot — replays hold.
+    pub fn with_profile(
+        player: PlayerId,
+        cadence: u64,
+        net: QuantNet,
+        skill: u32,
+        aggression: u32,
+        blunder_permille: u32,
+        scenario_seed: u64,
+    ) -> Self {
+        let skill = skill.min(1000);
+        let derived = (1000 - skill) / 2; // matches the training mapping
+        let blunder = if blunder_permille > 0 {
+            blunder_permille.min(1000)
+        } else {
+            derived
+        };
+        Self {
+            gym: GymBot::with_cadence(player, cadence),
+            net,
+            knobs: vec![i64::from(skill), i64::from(aggression.min(1000))],
+            blunder_permille: blunder,
+            rng: Pcg32::new(scenario_seed, 3000 + u64::from(player.0)),
+        }
+    }
+
+    /// Back-compat constructor: an explicit blunder dial, straight knobs.
     pub fn with_blunder(
         player: PlayerId,
         cadence: u64,
@@ -184,12 +229,15 @@ impl NeuralBot {
         blunder_permille: u32,
         scenario_seed: u64,
     ) -> Self {
-        Self {
-            gym: GymBot::with_cadence(player, cadence),
+        Self::with_profile(
+            player,
+            cadence,
             net,
-            blunder_permille: blunder_permille.min(1000),
-            rng: Pcg32::new(scenario_seed, 3000 + u64::from(player.0)),
-        }
+            1000,
+            500,
+            blunder_permille,
+            scenario_seed,
+        )
     }
 
     /// The player this bot drives.
@@ -203,14 +251,14 @@ impl NeuralBot {
             return Vec::new();
         }
         let decision = self.gym.decision(state);
-        let mut action = self.net.act(&decision);
+        let mut action = self.net.act(&decision, &self.knobs);
         if self.blunder_permille > 0 && self.rng.next_below(1000) < self.blunder_permille {
             // A blunder is a *plausible* mistake — the second- or
             // third-best idea, not a uniformly random legal action. In a
             // macro action space one mad decision loses a game outright,
             // and uniform blunders turn the dial into a cliff; near-best
             // blunders make it a slope.
-            let logits = self.net.logits(&decision.features);
+            let logits = self.net.logits(&decision.features, &self.knobs);
             let mut ranked: Vec<(i64, usize)> = decision
                 .mask
                 .iter()

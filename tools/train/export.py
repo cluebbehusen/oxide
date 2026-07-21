@@ -20,7 +20,7 @@ import numpy as np
 import torch
 
 from models import load_policy
-from oxide_gym import ACTIONS, FEATURES, GYM_VERSION, SCALES
+from oxide_gym import ACTIONS, CONDITION_DIMS, FEATURES, GYM_VERSION, SCALES
 
 Q = 12  # fractional bits
 
@@ -50,8 +50,11 @@ def main():
     lut = (np.tanh(xs) * (1 << Q)).round().astype(int).tolist()
 
     # feature -> Q12 normalization: (feature * recip) >> Q with
-    # recip = round(2^(2Q) / scale).
+    # recip = round(2^(2Q) / scale). Conditioning knobs (skill,
+    # aggression) ride at the end with scale 1000, matching
+    # oxide_gym.with_condition.
     recips = [round((1 << (2 * Q)) / float(s)) for s in SCALES]
+    recips += [round((1 << (2 * Q)) / 1000.0)] * CONDITION_DIMS
 
     artifact = {
         "gym_version": GYM_VERSION,
@@ -59,6 +62,7 @@ def main():
         "update": blob.get("update"),
         "q_bits": Q,
         "features": FEATURES,
+        "conditioning": CONDITION_DIMS,
         "actions": ACTIONS,
         "recips": recips,
         "tanh_lut": lut,
