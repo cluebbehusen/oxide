@@ -286,7 +286,14 @@ async fn run() -> Result<()> {
                 }
             }
             Mode::DifficultyMenu { ref scenario } => {
-                if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
+                let _ = scenario;
+                let escaped = events
+                    .iter()
+                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
+                if escaped {
+                    // Escape walks backward through the flow.
+                    mode = Mode::MainMenu;
+                } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
                     game.sounds_pending.push(SoundKind::Click);
                     let level = oxide_sim::bot::Level::LADDER[choice.min(3)];
                     let scenario = scenario.clone();
@@ -304,7 +311,21 @@ async fn run() -> Result<()> {
                 ref scenario,
                 level,
             } => {
-                if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
+                let escaped = events
+                    .iter()
+                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
+                if escaped {
+                    let scenario = scenario.clone();
+                    sub_menu = Menu::new(
+                        "DIFFICULTY",
+                        DIFFICULTY_ITEMS.iter().map(|s| s.to_string()).collect(),
+                    );
+                    sub_menu.selected = oxide_sim::bot::Level::LADDER
+                        .iter()
+                        .position(|l| *l == level)
+                        .unwrap_or(1);
+                    mode = Mode::DifficultyMenu { scenario };
+                } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
                     game.sounds_pending.push(SoundKind::Click);
                     let mut scenario = (**scenario).clone();
                     let config = oxide_sim::scenario::BotConfig {

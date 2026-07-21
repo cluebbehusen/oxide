@@ -140,6 +140,12 @@ def main():
         else:
             jobs = [(seed, args.scenario) for seed in range(3000, 3000 + args.seeds)]
         for opponent in args.opponents.split(","):
+            if ffa and opponent == "rusher":
+                # The scripted rusher is a duel-era probe; in FFA its
+                # seat shares the episode's fate with the learner's,
+                # which muddies the classification. Skip it.
+                print(json.dumps({"opponent": "rusher", "skipped": "ffa"}))
+                continue
             wins = draws = games = 0
             ticks = []
             for seed, scenario in jobs:

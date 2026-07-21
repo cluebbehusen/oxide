@@ -89,7 +89,7 @@ enum Cmd {
         #[arg(long)]
         weights: PathBuf,
         /// Seeds per matchup (each played from both seats).
-        #[arg(long, default_value_t = 30)]
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
         seeds: u64,
         /// Decision cadence the network trained at.
         #[arg(long, default_value_t = 16)]

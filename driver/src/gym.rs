@@ -114,12 +114,14 @@ impl Episode {
             .any(|b| b.player == seat && b.kind == oxide_sim::BuildingKind::Foundry)
     }
 
-    /// True while the match is live, a controlled seat stands, and the
-    /// tick cap is unmet.
+    /// True while the match is live, every controlled seat stands, and
+    /// the tick cap is unmet. Any controlled elimination ends the
+    /// episode: per-seat trajectory continuation is a team-training
+    /// concern, deferred until teams exist.
     fn live(&self) -> bool {
         self.state.result().is_none()
             && self.state.current_tick() < self.max_ticks
-            && self.gyms.iter().any(|g| self.seat_alive(g.player()))
+            && self.gyms.iter().all(|g| self.seat_alive(g.player()))
     }
 
     fn cadence(&self) -> u64 {

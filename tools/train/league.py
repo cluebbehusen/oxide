@@ -230,7 +230,7 @@ def assign_roles(workers, mix, pool_dir, rng, device, maps="fixed"):
     return jobs
 
 
-def rollout(policy, jobs, seeds, steps, device):
+def rollout(policy, jobs, seeds, steps, device, noise_rng):
     lanes = {(id(j), s): Lane(j.worker, s) for j in jobs for s in j.learner_seats}
     finished_rewards = []
     for j in jobs:
@@ -271,14 +271,17 @@ def rollout(policy, jobs, seeds, steps, device):
             lane.val.append(value[k])
 
         row = {key: k for k, key in enumerate(keys)}
-        py_rng = np.random.default_rng(int(action.sum()) + len(finished_rewards))
         cursor = 0
         for j in jobs:
             acts = {}
             for s in j.learner_seats:
                 k = row[(id(j), s)]
                 acts[s] = maybe_blunder(
-                    int(action[k]), logits_np[k], mask[k], j.conditions[s][0], py_rng
+                    int(action[k]),
+                    logits_np[k],
+                    mask[k],
+                    j.conditions[s][0],
+                    noise_rng,
                 )
             cursor += len(j.learner_seats)
             acts.update(j.opponent_action(device))
@@ -442,7 +445,9 @@ def main():
         jobs = assign_roles(workers, mix, pool_dir, rng, device, args.maps)
         for update in range(start_update + 1, start_update + args.updates + 1):
             t0 = time.time()
-            batch, last_val, finals = rollout(policy, jobs, seeds, args.steps, device)
+            batch, last_val, finals = rollout(
+                policy, jobs, seeds, args.steps, device, rng
+            )
             obs_b, mask_b, act_b, logp_b, val_b, rew_b, done_b = batch
             adv, ret = gae(rew_b, done_b, val_b, last_val)
             flat = (

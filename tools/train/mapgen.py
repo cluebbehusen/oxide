@@ -21,8 +21,11 @@ from __future__ import annotations
 
 import json
 import pathlib
+import subprocess
 
 import numpy as np
+
+DRIVER = "../../target/release/oxide-driver"
 
 
 def _carve(seed: int, players: int = 2) -> dict:
@@ -228,12 +231,31 @@ def _carve4(rng, seed: int, w: int, h: int) -> dict:
     }
 
 
-def generate(seed: int, out_dir: str, players: int = 2) -> str:
-    """Writes a scenario for `seed` and returns its path. Same seed,
-    same file."""
+def generate(seed: int, out_dir: str, players: int = 2, driver: str = DRIVER) -> str:
+    """Writes a validated scenario for `seed` and returns its path.
+    Same seed, same file. Random rock blobs carry no connectivity
+    guarantee, so every candidate is checked against the real sim
+    (`Scenario::build` rejects sealed maps) before it is cached —
+    a bad draw retries deterministically on a derived seed, and only
+    validated files ever land in the cache."""
     out = pathlib.Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"gen{players if players != 2 else ''}-{seed}.json"
-    if not path.exists():
-        path.write_text(json.dumps(_carve(seed, players)))
-    return str(path)
+    if path.exists():
+        return str(path)
+    for attempt in range(16):
+        candidate = _carve(seed + attempt * 10_000_019, players)
+        trial = path.with_suffix(".candidate.json")
+        trial.write_text(json.dumps(candidate))
+        ok = (
+            subprocess.run(
+                [driver, "run", str(trial), "--ticks", "0"],
+                capture_output=True,
+            ).returncode
+            == 0
+        )
+        if ok:
+            trial.rename(path)
+            return str(path)
+        trial.unlink(missing_ok=True)
+    raise RuntimeError(f"no valid map within 16 attempts of seed {seed}")
