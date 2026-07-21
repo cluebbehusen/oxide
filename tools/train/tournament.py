@@ -20,7 +20,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from league import TIERS, maybe_blunder, rusher
+from league import TIERS, faction_knob, maybe_blunder, rusher
 from mapgen import cache_dir, generate
 from models import load_policy
 from oxide_gym import Worker
@@ -48,8 +48,11 @@ def play(
 ) -> tuple[bool | None, int]:
     """One greedy match; returns (won, ticks). `won` is None only for a
     true draw (tick cap with the learner standing) — elimination in a
-    multiplayer game is a loss even while others fight on."""
-    conds = dict.fromkeys(range(8), condition)
+    multiplayer game is a loss even while others fight on. The faction
+    knob is appended per seat, honestly (even = ferrous)."""
+    conds: dict[int, tuple[int, ...]] = {
+        s: (*condition, faction_knob(s)) for s in range(8)
+    }
     rusher_seat = None
     if opponent == "rusher":
         # The rusher is driven locally, so its seat must be controlled
@@ -82,6 +85,8 @@ def play(
             ov = frame.seats[rusher_seat]
             acts[rusher_seat] = rusher(ov.raw, ov.mask, frame.tick)
         frame = worker.step(acts)
+    if frame.winners:
+        return seat in frame.winners, frame.tick
     if frame.winner is not None:
         return frame.winner == seat, frame.tick
     if frame.alive is not None and seat not in frame.alive:

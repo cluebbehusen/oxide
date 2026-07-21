@@ -19,22 +19,37 @@ import torch
 from torch import nn
 
 from models import make_policy, save_policy
-from oxide_gym import Worker, with_condition
+from oxide_gym import FEATURE_NAMES, Worker, with_condition
 
-# Action indices (see sim/src/bot/gym.rs).
+# Action indices (see sim/src/bot/gym.rs — the v3 menu).
 IDLE, TRAIN_H, TRAIN_S = 0, 1, 2
-BUILD_TURRET, FORM, PUSH, SCOUT = 6, 7, 8, 10
+TRAIN_AA, TRAIN_WING = 6, 7
+BUILD_TURRET, BUILD_FLAK, BUILD_RECLAIMER, REPAIR, AIR_RAID = 10, 11, 14, 15, 16
+FORM, PUSH, SCOUT = 17, 18, 20
+
+# Feature indices by name (the Worker asserts the same list against
+# the gym hello, so these lookups cannot skew).
+F = {name: i for i, name in enumerate(FEATURE_NAMES)}
 
 
 def rusher(raw: list[int], mask: np.ndarray, tick: int) -> int:
-    """The aggressive teacher: economy to four, pressure forever."""
-    harvesters, staging_size = raw[2], raw[11]
+    """The aggressive teacher: economy to four, pressure forever —
+    and a wing at the harvest line once the Fabricator stands."""
+    harvesters = raw[F["my_harvesters"]]
+    staging_size = raw[F["staging_army_size"]]
+    enemy_air = raw[F["enemy_airground"]] + raw[F["enemy_airair"]]
     if harvesters < 4 and mask[TRAIN_H]:
         return TRAIN_H
+    if enemy_air > raw[F["my_antiair"]] and mask[TRAIN_AA]:
+        return TRAIN_AA
+    if mask[AIR_RAID] and raw[F["my_airground"]] >= 3:
+        return AIR_RAID
     if mask[PUSH] and staging_size >= 5:
         return PUSH
     if mask[FORM]:
         return FORM
+    if raw[F["my_airground"]] < 3 and raw[F["fab_built"]] > 0 and mask[TRAIN_WING]:
+        return TRAIN_WING
     if mask[TRAIN_S]:
         return TRAIN_S
     if mask[SCOUT] and tick % 1024 == 0:
@@ -43,12 +58,22 @@ def rusher(raw: list[int], mask: np.ndarray, tick: int) -> int:
 
 
 def turtle(raw: list[int], mask: np.ndarray, tick: int) -> int:
-    """The defensive teacher: deep economy, turrets, one late hammer."""
-    harvesters, turrets, staging_size = raw[2], raw[6], raw[11]
+    """The defensive teacher: deep economy, turrets and flak, welds
+    its wounds, retires onto Reclaimers, one late hammer."""
+    harvesters = raw[F["my_harvesters"]]
+    turrets = raw[F["my_turrets_built"]]
+    staging_size = raw[F["staging_army_size"]]
     if harvesters < 5 and mask[TRAIN_H]:
         return TRAIN_H
     if turrets < 3 and mask[BUILD_TURRET]:
         return BUILD_TURRET
+    threatened = raw[F["blip_count"]] > 0 or raw[F["enemy_airground"]] > 0
+    if threatened and raw[F["my_flak_built"]] < 2 and mask[BUILD_FLAK]:
+        return BUILD_FLAK
+    if raw[F["repair_deficit"]] > 150 and mask[REPAIR]:
+        return REPAIR
+    if raw[F["wreck_value"]] + raw[F["scrap"]] < 200 and mask[BUILD_RECLAIMER]:
+        return BUILD_RECLAIMER
     if mask[PUSH] and staging_size >= 10:
         return PUSH
     if mask[FORM]:
@@ -79,6 +104,9 @@ def main() -> None:
             seat = ep % 2
             style = "rusher" if (ep // 2) % 2 == 0 else "turtle"
             teach = rusher if style == "rusher" else turtle
+            # The faction knob is honest: skirmish seats Ferrous at 0
+            # and Cupric at 1, so the label follows the seat.
+            faction = 0 if seat == 0 else 1000
             frame = worker.reset(20_000 + ep, control=(seat,), tier=args.tier)
             rng = np.random.default_rng(ep)
             while not frame.done:
@@ -92,6 +120,7 @@ def main() -> None:
                     cond = (
                         int(rng.integers(300, 1001)),
                         int(rng.integers(agg_lo, agg_hi)),
+                        faction,
                     )
                     obs_all.append(with_condition(view.obs, cond))
                     mask_all.append(view.mask)

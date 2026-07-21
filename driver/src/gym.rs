@@ -232,6 +232,7 @@ pub fn serve() -> Result<()> {
         serde_json::json!({
             "ready": true,
             "version": GYM_VERSION,
+            "names": oxide_sim::bot::FEATURE_NAMES.to_vec(),
             "features": FEATURE_COUNT,
             "actions": ACTION_COUNT,
         })
@@ -313,12 +314,14 @@ pub fn neural_cup(
                 let mut sc = crate::runner::load_scenario(scenario)?;
                 sc.seed = seed;
                 let mut state = sc.build().context("scenario build")?;
+                let faction = sc.players[seat as usize].faction;
                 let mut neural = NeuralBot::with_profile(
                     PlayerId(seat),
                     cadence,
                     net.clone(),
                     skill,
                     aggression,
+                    faction,
                     blunder,
                     seed,
                 );

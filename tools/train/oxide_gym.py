@@ -1,4 +1,4 @@
-"""Wrapper over `oxide-driver gym` subprocesses (protocol v2).
+"""Wrapper over `oxide-driver gym` subprocesses (protocol v3).
 
 Each worker is one driver process serving sequential episodes over
 stdio. `control` picks the externally-driven seats: `(0,)` against a
@@ -15,14 +15,15 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-FEATURES = 32
-ACTIONS = 11
-GYM_VERSION = 2
+FEATURES = 59
+ACTIONS = 21
+GYM_VERSION = 3
 # Conditioning dims appended to the gym features as network input:
-# skill (0-1000; 1000 = full strength) and aggression (0-1000; 500 =
-# balanced). The world features come from Rust; the knobs are the
-# bot's own configuration, so the wrapper appends them.
-CONDITION_DIMS = 2
+# skill (0-1000; 1000 = full strength), aggression (0-1000; 500 =
+# balanced), and faction (0 = ferrous, 1000 = cupric). The world
+# features come from Rust; the knobs are the bot's own configuration,
+# so the wrapper appends them.
+CONDITION_DIMS = 3
 NET_FEATURES = FEATURES + CONDITION_DIMS
 
 DRAW_REWARD = -0.3
@@ -31,49 +32,73 @@ STEP_COST = 1e-4
 # relative to the bots' own 8 — macro decisions don't need finer.
 CADENCE = 16
 
-# Hand-set scales per feature index (see sim/src/bot/gym.rs for the
-# layout). Order: tick, scrap, my H/S/Sc/L, turrets, fab, foundry hp,
-# idle fighters, armies, staging size, army state, enemy H/S/Sc/L,
-# enemy buildings, enemy turrets, enemy foundry known, my strength,
-# army strength, enemy strength, home x/y, enemy x/y, intel age,
-# remembered enemy strength, ticks since enemy seen, last seen x/y.
-SCALES = np.array(
-    [
-        40_000,
-        500,
-        8,
-        20,
-        10,
-        10,
-        4,
-        1,
-        800,
-        20,
-        4,
-        20,
-        4,
-        8,
-        20,
-        10,
-        10,
-        8,
-        4,
-        1,
-        500,
-        500,
-        500,
-        48,
-        32,
-        48,
-        32,
-        10_000,
-        500,
-        10_000,
-        48,
-        32,
-    ],
-    dtype=np.float32,
-)
+# Hand-set scales keyed by the Rust-side feature NAME — the gym hello
+# carries the authoritative name list, and the Worker asserts ours
+# matches it index for index. A wrong count or a shifted column fails
+# at handshake instead of silently training on garbage.
+SCALE_BY_NAME: dict[str, float] = {
+    "tick": 40_000,
+    "scrap": 500,
+    "my_harvesters": 8,
+    "my_sentinels": 20,
+    "my_scuttlers": 10,
+    "my_lancers": 10,
+    "my_turrets_built": 4,
+    "fab_built": 1,
+    "max_foundry_hp": 800,
+    "idle_ground_fighters": 20,
+    "armies": 4,
+    "staging_army_size": 20,
+    "army_state": 4,
+    "enemy_harvesters": 8,
+    "enemy_sentinels": 20,
+    "enemy_scuttlers": 10,
+    "enemy_lancers": 10,
+    "enemy_buildings": 8,
+    "enemy_turrets_built": 4,
+    "enemy_foundry_known": 1,
+    "my_strength": 500,
+    "army_strength": 500,
+    "enemy_strength": 500,
+    "home_x": 48,
+    "home_y": 32,
+    "enemy_site_x": 48,
+    "enemy_site_y": 32,
+    "intel_age": 10_000,
+    "seen_strength": 500,
+    "seen_age": 10_000,
+    "seen_x": 48,
+    "seen_y": 32,
+    "my_bombards": 6,
+    "my_antiair": 8,
+    "my_airground": 8,
+    "my_airair": 8,
+    "enemy_bombards": 6,
+    "enemy_antiair": 8,
+    "enemy_airground": 8,
+    "enemy_airair": 8,
+    "my_flak_built": 3,
+    "my_arrays_built": 2,
+    "my_reclaimers_built": 3,
+    "my_aa_strength": 300,
+    "enemy_aa_strength": 300,
+    "blip_count": 10,
+    "nearest_blip_x": 48,
+    "nearest_blip_y": 32,
+    "wreck_count": 20,
+    "wreck_value": 500,
+    "nearest_wreck_x": 48,
+    "nearest_wreck_y": 32,
+    "damaged_buildings": 5,
+    "repair_deficit": 1_000,
+    "ally_units": 30,
+    "ally_strength": 500,
+    "ally_foundry_hp": 800,
+    "ally_distress": 1,
+    "faction": 1,
+}
+FEATURE_NAMES = list(SCALE_BY_NAME.keys())
+SCALES = np.array([SCALE_BY_NAME[n] for n in FEATURE_NAMES], dtype=np.float32)
 if SCALES.shape != (FEATURES,):
     raise RuntimeError("SCALES must cover every gym feature")
 
@@ -82,8 +107,12 @@ def normalize(features: list[int]) -> np.ndarray:
     return np.asarray(features, dtype=np.float32) / SCALES
 
 
-def with_condition(obs: np.ndarray, condition: tuple[int, int]) -> np.ndarray:
-    """Appends normalized (skill, aggression) knobs to a feature row."""
+def with_condition(obs: np.ndarray, condition: tuple[int, ...]) -> np.ndarray:
+    """Appends normalized (skill, aggression, faction) knobs to a
+    feature row. Faction rides as 0 (ferrous) or 1000 (cupric) so every
+    knob shares the /1000 scale."""
+    if len(condition) != CONDITION_DIMS:
+        raise ValueError(f"expected {CONDITION_DIMS} knobs, got {condition}")
     knobs = np.asarray(condition, dtype=np.float32) / 1000.0
     return np.concatenate([obs, knobs])
 
@@ -99,13 +128,17 @@ class SeatView:
 class Frame:
     done: bool
     tick: int
-    winner: int | None = None  # seat number, or None for a draw/cap
+    winner: int | None = None  # winning TEAM id, or None for a draw/cap
+    winners: list[int] | None = None  # seats on the winning team
     alive: list[int] | None = None  # controlled seats still standing
     seats: dict[int, SeatView] = field(default_factory=dict)
 
     def reward(self, seat: int) -> float:
-        """Terminal reward for `seat` (call when done). Elimination in a
-        multiplayer game is a loss even if the game rages on."""
+        """Terminal reward for `seat` (call when done). A team win pays
+        every seat on the team; elimination is a loss even if the game
+        rages on (or the teammate later wins it)."""
+        if self.winners is not None and len(self.winners) > 0:
+            return 1.0 if seat in self.winners else -1.0
         if self.winner is not None:
             return 1.0 if self.winner == seat else -1.0
         if self.alive is not None and seat not in self.alive:
@@ -117,7 +150,7 @@ class Worker:
     """One driver process, one live episode at a time."""
 
     def __init__(self, driver_bin: str) -> None:
-        self.conditions: dict[int, tuple[int, int]] = {}
+        self.conditions: dict[int, tuple[int, ...]] = {}
         self.proc = subprocess.Popen(
             [driver_bin, "gym"],
             stdin=subprocess.PIPE,
@@ -134,6 +167,11 @@ class Worker:
             raise RuntimeError(f"gym server failed to start: {hello}")
         if hello["version"] != GYM_VERSION or hello["features"] != FEATURES:
             raise RuntimeError(f"gym contract mismatch: {hello}")
+        if hello.get("names") != FEATURE_NAMES:
+            raise RuntimeError(
+                "feature-name mismatch between Rust and Python — "
+                f"rust: {hello.get('names')} vs python: {FEATURE_NAMES}"
+            )
 
     def _rpc(self, request: dict) -> Frame:
         self._stdin.write(json.dumps(request) + "\n")
@@ -141,7 +179,13 @@ class Worker:
         if "error" in reply:
             raise RuntimeError(reply["error"])
         if reply["done"]:
-            return Frame(True, reply["tick"], reply["winner"], reply.get("alive"))
+            return Frame(
+                True,
+                reply["tick"],
+                reply["winner"],
+                reply.get("winners"),
+                reply.get("alive"),
+            )
         frame = Frame(False, reply["tick"])
         for s in reply["seats"]:
             seat = s["seat"]
@@ -164,7 +208,7 @@ class Worker:
         max_ticks: int = 40_000,
         cadence: int = CADENCE,
         scenario: str | None = None,
-        conditions: dict[int, tuple[int, int]] | None = None,
+        conditions: dict[int, tuple[int, ...]] | None = None,
     ) -> Frame:
         self.control = control
         self.conditions = conditions or {}
@@ -181,8 +225,11 @@ class Worker:
         return self._rpc(req)
 
     def step(self, actions: dict[int, int]) -> Frame:
-        """Actions keyed by seat (must cover every controlled seat)."""
-        ordered = [int(actions[s]) for s in self.control]
+        """Actions keyed by seat, in control order. Seats absent from
+        the dict send nothing — the driver expects exactly one action
+        per *living* controlled seat, and a dead teammate's seat has
+        dropped out of the frame."""
+        ordered = [int(actions[s]) for s in self.control if s in actions]
         return self._rpc({"cmd": "step", "actions": ordered})
 
     def close(self) -> None:

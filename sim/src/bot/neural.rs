@@ -13,6 +13,7 @@
 use super::gym::{ACTION_COUNT, Action, Decision, FEATURE_COUNT, GYM_VERSION, GymBot};
 use crate::command::PlayerCommand;
 use crate::ids::PlayerId;
+use crate::state::Faction;
 use crate::state::State;
 use chassis::rng::Pcg32;
 use serde::{Deserialize, Serialize};
@@ -237,21 +238,24 @@ pub struct NeuralBot {
 impl NeuralBot {
     /// A full-strength neural bot for `player` deciding every `cadence`
     /// ticks (use the cadence the network trained at).
-    pub fn new(player: PlayerId, cadence: u64, net: QuantNet) -> Self {
-        Self::with_profile(player, cadence, net, 1000, 500, 0, 0)
+    pub fn new(player: PlayerId, cadence: u64, net: QuantNet, faction: Faction) -> Self {
+        Self::with_profile(player, cadence, net, 1000, 500, faction, 0, 0)
     }
 
-    /// A profiled bot: `skill` and `aggression` in 0..=1000 feed the
-    /// network's conditioning inputs (ignored by unconditioned
-    /// artifacts); skill also derives the forced-blunder rate unless
-    /// `blunder_permille` overrides it (nonzero). The rng is seeded
-    /// from the scenario like every other bot — replays hold.
+    /// A profiled bot: `skill` and `aggression` in 0..=1000 plus the
+    /// seat's faction feed the network's conditioning inputs (extras are
+    /// truncated for artifacts with fewer knobs); skill also derives the
+    /// forced-blunder rate unless `blunder_permille` overrides it
+    /// (nonzero). The rng is seeded from the scenario like every other
+    /// bot — replays hold.
+    #[allow(clippy::too_many_arguments)]
     pub fn with_profile(
         player: PlayerId,
         cadence: u64,
         net: QuantNet,
         skill: u32,
         aggression: u32,
+        faction: Faction,
         blunder_permille: u32,
         scenario_seed: u64,
     ) -> Self {
@@ -262,10 +266,18 @@ impl NeuralBot {
         } else {
             derived
         };
+        let faction_knob = match faction {
+            Faction::Ferrous => 0,
+            Faction::Cupric => 1000,
+        };
         Self {
             gym: GymBot::with_cadence(player, cadence),
             net,
-            knobs: vec![i64::from(skill), i64::from(aggression.min(1000))],
+            knobs: vec![
+                i64::from(skill),
+                i64::from(aggression.min(1000)),
+                faction_knob,
+            ],
             blunder_permille: blunder,
             rng: Pcg32::new(scenario_seed, 3000 + u64::from(player.0)),
         }
@@ -280,6 +292,7 @@ impl NeuralBot {
         scenario_seed: u64,
         level: Level,
         aggression: Option<u32>,
+        faction: Faction,
     ) -> Self {
         let aggression = aggression.unwrap_or_else(|| {
             Pcg32::new(scenario_seed, 4000 + u64::from(player.0)).next_below(1001)
@@ -290,6 +303,7 @@ impl NeuralBot {
             QuantNet::ladder().clone(),
             level.skill(),
             aggression,
+            faction,
             0,
             scenario_seed,
         )
@@ -309,6 +323,7 @@ impl NeuralBot {
             net,
             1000,
             500,
+            Faction::Ferrous,
             blunder_permille,
             scenario_seed,
         )
