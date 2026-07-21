@@ -82,9 +82,13 @@ def play(
             ov = frame.seats[rusher_seat]
             acts[rusher_seat] = rusher(ov.raw, ov.mask, frame.tick)
         frame = worker.step(acts)
-    if frame.winner is None:
-        return None, frame.tick
-    return frame.winner == seat, frame.tick
+    if frame.winner is not None:
+        return frame.winner == seat, frame.tick
+    if frame.alive is not None and seat not in frame.alive:
+        # Eliminated; the game merely outlived us. A draw is only a
+        # tick-cap with the learner still standing.
+        return False, frame.tick
+    return None, frame.tick
 
 
 def main():
@@ -93,7 +97,9 @@ def main():
     ap.add_argument("--driver", default="../../target/release/oxide-driver")
     ap.add_argument("--seeds", type=int, default=30)
     ap.add_argument("--opponents", default=",".join(TIERS + ["rusher"]))
-    ap.add_argument("--scenario", default=None, help="map (default: the built-in skirmish)")
+    ap.add_argument(
+        "--scenario", default=None, help="map (default: the built-in skirmish)"
+    )
     ap.add_argument("--skill", type=int, default=1000)
     ap.add_argument("--aggression", type=int, default=500)
     ap.add_argument(

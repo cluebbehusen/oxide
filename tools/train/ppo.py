@@ -43,7 +43,9 @@ def ppo_update(
     anchor=None,
     anchor_coef=0.05,
 ):
-    obs, mask, act, logp_old, adv, ret = (torch.as_tensor(x, device=device) for x in batch)
+    obs, mask, act, logp_old, adv, ret = (
+        torch.as_tensor(x, device=device) for x in batch
+    )
     adv = (adv - adv.mean()) / (adv.std() + 1e-8)
     idx = np.arange(obs.shape[0])
     stats = {"pi": 0.0, "v": 0.0, "ent": 0.0, "kl": 0.0, "batches": 0}
@@ -77,9 +79,11 @@ def ppo_update(
                     with torch.no_grad():
                         a_logits, _ = anchor(obs[mb], mask[mb])
                     a_dist = torch.distributions.Categorical(logits=a_logits)
-                    loss = loss + anchor_coef * torch.distributions.kl_divergence(
-                        a_dist, dist
-                    ).mean()
+                    loss = (
+                        loss
+                        + anchor_coef
+                        * torch.distributions.kl_divergence(a_dist, dist).mean()
+                    )
             opt.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(policy.parameters(), 0.5)

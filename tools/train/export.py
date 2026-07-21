@@ -71,7 +71,7 @@ def main():
     }
     with open(args.out, "w") as f:
         json.dump(artifact, f)
-    n = sum(len(l["w"]) * len(l["w"][0]) + len(l["b"]) for l in layers)
+    n = sum(len(lay["w"]) * len(lay["w"][0]) + len(lay["b"]) for lay in layers)
     n += len(head["w"]) * len(head["w"][0]) + len(head["b"])
     print(f"exported {n} params (arch {blob.get('arch')}) to {args.out}")
 

@@ -88,6 +88,7 @@ def maybe_blunder(action: int, logits, mask, skill: int, rng) -> int:
         return action
     return int(rng.choice(legal[1 : min(3, len(legal))]))
 
+
 # Rush teacher (indices into the raw feature vector; see gym.rs).
 IDLE, TRAIN_H, TRAIN_S, FORM, PUSH, SCOUT = 0, 1, 2, 7, 8, 10
 
@@ -124,7 +125,9 @@ class Job:
     and a trajectory stream has to stay contiguous. What varies per
     episode is the detail: which tier, which past checkpoint."""
 
-    def __init__(self, worker: Worker, kind: str, seat: int, pool_dir, rng, device, maps="fixed"):
+    def __init__(
+        self, worker: Worker, kind: str, seat: int, pool_dir, rng, device, maps="fixed"
+    ):
         # seat: 0/1 for duel kinds; 0..3 for ffa.
         self.worker = worker
         self.kind = kind
@@ -319,13 +322,13 @@ def rollout(policy, jobs, seeds, steps, device):
 
     ordered = list(lanes.values())
     batch = (
-        np.stack([np.stack(l.obs) for l in ordered], axis=1),
-        np.stack([np.stack(l.mask) for l in ordered], axis=1),
-        np.stack([np.asarray(l.act) for l in ordered], axis=1),
-        np.stack([np.asarray(l.logp, dtype=np.float32) for l in ordered], axis=1),
-        np.stack([np.asarray(l.val, dtype=np.float32) for l in ordered], axis=1),
-        np.stack([np.asarray(l.rew, dtype=np.float32) for l in ordered], axis=1),
-        np.stack([np.asarray(l.done) for l in ordered], axis=1),
+        np.stack([np.stack(lane.obs) for lane in ordered], axis=1),
+        np.stack([np.stack(lane.mask) for lane in ordered], axis=1),
+        np.stack([np.asarray(lane.act) for lane in ordered], axis=1),
+        np.stack([np.asarray(lane.logp, dtype=np.float32) for lane in ordered], axis=1),
+        np.stack([np.asarray(lane.val, dtype=np.float32) for lane in ordered], axis=1),
+        np.stack([np.asarray(lane.rew, dtype=np.float32) for lane in ordered], axis=1),
+        np.stack([np.asarray(lane.done) for lane in ordered], axis=1),
     )
     return batch, last_val, finished_rewards
 
@@ -344,7 +347,9 @@ def evaluate(policy, workers, device, opponent: str, seeds=range(1000, 1010)) ->
             if opponent == "rusher":
                 frame = w.reset(seed, control=(0, 1), conditions=straight)
             else:
-                frame = w.reset(seed, control=(seat,), tier=opponent, conditions=straight)
+                frame = w.reset(
+                    seed, control=(seat,), tier=opponent, conditions=straight
+                )
             live.append((i, seat, frame))
         while live:
             still = []
@@ -384,9 +389,13 @@ def main():
     ap.add_argument("--pool-every", type=int, default=25)
     ap.add_argument("--eval-every", type=int, default=25)
     ap.add_argument("--resume", default=None)
-    ap.add_argument("--anchor", default="runs/bc.pt", help="KL anchor prior ('' disables)")
+    ap.add_argument(
+        "--anchor", default="runs/bc.pt", help="KL anchor prior ('' disables)"
+    )
     ap.add_argument("--anchor-coef", type=float, default=0.05)
-    ap.add_argument("--maps", default="fixed", help="fixed | random (fresh map per episode)")
+    ap.add_argument(
+        "--maps", default="fixed", help="fixed | random (fresh map per episode)"
+    )
     ap.add_argument(
         "--mix",
         default="self=0.45,past=0.20,tier=0.20,rusher=0.15",

@@ -82,7 +82,12 @@ def _carve(seed: int, players: int = 2) -> dict:
             break
         dx, dy = int(rng.integers(-4, 5)), int(rng.integers(-4, 5))
         x, y = ax + 1 + dx, ay + 1 + dy
-        if 1 < x < w - 2 and 1 < y < h - 2 and grid[y][x] == "." and abs(dx) + abs(dy) >= 2:
+        if (
+            1 < x < w - 2
+            and 1 < y < h - 2
+            and grid[y][x] == "."
+            and abs(dx) + abs(dy) >= 2
+        ):
             set_pair(x, y, "s")
             placed += 1
     center_nodes = int(rng.integers(1, 4))
@@ -177,7 +182,12 @@ def _carve4(rng, seed: int, w: int, h: int) -> dict:
             break
         dx, dy = int(rng.integers(-4, 5)), int(rng.integers(-4, 5))
         x, y = ax + 1 + dx, ay + 1 + dy
-        if 1 < x < w - 2 and 1 < y < h - 2 and grid[y][x] == "." and abs(dx) + abs(dy) >= 2:
+        if (
+            1 < x < w - 2
+            and 1 < y < h - 2
+            and grid[y][x] == "."
+            and abs(dx) + abs(dy) >= 2
+        ):
             set_all(x, y, "s")
             placed += 1
     cx, cy = w // 2, h // 2

@@ -319,8 +319,11 @@ impl GymBot {
                         .is_some()
                 });
             mask[Action::FormArmy as usize] = idle_fighters > 0;
-            mask[Action::Push as usize] =
-                staging.is_some_and(|a| !a.members.is_empty()) && enemy_site.is_some();
+            // Push commits the main army wherever it is in its life:
+            // between two decisions a staging army can enter combat,
+            // and an action the policy observed as legal must not
+            // no-op on that one-cadence transition.
+            mask[Action::Push as usize] = !armies.is_empty() && enemy_site.is_some();
             mask[Action::Recall as usize] = armies
                 .iter()
                 .any(|a| matches!(a.state, ArmyState::Pushing | ArmyState::Engaging));
@@ -434,7 +437,8 @@ impl GymBot {
                 });
             }
             Action::Push => {
-                if let (Some(a), Some(target)) = (staging, enemy_site) {
+                let main = staging.or_else(|| armies.iter().min_by_key(|a| a.id));
+                if let (Some(a), Some(target)) = (main, enemy_site) {
                     intents.push(Intent::PushArmy { army: a.id, target });
                 }
             }
