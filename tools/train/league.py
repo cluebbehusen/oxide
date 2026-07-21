@@ -23,16 +23,20 @@ Usage (from tools/train/):
         --updates 2000   # continue
 """
 
-from __future__ import annotations
-
 import argparse
 import json
 import pathlib
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator
 
 import numpy as np
 import torch
+from torch import nn
 
+from mapgen import cache_dir, generate
 from models import load_policy, make_policy, save_policy
 from oxide_gym import ACTIONS, GYM_VERSION, NET_FEATURES, Frame, Worker
 from ppo import gae, ppo_update
@@ -68,14 +72,20 @@ def style_reward(raw: list[int], aggression: int) -> float:
     return STYLE_K * lean * out_fighting
 
 
-def sample_condition(rng) -> tuple[int, int]:
+def sample_condition(rng: np.random.Generator) -> tuple[int, int]:
     """Per-episode knobs: skill favors the strong end (that end must
     stay sharpest) but visits the whole range; aggression is uniform."""
     skill = int(rng.choice([1000, 1000, 850, 700, 550, 400]))
     return skill, int(rng.integers(0, 1001))
 
 
-def maybe_blunder(action: int, logits, mask, skill: int, rng) -> int:
+def maybe_blunder(
+    action: int,
+    logits: np.ndarray,
+    mask: np.ndarray,
+    skill: int,
+    rng: np.random.Generator,
+) -> int:
     """Env-noise blunders, sticky-actions style: the executed action is
     degraded, the policy trains on what it intended. Near-best picks —
     a blunder is a plausible mistake, not madness."""
@@ -111,7 +121,7 @@ def rusher(raw: list[int], mask: np.ndarray, tick: int) -> int:
 class Lane:
     """One learner-controlled seat's trajectory stream."""
 
-    def __init__(self, worker: Worker, seat: int):
+    def __init__(self, worker: Worker, seat: int) -> None:
         self.worker = worker
         self.seat = seat
         self.obs, self.mask, self.act = [], [], []
@@ -126,8 +136,15 @@ class Job:
     episode is the detail: which tier, which past checkpoint."""
 
     def __init__(
-        self, worker: Worker, kind: str, seat: int, pool_dir, rng, device, maps="fixed"
-    ):
+        self,
+        worker: Worker,
+        kind: str,
+        seat: int,
+        pool_dir: pathlib.Path,
+        rng: np.random.Generator,
+        device: str,
+        maps: str = "fixed",
+    ) -> None:
         # seat: 0/1 for duel kinds; 0..3 for ffa.
         self.worker = worker
         self.kind = kind
@@ -135,7 +152,8 @@ class Job:
         self.rng = rng
         self.device = device
         self.maps = maps
-        self.detail = None  # tier name | frozen policy
+        self.tier: str | None = None
+        self.past: nn.Module | None = None
         self.frame: Frame | None = None
         self.conditions: dict[int, tuple[int, int]] = {}
         if kind == "self":
@@ -148,32 +166,37 @@ class Job:
             self.learner_seats = [seat]
             self.opp_seat = 1 - seat
 
-    def reset(self, seed: int):
+    @property
+    def view(self) -> Frame:
+        """The live frame; jobs are always reset before stepping."""
+        if self.frame is None:
+            raise RuntimeError("job stepped before reset")
+        return self.frame
+
+    def reset(self, seed: int) -> None:
         self.conditions = {s: sample_condition(self.rng) for s in self.learner_seats}
         scenario = None
         if self.maps == "random":
-            from mapgen import generate
-
-            scenario = generate(seed % 100_000, "/tmp/oxide-maps-train")
+            scenario = generate(seed % 100_000, cache_dir("oxide-maps-train"))
         if self.kind == "ffa":
-            from mapgen import generate
-
-            scenario = generate(seed % 100_000, "/tmp/oxide-maps-train4", players=4)
-            self.detail = TIERS[int(self.rng.integers(len(TIERS)))]
+            scenario = generate(
+                seed % 100_000, cache_dir("oxide-maps-train4"), players=4
+            )
+            self.tier = TIERS[int(self.rng.integers(len(TIERS)))]
             self.frame = self.worker.reset(
                 seed,
                 control=(self.learner_seats[0],),
-                tier=self.detail,
+                tier=self.tier,
                 conditions=self.conditions,
                 scenario=scenario,
             )
             return
         if self.kind == "tier":
-            self.detail = TIERS[int(self.rng.integers(len(TIERS)))]
+            self.tier = TIERS[int(self.rng.integers(len(TIERS)))]
             self.frame = self.worker.reset(
                 seed,
                 control=(self.learner_seats[0],),
-                tier=self.detail,
+                tier=self.tier or "veteran",
                 conditions=self.conditions,
                 scenario=scenario,
             )
@@ -182,10 +205,11 @@ class Job:
             pool = sorted(self.pool_dir.glob("ckpt-*.pt"))
             if pool:
                 pick = pool[int(self.rng.integers(len(pool)))]
-                self.detail, _ = load_policy(str(pick), self.device)
-                self.detail.eval()
+                past, _ = load_policy(str(pick), self.device)
+                past.eval()
+                self.past = past
             else:
-                self.detail = None  # empty pool: play the rusher instead
+                self.past = None  # empty pool: play the rusher instead
         all_conds = dict(self.conditions)
         if self.opp_seat is not None:
             all_conds[self.opp_seat] = (1000, 500)  # frozen opponents play straight
@@ -193,14 +217,14 @@ class Job:
             seed, control=(0, 1), conditions=all_conds, scenario=scenario
         )
 
-    def opponent_action(self, policy_device) -> dict[int, int]:
+    def opponent_action(self, policy_device: str) -> dict[int, int]:
         """Actions for locally-driven seats (empty for self/tier)."""
         if self.opp_seat is None:
             return {}
-        view = self.frame.seats[self.opp_seat]
-        if self.kind == "rusher" or self.detail is None:
-            return {self.opp_seat: rusher(view.raw, view.mask, self.frame.tick)}
-        policy, device = self.detail, policy_device
+        view = self.view.seats[self.opp_seat]
+        if self.kind == "rusher" or self.past is None:
+            return {self.opp_seat: rusher(view.raw, view.mask, self.view.tick)}
+        policy, device = self.past, policy_device
         with torch.no_grad():
             logits, _ = policy(
                 torch.as_tensor(view.obs[None], device=device),
@@ -210,7 +234,14 @@ class Job:
         return {self.opp_seat: int(a)}
 
 
-def assign_roles(workers, mix, pool_dir, rng, device, maps="fixed"):
+def assign_roles(
+    workers: list[Worker],
+    mix: dict[str, float],
+    pool_dir: pathlib.Path,
+    rng: np.random.Generator,
+    device: str,
+    maps: str = "fixed",
+) -> list[Job]:
     """Splits the worker fleet by the mix (largest remainder), seats
     alternating; the assignment is permanent for the run."""
     kinds = list(mix)
@@ -222,7 +253,7 @@ def assign_roles(workers, mix, pool_dir, rng, device, maps="fixed"):
         counts[int(np.argmax(exact - counts))] += 1
     jobs = []
     i = 0
-    for kind, count in zip(kinds, counts):
+    for kind, count in zip(kinds, counts, strict=False):
         seats = 4 if kind == "ffa" else 2
         for k in range(count):
             jobs.append(Job(workers[i], kind, k % seats, pool_dir, rng, device, maps))
@@ -230,7 +261,14 @@ def assign_roles(workers, mix, pool_dir, rng, device, maps="fixed"):
     return jobs
 
 
-def rollout(policy, jobs, seeds, steps, device, noise_rng):
+def rollout(
+    policy: nn.Module,
+    jobs: list[Job],
+    seeds: Iterator[int],
+    steps: int,
+    device: str,
+    noise_rng: np.random.Generator,
+) -> tuple[tuple[np.ndarray, ...], np.ndarray, list[float]]:
     lanes = {(id(j), s): Lane(j.worker, s) for j in jobs for s in j.learner_seats}
     finished_rewards = []
     for j in jobs:
@@ -238,14 +276,14 @@ def rollout(policy, jobs, seeds, steps, device, noise_rng):
             j.reset(next(seeds))
     for j in jobs:
         for s in j.learner_seats:
-            lanes[(id(j), s)].last_pot = potential(j.frame.seats[s].raw)
+            lanes[(id(j), s)].last_pot = potential(j.view.seats[s].raw)
 
     for _ in range(steps):
         views = []
         keys = []
         for j in jobs:
             for s in j.learner_seats:
-                v = j.frame.seats[s]
+                v = j.view.seats[s]
                 views.append(v)
                 keys.append((id(j), s))
         obs = np.stack([v.obs for v in views])
@@ -294,7 +332,7 @@ def rollout(policy, jobs, seeds, steps, device, noise_rng):
                     finished_rewards.append(frame.reward(s))
                 j.reset(next(seeds))
                 for s in j.learner_seats:
-                    lanes[(id(j), s)].last_pot = potential(j.frame.seats[s].raw)
+                    lanes[(id(j), s)].last_pot = potential(j.view.seats[s].raw)
             else:
                 for s in j.learner_seats:
                     lane = lanes[(id(j), s)]
@@ -313,7 +351,7 @@ def rollout(policy, jobs, seeds, steps, device, noise_rng):
     views = []
     for j in jobs:
         for s in j.learner_seats:
-            views.append(j.frame.seats[s])
+            views.append(j.view.seats[s])
     obs = np.stack([v.obs for v in views])
     mask = np.stack([v.mask for v in views])
     with torch.no_grad():
@@ -336,9 +374,16 @@ def rollout(policy, jobs, seeds, steps, device, noise_rng):
     return batch, last_val, finished_rewards
 
 
-def evaluate(policy, workers, device, opponent: str, seeds=range(1000, 1010)) -> float:
+def evaluate(
+    policy: nn.Module,
+    workers: list[Worker],
+    device: str,
+    opponent: str,
+    seeds: Iterable[int] | None = None,
+) -> float:
     """Greedy, fixed suite, both seats per seed. `opponent` is a tier
     name or 'rusher'."""
+    seeds = range(1000, 1010) if seeds is None else seeds
     wins = games = 0
     jobs = [(seed, seat) for seed in seeds for seat in (0, 1)]
     for start in range(0, len(jobs), len(workers)):
@@ -379,7 +424,7 @@ def evaluate(policy, workers, device, opponent: str, seeds=range(1000, 1010)) ->
     return wins / games if games else 0.0
 
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", required=True)
     ap.add_argument("--driver", default="../../target/release/oxide-driver")
@@ -432,7 +477,7 @@ def main():
     workers = [Worker(args.driver) for _ in range(args.workers)]
     rng = np.random.default_rng(0)
 
-    def seed_stream():
+    def seed_stream() -> Iterator[int]:
         s = 50_000
         while True:
             yield s

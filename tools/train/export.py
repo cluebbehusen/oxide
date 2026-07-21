@@ -11,8 +11,6 @@ Usage (from tools/train/):
     uv run export.py --ckpt runs/league4w/latest.pt --out runs/prime.json
 """
 
-from __future__ import annotations
-
 import argparse
 import json
 
@@ -29,7 +27,7 @@ def quant(t: torch.Tensor) -> list:
     return (t.detach().numpy() * (1 << Q)).round().astype(int).tolist()
 
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--out", required=True)
@@ -38,10 +36,8 @@ def main():
     policy, blob = load_policy(args.ckpt)
     policy.eval()
 
-    layers = []
-    linears = [m for m in policy.trunk if isinstance(m, torch.nn.Linear)]
-    for lin in linears:
-        layers.append({"w": quant(lin.weight), "b": quant(lin.bias)})
+    linears = [m for m in policy.trunk.modules() if isinstance(m, torch.nn.Linear)]
+    layers = [{"w": quant(lin.weight), "b": quant(lin.bias)} for lin in linears]
     head = {"w": quant(policy.pi.weight), "b": quant(policy.pi.bias)}
 
     # tanh as a 513-entry Q12 table over [-8, 8]; Rust interpolates

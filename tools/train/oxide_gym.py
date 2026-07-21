@@ -8,8 +8,7 @@ raw integers (the Rust side is the source of truth for their meaning);
 `normalize` scales them to roughly [-1, 1] for the network.
 """
 
-from __future__ import annotations
-
+import contextlib
 import json
 import subprocess
 from dataclasses import dataclass, field
@@ -75,7 +74,8 @@ SCALES = np.array(
     ],
     dtype=np.float32,
 )
-assert SCALES.shape == (FEATURES,)
+if SCALES.shape != (FEATURES,):
+    raise RuntimeError("SCALES must cover every gym feature")
 
 
 def normalize(features: list[int]) -> np.ndarray:
@@ -116,7 +116,7 @@ class Frame:
 class Worker:
     """One driver process, one live episode at a time."""
 
-    def __init__(self, driver_bin: str):
+    def __init__(self, driver_bin: str) -> None:
         self.conditions: dict[int, tuple[int, int]] = {}
         self.proc = subprocess.Popen(
             [driver_bin, "gym"],
@@ -125,15 +125,19 @@ class Worker:
             text=True,
             bufsize=1,
         )
-        hello = json.loads(self.proc.stdout.readline())
+        if self.proc.stdin is None or self.proc.stdout is None:
+            raise RuntimeError("gym driver started without pipes")
+        self._stdin = self.proc.stdin
+        self._stdout = self.proc.stdout
+        hello = json.loads(self._stdout.readline())
         if not hello.get("ready"):
             raise RuntimeError(f"gym server failed to start: {hello}")
         if hello["version"] != GYM_VERSION or hello["features"] != FEATURES:
             raise RuntimeError(f"gym contract mismatch: {hello}")
 
     def _rpc(self, request: dict) -> Frame:
-        self.proc.stdin.write(json.dumps(request) + "\n")
-        reply = json.loads(self.proc.stdout.readline())
+        self._stdin.write(json.dumps(request) + "\n")
+        reply = json.loads(self._stdout.readline())
         if "error" in reply:
             raise RuntimeError(reply["error"])
         if reply["done"]:
@@ -181,10 +185,8 @@ class Worker:
         ordered = [int(actions[s]) for s in self.control]
         return self._rpc({"cmd": "step", "actions": ordered})
 
-    def close(self):
-        try:
-            self.proc.stdin.write('{"cmd":"quit"}\n')
-            self.proc.stdin.flush()
-        except Exception:
-            pass
+    def close(self) -> None:
+        with contextlib.suppress(OSError, ValueError):
+            self._stdin.write('{"cmd":"quit"}\n')
+            self._stdin.flush()
         self.proc.terminate()

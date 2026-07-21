@@ -17,15 +17,19 @@ Usage:
     path = generate(seed=7, out_dir="/tmp/maps")
 """
 
-from __future__ import annotations
-
 import json
 import pathlib
 import subprocess
+import tempfile
 
 import numpy as np
 
 DRIVER = "../../target/release/oxide-driver"
+
+
+def cache_dir(name: str) -> str:
+    """A per-purpose map cache under the system temp directory."""
+    return str(pathlib.Path(tempfile.gettempdir()) / name)
 
 
 def _carve(seed: int, players: int = 2) -> dict:
@@ -39,7 +43,7 @@ def _carve(seed: int, players: int = 2) -> dict:
     def mirror(x: int, y: int) -> tuple[int, int]:
         return w - 1 - x, h - 1 - y
 
-    def set_pair(x: int, y: int, ch: str):
+    def set_pair(x: int, y: int, ch: str) -> None:
         grid[y][x] = ch
         mx, my = mirror(x, y)
         grid[my][mx] = ch
@@ -118,9 +122,9 @@ def _carve(seed: int, players: int = 2) -> dict:
         ):
             spots.append((x, y))
     kinds = ["harvester", "harvester", "harvester", "sentinel"]
-    for (x, y), kind in zip(spots, kinds):
+    for (x, y), kind in zip(spots, kinds, strict=False):
         units.append({"player": 0, "kind": kind, "x": x, "y": y})
-    for (x, y), kind in zip(spots, kinds):
+    for (x, y), kind in zip(spots, kinds, strict=False):
         mx2, my2 = mirror(x, y)
         units.append({"player": 1, "kind": kind, "x": mx2, "y": my2})
 
@@ -136,14 +140,14 @@ def _carve(seed: int, players: int = 2) -> dict:
     }
 
 
-def _carve4(rng, seed: int, w: int, h: int) -> dict:
+def _carve4(rng: np.random.Generator, seed: int, w: int, h: int) -> dict:
     """Four-player maps by double mirroring: author the top-left
     quadrant, reflect across both axes — every corner seat plays the
     same quadrant. Anchor characters 1-4; spawn lists are emitted in
     the same reflected order per seat."""
     grid = [["." for _ in range(w)] for _ in range(h)]
 
-    def images(x: int, y: int):
+    def images(x: int, y: int) -> list[tuple[int, int]]:
         return [
             (x, y),
             (w - 1 - x, y),
@@ -151,7 +155,7 @@ def _carve4(rng, seed: int, w: int, h: int) -> dict:
             (w - 1 - x, h - 1 - y),
         ]
 
-    def set_all(x: int, y: int, ch: str):
+    def set_all(x: int, y: int, ch: str) -> None:
         for ix, iy in images(x, y):
             grid[iy][ix] = ch
 
@@ -214,7 +218,7 @@ def _carve4(rng, seed: int, w: int, h: int) -> dict:
     kinds = ["harvester", "harvester", "harvester", "sentinel"]
     units = []
     for player in range(4):
-        for (x, y), kind in zip(spots, kinds):
+        for (x, y), kind in zip(spots, kinds, strict=False):
             ix, iy = images(x, y)[player]
             units.append({"player": player, "kind": kind, "x": ix, "y": iy})
 
@@ -251,6 +255,7 @@ def generate(seed: int, out_dir: str, players: int = 2, driver: str = DRIVER) ->
             subprocess.run(
                 [driver, "run", str(trial), "--ticks", "0"],
                 capture_output=True,
+                check=False,
             ).returncode
             == 0
         )

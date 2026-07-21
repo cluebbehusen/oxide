@@ -1,15 +1,15 @@
 //! The difficulty ladder: four tiers, zero cheats — including vision.
 //!
 //! Every tier plays under exactly the rules a human gets: no income,
-//! vision, or combat multipliers anywhere, and since Connor's 0.7
-//! all-honest ruling, **no omniscience either** — every tier observes
+//! vision, or combat multipliers anywhere, and — since the ladder went
+//! all-honest — **no omniscience either** — every tier observes
 //! through its own fog of war and scouts to know anything at all.
 //! Difficulty is purely *considerations*: how often the bot thinks,
 //! how deep its economy runs, which combat habits its executive
 //! practices. (Mixing honest and omniscient rungs was measured and
 //! rejected: an omniscient bot times every push off true totals and
 //! beats its equally-skilled honest twin 17-3, so the two kinds can't
-//! be ordered on one ladder. The classic 0.6 bot stays in-tree as the
+//! be ordered on one ladder. The legacy rule-based bot stays in-tree as the
 //! omniscient benchmark the honest ladder is gated against.)
 
 use super::executive::Doctrine;

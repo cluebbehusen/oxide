@@ -1,7 +1,7 @@
 """The promotion tournament: a checkpoint against the world.
 
 Determinism means a single seed proves nothing, so every matchup runs
-a fixed seed suite × both seat assignments, and the table reports
+a fixed seed suite x both seat assignments, and the table reports
 Wilson 95% intervals. Opponents: every scripted tier plus the rush
 teacher (the known exploit). This is the gate the 0.7 plan defines —
 the learned policy ships as the top difficulty only if it clears the
@@ -12,16 +12,16 @@ Usage (from tools/train/):
     uv run tournament.py --ckpt runs/bc.pt --seeds 10   # quick look
 """
 
-from __future__ import annotations
-
 import argparse
 import json
 import math
 
 import numpy as np
 import torch
+from torch import nn
 
 from league import TIERS, maybe_blunder, rusher
+from mapgen import cache_dir, generate
 from models import load_policy
 from oxide_gym import Worker
 
@@ -37,7 +37,7 @@ def wilson(wins: int, games: int, z: float = 1.96) -> tuple[float, float]:
 
 
 def play(
-    policy,
+    policy: nn.Module,
     worker: Worker,
     opponent: str,
     seed: int,
@@ -49,7 +49,7 @@ def play(
     """One greedy match; returns (won, ticks). `won` is None only for a
     true draw (tick cap with the learner standing) — elimination in a
     multiplayer game is a loss even while others fight on."""
-    conds = {s: condition for s in range(8)}
+    conds = dict.fromkeys(range(8), condition)
     rusher_seat = None
     if opponent == "rusher":
         # The rusher is driven locally, so its seat must be controlled
@@ -91,12 +91,12 @@ def play(
     return None, frame.tick
 
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--driver", default="../../target/release/oxide-driver")
     ap.add_argument("--seeds", type=int, default=30)
-    ap.add_argument("--opponents", default=",".join(TIERS + ["rusher"]))
+    ap.add_argument("--opponents", default=",".join([*TIERS, "rusher"]))
     ap.add_argument(
         "--scenario", default=None, help="map (default: the built-in skirmish)"
     )
@@ -124,17 +124,13 @@ def main():
         jobs: list[tuple[int, str | None]]
         ffa = args.ffa_maps > 0
         if ffa:
-            from mapgen import generate
-
             jobs = [
-                (9500 + i, generate(9500 + i, "/tmp/oxide-maps4", players=4))
+                (9500 + i, generate(9500 + i, cache_dir("oxide-maps4"), players=4))
                 for i in range(args.ffa_maps)
             ]
         elif args.random_maps:
-            from mapgen import generate
-
             jobs = [
-                (9000 + i, generate(9000 + i, "/tmp/oxide-maps"))
+                (9000 + i, generate(9000 + i, cache_dir("oxide-maps")))
                 for i in range(args.random_maps)
             ]
         else:

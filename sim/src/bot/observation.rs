@@ -1,6 +1,6 @@
 //! What a bot may know.
 //!
-//! An [`Observation`] is the only input a 0.7 policy receives — versioned,
+//! An [`Observation`] is the only input a bot policy receives — versioned,
 //! serializable, and buildable two ways: [`Observation::omniscient`] reads
 //! the whole state (the classic cheating commander, honestly labeled), and
 //! [`Observation::fog_honest`] filters through the player's own vision:

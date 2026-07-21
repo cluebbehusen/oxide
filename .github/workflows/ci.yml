@@ -78,3 +78,23 @@ jobs:
           sudo apt-get install -y libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
       - name: Test on MSRV
         run: cargo test --workspace
+
+  # The training tools are shipped source too: lint, formatting, and
+  # types hold to the same standard as the Rust side.
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: tools/train/uv.lock
+      - name: Ruff lint
+        working-directory: tools/train
+        run: uv run ruff check .
+      - name: Ruff format
+        working-directory: tools/train
+        run: uv run ruff format --check .
+      - name: Type check
+        working-directory: tools/train
+        run: uv run ty check

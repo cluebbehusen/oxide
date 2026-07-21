@@ -3,14 +3,19 @@ the first collapsed run taught us — a KL early stop so fine-tuning
 can't sprint away from a working policy, and an optional policy freeze
 for value warm-up."""
 
-from __future__ import annotations
-
 import numpy as np
 import torch
-import torch.nn as nn
+from torch import nn
 
 
-def gae(rew, done, val, last_val, gamma=0.999, lam=0.95):
+def gae(
+    rew: np.ndarray,
+    done: np.ndarray,
+    val: np.ndarray,
+    last_val: np.ndarray,
+    gamma: float = 0.999,
+    lam: float = 0.95,
+) -> tuple[np.ndarray, np.ndarray]:
     steps, n = rew.shape
     adv = np.zeros_like(rew)
     running = np.zeros(n, dtype=np.float32)
@@ -30,19 +35,19 @@ def gae(rew, done, val, last_val, gamma=0.999, lam=0.95):
 
 
 def ppo_update(
-    policy,
-    opt,
-    batch,
-    device,
-    epochs=4,
-    minibatch=1024,
-    clip=0.2,
-    ent_coef=0.002,
-    kl_stop=0.03,
-    value_only=False,
-    anchor=None,
-    anchor_coef=0.05,
-):
+    policy: nn.Module,
+    opt: torch.optim.Optimizer,
+    batch: tuple[np.ndarray, ...],
+    device: str,
+    epochs: int = 4,
+    minibatch: int = 1024,
+    clip: float = 0.2,
+    ent_coef: float = 0.002,
+    kl_stop: float = 0.03,
+    value_only: bool = False,
+    anchor: nn.Module | None = None,
+    anchor_coef: float = 0.05,
+) -> dict[str, float]:
     obs, mask, act, logp_old, adv, ret = (
         torch.as_tensor(x, device=device) for x in batch
     )

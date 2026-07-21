@@ -1,7 +1,7 @@
 //! Bots: command sources that read [`crate::State`] and emit
 //! [`crate::PlayerCommand`]s, exactly like a mouse or the debug socket.
 //!
-//! Since 0.7 the brain is layered (the architecture both the scripted
+//! The modern brains are layered (the architecture both the scripted
 //! and any learned policy share):
 //!
 //! ```text
@@ -11,7 +11,7 @@
 //! [`observation`] builds what a bot may know — omnisciently or
 //! fog-honestly; [`Intent`]s are the policy's vocabulary; the
 //! [`Executive`] owns army bookkeeping and lowers intents to commands.
-//! The 0.6 rule-cascade bot survives as [`classic::Bot`], the benchmark
+//! The legacy rule-cascade bot survives as [`classic::Bot`], the benchmark
 //! opponent every new tier must beat.
 
 pub mod brain;
@@ -35,12 +35,13 @@ pub use tiers::Difficulty;
 pub use utility::{Dials, UtilityPolicy};
 
 /// A bot seat as the shell and driver run it: the shipped neural
-/// ladder when the scenario configures one, the classic 0.6 rule
-/// cascade otherwise (which is what keeps pre-0.7 replays and
+/// ladder when the scenario configures one, the legacy rule cascade
+/// otherwise (which is what keeps replays recorded before bot configs
+/// existed and
 /// fixtures reproducing).
 #[derive(Debug, Clone)]
 pub enum SeatBot {
-    /// The 0.6 benchmark bot.
+    /// The legacy rule-based benchmark bot.
     Classic(Box<Bot>),
     /// The shipped ladder network.
     Neural(Box<NeuralBot>),

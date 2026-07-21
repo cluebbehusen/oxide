@@ -11,14 +11,12 @@ Usage (from tools/train/):
     uv run bc.py --episodes 40 --out runs/bc.pt
 """
 
-from __future__ import annotations
-
 import argparse
 import pathlib
 
 import numpy as np
 import torch
-import torch.nn as nn
+from torch import nn
 
 from models import make_policy, save_policy
 from oxide_gym import Worker, with_condition
@@ -62,7 +60,7 @@ def turtle(raw: list[int], mask: np.ndarray, tick: int) -> int:
     return IDLE
 
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--driver", default="../../target/release/oxide-driver")
     ap.add_argument("--episodes", type=int, default=40)

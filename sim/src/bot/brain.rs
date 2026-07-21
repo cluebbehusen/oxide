@@ -1,4 +1,4 @@
-//! The composed 0.7 bot: observation builder + policy + executive.
+//! The composed rule-based bot: observation builder + policy + executive.
 //!
 //! A [`Brain`] is a command source exactly like [`super::classic::Bot`]:
 //! it reads [`State`], emits [`crate::PlayerCommand`]s, and its commands

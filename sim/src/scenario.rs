@@ -45,8 +45,9 @@ pub struct PlayerSpec {
     #[serde(default)]
     pub bot: bool,
     /// How that bot plays: a ladder level and personality. `None` means
-    /// the classic 0.6 rule-cascade bot — which is also what keeps
-    /// pre-0.7 replays reproducing, since the scenario (and therefore
+    /// the legacy rule-cascade bot — which is also what keeps replays
+    /// recorded before bot configs existed reproducing, since the
+    /// scenario (and therefore
     /// this config) rides inside every replay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bot_config: Option<BotConfig>,
