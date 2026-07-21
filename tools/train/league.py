@@ -48,11 +48,13 @@ TIERS = ["scrapheap", "standard", "veteran", "prime"]
 # what the agent happens to know about the enemy.
 SHAPE_K = 0.05
 
-# Style shaping: a small per-step nudge that makes the aggression knob
-# mean something. Aggressive settings are paid for being out fighting
-# (army state Pushing/Engaging); turtle settings for standing home
-# defense. Tiny relative to the terminal reward — flavor, not goal.
-STYLE_K = 0.0004
+# Style shaping: a per-step nudge that makes the aggression knob mean
+# something. Aggressive settings are paid for being out fighting (army
+# state Pushing/Engaging); turtle settings for standing home defense.
+# Sized so a full game's worth of style adds up to the order of the
+# terminal reward — style must be able to argue with winning, or the
+# greedy policy plays one line at every knob setting.
+STYLE_K = 0.0025
 
 
 def potential(raw: list[int]) -> float:
@@ -412,6 +414,10 @@ def main():
                 adv.reshape(-1),
                 ret.reshape(-1),
             )
+            # The anchor is scaffolding: essential while the policy is a
+            # fragile clone, a straitjacket once the league is teaching —
+            # and it pins every knob setting to the teacher's one style.
+            # Anneal it away (halves roughly every 140 updates).
             stats = ppo_update(
                 policy,
                 opt,
@@ -419,7 +425,7 @@ def main():
                 device,
                 value_only=update <= args.value_warmup,
                 anchor=anchor,
-                anchor_coef=args.anchor_coef,
+                anchor_coef=args.anchor_coef * (0.995**update),
             )
             entry = {
                 "update": update,

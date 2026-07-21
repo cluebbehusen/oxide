@@ -21,7 +21,7 @@ import math
 import numpy as np
 import torch
 
-from league import TIERS, rusher
+from league import TIERS, maybe_blunder, rusher
 from models import load_policy
 from oxide_gym import Worker
 
@@ -53,6 +53,7 @@ def play(
         frame = worker.reset(
             seed, control=(seat,), tier=opponent, scenario=scenario, conditions=conds
         )
+    rng = np.random.default_rng(seed * 2 + seat)
     while not frame.done:
         view = frame.seats[seat]
         with torch.no_grad():
@@ -60,7 +61,14 @@ def play(
                 torch.as_tensor(view.obs[None]),
                 torch.as_tensor(view.mask[None]),
             )
-        acts = {seat: int(logits.argmax())}
+        # The shipped weakening is knob input + forced near-best
+        # blunders, exactly as trained — evaluate that mechanism.
+        intended = int(logits.argmax())
+        acts = {
+            seat: maybe_blunder(
+                intended, logits[0].numpy(), view.mask, condition[0], rng
+            )
+        }
         if opponent == "rusher":
             ov = frame.seats[1 - seat]
             acts[1 - seat] = rusher(ov.raw, ov.mask, frame.tick)
