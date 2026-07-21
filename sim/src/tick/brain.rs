@@ -25,13 +25,14 @@ struct PendingHit {
     damage: u32,
 }
 
-/// A construction hp-gain decided this tick. Buffered like damage, and
-/// applied *after* it: the documented rule is that a site zeroed by fire
-/// is dead even if its builder acted the same tick — the shooter aimed at
-/// the start-of-tick world, where the hit was lethal. Completion buffers
-/// too: a site whose final tick coincides with a lethal volley must never
-/// come online — no free turret shot, no "online" fanfare before death.
-struct PendingBuild {
+/// A buffered hp gain — construction progress or repair welding —
+/// applied *after* damage: the documented rule is that a building zeroed
+/// by fire is dead even if its crew acted the same tick — the shooter
+/// aimed at the start-of-tick world, where the hit was lethal. Completion
+/// buffers too: a site whose final tick coincides with a lethal volley
+/// must never come online — no free turret shot, no "online" fanfare
+/// before death.
+struct PendingHpGain {
     site: crate::ids::BuildingId,
     step: u32,
     max_hp: u32,
@@ -42,7 +43,7 @@ struct PendingBuild {
 
 pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
     let mut hits: Vec<PendingHit> = Vec::new();
-    let mut builds: Vec<PendingBuild> = Vec::new();
+    let mut builds: Vec<PendingHpGain> = Vec::new();
     // Alternate direction by tick parity: sequential phases must not hand
     // one seat a standing first-mover edge (with damage buffered, the
     // remaining coupling is small — shared scrap, own-side order state —
@@ -71,6 +72,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
             }
             Order::AttackMove { goal } => attack_move(state, id, goal, events),
             Order::Build { site } => build(state, id, site, events, &mut builds),
+            Order::Repair { building } => repair(state, id, building, events, &mut builds),
         }
     }
     turret_fire(state, events, &mut hits);
@@ -86,7 +88,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
 fn resolve_hits(
     state: &mut State,
     hits: Vec<PendingHit>,
-    builds: Vec<PendingBuild>,
+    builds: Vec<PendingHpGain>,
     events: &mut Vec<Event>,
 ) {
     for hit in &hits {
@@ -263,7 +265,7 @@ fn build(
     id: UnitId,
     site: crate::ids::BuildingId,
     events: &mut Vec<Event>,
-    builds: &mut Vec<PendingBuild>,
+    builds: &mut Vec<PendingHpGain>,
 ) {
     let me = state.unit(id).expect("caller checked").player;
     // hp > 0 is defense in depth: with buffered damage nothing dies
@@ -292,11 +294,11 @@ fn build(
         let step = (ramp * (b.progress + 1) / build_ticks) - (ramp * b.progress / build_ticks);
         b.progress += 1;
         // Both the hp gain and the completion are buffered and applied
-        // after damage — see PendingBuild. The builder learns the site is
+        // after damage — see PendingHpGain. The builder learns the site is
         // done next tick, through the built-site branch above.
         let completes = b.progress >= build_ticks;
         if step > 0 || completes {
-            builds.push(PendingBuild {
+            builds.push(PendingHpGain {
                 site,
                 step,
                 max_hp: stats.max_hp,
@@ -306,6 +308,84 @@ fn build(
             });
         }
         state.unit_mut(id).expect("caller checked").path = None;
+    } else if !approach_rect(state, id, anchor, size) {
+        let unit = state.unit_mut(id).expect("caller checked");
+        let (player, pos) = (unit.player, unit.pos);
+        unit.clear_program();
+        events.push(Event::OrderStalled {
+            unit: id,
+            player,
+            pos,
+        });
+    }
+}
+
+/// Weld a damaged own built building: walk adjacent, then feed it hp
+/// along the same ramp construction climbs, paying one scrap per
+/// [`crate::stats::REPAIR_TICKS_PER_SCRAP`] ticks of torch time. Gains
+/// buffer like construction — fire wins ties — and an empty bank stalls
+/// the job. Several welders stack, each burning their own scrap ticks.
+fn repair(
+    state: &mut State,
+    id: UnitId,
+    building: crate::ids::BuildingId,
+    events: &mut Vec<Event>,
+    builds: &mut Vec<PendingHpGain>,
+) {
+    let me = state.unit(id).expect("caller checked").player;
+    let Some(b) = state
+        .building(building)
+        .filter(|b| b.player == me && b.built && b.hp > 0 && b.hp < b.kind.stats().max_hp)
+    else {
+        // Healed, destroyed, or never a patient: the job is over.
+        state.unit_mut(id).expect("caller checked").advance_queue();
+        return;
+    };
+    let (anchor, kind) = (b.anchor, b.kind);
+    let stats = kind.stats();
+    let size = stats.size;
+    // The welding rate is the construction ramp; the unbuyable Foundry
+    // repairs on an authored ramp of its own.
+    let ramp_ticks = stats
+        .construction
+        .map_or(crate::stats::FOUNDRY_REPAIR_TICKS, |c| c.build_ticks);
+    let tile = state.unit(id).expect("caller checked").tile();
+    if tile_adjacent_to_rect(tile, anchor, size) {
+        if state.player(me).scrap == 0 {
+            // Broke stalls the torch.
+            let unit = state.unit_mut(id).expect("caller checked");
+            let (player, pos) = (unit.player, unit.pos);
+            unit.clear_program();
+            events.push(Event::OrderStalled {
+                unit: id,
+                player,
+                pos,
+            });
+            return;
+        }
+        let start_hp = stats.max_hp / 5;
+        let ramp = stats.max_hp - start_hp;
+        let unit = state.unit_mut(id).expect("caller checked");
+        unit.path = None;
+        let p = unit.progress;
+        unit.progress += 1;
+        if unit
+            .progress
+            .is_multiple_of(crate::stats::REPAIR_TICKS_PER_SCRAP)
+        {
+            state.player_mut(me).scrap -= 1; // nonzero checked above
+        }
+        let step = (ramp * (p + 1) / ramp_ticks) - (ramp * p / ramp_ticks);
+        if step > 0 {
+            builds.push(PendingHpGain {
+                site: building,
+                step,
+                max_hp: stats.max_hp,
+                completes: false,
+                player: me,
+                kind,
+            });
+        }
     } else if !approach_rect(state, id, anchor, size) {
         let unit = state.unit_mut(id).expect("caller checked");
         let (player, pos) = (unit.player, unit.pos);

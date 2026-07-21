@@ -64,6 +64,7 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
                 anchor,
             } => apply_build(state, pc.player, units, *kind, *anchor),
             Command::Cancel { building } => apply_cancel(state, pc.player, *building, events),
+            Command::Repair { units, building } => apply_repair(state, pc.player, units, *building),
             Command::Stop { units } => apply_stop(state, pc.player, units),
             Command::Train { building, kind } => apply_train(state, pc.player, *building, *kind),
             Command::SetRally { building, rally } => {
@@ -512,6 +513,42 @@ fn apply_cancel(
         refund,
     });
     Ok(())
+}
+
+/// Welding is for standing, wounded, own buildings; sites are resumed
+/// through Build instead, and full health leaves nothing to do.
+fn apply_repair(
+    state: &mut State,
+    player: PlayerId,
+    units: &[UnitId],
+    building: crate::ids::BuildingId,
+) -> Result<(), RejectReason> {
+    let b = state
+        .building(building)
+        .ok_or(RejectReason::NotYourBuilding)?;
+    if b.player != player {
+        return Err(RejectReason::NotYourBuilding);
+    }
+    if !b.built || b.hp >= b.kind.stats().max_hp {
+        return Err(RejectReason::InvalidTarget);
+    }
+    let mut landed = 0;
+    let mut applied = 0;
+    for &id in units {
+        if let Some(unit) = state.unit_mut(id)
+            && unit.player == player
+            && unit.kind.stats().harvest.is_some()
+        {
+            if assign(unit, Order::Repair { building }, false) {
+                landed += 1;
+            }
+            applied += 1;
+        }
+    }
+    if applied == 0 {
+        return Err(RejectReason::NoValidUnits);
+    }
+    (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
 }
 
 fn apply_stop(state: &mut State, player: PlayerId, units: &[UnitId]) -> Result<(), RejectReason> {

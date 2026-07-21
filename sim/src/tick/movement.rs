@@ -110,10 +110,14 @@ pub(super) fn run(state: &mut State) {
     }
 }
 
-/// A unit that is standing still to work — extracting or holding fire on a
-/// target — resists shoving; movers yield around it.
+/// A unit that is standing still to work — extracting, welding, or
+/// holding fire on a target — resists shoving; movers yield around it.
 fn is_anchored(unit: &crate::state::Unit) -> bool {
-    unit.path.is_none() && matches!(unit.order, Order::Harvest { .. } | Order::Attack { .. })
+    unit.path.is_none()
+        && matches!(
+            unit.order,
+            Order::Harvest { .. } | Order::Attack { .. } | Order::Repair { .. }
+        )
 }
 
 /// Unit directions for perfectly stacked pairs, indexed by id xor — any

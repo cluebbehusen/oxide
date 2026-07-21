@@ -732,6 +732,25 @@ pub const FOUNDRY_WRECK_VALUE: u32 = 300;
 /// bank.
 pub const WRECK_DECAY_TICKS: u64 = 40;
 
+/// Outer detection ring of the Array, in tiles: hostile units inside it
+/// but out of true sight appear as blips — a tile, no kind, no owner.
+/// Blips never satisfy targeted-attack visibility.
+pub const RADAR_DETECT_RADIUS: i32 = 16;
+
+/// Ticks per scrap credited by each built Reclaimer. At this rate the
+/// building repays its own price in roughly four minutes — insurance and
+/// a stalemate valve, never an opening.
+pub const RECLAIMER_PERIOD: u64 = 30;
+
+/// Ticks of builder attention per scrap charged while repairing. A full
+/// re-ramp of a building costs roughly a third of its price — cheaper
+/// than replacing it, never free.
+pub const REPAIR_TICKS_PER_SCRAP: u32 = 10;
+
+/// Welding ramp for the Foundry, which has no construction stats to
+/// borrow one from.
+pub const FOUNDRY_REPAIR_TICKS: u32 = 400;
+
 /// Scrap in a rich node (the `S` map legend) — a fought-over prize.
 pub const RICH_SCRAP_NODE_AMOUNT: u32 = 800;
 

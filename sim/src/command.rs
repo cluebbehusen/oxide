@@ -101,6 +101,14 @@ pub enum Command {
         /// The site to abandon.
         building: BuildingId,
     },
+    /// Send harvesters to weld a damaged own built building back toward
+    /// full. Repair costs a scrap trickle while the welding runs.
+    Repair {
+        /// The units to commit (only harvesters are accepted).
+        units: Vec<UnitId>,
+        /// The patient.
+        building: BuildingId,
+    },
     /// Point a building's fresh units somewhere (`None` clears the rally).
     SetRally {
         /// The building.

@@ -88,6 +88,12 @@ pub enum Order {
         /// The site under construction.
         site: crate::ids::BuildingId,
     },
+    /// Walk adjacent to a damaged own built building and weld it back
+    /// toward full (harvesters only; costs a scrap trickle).
+    Repair {
+        /// The patient.
+        building: crate::ids::BuildingId,
+    },
     /// March to a tile, engaging anything encountered on the way — the
     /// stance for actually fighting, as opposed to [`Order::Move`]'s
     /// oblivious walk.

@@ -16,7 +16,7 @@
 //! serialized byte of a fog-honest observation.
 
 use crate::ids::{BuildingId, PlayerId, UnitId};
-use crate::state::{Order, State};
+use crate::state::{Faction, Order, State};
 use crate::stats::{BuildingKind, UnitKind};
 use chassis::Tick;
 use chassis::grid::TilePos;
@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 /// Observation schema version — bump when the shape changes so recorded
 /// training data and shipped policies can refuse mismatched worlds.
-pub const OBSERVATION_VERSION: u32 = 1;
+pub const OBSERVATION_VERSION: u32 = 2;
 
 /// One unit as a bot sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +106,18 @@ pub struct Observation {
     /// forever). What placement and staging decisions steer around;
     /// sorted by (y, x).
     pub known_rock: Vec<TilePos>,
+    /// Wreck salvage as known: `(tile, amount)` — live under the
+    /// omniscient builder, remembered under the fog-honest one. Sorted
+    /// by (y, x).
+    pub known_wrecks: Vec<(TilePos, u32)>,
+    /// Radar blips: tiles holding an unidentified hostile contact inside
+    /// an Array's outer ring but out of sight. Always empty under the
+    /// omniscient builder (it has no unidentified anything). Sorted by
+    /// (y, x).
+    pub blips: Vec<TilePos>,
+    /// The seat's faction — which variants of the varied roles it may
+    /// train.
+    pub faction: Faction,
 }
 
 impl Observation {
@@ -141,6 +153,9 @@ impl Observation {
         for (pos, tile) in state.map().iter() {
             if tile.scrap > 0 {
                 obs.known_scrap.push((pos, tile.scrap));
+            }
+            if tile.wreck > 0 {
+                obs.known_wrecks.push((pos, tile.wreck));
             }
             if tile.terrain == crate::map::Terrain::Rock {
                 obs.known_rock.push(pos);
@@ -206,7 +221,7 @@ impl Observation {
         }
         obs.enemy_buildings
             .sort_by_key(|b| (b.anchor.y, b.anchor.x, b.player));
-        // Remembered scrap: what this player last saw, everywhere. Rock
+        // Remembered salvage: what this player last saw, everywhere. Rock
         // is static, so explored is knowledge enough.
         for (pos, tile) in state.map().iter() {
             let amount = if vision.visible(pos) {
@@ -217,10 +232,20 @@ impl Observation {
             if amount > 0 {
                 obs.known_scrap.push((pos, amount));
             }
+            let wreck = if vision.visible(pos) {
+                state.map().wreck_at(pos)
+            } else {
+                vision.remembered_wreck(pos)
+            };
+            if wreck > 0 {
+                obs.known_wrecks.push((pos, wreck));
+            }
             if tile.terrain == crate::map::Terrain::Rock && vision.explored(pos) {
                 obs.known_rock.push(pos);
             }
         }
+        // Blips ride through untouched: tiles only, by construction.
+        obs.blips = vision.contacts().to_vec();
         obs
     }
 
@@ -239,6 +264,9 @@ impl Observation {
             enemy_buildings: Vec::new(),
             known_scrap: Vec::new(),
             known_rock: Vec::new(),
+            known_wrecks: Vec::new(),
+            blips: Vec::new(),
+            faction: state.player(me).faction,
         }
     }
 }

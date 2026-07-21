@@ -103,14 +103,16 @@ impl Orientation {
                 (w, h)
             });
         }
-        for (pos, _) in o.known_scrap.iter_mut() {
+        for (pos, _) in o.known_scrap.iter_mut().chain(o.known_wrecks.iter_mut()) {
             *pos = self.tile(*pos);
         }
-        for pos in o.known_rock.iter_mut() {
+        for pos in o.known_rock.iter_mut().chain(o.blips.iter_mut()) {
             *pos = self.tile(*pos);
         }
         o.known_scrap.sort_by_key(|(p, _)| (p.y, p.x));
+        o.known_wrecks.sort_by_key(|(p, _)| (p.y, p.x));
         o.known_rock.sort_by_key(|p| (p.y, p.x));
+        o.blips.sort_by_key(|p| (p.y, p.x));
         o.enemy_buildings
             .sort_by_key(|b| (b.anchor.y, b.anchor.x, b.player));
         o

@@ -13,6 +13,22 @@ use crate::stats::UnitKind;
 use chassis::grid::TilePos;
 
 pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
+    // Reclaimers trickle first: every built one grinds ambient debris
+    // into a scrap each period. Order is building-id order (commutative
+    // anyway — the credits are per-player sums).
+    if state.tick.is_multiple_of(crate::stats::RECLAIMER_PERIOD) {
+        let credits: Vec<PlayerId> = state
+            .buildings
+            .iter()
+            .filter(|b| b.built && b.hp > 0 && b.kind == crate::stats::BuildingKind::Reclaimer)
+            .map(|b| b.player)
+            .collect();
+        for player in credits {
+            let bank = &mut state.player_mut(player).scrap;
+            *bank = bank.saturating_add(1);
+        }
+    }
+
     let ids: Vec<_> = state.buildings.iter().map(|b| b.id).collect();
     for id in ids {
         let Some(b) = state.building_mut(id) else {

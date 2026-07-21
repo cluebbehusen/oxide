@@ -605,3 +605,93 @@ fn the_sidearm_fights_its_own_war_alongside_the_main_gun() {
         "both weapons must cycle (ground {ground_hits}, air {air_hits})"
     );
 }
+
+#[test]
+fn radar_blips_detect_without_identifying_or_authorizing() {
+    // Array mast at (4,2): true sight to 9, detection to 16. The enemy
+    // harvester at (12,7) sits outside every friendly eye but inside the
+    // ring — a blip. Blips are tiles: no kind, no owner, and no license
+    // to shoot.
+    let mut scenario = arena(vec![
+        unit(0, UnitKind::Harvester, 4, 1),
+        unit(0, UnitKind::Sentinel, 5, 1),
+        unit(1, UnitKind::Harvester, 12, 7),
+    ]);
+    scenario.players[0].scrap = 200;
+    let mut state = scenario.build().unwrap();
+    let (builder, fighter, intruder) = (
+        state.units()[0].id,
+        state.units()[1].id,
+        state.units()[2].id,
+    );
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Array,
+            anchor: TilePos::new(4, 2),
+        },
+    )]);
+    run_until(&mut state, 500, |_, events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::BuildingCompleted { .. }))
+    });
+    state.tick(&[]);
+    let intruder_tile = state.unit(intruder).unwrap().tile();
+    assert!(
+        state
+            .vision(PlayerId(0))
+            .contacts()
+            .contains(&intruder_tile),
+        "the ring detects what sight cannot reach"
+    );
+    assert!(
+        !state.vision(PlayerId(0)).visible(intruder_tile),
+        "test premise: the contact is genuinely out of sight"
+    );
+
+    // The fog-honest observation carries the blip and nothing more about
+    // the contact — the unit itself is absent.
+    let obs = oxide_sim::bot::Observation::fog_honest(&state, PlayerId(0));
+    assert!(obs.blips.contains(&intruder_tile));
+    assert!(
+        obs.enemy_units.is_empty(),
+        "detection is not identification"
+    );
+
+    // And it buys no shot: targeted attacks still need true sight.
+    let report = state.tick(&[cmd(
+        0,
+        Command::Attack {
+            units: vec![fighter],
+            target: Target::Unit(intruder),
+            queue: false,
+        },
+    )]);
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::CommandRejected { .. })),
+        "a blip is not a target"
+    );
+
+    // Walking into true sight converts the blip into a sighting.
+    state.tick(&[cmd(
+        1,
+        Command::Move {
+            units: vec![intruder],
+            goal: TilePos::new(6, 2),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| {
+        let t = s.unit(intruder).unwrap().tile();
+        s.vision(PlayerId(0)).visible(t)
+    });
+    assert!(
+        state.vision(PlayerId(0)).contacts().is_empty(),
+        "seen contacts are sightings, not blips"
+    );
+}

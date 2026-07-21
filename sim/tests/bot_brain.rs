@@ -259,6 +259,9 @@ fn wounded_members_rotate_to_the_rear_permanently() {
         enemy_buildings: Vec::new(),
         known_scrap: Vec::new(),
         known_rock: Vec::new(),
+        known_wrecks: Vec::new(),
+        blips: Vec::new(),
+        faction: oxide_sim::Faction::Ferrous,
     };
     let sentinel = |id: u32, player: u8, x: i32, y: i32, hp: u32| UnitObs {
         id: UnitId(id),
