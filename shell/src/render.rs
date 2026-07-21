@@ -755,6 +755,7 @@ fn draw_hud(game: &Game) {
         );
     }
 
+    let mut panel_shown = false;
     // Selection panel.
     if let Some(id) = game.selection.building {
         if let Some(building) = game.state.building(id) {
@@ -800,6 +801,7 @@ fn draw_hud(game: &Game) {
                 ));
             }
             panel_line(&line);
+            panel_shown = true;
         }
     } else if !game.selection.units.is_empty() {
         let has_builder = game.selection.units.iter().any(|id| {
@@ -815,18 +817,23 @@ fn draw_hud(game: &Game) {
             line.push_str("   B: turret (100)   N: fabricator (150)");
         }
         panel_line(&line);
+        panel_shown = true;
     }
 
-    // Controls hint.
-    let hint = "LMB select · RMB move/engage · H/S train · arrows pan · Esc menu · F1 debug";
-    let width = measure_text(hint, None, (16.0 * s) as u16, 1.0).width;
-    draw_text(
-        hint,
-        screen_width() - width - 10.0 * s,
-        screen_height() - 10.0 * s,
-        16.0 * s,
-        BONE_FAINT,
-    );
+    // Controls hint — it lives in the same bottom band as the selection
+    // panel, so it yields whenever a panel is up (the panel carries its
+    // own key prompts).
+    if !panel_shown {
+        let hint = "LMB select · RMB move/engage · H/S train · arrows pan · Esc menu · F1 debug";
+        let width = measure_text(hint, None, (16.0 * s) as u16, 1.0).width;
+        draw_text(
+            hint,
+            screen_width() - width - 10.0 * s,
+            screen_height() - 10.0 * s,
+            16.0 * s,
+            BONE_FAINT,
+        );
+    }
 
     // Toasts: rejected orders and stalled units, newest at the bottom.
     for (i, toast) in game.toasts.iter().rev().take(3).enumerate() {

@@ -10,6 +10,7 @@ description = "Headless harness and live-game client for Oxide"
 chassis = { workspace = true }
 oxide-sim = { workspace = true }
 oxide-protocol = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 clap = { version = "4", features = ["derive"] }

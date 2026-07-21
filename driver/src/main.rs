@@ -80,6 +80,33 @@ enum Cmd {
         #[command(subcommand)]
         cmd: LiveCmd,
     },
+    /// Serve training episodes over stdio (newline-delimited JSON).
+    Gym,
+    /// Tournament a quantized policy artifact against the scripted
+    /// tiers (the promotion gate measures the shipped integer bot).
+    NeuralCup {
+        /// Exported weights JSON (tools/train/export.py).
+        #[arg(long)]
+        weights: PathBuf,
+        /// Seeds per matchup (each played from both seats).
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
+        seeds: u64,
+        /// Decision cadence the network trained at.
+        #[arg(long, default_value_t = 16)]
+        cadence: u64,
+        /// Scenario path, or "skirmish".
+        #[arg(long, default_value = "skirmish")]
+        scenario: String,
+        /// Blunder rate per mille (0 = derive from skill).
+        #[arg(long, default_value_t = 0)]
+        blunder: u32,
+        /// Skill knob 0-1000 (conditioning input + derived blunders).
+        #[arg(long, default_value_t = 1000)]
+        skill: u32,
+        /// Aggression knob 0-1000 (personality conditioning input).
+        #[arg(long, default_value_t = 500)]
+        aggression: u32,
+    },
     /// Automated end-to-end check against a live shell.
     Smoke {
         /// Shell debug-server address.
@@ -389,6 +416,18 @@ fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&reply)?);
             }
         }
+        Cmd::Gym => oxide_driver::gym::serve()?,
+        Cmd::NeuralCup {
+            weights,
+            seeds,
+            cadence,
+            scenario,
+            blunder,
+            skill,
+            aggression,
+        } => oxide_driver::gym::neural_cup(
+            &weights, seeds, cadence, &scenario, blunder, skill, aggression,
+        )?,
         Cmd::Smoke { addr, spawn } => smoke::run(&addr, spawn)?,
     }
     Ok(())

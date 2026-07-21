@@ -43,28 +43,59 @@ impl Menu {
         }
     }
 
-    fn item_rect(&self, index: usize) -> Rect {
+    /// Where the list lives this frame: top edge, row height, and the
+    /// window of visible rows. The list fits itself between the title
+    /// block and the hint line — rows shrink when the window is short,
+    /// and past the readable minimum the list scrolls around the
+    /// selection instead of running off the screen.
+    fn layout(&self) -> (f32, f32, usize, usize) {
         let s = ui();
-        let top = screen_height() * 0.42;
-        Rect::new(
+        let top_bound = (screen_height() * 0.36).max(screen_height() * 0.28 + 64.0 * s);
+        let bottom_bound = screen_height() - 64.0 * s;
+        let avail = (bottom_bound - top_bound).max(ITEM_HEIGHT * s);
+        let n = self.items.len().max(1);
+        let row = (avail / n as f32).clamp(30.0 * s, ITEM_HEIGHT * s);
+        let visible = ((avail / row).floor() as usize).clamp(1, n);
+        let first = if n <= visible {
+            0
+        } else {
+            // Keep the selection comfortably inside the window.
+            self.selected.saturating_sub(visible / 2).min(n - visible)
+        };
+        let top = top_bound + (avail - visible as f32 * row) * 0.5;
+        (top, row, first, visible)
+    }
+
+    fn item_rect(&self, index: usize) -> Option<Rect> {
+        let s = ui();
+        let (top, row, first, visible) = self.layout();
+        if index < first || index >= first + visible {
+            return None;
+        }
+        Some(Rect::new(
             (screen_width() - ITEM_WIDTH * s) * 0.5,
-            top + index as f32 * ITEM_HEIGHT * s,
+            top + (index - first) as f32 * row,
             ITEM_WIDTH * s,
-            (ITEM_HEIGHT - 8.0) * s,
-        )
+            row - 6.0 * s,
+        ))
     }
 
     /// Feeds a frame of events through the menu; returns the activated row,
     /// if any. Mouse position updates come along in the same events.
     pub fn handle(&mut self, events: &[RawEvent], mouse: &mut Vec2) -> Option<usize> {
+        // Hit-testing uses one frozen snapshot of the row layout: when
+        // the list scrolls, the layout depends on the selection, so
+        // mutating the selection mid-scan would shift rows under the
+        // pointer and let one coordinate match several of them.
+        let rects: Vec<Option<Rect>> = (0..self.items.len()).map(|i| self.item_rect(i)).collect();
         for event in events {
             match *event {
                 RawEvent::MouseMove { x, y } => {
                     *mouse = vec2(x, y);
-                    for index in 0..self.items.len() {
-                        if self.item_rect(index).contains(*mouse) {
-                            self.selected = index;
-                        }
+                    if let Some(index) = (0..self.items.len())
+                        .find(|i| rects[*i].is_some_and(|r| r.contains(*mouse)))
+                    {
+                        self.selected = index;
                     }
                 }
                 RawEvent::MouseDown {
@@ -73,10 +104,10 @@ impl Menu {
                     y,
                 } => {
                     let click = vec2(x, y);
-                    for index in 0..self.items.len() {
-                        if self.item_rect(index).contains(click) {
-                            return Some(index);
-                        }
+                    if let Some(index) =
+                        (0..self.items.len()).find(|i| rects[*i].is_some_and(|r| r.contains(click)))
+                    {
+                        return Some(index);
                     }
                 }
                 RawEvent::KeyDown { key: Key::Up } => {
@@ -113,8 +144,12 @@ impl Menu {
             DIM,
         );
 
+        let (_, row, first, visible) = self.layout();
+        let text_size = (26.0 * s * (row / (ITEM_HEIGHT * s))).clamp(18.0 * s, 26.0 * s);
         for (index, label) in self.items.iter().enumerate() {
-            let rect = self.item_rect(index);
+            let Some(rect) = self.item_rect(index) else {
+                continue;
+            };
             let selected = index == self.selected;
             if selected {
                 draw_rectangle(rect.x, rect.y, rect.w, rect.h, PANEL);
@@ -125,9 +160,18 @@ impl Menu {
                 label,
                 rect.x + 18.0 * s,
                 rect.y + rect.h * 0.68,
-                26.0 * s,
+                text_size,
                 color,
             );
+        }
+        // Scroll cues when the list is windowed.
+        if first > 0 {
+            let r = self.item_rect(first).unwrap();
+            draw_text("^", r.x + r.w * 0.5, r.y - 6.0 * s, 22.0 * s, DIM);
+        }
+        if first + visible < self.items.len() {
+            let r = self.item_rect(first + visible - 1).unwrap();
+            draw_text("v", r.x + r.w * 0.5, r.y + row + 14.0 * s, 22.0 * s, DIM);
         }
 
         // ASCII on purpose: the default font has no glyphs for arrows.

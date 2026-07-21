@@ -44,6 +44,25 @@ pub struct PlayerSpec {
     /// ignores this — shells and drivers honor it).
     #[serde(default)]
     pub bot: bool,
+    /// How that bot plays: a ladder level and personality. `None` means
+    /// the legacy rule-cascade bot — which is also what keeps replays
+    /// recorded before bot configs existed reproducing, since the
+    /// scenario (and therefore
+    /// this config) rides inside every replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_config: Option<BotConfig>,
+}
+
+/// A shipped-ladder bot seat: difficulty plus personality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BotConfig {
+    /// Named difficulty on the neural ladder.
+    pub level: crate::bot::Level,
+    /// Personality knob 0..=1000 (turtle to aggressive); `None` deals
+    /// one from the scenario seed, deterministically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aggression: Option<u32>,
 }
 
 fn default_scrap() -> u32 {
@@ -235,6 +254,7 @@ mod tests {
             faction: Faction::Ferrous,
             scrap: 0,
             bot: false,
+            bot_config: None,
         });
         assert!(matches!(
             scenario.build(),

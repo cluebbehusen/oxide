@@ -100,10 +100,34 @@ async fn main() {
 enum Mode {
     /// Scenario picker.
     MainMenu,
+    /// Difficulty picker for the chosen scenario.
+    DifficultyMenu {
+        /// The scenario about to start.
+        scenario: Box<Scenario>,
+    },
+    /// Personality picker (after difficulty).
+    PersonalityMenu {
+        /// The scenario about to start.
+        scenario: Box<Scenario>,
+        /// The chosen ladder level.
+        level: oxide_sim::bot::Level,
+    },
     /// The game proper.
     Playing,
     /// Game visible but veiled; the pause menu owns input.
     PauseMenu,
+}
+
+const DIFFICULTY_ITEMS: [&str; 4] = ["Easy", "Medium", "Hard", "Expert"];
+const PERSONALITY_ITEMS: [&str; 4] = ["Surprise me", "Turtle", "Balanced", "Aggressive"];
+
+fn personality_knob(choice: usize) -> Option<u32> {
+    match choice {
+        1 => Some(100), // Turtle
+        2 => Some(500), // Balanced
+        3 => Some(900), // Aggressive
+        _ => None,      // Surprise me: dealt from the scenario seed
+    }
 }
 
 /// A screenshot request parked until after this frame renders.
@@ -191,6 +215,7 @@ async fn run() -> Result<()> {
         Mode::MainMenu
     };
     let mut main_menu: Option<(Menu, Vec<ScenarioEntry>)> = None;
+    let mut sub_menu = Menu::new("", Vec::new());
     let mut pause_menu = Menu::new(
         "PAUSED",
         PAUSE_ITEMS.iter().map(|s| s.to_string()).collect(),
@@ -244,11 +269,14 @@ async fn run() -> Result<()> {
                             .with_context(|| format!("loading {}", path.display()))?,
                         None => Scenario::skirmish(),
                     };
-                    let fresh = Game::new(scenario)?;
-                    game = keep_flags(fresh, &game);
-                    game.paused = false;
-                    mode = Mode::Playing;
-                    input.reset_session();
+                    sub_menu = Menu::new(
+                        "DIFFICULTY",
+                        DIFFICULTY_ITEMS.iter().map(|s| s.to_string()).collect(),
+                    );
+                    sub_menu.selected = 1; // Medium is the fair default
+                    mode = Mode::DifficultyMenu {
+                        scenario: Box::new(scenario),
+                    };
                     main_menu = None;
                 }
                 render::draw(&game, &sprites, &input);
@@ -256,6 +284,66 @@ async fn run() -> Result<()> {
                 if let Some((menu, _)) = &main_menu {
                     menu.draw("machines eating a dead world");
                 }
+            }
+            Mode::DifficultyMenu { ref scenario } => {
+                let _ = scenario;
+                let escaped = events
+                    .iter()
+                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
+                if escaped {
+                    // Escape walks backward through the flow.
+                    mode = Mode::MainMenu;
+                } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
+                    game.sounds_pending.push(SoundKind::Click);
+                    let level = oxide_sim::bot::Level::LADDER[choice.min(3)];
+                    let scenario = scenario.clone();
+                    sub_menu = Menu::new(
+                        "OPPONENT",
+                        PERSONALITY_ITEMS.iter().map(|s| s.to_string()).collect(),
+                    );
+                    mode = Mode::PersonalityMenu { scenario, level };
+                }
+                render::draw(&game, &sprites, &input);
+                veil();
+                sub_menu.draw("how hard should it think?");
+            }
+            Mode::PersonalityMenu {
+                ref scenario,
+                level,
+            } => {
+                let escaped = events
+                    .iter()
+                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
+                if escaped {
+                    let scenario = scenario.clone();
+                    sub_menu = Menu::new(
+                        "DIFFICULTY",
+                        DIFFICULTY_ITEMS.iter().map(|s| s.to_string()).collect(),
+                    );
+                    sub_menu.selected = oxide_sim::bot::Level::LADDER
+                        .iter()
+                        .position(|l| *l == level)
+                        .unwrap_or(1);
+                    mode = Mode::DifficultyMenu { scenario };
+                } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
+                    game.sounds_pending.push(SoundKind::Click);
+                    let mut scenario = (**scenario).clone();
+                    let config = oxide_sim::scenario::BotConfig {
+                        level,
+                        aggression: personality_knob(choice),
+                    };
+                    for player in scenario.players.iter_mut().filter(|p| p.bot) {
+                        player.bot_config = Some(config);
+                    }
+                    let fresh = Game::new(scenario)?;
+                    game = keep_flags(fresh, &game);
+                    game.paused = false;
+                    mode = Mode::Playing;
+                    input.reset_session();
+                }
+                render::draw(&game, &sprites, &input);
+                veil();
+                sub_menu.draw("every one is the same mind, dialed differently");
             }
             Mode::Playing => {
                 let had_selection =
@@ -352,12 +440,15 @@ fn keep_flags(mut fresh: Game, old: &Game) -> Game {
 
 /// Dark translucent layer between the world and a menu.
 fn veil() {
+    // Dark enough that the game behind reads as backdrop texture, not
+    // as competing UI — the HUD's own text lines must not fight the
+    // menu's.
     draw_rectangle(
         0.0,
         0.0,
         screen_width(),
         screen_height(),
-        Color::new(0.05, 0.05, 0.07, 0.75),
+        Color::new(0.05, 0.05, 0.07, 0.92),
     );
 }
 

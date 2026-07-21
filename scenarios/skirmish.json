@@ -12,7 +12,10 @@
       "name": "Cupric",
       "faction": "cupric",
       "scrap": 150,
-      "bot": true
+      "bot": true,
+      "bot_config": {
+        "level": "medium"
+      }
     }
   ],
   "map": [
@@ -75,13 +78,13 @@
     {
       "player": 1,
       "kind": "harvester",
-      "x": 32,
+      "x": 33,
       "y": 17
     },
     {
       "player": 1,
       "kind": "harvester",
-      "x": 33,
+      "x": 32,
       "y": 17
     },
     {

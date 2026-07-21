@@ -26,7 +26,13 @@ cargo run -p oxide-shell
 
 A menu lists the shipped maps — Skirmish Basin, Scrapyard Brawl, Rustbelt
 Canyon, Verdigris Fields, Derelict Yard, Slagline, Open Circuit, Meridian
-Scar. You're Ferrous; the bot is Cupric, and it is not asleep.
+Scar — then asks two questions: how hard should the opponent think
+(**Easy, Medium, Hard, Expert**), and who is it (**turtle, balanced,
+aggressive**, or let the map decide). Every answer is the same trained
+neural commander with different dials: it sees only what its units see,
+plays by exactly your rules, and its mistakes at lower settings are
+misjudgments, not lobotomies. You're Ferrous; the machine is Cupric,
+and it is not asleep.
 
 Four machines and three buildings. **Harvesters** feed the economy and
 build; **Sentinels** hold the line; **Scuttlers** (fast, cheap, fragile)
@@ -155,12 +161,13 @@ war and ghost memory, a four-unit roster behind a build-your-tech gate,
 harvester-built turrets and factories, order queues and patrols, solid
 units that crowd without gridlocking, attack-move with line-of-sight
 fire, damage retaliation, rally points, control groups, shift-select,
-order feedback, a fog-aware minimap, sound, eight maps, menus, a skirmish
-bot that builds and mixes its army, save/resume via replays, and the
-agent tooling described above.
+order feedback, a fog-aware minimap, sound, eight maps, menus, a trained
+neural opponent with four difficulty levels and selectable personalities,
+save/resume via replays, and the agent tooling described above.
 
-Not yet: expansions (Foundries aren't buildable), formations, bot
-scouting (it reads full state, honestly labeled), and the mobile ports —
+Not yet: expansions (Foundries aren't buildable), formations, teams and
+free-for-all lobbies (the sim supports up to eight players; the menus
+don't, yet), and the mobile ports —
 macroquad makes iOS/Android plausible, and `RawEvent` already carries
 touch variants, but nothing is wired. The sim freezes at game end; the
 pause menu's Restart is the rematch.

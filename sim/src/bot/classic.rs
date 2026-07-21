@@ -1,4 +1,6 @@
-//! The built-in skirmish bot.
+//! The legacy rule-cascade skirmish bot — kept intact as the benchmark
+//! opponent every newer brain must beat, and as the
+//! bot behind existing scenarios until the tiered brains land.
 //!
 //! Deliberately *outside* the sim's tick pipeline: a bot is just another
 //! command source, reading [`State`] and emitting [`PlayerCommand`]s exactly
@@ -27,7 +29,7 @@ const TURRET_CAP: usize = 2;
 /// Enemies inside this radius of home trigger a full defensive response.
 const DEFENSE_RADIUS: Fx = Fx::lit("8");
 /// The bot thinks every N ticks. All bots think on the same tick since
-/// 0.6: commands have no cross-player coupling at application, and the
+/// tick: commands have no cross-player coupling at application, and the
 /// old per-seat stagger handed the later thinker one tick of fresher
 /// information every cycle.
 const CADENCE: u64 = 8;

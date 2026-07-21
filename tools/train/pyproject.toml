@@ -1,0 +1,80 @@
+[project]
+name = "oxide-train"
+version = "0.1.0"
+description = "PPO self-play trainer for Oxide's gym interface"
+requires-python = ">=3.14"
+dependencies = [
+    "torch>=2.4",
+    "numpy>=1.26",
+]
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "ruff~=0.15.4",
+    "ty~=0.0.56",
+]
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+    "F",     # pyflakes
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "I",     # isort
+    "N",     # pep8-naming
+    "UP",    # pyupgrade
+    "ANN",   # flake8-annotations
+    "S",     # flake8-bandit (security)
+    "BLE",   # flake8-blind-except
+    "B",     # flake8-bugbear
+    "A",     # flake8-builtins
+    "ARG",   # flake8-unused-arguments
+    "C4",    # flake8-comprehensions
+    "T10",   # flake8-debugger
+    "ISC",   # flake8-implicit-str-concat
+    "ICN",   # flake8-import-conventions
+    "PIE",   # flake8-pie
+    "Q",     # flake8-quotes
+    "RSE",   # flake8-raise
+    "RET",   # flake8-return
+    "SLF",   # flake8-self
+    "SLOT",  # flake8-slots
+    "SIM",   # flake8-simplify
+    "TID",   # flake8-tidy-imports
+    "TC",    # flake8-type-checking
+    "PGH",   # pygrep-hooks
+    "PL",    # pylint
+    "TRY",   # tryceratops
+    "FLY",   # flynt
+    "PERF",  # perflint
+    "FURB",  # refurb
+    "RUF",   # ruff-specific rules
+]
+ignore = [
+    "ISC001",  # conflicts with the ruff formatter
+    "T201",    # these are CLI tools; print is the output format
+    "PLR0913", # RL training functions legitimately take many knobs
+    "PLR2004", # research constants (feature indices, thresholds) abound
+    "S311",    # numpy/std RNGs are for training noise, not cryptography
+    "S603",    # subprocess calls run our own driver binary with fixed args
+    "PLR0911", # training mains and rollout loops are long by nature;
+    "PLR0912", # splitting them into fragments would hide the sequence
+    "PLR0915", # they exist to express
+    "TRY003",  # CLI tools raise with messages, not exception taxonomies
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.ty.rules]
+unused-ignore-comment = "error"
