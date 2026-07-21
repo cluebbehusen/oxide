@@ -20,7 +20,7 @@ screenshots you read back and judge with your own eyes.
 | Crate | Path | Purpose |
 |---|---|---|
 | `chassis` | `chassis/` | Reusable deterministic-sim toolkit: Q32.32 fixed point (`fx`), PCG32 (`rng`), FNV-1a state hashing over postcard bytes (`hash`), tile grid (`grid`), 8-dir A* (`path`), tick-stamped replay format (`replay`). No game rules, no engine deps. |
-| `oxide-sim` | `sim/` | All Oxide game rules. `State::tick(&[PlayerCommand])` is the only way anything happens. The skirmish bot lives here too, but *outside* the tick pipeline — it's just another command source. |
+| `oxide-sim` | `sim/` | All Oxide game rules. `State::tick(&[PlayerCommand])` is the only way anything happens. The bots live here too, but *outside* the tick pipeline — command sources like the mouse: the shipped **neural ladder** (`bot::NeuralBot`, embedded quantized weights, Easy/Medium/Hard/Expert + a personality knob), the scripted `bot::Brain` tiers (fog-honest, training anchors and benchmarks), and the classic 0.6 `bot::Bot` (what replays without a `bot_config` reproduce). |
 | `oxide-protocol` | `protocol/` | Debug-protocol types: JSON-lines envelope, tagged requests/replies, `RawEvent` input events (touch included for the future mobile shell), and `StateView` (floats + ASCII map — legible, not exact; exactness is the hash's job). |
 | `oxide-shell` | `shell/` | macroquad renderer, the single input funnel, HUD, debug server. Nothing here may affect game outcomes except by staging tick-stamped commands. |
 | `oxide-driver` | `driver/` | CLI harness: headless scenario runs, replay verification, byte-exact golden images (tiny-skia, CPU-only), live-game client, automated smoke test. Also a library (`runner`/`render`/`client`/`smoke`). |
@@ -154,6 +154,44 @@ and test fixtures inside crate `tests/` directories.
   when touching them.
 - Keep this file and README.md current when commands or behavior change.
 
+## The bots and the training loop
+
+The shipped opponent is a neural policy embedded in `oxide-sim`
+(`sim/src/bot/ladder_weights.json`, Q12 integers evaluated in pure
+`i64` — no floats, so neural matches replay bit-identically and the
+hash fixtures pin the weights like any other rule). Difficulty is a
+dial into one mind: `bot::Level` (Easy/Medium/Hard/Expert) sets a
+skill knob whose degradation the network *trained under*; a second
+knob picks the personality (turtle → aggressive), dealt from the
+scenario seed when unset. Scenario seats opt in via
+`PlayerSpec.bot_config`; a seat without one gets the classic 0.6 bot,
+which is what keeps pre-0.7 replays reproducing.
+
+The weights are a generated artifact with a regeneration ritual, like
+the goldens. From `tools/train/` (uv + PyTorch):
+
+```sh
+uv run bc.py --arch deep --episodes 48 --out runs/prior.pt   # imitation warm start
+uv run league.py --name run --resume runs/prior.pt --anchor runs/prior.pt     --maps random --mix "self=0.35,past=0.15,tier=0.15,rusher=0.10,ffa=0.25"
+uv run tournament.py --ckpt runs/run/pool/ckpt-XXXXX.pt      # torch-side eval
+uv run export.py --ckpt <winner> --out runs/candidate.json   # Q12 artifact
+cargo run -p oxide-driver -- neural-cup --weights runs/candidate.json  # the gate
+```
+
+Hard-won rules encoded in that stack: pick checkpoints by tournament,
+never recency (ladder-facing quality peaks early-mid run, then league
+training drifts inward); masks are part of the trained distribution
+(widening one feeds untrained logits to the blunder picker) while
+action *lowering* absorbs lifecycle races; `decision()` previews the
+executive's reconciliation on a throwaway clone so observations match
+what lowering will see; and never build a reward out of what the
+agent happens to know about the enemy — under fog, "known" is an
+information artifact, and shaping on it teaches blindness. The
+scripted `Brain` tiers and the rush teacher stay in-tree as league
+anchors, benchmarks, and the ladder-integrity yardstick
+(`sim/tests/neural_ladder.rs` enforces Easy < Medium < Hard < Expert
+forever).
+
 ## Design decisions worth knowing
 
 - **`State` fields are private; `State::tick` is the only mutator.** Read
@@ -242,22 +280,26 @@ and test fixtures inside crate `tests/` directories.
 
 ## Known issues (tracked, deliberate)
 
-- **Mirror bot matches still resolve 100% to seat 1 — root cause open.**
-  0.6 removed three real structural edges: damage is buffered and applied
-  after all brains (identical opponents now annihilate mutually — before,
-  the lower id won every mirror duel), bots think on the same tick (the
-  old stagger fed the later thinker fresher information every cycle), and
-  the sequential phases (brains, collision passes) alternate direction by
-  tick parity so no seat holds a standing first-mover slot. All three are
-  correct on their own merits — and the mirror outcome did not move:
-  seat 1 wins across every map, seed, and even with home positions
-  swapped, so the residual mechanism is seat-linked, not geometric. The
-  instrumented probe (`probe_mirror_divergence`, ignored test in
-  `sim/tests/behavior.rs`) shows symmetry already breaking at tick 0
-  through geometry-anchored doorstep selection; why the ensuing chaos
-  always favors seat 1 is the open question. The full twin-simulation
-  trace continues with the 0.7 bot rework — where per-difficulty
-  randomization will also drown structural micro-bias in practice.
+- **The classic bot's 27/27 seat-1 mirror sweep: root-caused and fixed
+  in 0.7.** The twin-simulation trace found symmetry breaking at tick 0
+  because `skirmish.json`'s p1 spawn list wasn't the exact mirror-order
+  of p0's — every id-order-sensitive decision then ran in a different
+  logical order per seat. Two swapped JSON lines turned the sweep into
+  a seed-decided coin flip; all other shipped maps were already
+  mirror-ordered (authoring rule: p1's unit list must mirror p0's entry
+  by entry). The learned bots additionally think in *seat-oriented*
+  coordinates (`bot::Orientation`) so no `(y, x)` tie-break or ring
+  scan favors a compass direction. Residual: the sim's id-order micro
+  (movement first-mover, brain iteration) can still decide
+  identical-dial neural mirror matches; win-rate gates neutralize it by
+  scoring seat-swapped pairs, and shipped matches deal varied
+  personalities, so no seat holds a standing edge in practice.
+- **Expert stalls (never loses) some games against the scripted
+  Standard tier's passive style**, and a bot-vs-bot match on Open
+  Circuit can stalemate when the map seed deals both seats
+  turtle-leaning personalities. Both are draw-shaped, not loss-shaped;
+  a longer corrected-stack training run demonstrably cures the
+  Standard stalls and is queued for the 0.8 cycle.
 
 ## Gotchas learned the hard way
 
