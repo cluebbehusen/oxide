@@ -140,32 +140,29 @@ impl GymBot {
         self.player
     }
 
-    /// Features and action mask at the current tick, oriented. Also
-    /// refreshes the fog memory (idempotent at a given tick).
+    /// Features and action mask at the current tick, oriented.
+    /// Also refreshes the fog memory (idempotent at a given tick).
+    ///
+    /// The executive's real reconciliation lives in `step` (its
+    /// transitions emit commands, which a read path must not). To keep
+    /// the observation honest anyway, the decision previews that exact
+    /// reconciliation on a throwaway clone — same implementation, no
+    /// drift, commands discarded — so features and masks always match
+    /// what the subsequent lowering will see.
     pub fn decision(&mut self, state: &State) -> Decision {
-        let (obs, orientation) = self.observe(state);
-        self.remember(&obs);
-        let obs = orientation.observe(&obs);
+        let (world, orientation) = self.observe(state);
+        self.remember(&world);
+        let rear = rear_tile(&world);
+        let mut projected = self.exec.clone();
+        let _ = projected.maintain(self.player, &world, rear);
+        let obs = orientation.observe(&world);
         let home = home_tile(&obs);
-        // The executive reconciles in `step` (its transitions emit
-        // commands, which a read path must not). But deaths since the
-        // last step must not leak into what the policy observes: filter
-        // members against the living before deriving any army feature
-        // or mask. Lifecycle state can lag one cadence; membership
-        // cannot.
-        let armies: Vec<_> = self
-            .exec
+        let armies: Vec<_> = projected
             .armies()
             .iter()
-            .map(|a| {
-                let mut a = orientation.army(a.clone());
-                a.members
-                    .retain(|id| obs.my_units.iter().any(|u| u.id == *id));
-                a
-            })
-            .filter(|a| !a.members.is_empty())
+            .map(|a| orientation.army(a.clone()))
             .collect();
-        let enlisted: Vec<_> = self.exec.enlisted().collect();
+        let enlisted: Vec<_> = projected.enlisted().collect();
 
         let count = |kind: UnitKind, mine: bool| -> i64 {
             let list = if mine {
@@ -346,13 +343,7 @@ impl GymBot {
     /// returns this tick's commands.
     pub fn step(&mut self, state: &State, action: Action) -> Vec<PlayerCommand> {
         let (world, orientation) = self.observe(state);
-        let rear = world
-            .my_buildings
-            .iter()
-            .filter(|b| b.kind == BuildingKind::Foundry)
-            .min_by_key(|b| b.id)
-            .map(|b| b.anchor)
-            .unwrap_or(TilePos::new(0, 0));
+        let rear = rear_tile(&world);
         let mut commands = self.exec.maintain(self.player, &world, rear);
 
         let obs = orientation.observe(&world);
@@ -536,6 +527,17 @@ impl GymBot {
         let orientation = Orientation::for_home(&obs, home);
         (obs, orientation)
     }
+}
+
+/// The wounded rear line's tile: the Foundry, in world coordinates.
+fn rear_tile(world: &Observation) -> TilePos {
+    world
+        .my_buildings
+        .iter()
+        .filter(|b| b.kind == BuildingKind::Foundry)
+        .min_by_key(|b| b.id)
+        .map(|b| b.anchor)
+        .unwrap_or(TilePos::new(0, 0))
 }
 
 fn home_tile(obs: &Observation) -> Option<TilePos> {
