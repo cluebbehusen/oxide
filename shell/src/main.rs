@@ -459,8 +459,16 @@ async fn run() -> Result<()> {
                 }
                 render::draw(&game, &sprites, &input);
                 veil();
-                if let Some((menu, _)) = &main_menu {
-                    menu.draw("machines eating a dead world");
+                if let Some((menu, entries)) = &main_menu {
+                    // The subtitle browses with the player: the
+                    // highlighted map's hook and badges, the pointer's
+                    // row winning over the keyboard cursor.
+                    let focus = menu.hover().unwrap_or(menu.selected);
+                    let subtitle = entries
+                        .get(focus)
+                        .and_then(|e| e.blurb.as_deref())
+                        .unwrap_or("machines eating a dead world");
+                    menu.draw(subtitle);
                 }
             }
             Mode::DifficultyMenu => {

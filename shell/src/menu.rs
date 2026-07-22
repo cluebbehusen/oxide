@@ -215,12 +215,20 @@ impl Menu {
             title_size,
             TITLE_COLOR,
         );
-        let sub_dims = measure_text(subtitle, None, (20.0 * s) as u16, 1.0);
+        // The subtitle shrinks to fit — map blurbs run long, and text
+        // spilling off both window edges reads as a defect, not a hook.
+        let mut sub_size = 20.0 * s;
+        let mut sub_dims = measure_text(subtitle, None, sub_size as u16, 1.0);
+        let max_width = screen_width() * 0.92;
+        if sub_dims.width > max_width {
+            sub_size = (sub_size * max_width / sub_dims.width).max(12.0 * s);
+            sub_dims = measure_text(subtitle, None, sub_size as u16, 1.0);
+        }
         draw_text(
             subtitle,
             (screen_width() - sub_dims.width) * 0.5,
             screen_height() * 0.28 + 34.0 * s,
-            20.0 * s,
+            sub_size,
             DIM,
         );
 
@@ -274,6 +282,9 @@ impl Menu {
 pub struct ScenarioEntry {
     /// Display name (from the file's own `name` field).
     pub label: String,
+    /// One-line browser blurb from the authored metadata, when present:
+    /// hook plus pace/mode/richness badges.
+    pub blurb: Option<String>,
     /// File path; `None` means the embedded skirmish.
     pub path: Option<PathBuf>,
 }
@@ -292,8 +303,13 @@ pub fn discover_scenarios() -> Vec<ScenarioEntry> {
         paths.sort();
         for path in paths {
             if let Ok(scenario) = Scenario::load(&path) {
+                let blurb = scenario
+                    .meta
+                    .as_ref()
+                    .map(|m| format!("{}  [{} - {} - {}]", m.hook, m.pace, m.mode, m.richness));
                 entries.push(ScenarioEntry {
                     label: scenario.name,
+                    blurb,
                     path: Some(path),
                 });
             }
@@ -302,6 +318,7 @@ pub fn discover_scenarios() -> Vec<ScenarioEntry> {
     if entries.is_empty() {
         entries.push(ScenarioEntry {
             label: Scenario::skirmish().name,
+            blurb: None,
             path: None,
         });
     }
