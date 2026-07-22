@@ -35,8 +35,13 @@ pub struct Scenario {
 pub struct PlayerSpec {
     /// Display name.
     pub name: String,
-    /// Sprite tint.
+    /// Which roster this seat runs (and its sprite tint).
     pub faction: Faction,
+    /// Team index; seats sharing one stand and fall together. `None`
+    /// puts the seat on its own team (every pre-team scenario is a
+    /// free-for-all of one-player teams).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<u8>,
     /// Starting scrap.
     #[serde(default = "default_scrap")]
     pub scrap: u32,
@@ -48,7 +53,8 @@ pub struct PlayerSpec {
     /// the legacy rule-cascade bot — which is also what keeps replays
     /// recorded before bot configs existed reproducing, since the
     /// scenario (and therefore
-    /// this config) rides inside every replay.
+    /// this config) rides inside every replay. The legacy bot is
+    /// team-blind: a seat with a `team` must set a config.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bot_config: Option<BotConfig>,
 }
@@ -113,6 +119,15 @@ pub enum ScenarioError {
     /// Two Foundries can't reach each other: the match could never end.
     #[error("players {0} and {1} are sealed apart — no ground route between their foundries")]
     Disconnected(PlayerId, PlayerId),
+    /// Every seat on one team: nobody to fight, no way to win.
+    #[error("all players share one team — the match could never end")]
+    OneTeam,
+    /// A teamed seat asked for the config-less classic bot, which is
+    /// team-blind by design and would spend the match targeting allies.
+    #[error(
+        "player {0} shares a team but fields the classic bot — teamed bot seats need a bot_config"
+    )]
+    TeamBotNeedsConfig(PlayerId),
 }
 
 impl Scenario {
@@ -148,15 +163,59 @@ impl Scenario {
         {
             return Err(ScenarioError::ExtraAnchor(*player, self.players.len()));
         }
-        let players = self
+        // Teams normalize to dense ids by first appearance: seats naming
+        // the same explicit id share one, and every omitted seat gets a
+        // fresh singleton — an authored id can never alias a "team of
+        // one" seat, whatever number it picked. For every shipped map
+        // (all-explicit in authored order, or all-omitted) the dense ids
+        // equal the raw values, so old hashes stand.
+        let mut team_ids: Vec<(Option<u8>, u8)> = Vec::new();
+        let players: Vec<Player> = self
             .players
             .iter()
-            .map(|spec| Player {
-                name: spec.name.clone(),
-                faction: spec.faction,
-                scrap: spec.scrap,
+            .map(|spec| {
+                let team = match spec.team {
+                    Some(id) => match team_ids.iter().find(|(k, _)| *k == Some(id)) {
+                        Some((_, dense)) => *dense,
+                        None => {
+                            let dense = team_ids.len() as u8;
+                            team_ids.push((Some(id), dense));
+                            dense
+                        }
+                    },
+                    None => {
+                        let dense = team_ids.len() as u8;
+                        team_ids.push((None, dense));
+                        dense
+                    }
+                };
+                Player {
+                    name: spec.name.clone(),
+                    faction: spec.faction,
+                    team,
+                    scrap: spec.scrap,
+                }
             })
             .collect();
+        if self.players.len() > 1 {
+            let first = players[0].team;
+            if players.iter().all(|p| p.team == first) {
+                return Err(ScenarioError::OneTeam);
+            }
+        }
+        // The config-less classic bot is team-blind by design (frozen for
+        // pre-0.7 replay reproduction); on a seat with a genuine teammate
+        // it would spend the match targeting allies. A team of one is
+        // fine — everyone really is its enemy there.
+        for (index, spec) in self.players.iter().enumerate() {
+            let teamed = players
+                .iter()
+                .enumerate()
+                .any(|(j, p)| j != index && p.team == players[index].team);
+            if teamed && spec.bot && spec.bot_config.is_none() {
+                return Err(ScenarioError::TeamBotNeedsConfig(PlayerId(index as u8)));
+            }
+        }
         let mut state = State::assemble(map, players, self.seed);
 
         for index in 0..self.players.len() {
@@ -178,7 +237,11 @@ impl Scenario {
 
         for (index, spec) in self.units.iter().enumerate() {
             let tile = TilePos::new(spec.x, spec.y);
-            if (spec.player as usize) >= self.players.len() || !state.passable(tile) {
+            // Validated in the unit's own movement domain: a flyer may
+            // legally start over any on-map tile it could hover over in
+            // play — rock included — while walkers need open ground.
+            let standable = state.passable_for(spec.kind.stats().domain, tile);
+            if (spec.player as usize) >= self.players.len() || !standable {
                 return Err(ScenarioError::BadUnit(index));
             }
             state.spawn_unit(PlayerId(spec.player), spec.kind, tile.center());
@@ -252,6 +315,7 @@ mod tests {
         scenario.players.push(PlayerSpec {
             name: "third".into(),
             faction: Faction::Ferrous,
+            team: None,
             scrap: 0,
             bot: false,
             bot_config: None,

@@ -1,0 +1,161 @@
+{
+ "name": "Twin Forges (2v2)",
+ "seed": 8801,
+ "map": [
+  "################################",
+  "#..............##..............#",
+  "#.1...s........##........s.....#",
+  "#.....s........##........s..4..#",
+  "#..............................#",
+  "#.........,,,S....S,,,.........#",
+  "#.s..........................s.#",
+  "#..............##..............#",
+  "#.......##.....##.....##.......#",
+  "#.......##.....##.....##.......#",
+  "#..............##..............#",
+  "#.s..........................s.#",
+  "#.........,,,S....S,,,.........#",
+  "#.2............................#",
+  "#.....s........##........s..3..#",
+  "#.....s........##........s.....#",
+  "#..............##..............#",
+  "################################"
+ ],
+ "players": [
+  {
+   "name": "West Ferrous",
+   "faction": "ferrous",
+   "team": 0,
+   "scrap": 100,
+   "bot": false
+  },
+  {
+   "name": "West Cupric",
+   "faction": "cupric",
+   "team": 0,
+   "scrap": 100,
+   "bot": true,
+   "bot_config": {
+    "level": "medium"
+   }
+  },
+  {
+   "name": "East Ferrous",
+   "faction": "ferrous",
+   "team": 1,
+   "scrap": 100,
+   "bot": true,
+   "bot_config": {
+    "level": "medium"
+   }
+  },
+  {
+   "name": "East Cupric",
+   "faction": "cupric",
+   "team": 1,
+   "scrap": 100,
+   "bot": true,
+   "bot_config": {
+    "level": "medium"
+   }
+  }
+ ],
+ "units": [
+  {
+   "player": 0,
+   "kind": "harvester",
+   "x": 4,
+   "y": 2
+  },
+  {
+   "player": 0,
+   "kind": "harvester",
+   "x": 4,
+   "y": 3
+  },
+  {
+   "player": 0,
+   "kind": "harvester",
+   "x": 2,
+   "y": 4
+  },
+  {
+   "player": 0,
+   "kind": "sentinel",
+   "x": 4,
+   "y": 4
+  },
+  {
+   "player": 1,
+   "kind": "harvester",
+   "x": 4,
+   "y": 13
+  },
+  {
+   "player": 1,
+   "kind": "harvester",
+   "x": 4,
+   "y": 14
+  },
+  {
+   "player": 1,
+   "kind": "harvester",
+   "x": 2,
+   "y": 15
+  },
+  {
+   "player": 1,
+   "kind": "sentinel",
+   "x": 4,
+   "y": 15
+  },
+  {
+   "player": 2,
+   "kind": "harvester",
+   "x": 27,
+   "y": 15
+  },
+  {
+   "player": 2,
+   "kind": "harvester",
+   "x": 27,
+   "y": 14
+  },
+  {
+   "player": 2,
+   "kind": "harvester",
+   "x": 29,
+   "y": 13
+  },
+  {
+   "player": 2,
+   "kind": "sentinel",
+   "x": 27,
+   "y": 13
+  },
+  {
+   "player": 3,
+   "kind": "harvester",
+   "x": 27,
+   "y": 4
+  },
+  {
+   "player": 3,
+   "kind": "harvester",
+   "x": 27,
+   "y": 3
+  },
+  {
+   "player": 3,
+   "kind": "harvester",
+   "x": 29,
+   "y": 2
+  },
+  {
+   "player": 3,
+   "kind": "sentinel",
+   "x": 27,
+   "y": 2
+  }
+ ]
+}

@@ -90,12 +90,18 @@ impl Orientation {
             return obs.clone();
         }
         let mut o = obs.clone();
-        for u in o.my_units.iter_mut().chain(o.enemy_units.iter_mut()) {
+        for u in o
+            .my_units
+            .iter_mut()
+            .chain(o.ally_units.iter_mut())
+            .chain(o.enemy_units.iter_mut())
+        {
             u.tile = self.tile(u.tile);
         }
         for b in o
             .my_buildings
             .iter_mut()
+            .chain(o.ally_buildings.iter_mut())
             .chain(o.enemy_buildings.iter_mut())
         {
             b.anchor = self.anchor(b.anchor, {
@@ -103,14 +109,16 @@ impl Orientation {
                 (w, h)
             });
         }
-        for (pos, _) in o.known_scrap.iter_mut() {
+        for (pos, _) in o.known_scrap.iter_mut().chain(o.known_wrecks.iter_mut()) {
             *pos = self.tile(*pos);
         }
-        for pos in o.known_rock.iter_mut() {
+        for pos in o.known_rock.iter_mut().chain(o.blips.iter_mut()) {
             *pos = self.tile(*pos);
         }
         o.known_scrap.sort_by_key(|(p, _)| (p.y, p.x));
+        o.known_wrecks.sort_by_key(|(p, _)| (p.y, p.x));
         o.known_rock.sort_by_key(|p| (p.y, p.x));
+        o.blips.sort_by_key(|p| (p.y, p.x));
         o.enemy_buildings
             .sort_by_key(|b| (b.anchor.y, b.anchor.x, b.player));
         o
@@ -154,7 +162,16 @@ impl Orientation {
                     unit,
                     to: self.tile(to),
                 },
-                keep @ (Intent::TrainAt { .. } | Intent::RecallArmy { .. }) => keep,
+                Intent::RaidAir { target } => Intent::RaidAir {
+                    target: self.tile(target),
+                },
+                // Positionless intents pass through — and the match stays
+                // exhaustive on purpose: a new positioned intent that
+                // slips through unflipped is a silent seat-bias
+                // regression, so adding a variant must break this match.
+                keep @ (Intent::TrainAt { .. }
+                | Intent::RecallArmy { .. }
+                | Intent::Repair { .. }) => keep,
             })
             .collect()
     }

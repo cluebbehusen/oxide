@@ -23,13 +23,27 @@ pub struct Sprites {
     scrap_rich: Rect,
     muzzle_flash: Rect,
     scorch: Rect,
+    wreck_pile: Rect,
+    air_shadow: Rect,
+    burst: Rect,
     foundry: [Rect; 2],
     turret: [Rect; 2],
     fabricator: [Rect; 2],
+    flak_turret: [Rect; 2],
+    bastion: [Rect; 2],
+    array: [Rect; 2],
+    reclaimer: [Rect; 2],
     harvester: [Rect; 2],
     scuttler: [Rect; 2],
     lancer: [Rect; 2],
     sentinel: [Rect; 2],
+    bombard: [Rect; 2],
+    flakhound: [Rect; 2],
+    stinger: [Rect; 2],
+    buzzard: [Rect; 2],
+    darter: [Rect; 2],
+    talon: [Rect; 2],
+    wisp: [Rect; 2],
 }
 
 fn faction_index(faction: Faction) -> usize {
@@ -88,13 +102,27 @@ impl Sprites {
             scrap_rich: rect("scrap_rich")?,
             muzzle_flash: rect("muzzle_flash")?,
             scorch: rect("scorch")?,
+            wreck_pile: rect("wreck_pile")?,
+            air_shadow: rect("air_shadow")?,
+            burst: rect("burst")?,
             foundry: [rect("foundry_ferrous")?, rect("foundry_cupric")?],
             turret: [rect("turret_ferrous")?, rect("turret_cupric")?],
             fabricator: [rect("fabricator_ferrous")?, rect("fabricator_cupric")?],
+            flak_turret: [rect("flak_turret_ferrous")?, rect("flak_turret_cupric")?],
+            bastion: [rect("bastion_ferrous")?, rect("bastion_cupric")?],
+            array: [rect("array_ferrous")?, rect("array_cupric")?],
+            reclaimer: [rect("reclaimer_ferrous")?, rect("reclaimer_cupric")?],
             harvester: [rect("harvester_ferrous")?, rect("harvester_cupric")?],
             scuttler: [rect("scuttler_ferrous")?, rect("scuttler_cupric")?],
             lancer: [rect("lancer_ferrous")?, rect("lancer_cupric")?],
             sentinel: [rect("sentinel_ferrous")?, rect("sentinel_cupric")?],
+            bombard: [rect("bombard_ferrous")?, rect("bombard_cupric")?],
+            flakhound: [rect("flakhound_ferrous")?, rect("flakhound_cupric")?],
+            stinger: [rect("stinger_ferrous")?, rect("stinger_cupric")?],
+            buzzard: [rect("buzzard_ferrous")?, rect("buzzard_cupric")?],
+            darter: [rect("darter_ferrous")?, rect("darter_cupric")?],
+            talon: [rect("talon_ferrous")?, rect("talon_cupric")?],
+            wisp: [rect("wisp_ferrous")?, rect("wisp_cupric")?],
         })
     }
 
@@ -148,22 +176,50 @@ impl Sprites {
         self.scorch
     }
 
+    /// A wreck salvage pile on open ground.
+    pub fn wreck_pile(&self) -> Rect {
+        self.wreck_pile
+    }
+
+    /// The soft shadow a flyer casts on the ground.
+    pub fn air_shadow(&self) -> Rect {
+        self.air_shadow
+    }
+
+    /// The splash-detonation frame.
+    pub fn burst(&self) -> Rect {
+        self.burst
+    }
+
     /// The building sprite region for a kind and faction.
     pub fn building(&self, kind: oxide_sim::BuildingKind, faction: Faction) -> Rect {
+        let f = faction_index(faction);
         match kind {
-            oxide_sim::BuildingKind::Foundry => self.foundry[faction_index(faction)],
-            oxide_sim::BuildingKind::Turret => self.turret[faction_index(faction)],
-            oxide_sim::BuildingKind::Fabricator => self.fabricator[faction_index(faction)],
+            oxide_sim::BuildingKind::Foundry => self.foundry[f],
+            oxide_sim::BuildingKind::Turret => self.turret[f],
+            oxide_sim::BuildingKind::Fabricator => self.fabricator[f],
+            oxide_sim::BuildingKind::FlakTurret => self.flak_turret[f],
+            oxide_sim::BuildingKind::Bastion => self.bastion[f],
+            oxide_sim::BuildingKind::Array => self.array[f],
+            oxide_sim::BuildingKind::Reclaimer => self.reclaimer[f],
         }
     }
 
     /// The unit sprite region for a kind and faction.
     pub fn unit(&self, kind: UnitKind, faction: Faction) -> Rect {
+        let f = faction_index(faction);
         match kind {
-            UnitKind::Harvester => self.harvester[faction_index(faction)],
-            UnitKind::Sentinel => self.sentinel[faction_index(faction)],
-            UnitKind::Scuttler => self.scuttler[faction_index(faction)],
-            UnitKind::Lancer => self.lancer[faction_index(faction)],
+            UnitKind::Harvester => self.harvester[f],
+            UnitKind::Sentinel => self.sentinel[f],
+            UnitKind::Scuttler => self.scuttler[f],
+            UnitKind::Lancer => self.lancer[f],
+            UnitKind::Bombard => self.bombard[f],
+            UnitKind::Flakhound => self.flakhound[f],
+            UnitKind::Stinger => self.stinger[f],
+            UnitKind::Buzzard => self.buzzard[f],
+            UnitKind::Darter => self.darter[f],
+            UnitKind::Talon => self.talon[f],
+            UnitKind::Wisp => self.wisp[f],
         }
     }
 }
@@ -190,6 +246,10 @@ pub struct Sounds {
     pub victory: Sound,
     /// You didn't.
     pub defeat: Sound,
+    /// Flak bursting against the sky.
+    pub flak: Sound,
+    /// An artillery shell landing.
+    pub artillery_boom: Sound,
 }
 
 async fn clip(name: &str) -> Result<Sound> {
@@ -213,6 +273,8 @@ impl Sounds {
             denied: clip("denied").await?,
             victory: clip("victory").await?,
             defeat: clip("defeat").await?,
+            flak: clip("flak").await?,
+            artillery_boom: clip("artillery_boom").await?,
         })
     }
 }

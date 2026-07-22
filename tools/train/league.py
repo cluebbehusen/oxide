@@ -38,7 +38,15 @@ from torch import nn
 
 from mapgen import cache_dir, generate
 from models import load_policy, make_policy, save_policy
-from oxide_gym import ACTIONS, GYM_VERSION, NET_FEATURES, Frame, Worker
+from oxide_gym import (
+    ACTIONS,
+    FEATURE_NAMES,
+    GYM_VERSION,
+    NET_FEATURES,
+    Frame,
+    SeatView,
+    Worker,
+)
 from ppo import gae, ppo_update
 
 TIERS = ["scrapheap", "standard", "veteran", "prime"]
@@ -72,11 +80,20 @@ def style_reward(raw: list[int], aggression: int) -> float:
     return STYLE_K * lean * out_fighting
 
 
-def sample_condition(rng: np.random.Generator) -> tuple[int, int]:
+def faction_knob(seat: int) -> int:
+    """The seat's faction, by the map convention every shipped and
+    generated scenario follows: even seats run Ferrous (0), odd seats
+    Cupric (1000). The knob is honest, never sampled — a policy trained
+    on lies about its own roster learns nothing about either."""
+    return 0 if seat % 2 == 0 else 1000
+
+
+def sample_condition(rng: np.random.Generator, seat: int) -> tuple[int, int, int]:
     """Per-episode knobs: skill favors the strong end (that end must
-    stay sharpest) but visits the whole range; aggression is uniform."""
+    stay sharpest) but visits the whole range; aggression is uniform;
+    faction follows the seat."""
     skill = int(rng.choice([1000, 1000, 850, 700, 550, 400]))
-    return skill, int(rng.integers(0, 1001))
+    return skill, int(rng.integers(0, 1001)), faction_knob(seat)
 
 
 def maybe_blunder(
@@ -99,12 +116,13 @@ def maybe_blunder(
     return int(rng.choice(legal[1 : min(3, len(legal))]))
 
 
-# Rush teacher (indices into the raw feature vector; see gym.rs).
-IDLE, TRAIN_H, TRAIN_S, FORM, PUSH, SCOUT = 0, 1, 2, 7, 8, 10
+# Rush teacher — the v3 action menu; feature indices resolved by name.
+IDLE, TRAIN_H, TRAIN_S, FORM, PUSH, SCOUT = 0, 1, 2, 17, 18, 20
+F = {name: i for i, name in enumerate(FEATURE_NAMES)}
 
 
 def rusher(raw: list[int], mask: np.ndarray, tick: int) -> int:
-    harvesters, staging_size = raw[2], raw[11]
+    harvesters, staging_size = raw[F["my_harvesters"]], raw[F["staging_army_size"]]
     if harvesters < 4 and mask[TRAIN_H]:
         return TRAIN_H
     if mask[PUSH] and staging_size >= 5:
@@ -126,6 +144,10 @@ class Lane:
         self.seat = seat
         self.obs, self.mask, self.act = [], [], []
         self.logp, self.val, self.rew, self.done = [], [], [], []
+        # False on rows collected while the seat was dead (frozen-view
+        # padding): they stay in the batch so GAE can flow the episode's
+        # team payoff backward, but the update must not learn from them.
+        self.valid: list[bool] = []
         self.last_pot = 0.0
 
 
@@ -155,9 +177,28 @@ class Job:
         self.tier: str | None = None
         self.past: nn.Module | None = None
         self.frame: Frame | None = None
-        self.conditions: dict[int, tuple[int, int]] = {}
+        self.conditions: dict[int, tuple[int, ...]] = {}
+        # Team episodes truncate per seat: a dead learner's lane pads on
+        # its frozen last view (zero reward, policy still queried so the
+        # batch stays rectangular) until the episode really ends and the
+        # team outcome pays every lane its truth. Padded rows are marked
+        # invalid and masked out of the PPO update.
+        self.dead: set[int] = set()
+        self.last_views: dict[int, SeatView] = {}
         if kind == "self":
             self.learner_seats = [0, 1]
+            self.opp_seat = None
+        elif kind == "team":
+            # 2v2: the west column (seats 0 and 2 by the mapgen
+            # convention) learns as one team against scripted tiers.
+            self.learner_seats = [0, 2]
+            self.opp_seat = None
+        elif kind == "team2":
+            # 2v2 beside a scripted ally: the learner holds one west
+            # chair, a tier Brain drives its teammate (and both foes) —
+            # the robustness half of team training, so the policy
+            # learns to fight NEXT TO conventions it doesn't share.
+            self.learner_seats = [seat * 2]  # 0 or 2, the west chairs
             self.opp_seat = None
         elif kind in ("tier", "ffa"):
             self.learner_seats = [seat]
@@ -173,8 +214,19 @@ class Job:
             raise RuntimeError("job stepped before reset")
         return self.frame
 
+    def seat_view(self, seat: int) -> SeatView:
+        """The seat's live view, or its frozen last one if the seat
+        died while teammates play on."""
+        live = self.view.seats.get(seat)
+        if live is not None:
+            self.last_views[seat] = live
+            return live
+        return self.last_views[seat]
+
     def reset(self, seed: int) -> None:
-        self.conditions = {s: sample_condition(self.rng) for s in self.learner_seats}
+        self.dead = set()
+        self.last_views = {}
+        self.conditions = {s: sample_condition(self.rng, s) for s in self.learner_seats}
         scenario = None
         if self.maps == "random":
             scenario = generate(seed % 100_000, cache_dir("oxide-maps-train"))
@@ -186,6 +238,19 @@ class Job:
             self.frame = self.worker.reset(
                 seed,
                 control=(self.learner_seats[0],),
+                tier=self.tier,
+                conditions=self.conditions,
+                scenario=scenario,
+            )
+            return
+        if self.kind in ("team", "team2"):
+            scenario = generate(
+                seed % 100_000, cache_dir("oxide-maps-train2v2"), players=4, teams=True
+            )
+            self.tier = TIERS[int(self.rng.integers(len(TIERS)))]
+            self.frame = self.worker.reset(
+                seed,
+                control=tuple(self.learner_seats),
                 tier=self.tier,
                 conditions=self.conditions,
                 scenario=scenario,
@@ -212,7 +277,8 @@ class Job:
                 self.past = None  # empty pool: play the rusher instead
         all_conds = dict(self.conditions)
         if self.opp_seat is not None:
-            all_conds[self.opp_seat] = (1000, 500)  # frozen opponents play straight
+            # Frozen opponents play straight, under their honest faction.
+            all_conds[self.opp_seat] = (1000, 500, faction_knob(self.opp_seat))
         self.frame = self.worker.reset(
             seed, control=(0, 1), conditions=all_conds, scenario=scenario
         )
@@ -254,7 +320,10 @@ def assign_roles(
     jobs = []
     i = 0
     for kind, count in zip(kinds, counts, strict=False):
-        seats = 4 if kind == "ffa" else 2
+        # team2 alternates its single learner between the two west
+        # chairs (k % 2 -> seat 0 or 2 inside the Job), everything else
+        # keeps its established seat arithmetic.
+        seats = 4 if kind in ("ffa", "team") else 2
         for k in range(count):
             jobs.append(Job(workers[i], kind, k % seats, pool_dir, rng, device, maps))
             i += 1
@@ -276,16 +345,18 @@ def rollout(
             j.reset(next(seeds))
     for j in jobs:
         for s in j.learner_seats:
-            lanes[(id(j), s)].last_pot = potential(j.view.seats[s].raw)
+            lanes[(id(j), s)].last_pot = potential(j.seat_view(s).raw)
 
     for _ in range(steps):
         views = []
         keys = []
+        live = []
         for j in jobs:
             for s in j.learner_seats:
-                v = j.view.seats[s]
+                v = j.seat_view(s)
                 views.append(v)
                 keys.append((id(j), s))
+                live.append(s not in j.dead)
         obs = np.stack([v.obs for v in views])
         mask = np.stack([v.mask for v in views])
         with torch.no_grad():
@@ -307,12 +378,14 @@ def rollout(
             lane.act.append(action[k])
             lane.logp.append(logp[k])
             lane.val.append(value[k])
+            lane.valid.append(live[k])
 
         row = {key: k for k, key in enumerate(keys)}
-        cursor = 0
         for j in jobs:
             acts = {}
             for s in j.learner_seats:
+                if s in j.dead:
+                    continue  # a frozen lane sends nothing to the sim
                 k = row[(id(j), s)]
                 acts[s] = maybe_blunder(
                     int(action[k]),
@@ -321,7 +394,6 @@ def rollout(
                     j.conditions[s][0],
                     noise_rng,
                 )
-            cursor += len(j.learner_seats)
             acts.update(j.opponent_action(device))
             frame = j.worker.step(acts)
             if frame.done:
@@ -332,10 +404,17 @@ def rollout(
                     finished_rewards.append(frame.reward(s))
                 j.reset(next(seeds))
                 for s in j.learner_seats:
-                    lanes[(id(j), s)].last_pot = potential(j.view.seats[s].raw)
+                    lanes[(id(j), s)].last_pot = potential(j.seat_view(s).raw)
             else:
                 for s in j.learner_seats:
                     lane = lanes[(id(j), s)]
+                    if s not in frame.seats:
+                        # Died this step (or earlier): the lane pads at
+                        # zero until the team's episode resolves.
+                        j.dead.add(s)
+                        lane.rew.append(0.0)
+                        lane.done.append(False)
+                        continue
                     raw = frame.seats[s].raw
                     pot = potential(raw)
                     lane.rew.append(
@@ -351,7 +430,7 @@ def rollout(
     views = []
     for j in jobs:
         for s in j.learner_seats:
-            views.append(j.view.seats[s])
+            views.append(j.seat_view(s))
     obs = np.stack([v.obs for v in views])
     mask = np.stack([v.mask for v in views])
     with torch.no_grad():
@@ -370,6 +449,7 @@ def rollout(
         np.stack([np.asarray(lane.val, dtype=np.float32) for lane in ordered], axis=1),
         np.stack([np.asarray(lane.rew, dtype=np.float32) for lane in ordered], axis=1),
         np.stack([np.asarray(lane.done) for lane in ordered], axis=1),
+        np.stack([np.asarray(lane.valid) for lane in ordered], axis=1),
     )
     return batch, last_val, finished_rewards
 
@@ -391,7 +471,9 @@ def evaluate(
         live = []
         for i, (seed, seat) in enumerate(chunk):
             w = workers[i]
-            straight = {0: (1000, 500), 1: (1000, 500)}
+            straight: dict[int, tuple[int, ...]] = {
+                s: (1000, 500, faction_knob(s)) for s in (0, 1)
+            }
             if opponent == "rusher":
                 frame = w.reset(seed, control=(0, 1), conditions=straight)
             else:
@@ -493,15 +575,19 @@ def main() -> None:
             batch, last_val, finals = rollout(
                 policy, jobs, seeds, args.steps, device, rng
             )
-            obs_b, mask_b, act_b, logp_b, val_b, rew_b, done_b = batch
+            obs_b, mask_b, act_b, logp_b, val_b, rew_b, done_b, valid_b = batch
             adv, ret = gae(rew_b, done_b, val_b, last_val)
+            # GAE ran over the full rectangle so a dead teammate's lane
+            # still carries the episode's team payoff backward; the
+            # frozen-view padding rows themselves train nothing.
+            rows = valid_b.reshape(-1)
             flat = (
-                obs_b.reshape(-1, NET_FEATURES),
-                mask_b.reshape(-1, ACTIONS),
-                act_b.reshape(-1),
-                logp_b.reshape(-1),
-                adv.reshape(-1),
-                ret.reshape(-1),
+                obs_b.reshape(-1, NET_FEATURES)[rows],
+                mask_b.reshape(-1, ACTIONS)[rows],
+                act_b.reshape(-1)[rows],
+                logp_b.reshape(-1)[rows],
+                adv.reshape(-1)[rows],
+                ret.reshape(-1)[rows],
             )
             # The anchor is scaffolding: essential while the policy is a
             # fragile clone, a straitjacket once the league is teaching —

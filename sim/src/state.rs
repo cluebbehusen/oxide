@@ -21,7 +21,7 @@ use chassis::grid::TilePos;
 use chassis::rng::Pcg32;
 use serde::{Deserialize, Serialize};
 
-/// Cosmetic allegiance — decides sprite tint, nothing else.
+/// A seat's allegiance: which roster it runs, and its sprite tint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Faction {
@@ -36,8 +36,11 @@ pub enum Faction {
 pub struct Player {
     /// Display name.
     pub name: String,
-    /// Sprite tint.
+    /// Which roster this seat runs (and its sprite tint).
     pub faction: Faction,
+    /// Team index: seats sharing one share vision, never fight each
+    /// other, and stand or fall together.
+    pub team: u8,
     /// Scrap in the bank.
     pub scrap: u32,
 }
@@ -46,12 +49,13 @@ pub struct Player {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum GameResult {
-    /// One player still has buildings.
+    /// One team still holds a Foundry.
     Victory {
-        /// The survivor.
-        winner: PlayerId,
+        /// The surviving team (see [`crate::State::winners`] for its
+        /// seats).
+        team: u8,
     },
-    /// Everyone's buildings died on the same tick.
+    /// Every team's last Foundry died on the same tick.
     Draw,
 }
 
@@ -88,6 +92,12 @@ pub enum Order {
         /// The site under construction.
         site: crate::ids::BuildingId,
     },
+    /// Walk adjacent to a damaged own built building and weld it back
+    /// toward full (harvesters only; costs a scrap trickle).
+    Repair {
+        /// The patient.
+        building: crate::ids::BuildingId,
+    },
     /// March to a tile, engaging anything encountered on the way — the
     /// stance for actually fighting, as opposed to [`Order::Move`]'s
     /// oblivious walk.
@@ -123,8 +133,9 @@ pub struct Unit {
     pub hp: u32,
     /// Scrap on board (harvesters only).
     pub carrying: u32,
-    /// Ticks until the next attack is allowed.
-    pub cooldown: u32,
+    /// Ticks until each weapon may fire again, indexed like
+    /// `kind.stats().weapons` (unused slots stay zero).
+    pub cooldowns: [u32; crate::stats::MAX_WEAPONS],
     /// Order-specific counter (extraction progress).
     pub progress: u32,
     /// Current intent.
@@ -410,6 +421,25 @@ impl State {
         self.vision(player).visible(pos)
     }
 
+    /// Whether two seats are enemies. Every combat, targeting, and
+    /// detection decision routes through this — teammates are never
+    /// valid victims, and a seat is never hostile to itself.
+    pub fn hostile(&self, a: PlayerId, b: PlayerId) -> bool {
+        self.players[a.0 as usize].team != self.players[b.0 as usize].team
+    }
+
+    /// The seats on the winning team, in id order — empty until a
+    /// victory is declared.
+    pub fn winners(&self) -> Vec<PlayerId> {
+        match self.result {
+            Some(GameResult::Victory { team }) => (0..self.players.len())
+                .filter(|&i| self.players[i].team == team)
+                .map(|i| PlayerId(i as u8))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Rebuilds every player's visible set; runs each tick and once at
     /// scenario build so tick 0 already has sight.
     pub(crate) fn refresh_vision(&mut self) {
@@ -465,6 +495,16 @@ impl State {
         self.map.terrain_passable(pos) && self.building_at(pos).is_none()
     }
 
+    /// Whether a unit of the given movement domain may stand on `pos`.
+    /// Ground units need open terrain and no building; air units only need
+    /// the map itself — rock, scrap, and roofs mean nothing up there.
+    pub fn passable_for(&self, domain: crate::stats::Domain, pos: TilePos) -> bool {
+        match domain {
+            crate::stats::Domain::Ground => self.passable(pos),
+            crate::stats::Domain::Air => self.map.tile(pos).is_some(),
+        }
+    }
+
     /// Spawns a unit at full health. Position is the caller's problem to
     /// validate.
     pub(crate) fn spawn_unit(&mut self, player: PlayerId, kind: UnitKind, pos: Vec2Fx) -> UnitId {
@@ -477,7 +517,7 @@ impl State {
             pos,
             hp: kind.stats().max_hp,
             carrying: 0,
-            cooldown: 0,
+            cooldowns: [0; crate::stats::MAX_WEAPONS],
             progress: 0,
             order: Order::Idle,
             queue: std::collections::VecDeque::new(),
@@ -566,8 +606,9 @@ impl State {
             }
         }
         // Standing machines hold their ground — no foundations under feet.
+        // A flyer passing overhead blocks nothing.
         !self.units.iter().any(|u| {
-            u.hp > 0 && {
+            u.hp > 0 && u.kind.stats().domain == crate::stats::Domain::Ground && {
                 let t = u.tile();
                 t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h
             }
@@ -587,6 +628,7 @@ mod tests {
             vec![Player {
                 name: "p".into(),
                 faction: Faction::Ferrous,
+                team: 0,
                 scrap: 0,
             }],
             7,

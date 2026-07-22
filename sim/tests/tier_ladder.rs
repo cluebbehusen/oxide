@@ -19,8 +19,8 @@ fn class_match(hi: Difficulty, lo: Difficulty, hi_seat: u8, seed: u64) -> Option
         let mut commands = a.act(&state);
         commands.extend(b.act(&state));
         state.tick(&commands);
-        if let Some(GameResult::Victory { winner }) = state.result() {
-            return Some(winner == PlayerId(hi_seat));
+        if let Some(GameResult::Victory { team }) = state.result() {
+            return Some(PlayerId(team) == PlayerId(hi_seat));
         }
     }
     None

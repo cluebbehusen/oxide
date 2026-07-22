@@ -36,6 +36,11 @@ pub struct Tile {
     /// Remaining scrap. A ground tile with scrap is a node: impassable and
     /// harvestable until it hits zero.
     pub scrap: u32,
+    /// Battlefield salvage left by destroyed machines. Unlike a node it
+    /// never blocks movement — harvesters stand *on* the tile to strip it
+    /// — and it decays slowly back into the dirt.
+    #[serde(default)]
+    pub wreck: u32,
     /// Purely visual ground dressing (0 plain, 1 rubble). No gameplay
     /// effect, but part of the map and therefore of the state hash.
     pub cosmetic: u8,
@@ -122,26 +127,31 @@ impl Map {
                     '.' => Tile {
                         terrain: Terrain::Ground,
                         scrap: 0,
+                        wreck: 0,
                         cosmetic: 0,
                     },
                     ',' => Tile {
                         terrain: Terrain::Ground,
                         scrap: 0,
+                        wreck: 0,
                         cosmetic: 1,
                     },
                     '#' => Tile {
                         terrain: Terrain::Rock,
                         scrap: 0,
+                        wreck: 0,
                         cosmetic: 0,
                     },
                     's' => Tile {
                         terrain: Terrain::Ground,
                         scrap: SCRAP_NODE_AMOUNT,
+                        wreck: 0,
                         cosmetic: 0,
                     },
                     'S' => Tile {
                         terrain: Terrain::Ground,
                         scrap: RICH_SCRAP_NODE_AMOUNT,
+                        wreck: 0,
                         cosmetic: 0,
                     },
                     '1'..='8' => {
@@ -153,6 +163,7 @@ impl Map {
                         Tile {
                             terrain: Terrain::Ground,
                             scrap: 0,
+                            wreck: 0,
                             cosmetic: 0,
                         }
                     }
@@ -221,6 +232,49 @@ impl Map {
         Some(tile.scrap)
     }
 
+    /// Battlefield salvage at `pos` (zero when out of bounds).
+    pub fn wreck_at(&self, pos: TilePos) -> u32 {
+        self.grid.get(pos).map_or(0, |t| t.wreck)
+    }
+
+    /// Deposits salvage on plain ground. Rock and live nodes swallow it —
+    /// a machine downed where nothing can stand leaves nothing to strip.
+    pub(crate) fn add_wreck(&mut self, pos: TilePos, amount: u32) {
+        if let Some(tile) = self.grid.get_mut(pos)
+            && tile.terrain == Terrain::Ground
+            && tile.scrap == 0
+        {
+            tile.wreck = tile.wreck.saturating_add(amount);
+        }
+    }
+
+    /// Removes one salvage from the wreck at `pos`. Returns the amount
+    /// left, or `None` if there was nothing to strip.
+    pub fn extract_wreck(&mut self, pos: TilePos) -> Option<u32> {
+        let tile = self.grid.get_mut(pos)?;
+        if tile.wreck == 0 {
+            return None;
+        }
+        tile.wreck -= 1;
+        Some(tile.wreck)
+    }
+
+    /// One decay step: every wreck tile loses one salvage. Runs on a
+    /// global cadence so battlefield scrap stays a fresh-battle prize
+    /// without per-tile timers in the hash.
+    pub(crate) fn decay_wrecks(&mut self) {
+        for (_, tile) in self.grid.iter_mut() {
+            tile.wreck = tile.wreck.saturating_sub(1);
+        }
+    }
+
+    /// Erases the wreck under a new foundation.
+    pub(crate) fn clear_wreck(&mut self, pos: TilePos) {
+        if let Some(tile) = self.grid.get_mut(pos) {
+            tile.wreck = 0;
+        }
+    }
+
     /// Iterates all tiles row-major.
     pub fn iter(&self) -> impl Iterator<Item = (TilePos, &Tile)> {
         self.grid.iter()
@@ -233,6 +287,9 @@ impl Map {
         for (pos, tile) in self.grid.iter() {
             let c = match (tile.terrain, tile.scrap) {
                 (Terrain::Rock, _) => '#',
+                // Render-only: wrecks are never authored, so `w` stays out
+                // of the parse legend.
+                (Terrain::Ground, 0) if tile.wreck > 0 => 'w',
                 (Terrain::Ground, 0) if tile.cosmetic == 1 => ',',
                 (Terrain::Ground, 0) => '.',
                 (Terrain::Ground, s) if s > SCRAP_NODE_AMOUNT => 'S',

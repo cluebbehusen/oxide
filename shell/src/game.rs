@@ -68,6 +68,10 @@ pub enum SoundKind {
     Victory,
     /// It did not.
     Defeat,
+    /// Flak bursting against the sky.
+    Flak,
+    /// An artillery shell landing.
+    Artillery,
 }
 
 /// What an order-acknowledgment ping means (decides its color).
@@ -107,6 +111,13 @@ pub enum EffectKind {
         at: Vec2,
         /// Color class.
         kind: PingKind,
+    },
+    /// A splash detonation blooming over its radius.
+    Burst {
+        /// Impact center, world coords.
+        at: Vec2,
+        /// Splash radius, tiles.
+        radius: f32,
     },
 }
 
@@ -159,6 +170,11 @@ pub struct Game {
     pub hinted_train: bool,
     /// See [`Game::hinted_train`].
     pub hinted_fight: bool,
+    /// Bottom-panel rows the HUD drew last frame (the packed palette can
+    /// wrap to several). Written by the renderer, read by click
+    /// hit-testing so every drawn row swallows clicks — a `Cell` because
+    /// drawing holds `&Game`.
+    pub panel_rows: std::cell::Cell<usize>,
     accum: f32,
     /// True during bulk fast-forwards: presentation (fx, sounds, facing)
     /// is skipped entirely instead of accumulated-then-discarded — a
@@ -218,6 +234,7 @@ impl Game {
             scorches: Vec::new(),
             hinted_train: false,
             hinted_fight: false,
+            panel_rows: std::cell::Cell::new(0),
             accum: 0.0,
             suppress_presentation: false,
         })
@@ -453,6 +470,7 @@ impl Game {
                     EffectKind::Laser { .. } => 0.15,
                     EffectKind::Puff { .. } => 0.4,
                     EffectKind::Ping { .. } => 0.5,
+                    EffectKind::Burst { .. } => 0.35,
                 }
         });
         for toast in &mut self.toasts {
@@ -476,26 +494,35 @@ impl Game {
         for event in events {
             match event {
                 Event::AttackHit {
+                    attacker_kind,
                     attacker_pos,
                     target_pos,
                     ..
                 } => {
                     // Kind rides in the event: the attacker itself may have
                     // died later this same tick, and a rail shot deserves
-                    // its report either way.
-                    let heavy = matches!(
-                        event,
-                        Event::AttackHit {
-                            attacker_kind: oxide_sim::UnitKind::Lancer,
-                            ..
+                    // its report either way. The weapon's character decides
+                    // the report and whether the impact blooms.
+                    let heard = sees(self, *attacker_pos) || sees(self, *target_pos);
+                    let (sound, heavy) = match attacker_kind {
+                        oxide_sim::UnitKind::Lancer => (SoundKind::RailFire, true),
+                        oxide_sim::UnitKind::Bombard => (SoundKind::Artillery, true),
+                        oxide_sim::UnitKind::Flakhound | oxide_sim::UnitKind::Stinger => {
+                            (SoundKind::Flak, false)
                         }
-                    );
-                    if sees(self, *attacker_pos) || sees(self, *target_pos) {
-                        self.sounds_pending.push(if heavy {
-                            SoundKind::RailFire
-                        } else {
-                            SoundKind::Laser
-                        });
+                        _ => (SoundKind::Laser, false),
+                    };
+                    // The burst radius comes from the kind's actual splash
+                    // stat, so the telegraphed area never overstates (or
+                    // hides) the damage the sim will deal.
+                    let splash = attacker_kind
+                        .stats()
+                        .weapons
+                        .iter()
+                        .find_map(|w| w.splash)
+                        .map(|s| s.to_num::<f32>());
+                    if heard {
+                        self.sounds_pending.push(sound);
                     }
                     self.fx.push(Effect {
                         kind: EffectKind::Laser {
@@ -505,31 +532,60 @@ impl Game {
                         },
                         age: 0.0,
                     });
+                    if let Some(radius) = splash {
+                        self.fx.push(Effect {
+                            kind: EffectKind::Burst {
+                                at: world_vec(*target_pos),
+                                radius,
+                            },
+                            age: 0.0,
+                        });
+                    }
                 }
                 Event::TurretFired {
+                    kind,
                     turret_pos,
                     target_pos,
                     ..
                 } => {
+                    // Kind rides in the event: the turret may be rubble by
+                    // now (destroyed the tick it fired), and its shot still
+                    // deserves the right report and burst.
+                    let sound = match kind {
+                        oxide_sim::BuildingKind::Bastion => SoundKind::Artillery,
+                        oxide_sim::BuildingKind::FlakTurret => SoundKind::Flak,
+                        _ => SoundKind::Laser,
+                    };
+                    let splash = kind
+                        .stats()
+                        .weapons
+                        .iter()
+                        .find_map(|w| w.splash)
+                        .map(|s| s.to_num::<f32>());
                     if sees(self, *turret_pos) || sees(self, *target_pos) {
-                        self.sounds_pending.push(SoundKind::Laser);
+                        self.sounds_pending.push(sound);
                     }
                     self.fx.push(Effect {
                         kind: EffectKind::Laser {
-                            heavy: false,
+                            heavy: splash.is_some(),
                             from: world_vec(*turret_pos),
                             to: world_vec(*target_pos),
                         },
                         age: 0.0,
                     });
+                    if let Some(radius) = splash {
+                        self.fx.push(Effect {
+                            kind: EffectKind::Burst {
+                                at: world_vec(*target_pos),
+                                radius,
+                            },
+                            age: 0.0,
+                        });
+                    }
                 }
                 Event::BuildingCompleted { player, kind, .. } if *player == self.human => {
                     self.sounds_pending.push(SoundKind::TrainDone);
-                    self.toast(match kind {
-                        oxide_sim::BuildingKind::Turret => "turret online",
-                        oxide_sim::BuildingKind::Fabricator => "fabricator online",
-                        oxide_sim::BuildingKind::Foundry => "foundry online",
-                    });
+                    self.toast(format!("{} online", kind.name()));
                 }
                 Event::BuildCancelled { player, refund, .. } if *player == self.human => {
                     self.toast(format!("site salvaged (+{refund} scrap)"));
@@ -579,6 +635,9 @@ impl Game {
                 Event::CommandRejected { player, reason } if *player == self.human => {
                     let why = match reason {
                         oxide_sim::command::RejectReason::NotEnoughScrap => "not enough scrap",
+                        oxide_sim::command::RejectReason::WrongFaction => {
+                            "that machine belongs to the other faction"
+                        }
                         oxide_sim::command::RejectReason::QueueFull => "queue is full",
                         oxide_sim::command::RejectReason::UnreachableGoal => "can't reach that",
                         oxide_sim::command::RejectReason::InvalidTarget => "can't target that",
@@ -610,7 +669,8 @@ impl Game {
                 Event::GameOver { result } => {
                     let won = matches!(
                         result,
-                        oxide_sim::GameResult::Victory { winner } if *winner == self.human
+                        oxide_sim::GameResult::Victory { team }
+                            if *team == self.state.player(self.human).team
                     );
                     self.sounds_pending.push(if won {
                         SoundKind::Victory

@@ -110,6 +110,17 @@ pub enum Intent {
         /// Where to look.
         to: TilePos,
     },
+    /// Weld a damaged own building (the executive picks the welder).
+    Repair {
+        /// The patient.
+        building: crate::ids::BuildingId,
+    },
+    /// Throw every idle ground-attack flyer at a target — a strike, not
+    /// an army: no lifecycle, no withdraw call, just wings and a place.
+    RaidAir {
+        /// Where the strike flies.
+        target: TilePos,
+    },
 }
 
 /// Fraction of max hp below which a member is rotated out of its army to
@@ -269,14 +280,7 @@ impl Executive {
                     {
                         a.state = ArmyState::Pushing;
                         a.target = Some(*target);
-                        out.push(PlayerCommand {
-                            player: me,
-                            command: Command::AttackMove {
-                                units: a.members.clone(),
-                                goal: *target,
-                                queue: false,
-                            },
-                        });
+                        march(me, obs, a, *target, &mut out);
                     }
                 }
                 Intent::RecallArmy { army } => {
@@ -320,6 +324,52 @@ impl Executive {
                             queue: false,
                         },
                     });
+                }
+                Intent::Repair { building } => {
+                    let anchor = obs
+                        .my_buildings
+                        .iter()
+                        .find(|b| b.id == *building)
+                        .map(|b| b.anchor);
+                    if let Some(anchor) = anchor
+                        && let Some(welder) = self.free_harvester(obs, anchor, &claimed)
+                    {
+                        claimed.push(welder);
+                        out.push(PlayerCommand {
+                            player: me,
+                            command: Command::Repair {
+                                units: vec![welder],
+                                building: *building,
+                            },
+                        });
+                    }
+                }
+                Intent::RaidAir { target } => {
+                    let enlisted: Vec<UnitId> = self.enlisted().collect();
+                    let wings: Vec<UnitId> = obs
+                        .my_units
+                        .iter()
+                        .filter(|u| {
+                            let stats = u.kind.stats();
+                            stats.domain == crate::stats::Domain::Air
+                                && stats.can_target(crate::stats::Domain::Ground)
+                                && u.idle
+                                && !enlisted.contains(&u.id)
+                                && !claimed.contains(&u.id)
+                        })
+                        .map(|u| u.id)
+                        .collect();
+                    if !wings.is_empty() {
+                        claimed.extend(wings.iter().copied());
+                        out.push(PlayerCommand {
+                            player: me,
+                            command: Command::AttackMove {
+                                units: wings,
+                                goal: *target,
+                                queue: false,
+                            },
+                        });
+                    }
                 }
             }
         }
@@ -395,7 +445,7 @@ impl Executive {
                     if in_contact {
                         army.state = ArmyState::Engaging;
                     } else if let Some(target) = army.target
-                        && tiles_within(centroid, target, 2)
+                        && tiles_within(vanguard_centroid(&army.members, obs), target, 2)
                     {
                         // Arrived and nothing to fight: hold the ground
                         // taken — this rally is the staging point now.
@@ -414,14 +464,7 @@ impl Executive {
                         };
                         army.focus = None;
                         if let Some(target) = army.target {
-                            out.push(PlayerCommand {
-                                player: me,
-                                command: Command::AttackMove {
-                                    units: army.members.clone(),
-                                    goal: target,
-                                    queue: false,
-                                },
-                            });
+                            march(me, obs, army, target, &mut out);
                         }
                     } else if mine * u64::from(WITHDRAW_MARGIN_DEN)
                         < theirs * u64::from(WITHDRAW_MARGIN_NUM)
@@ -467,7 +510,7 @@ impl Executive {
                             .enemy_units
                             .iter()
                             .filter(|u| {
-                                near(u.tile) <= CONTACT_RADIUS && u.kind.stats().attack.is_some()
+                                near(u.tile) <= CONTACT_RADIUS && u.kind.stats().can_fight()
                             })
                             .map(|u| (u.hp, near(u.tile), u.id))
                             .min()
@@ -535,7 +578,13 @@ impl Executive {
             .my_units
             .iter()
             .filter(|u| {
-                u.kind.stats().attack.is_some()
+                let stats = u.kind.stats();
+                // Armies are ground bodies: the lifecycle's centroids,
+                // standoffs, and focus picks are all ground-shaped, and
+                // enlisting wings here would starve the raid channel of
+                // the very units it was bought for.
+                stats.can_fight()
+                    && stats.domain == crate::stats::Domain::Ground
                     && u.idle
                     && !enlisted.contains(&u.id)
                     && !claimed.contains(&u.id)
@@ -548,6 +597,94 @@ impl Executive {
             .take(size as usize)
             .map(|(_, id)| id)
             .collect()
+    }
+}
+
+/// A long gun: ordered reach beyond its own eyes. It fires on the
+/// team's sight, so it must never lead the march into what it cannot
+/// see.
+fn is_artillery(u: &UnitObs) -> bool {
+    let stats = u.kind.stats();
+    stats
+        .max_range_vs(crate::stats::Domain::Ground)
+        .is_some_and(|r| r > chassis::fx::Fx::from_num(stats.vision))
+}
+
+/// How far short of the push target artillery parks — inside its own
+/// reach of the target, outside a defending turret's.
+const ARTY_STANDOFF: i32 = 7;
+
+/// Marching orders for a push: escorts attack-move onto the target;
+/// artillery holds a standoff point pulled back along the line of
+/// advance — and without an escort quorum (a third of the army) the
+/// guns stay at the staging ground instead. Nobody pushes blind
+/// artillery.
+fn march(
+    me: PlayerId,
+    obs: &Observation,
+    army: &Army,
+    target: TilePos,
+    out: &mut Vec<PlayerCommand>,
+) {
+    let (arty, escorts): (Vec<UnitId>, Vec<UnitId>) = army
+        .members
+        .iter()
+        .partition(|id| obs.my_units.iter().any(|u| u.id == **id && is_artillery(u)));
+    if !escorts.is_empty() {
+        out.push(PlayerCommand {
+            player: me,
+            command: Command::AttackMove {
+                units: escorts.clone(),
+                goal: target,
+                queue: false,
+            },
+        });
+    }
+    if arty.is_empty() {
+        return;
+    }
+    if escorts.len() * 3 >= army.members.len() {
+        let (dx, dy) = (army.staging.x - target.x, army.staging.y - target.y);
+        let d = dx.abs().max(dy.abs());
+        let stand = if d == 0 {
+            target
+        } else {
+            let pull = ARTY_STANDOFF.min(d);
+            TilePos::new(target.x + dx * pull / d, target.y + dy * pull / d)
+        };
+        out.push(PlayerCommand {
+            player: me,
+            command: Command::AttackMove {
+                units: arty,
+                goal: stand,
+                queue: false,
+            },
+        });
+    } else {
+        out.push(PlayerCommand {
+            player: me,
+            command: Command::Move {
+                units: arty,
+                goal: army.staging,
+                queue: false,
+            },
+        });
+    }
+}
+
+/// The escorts' mean tile — artillery hanging back must not drag the
+/// army's sense of "arrived" backward with it. Falls back to the whole
+/// body for a pure-artillery force.
+fn vanguard_centroid(members: &[UnitId], obs: &Observation) -> TilePos {
+    let escorts: Vec<UnitId> = members
+        .iter()
+        .copied()
+        .filter(|id| obs.my_units.iter().any(|u| u.id == *id && !is_artillery(u)))
+        .collect();
+    if escorts.is_empty() {
+        centroid(members, obs)
+    } else {
+        centroid(&escorts, obs)
     }
 }
 
@@ -579,32 +716,58 @@ fn enemies_near(obs: &Observation, members: &[UnitId], radius: i32) -> bool {
         .filter(|m| {
             obs.enemy_units
                 .iter()
-                .any(|e| e.kind.stats().attack.is_some() && m.tile.chebyshev(e.tile) <= radius)
+                .any(|e| mutually_relevant(m, e) && m.tile.chebyshev(e.tile) <= radius)
         })
         .count();
     touched > 0 && touched * 3 >= members.len()
 }
 
-/// hp-weighted dps of one unit — the shared coin every fight estimate is
-/// priced in. Damage per 100 ticks keeps it in integers (cooldowns divide
-/// 100 unevenly — close enough for margin calls that carry hysteresis).
-pub fn unit_strength(u: &UnitObs) -> u64 {
-    let Some(atk) = u.kind.stats().attack else {
-        return 0;
-    };
-    let dps100 = u64::from(atk.damage) * 100 / u64::from(atk.cooldown_ticks);
+/// hp-weighted dps a unit can bring against the given movement domain —
+/// the shared coin every fight estimate is priced in. Damage per 100
+/// ticks keeps it in integers (cooldowns divide 100 unevenly — close
+/// enough for margin calls that carry hysteresis).
+pub fn strength_vs(u: &UnitObs, domain: crate::stats::Domain) -> u64 {
+    let stats = u.kind.stats();
+    let dps100: u64 = stats
+        .weapons
+        .iter()
+        .filter(|w| w.targets.covers(domain))
+        .map(|w| u64::from(w.damage) * 100 / u64::from(w.cooldown_ticks))
+        .sum();
     u64::from(u.hp) * dps100
+}
+
+/// Ground-battle strength — the legacy coin the gym's v2 features are
+/// priced in. Weapons that can only look up contribute nothing, so an
+/// anti-air escort never inflates a push estimate.
+pub fn unit_strength(u: &UnitObs) -> u64 {
+    strength_vs(u, crate::stats::Domain::Ground)
+}
+
+/// Whether these two would have anything to say to each other in a
+/// fight: the enemy is armed and coverable, or it can cover us. Unarmed
+/// enemies never constitute a fight (chasing a fleeing harvester is not
+/// an engagement), and a flak platform staring at ground infantry is
+/// scenery to both sides.
+fn mutually_relevant(member: &UnitObs, enemy: &UnitObs) -> bool {
+    let m = member.kind.stats();
+    let e = enemy.kind.stats();
+    (e.can_fight() && m.can_target(e.domain)) || e.can_target(m.domain)
 }
 
 /// Same coin for a standing building (turrets; zero for the unarmed).
 pub fn building_strength(b: &super::observation::BuildingObs) -> u64 {
-    let Some(atk) = b.kind.stats().attack else {
-        return 0;
-    };
     if !b.built {
         return 0;
     }
-    let dps100 = u64::from(atk.damage) * 100 / u64::from(atk.cooldown_ticks);
+    let dps100: u64 = b
+        .kind
+        .stats()
+        .weapons
+        .iter()
+        .filter(|w| w.targets.ground)
+        .map(|w| u64::from(w.damage) * 100 / u64::from(w.cooldown_ticks))
+        .sum();
     u64::from(b.hp) * dps100
 }
 
@@ -616,28 +779,54 @@ pub fn building_strength(b: &super::observation::BuildingObs) -> u64 {
 /// empty ground and blind every radius test around it — while stragglers
 /// don't sweep distant enemies into the count.
 fn local_strength(obs: &Observation, members: &[UnitId]) -> (u64, u64) {
-    let mine: u64 = obs
+    use crate::stats::Domain;
+    let mine_units: Vec<&UnitObs> = obs
         .my_units
         .iter()
         .filter(|u| members.contains(&u.id))
-        .map(unit_strength)
-        .sum();
-    let engaged: Vec<TilePos> = obs
-        .my_units
+        .collect();
+    let engaged: Vec<TilePos> = mine_units
         .iter()
-        .filter(|u| members.contains(&u.id))
         .filter(|m| {
-            obs.enemy_units.iter().any(|e| {
-                e.kind.stats().attack.is_some() && m.tile.chebyshev(e.tile) <= CONTACT_RADIUS
-            })
+            obs.enemy_units
+                .iter()
+                .any(|e| mutually_relevant(m, e) && m.tile.chebyshev(e.tile) <= CONTACT_RADIUS)
         })
         .map(|m| m.tile)
         .collect();
-    let theirs: u64 = obs
+    let opposition: Vec<&UnitObs> = obs
         .enemy_units
         .iter()
         .filter(|e| engaged.iter().any(|m| m.chebyshev(e.tile) <= ENGAGE_RADIUS))
-        .map(unit_strength)
+        .collect();
+    // Matched pairs: each side is worth what it can actually apply to
+    // the domains the other side fields. An interceptor over a pure
+    // ground brawl contributes nothing to either column.
+    let domains_of = |units: &[&UnitObs]| {
+        let ground = units
+            .iter()
+            .any(|u| u.kind.stats().domain == Domain::Ground);
+        let air = units.iter().any(|u| u.kind.stats().domain == Domain::Air);
+        (ground, air)
+    };
+    let (their_ground, their_air) = domains_of(&opposition);
+    let (my_ground, my_air) = domains_of(&mine_units);
+    let applicable = |u: &UnitObs, ground: bool, air: bool| -> u64 {
+        let g = if ground {
+            strength_vs(u, Domain::Ground)
+        } else {
+            0
+        };
+        let a = if air { strength_vs(u, Domain::Air) } else { 0 };
+        g.max(a)
+    };
+    let mine: u64 = mine_units
+        .iter()
+        .map(|u| applicable(u, their_ground, their_air))
+        .sum();
+    let theirs: u64 = opposition
+        .iter()
+        .map(|u| applicable(u, my_ground, my_air))
         .sum();
     (mine, theirs)
 }

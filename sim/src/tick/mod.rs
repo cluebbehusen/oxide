@@ -16,10 +16,14 @@
 //! 5. **Movement** — units advance along their paths.
 //! 6. **Collision** — overlapping bodies are pushed apart until they fit;
 //!    units are solid to each other but never block tiles.
-//! 7. **Cleanup** — entities at 0 hp are removed, with events.
-//! 8. **Vision** — every player's fog-of-war visible set is rebuilt from
+//! 7. **Cleanup** — entities at 0 hp are removed, with events; every
+//!    death deposits wreck salvage on its ground.
+//! 8. **Decay** — on its global cadence, every wreck tile loses one
+//!    salvage (deposits land first, so a fresh wreck survives its birth
+//!    tick).
+//! 9. **Vision** — every player's fog-of-war visible set is rebuilt from
 //!    their surviving entities (explored only accumulates).
-//! 9. **Victory** — a player with no Foundry is out; last standing wins.
+//! 10. **Victory** — a player with no Foundry is out; last standing wins.
 //!
 //! After [`GameResult`] is set the world freezes: ticks still count up (so
 //! timelines stay aligned) but nothing moves and commands are ignored.
@@ -50,6 +54,9 @@ impl State {
             movement::run(self);
             movement::resolve_collisions(self);
             cleanup(self, &mut events);
+            if self.tick.is_multiple_of(crate::stats::WRECK_DECAY_TICKS) {
+                self.map.decay_wrecks();
+            }
             self.refresh_vision();
             victory(self, &mut events);
         }
@@ -58,8 +65,12 @@ impl State {
     }
 }
 
-/// Removes entities that hit 0 hp this tick, reporting each.
+/// Removes entities that hit 0 hp this tick, reporting each — and leaves
+/// their price on the ground: a fraction of every destroyed machine's
+/// cost lands as wreck salvage (buildings split theirs across the
+/// footprint). Battles literally feed the salvagers.
 fn cleanup(state: &mut State, events: &mut Vec<Event>) {
+    let mut deposits: Vec<(TilePos, u32)> = Vec::new();
     for unit in state.units.iter().filter(|u| u.hp == 0) {
         events.push(Event::UnitDied {
             unit: unit.id,
@@ -67,6 +78,9 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
             player: unit.player,
             pos: unit.pos,
         });
+        let value =
+            unit.kind.stats().cost * crate::stats::WRECK_VALUE_NUM / crate::stats::WRECK_VALUE_DEN;
+        deposits.push((unit.tile(), value));
     }
     state.units.retain(|u| u.hp > 0);
 
@@ -76,35 +90,73 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
             player: building.player,
             pos: building.center(),
         });
+        let stats = building.kind.stats();
+        let price = stats
+            .construction
+            .map_or(crate::stats::FOUNDRY_WRECK_VALUE, |c| c.cost);
+        let value = price * crate::stats::WRECK_VALUE_NUM / crate::stats::WRECK_VALUE_DEN;
+        let tiles = (stats.size.0 * stats.size.1) as u32;
+        for tile in building.tiles() {
+            deposits.push((tile, value / tiles));
+        }
     }
     state.buildings.retain(|b| b.hp > 0);
+
+    for (tile, value) in deposits {
+        // A tile under a surviving building swallows its deposit — a
+        // flyer downed over a roof leaves nothing strippable, and wreck
+        // must never coexist with a standing footprint (harvesters
+        // cannot reach it, and the building's own eventual wreck would
+        // double-stack). Buildings that died this tick are already gone
+        // from the vec, so their footprints take deposits normally.
+        if state.buildings.iter().any(|b| b.contains(tile)) {
+            continue;
+        }
+        // Rock never opens up, so salvage there is bait no harvester
+        // can ever strip — a downed flyer's value is simply lost. Scrap
+        // node tiles keep their deposits: they become standable the
+        // moment the node exhausts.
+        if state
+            .map
+            .tile(tile)
+            .is_none_or(|t| t.terrain == crate::map::Terrain::Rock)
+        {
+            continue;
+        }
+        state.map.add_wreck(tile, value);
+    }
 }
 
-/// Declares the result once at least one player has been eliminated.
+/// Declares the result once at least one team has been eliminated.
 ///
-/// Elimination is Foundry-based: no Foundry, no comeback — turrets and
-/// factories left standing don't keep a player in the game (or 0.5's
+/// Elimination is Foundry-based: a team lives while *any* of its seats
+/// holds a Foundry — no Foundry anywhere, no comeback; turrets and
+/// factories left standing don't keep a team in the game (or 0.5's
 /// buildable kinds would have silently rewritten the victory rule).
+/// The per-seat command gate in `commands::apply` deliberately stays
+/// player-scoped: a foundry-less seat on a living team spectates while
+/// its team plays on.
 fn victory(state: &mut State, events: &mut Vec<Event>) {
     if state.result.is_some() {
         return;
     }
-    let alive = |p: usize| {
-        state
-            .buildings
-            .iter()
-            .any(|b| b.player.0 as usize == p && b.kind == crate::stats::BuildingKind::Foundry)
+    let mut teams: Vec<u8> = state.players.iter().map(|p| p.team).collect();
+    teams.sort_unstable();
+    teams.dedup();
+    let alive = |team: u8| {
+        state.buildings.iter().any(|b| {
+            b.kind == crate::stats::BuildingKind::Foundry
+                && state.players[b.player.0 as usize].team == team
+        })
     };
-    let survivors: Vec<usize> = (0..state.players.len()).filter(|&p| alive(p)).collect();
-    if survivors.len() == state.players.len() {
+    let survivors: Vec<u8> = teams.iter().copied().filter(|&t| alive(t)).collect();
+    if survivors.len() == teams.len() {
         return;
     }
     let result = match survivors.as_slice() {
         [] => GameResult::Draw,
-        [winner] => GameResult::Victory {
-            winner: crate::ids::PlayerId(*winner as u8),
-        },
-        _ => return, // multiple survivors — play on
+        [team] => GameResult::Victory { team: *team },
+        _ => return, // multiple teams standing — play on
     };
     state.result = Some(result);
     events.push(Event::GameOver { result });
@@ -120,6 +172,20 @@ pub(crate) fn astar_for(state: &State, from: TilePos, to: TilePos) -> Option<Vec
         |p| state.passable(p),
         PATH_EXPANSION_CAP,
     )
+}
+
+/// A route for a unit of the given kind: ground units A* around the
+/// world, air units fly the straight line — one waypoint, landed exactly.
+pub(crate) fn route_for(
+    state: &State,
+    kind: crate::stats::UnitKind,
+    from: TilePos,
+    to: TilePos,
+) -> Option<Vec<TilePos>> {
+    match kind.stats().domain {
+        crate::stats::Domain::Ground => astar_for(state, from, to),
+        crate::stats::Domain::Air => Some(vec![to]),
+    }
 }
 
 /// The ring of tiles surrounding a rectangle, row-major (deterministic).
@@ -154,6 +220,25 @@ pub(crate) fn tile_adjacent_to_rect(tile: TilePos, anchor: TilePos, size: (i32, 
         && tile.y >= anchor.y - 1
         && tile.x <= anchor.x + w
         && tile.y <= anchor.y + h
+}
+
+/// The tile a commanded goal actually means to one movement domain:
+/// ground snaps to the nearest walkable tile, air clamps onto the map —
+/// any tile flies, rock included.
+pub(crate) fn domain_goal(
+    state: &State,
+    goal: TilePos,
+    domain: crate::stats::Domain,
+) -> Option<TilePos> {
+    match domain {
+        crate::stats::Domain::Ground => {
+            find_nearby_passable(state, goal, crate::stats::GOAL_SNAP_RADIUS)
+        }
+        crate::stats::Domain::Air => Some(TilePos::new(
+            goal.x.clamp(0, state.map.width() - 1),
+            goal.y.clamp(0, state.map.height() - 1),
+        )),
+    }
 }
 
 /// The nearest passable tile to `goal` within `radius`, scanning rings

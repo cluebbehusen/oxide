@@ -193,4 +193,67 @@ mod tests {
         cam.pan(vec2(1000.0, 1000.0));
         assert!(cam.center.x >= before.x && cam.center.y >= before.y);
     }
+
+    #[test]
+    fn a_map_smaller_than_the_viewport_pins_the_view_to_center() {
+        // A 4x4 map is dwarfed by the 1280x800 viewport at default zoom, so
+        // there is no room to pan: the clamp holds the center on the map's
+        // midpoint however hard it is shoved.
+        let mut cam = Camera::new(vec2(2.0, 2.0), 4, 4, vec2(1280.0, 800.0), 1.0);
+        let mid = vec2(2.0, 2.0);
+        assert!((cam.center - mid).length() < 1e-4);
+        for shove in [
+            vec2(-500.0, -500.0),
+            vec2(500.0, 500.0),
+            vec2(500.0, -500.0),
+        ] {
+            cam.pan(shove);
+            assert!(
+                (cam.center - mid).length() < 1e-4,
+                "pinned center drifted to {:?}",
+                cam.center
+            );
+        }
+    }
+
+    #[test]
+    fn the_cursor_anchor_holds_through_a_multi_step_zoom_glide() {
+        // The existing anchor test saturates the glide in one step; this
+        // pins that every *intermediate* frame keeps the world point under
+        // the cursor stationary, not just the final one.
+        let mut cam = camera();
+        let cursor = vec2(800.0, 500.0);
+        let anchored = cam.to_world(cursor);
+        cam.zoom_at(cursor, 1.0);
+        for _ in 0..30 {
+            cam.update(1.0 / 60.0); // small dt: the glide is mid-flight here
+            assert!(
+                (cam.to_world(cursor) - anchored).length() < 1e-2,
+                "anchor drifted mid-glide to {:?}",
+                cam.to_world(cursor)
+            );
+        }
+        assert!(
+            (cam.zoom - ZOOM_DEFAULT * 1.15).abs() < 0.01,
+            "glide never reached its one-notch target"
+        );
+    }
+
+    #[test]
+    fn panning_past_the_far_corner_stops_within_slack() {
+        // `pan_clamps_to_map_with_slack` pins the lo corner; this pins the
+        // hi corner. Shoved past the bottom-right, the visible rect reaches
+        // the map edge but overshoots it by at most the two-tile slack.
+        let mut cam = camera();
+        cam.pan(vec2(1000.0, 1000.0));
+        let (_, max) = cam.world_rect();
+        assert!(
+            max.x >= 40.0 && max.y >= 24.0,
+            "clamp fell short of the map edge: {max:?}"
+        );
+        assert!(
+            max.x <= 40.0 + 3.0 && max.y <= 24.0 + 3.0,
+            "far edge ran away: {max:?}"
+        );
+    }
 }

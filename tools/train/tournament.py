@@ -20,7 +20,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from league import TIERS, maybe_blunder, rusher
+from league import TIERS, faction_knob, maybe_blunder, rusher
 from mapgen import cache_dir, generate
 from models import load_policy
 from oxide_gym import Worker
@@ -48,8 +48,11 @@ def play(
 ) -> tuple[bool | None, int]:
     """One greedy match; returns (won, ticks). `won` is None only for a
     true draw (tick cap with the learner standing) — elimination in a
-    multiplayer game is a loss even while others fight on."""
-    conds = dict.fromkeys(range(8), condition)
+    multiplayer game is a loss even while others fight on. The faction
+    knob is appended per seat, honestly (even = ferrous)."""
+    conds: dict[int, tuple[int, ...]] = {
+        s: (*condition, faction_knob(s)) for s in range(8)
+    }
     rusher_seat = None
     if opponent == "rusher":
         # The rusher is driven locally, so its seat must be controlled
@@ -82,6 +85,8 @@ def play(
             ov = frame.seats[rusher_seat]
             acts[rusher_seat] = rusher(ov.raw, ov.mask, frame.tick)
         frame = worker.step(acts)
+    if frame.winners:
+        return seat in frame.winners, frame.tick
     if frame.winner is not None:
         return frame.winner == seat, frame.tick
     if frame.alive is not None and seat not in frame.alive:
@@ -114,6 +119,13 @@ def main() -> None:
         default=0,
         help="evaluate as 1-of-4 on N generated FFA maps (seat rotates)",
     )
+    ap.add_argument(
+        "--team-maps",
+        type=int,
+        default=0,
+        help="evaluate on N generated 2v2 maps: the learner takes one "
+        "west seat, a scripted tier drives its teammate and both foes",
+    )
     args = ap.parse_args()
 
     policy, blob = load_policy(args.ckpt)
@@ -123,7 +135,21 @@ def main() -> None:
     try:
         jobs: list[tuple[int, str | None]]
         ffa = args.ffa_maps > 0
-        if ffa:
+        team = args.team_maps > 0
+        if team:
+            jobs = [
+                (
+                    9800 + i,
+                    generate(
+                        9800 + i,
+                        cache_dir("oxide-maps2v2"),
+                        players=4,
+                        teams=True,
+                    ),
+                )
+                for i in range(args.team_maps)
+            ]
+        elif ffa:
             jobs = [
                 (9500 + i, generate(9500 + i, cache_dir("oxide-maps4"), players=4))
                 for i in range(args.ffa_maps)
@@ -136,7 +162,7 @@ def main() -> None:
         else:
             jobs = [(seed, args.scenario) for seed in range(3000, 3000 + args.seeds)]
         for opponent in args.opponents.split(","):
-            if ffa and opponent == "rusher":
+            if (ffa or team) and opponent == "rusher":
                 # The scripted rusher is a duel-era probe; in FFA its
                 # seat shares the episode's fate with the learner's,
                 # which muddies the classification. Skip it.
@@ -145,7 +171,13 @@ def main() -> None:
             wins = draws = games = 0
             ticks = []
             for seed, scenario in jobs:
-                for seat in (0, 1) if not ffa else (seed % 4,):
+                if team:
+                    seats: tuple[int, ...] = (0, 2)  # both west chairs
+                elif ffa:
+                    seats = (seed % 4,)
+                else:
+                    seats = (0, 1)
+                for seat in seats:
                     won, t = play(
                         policy,
                         worker,
@@ -154,7 +186,7 @@ def main() -> None:
                         seat,
                         scenario,
                         (args.skill, args.aggression),
-                        seats=4 if ffa else 2,
+                        seats=4 if (ffa or team) else 2,
                     )
                     games += 1
                     ticks.append(t)

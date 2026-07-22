@@ -10,8 +10,8 @@ use oxide_sim::{PlayerId, Scenario};
 /// A hand-built artifact: identity-ish single layer, so argmax and
 /// masking are checkable by inspection.
 fn tiny_net() -> QuantNet {
-    let features = 32;
-    let actions = 11;
+    let features = oxide_sim::bot::FEATURE_COUNT;
+    let actions = oxide_sim::bot::ACTION_COUNT;
     // recips = 2^24 / 1 (scale 1 per feature); trunk: one 4-wide layer
     // reading features 0..4; head maps those 4 to the first 4 actions.
     // The "tanh" is a monotone integer ramp — ordering is all the
@@ -73,9 +73,15 @@ fn masked_argmax_is_exact_and_deterministic() {
 #[test]
 fn shape_and_version_drift_is_refused() {
     let mut bad = serde_json::json!({
-        "gym_version": 999, "q_bits": 12, "features": 32, "actions": 11,
-        "recips": vec![1; 32], "tanh_lut": vec![0; 513],
-        "layers": [], "head": {"w": vec![vec![0; 32]; 11], "b": vec![0; 11]},
+        "gym_version": 999, "q_bits": 12,
+        "features": oxide_sim::bot::FEATURE_COUNT,
+        "actions": oxide_sim::bot::ACTION_COUNT,
+        "recips": vec![1; oxide_sim::bot::FEATURE_COUNT], "tanh_lut": vec![0; 513],
+        "layers": [],
+        "head": {
+            "w": vec![vec![0; oxide_sim::bot::FEATURE_COUNT]; oxide_sim::bot::ACTION_COUNT],
+            "b": vec![0; oxide_sim::bot::ACTION_COUNT],
+        },
     });
     assert!(QuantNet::from_json(&bad.to_string()).is_err(), "version");
     bad["gym_version"] = oxide_sim::bot::GYM_VERSION.into();
@@ -96,7 +102,7 @@ fn exported_weights_play_a_deterministic_match() {
         let mut scenario = Scenario::skirmish();
         scenario.seed = 7;
         let mut state = scenario.build().unwrap();
-        let mut neural = NeuralBot::new(PlayerId(0), 16, net.clone());
+        let mut neural = NeuralBot::new(PlayerId(0), 16, net.clone(), oxide_sim::Faction::Ferrous);
         let mut veteran = Brain::for_tier(PlayerId(1), 7, Difficulty::Veteran);
         for _ in 0..40_000u32 {
             let mut commands = neural.act(&state);
@@ -115,9 +121,7 @@ fn exported_weights_play_a_deterministic_match() {
     println!("result: {r1:?}");
     assert_eq!(
         r1,
-        Some(GameResult::Victory {
-            winner: PlayerId(0)
-        }),
+        Some(GameResult::Victory { team: 0 }),
         "the exported policy should beat Veteran"
     );
 }

@@ -34,6 +34,19 @@ const TURRET_CAP: usize = 2;
 /// Scrap kept banked past a Fabricator's price before teching — the
 /// fighting reserve that keeps the sentinel drip alive.
 const TECH_RESERVE: u32 = 70;
+/// Most flak turrets the policy will pay for against an air threat.
+const FLAK_CAP: usize = 2;
+/// Most Reclaimers the policy will run at once.
+const RECLAIMER_CAP: usize = 3;
+/// Ground-attack wings gathered before an air raid launches.
+const AIR_WING: usize = 3;
+/// How far around home the policy counts remaining salvage (Chebyshev)
+/// when judging whether the patches are running dry.
+const HOME_SALVAGE_RADIUS: i32 = 14;
+/// Below this much known salvage near home, Reclaimers earn their keep.
+const SALVAGE_LOW: u32 = 250;
+/// Known anti-air within this range of a raid target scrubs the raid.
+const RAID_AA_RADIUS: i32 = 6;
 
 /// The policy's tunable considerations. Phase C's difficulty tiers are
 /// presets over these dials (plus the executive's); the fairness rule is
@@ -54,6 +67,16 @@ pub struct Dials {
     pub scouting: bool,
     /// Observe through own vision instead of omnisciently.
     pub fog_honest: bool,
+    /// Answer air threats: anti-air crawlers and flak turrets.
+    pub aa_response: bool,
+    /// Raise an Array once teched — the eyes for blips and long guns.
+    pub radar: bool,
+    /// Build Reclaimers when the patches near home run dry.
+    pub reclaimers: bool,
+    /// Weld wounded buildings instead of watching them rust.
+    pub repair: bool,
+    /// Fly ground-attack wings at the enemy economy.
+    pub air_harass: bool,
 }
 
 impl Dials {
@@ -67,6 +90,11 @@ impl Dials {
             turret_response: true,
             scouting: true,
             fog_honest: true,
+            aa_response: true,
+            radar: true,
+            reclaimers: true,
+            repair: true,
+            air_harass: true,
         }
     }
 
@@ -111,6 +139,9 @@ pub struct UtilityPolicy {
     scout_leg: u32,
     /// Tick of the last intel refresh toward a known enemy base.
     scouted_at: u64,
+    /// Whether enemy air has ever been sighted — the sky stays suspect
+    /// afterward.
+    seen_air: bool,
 }
 
 impl UtilityPolicy {
@@ -147,10 +178,18 @@ impl UtilityPolicy {
         self.audit_harvests(obs);
         self.audit_sites(obs);
         self.audit_raids(obs);
+        if obs
+            .enemy_units
+            .iter()
+            .any(|u| u.kind.stats().domain == crate::stats::Domain::Air)
+        {
+            self.seen_air = true;
+        }
 
         self.economy(obs, home_tile, &mut intents);
         self.production(dials, obs, &mut budget, &mut intents);
         self.construction(dials, obs, home_tile, &mut budget, &mut intents);
+        self.repairs(dials, obs, &mut budget, &mut intents);
         // No scouting while the economy is short-handed: pulling one of
         // three starting harvesters off the line buys intel with the
         // opening — the most expensive scrap there is.
@@ -163,6 +202,7 @@ impl UtilityPolicy {
             self.scouting(obs, home_tile, enlisted, false, &mut intents);
         }
         self.army(dials, obs, armies, home_tile, &mut intents);
+        self.air_raid(dials, obs, home_tile, enlisted, &mut intents);
         intents
     }
 
@@ -234,6 +274,7 @@ impl UtilityPolicy {
             let node = obs
                 .known_scrap
                 .iter()
+                .chain(obs.known_wrecks.iter())
                 .filter(|(pos, amount)| {
                     *amount > 0
                         && !self.dead_nodes.contains(pos)
@@ -317,10 +358,35 @@ impl UtilityPolicy {
         if let Some((qi, fab)) = fabricator
             && obs.my_queues[qi].len() < 2
         {
+            use crate::stats::{Domain, Role};
+            let aa_kind = Role::AntiAir.unit_for(obs.faction);
+            let wing_kind = Role::AirGround.unit_for(obs.faction);
             let lancer = UnitKind::Lancer.stats().cost;
             let scuttler = UnitKind::Scuttler.stats().cost;
             let reserve = UnitKind::Sentinel.stats().cost;
-            if enemy_turrets > alive(UnitKind::Lancer) + queued(UnitKind::Lancer)
+            // The sky answers first: enemy air on the field (or ever
+            // sighted) wants a dedicated gun per two known wings, before
+            // any ground purchase.
+            let enemy_air = obs
+                .enemy_units
+                .iter()
+                .filter(|u| u.kind.stats().domain == Domain::Air)
+                .count();
+            let want_aa = if enemy_air > 0 {
+                enemy_air.div_ceil(2) + 1
+            } else {
+                usize::from(self.seen_air)
+            };
+            if dials.aa_response
+                && alive(aa_kind) + queued(aa_kind) < want_aa
+                && *budget >= aa_kind.stats().cost
+            {
+                *budget -= aa_kind.stats().cost;
+                intents.push(Intent::TrainAt {
+                    building: fab.id,
+                    kind: aa_kind,
+                });
+            } else if enemy_turrets > alive(UnitKind::Lancer) + queued(UnitKind::Lancer)
                 && *budget >= lancer
             {
                 *budget -= lancer;
@@ -336,6 +402,18 @@ impl UtilityPolicy {
                 intents.push(Intent::TrainAt {
                     building: fab.id,
                     kind: UnitKind::Scuttler,
+                });
+            } else if dials.air_harass
+                && alive(wing_kind) + queued(wing_kind) < AIR_WING
+                && enemy_harvesters >= 2
+                && *budget >= wing_kind.stats().cost + reserve
+            {
+                // A wing for the harvest line — bought only once raiding
+                // has something to eat.
+                *budget -= wing_kind.stats().cost;
+                intents.push(Intent::TrainAt {
+                    building: fab.id,
+                    kind: wing_kind,
                 });
             } else if *budget >= lancer + reserve {
                 *budget -= lancer;
@@ -421,7 +499,189 @@ impl UtilityPolicy {
                     kind: BuildingKind::Turret,
                     anchor,
                 });
+                return;
             }
+        }
+
+        // The sky over the economy: enemy air sighted (or blips inbound)
+        // raises flak over the harvest line.
+        if dials.aa_response && (self.seen_air || !obs.blips.is_empty()) {
+            let flak_cost = BuildingKind::FlakTurret
+                .stats()
+                .construction
+                .map(|c| c.cost);
+            let flak = obs
+                .my_buildings
+                .iter()
+                .filter(|b| b.kind == BuildingKind::FlakTurret)
+                .count();
+            if let Some(cost) = flak_cost
+                && flak < FLAK_CAP
+                && *budget >= cost + UnitKind::Harvester.stats().cost
+                && let Some(node) = self.nearest_scrap(obs, home)
+                && let Some(anchor) = self.placement_near(obs, BuildingKind::FlakTurret, node)
+            {
+                *budget -= cost;
+                self.pending_sites.push(anchor);
+                intents.push(Intent::Build {
+                    kind: BuildingKind::FlakTurret,
+                    anchor,
+                });
+                return;
+            }
+        }
+
+        // One Array once teched: the early-warning ring and the eyes
+        // long guns fire on.
+        if dials.radar {
+            let have_fab = obs
+                .my_buildings
+                .iter()
+                .any(|b| b.kind == BuildingKind::Fabricator && b.built);
+            let have_array = obs
+                .my_buildings
+                .iter()
+                .any(|b| b.kind == BuildingKind::Array);
+            let array_cost = BuildingKind::Array.stats().construction.map(|c| c.cost);
+            if have_fab
+                && !have_array
+                && let Some(cost) = array_cost
+                && *budget >= cost + TECH_RESERVE
+                && let Some(anchor) = self.placement_near(obs, BuildingKind::Array, home)
+            {
+                *budget -= cost;
+                self.pending_sites.push(anchor);
+                intents.push(Intent::Build {
+                    kind: BuildingKind::Array,
+                    anchor,
+                });
+                return;
+            }
+        }
+
+        // Reclaimers once the patches near home run dry: the economy's
+        // retirement plan, never its opening.
+        if dials.reclaimers {
+            let near_home: u32 = obs
+                .known_scrap
+                .iter()
+                .chain(obs.known_wrecks.iter())
+                .filter(|(pos, _)| pos.chebyshev(home) <= HOME_SALVAGE_RADIUS)
+                .map(|(_, amount)| amount)
+                .sum();
+            let reclaimers = obs
+                .my_buildings
+                .iter()
+                .filter(|b| b.kind == BuildingKind::Reclaimer)
+                .count();
+            let rec_cost = BuildingKind::Reclaimer.stats().construction.map(|c| c.cost);
+            if near_home < SALVAGE_LOW
+                && reclaimers < RECLAIMER_CAP
+                && let Some(cost) = rec_cost
+                && *budget >= cost + TECH_RESERVE
+                && let Some(anchor) = self.placement_near(obs, BuildingKind::Reclaimer, home)
+            {
+                *budget -= cost;
+                self.pending_sites.push(anchor);
+                intents.push(Intent::Build {
+                    kind: BuildingKind::Reclaimer,
+                    anchor,
+                });
+            }
+        }
+    }
+
+    /// Repair channel: one weld order per think for the most wounded
+    /// standing building, funded only past a fighting reserve — welding
+    /// is upkeep, never the main line's budget.
+    fn repairs(
+        &mut self,
+        dials: &Dials,
+        obs: &Observation,
+        budget: &mut u32,
+        intents: &mut Vec<Intent>,
+    ) {
+        if !dials.repair {
+            return;
+        }
+        // Reserve: a sentinel's price stays banked, and the trickle
+        // itself is cheap — gate on the reserve, not the full damage.
+        let reserve = UnitKind::Sentinel.stats().cost;
+        if *budget < reserve {
+            return;
+        }
+        let patient = obs
+            .my_buildings
+            .iter()
+            .filter(|b| b.built && b.hp * 10 < b.kind.stats().max_hp * 8)
+            .map(|b| {
+                let deficit = b.kind.stats().max_hp - b.hp;
+                (std::cmp::Reverse(deficit), b.anchor.y, b.anchor.x, b.id)
+            })
+            .min()
+            .map(|(.., id)| id);
+        if let Some(building) = patient {
+            intents.push(Intent::Repair { building });
+        }
+    }
+
+    /// Air-raid channel: once a wing of idle ground-attack flyers has
+    /// gathered, throw it at the enemy's harvest line — unless known
+    /// anti-air stands over the target. Wings are spent, not managed:
+    /// the raid is an attack-move and whatever comes back rejoins the
+    /// idle pool.
+    fn air_raid(
+        &mut self,
+        dials: &Dials,
+        obs: &Observation,
+        home: TilePos,
+        enlisted: &[UnitId],
+        intents: &mut Vec<Intent>,
+    ) {
+        if !dials.air_harass {
+            return;
+        }
+        let wings = obs
+            .my_units
+            .iter()
+            .filter(|u| {
+                let stats = u.kind.stats();
+                stats.domain == crate::stats::Domain::Air
+                    && stats.can_target(crate::stats::Domain::Ground)
+                    && u.idle
+                    && !enlisted.contains(&u.id)
+            })
+            .count();
+        if wings < AIR_WING {
+            return;
+        }
+        // The juiciest known target: an enemy harvester, else any
+        // enemy building — the raid flies at work, not at armies.
+        let target = obs
+            .enemy_units
+            .iter()
+            .filter(|u| u.kind.stats().harvest.is_some())
+            .map(|u| (u.tile.manhattan(home), u.tile.y, u.tile.x))
+            .min()
+            .map(|(_, y, x)| TilePos::new(x, y))
+            .or_else(|| Self::enemy_site(obs, home));
+        let Some(target) = target else { return };
+        // Known anti-air over the target scrubs the raid: flak turrets
+        // and AA crawlers in sight or memory near the objective.
+        let aa_guard = obs
+            .enemy_buildings
+            .iter()
+            .filter(|b| b.kind == BuildingKind::FlakTurret)
+            .map(|b| b.anchor)
+            .chain(
+                obs.enemy_units
+                    .iter()
+                    .filter(|u| u.kind.stats().can_target(crate::stats::Domain::Air))
+                    .map(|u| u.tile),
+            )
+            .any(|t| t.chebyshev(target) <= RAID_AA_RADIUS);
+        if !aa_guard {
+            intents.push(Intent::RaidAir { target });
         }
     }
 
@@ -552,15 +812,31 @@ impl UtilityPolicy {
             .min_by_key(|a| a.id);
         let rally = self.rally_point(obs, staging_army, enemy_site, home);
 
-        // Defense: an intruder near home turns every army on it. Fresh
-        // fighters still muster at the rally — a body forms there and
-        // joins whole; sending each spawn at the threat is the trickle.
+        // Defense: an intruder near home — or near an ally's foundry;
+        // a teammate's base is ground worth marching for — turns every
+        // army on it. Fresh fighters still muster at the rally — a body
+        // forms there and joins whole; sending each spawn at the threat
+        // is the trickle.
+        let bases: Vec<TilePos> = std::iter::once(home)
+            .chain(
+                obs.ally_buildings
+                    .iter()
+                    .filter(|b| b.kind == BuildingKind::Foundry)
+                    .map(|b| b.anchor),
+            )
+            .collect();
         let intruder = obs
             .enemy_units
             .iter()
             .filter(|u| is_fighter(u))
-            .map(|u| (u.tile.chebyshev(home), u.tile.y, u.tile.x, u.id))
-            .filter(|(d, ..)| *d <= DEFENSE_RADIUS)
+            .filter_map(|u| {
+                bases
+                    .iter()
+                    .map(|b| u.tile.chebyshev(*b))
+                    .min()
+                    .filter(|d| *d <= DEFENSE_RADIUS)
+                    .map(|d| (d, u.tile.y, u.tile.x, u.id))
+            })
             .min()
             .map(|(_, y, x, _)| TilePos::new(x, y));
         if let Some(threat) = intruder {
@@ -616,7 +892,7 @@ impl UtilityPolicy {
             || (self.scouted_at > 0
                 && obs.tick.saturating_sub(self.scouted_at) < 2 * SCOUT_REFRESH);
         let sentinel = UnitKind::Sentinel.stats();
-        let atk = sentinel.attack.expect("sentinels fight");
+        let atk = sentinel.weapons.first().expect("sentinels fight");
         let sentinel_worth = u64::from(sentinel.max_hp)
             * (u64::from(atk.damage) * 100 / u64::from(atk.cooldown_ticks));
         let floor = if intel_fresh { 2 } else { 5 } * sentinel_worth;
@@ -774,7 +1050,9 @@ impl UtilityPolicy {
             let (w, h) = b.kind.stats().size;
             t.x >= b.anchor.x && t.x < b.anchor.x + w && t.y >= b.anchor.y && t.y < b.anchor.y + h
         };
-        !obs.my_buildings.iter().any(covered) && !obs.enemy_buildings.iter().any(covered)
+        !obs.my_buildings.iter().any(covered)
+            && !obs.ally_buildings.iter().any(covered)
+            && !obs.enemy_buildings.iter().any(covered)
     }
 
     fn rock_at(&self, obs: &Observation, t: TilePos) -> bool {
@@ -809,5 +1087,5 @@ impl UtilityPolicy {
 /// Convenience for tests and future tiers: whether a unit observation
 /// can fight.
 pub fn is_fighter(u: &UnitObs) -> bool {
-    u.kind.stats().attack.is_some()
+    u.kind.stats().can_fight()
 }

@@ -4,3 +4,4 @@
 # Runtime output — never commit; test fixtures live in driver/tests/.
 /screenshots/
 /replays/
+EXPERIMENTS.md

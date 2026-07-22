@@ -30,6 +30,7 @@ fn arena(units: Vec<UnitSpec>) -> Scenario {
             PlayerSpec {
                 name: "Ferrous".into(),
                 faction: Faction::Ferrous,
+                team: None,
                 scrap: 200,
                 bot: false,
                 bot_config: None,
@@ -37,6 +38,7 @@ fn arena(units: Vec<UnitSpec>) -> Scenario {
             PlayerSpec {
                 name: "Cupric".into(),
                 faction: Faction::Cupric,
+                team: None,
                 scrap: 200,
                 bot: false,
                 bot_config: None,
@@ -765,6 +767,7 @@ fn ghost_memory_survives_unseen_demolition_until_revisited() {
     players.push(PlayerSpec {
         name: "Third".into(),
         faction: Faction::Ferrous,
+        team: None,
         scrap: 0,
         bot: false,
         bot_config: None,
@@ -986,6 +989,7 @@ fn eliminated_players_cannot_command_survivors() {
     players.push(PlayerSpec {
         name: "Third".into(),
         faction: Faction::Ferrous,
+        team: None,
         scrap: 0,
         bot: false,
         bot_config: None,
@@ -1096,12 +1100,7 @@ fn destroying_the_last_foundry_wins_and_freezes() {
     )]);
     // 800 hp / 30 dps → ~27 s ≈ 540 ticks, plus approach.
     let events = run_until(&mut state, 800, |s, _| s.result().is_some());
-    assert_eq!(
-        state.result(),
-        Some(GameResult::Victory {
-            winner: PlayerId(0)
-        })
-    );
+    assert_eq!(state.result(), Some(GameResult::Victory { team: 0 }));
     assert!(events.iter().any(|e| matches!(e, Event::GameOver { .. })));
 
     // Frozen: ticks advance, nothing else changes. (State fields are
@@ -1116,12 +1115,7 @@ fn destroying_the_last_foundry_wins_and_freezes() {
     assert_eq!(state.units(), units_before.as_slice());
     assert_eq!(state.buildings(), buildings_before.as_slice());
     assert_eq!(state.players(), players_before.as_slice());
-    assert_eq!(
-        state.result(),
-        Some(GameResult::Victory {
-            winner: PlayerId(0)
-        })
-    );
+    assert_eq!(state.result(), Some(GameResult::Victory { team: 0 }));
 }
 
 #[test]
@@ -1149,6 +1143,7 @@ fn congestion_survives_nonconsecutive_unit_ids() {
             PlayerSpec {
                 name: "Ferrous".into(),
                 faction: Faction::Ferrous,
+                team: None,
                 scrap: 0,
                 bot: false,
                 bot_config: None,
@@ -1156,6 +1151,7 @@ fn congestion_survives_nonconsecutive_unit_ids() {
             PlayerSpec {
                 name: "Cupric".into(),
                 faction: Faction::Cupric,
+                team: None,
                 scrap: 0,
                 bot: false,
                 bot_config: None,
@@ -1637,11 +1633,7 @@ fn lancer_outranges_aggro_and_retaliation_answers() {
         let b = state.unit(lancer).unwrap().pos;
         a.dist_sq(b)
     };
-    let aggro = oxide_sim::stats::UnitKind::Sentinel
-        .stats()
-        .attack
-        .unwrap()
-        .aggro_range;
+    let aggro = oxide_sim::stats::UnitKind::Sentinel.stats().aggro_range;
     assert!(d2 > aggro * aggro, "test premise: outside sentinel aggro");
 
     state.tick(&[cmd(
@@ -2311,9 +2303,7 @@ fn losing_the_last_foundry_ends_the_match_despite_other_buildings() {
     run_until(&mut state, 4000, |s, _| s.building(foundry).is_none());
     assert_eq!(
         state.result(),
-        Some(GameResult::Victory {
-            winner: PlayerId(0)
-        }),
+        Some(GameResult::Victory { team: 0 }),
         "a standing turret must not keep an eliminated player alive"
     );
 }
@@ -2431,7 +2421,7 @@ fn turret_fires_at_its_stated_cadence() {
             break;
         }
     }
-    let cooldown = u64::from(BuildingKind::Turret.stats().attack.unwrap().cooldown_ticks);
+    let cooldown = u64::from(BuildingKind::Turret.stats().weapons[0].cooldown_ticks);
     assert!(fire_ticks.len() >= 3, "not enough shots observed");
     assert_eq!(
         fire_ticks[1] - fire_ticks[0],

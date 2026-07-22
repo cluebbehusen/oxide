@@ -10,11 +10,11 @@
 //! ordered by an explicit key ending in an id or a position, so there is
 //! exactly one possible choice.
 
-use super::{astar_for, rect_adjacent_tiles, tile_adjacent_to_rect};
+use super::{rect_adjacent_tiles, route_for, tile_adjacent_to_rect};
 use crate::event::Event;
-use crate::ids::{Target, UnitId};
+use crate::ids::{PlayerId, Target, UnitId};
 use crate::state::{Order, PathFollow, State};
-use crate::stats::RETARGET_RADIUS;
+use crate::stats::{Domain, RETARGET_RADIUS, WeaponStats};
 use chassis::fx::Vec2Fx;
 use chassis::grid::TilePos;
 
@@ -25,13 +25,14 @@ struct PendingHit {
     damage: u32,
 }
 
-/// A construction hp-gain decided this tick. Buffered like damage, and
-/// applied *after* it: the documented rule is that a site zeroed by fire
-/// is dead even if its builder acted the same tick — the shooter aimed at
-/// the start-of-tick world, where the hit was lethal. Completion buffers
-/// too: a site whose final tick coincides with a lethal volley must never
-/// come online — no free turret shot, no "online" fanfare before death.
-struct PendingBuild {
+/// A buffered hp gain — construction progress or repair welding —
+/// applied *after* damage: the documented rule is that a building zeroed
+/// by fire is dead even if its crew acted the same tick — the shooter
+/// aimed at the start-of-tick world, where the hit was lethal. Completion
+/// buffers too: a site whose final tick coincides with a lethal volley
+/// must never come online — no free turret shot, no "online" fanfare
+/// before death.
+struct PendingHpGain {
     site: crate::ids::BuildingId,
     step: u32,
     max_hp: u32,
@@ -42,7 +43,7 @@ struct PendingBuild {
 
 pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
     let mut hits: Vec<PendingHit> = Vec::new();
-    let mut builds: Vec<PendingBuild> = Vec::new();
+    let mut builds: Vec<PendingHpGain> = Vec::new();
     // Alternate direction by tick parity: sequential phases must not hand
     // one seat a standing first-mover edge (with damage buffered, the
     // remaining coupling is small — shared scrap, own-side order state —
@@ -57,7 +58,9 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
             continue; // dead since a previous tick but not yet swept
         }
         if let Some(unit) = state.unit_mut(id) {
-            unit.cooldown = unit.cooldown.saturating_sub(1);
+            for cd in &mut unit.cooldowns {
+                *cd = cd.saturating_sub(1);
+            }
         }
         let order = state.unit(id).expect("just seen").order;
         match order {
@@ -69,6 +72,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
             }
             Order::AttackMove { goal } => attack_move(state, id, goal, events),
             Order::Build { site } => build(state, id, site, events, &mut builds),
+            Order::Repair { building } => repair(state, id, building, events, &mut builds),
         }
     }
     turret_fire(state, events, &mut hits);
@@ -84,7 +88,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
 fn resolve_hits(
     state: &mut State,
     hits: Vec<PendingHit>,
-    builds: Vec<PendingBuild>,
+    builds: Vec<PendingHpGain>,
     events: &mut Vec<Event>,
 ) {
     for hit in &hits {
@@ -128,6 +132,68 @@ fn resolve_hits(
     }
 }
 
+/// The movement domain a target occupies (buildings sit on the ground).
+fn target_domain(state: &State, target: Target) -> Domain {
+    match target {
+        Target::Unit(uid) => state
+            .unit(uid)
+            .map_or(Domain::Ground, |u| u.kind.stats().domain),
+        Target::Building(_) => Domain::Ground,
+    }
+}
+
+/// Whether terrain cover applies to a shot: only direct fire between two
+/// ground parties traces the line — rock reaches nobody in the air, and
+/// indirect shells arc over it.
+fn traces_terrain(weapon: &WeaponStats, shooter: Domain, victim: Domain) -> bool {
+    !weapon.indirect && shooter == Domain::Ground && victim == Domain::Ground
+}
+
+/// Buffers a shot: the direct hit, plus — for splash weapons — one hit on
+/// every other hostile unit inside the radius that the weapon can cover.
+/// Victims are chosen against the start-of-tick world like every other
+/// decision this phase makes; buildings only ever take the direct hit.
+///
+/// Splash deliberately skips the owner-sight fire gate the aimed paths
+/// enforce: the gate governs *choosing* a victim, and a shell in flight
+/// chooses nothing — whatever stands in the blast is hit, seen or not.
+/// No information leaks through the hole: the only emitted event names
+/// the aimed victim, and retaliation stays gated on the sufferer seeing
+/// the shooter, so an unseen bystander takes damage silently and nobody
+/// learns anything they could not already see.
+fn buffer_shot(
+    state: &State,
+    attacker: Target,
+    attacker_owner: PlayerId,
+    victim: Target,
+    aim: Vec2Fx,
+    weapon: &WeaponStats,
+    hits: &mut Vec<PendingHit>,
+) {
+    hits.push(PendingHit {
+        attacker,
+        victim,
+        damage: weapon.damage,
+    });
+    let Some(radius) = weapon.splash else { return };
+    let radius_sq = radius * radius;
+    for u in state.units.iter() {
+        if u.hp == 0
+            || !state.hostile(attacker_owner, u.player)
+            || Target::Unit(u.id) == victim
+            || !weapon.targets.covers(u.kind.stats().domain)
+            || u.pos.dist_sq(aim) > radius_sq
+        {
+            continue;
+        }
+        hits.push(PendingHit {
+            attacker,
+            victim: Target::Unit(u.id),
+            damage: weapon.damage,
+        });
+    }
+}
+
 /// Built turrets pick their own fights: nearest enemy unit in range with a
 /// clear line (buildings can't chase, so out-of-line targets are simply
 /// ignored until they move). Stateless — target choice re-evaluates every
@@ -138,13 +204,13 @@ fn turret_fire(state: &mut State, events: &mut Vec<Event>, hits: &mut Vec<Pendin
         let Some(b) = state.building(id) else {
             continue;
         };
-        let Some(atk) = b.kind.stats().attack else {
+        let Some(atk) = b.kind.stats().weapons.first() else {
             continue;
         };
         if !b.built || b.hp == 0 {
             continue;
         }
-        let (me, center, cooling) = (b.player, b.center(), b.cooldown > 0);
+        let (me, center, cooling, kind) = (b.player, b.center(), b.cooldown > 0, b.kind);
         if cooling {
             let b = state.building_mut(id).expect("just seen");
             b.cooldown -= 1;
@@ -162,26 +228,39 @@ fn turret_fire(state: &mut State, events: &mut Vec<Event>, hits: &mut Vec<Pendin
             let building_open = state.building_at(t).is_none_or(|other| other.id == id);
             terrain_open && building_open
         };
+        // The owner must see the victim's tile — a turret that outranges
+        // its own mast fires on a spotter's eyes, never into fog.
         let victim = state
             .units
             .iter()
-            .filter(|u| u.player != me && u.hp > 0)
-            .map(|u| (center.dist_sq(u.pos), u.id, u.pos))
-            .filter(|(d, _, _)| *d <= range_sq)
-            .filter(|(_, _, pos)| !chassis::path::line_blocked(center, *pos, clear_shot))
-            .min_by_key(|(d, uid, _)| (*d, *uid));
-        let Some((_, uid, upos)) = victim else {
+            .filter(|u| {
+                state.hostile(me, u.player) && u.hp > 0 && atk.targets.covers(u.kind.stats().domain)
+            })
+            .filter(|u| state.can_see(me, u.tile()))
+            .map(|u| (center.dist_sq(u.pos), u.id, u.pos, u.kind.stats().domain))
+            .filter(|(d, _, _, _)| *d <= range_sq)
+            .filter(|(_, _, pos, dom)| {
+                !traces_terrain(atk, Domain::Ground, *dom)
+                    || !chassis::path::line_blocked(center, *pos, clear_shot)
+            })
+            .min_by_key(|&(d, uid, _, _)| (d, uid));
+        let Some((_, uid, upos, _)) = victim else {
             continue;
         };
         let b = state.building_mut(id).expect("just seen");
         b.cooldown = atk.cooldown_ticks;
-        hits.push(PendingHit {
-            attacker: Target::Building(id),
-            victim: Target::Unit(uid),
-            damage: atk.damage,
-        });
+        buffer_shot(
+            state,
+            Target::Building(id),
+            me,
+            Target::Unit(uid),
+            upos,
+            atk,
+            hits,
+        );
         events.push(Event::TurretFired {
             turret: id,
+            kind,
             target: uid,
             turret_pos: center,
             target_pos: upos,
@@ -197,7 +276,7 @@ fn build(
     id: UnitId,
     site: crate::ids::BuildingId,
     events: &mut Vec<Event>,
-    builds: &mut Vec<PendingBuild>,
+    builds: &mut Vec<PendingHpGain>,
 ) {
     let me = state.unit(id).expect("caller checked").player;
     // hp > 0 is defense in depth: with buffered damage nothing dies
@@ -226,11 +305,11 @@ fn build(
         let step = (ramp * (b.progress + 1) / build_ticks) - (ramp * b.progress / build_ticks);
         b.progress += 1;
         // Both the hp gain and the completion are buffered and applied
-        // after damage — see PendingBuild. The builder learns the site is
+        // after damage — see PendingHpGain. The builder learns the site is
         // done next tick, through the built-site branch above.
         let completes = b.progress >= build_ticks;
         if step > 0 || completes {
-            builds.push(PendingBuild {
+            builds.push(PendingHpGain {
                 site,
                 step,
                 max_hp: stats.max_hp,
@@ -252,28 +331,153 @@ fn build(
     }
 }
 
-/// The nearest enemy in this unit's aggro range — units before buildings,
-/// ties to the lowest id. `None` for pacifists and empty horizons.
+/// Weld a damaged own built building: walk adjacent, then feed it hp
+/// along the same ramp construction climbs, paying one scrap per
+/// [`crate::stats::REPAIR_TICKS_PER_SCRAP`] ticks of torch time. Gains
+/// buffer like construction — fire wins ties — and an empty bank stalls
+/// the job. Several welders stack, each burning their own scrap ticks.
+fn repair(
+    state: &mut State,
+    id: UnitId,
+    building: crate::ids::BuildingId,
+    events: &mut Vec<Event>,
+    builds: &mut Vec<PendingHpGain>,
+) {
+    let me = state.unit(id).expect("caller checked").player;
+    let Some(b) = state
+        .building(building)
+        .filter(|b| b.player == me && b.built && b.hp > 0 && b.hp < b.kind.stats().max_hp)
+    else {
+        // Healed, destroyed, or never a patient: the job is over.
+        state.unit_mut(id).expect("caller checked").advance_queue();
+        return;
+    };
+    let (anchor, kind) = (b.anchor, b.kind);
+    let stats = kind.stats();
+    let size = stats.size;
+    // The welding rate is the construction ramp; the unbuyable Foundry
+    // repairs on an authored ramp of its own.
+    let ramp_ticks = stats
+        .construction
+        .map_or(crate::stats::FOUNDRY_REPAIR_TICKS, |c| c.build_ticks);
+    let tile = state.unit(id).expect("caller checked").tile();
+    if tile_adjacent_to_rect(tile, anchor, size) {
+        // The bank is consulted only at billing boundaries: the coin
+        // paid at an interval's start has prepaid the whole interval,
+        // so the torch burns it to the end before broke can stall it —
+        // and a weld shorter than an interval still pays (chip repairs
+        // were free when billing landed at the interval's close).
+        let p = state.unit(id).expect("caller checked").progress;
+        if p.is_multiple_of(crate::stats::REPAIR_TICKS_PER_SCRAP) {
+            if state.player(me).scrap == 0 {
+                // Broke stalls the torch.
+                let unit = state.unit_mut(id).expect("caller checked");
+                let (player, pos) = (unit.player, unit.pos);
+                unit.clear_program();
+                events.push(Event::OrderStalled {
+                    unit: id,
+                    player,
+                    pos,
+                });
+                return;
+            }
+            state.player_mut(me).scrap -= 1;
+        }
+        let start_hp = stats.max_hp / 5;
+        let ramp = stats.max_hp - start_hp;
+        let unit = state.unit_mut(id).expect("caller checked");
+        unit.path = None;
+        unit.progress += 1;
+        let step = (ramp * (p + 1) / ramp_ticks) - (ramp * p / ramp_ticks);
+        if step > 0 {
+            builds.push(PendingHpGain {
+                site: building,
+                step,
+                max_hp: stats.max_hp,
+                completes: false,
+                player: me,
+                kind,
+            });
+        }
+    } else if !approach_rect(state, id, anchor, size) {
+        let unit = state.unit_mut(id).expect("caller checked");
+        let (player, pos) = (unit.player, unit.pos);
+        unit.clear_program();
+        events.push(Event::OrderStalled {
+            unit: id,
+            player,
+            pos,
+        });
+    }
+}
+
+/// Firing positions for a chaser around an unstandable victim tile:
+/// ring-scanned outward (row-major within a ring — the deterministic
+/// snap every goal uses), keeping only tiles the chaser can stand on
+/// AND shoot from — a stand-in beyond the weapon's Euclidean reach is
+/// no stand-in at all (ring corners sit √2 further out than their
+/// Chebyshev radius suggests). Candidates come back in scan order; the
+/// caller takes the first it can actually route to. Empty when the
+/// victim sits deeper in blocked ground than any weapon reaches.
+fn chase_stand_ins(
+    state: &State,
+    domain: Domain,
+    around: TilePos,
+    range: chassis::fx::Fx,
+) -> Vec<TilePos> {
+    /// Furthest ring hunted for standing room — covers the longest
+    /// anti-air reach (range 5 lands exactly on ring 5's axis tiles).
+    const CHASE_STAND_RADIUS: i32 = 5;
+    let aim = around.center();
+    let mut out = Vec::new();
+    for r in 1..=CHASE_STAND_RADIUS {
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs().max(dy.abs()) != r {
+                    continue;
+                }
+                let t = around.offset(dx, dy);
+                if state.passable_for(domain, t) && t.center().dist_sq(aim) <= range * range {
+                    out.push(t);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The nearest enemy this unit's weapons can cover, in aggro range —
+/// units before buildings, ties to the lowest id. `None` for pacifists,
+/// empty horizons, and everything outside the weapon masks (a flak
+/// crawler never picks a fight with infantry it cannot shoot).
 fn acquire_target(state: &State, id: UnitId) -> Option<Target> {
     let unit = state.unit(id).expect("caller checked");
-    let atk = unit.kind.stats().attack?;
+    let stats = unit.kind.stats();
+    if !stats.can_fight() {
+        return None;
+    }
     let (pos, me) = (unit.pos, unit.player);
-    let aggro_sq = atk.aggro_range * atk.aggro_range;
+    let aggro_sq = stats.aggro_range * stats.aggro_range;
 
     let unit_target = state
         .units
         .iter()
-        .filter(|u| u.player != me && u.hp > 0)
+        .filter(|u| {
+            state.hostile(me, u.player) && u.hp > 0 && stats.can_target(u.kind.stats().domain)
+        })
         .map(|u| (pos.dist_sq(u.pos), u.id))
         .filter(|(d, _)| *d <= aggro_sq)
         .min();
     if let Some((_, uid)) = unit_target {
         return Some(Target::Unit(uid));
     }
+    if !stats.can_target(Domain::Ground) {
+        return None;
+    }
     state
         .buildings
         .iter()
-        .filter(|b| b.player != me && b.hp > 0)
+        .filter(|b| state.hostile(me, b.player) && b.hp > 0)
         .map(|b| (pos.dist_sq(b.closest_point_to(pos)), b.id))
         .filter(|(d, _)| *d <= aggro_sq)
         .min()
@@ -323,8 +527,8 @@ fn walk(state: &mut State, id: UnitId, goal: TilePos, events: &mut Vec<Event>) {
     if has_fresh_path {
         return;
     }
-    let tile = unit.tile();
-    let path = astar_for(state, tile, goal);
+    let (tile, kind) = (unit.tile(), unit.kind);
+    let path = route_for(state, kind, tile, goal);
     let unit = state.unit_mut(id).expect("caller checked");
     match path {
         Some(waypoints) => {
@@ -356,11 +560,15 @@ fn touching_settled_arrival(state: &State, id: UnitId, goal: TilePos) -> bool {
     if unit.pos.dist_sq(goal_center) > near_sq {
         return false;
     }
-    let my_radius = unit.kind.stats().radius;
+    let my_stats = unit.kind.stats();
+    let my_radius = my_stats.radius;
     let contact_slack = chassis::fx::Fx::lit("0.05");
+    // Contact only means anything between bodies that collide: a flyer
+    // hovering over a parked crowd is not "touching" it.
     state.units.iter().any(|other| {
         other.id != id
             && other.hp > 0
+            && other.kind.stats().domain == my_stats.domain
             && other.path.is_none()
             && other.order == Order::Idle
             && other.pos.dist_sq(goal_center) <= near_sq
@@ -368,8 +576,11 @@ fn touching_settled_arrival(state: &State, id: UnitId, goal: TilePos) -> bool {
     })
 }
 
-/// The harvest loop: walk to node, extract to capacity, haul to the nearest
-/// Foundry, repeat; when the node dies, hop to a neighbor node or go idle.
+/// The harvest loop: walk to the salvage, extract to capacity, haul to
+/// the nearest Foundry, repeat; when the source dies, hop to a neighbor
+/// source or go idle. Nodes are worked from an adjacent tile (they block
+/// ground); wrecks are worked standing *on* the tile — they are junk on
+/// open ground.
 fn harvest(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>) {
     let unit = state.unit(id).expect("caller checked");
     let Some(hstats) = unit.kind.stats().harvest else {
@@ -377,8 +588,9 @@ fn harvest(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
         state.unit_mut(id).expect("caller checked").clear_program();
         return;
     };
-    let (tile, carrying) = (unit.tile(), unit.carrying);
+    let (tile, kind, carrying) = (unit.tile(), unit.kind, unit.carrying);
     let node_scrap = state.map.scrap_at(node);
+    let node_wreck = state.map.wreck_at(node);
 
     if carrying >= hstats.capacity {
         deliver(state, id, node, events);
@@ -395,8 +607,41 @@ fn harvest(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
                 pos,
             });
         }
+    } else if node_wreck > 0 {
+        if tile == node {
+            extract_wreck(state, id, node, hstats.ticks_per_scrap);
+        } else {
+            let keep = state
+                .unit(id)
+                .expect("caller checked")
+                .path
+                .as_ref()
+                .is_some_and(|p| p.goal == node);
+            if !keep {
+                let path = route_for(state, kind, tile, node);
+                let unit = state.unit_mut(id).expect("caller checked");
+                match path {
+                    Some(waypoints) => {
+                        unit.path = Some(PathFollow {
+                            goal: node,
+                            waypoints,
+                            next: 0,
+                        });
+                    }
+                    None => {
+                        let (player, pos) = (unit.player, unit.pos);
+                        unit.clear_program();
+                        events.push(Event::OrderStalled {
+                            unit: id,
+                            player,
+                            pos,
+                        });
+                    }
+                }
+            }
+        }
     } else {
-        // Node is dry. Find a replacement, else wrap up.
+        // Dry. Find a replacement source, else wrap up.
         match replacement_node(state, node, tile) {
             Some(next) => {
                 let unit = state.unit_mut(id).expect("caller checked");
@@ -407,6 +652,21 @@ fn harvest(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
             None if carrying > 0 => deliver(state, id, node, events),
             None => state.unit_mut(id).expect("caller checked").advance_queue(),
         }
+    }
+}
+
+/// Stand on the wreck and strip it. Decay can beat the stripper to the
+/// last piece — the dry-source branch above handles the morning after.
+fn extract_wreck(state: &mut State, id: UnitId, node: TilePos, ticks_per_scrap: u32) {
+    let unit = state.unit_mut(id).expect("caller checked");
+    unit.path = None;
+    unit.progress += 1;
+    if unit.progress < ticks_per_scrap {
+        return;
+    }
+    unit.progress = 0;
+    if state.map.extract_wreck(node).is_some() {
+        state.unit_mut(id).expect("caller checked").carrying += 1;
     }
 }
 
@@ -473,7 +733,10 @@ fn deliver(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
             amount: credited,
         });
         // Nothing left to go back to? Then we're done hauling.
-        if state.map.scrap_at(node) == 0 && replacement_node(state, node, tile).is_none() {
+        if state.map.scrap_at(node) == 0
+            && state.map.wreck_at(node) == 0
+            && replacement_node(state, node, tile).is_none()
+        {
             state.unit_mut(id).expect("caller checked").advance_queue();
         }
     } else if !approach_rect(state, id, anchor, size) {
@@ -488,9 +751,10 @@ fn deliver(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
     }
 }
 
-/// Chase-and-hit. Range is measured to the target's closest point and damage
-/// is immediate. A vanished target hands control back to the remembered
-/// attack-move (or idle, where auto-acquire finds the next fight).
+/// Chase-and-hit. Range is measured to the target's closest point and
+/// shots are buffered. A vanished target — or one no carried weapon can
+/// cover — hands control back to the remembered attack-move (or idle,
+/// where auto-acquire finds the next fight).
 fn attack(
     state: &mut State,
     id: UnitId,
@@ -500,11 +764,18 @@ fn attack(
     hits: &mut Vec<PendingHit>,
 ) {
     let unit = state.unit(id).expect("caller checked");
-    let Some(atk) = unit.kind.stats().attack else {
+    let stats = unit.kind.stats();
+    if !stats.can_fight() {
         state.unit_mut(id).expect("caller checked").clear_program();
         return;
-    };
-    let (pos, tile, cooldown) = (unit.pos, unit.tile(), unit.cooldown);
+    }
+    let (pos, tile, me, kind, cooldowns) = (
+        unit.pos,
+        unit.tile(),
+        unit.player,
+        unit.kind,
+        unit.cooldowns,
+    );
 
     // An attack-mover pounding a building stays alert: an enemy *unit*
     // wandering into aggro takes priority (deterministic — acquire prefers
@@ -522,7 +793,9 @@ fn attack(
         return;
     }
 
-    // Resolve the target's current position; None means it is gone.
+    // Resolve the target's current position; None means it is gone. A
+    // target outside every weapon mask ends the engagement the same way —
+    // nothing this chassis carries will ever land on it.
     let target_info: Option<(Vec2Fx, TilePos)> = match target {
         Target::Unit(uid) => state
             .unit(uid)
@@ -533,7 +806,12 @@ fn attack(
             .filter(|b| b.hp > 0)
             .map(|b| (b.closest_point_to(pos), b.anchor)),
     };
-    let Some((aim_point, target_tile)) = target_info else {
+    let victim_domain = target_domain(state, target);
+    let primary = stats
+        .weapons
+        .iter()
+        .position(|w| w.targets.covers(victim_domain));
+    let (Some((aim_point, target_tile)), Some(pi)) = (target_info, primary) else {
         let unit = state.unit_mut(id).expect("caller checked");
         match resume {
             Some(goal) => {
@@ -544,11 +822,15 @@ fn attack(
         }
         return;
     };
+    let weapon = &stats.weapons[pi];
 
-    // In range only counts with a clear line: rock is cover, and buildings
-    // (other than the victim itself) block shots. Scrap piles are low junk
-    // — fire passes over them. No LOS → keep approaching; the chase path
-    // already routes around whatever is in the way.
+    // In range only counts with a clear line — and with eyes. Terrain
+    // cover (rock, non-victim buildings) applies to direct ground-vs-
+    // ground fire only; shots to or from the air and indirect shells arc
+    // past it. The owner must currently *see* the victim's tile: a gun
+    // that outranges its own vision fires on a spotter's sight (scrap
+    // piles are low junk — fire passes over them). No shot → keep
+    // approaching; the chase path already routes around what's in the way.
     let clear_shot = |t: TilePos| {
         let terrain_open = state
             .map
@@ -560,47 +842,84 @@ fn attack(
         };
         terrain_open && building_open
     };
-    let in_range = pos.dist_sq(aim_point) <= atk.range * atk.range;
-    if in_range && !chassis::path::line_blocked(pos, aim_point, clear_shot) {
+    // Sight of any footprint tile serves for a building (matching attack
+    // validation); a unit is seen at its own tile. The line trace runs
+    // only once in range — it is not built for cross-map endpoints.
+    let seen = match target {
+        Target::Unit(_) => state.can_see(me, target_tile),
+        Target::Building(bid) => state
+            .building(bid)
+            .is_some_and(|b| b.tiles().any(|t| state.can_see(me, t))),
+    };
+    let in_range = pos.dist_sq(aim_point) <= weapon.range * weapon.range;
+    if in_range
+        && seen
+        && (!traces_terrain(weapon, stats.domain, victim_domain)
+            || !chassis::path::line_blocked(pos, aim_point, clear_shot))
+    {
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = None;
-        if cooldown > 0 {
-            return;
+        if cooldowns[pi] == 0 {
+            unit.cooldowns[pi] = weapon.cooldown_ticks;
+            buffer_shot(state, Target::Unit(id), me, target, aim_point, weapon, hits);
+            events.push(Event::AttackHit {
+                attacker: id,
+                attacker_kind: kind,
+                target,
+                attacker_pos: pos,
+                target_pos: aim_point,
+            });
         }
-        unit.cooldown = atk.cooldown_ticks;
-        hits.push(PendingHit {
-            attacker: Target::Unit(id),
-            victim: target,
-            damage: atk.damage,
-        });
-        events.push(Event::AttackHit {
-            attacker: id,
-            attacker_kind: state.unit(id).expect("caller checked").kind,
-            target,
-            attacker_pos: pos,
-            target_pos: aim_point,
-        });
+        fire_sidearms(state, id, pi, hits, events);
         return;
     }
+    // Opportunist guns don't wait for the march to end.
+    fire_sidearms(state, id, pi, hits, events);
 
-    // Out of range: chase.
+    // Out of range (or blind, or blocked): chase.
     let reached = match target {
         Target::Unit(_) => {
-            // Repath only when the target has drifted a tile away from the
-            // path's goal — cheap pursuit without per-tick A*.
+            // A ground chaser cannot stand where a flyer hovers — over
+            // rock, over a roof — so it marches to a tile it CAN stand
+            // on and shoot from instead; getting within weapon range is
+            // the job, occupying the victim's tile never was. Air
+            // chasers (and reachable tiles) keep the direct goal.
+            let direct = state.passable_for(stats.domain, target_tile);
+            // Repath when the target has drifted a tile from the
+            // path's goal — cheap pursuit without per-tick A*. A path
+            // already aimed at a firing position for this victim stays
+            // fresh while it parks, or a grounded chaser would repath
+            // forever.
             let stale = state
                 .unit(id)
                 .expect("caller checked")
                 .path
                 .as_ref()
-                .is_none_or(|p| p.goal.chebyshev(target_tile) > 1);
+                .is_none_or(|p| {
+                    if direct {
+                        p.goal != target_tile && p.goal.chebyshev(target_tile) > 1
+                    } else {
+                        !(state.passable_for(stats.domain, p.goal)
+                            && p.goal.center().dist_sq(target_tile.center())
+                                <= weapon.range * weapon.range)
+                    }
+                });
             if stale {
-                let path = astar_for(state, tile, target_tile);
-                let unit = state.unit_mut(id).expect("caller checked");
-                match path {
-                    Some(waypoints) => {
+                let routed = if direct {
+                    route_for(state, kind, tile, target_tile).map(|w| (target_tile, w))
+                } else {
+                    // Scan-order candidates, first one that routes wins:
+                    // an isolated pocket next to the victim must not
+                    // stall a chaser that could fire from the far side.
+                    chase_stand_ins(state, stats.domain, target_tile, weapon.range)
+                        .into_iter()
+                        .find_map(|goal| route_for(state, kind, tile, goal).map(|w| (goal, w)))
+                };
+                match routed {
+                    Some((goal, waypoints)) => {
+                        let unit = state.unit_mut(id).expect("caller checked");
                         unit.path = Some(PathFollow {
-                            goal: target_tile,
+                            goal,
                             waypoints,
                             next: 0,
                         });
@@ -630,6 +949,73 @@ fn attack(
     }
 }
 
+/// Weapons other than the one engaging the ordered target pick their own
+/// fights: the nearest hostile unit each can cover, in range, seen by the
+/// owner, and clear — opportunist fire that never steers the chassis.
+fn fire_sidearms(
+    state: &mut State,
+    id: UnitId,
+    primary: usize,
+    hits: &mut Vec<PendingHit>,
+    events: &mut Vec<Event>,
+) {
+    let unit = state.unit(id).expect("caller checked");
+    let stats = unit.kind.stats();
+    if stats.weapons.len() < 2 {
+        return;
+    }
+    let (pos, me, kind, cooldowns) = (unit.pos, unit.player, unit.kind, unit.cooldowns);
+    for (wi, weapon) in stats.weapons.iter().enumerate() {
+        if wi == primary || cooldowns[wi] > 0 {
+            continue;
+        }
+        let range_sq = weapon.range * weapon.range;
+        let clear_shot = |t: TilePos| {
+            let terrain_open = state
+                .map
+                .tile(t)
+                .is_some_and(|tile| tile.terrain != crate::map::Terrain::Rock);
+            terrain_open && state.building_at(t).is_none()
+        };
+        let victim = state
+            .units
+            .iter()
+            .filter(|u| {
+                state.hostile(me, u.player)
+                    && u.hp > 0
+                    && weapon.targets.covers(u.kind.stats().domain)
+            })
+            .filter(|u| state.can_see(me, u.tile()))
+            .map(|u| (pos.dist_sq(u.pos), u.id, u.pos, u.kind.stats().domain))
+            .filter(|(d, _, _, _)| *d <= range_sq)
+            .filter(|(_, _, upos, dom)| {
+                !traces_terrain(weapon, stats.domain, *dom)
+                    || !chassis::path::line_blocked(pos, *upos, clear_shot)
+            })
+            .min_by_key(|&(d, uid, _, _)| (d, uid));
+        let Some((_, uid, upos, _)) = victim else {
+            continue;
+        };
+        state.unit_mut(id).expect("caller checked").cooldowns[wi] = weapon.cooldown_ticks;
+        buffer_shot(
+            state,
+            Target::Unit(id),
+            me,
+            Target::Unit(uid),
+            upos,
+            weapon,
+            hits,
+        );
+        events.push(Event::AttackHit {
+            attacker: id,
+            attacker_kind: kind,
+            target: Target::Unit(uid),
+            attacker_pos: pos,
+            target_pos: upos,
+        });
+    }
+}
+
 /// Damage answers back: a hit unit that can fight and isn't already
 /// fighting turns on its attacker — the counter to weapons that outrange
 /// aggro (nothing else ever gets this far: inside aggro, auto-acquire
@@ -640,7 +1026,23 @@ fn retaliate(state: &mut State, victim: UnitId, attacker: Target) {
     let Some(unit) = state.unit(victim) else {
         return;
     };
-    if unit.hp == 0 || unit.kind.stats().attack.is_none() {
+    let stats = unit.kind.stats();
+    let attacker_domain = target_domain(state, attacker);
+    if unit.hp == 0 || !stats.can_target(attacker_domain) {
+        return;
+    }
+    // Answering fire needs eyes: an indirect shell lobbed from beyond
+    // every friendly sight line reveals nothing to march after — chasing
+    // it would hand out free intel and a suicide route.
+    let seen = match attacker {
+        Target::Unit(uid) => state
+            .unit(uid)
+            .is_some_and(|a| state.can_see(unit.player, a.tile())),
+        Target::Building(bid) => state
+            .building(bid)
+            .is_some_and(|b| b.tiles().any(|t| state.can_see(unit.player, t))),
+    };
+    if !seen {
         return;
     }
     let resume = match unit.order {
@@ -673,7 +1075,10 @@ fn target_standing(state: &State, target: Target) -> bool {
 /// Ensures the unit is walking to some passable tile touching the rectangle.
 /// Returns false when no ring tile is reachable.
 fn approach_rect(state: &mut State, id: UnitId, anchor: TilePos, size: (i32, i32)) -> bool {
-    let tile = state.unit(id).expect("caller checked").tile();
+    let (tile, kind) = {
+        let u = state.unit(id).expect("caller checked");
+        (u.tile(), u.kind)
+    };
     let keep = state
         .unit(id)
         .expect("caller checked")
@@ -689,8 +1094,9 @@ fn approach_rect(state: &mut State, id: UnitId, anchor: TilePos, size: (i32, i32
     // magnetizing onto one tile and jamming — the exact configuration that
     // froze bot economies. Only the near face rotates: a lone unit never
     // detours to the building's far side.
+    let domain = kind.stats().domain;
     let mut candidates: Vec<TilePos> = rect_adjacent_tiles(anchor, size)
-        .filter(|&t| state.passable(t))
+        .filter(|&t| state.passable_for(domain, t))
         .collect();
     candidates.sort_by_key(|t| t.chebyshev(tile));
     let near = candidates.len().min(4);
@@ -698,7 +1104,7 @@ fn approach_rect(state: &mut State, id: UnitId, anchor: TilePos, size: (i32, i32
         candidates[..near].rotate_left(id.0 as usize % near);
     }
     for goal in candidates {
-        if let Some(waypoints) = astar_for(state, tile, goal) {
+        if let Some(waypoints) = route_for(state, kind, tile, goal) {
             let unit = state.unit_mut(id).expect("caller checked");
             unit.path = Some(PathFollow {
                 goal,
@@ -711,14 +1117,15 @@ fn approach_rect(state: &mut State, id: UnitId, anchor: TilePos, size: (i32, i32
     false
 }
 
-/// The nearest tile still holding scrap within [`RETARGET_RADIUS`] of a dead
-/// node — keyed by (distance from the unit, y, x) so the pick is unique.
+/// The nearest tile still holding salvage — node scrap or wreck — within
+/// [`RETARGET_RADIUS`] of a dead source, keyed by (distance from the
+/// unit, y, x) so the pick is unique.
 fn replacement_node(state: &State, around: TilePos, unit_tile: TilePos) -> Option<TilePos> {
     let mut best: Option<(i32, i32, i32)> = None;
     for dy in -RETARGET_RADIUS..=RETARGET_RADIUS {
         for dx in -RETARGET_RADIUS..=RETARGET_RADIUS {
             let t = around.offset(dx, dy);
-            if state.map.scrap_at(t) == 0 {
+            if state.map.scrap_at(t) == 0 && state.map.wreck_at(t) == 0 {
                 continue;
             }
             let key = (t.manhattan(unit_tile), t.y, t.x);

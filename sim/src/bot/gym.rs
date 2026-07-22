@@ -19,14 +19,17 @@ use super::utility::{Dials, UtilityPolicy};
 use crate::command::PlayerCommand;
 use crate::ids::PlayerId;
 use crate::state::State;
-use crate::stats::{BuildingKind, UnitKind};
+use crate::stats::{BuildingKind, Domain, Role, UnitKind};
 use chassis::grid::TilePos;
 
 /// Bump when actions or features change shape — recorded checkpoints
 /// and shipped weights must refuse mismatched worlds.
-pub const GYM_VERSION: u32 = 2;
+pub const GYM_VERSION: u32 = 3;
 
-/// The macro menu, one action per think.
+/// The macro menu, one action per think. Training slots are
+/// role-indexed where the factions differ: one action means "train my
+/// anti-air", and the seat's faction resolves which machine that is —
+/// one action space, two rosters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Action {
@@ -40,25 +43,110 @@ pub enum Action {
     TrainScuttler = 3,
     /// Queue a Lancer at the Fabricator.
     TrainLancer = 4,
+    /// Queue a Bombard at the Fabricator.
+    TrainBombard = 5,
+    /// Queue the faction's anti-air crawler at the Fabricator.
+    TrainAntiAir = 6,
+    /// Queue the faction's ground-attack flyer at the Fabricator.
+    TrainAirGround = 7,
+    /// Queue the faction's air-superiority flyer at the Fabricator.
+    TrainAirAir = 8,
     /// Start a Fabricator near home.
-    BuildFabricator = 5,
+    BuildFabricator = 9,
     /// Start a Turret over the harvest line.
-    BuildTurret = 6,
-    /// Draft idle fighters into the staging army (or found it).
-    FormArmy = 7,
+    BuildTurret = 10,
+    /// Start a Flak Turret over the harvest line.
+    BuildFlak = 11,
+    /// Start a Bastion near home.
+    BuildBastion = 12,
+    /// Start an Array near home.
+    BuildArray = 13,
+    /// Start a Reclaimer near home.
+    BuildReclaimer = 14,
+    /// Weld the most-wounded standing building.
+    Repair = 15,
+    /// Throw the idle air wing at the enemy's work.
+    AirRaid = 16,
+    /// Draft idle ground fighters into the staging army (or found it).
+    FormArmy = 17,
     /// Commit the staging army at the nearest known enemy site.
-    Push = 8,
+    Push = 18,
     /// Pull every army back to its rally.
-    Recall = 9,
+    Recall = 19,
     /// Send a scout now.
-    Scout = 10,
+    Scout = 20,
 }
 
 /// Number of actions in [`Action`].
-pub const ACTION_COUNT: usize = 11;
+pub const ACTION_COUNT: usize = 21;
 
 /// Number of entries in the feature vector.
-pub const FEATURE_COUNT: usize = 32;
+pub const FEATURE_COUNT: usize = 59;
+
+/// One name per feature index, emitted in the gym hello and asserted
+/// by the trainer — Rust/Python index skew fails loudly at handshake
+/// instead of silently training on shifted columns.
+pub const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
+    "tick",
+    "scrap",
+    "my_harvesters",
+    "my_sentinels",
+    "my_scuttlers",
+    "my_lancers",
+    "my_turrets_built",
+    "fab_built",
+    "max_foundry_hp",
+    "idle_ground_fighters",
+    "armies",
+    "staging_army_size",
+    "army_state",
+    "enemy_harvesters",
+    "enemy_sentinels",
+    "enemy_scuttlers",
+    "enemy_lancers",
+    "enemy_buildings",
+    "enemy_turrets_built",
+    "enemy_foundry_known",
+    "my_strength",
+    "army_strength",
+    "enemy_strength",
+    "home_x",
+    "home_y",
+    "enemy_site_x",
+    "enemy_site_y",
+    "intel_age",
+    "seen_strength",
+    "seen_age",
+    "seen_x",
+    "seen_y",
+    "my_bombards",
+    "my_antiair",
+    "my_airground",
+    "my_airair",
+    "enemy_bombards",
+    "enemy_antiair",
+    "enemy_airground",
+    "enemy_airair",
+    "my_flak_built",
+    "my_arrays_built",
+    "my_reclaimers_built",
+    "my_aa_strength",
+    "enemy_aa_strength",
+    "blip_count",
+    "nearest_blip_x",
+    "nearest_blip_y",
+    "wreck_count",
+    "wreck_value",
+    "nearest_wreck_x",
+    "nearest_wreck_y",
+    "damaged_buildings",
+    "repair_deficit",
+    "ally_units",
+    "ally_strength",
+    "ally_foundry_hp",
+    "ally_distress",
+    "faction",
+];
 
 impl Action {
     /// Decodes a policy's choice; out-of-range folds to Idle (the
@@ -69,12 +157,22 @@ impl Action {
             2 => Action::TrainSentinel,
             3 => Action::TrainScuttler,
             4 => Action::TrainLancer,
-            5 => Action::BuildFabricator,
-            6 => Action::BuildTurret,
-            7 => Action::FormArmy,
-            8 => Action::Push,
-            9 => Action::Recall,
-            10 => Action::Scout,
+            5 => Action::TrainBombard,
+            6 => Action::TrainAntiAir,
+            7 => Action::TrainAirGround,
+            8 => Action::TrainAirAir,
+            9 => Action::BuildFabricator,
+            10 => Action::BuildTurret,
+            11 => Action::BuildFlak,
+            12 => Action::BuildBastion,
+            13 => Action::BuildArray,
+            14 => Action::BuildReclaimer,
+            15 => Action::Repair,
+            16 => Action::AirRaid,
+            17 => Action::FormArmy,
+            18 => Action::Push,
+            19 => Action::Recall,
+            20 => Action::Scout,
             _ => Action::Idle,
         }
     }
@@ -176,10 +274,18 @@ impl GymBot {
             .my_buildings
             .iter()
             .any(|b| b.kind == BuildingKind::Fabricator && b.built);
+        // Ground fighters only: the draft (and therefore FormArmy's
+        // meaning) is a ground body — wings belong to the raid action.
         let idle_fighters = obs
             .my_units
             .iter()
-            .filter(|u| u.kind.stats().attack.is_some() && u.idle && !enlisted.contains(&u.id))
+            .filter(|u| {
+                let stats = u.kind.stats();
+                stats.can_fight()
+                    && stats.domain == Domain::Ground
+                    && u.idle
+                    && !enlisted.contains(&u.id)
+            })
             .count() as i64;
         let staging = armies
             .iter()
@@ -226,6 +332,74 @@ impl GymBot {
         } else {
             obs.tick.saturating_sub(self.seen_at).min(10_000) as i64
         };
+
+        let role_count = |role: Role, mine: bool| -> i64 {
+            let list = if mine {
+                &obs.my_units
+            } else {
+                &obs.enemy_units
+            };
+            list.iter().filter(|u| u.kind.role() == role).count() as i64
+        };
+        let built = |kind: BuildingKind| -> i64 {
+            obs.my_buildings
+                .iter()
+                .filter(|b| b.kind == kind && b.built)
+                .count() as i64
+        };
+        let aa_strength = |mine: bool| -> i64 {
+            let list = if mine {
+                &obs.my_units
+            } else {
+                &obs.enemy_units
+            };
+            (list
+                .iter()
+                .map(|u| super::executive::strength_vs(u, Domain::Air))
+                .sum::<u64>()
+                / 100) as i64
+        };
+        let nearest = |tiles: &mut dyn Iterator<Item = TilePos>| -> Option<TilePos> {
+            home.and_then(|h| {
+                tiles
+                    .map(|t| (t.manhattan(h), t.y, t.x))
+                    .min()
+                    .map(|(_, y, x)| TilePos::new(x, y))
+            })
+        };
+        let nearest_blip = nearest(&mut obs.blips.iter().copied());
+        let nearest_wreck = nearest(&mut obs.known_wrecks.iter().map(|(t, _)| *t));
+        let damaged: Vec<_> = obs
+            .my_buildings
+            .iter()
+            .filter(|b| b.built && b.hp < b.kind.stats().max_hp)
+            .collect();
+        let repair_deficit: i64 = damaged
+            .iter()
+            .map(|b| i64::from(b.kind.stats().max_hp - b.hp))
+            .sum();
+        let ally_strength: i64 = (obs
+            .ally_units
+            .iter()
+            .map(super::executive::unit_strength)
+            .sum::<u64>()
+            / 100) as i64;
+        let ally_foundries: Vec<TilePos> = obs
+            .ally_buildings
+            .iter()
+            .filter(|b| b.kind == BuildingKind::Foundry && b.built)
+            .map(|b| b.anchor)
+            .collect();
+        let ally_foundry_hp = obs
+            .ally_buildings
+            .iter()
+            .filter(|b| b.kind == BuildingKind::Foundry && b.built)
+            .map(|b| i64::from(b.hp))
+            .min()
+            .unwrap_or(-1);
+        let ally_distress = i64::from(obs.enemy_units.iter().any(|u| {
+            u.kind.stats().can_fight() && ally_foundries.iter().any(|f| u.tile.chebyshev(*f) <= 8)
+        }));
 
         let features: [i64; FEATURE_COUNT] = [
             obs.tick as i64,
@@ -275,6 +449,36 @@ impl GymBot {
             seen_age,
             seen_pos.map_or(-1, |p| i64::from(p.x)),
             seen_pos.map_or(-1, |p| i64::from(p.y)),
+            role_count(Role::Bombard, true),
+            role_count(Role::AntiAir, true),
+            role_count(Role::AirGround, true),
+            role_count(Role::AirAir, true),
+            role_count(Role::Bombard, false),
+            role_count(Role::AntiAir, false),
+            role_count(Role::AirGround, false),
+            role_count(Role::AirAir, false),
+            built(BuildingKind::FlakTurret),
+            built(BuildingKind::Array),
+            built(BuildingKind::Reclaimer),
+            aa_strength(true),
+            aa_strength(false),
+            obs.blips.len() as i64,
+            nearest_blip.map_or(-1, |p| i64::from(p.x)),
+            nearest_blip.map_or(-1, |p| i64::from(p.y)),
+            obs.known_wrecks.len() as i64,
+            obs.known_wrecks
+                .iter()
+                .map(|(_, v)| i64::from(*v))
+                .sum::<i64>(),
+            nearest_wreck.map_or(-1, |p| i64::from(p.x)),
+            nearest_wreck.map_or(-1, |p| i64::from(p.y)),
+            damaged.len() as i64,
+            repair_deficit,
+            obs.ally_units.len() as i64,
+            ally_strength,
+            ally_foundry_hp,
+            ally_distress,
+            i64::from(obs.faction == crate::state::Faction::Cupric),
         ];
 
         let mut mask = [false; ACTION_COUNT];
@@ -291,6 +495,12 @@ impl GymBot {
             mask[Action::TrainSentinel as usize] = foundry_open && cost(UnitKind::Sentinel);
             mask[Action::TrainScuttler as usize] = fab_open && cost(UnitKind::Scuttler);
             mask[Action::TrainLancer as usize] = fab_open && cost(UnitKind::Lancer);
+            mask[Action::TrainBombard as usize] = fab_open && cost(UnitKind::Bombard);
+            // Role slots price the seat's own variant.
+            let role_kind = |r: Role| r.unit_for(obs.faction);
+            mask[Action::TrainAntiAir as usize] = fab_open && cost(role_kind(Role::AntiAir));
+            mask[Action::TrainAirGround as usize] = fab_open && cost(role_kind(Role::AirGround));
+            mask[Action::TrainAirAir as usize] = fab_open && cost(role_kind(Role::AirAir));
             let build_cost =
                 |k: BuildingKind| k.stats().construction.is_some_and(|c| obs.scrap >= c.cost);
             // A build without a builder lowers to nothing — and worse,
@@ -315,6 +525,35 @@ impl GymBot {
                         .placement_near(&obs, BuildingKind::Turret, node)
                         .is_some()
                 });
+            // Flak guards the same ground the Turret does; the pricier
+            // emplacements anchor near home like the Fabricator.
+            mask[Action::BuildFlak as usize] = builder_free
+                && build_cost(BuildingKind::FlakTurret)
+                && self.policy.nearest_scrap(&obs, h).is_some_and(|node| {
+                    self.policy
+                        .placement_near(&obs, BuildingKind::FlakTurret, node)
+                        .is_some()
+                });
+            let near_home = |k: BuildingKind| {
+                builder_free && build_cost(k) && self.policy.placement_near(&obs, k, h).is_some()
+            };
+            mask[Action::BuildBastion as usize] = near_home(BuildingKind::Bastion);
+            mask[Action::BuildArray as usize] = near_home(BuildingKind::Array);
+            mask[Action::BuildReclaimer as usize] = near_home(BuildingKind::Reclaimer);
+            mask[Action::Repair as usize] = builder_free
+                && obs.scrap > 0
+                && obs
+                    .my_buildings
+                    .iter()
+                    .any(|b| b.built && b.hp < b.kind.stats().max_hp);
+            mask[Action::AirRaid as usize] = enemy_site.is_some()
+                && obs.my_units.iter().any(|u| {
+                    let stats = u.kind.stats();
+                    stats.domain == Domain::Air
+                        && stats.can_target(Domain::Ground)
+                        && u.idle
+                        && !enlisted.contains(&u.id)
+                });
             mask[Action::FormArmy as usize] = idle_fighters > 0;
             // Push commits the main army wherever it is in its life:
             // between two decisions a staging army can enter combat,
@@ -332,8 +571,7 @@ impl GymBot {
             mask[Action::Scout as usize] = obs.my_units.iter().any(|u| {
                 !enlisted.contains(&u.id)
                     && u.site.is_none()
-                    && (u.kind == UnitKind::Harvester
-                        || (u.idle && u.kind.stats().attack.is_some()))
+                    && (u.kind == UnitKind::Harvester || (u.idle && u.kind.stats().can_fight()))
             });
         }
         Decision { features, mask }
@@ -399,6 +637,30 @@ impl GymBot {
                 UnitKind::Lancer,
                 &mut intents,
             ),
+            Action::TrainBombard => self.train(
+                &obs,
+                BuildingKind::Fabricator,
+                UnitKind::Bombard,
+                &mut intents,
+            ),
+            Action::TrainAntiAir => self.train(
+                &obs,
+                BuildingKind::Fabricator,
+                Role::AntiAir.unit_for(obs.faction),
+                &mut intents,
+            ),
+            Action::TrainAirGround => self.train(
+                &obs,
+                BuildingKind::Fabricator,
+                Role::AirGround.unit_for(obs.faction),
+                &mut intents,
+            ),
+            Action::TrainAirAir => self.train(
+                &obs,
+                BuildingKind::Fabricator,
+                Role::AirAir.unit_for(obs.faction),
+                &mut intents,
+            ),
             Action::BuildFabricator => {
                 if let Some(anchor) =
                     self.policy
@@ -411,17 +673,64 @@ impl GymBot {
                     });
                 }
             }
-            Action::BuildTurret => {
+            Action::BuildTurret | Action::BuildFlak => {
+                let kind = if action == Action::BuildTurret {
+                    BuildingKind::Turret
+                } else {
+                    BuildingKind::FlakTurret
+                };
                 if let Some(anchor) = self
                     .policy
                     .nearest_scrap(&obs, home)
-                    .and_then(|node| self.policy.placement_near(&obs, BuildingKind::Turret, node))
+                    .and_then(|node| self.policy.placement_near(&obs, kind, node))
                 {
                     self.policy.note_pending_site(anchor);
-                    intents.push(Intent::Build {
-                        kind: BuildingKind::Turret,
-                        anchor,
-                    });
+                    intents.push(Intent::Build { kind, anchor });
+                }
+            }
+            Action::BuildBastion | Action::BuildArray | Action::BuildReclaimer => {
+                let kind = match action {
+                    Action::BuildBastion => BuildingKind::Bastion,
+                    Action::BuildArray => BuildingKind::Array,
+                    _ => BuildingKind::Reclaimer,
+                };
+                if let Some(anchor) = self.policy.placement_near(&obs, kind, home) {
+                    self.policy.note_pending_site(anchor);
+                    intents.push(Intent::Build { kind, anchor });
+                }
+            }
+            Action::Repair => {
+                // Same pick as the scripted repair channel: deepest
+                // wound first, ties toward the map origin then id.
+                let patient = obs
+                    .my_buildings
+                    .iter()
+                    .filter(|b| b.built && b.hp < b.kind.stats().max_hp)
+                    .map(|b| {
+                        let deficit = b.kind.stats().max_hp - b.hp;
+                        (std::cmp::Reverse(deficit), b.anchor.y, b.anchor.x, b.id)
+                    })
+                    .min()
+                    .map(|(.., id)| id);
+                if let Some(building) = patient {
+                    intents.push(Intent::Repair { building });
+                }
+            }
+            Action::AirRaid => {
+                // The wing flies at the enemy's work: the nearest known
+                // harvester, else the known site. Whether flak waits
+                // there is the policy's problem — lowering is total,
+                // judgment is what the network is for.
+                let target = obs
+                    .enemy_units
+                    .iter()
+                    .filter(|u| u.kind.stats().harvest.is_some())
+                    .map(|u| (u.tile.manhattan(home), u.tile.y, u.tile.x))
+                    .min()
+                    .map(|(_, y, x)| TilePos::new(x, y))
+                    .or(enemy_site);
+                if let Some(target) = target {
+                    intents.push(Intent::RaidAir { target });
                 }
             }
             Action::FormArmy => {
@@ -498,7 +807,7 @@ impl GymBot {
         let fighters: Vec<_> = world
             .enemy_units
             .iter()
-            .filter(|u| u.kind.stats().attack.is_some())
+            .filter(|u| u.kind.stats().can_fight())
             .collect();
         if fighters.is_empty() {
             return;

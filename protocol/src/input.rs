@@ -84,6 +84,72 @@ pub enum RawEvent {
     },
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn roundtrip(event: RawEvent) -> RawEvent {
+        let json = serde_json::to_string(&event).unwrap();
+        serde_json::from_str(&json).unwrap()
+    }
+
+    #[test]
+    fn every_raw_event_variant_including_touch_survives_a_roundtrip() {
+        // The touch trio ships ahead of the mobile funnel that will read it,
+        // so nothing else exercises it; the wire contract is pinned here.
+        let events = [
+            RawEvent::MouseMove { x: 1.5, y: 2.5 },
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: 3.0,
+                y: 4.0,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Right,
+                x: 5.0,
+                y: 6.0,
+            },
+            RawEvent::Wheel { delta: -2.0 },
+            RawEvent::KeyDown { key: Key::Escape },
+            RawEvent::KeyUp { key: Key::Shift },
+            RawEvent::TouchDown {
+                id: 7,
+                x: 8.0,
+                y: 9.0,
+            },
+            RawEvent::TouchMove {
+                id: 7,
+                x: 10.0,
+                y: 11.0,
+            },
+            RawEvent::TouchUp {
+                id: 7,
+                x: 12.0,
+                y: 13.0,
+            },
+        ];
+        // A new variant with no line here escapes the wire round-trip.
+        assert_eq!(events.len(), 9);
+        for event in events {
+            assert_eq!(
+                roundtrip(event),
+                event,
+                "raw event did not survive: {event:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_middle_mouse_button_survives_a_roundtrip() {
+        let event = RawEvent::MouseDown {
+            button: MouseButton::Middle,
+            x: 0.0,
+            y: 0.0,
+        };
+        assert_eq!(roundtrip(event), event);
+    }
+}
+
 /// Mouse buttons the shell cares about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -120,9 +186,10 @@ pub enum Key {
     P,
     /// Arm a patrol route; pressed again, starts it.
     R,
-    /// Arm turret placement (harvester selected).
+    /// Open the build palette (harvester selected).
     B,
-    /// Arm fabricator placement (harvester selected).
+    /// Reserved. Formerly armed fabricator placement; the build palette
+    /// superseded it. Kept for wire compatibility.
     N,
     /// Scrap the selected construction site (partial refund).
     X,
@@ -148,4 +215,13 @@ pub enum Key {
     Num4,
     /// Control group 5.
     Num5,
+    /// Sixth contextual digit (build palette / production slots; no
+    /// control group behind it).
+    Num6,
+    /// Seventh contextual digit.
+    Num7,
+    /// Eighth contextual digit.
+    Num8,
+    /// Ninth contextual digit.
+    Num9,
 }

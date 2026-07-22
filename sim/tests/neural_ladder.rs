@@ -12,14 +12,26 @@ fn ladder_match(hi: Level, lo: Level, hi_seat: u8, seed: u64) -> (Option<bool>, 
     scenario.seed = seed;
     let mut state = scenario.build().unwrap();
     // Fixed balanced personalities: this test isolates the skill knob.
-    let mut a = NeuralBot::ladder(PlayerId(hi_seat), seed, hi, Some(500));
-    let mut b = NeuralBot::ladder(PlayerId(1 - hi_seat), seed, lo, Some(500));
+    let mut a = NeuralBot::ladder(
+        PlayerId(hi_seat),
+        seed,
+        hi,
+        Some(500),
+        oxide_sim::Faction::Ferrous,
+    );
+    let mut b = NeuralBot::ladder(
+        PlayerId(1 - hi_seat),
+        seed,
+        lo,
+        Some(500),
+        oxide_sim::Faction::Cupric,
+    );
     for _ in 0..40_000u32 {
         let mut commands = a.act(&state);
         commands.extend(b.act(&state));
         state.tick(&commands);
-        if let Some(GameResult::Victory { winner }) = state.result() {
-            return (Some(winner == PlayerId(hi_seat)), state.hash());
+        if let Some(GameResult::Victory { team }) = state.result() {
+            return (Some(PlayerId(team) == PlayerId(hi_seat)), state.hash());
         }
     }
     (None, state.hash())
@@ -28,7 +40,7 @@ fn ladder_match(hi: Level, lo: Level, hi_seat: u8, seed: u64) -> (Option<bool>, 
 #[test]
 fn embedded_weights_parse() {
     let net = QuantNet::ladder();
-    assert_eq!(net.conditioning(), 2, "the ladder network is conditioned");
+    assert_eq!(net.conditioning(), 3, "the ladder network is conditioned");
 }
 
 #[test]
@@ -62,8 +74,20 @@ fn ladder_matches_reproduce_bit_identically() {
 
 #[test]
 fn a_seeded_random_personality_is_deterministic() {
-    let a = NeuralBot::ladder(PlayerId(0), 42, Level::Expert, None);
-    let b = NeuralBot::ladder(PlayerId(0), 42, Level::Expert, None);
+    let a = NeuralBot::ladder(
+        PlayerId(0),
+        42,
+        Level::Expert,
+        None,
+        oxide_sim::Faction::Ferrous,
+    );
+    let b = NeuralBot::ladder(
+        PlayerId(0),
+        42,
+        Level::Expert,
+        None,
+        oxide_sim::Faction::Ferrous,
+    );
     let scenario = Scenario::skirmish();
     let mut s1 = scenario.build().unwrap();
     let mut s2 = scenario.build().unwrap();

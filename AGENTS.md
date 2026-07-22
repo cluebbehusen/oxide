@@ -147,9 +147,17 @@ and test fixtures inside crate `tests/` directories.
 - **Scenarios** are JSON with ASCII maps: `.` ground, `,` rubble (cosmetic
   ground; the byte is hashed but nothing else changes), `#` rock, `s` scrap
   node, `S` rich node (double salvage), `1`-`8` Foundry anchors (top-left
-  of 2x2). Shipped maps are 180°-symmetric — author edits in mirrored
-  pairs. `Scenario::skirmish()` embeds `scenarios/skirmish.json` at
-  compile time.
+  of 2x2). (`w` appears in *rendered* ASCII for wreck tiles but is never
+  authorable.) `PlayerSpec.team` groups seats; omitted means a team of
+  one — genuinely: teams normalize to dense ids by first appearance,
+  so an authored id can never alias an omitted seat, whatever number
+  it picked — and every-seat-one-team is a build error. Shipped maps are
+  180°-symmetric — author edits in mirrored pairs, and on 4-player maps
+  every seat's unit list must be the exact image-transform of seat 0's,
+  entry by entry (the 0.7 seat-fairness rule generalized). Faction
+  convention: even seats Ferrous, odd seats Cupric.
+  `Scenario::skirmish()` embeds `scenarios/skirmish.json` at compile
+  time.
 - **Balance numbers** all live in `sim/src/stats.rs`; expect hash churn
   when touching them.
 - Keep this file and README.md current when commands or behavior change.
@@ -163,9 +171,19 @@ hash fixtures pin the weights like any other rule). Difficulty is a
 dial into one mind: `bot::Level` (Easy/Medium/Hard/Expert) sets a
 skill knob whose degradation the network *trained under*; a second
 knob picks the personality (turtle → aggressive), dealt from the
-scenario seed when unset. Scenario seats opt in via
-`PlayerSpec.bot_config`; a seat without one gets the classic 0.6 bot,
-which is what keeps pre-0.7 replays reproducing.
+scenario seed when unset; a third carries the seat's faction (by map
+convention, even seats run Ferrous — every shipped and generated map
+follows it, and the knob is honest, never sampled). Scenario seats opt
+in via `PlayerSpec.bot_config`; a seat without one gets the legacy
+rule-cascade bot, which is what keeps pre-0.7 replays reproducing
+(that bot is team-blind by design — team seats must set a config).
+
+The gym contract (v3) is 59 named integer features and 21 masked
+macro actions; training slots are role-indexed where the factions
+differ, so one action space serves both rosters. `FEATURE_NAMES`
+rides in the gym hello and the Python wrapper asserts its own list
+against it — Rust/Python column skew dies at handshake, not in a
+silently mistrained run.
 
 The weights are a generated artifact with a regeneration ritual, like
 the goldens. From `tools/train/` (uv + PyTorch):
@@ -179,18 +197,30 @@ cargo run -p oxide-driver -- neural-cup --weights runs/candidate.json  # the gat
 ```
 
 Hard-won rules encoded in that stack: pick checkpoints by tournament,
-never recency (ladder-facing quality peaks early-mid run, then league
-training drifts inward); masks are part of the trained distribution
-(widening one feeds untrained logits to the blunder picker) while
-action *lowering* absorbs lifecycle races; `decision()` previews the
+never recency — leagues are checkpoint farms with a shelf life
+(ladder-facing quality peaks, then league inbreeding takes over;
+drift arrives 150-400 updates past the peak, and the rusher eval
+going soft is the earliest canary; anchored mixes — scripted share
+around 0.45, KL anchor-coef 0.1 — widen the harvest window but never
+cure the drift); masks are part of the trained distribution (widening
+one feeds untrained logits to the blunder picker) while action
+*lowering* absorbs lifecycle races; `decision()` previews the
 executive's reconciliation on a throwaway clone so observations match
-what lowering will see; and never build a reward out of what the
-agent happens to know about the enemy — under fog, "known" is an
-information artifact, and shaping on it teaches blindness. The
-scripted `Brain` tiers and the rush teacher stay in-tree as league
-anchors, benchmarks, and the ladder-integrity yardstick
-(`sim/tests/neural_ladder.rs` enforces Easy < Medium < Hard < Expert
-forever).
+what lowering will see; never build a reward out of what the agent
+happens to know about the enemy — under fog, "known" is an
+information artifact, and shaping on it teaches blindness; and
+teammate skill is bought with duel sharpness unless consolidated from
+an already-strong parent (the 0.8 artifact's lineage: BC bridge →
+league peak → anchored peak → team-consolidated peak, gated 300/300).
+Team training runs two flavors — self-team (`team`: the learner holds
+both chairs) and mixed-ally (`team2`: a scripted Brain drives the
+teammate) — and per-seat episode truncation pads a dead learner's
+lane on its frozen last view so batches stay rectangular while the
+teammate plays on; padded rows are masked out of the PPO update (GAE
+still spans them so the team payoff reaches the live prefix). The scripted `Brain` tiers and the rush teacher
+stay in-tree as league anchors, benchmarks, and the ladder-integrity
+yardstick (`sim/tests/neural_ladder.rs` enforces Easy < Medium <
+Hard < Expert forever).
 
 ## Design decisions worth knowing
 
@@ -202,7 +232,12 @@ forever).
   fixed-point supercover walk): rock and non-target buildings block, scrap
   and units don't, endpoints never do. In range but blocked → keep
   approaching until range *and* line hold. Vision stays radius-based on
-  purpose — cover is a firing rule, not a stealth system.
+  purpose — cover is a firing rule, not a stealth system. The trace
+  saturates on hairline deltas (a 1-ulp segment once overflowed the
+  1/Δ step math); direction symmetry A→B vs B→A is *not* promised
+  (corner-graze rounding differs), mirror fairness *is* — a lattice
+  test pins it, so don't "fix" the asymmetry by canonicalizing
+  endpoints.
 - **Movement feel is tuned, not emergent** (`sim/src/stats.rs`): waypoints
   accept within `WAYPOINT_ACCEPT` (corner-safe), arrival propagates through
   contact with settled neighbors near a shared goal (`ARRIVAL_NEAR`), group
@@ -213,7 +248,10 @@ forever).
 - **Orders are programs since 0.5**: every unit carries a bounded queue
   plus a looping flag; completion pops (or rotates — that's patrol),
   stalls drop the whole program with `OrderStalled`, plain orders replace
-  it wholesale. Patrol legs are attack-moves and never settle.
+  it wholesale — except that reissuing the unit's *exact current* order
+  is a no-op past the queue wipe, keeping path and progress (the
+  scripted tiers re-command every think; repair billing counts on the
+  meter surviving). Patrol legs are attack-moves and never settle.
 - **Combat resolves simultaneously since 0.6**: brains decide in id
   order (direction alternating by tick parity), but every shot is
   buffered and applied only after all brains and turrets have acted —
@@ -274,9 +312,59 @@ forever).
 - **Eliminated players leave autonomous remnants — by design.** Losing
   your last Foundry rejects your future commands, but units already in
   the world keep executing their brains (idle ones still auto-acquire).
-  Masterless machines finishing their last orders fit the fiction; in
-  two-player games the question is moot (elimination ends the match), and
-  if FFA maps ever ship, revisit deliberately.
+  Masterless machines finishing their last orders fit the fiction; in a
+  team game a foundry-less seat spectates while its team plays on (the
+  victory check is team-scoped, the command gate stays player-scoped —
+  the two sites cross-reference each other on purpose).
+- **Air is a second movement domain, not a special case.** Flyers take
+  the straight line (no A*), ignore terrain, construction claims, and
+  ground collision, collide only with each other, never block
+  foundations, and accept any on-map tile as a goal — rock included.
+  Group orders split by domain so each half routes sensibly. Terrain
+  cover (the rock LOS rule) is ground-vs-ground only. A ground chaser
+  whose flying victim parks over impassable ground marches to a
+  stand-in instead: ring-scanned candidates filtered to the weapon's
+  Euclidean reach (ring corners sit √2 past their Chebyshev radius),
+  first routeable one wins — reaching weapon range is the job;
+  occupying the victim's tile never was. No candidate in reach stalls
+  the order honestly.
+- **Combat is a weapons matrix.** Every kind carries a weapon list
+  (cap 2) with per-weapon cooldowns and target-domain masks; the weapon
+  covering the ordered target is the primary, sidearms pick their own
+  nearest coverable hostile without steering the chassis. Splash hits
+  hostile *units* in radius (buildings take direct hits only), computed
+  against the start-of-tick world; every victim retaliates at the
+  shooter. Indirect weapons arc over terrain. The **fire gate**: a shot
+  needs the owner's team to currently see the victim's tile — which is
+  what turns beyond-vision guns (Bombard, Bastion) into spotter
+  weapons. Splash deliberately skips the gate (a shell in flight
+  chooses nothing) and leaks no information: no event names an unseen
+  sufferer, and retaliation stays sight-gated.
+- **Factions are one roster deal, not two stat tables.** Variant kinds
+  are separate `UnitKind`s sharing kind-keyed static stats;
+  `Role::unit_for(faction)` maps the varied slots and `apply_train`
+  rejects cross-faction kinds. Even seats run Ferrous on every shipped
+  and generated map — the training stack's faction knob depends on it.
+- **Wrecks are a second salvage layer, not nodes.** Deaths leave a
+  fraction of cost as `Tile.wreck`: never blocks movement, stripped
+  standing ON the tile, decays on a global cadence, buried by accepted
+  foundations, skipped when a surviving building covers the tile.
+  Vision remembers wreck amounts like scrap; stale memories resolve by
+  walking and discovering.
+- **Repair reuses construction's machinery.** Welding feeds buffered
+  hp gains through the same resolve path as building (fire wins ties),
+  costs a scrap trickle billed at each interval's *start* (chip
+  repairs pay their coin; free healing was an exploit), stalls broke,
+  and stacks across welders.
+- **Radar blips detect without identifying.** The Array's outer ring
+  surfaces hostile units as bare tiles in `Vision::contacts` — no kind,
+  no owner, no memory, no license for a targeted attack. Team sight is
+  shared by stamping every teammate's discs into each seat's view;
+  `State::hostile` routes every allegiance decision.
+- **The build palette is data-driven.** `B` opens it; digits are
+  contextual (palette first, then a selected factory's produce slots
+  filtered to the seat's faction, then control groups). The old
+  hardcoded B/N hotkeys are gone.
 
 ## Known issues (tracked, deliberate)
 
@@ -294,12 +382,27 @@ forever).
   identical-dial neural mirror matches; win-rate gates neutralize it by
   scoring seat-swapped pairs, and shipped matches deal varied
   personalities, so no seat holds a standing edge in practice.
-- **Expert stalls (never loses) some games against the scripted
-  Standard tier's passive style**, and a bot-vs-bot match on Open
-  Circuit can stalemate when the map seed deals both seats
-  turtle-leaning personalities. Both are draw-shaped, not loss-shaped;
-  a longer corrected-stack training run demonstrably cures the
-  Standard stalls and is queued for the 0.8 cycle.
+- **The 0.7 Standard-stall blemish is gone in 0.8** — the promoted
+  artifact swept its gate 300/300 with zero draws; air harass gave the
+  policy the anti-turtle tool the old roster lacked.
+- **All-neural Expert 2v2 can stall on open maps and leans west on
+  Twin Forges** (measured: 12/12 thirty-k-tick draws on Open Quarry at
+  Expert; 12-2 west in decisive Twin Forges games). Both are artifacts
+  of near-deterministic symmetric self-play: each seat's
+  enemy-strength reading doubles in 2v2 so trained push thresholds
+  never fire, and the sim's residual id-order micro (movement still
+  iterates in fixed id order) compounds without blunder noise. At the
+  shipped Medium default both effects vanish (12/12 decisive, no
+  consistent lean), and a human in the match breaks symmetry at any
+  level — bounded to bot-vs-bot spectacles. Candidate engine
+  experiment for 0.9: parity-alternate `movement::run` like the brain
+  loop (hash-moving; needs a bless and a re-measure).
+- **The learned policy is a middling teammate beside a scripted ally**
+  (25-31% on the mixed-ally 2v2 bracket vs scripted pairs, up 5x from
+  pre-team-training). Shipped 2v2 seats are all-neural, which is the
+  configuration it trained; deeper mixed-ally training is the known
+  lever and costs duel sharpness — revisit when 2v2 becomes a
+  headline mode.
 
 ## Gotchas learned the hard way
 
@@ -313,3 +416,13 @@ forever).
 - A macroquad window on macOS must run on the main thread; the debug
   server therefore lives on socket threads and crosses to the frame loop
   by channel. Don't try to answer protocol requests off-thread.
+- macroquad 0.4 ships with `default = []` — audio is a feature. Without
+  `features = ["audio"]` every sound call is a silent stub that only
+  logs a warning (this repo shipped four versions that way).
+- Injected pointer events use *logical* coordinates (what
+  `screen_width()` reports); screenshots come back in *physical* pixels
+  (2× on retina). Don't dpi-scale injected clicks to match a screenshot
+  — halve the screenshot's coordinates instead.
+- A paused shell stages socket commands for the *next* tick; drive one
+  `AdvanceTicks` before asserting on their effects, or the assert races
+  the order.

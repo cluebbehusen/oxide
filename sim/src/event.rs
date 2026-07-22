@@ -80,6 +80,10 @@ pub enum Event {
     TurretFired {
         /// The firing turret.
         turret: crate::ids::BuildingId,
+        /// What kind of turret — carried in the event because the
+        /// building may be rubble by the time presentation looks it up
+        /// (a Bastion destroyed the tick it fires still booms).
+        kind: crate::stats::BuildingKind,
         /// The unit hit.
         target: crate::ids::UnitId,
         /// Muzzle position.

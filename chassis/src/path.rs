@@ -24,6 +24,14 @@ use std::collections::BinaryHeap;
 /// crossing conservatively visits both adjacent tiles, so a diagonal shot
 /// cannot slip between two blockers, mirroring [`astar`]'s no-corner-cut
 /// rule.
+///
+/// Direction symmetry is NOT guaranteed: a segment that grazes a tile
+/// corner exactly can round to opposite sides of it depending on which
+/// end the walk starts from (1/7-slope shots, say — the reciprocal is
+/// inexact in binary). What IS guaranteed, and what seat fairness rests
+/// on, is mirror symmetry: a 180°-rotated segment over 180°-rotated
+/// terrain computes the identical verdict, because every quantity here
+/// is sign-symmetric. A test pins that property.
 pub fn line_blocked(a: Vec2Fx, b: Vec2Fx, mut passable: impl FnMut(TilePos) -> bool) -> bool {
     let start = TilePos::containing(a);
     let end = TilePos::containing(b);
@@ -46,18 +54,33 @@ pub fn line_blocked(a: Vec2Fx, b: Vec2Fx, mut passable: impl FnMut(TilePos) -> b
         0
     };
     // Parametric distance (0..1 along the segment) to the next x/y tile
-    // boundary, and per-tile increments. All exact Q32.32 arithmetic.
+    // boundary, and per-tile increments — SATURATING Q32.32 arithmetic.
+    // A delta component can be as small as one fixed-point ulp (two
+    // machines a hair apart across a tile boundary), and 1/ulp is 2^32 —
+    // past the type's ceiling. Saturation is exactly correct here: a
+    // t_max at MAX means "this axis crosses no more boundaries within
+    // the segment," which is precisely how the zero-delta arm already
+    // behaves, and every non-degenerate segment computes bit-identical
+    // values to the plain arithmetic. Deltas are div'd by their abs
+    // (positive), so saturation lands on MAX and never on MIN, whose
+    // own abs would panic.
     let (mut t_max_x, t_delta_x) = if step_x == 0 {
         (Fx::MAX, Fx::MAX)
     } else {
         let next_boundary = Fx::from_num(if step_x > 0 { start.x + 1 } else { start.x });
-        ((next_boundary - a.x) / delta.x, (Fx::ONE / delta.x).abs())
+        (
+            (next_boundary - a.x).abs().saturating_div(delta.x.abs()),
+            Fx::ONE.saturating_div(delta.x.abs()),
+        )
     };
     let (mut t_max_y, t_delta_y) = if step_y == 0 {
         (Fx::MAX, Fx::MAX)
     } else {
         let next_boundary = Fx::from_num(if step_y > 0 { start.y + 1 } else { start.y });
-        ((next_boundary - a.y) / delta.y, (Fx::ONE / delta.y).abs())
+        (
+            (next_boundary - a.y).abs().saturating_div(delta.y.abs()),
+            Fx::ONE.saturating_div(delta.y.abs()),
+        )
     };
 
     let mut tile = start;
@@ -75,14 +98,14 @@ pub fn line_blocked(a: Vec2Fx, b: Vec2Fx, mut passable: impl FnMut(TilePos) -> b
                 return true;
             }
             tile = tile.offset(step_x, step_y);
-            t_max_x += t_delta_x;
-            t_max_y += t_delta_y;
+            t_max_x = t_max_x.saturating_add(t_delta_x);
+            t_max_y = t_max_y.saturating_add(t_delta_y);
         } else if t_max_x < t_max_y {
             tile = tile.offset(step_x, 0);
-            t_max_x += t_delta_x;
+            t_max_x = t_max_x.saturating_add(t_delta_x);
         } else {
             tile = tile.offset(0, step_y);
-            t_max_y += t_delta_y;
+            t_max_y = t_max_y.saturating_add(t_delta_y);
         }
         if tile == end {
             return false;
@@ -340,6 +363,90 @@ mod tests {
         let forward = line_blocked(center(0, 0), center(7, 3), open);
         for _ in 0..10 {
             assert_eq!(line_blocked(center(0, 0), center(7, 3), open), forward);
+        }
+    }
+
+    #[test]
+    fn hairline_deltas_cannot_overflow_the_trace() {
+        // Two machines a single fixed-point ulp apart straddling a tile
+        // boundary: the parametric setup wants 1/ulp = 2^32, past the
+        // type's ceiling — this exact geometry panicked in FixedI64
+        // arithmetic before the walk went saturating. Adversarial in x,
+        // in y, and in both at once, in both directions, over open and
+        // blocked ground.
+        let (grid, ..) = arena(&["....", "....", "....", "...."]);
+        let open = |p: TilePos| grid.get(p).copied().unwrap_or(false);
+        let ulp = Fx::from_bits(1);
+        let edge_x = Fx::from_num(2);
+        let edge_y = Fx::from_num(2);
+        let cases = [
+            // x hairline, y level.
+            (
+                Vec2Fx::new(edge_x - ulp, Fx::lit("1.5")),
+                Vec2Fx::new(edge_x + ulp, Fx::lit("1.5")),
+            ),
+            // y hairline, x level.
+            (
+                Vec2Fx::new(Fx::lit("1.5"), edge_y - ulp),
+                Vec2Fx::new(Fx::lit("1.5"), edge_y + ulp),
+            ),
+            // A diagonal hair across the corner.
+            (
+                Vec2Fx::new(edge_x - ulp, edge_y - ulp),
+                Vec2Fx::new(edge_x + ulp, edge_y + ulp),
+            ),
+            // Hairline in x while y spans real distance (one axis
+            // saturates, the other walks normally).
+            (
+                Vec2Fx::new(edge_x - ulp, Fx::lit("0.5")),
+                Vec2Fx::new(edge_x + ulp, Fx::lit("3.5")),
+            ),
+        ];
+        for (a, b) in cases {
+            let fwd = line_blocked(a, b, open);
+            let back = line_blocked(b, a, open);
+            assert!(!fwd && !back, "open ground stays open for {a:?}->{b:?}");
+        }
+        // Same hairlines against a wall: the blocker must still be seen.
+        let (walled, ..) = arena(&["....", "..#.", "..#.", "...."]);
+        let solid = |p: TilePos| walled.get(p).copied().unwrap_or(false);
+        let a = Vec2Fx::new(edge_x - ulp, Fx::lit("0.5"));
+        let b = Vec2Fx::new(edge_x + ulp, Fx::lit("3.5"));
+        assert!(line_blocked(a, b, solid), "the wall is on the path");
+        assert!(line_blocked(b, a, solid), "in both directions");
+    }
+
+    #[test]
+    fn trace_is_mirror_fair() {
+        // The fairness the game rests on: a 180°-rotated shot over
+        // 180°-rotated terrain gets the identical verdict, so mirrored
+        // seats never disagree about the same engagement. (Direction
+        // symmetry along ONE segment is deliberately not promised — an
+        // exact corner graze can round differently from the two ends;
+        // see the doc comment.)
+        let rows = &["........", "..##....", "....#...", ".#......", "........"];
+        let (grid, w, h) = arena(rows);
+        let open = |p: TilePos| grid.get(p).copied().unwrap_or(false);
+        // The rotated world: cell (x, y) holds what (w-1-x, h-1-y) held.
+        let rot_open = |p: TilePos| {
+            grid.get(TilePos::new(w - 1 - p.x, h - 1 - p.y))
+                .copied()
+                .unwrap_or(false)
+        };
+        let rot = |v: Vec2Fx| Vec2Fx::new(Fx::from_num(w) - v.x, Fx::from_num(h) - v.y);
+        for ax in 0..w {
+            for ay in 0..h {
+                for bx in 0..w {
+                    for by in 0..h {
+                        let (a, b) = (center(ax, ay), center(bx, by));
+                        assert_eq!(
+                            line_blocked(a, b, open),
+                            line_blocked(rot(a), rot(b), rot_open),
+                            "mirror-unfair trace {ax},{ay} -> {bx},{by}"
+                        );
+                    }
+                }
+            }
         }
     }
 

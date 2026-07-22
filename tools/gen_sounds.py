@@ -92,6 +92,43 @@ def building_boom() -> None:
     write("building_boom", out)
 
 
+def flak() -> None:
+    # A tight triple pop of bandpassed noise — anti-air fire bursting
+    # against the sky, distinct from any ground zap.
+    rng = random.Random(17)
+    n = int(0.20 * RATE)
+    out = [0.0] * n
+    for burst_at in (0.0, 0.06, 0.12):
+        start = int(burst_at * RATE)
+        length = int(0.06 * RATE)
+        band = 0.0
+        for i in range(length):
+            if start + i >= n:
+                break
+            # Cheap one-pole toward fresh noise keeps it hissy but round.
+            band += 0.35 * (rng.uniform(-1.0, 1.0) - band)
+            ring = math.sin(2 * math.pi * 900.0 * i / RATE)
+            out[start + i] += (0.5 * band + 0.25 * ring) * decay(i, length, 6.0)
+    write("flak", out)
+
+
+def artillery_boom() -> None:
+    # A shell landing: sharp crack into a rolling low boom — bigger than
+    # the rail, smaller than a building coming down.
+    rng = random.Random(29)
+    n = int(0.4 * RATE)
+    out = []
+    for i in range(n):
+        t = i / RATE
+        crack = rng.uniform(-1.0, 1.0) * decay(i, n, 22.0)
+        boom = (
+            0.7 * math.sin(2 * math.pi * 70.0 * t)
+            + 0.3 * math.sin(2 * math.pi * 52.0 * t)
+        ) * decay(i, n, 5.0)
+        out.append(0.5 * crack + 0.6 * boom)
+    write("artillery_boom", out)
+
+
 def chime(name: str, freqs: list[float], each: float, volume: float, dark: bool = False) -> None:
     """A little melody of overlapping sine notes."""
     step = int(each * RATE)
@@ -118,6 +155,8 @@ def main() -> None:
     rail_fire()
     unit_death()
     building_boom()
+    flak()
+    artillery_boom()
     chime("deposit", [780.0, 1170.0], 0.06, 0.4)
     chime("train_done", [520.0, 660.0, 880.0], 0.05, 0.4)
     chime("click", [1100.0], 0.03, 0.35)

@@ -87,6 +87,19 @@ pub fn render_state(state: &State) -> Pixmap {
         match (tile.terrain, tile.scrap) {
             (Terrain::Rock, _) => fill_rect(&mut pixmap, x, y, TILE_PX, TILE_PX, ROCK),
             // Rubble: a faint lightening so the goldens register it.
+            // Wreck salvage: a small dim-amber square, unmistakably not a
+            // node (nodes render bigger and brighter below).
+            (Terrain::Ground, 0) if tile.wreck > 0 => {
+                let inset = TILE_PX * 0.35;
+                fill_rect(
+                    &mut pixmap,
+                    x + inset,
+                    y + inset,
+                    TILE_PX - 2.0 * inset,
+                    TILE_PX - 2.0 * inset,
+                    SCRAP_LOW,
+                );
+            }
             (Terrain::Ground, 0) if tile.cosmetic == 1 => {
                 fill_rect(&mut pixmap, x, y, TILE_PX, TILE_PX, 0x2C2C34);
             }

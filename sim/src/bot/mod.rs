@@ -27,7 +27,7 @@ pub mod utility;
 pub use brain::Brain;
 pub use classic::Bot;
 pub use executive::{Army, ArmyId, ArmyState, Doctrine, Executive, Intent};
-pub use gym::{ACTION_COUNT, Action, Decision, FEATURE_COUNT, GYM_VERSION, GymBot};
+pub use gym::{ACTION_COUNT, Action, Decision, FEATURE_COUNT, FEATURE_NAMES, GYM_VERSION, GymBot};
 pub use neural::{LADDER_CADENCE, Level, NeuralBot, QuantNet};
 pub use observation::{BuildingObs, Observation, UnitObs};
 pub use orient::Orientation;
@@ -80,6 +80,7 @@ pub fn seat_bots(scenario: &crate::Scenario) -> Vec<SeatBot> {
                     scenario.seed,
                     config.level,
                     config.aggression,
+                    p.faction,
                 ))),
                 None => SeatBot::Classic(Box::new(Bot::new(player, scenario.seed))),
             }

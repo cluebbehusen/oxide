@@ -1,10 +1,12 @@
 {
-  "derelict-yard": "0x73f6e1e507ba5578",
-  "meridian-scar": "0x1f0f9f5d303ed2cc",
-  "open-circuit": "0x37101f9cc8f35bc3",
-  "rustbelt-canyon": "0x5570a9ddf34cce28",
-  "scrapyard-brawl": "0xb2ad0633405c9584",
-  "skirmish": "0xba3f0da2dd7a7590",
-  "slagline": "0xfb3892f900d47ce7",
-  "verdigris-fields": "0xb594366bc0f9ab63"
+  "derelict-yard": "0x078c7a451b9c37b4",
+  "meridian-scar": "0x02722d7817af8f15",
+  "open-circuit": "0xcd4345a1fb30d8d1",
+  "open-quarry": "0xef731d1cb2638ed6",
+  "rustbelt-canyon": "0x6e48671161fb1149",
+  "scrapyard-brawl": "0x3b6df0ebf1c32d7e",
+  "skirmish": "0x924f35915be9ab9a",
+  "slagline": "0x027d2ca69052b23c",
+  "twin-forges": "0x75a35cc74938f499",
+  "verdigris-fields": "0x3bc55bbeefd8c003"
 }

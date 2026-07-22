@@ -32,12 +32,12 @@ def cache_dir(name: str) -> str:
     return str(pathlib.Path(tempfile.gettempdir()) / name)
 
 
-def _carve(seed: int, players: int = 2) -> dict:
+def _carve(seed: int, players: int = 2, teams: bool = False) -> dict:
     rng = np.random.default_rng(seed)
     w = int(rng.integers(30, 46))
     h = int(rng.integers(18, 28))
     if players == 4:
-        return _carve4(rng, seed, w, h)
+        return _carve4(rng, seed, w, h, teams)
     grid = [["." for _ in range(w)] for _ in range(h)]
 
     def mirror(x: int, y: int) -> tuple[int, int]:
@@ -140,11 +140,15 @@ def _carve(seed: int, players: int = 2) -> dict:
     }
 
 
-def _carve4(rng: np.random.Generator, seed: int, w: int, h: int) -> dict:
+def _carve4(
+    rng: np.random.Generator, seed: int, w: int, h: int, teams: bool = False
+) -> dict:
     """Four-player maps by double mirroring: author the top-left
     quadrant, reflect across both axes — every corner seat plays the
     same quadrant. Anchor characters 1-4; spawn lists are emitted in
-    the same reflected order per seat."""
+    the same reflected order per seat. With `teams`, the west column
+    (seats 0, 2) faces the east column (seats 1, 3) — reflection makes
+    the pairing fair from every corner."""
     grid = [["." for _ in range(w)] for _ in range(h)]
 
     def images(x: int, y: int) -> list[tuple[int, int]]:
@@ -223,19 +227,26 @@ def _carve4(rng: np.random.Generator, seed: int, w: int, h: int) -> dict:
             units.append({"player": player, "kind": kind, "x": ix, "y": iy})
 
     factions = ["ferrous", "cupric", "ferrous", "cupric"]
+    # Seats reflect across x for 1|2 and 3|4, so west = seats 0, 2.
+    team_of = [0, 1, 0, 1] if teams else [None] * 4
+    players_spec = []
+    for p in range(4):
+        spec = {"name": f"Seat{p}", "faction": factions[p], "scrap": 150, "bot": False}
+        if team_of[p] is not None:
+            spec["team"] = team_of[p]
+        players_spec.append(spec)
     return {
-        "name": f"generated4-{seed}",
+        "name": f"generated{'2v2' if teams else '4'}-{seed}",
         "seed": seed,
         "map": ["".join(row) for row in grid],
-        "players": [
-            {"name": f"Seat{p}", "faction": factions[p], "scrap": 150, "bot": False}
-            for p in range(4)
-        ],
+        "players": players_spec,
         "units": units,
     }
 
 
-def generate(seed: int, out_dir: str, players: int = 2, driver: str = DRIVER) -> str:
+def generate(
+    seed: int, out_dir: str, players: int = 2, teams: bool = False, driver: str = DRIVER
+) -> str:
     """Writes a validated scenario for `seed` and returns its path.
     Same seed, same file. Random rock blobs carry no connectivity
     guarantee, so every candidate is checked against the real sim
@@ -244,11 +255,12 @@ def generate(seed: int, out_dir: str, players: int = 2, driver: str = DRIVER) ->
     validated files ever land in the cache."""
     out = pathlib.Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    path = out / f"gen{players if players != 2 else ''}-{seed}.json"
+    tag = "2v2" if teams else (str(players) if players != 2 else "")
+    path = out / f"gen{tag}-{seed}.json"
     if path.exists():
         return str(path)
     for attempt in range(16):
-        candidate = _carve(seed + attempt * 10_000_019, players)
+        candidate = _carve(seed + attempt * 10_000_019, players, teams)
         trial = path.with_suffix(".candidate.json")
         trial.write_text(json.dumps(candidate))
         ok = (
