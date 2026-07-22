@@ -19,6 +19,9 @@ pub struct LayoutModel {
     pub panel_top: f32,
     /// The minimap rectangle.
     pub minimap: Rect,
+    /// The idle-worker badge in the top bar; zero-sized when nobody
+    /// idles. Clicking it cycles idle harvesters.
+    pub idle_badge: Rect,
 }
 
 impl Default for LayoutModel {
@@ -27,6 +30,7 @@ impl Default for LayoutModel {
             top_bar_h: 0.0,
             panel_top: f32::INFINITY,
             minimap: Rect::new(0.0, 0.0, 0.0, 0.0),
+            idle_badge: Rect::new(0.0, 0.0, 0.0, 0.0),
         }
     }
 }
@@ -34,7 +38,13 @@ impl Default for LayoutModel {
 impl LayoutModel {
     /// Computes the frame's chrome geometry. `panel_rows` is how many
     /// bottom rows the HUD actually drew (zero = no panel).
-    pub fn compute(viewport: Vec2, ui: f32, panel_rows: usize, minimap: Rect) -> Self {
+    pub fn compute(
+        viewport: Vec2,
+        ui: f32,
+        panel_rows: usize,
+        minimap: Rect,
+        idle_badge: Rect,
+    ) -> Self {
         Self {
             top_bar_h: 32.0 * ui,
             panel_top: if panel_rows == 0 {
@@ -43,6 +53,7 @@ impl LayoutModel {
                 viewport.y - 36.0 * ui * panel_rows as f32
             },
             minimap,
+            idle_badge,
         }
     }
 
@@ -62,8 +73,8 @@ mod tests {
     #[test]
     fn the_panel_band_scales_with_its_row_count() {
         let mini = Rect::new(0.0, 0.0, 0.0, 0.0);
-        let one = LayoutModel::compute(vec2(1280.0, 800.0), 1.0, 1, mini);
-        let three = LayoutModel::compute(vec2(1280.0, 800.0), 1.0, 3, mini);
+        let one = LayoutModel::compute(vec2(1280.0, 800.0), 1.0, 1, mini, mini);
+        let three = LayoutModel::compute(vec2(1280.0, 800.0), 1.0, 3, mini, mini);
         assert!(one.chrome_owns(vec2(600.0, 770.0)));
         assert!(
             !one.chrome_owns(vec2(600.0, 700.0)),
@@ -77,7 +88,13 @@ mod tests {
 
     #[test]
     fn no_panel_means_no_band_at_all() {
-        let m = LayoutModel::compute(vec2(1280.0, 800.0), 2.0, 0, Rect::new(0.0, 0.0, 0.0, 0.0));
+        let m = LayoutModel::compute(
+            vec2(1280.0, 800.0),
+            2.0,
+            0,
+            Rect::new(0.0, 0.0, 0.0, 0.0),
+            Rect::new(0.0, 0.0, 0.0, 0.0),
+        );
         assert!(!m.chrome_owns(vec2(600.0, 799.0)));
         assert!(m.chrome_owns(vec2(600.0, 30.0)), "the top bar always owns");
     }

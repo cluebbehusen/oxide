@@ -362,7 +362,7 @@ fn cycle_setting(config: &mut config::Config, row: usize) -> bool {
 /// The remappable actions, in display order. Digits and structural keys
 /// (Back, Confirm, group slots) stay fixed — their meaning is
 /// positional, not preferential.
-const REMAPPABLE: [(action::Action, &str); 10] = [
+const REMAPPABLE: [(action::Action, &str); 11] = [
     (action::Action::StopOrScrap, "Stop / scrap site"),
     (action::Action::TrainSlot(0), "Train slot 1"),
     (action::Action::TrainSlot(1), "Train slot 2"),
@@ -373,6 +373,7 @@ const REMAPPABLE: [(action::Action, &str); 10] = [
     (action::Action::ToggleOverlay, "Debug overlay"),
     (action::Action::PanLeft, "Pan left"),
     (action::Action::PanRight, "Pan right"),
+    (action::Action::CycleIdleWorker, "Next idle harvester"),
 ];
 
 fn controls_menu(config: &config::Config) -> Menu {

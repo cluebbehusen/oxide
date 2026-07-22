@@ -227,6 +227,45 @@ pub fn poll_events(input: &InputState) -> Vec<RawEvent> {
     events
 }
 
+/// Own harvesters with nothing to do, in id order — the cycle key and
+/// the HUD badge both read this.
+pub fn idle_harvesters(game: &Game) -> Vec<UnitId> {
+    game.state
+        .units()
+        .iter()
+        .filter(|u| {
+            u.player == game.human
+                && u.kind == UnitKind::Harvester
+                && u.order == oxide_sim::Order::Idle
+        })
+        .map(|u| u.id)
+        .collect()
+}
+
+/// Selects the next idle harvester after the current selection (id
+/// order, wrapping) and centers the camera on it. Stateless: the
+/// selection itself is the cursor.
+fn cycle_idle_worker(game: &mut Game) {
+    let idle = idle_harvesters(game);
+    let Some(&first) = idle.first() else {
+        game.toast("no idle harvesters");
+        return;
+    };
+    let next = match game.selection.units.as_slice() {
+        [current] => idle
+            .iter()
+            .copied()
+            .find(|id| id > current)
+            .unwrap_or(first),
+        _ => first,
+    };
+    game.selection.units = vec![next];
+    game.selection.building = None;
+    let unit = game.state.unit(next).expect("listed above");
+    game.camera.center = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
+    game.camera.pan(Vec2::ZERO); // re-clamp
+}
+
 /// World-space pick radius around a unit: generous when zoomed out so
 /// units never need tweezers (at least 10 logical px on screen).
 fn pick_radius(game: &Game, ui: f32) -> f32 {
@@ -279,6 +318,12 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         game.ping(world, PingKind::Rally);
                         input.placing = None;
                     }
+                    continue;
+                }
+                // The idle badge cycles workers on click.
+                let badge = game.layout.get().idle_badge;
+                if badge.w > 0.0 && badge.contains(vec2(x, y)) {
+                    cycle_idle_worker(game);
                     continue;
                 }
                 // The minimap owns clicks landing on it: jump the camera,
@@ -787,6 +832,7 @@ fn dispatch_action(game: &mut Game, input: &mut InputState, action: Action) {
             game.selection.units.clear();
             game.selection.building = None;
         }
+        Action::CycleIdleWorker => cycle_idle_worker(game),
         Action::HomeCamera => {
             if let Some(center) = game.home_foundry().map(|b| b.center()) {
                 let target = vec2(center.x.to_num::<f32>(), center.y.to_num::<f32>());
@@ -866,6 +912,32 @@ mod tests {
                 y,
             },
         ]
+    }
+
+    #[test]
+    fn the_cycle_key_walks_idle_harvesters_in_id_order() {
+        let mut game = headless_game();
+        let mut input = InputState::new();
+        let idle = idle_harvesters(&game);
+        assert!(idle.len() >= 2, "premise: skirmish opens with idle workers");
+        let press = |game: &mut Game, input: &mut InputState| {
+            apply_events(
+                game,
+                input,
+                &[
+                    RawEvent::KeyDown { key: Key::N },
+                    RawEvent::KeyUp { key: Key::N },
+                ],
+            );
+        };
+        press(&mut game, &mut input);
+        assert_eq!(game.selection.units, vec![idle[0]]);
+        press(&mut game, &mut input);
+        assert_eq!(game.selection.units, vec![idle[1]], "id order, forward");
+        for _ in 0..idle.len() - 1 {
+            press(&mut game, &mut input);
+        }
+        assert_eq!(game.selection.units, vec![idle[0]], "and wraps");
     }
 
     #[test]

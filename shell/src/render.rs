@@ -945,6 +945,18 @@ fn draw_hud(game: &Game, input: &InputState) {
         22.0 * s,
         BONE_FAINT,
     );
+    // Idle harvesters are money on the ground; the badge nags in danger
+    // red and clicking it (or N) cycles through them.
+    let idle = crate::input::idle_harvesters(game).len();
+    let idle_badge = if idle > 0 {
+        let label = format!("IDLE {idle}");
+        let dims = measure_text(&label, None, (22.0 * s) as u16, 1.0);
+        let x = 360.0 * s;
+        draw_text(&label, x, 22.0 * s, 22.0 * s, DANGER);
+        Rect::new(x - 4.0 * s, 4.0 * s, dims.width + 8.0 * s, 26.0 * s)
+    } else {
+        Rect::new(0.0, 0.0, 0.0, 0.0)
+    };
     if game.paused {
         draw_text("PAUSED (P)", 420.0 * s, 22.0 * s, 22.0 * s, DANGER);
     } else if (game.speed - 1.0).abs() > f64::EPSILON {
@@ -1025,6 +1037,7 @@ fn draw_hud(game: &Game, input: &InputState) {
         s,
         panel_rows,
         minimap_rect(game),
+        idle_badge,
     ));
 
     // Controls hint — it lives in the same bottom band as the selection

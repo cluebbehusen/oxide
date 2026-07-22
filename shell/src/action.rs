@@ -47,6 +47,8 @@ pub enum Action {
     AssignGroup(u8),
     /// Menu confirm.
     Confirm,
+    /// Select (and center on) the next idle own harvester.
+    CycleIdleWorker,
 }
 
 /// A physical chord: one key plus the modifier truth that must hold.
@@ -173,6 +175,10 @@ impl BindingMap {
             Binding {
                 chord: Chord::bare(Key::Enter),
                 action: Action::Confirm,
+            },
+            Binding {
+                chord: Chord::bare(Key::N),
+                action: Action::CycleIdleWorker,
             },
         ];
         for (i, key) in digits.into_iter().enumerate() {
@@ -373,8 +379,8 @@ mod tests {
             !map.rebind(Action::StopOrScrap, Chord::bare(Key::H)),
             "H belongs to train slot 0; shadowing must be refused"
         );
-        assert!(map.rebind(Action::StopOrScrap, Chord::bare(Key::N)));
-        assert_eq!(map.resolve(Key::N, false, false), Some(Action::StopOrScrap));
+        assert!(map.rebind(Action::StopOrScrap, Chord::bare(Key::A)));
+        assert_eq!(map.resolve(Key::A, false, false), Some(Action::StopOrScrap));
         assert_eq!(
             map.resolve(Key::X, false, false),
             None,
