@@ -18,3 +18,4 @@ pub mod gym;
 pub mod render;
 pub mod runner;
 pub mod smoke;
+pub mod stats;

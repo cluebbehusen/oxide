@@ -81,6 +81,15 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Recompute match statistics from a replay (scrap and army-value
+    /// series, losses) — the record is the match.
+    ReplayStats {
+        /// Replay JSON path.
+        path: PathBuf,
+        /// Sample stride in ticks.
+        #[arg(long, default_value_t = 200)]
+        every: u64,
+    },
     /// Talk to a running shell (`oxide-shell --debug-server`).
     Live {
         /// Shell debug-server address.
@@ -497,6 +506,12 @@ fn main() -> Result<()> {
             } else {
                 print!("{}", audit.table());
             }
+        }
+        Cmd::ReplayStats { path, every } => {
+            let replay =
+                GameReplay::load(&path).with_context(|| format!("loading {}", path.display()))?;
+            let stats = oxide_driver::stats::compute(&replay, every)?;
+            println!("{}", serde_json::to_string_pretty(&stats)?);
         }
         Cmd::Live { addr, cmd } => {
             if let LiveCmd::CaptureSequence {
