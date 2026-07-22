@@ -70,6 +70,7 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     draw_breadcrumbs(game, input);
     draw_placement_ghost(game, sprites, input);
     draw_drag_rect(game, input);
+    draw_salvage_tooltip(game, input);
     draw_hud(game, input);
     draw_minimap(game);
 }
@@ -797,6 +798,45 @@ fn draw_range_rings(game: &Game, input: &InputState) {
         let center = anchor + vec2(size.0 as f32 * 0.5, size.1 as f32 * 0.5);
         building_rings(center, kind);
     }
+}
+
+/// Hovered salvage says what it holds: live amounts on visible ground,
+/// remembered amounts under the dim — the same memory rule as every
+/// renderer, so the tooltip can't leak what fog took back.
+fn draw_salvage_tooltip(game: &Game, input: &InputState) {
+    if game.layout.get().chrome_owns(input.mouse) {
+        return;
+    }
+    let world = game.camera.to_world(input.mouse);
+    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    let vision = game.my_vision();
+    if !vision.explored(tile) && !game.overlay {
+        return;
+    }
+    let (scrap, wreck) = if vision.visible(tile) || game.overlay {
+        (
+            game.state.map().scrap_at(tile),
+            game.state.map().wreck_at(tile),
+        )
+    } else {
+        (vision.remembered_scrap(tile), vision.remembered_wreck(tile))
+    };
+    let text = match (scrap > 0, wreck > 0) {
+        (true, _) => format!("scrap {scrap}"),
+        (_, true) => format!("wreck {wreck}"),
+        _ => return,
+    };
+    let s = ui_scale();
+    let dims = measure_text(&text, None, (16.0 * s) as u16, 1.0);
+    let (x, y) = (input.mouse.x + 14.0 * s, input.mouse.y - 10.0 * s);
+    draw_rectangle(
+        x - 4.0 * s,
+        y - 14.0 * s,
+        dims.width + 8.0 * s,
+        20.0 * s,
+        PANEL,
+    );
+    draw_text(&text, x, y, 16.0 * s, SCRAP_COLOR);
 }
 
 fn draw_pings(game: &Game) {
