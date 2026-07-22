@@ -43,7 +43,13 @@ pub fn set_user_scale(factor: f32) {
 /// swallowing minimap, root-caused by a live probe: screen_w=1280 on a
 /// 2560-pixel display). The user preference is the only factor.
 pub fn ui_scale() -> f32 {
-    f32::from_bits(USER_SCALE.load(std::sync::atomic::Ordering::Relaxed))
+    let user = f32::from_bits(USER_SCALE.load(std::sync::atomic::Ordering::Relaxed));
+    // A narrow window can't seat 150% chrome: panel packing would run
+    // under the minimap and its click rects would shadow camera clicks.
+    // Cap by width so 640px tops out at 1x, 960px at 1.5x, and roomy
+    // windows keep whatever the user asked for.
+    let cap = (screen_width() / 640.0).max(1.0);
+    user.min(cap)
 }
 
 /// Draws one frame.
@@ -641,12 +647,64 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
         game.my_vision()
             .visible(TilePos::new(p.x.floor() as i32, p.y.floor() as i32))
     };
+    // Real shells render from sim state, aged by sim ticks: pause holds
+    // them mid-air, speed changes track, and a replay loaded mid-flight
+    // restores them — no wall-clock effect can drift from the rules.
+    let shell_speed = oxide_sim::stats::SHELL_SPEED.to_num::<f32>();
+    let now = game.state.current_tick() as f32 + game.tick_fraction();
+    for shell in game.state.shells() {
+        let from = vec2(
+            shell.launch.x.to_num::<f32>(),
+            shell.launch.y.to_num::<f32>(),
+        );
+        let to = vec2(
+            shell.impact.x.to_num::<f32>(),
+            shell.impact.y.to_num::<f32>(),
+        );
+        if !game.overlay && !(sees(from) || sees(to)) {
+            continue;
+        }
+        // Reconstruct flight length the way the launch computed it, so
+        // the dot lands exactly when the sim resolves the hit.
+        let total = (from.distance(to) / shell_speed).ceil().max(1.0);
+        let elapsed = total - (shell.arrival as f32 - now);
+        let t = (elapsed / total).clamp(0.0, 1.0);
+        let a = game.camera.to_screen(from);
+        let b = game.camera.to_screen(to);
+        let dist = (b - a).length();
+        let lift = (dist * 0.22).min(game.camera.zoom * 3.0);
+        let at = |t: f32| {
+            let flat = a.lerp(b, t);
+            vec2(flat.x, flat.y - lift * 4.0 * t * (1.0 - t))
+        };
+        let mut prev = at(0.0);
+        let steps = 10;
+        for i in 1..=((t * steps as f32) as usize).max(1) {
+            let p = at(i as f32 / steps as f32);
+            let fade = 0.35 * (1.0 - t);
+            draw_line(
+                prev.x,
+                prev.y,
+                p.x,
+                p.y,
+                1.5,
+                Color::new(0.95, 0.75, 0.5, fade),
+            );
+            prev = p;
+        }
+        let dot = at(t);
+        draw_circle(
+            dot.x,
+            dot.y,
+            3.0,
+            Color::new(0.98, 0.93, 0.8, 1.0 - t * 0.5),
+        );
+    }
     for fx in &game.fx {
         // A beam needs BOTH endpoints in sight: a half-fogged laser would
         // pinpoint an unseen combatant at its far end.
         let in_sight = match fx.kind {
             EffectKind::Laser { from, to, .. } => sees(from) && sees(to),
-            EffectKind::ShellArc { from, to, .. } => sees(from) || sees(to),
             EffectKind::Puff { at } => sees(at),
             EffectKind::Burst { at, .. } => sees(at),
             // Own-order acknowledgments always show; fogged targets are
@@ -657,42 +715,6 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
             continue;
         }
         match fx.kind {
-            EffectKind::ShellArc { from, to, secs } => {
-                // A dot rides a lobbed arc; the trail fades behind it.
-                let a = game.camera.to_screen(from);
-                let b = game.camera.to_screen(to);
-                // The timing is the sim's own: arrival on screen IS
-                // arrival in the rules.
-                let t = (fx.age / secs.max(0.05)).clamp(0.0, 1.0);
-                let dist = (b - a).length();
-                let lift = (dist * 0.22).min(game.camera.zoom * 3.0);
-                let at = |t: f32| {
-                    let flat = a.lerp(b, t);
-                    vec2(flat.x, flat.y - lift * 4.0 * t * (1.0 - t))
-                };
-                let mut prev = at(0.0);
-                let steps = 10;
-                for i in 1..=((t * steps as f32) as usize).max(1) {
-                    let p = at(i as f32 / steps as f32);
-                    let fade = 0.35 * (1.0 - t);
-                    draw_line(
-                        prev.x,
-                        prev.y,
-                        p.x,
-                        p.y,
-                        1.5,
-                        Color::new(0.95, 0.75, 0.5, fade),
-                    );
-                    prev = p;
-                }
-                let dot = at(t);
-                draw_circle(
-                    dot.x,
-                    dot.y,
-                    3.0,
-                    Color::new(0.98, 0.93, 0.8, 1.0 - t * 0.5),
-                );
-            }
             EffectKind::Laser { heavy, from, to } => {
                 let a = game.camera.to_screen(from);
                 let b = game.camera.to_screen(to);
@@ -1130,13 +1152,23 @@ fn draw_hud(game: &Game, input: &InputState) {
                 .unit(*id)
                 .is_some_and(|u| u.kind == UnitKind::Harvester)
         });
+        let label = |a: crate::action::Action| {
+            input
+                .bindings
+                .chord_for(a)
+                .map(crate::action::BindingMap::chord_label)
+                .unwrap_or_else(|| "unbound".to_string())
+        };
         let mut line_items = vec![
             format!("{} unit(s) selected", game.selection.units.len()),
-            "X: stop".to_string(),
-            "R: patrol".to_string(),
+            format!("{}: stop", label(crate::action::Action::StopOrScrap)),
+            format!("{}: patrol", label(crate::action::Action::Patrol)),
         ];
         if has_builder {
-            line_items.push("B: build".to_string());
+            line_items.push(format!(
+                "{}: build",
+                label(crate::action::Action::ToggleBuildPalette)
+            ));
         }
         if input.build_menu {
             let palette: Vec<String> = crate::input::BUILD_PALETTE
@@ -1171,11 +1203,36 @@ fn draw_hud(game: &Game, input: &InputState) {
     // panel, so it yields whenever a panel is up (the panel carries its
     // own key prompts).
     if !panel_shown {
-        let hint =
-            "LMB select · RMB move/engage · 1-9 train · B build · arrows pan · Esc menu · F1 debug";
-        let width = measure_text(hint, None, (16.0 * s) as u16, 1.0).width;
+        use crate::action::{Action, BindingMap};
+        let label = |a: Action| {
+            input
+                .bindings
+                .chord_for(a)
+                .map(BindingMap::chord_label)
+                .unwrap_or_else(|| "unbound".to_string())
+        };
+        // Live chords, not folklore: a rebound key changes the prompt.
+        let pans = [
+            Action::PanLeft,
+            Action::PanRight,
+            Action::PanUp,
+            Action::PanDown,
+        ]
+        .map(label);
+        let pan = if pans == ["Left", "Right", "Up", "Down"].map(String::from) {
+            "arrows pan".to_string()
+        } else {
+            format!("{}/{}/{}/{} pan", pans[0], pans[1], pans[2], pans[3])
+        };
+        let hint = format!(
+            "LMB select · RMB move/engage · 1-9 train · {} build · {} · Esc menu · {} debug",
+            label(Action::ToggleBuildPalette),
+            pan,
+            label(Action::ToggleOverlay),
+        );
+        let width = measure_text(&hint, None, (16.0 * s) as u16, 1.0).width;
         draw_text(
-            hint,
+            &hint,
             screen_width() - width - 10.0 * s,
             screen_height() - 10.0 * s,
             16.0 * s,

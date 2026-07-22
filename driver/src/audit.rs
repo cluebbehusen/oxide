@@ -31,8 +31,10 @@ pub struct RouteAudit {
     pub seats: (u8, u8),
     /// A* steps between doorsteps for ground units; None when sealed.
     pub ground_steps: Option<usize>,
-    /// Straight-line tiles for flyers.
-    pub air_tiles: f64,
+    /// Air distance between Foundry centers: the straight line unless a
+    /// peak forces the sim's air router around, then BFS steps over
+    /// air-passable tiles. None when peaks seal the sky entirely.
+    pub air_tiles: Option<f64>,
     /// The longest artillery reach as a fraction of the ground route —
     /// past ~0.5 the map is a siege range, not a battlefield.
     pub artillery_pressure: Option<f64>,
@@ -173,6 +175,76 @@ fn ground_route(state: &State, from: &[TilePos], to: &[TilePos]) -> Option<usize
     None
 }
 
+/// Air distance between two Foundries: center-to-center geometry, so an
+/// asymmetric doorstep ring can't skew a metric flyers never feel. The
+/// straight line serves unless a peak crosses it — then an 8-connected
+/// BFS over air-passable tiles (footprint to footprint) measures the
+/// detour the sim's air router would actually take.
+fn air_route(state: &State, a: &oxide_sim::Building, b: &oxide_sim::Building) -> Option<f64> {
+    let center = |f: &oxide_sim::Building| {
+        let (w, h) = f.kind.stats().size;
+        (
+            f.anchor.x as f64 + w as f64 / 2.0,
+            f.anchor.y as f64 + h as f64 / 2.0,
+        )
+    };
+    let (ax, ay) = center(a);
+    let (bx, by) = center(b);
+    let euclid = ((ax - bx).powi(2) + (ay - by).powi(2)).sqrt();
+    let blocked = chassis::path::line_blocked(
+        chassis::fx::Vec2Fx::new(chassis::fx::Fx::from_num(ax), chassis::fx::Fx::from_num(ay)),
+        chassis::fx::Vec2Fx::new(chassis::fx::Fx::from_num(bx), chassis::fx::Fx::from_num(by)),
+        |t| {
+            state
+                .map()
+                .tile(t)
+                .is_none_or(|tile| tile.terrain != oxide_sim::map::Terrain::Peak)
+        },
+    );
+    if !blocked {
+        return Some(euclid);
+    }
+    let (w, h) = (state.map().width(), state.map().height());
+    let index = |t: TilePos| (t.y * w + t.x) as usize;
+    let open = |t: TilePos| {
+        state
+            .map()
+            .tile(t)
+            .is_some_and(|tile| tile.terrain != oxide_sim::map::Terrain::Peak)
+    };
+    let mut dist: Vec<Option<usize>> = vec![None; (w * h) as usize];
+    let mut queue: std::collections::VecDeque<TilePos> = Default::default();
+    for t in a.tiles() {
+        dist[index(t)] = Some(0);
+        queue.push_back(t);
+    }
+    let mut target = vec![false; (w * h) as usize];
+    for t in b.tiles() {
+        target[index(t)] = true;
+    }
+    while let Some(t) = queue.pop_front() {
+        let d = dist[index(t)].expect("queued tiles have distances");
+        if target[index(t)] {
+            return Some(d as f64);
+        }
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                let n = t.offset(dx, dy);
+                let in_bounds = n.x >= 0 && n.y >= 0 && n.x < w && n.y < h;
+                if !in_bounds || dist[index(n)].is_some() || !open(n) {
+                    continue;
+                }
+                dist[index(n)] = Some(d + 1);
+                queue.push_back(n);
+            }
+        }
+    }
+    None
+}
+
 /// Audits a built scenario.
 pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
     let state = scenario.build().context("building scenario")?;
@@ -198,8 +270,8 @@ pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
         }
     }
 
-    // Every seat's Foundry doorstep set, in seat order.
-    let mut steps: Vec<(u8, Vec<TilePos>)> = Vec::new();
+    // Every seat's Foundry (and its doorstep set), in seat order.
+    let mut steps: Vec<(u8, &oxide_sim::Building, Vec<TilePos>)> = Vec::new();
     for (i, player) in state.players().iter().enumerate() {
         let _ = player;
         let Some(foundry) = state
@@ -211,6 +283,7 @@ pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
         };
         steps.push((
             i as u8,
+            foundry,
             doorsteps(&state, foundry.anchor, foundry.kind.stats().size),
         ));
     }
@@ -224,10 +297,8 @@ pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
             if !state.hostile(oxide_sim::PlayerId(sa), oxide_sim::PlayerId(sb)) {
                 continue;
             }
-            let ground_steps = ground_route(&state, &steps[i].1, &steps[j].1);
-            let (a, b) = (steps[i].1[0], steps[j].1[0]);
-            let (dx, dy) = ((a.x - b.x) as f64, (a.y - b.y) as f64);
-            let air_tiles = (dx * dx + dy * dy).sqrt();
+            let ground_steps = ground_route(&state, &steps[i].2, &steps[j].2);
+            let air_tiles = air_route(&state, steps[i].1, steps[j].1);
             let artillery_pressure = ground_steps.map(|s| reach / s.max(1) as f64);
             for (seat, slot) in [(i, ground_steps), (j, ground_steps)] {
                 nearest_enemy[seat] = match (nearest_enemy[seat], slot) {
@@ -248,7 +319,7 @@ pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
     let seats = steps
         .iter()
         .enumerate()
-        .map(|(idx, (seat, doorstep))| {
+        .map(|(idx, (seat, _, doorstep))| {
             // Scrap distance measures from the Foundry's center, not a
             // doorstep — doorstep order is row-major and would report
             // different numbers for mirror-identical seats.
@@ -320,13 +391,15 @@ impl MapAudit {
         for route in &self.routes {
             let _ = writeln!(
                 out,
-                "  {}v{}: ground {} / air {:.1} — artillery pressure {}",
+                "  {}v{}: ground {} / air {} — artillery pressure {}",
                 route.seats.0,
                 route.seats.1,
                 route
                     .ground_steps
                     .map_or("sealed".into(), |s| s.to_string()),
-                route.air_tiles,
+                route
+                    .air_tiles
+                    .map_or("sealed".into(), |a| format!("{a:.1}")),
                 route
                     .artillery_pressure
                     .map_or("-".into(), |p| format!("{:.0}%", p * 100.0)),
@@ -365,7 +438,7 @@ mod tests {
         let route = &audit.routes[0];
         let steps = route.ground_steps.expect("shipped maps are connected");
         assert!(steps > 0);
-        assert!(route.air_tiles > 0.0);
+        assert!(route.air_tiles.expect("open sky on the shipped duel") > 0.0);
         let pressure = route.artillery_pressure.expect("routed pair has pressure");
         assert!(
             (0.0..1.0).contains(&pressure),

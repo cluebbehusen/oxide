@@ -265,8 +265,10 @@ def generate(
         candidate = _carve(seed + attempt * 10_000_019, players, teams)
         # Unique per caller: the map warmer and a foreground reset may
         # generate the same seed concurrently, and a shared candidate
-        # name lets one unlink the other's file mid-rename. Both rename
-        # to the same target with identical bytes, which is safe.
+        # name lets one unlink the other's file mid-rename. Both publish
+        # identical bytes, so replace semantics (not rename — Windows
+        # raises FileExistsError when the loser finishes second) make
+        # the race harmless on every platform.
         tag = f"{os.getpid()}-{threading.get_ident()}"
         trial = path.with_suffix(f".candidate-{tag}.json")
         trial.write_text(json.dumps(candidate))
@@ -279,7 +281,7 @@ def generate(
             == 0
         )
         if ok:
-            trial.rename(path)
+            trial.replace(path)
             return str(path)
         trial.unlink(missing_ok=True)
     raise RuntimeError(f"no valid map within 16 attempts of seed {seed}")

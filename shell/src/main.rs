@@ -369,7 +369,7 @@ fn cycle_setting(config: &mut config::Config, row: usize) -> bool {
 /// The remappable actions, in display order. Digits and structural keys
 /// (Back, Confirm, group slots) stay fixed — their meaning is
 /// positional, not preferential.
-const REMAPPABLE: [(action::Action, &str); 12] = [
+const REMAPPABLE: [(action::Action, &str); 14] = [
     (action::Action::StopOrScrap, "Stop / scrap site"),
     (action::Action::TrainSlot(0), "Train slot 1"),
     (action::Action::TrainSlot(1), "Train slot 2"),
@@ -380,6 +380,8 @@ const REMAPPABLE: [(action::Action, &str); 12] = [
     (action::Action::ToggleOverlay, "Debug overlay"),
     (action::Action::PanLeft, "Pan left"),
     (action::Action::PanRight, "Pan right"),
+    (action::Action::PanUp, "Pan up"),
+    (action::Action::PanDown, "Pan down"),
     (action::Action::CycleIdleWorker, "Next idle harvester"),
     (action::Action::JumpToLastAlert, "Jump to last alert"),
 ];
@@ -502,14 +504,15 @@ async fn run() -> Result<()> {
     game.speed = args.speed;
 
     // Launched for a purpose (a scenario, a resume, or an agent socket)?
-    // Straight into the game; the menu is for humans starting cold.
+    // Straight into the game. Everyone else — automation and humans
+    // alike — starts cold at the Home front door.
     let (mut home, mut home_resumable) = home_menu();
-    let mut mode = if args.automation {
-        Mode::Home
-    } else if args.debug_server || args.scenario.is_some() || args.replay.is_some() {
+    let purposeful =
+        (args.debug_server && !args.automation) || args.scenario.is_some() || args.replay.is_some();
+    let mut mode = if purposeful {
         Mode::Playing
     } else {
-        Mode::MainMenu
+        Mode::Home
     };
     let mut draft = NewMatchDraft::default();
     let mut previews = PreviewCache::default();

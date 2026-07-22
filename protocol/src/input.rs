@@ -179,8 +179,8 @@ pub enum Key {
     H,
     /// Train a Sentinel.
     S,
-    /// Reserved. Formerly armed attack-move; unmapped since right-click
-    /// ground orders became fire-at-will. Kept for wire compatibility.
+    /// Jump the camera to the last alert (classic profile). Formerly
+    /// armed attack-move; reassigned when alerts landed.
     A,
     /// Pause / unpause.
     P,
@@ -240,4 +240,41 @@ pub enum Key {
     F7,
     /// Camera bookmark keys.
     F8,
+    /// Unbound by default; present so remapping can reach the full
+    /// letter row (WASD panning, custom profiles).
+    C,
+    /// See [`Key::C`].
+    D,
+    /// See [`Key::C`].
+    E,
+    /// See [`Key::C`].
+    F,
+    /// See [`Key::C`].
+    G,
+    /// See [`Key::C`].
+    I,
+    /// See [`Key::C`].
+    J,
+    /// See [`Key::C`].
+    K,
+    /// See [`Key::C`].
+    L,
+    /// See [`Key::C`].
+    M,
+    /// See [`Key::C`].
+    O,
+    /// See [`Key::C`].
+    Q,
+    /// See [`Key::C`].
+    T,
+    /// See [`Key::C`].
+    U,
+    /// See [`Key::C`].
+    V,
+    /// See [`Key::C`].
+    W,
+    /// See [`Key::C`].
+    Y,
+    /// See [`Key::C`].
+    Z,
 }

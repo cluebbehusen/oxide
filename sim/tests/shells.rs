@@ -192,6 +192,20 @@ fn shells_outlive_their_shooters() {
 }
 
 #[test]
+fn a_tampered_shell_owner_never_becomes_a_state() {
+    // hostile() indexes the player table when the shell lands; the
+    // validator has to reject the foreign seat at deserialization, not
+    // panic ticks later.
+    let (mut state, _) = open_fire();
+    run(&mut state, 3);
+    assert!(!state.shells().is_empty(), "premise: a shell is airborne");
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+    doc["shells"][0]["player"] = serde_json::json!(9);
+    assert!(serde_json::from_value::<State>(doc).is_err());
+}
+
+#[test]
 fn two_runs_with_shells_in_flight_stay_bit_identical() {
     let build = || {
         let (mut state, _) = open_fire();

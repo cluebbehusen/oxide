@@ -130,7 +130,7 @@ impl InputState {
     }
 }
 
-const KEY_MAP: [(Key, mq::KeyCode); 23] = [
+const KEY_MAP: [(Key, mq::KeyCode); 42] = [
     (Key::Up, mq::KeyCode::Up),
     (Key::Down, mq::KeyCode::Down),
     (Key::Left, mq::KeyCode::Left),
@@ -154,6 +154,25 @@ const KEY_MAP: [(Key, mq::KeyCode); 23] = [
     (Key::F6, mq::KeyCode::F6),
     (Key::F7, mq::KeyCode::F7),
     (Key::F8, mq::KeyCode::F8),
+    (Key::A, mq::KeyCode::A),
+    (Key::C, mq::KeyCode::C),
+    (Key::D, mq::KeyCode::D),
+    (Key::E, mq::KeyCode::E),
+    (Key::F, mq::KeyCode::F),
+    (Key::G, mq::KeyCode::G),
+    (Key::I, mq::KeyCode::I),
+    (Key::J, mq::KeyCode::J),
+    (Key::K, mq::KeyCode::K),
+    (Key::L, mq::KeyCode::L),
+    (Key::M, mq::KeyCode::M),
+    (Key::O, mq::KeyCode::O),
+    (Key::Q, mq::KeyCode::Q),
+    (Key::T, mq::KeyCode::T),
+    (Key::U, mq::KeyCode::U),
+    (Key::V, mq::KeyCode::V),
+    (Key::W, mq::KeyCode::W),
+    (Key::Y, mq::KeyCode::Y),
+    (Key::Z, mq::KeyCode::Z),
 ];
 
 /// Converts this frame's hardware input into events. Purely a poll→event
@@ -189,14 +208,9 @@ pub fn poll_events(input: &InputState) -> Vec<RawEvent> {
             });
         }
     }
-    for (key, code) in KEY_MAP {
-        if mq::is_key_pressed(code) {
-            events.push(RawEvent::KeyDown { key });
-        }
-        if mq::is_key_released(code) {
-            events.push(RawEvent::KeyUp { key });
-        }
-    }
+    // Modifier edges land BEFORE ordinary key edges: a chord pressed
+    // whole within one frame (Ctrl and F5 together) must resolve as
+    // Ctrl+F5, not as F5 followed by a late Ctrl.
     // Modifiers map two physical keys onto one logical one. (Releasing one
     // of a simultaneously-held pair releases the logical key — an edge case
     // nobody plays with.)
@@ -212,6 +226,14 @@ pub fn poll_events(input: &InputState) -> Vec<RawEvent> {
             events.push(RawEvent::KeyDown { key });
         }
         if mq::is_key_released(a) || mq::is_key_released(b) {
+            events.push(RawEvent::KeyUp { key });
+        }
+    }
+    for (key, code) in KEY_MAP {
+        if mq::is_key_pressed(code) {
+            events.push(RawEvent::KeyDown { key });
+        }
+        if mq::is_key_released(code) {
             events.push(RawEvent::KeyUp { key });
         }
     }

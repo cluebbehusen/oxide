@@ -406,6 +406,11 @@ impl State {
         {
             return Err(StateIntegrityError::ForeignBuildingOwner);
         }
+        // Shells carry a seat too: hostile() indexes the player table on
+        // impact, so a foreign owner would panic ticks after acceptance.
+        if self.shells.iter().any(|s| (s.player.0 as usize) >= players) {
+            return Err(StateIntegrityError::ForeignShellOwner);
+        }
         // Nested grids: derived Deserialize accepts any cell count, and a
         // short one panics deep inside vision refresh instead of here.
         if !self.map.is_consistent() {
@@ -724,6 +729,9 @@ pub enum StateIntegrityError {
     /// A building is owned by a player outside the table.
     #[error("building owned by a player outside the table")]
     ForeignBuildingOwner,
+    /// A shell in flight is owned by a player outside the table.
+    #[error("shell owned by a player outside the table")]
+    ForeignShellOwner,
     /// The map grid's dimensions disagree with its cells.
     #[error("map grid dimensions disagree with its cells")]
     MalformedMapGrid,

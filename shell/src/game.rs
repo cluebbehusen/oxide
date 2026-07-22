@@ -100,17 +100,6 @@ pub enum EffectKind {
         /// Impact, world coords.
         to: Vec2,
     },
-    /// A lobbed shell: a dot rides an arc from muzzle to impact —
-    /// cosmetic travel ahead of the real projectiles, damage already
-    /// resolved underneath.
-    ShellArc {
-        /// Muzzle, world coords.
-        from: Vec2,
-        /// Impact, world coords.
-        to: Vec2,
-        /// Seconds of flight (the sim's ticks over cadence).
-        secs: f32,
-    },
     /// A death pop.
     Puff {
         /// Center, world coords.
@@ -394,6 +383,13 @@ impl Game {
         }
     }
 
+    /// How far the presentation clock sits between the last executed
+    /// tick and the next, 0..1 — frozen while paused. Interpolation
+    /// fuel for anything that must move on sim time, not wall time.
+    pub fn tick_fraction(&self) -> f32 {
+        (self.accum / TICK_DT).clamp(0.0, 1.0)
+    }
+
     /// Advances the sim from wall time (the normal play path).
     pub fn advance_wall_clock(&mut self, dt: f32) {
         if self.paused {
@@ -525,7 +521,6 @@ impl Game {
             fx.age
                 < match fx.kind {
                     EffectKind::Laser { .. } => 0.15,
-                    EffectKind::ShellArc { secs, .. } => secs,
                     EffectKind::Puff { .. } => 0.4,
                     EffectKind::Ping { .. } => 0.5,
                     EffectKind::Burst { .. } => 0.35,
@@ -620,8 +615,18 @@ impl Game {
                     kind,
                     turret_pos,
                     target_pos,
+                    target,
                     ..
                 } => {
+                    // A turret chewing on our unit is an attack like any
+                    // other; the death case is UnitDied's alert.
+                    if self
+                        .state
+                        .unit(*target)
+                        .is_some_and(|u| u.player == self.human)
+                    {
+                        self.raise_alert(world_vec(*target_pos));
+                    }
                     // Kind rides in the event: the turret may be rubble by
                     // now (destroyed the tick it fired), and its shot still
                     // deserves the right report and burst.
@@ -679,6 +684,9 @@ impl Game {
                     });
                 }
                 Event::BuildingDestroyed { pos, player, .. } => {
+                    if *player == self.human {
+                        self.raise_alert(world_vec(*pos));
+                    }
                     if *player == self.human || sees(self, *pos) {
                         self.sounds_pending.push(SoundKind::BuildingBoom);
                     }
@@ -734,25 +742,43 @@ impl Game {
                     self.sounds_pending.push(SoundKind::Denied);
                 }
                 Event::ShellLaunched {
-                    player,
-                    from,
-                    to,
-                    flight,
+                    player, from, to, ..
                 } => {
+                    // No effect spawned: in-flight shells render from
+                    // `state.shells()` directly, aged by sim ticks — a
+                    // paused shell hangs in the air, a loaded replay
+                    // restores its arc, and speed changes track.
                     let heard = sees(self, *from) || sees(self, *to);
                     if heard || *player == self.human {
                         self.sounds_pending.push(SoundKind::Artillery);
                     }
-                    self.fx.push(Effect {
-                        kind: EffectKind::ShellArc {
-                            from: world_vec(*from),
-                            to: world_vec(*to),
-                            secs: *flight as f32 / 20.0,
-                        },
-                        age: 0.0,
-                    });
                 }
                 Event::ShellLanded { at, splash } => {
+                    // The event names no victim on purpose (a shell in
+                    // flight chooses nothing), so ask the post-tick world
+                    // whether the blast reached anything of ours —
+                    // survivors alert here, the dead through their own
+                    // events.
+                    let reach = splash.map_or(1.0, |r| r.to_num::<f32>().max(1.0));
+                    let world = world_vec(*at);
+                    let own_hurt = self
+                        .state
+                        .units()
+                        .iter()
+                        .filter(|u| u.player == self.human)
+                        .any(|u| world_vec(u.pos).distance(world) <= reach)
+                        || self
+                            .state
+                            .buildings()
+                            .iter()
+                            .filter(|b| b.player == self.human)
+                            .any(|b| {
+                                let c = world_vec(b.center());
+                                c.distance(world) <= reach + 1.5
+                            });
+                    if own_hurt {
+                        self.raise_alert(world);
+                    }
                     if sees(self, *at) {
                         self.sounds_pending.push(SoundKind::Artillery);
                     }
