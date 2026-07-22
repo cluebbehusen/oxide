@@ -24,24 +24,40 @@ replay that re-executes headless to a bit-identical state hash.
 cargo run -p oxide-shell
 ```
 
-A menu lists the shipped maps — Skirmish Basin, Scrapyard Brawl, Rustbelt
-Canyon, Verdigris Fields, Derelict Yard, Slagline, Open Circuit, Meridian
-Scar — then asks two questions: how hard should the opponent think
-(**Easy, Medium, Hard, Expert**), and who is it (**turtle, balanced,
-aggressive**, or let the map decide). Every answer is the same trained
-neural commander with different dials: it sees only what its units see,
-plays by exactly your rules, and its mistakes at lower settings are
-misjudgments, not lobotomies. You're Ferrous; the machine is Cupric,
-and it is not asleep.
+A menu lists the shipped maps — the classic duels plus two 2v2 maps,
+Twin Forges and Open Quarry — then asks three questions: how hard
+should the opponent think (**Easy, Medium, Hard, Expert**), who is it
+(**turtle, balanced, aggressive**, or let the map decide), and which
+faction you run (**Ferrous, Cupric**, or let the seed decide). Every
+opponent is the same trained neural commander with different dials: it
+sees only what its units see, plays by exactly your rules, and its
+mistakes at lower settings are misjudgments, not lobotomies. On the
+2v2 maps your teammate is that same mind, fighting beside you with
+shared sight.
 
-Four machines and three buildings. **Harvesters** feed the economy and
-build; **Sentinels** hold the line; **Scuttlers** (fast, cheap, fragile)
-eat undefended harvest lines; **Lancers** outrange everything including
-turrets, and melt if anything reaches them. The **Foundry** trains the
-basics and anchors your defeat condition; the **Fabricator** (built by a
-harvester) unlocks the advanced pair; **Turrets** hold ground on their
-own. Construction sites are attackable from the first tick, and
-cancelling one refunds only what's still standing — damage burns salvage.
+Eleven machines and seven buildings now. The shared core: **Harvesters**
+feed the economy, build, salvage battlefield wrecks, and weld wounded
+buildings; **Sentinels** hold the line (and carry a weak anti-air
+poke); **Scuttlers** eat undefended harvest lines; **Lancers**
+outrange turrets and melt in reach; the **Bombard** shells beyond its
+own eyes — someone must spot for it — and its blasts hurt everything
+in the radius. The factions split on the sky: Ferrous flies the heavy
+**Buzzard**, hunts with the **Talon**, and guards with the tanky
+**Flakhound**; Cupric answers with the darting **Darter**, the swarm
+**Wisp**, and the cheap **Stinger**. Air ignores terrain entirely —
+and only anti-air weapons can touch it.
+
+Buildings: the **Foundry** trains the basics and anchors your defeat
+condition; the **Fabricator** unlocks everything advanced including
+the air wing; **Turrets** hold ground; **Flak Turrets** hold sky;
+the **Bastion** is artillery in a fortress shell — full reach needs a
+spotter; the **Array** is radar (true sight in close, unidentified
+blips out to its ring); the **Reclaimer** grinds a slow scrap trickle
+so a long war never fully starves. Deaths leave wreck salvage where
+machines fall — winning a fight and holding the ground pays twice,
+and throwing an army away literally funds the enemy. Construction
+sites are attackable from the first tick, and cancelling one refunds
+only what's still standing — damage burns salvage.
 
 | Input | Action |
 |---|---|
@@ -54,21 +70,26 @@ cancelling one refunds only what's still standing — damage burns salvage.
 | Right click | Contextual order: enemy → attack, scrap → harvest, ground → **move engaging everything on the way** (fire at will is the only stance; combat units always defend themselves) |
 | Shift + right click | Queue the order behind the current one |
 | `R` | Arm a patrol: right-click waypoints, `R` again to start the loop — patrollers engage everything met and never settle |
-| `B` / `N` | With a harvester selected: place a Turret / Fabricator (ghost shows validity on ground you can currently see; click commits, Esc cancels) |
+| `B` | With a harvester selected: open the build palette — digits pick the structure, the ghost shows validity on ground you can currently see, click commits, Esc cancels |
+| Right click a damaged own building | With harvesters selected: weld it (costs a scrap trickle) |
 | `X` | Units selected: stop in place. Construction site selected: scrap it for a partial refund |
 | Right click on minimap | Send the selection there, fighting through |
 | Right click (Foundry selected) | Set the rally point — rally a scrap node and fresh harvesters mine it; fresh Sentinels attack-move to it |
 | Mouse wheel | Zoom (toward the cursor) |
 | Arrow keys | Pan |
-| `H` / `S` | Train the selected factory's first / second unit (Foundry: harvester 50 / sentinel 75; Fabricator: scuttler 40 / lancer 110) |
+| `H` / `S` | Train the selected factory's first / second unit |
+| `1`-`9` (factory selected) | Train by slot — the panel lists your faction's roster with prices |
 | `Space` | Jump to your Foundry |
 | `P` | Quick pause |
 | `Esc` | Deselect, then the pause menu (resume / restart / main menu / quit) |
 | `F1` | Debug overlay (grid, ids, paths — and no fog) |
 
-Ranged fire needs a clear line: rock (and buildings) block shots, so a
-Sentinel behind cover must step out to fire — and so must the one shooting
-at it. Every order answers back — a ground ping where it landed, a toast
+Ranged fire needs a clear line: rock (and buildings) block ground
+shots, so a Sentinel behind cover must step out to fire — and so must
+the one shooting at it. The air plays by different rules: nothing
+blocks a shot to or from the sky, and indirect shells (Bombard,
+Bastion) arc over everything. Guns that outrange their own eyes fire
+on your team's sight — kill the spotter and the guns go quiet. Every order answers back — a ground ping where it landed, a toast
 when it couldn't be done. Rich scrap nodes (the taller, denser piles)
 hold double the salvage and are usually worth fighting over.
 
