@@ -248,6 +248,8 @@ pub struct Game {
     /// End-of-match statistics, computed once from the recorder when
     /// the result lands (the record IS the match — a re-execution).
     pub end_stats: Option<oxide_driver::stats::MatchStats>,
+    /// What the player has demonstrably done — the tutorial's evidence.
+    pub demo: crate::tutorial::Demo,
     accum: f32,
     /// True during bulk fast-forwards: presentation (fx, sounds, facing)
     /// is skipped entirely instead of accumulated-then-discarded — a
@@ -325,6 +327,7 @@ impl Game {
             hinted_fight: false,
             layout: std::cell::Cell::new(crate::layout::LayoutModel::default()),
             end_stats: None,
+            demo: crate::tutorial::Demo::default(),
             accum: 0.0,
             suppress_presentation: false,
         })
@@ -413,6 +416,24 @@ impl Game {
         }
 
         let mut commands = std::mem::take(&mut self.pending);
+        // The tutorial's evidence: what the human has actually asked
+        // for, read off the same stream the recorder gets.
+        for pc in commands.iter().filter(|pc| pc.player == self.human) {
+            match &pc.command {
+                Command::Train { kind, .. } => {
+                    self.demo.trained = true;
+                    if kind.stats().can_fight() {
+                        self.demo.trained_fighter = true;
+                    }
+                }
+                Command::Harvest { .. } => self.demo.harvested = true,
+                Command::Build { .. } => self.demo.built = true,
+                Command::AttackMove { .. } | Command::Attack { .. } => {
+                    self.demo.attack_moved = true;
+                }
+                _ => {}
+            }
+        }
         for bot in &mut self.bots {
             commands.extend(bot.act(&self.state));
         }

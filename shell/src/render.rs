@@ -1882,6 +1882,55 @@ fn draw_panel(
     (cards, card_count, queue_slots, queue_count, top)
 }
 
+/// Where the tutorial card's dismiss box sits this frame — pure
+/// geometry shared by drawing and the click test.
+pub fn tutorial_dismiss_rect() -> Rect {
+    let s = ui_scale();
+    let w = 460.0 * s;
+    let x = (screen_width() - w) * 0.5;
+    Rect::new(x + w - 26.0 * s, 40.0 * s, 22.0 * s, 22.0 * s)
+}
+
+/// The tutorial card: headline, lesson, dismiss box, progress. Drawn
+/// over the world, under nothing — school outranks scenery.
+pub fn draw_tutorial(t: &crate::tutorial::Tutorial) {
+    let Some(step) = crate::tutorial::STEPS.get(t.step) else {
+        return;
+    };
+    let s = ui_scale();
+    let w = 460.0 * s;
+    let x = (screen_width() - w) * 0.5;
+    let y = 36.0 * s;
+    let line_h = 18.0 * s;
+    let h = 34.0 * s + step.body.len() as f32 * line_h + 10.0 * s;
+    draw_rectangle(x, y, w, h, Color::from_rgba(14, 14, 18, 235));
+    draw_rectangle_lines(x, y, w, h, 1.5 * s, Color::new(0.85, 0.65, 0.35, 0.9));
+    draw_text(
+        &format!(
+            "TUTORIAL {}/{}  ·  {}",
+            t.step + 1,
+            crate::tutorial::STEPS.len(),
+            step.title
+        ),
+        x + 10.0 * s,
+        y + 22.0 * s,
+        18.0 * s,
+        SCRAP_COLOR,
+    );
+    for (i, line) in step.body.iter().enumerate() {
+        draw_text(
+            line,
+            x + 10.0 * s,
+            y + 42.0 * s + i as f32 * line_h,
+            15.0 * s,
+            BONE_FAINT,
+        );
+    }
+    let d = tutorial_dismiss_rect();
+    draw_rectangle_lines(d.x, d.y, d.w, d.h, 1.2 * s, BONE_FAINT);
+    draw_text("x", d.x + 7.0 * s, d.y + 16.0 * s, 16.0 * s, BONE_FAINT);
+}
+
 /// The hover tooltip for panel cards, drawn over everything: name,
 /// hotkey, cost, description, weapon lines, and why a disabled card
 /// refuses. Rebuilt from the same panel model the frame drew.

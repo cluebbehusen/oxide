@@ -27,6 +27,7 @@ mod menu;
 mod panel;
 mod render;
 mod saves;
+mod tutorial;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -36,7 +37,7 @@ use macroquad::audio::{PlaySoundParams, play_sound};
 use macroquad::prelude::*;
 use menu::{Menu, PreviewCache, ScenarioEntry};
 use oxide_protocol::{
-    AdvancedView, CameraView, HashView, Key, OverlayView, RawEvent, Reply, Request,
+    AdvancedView, CameraView, HashView, Key, MouseButton, OverlayView, RawEvent, Reply, Request,
     ResponseEnvelope, SavedView, ScreenshotView, StateView, StatusView, UiView,
 };
 use oxide_sim::{PlayerCommand, SIM_VERSION, Scenario};
@@ -327,7 +328,7 @@ fn home_menu() -> (Menu, bool) {
     if resumable {
         items.push("Continue".to_string());
     }
-    items.extend(["Play", "Replays", "Settings", "Quit"].map(str::to_string));
+    items.extend(["Play", "Tutorial", "Replays", "Settings", "Quit"].map(str::to_string));
     (Menu::new("OXIDE", items), resumable)
 }
 
@@ -613,6 +614,7 @@ async fn run() -> Result<()> {
     // alike — starts cold at the Home front door.
     let (mut home, mut home_resumable) = home_menu();
     let mut playback: Option<PlaybackSession> = None;
+    let mut tutorial: Option<tutorial::Tutorial> = None;
     let mut replay_shelf: Vec<saves::ReplayEntry> = Vec::new();
     if let Some(path) = &args.watch {
         playback = Some(PlaybackSession::open(path)?);
@@ -703,6 +705,26 @@ async fn run() -> Result<()> {
                             mode = Mode::MainMenu;
                         }
                         2 => {
+                            // The tutorial is a gentle real match with
+                            // the lesson cards riding on top.
+                            let mut scenario = Scenario::skirmish();
+                            for p in scenario.players.iter_mut().skip(1) {
+                                p.bot_config = Some(oxide_sim::scenario::BotConfig {
+                                    level: oxide_sim::bot::Level::Easy,
+                                    aggression: Some(0),
+                                });
+                            }
+                            let mut fresh = Game::new(scenario)?;
+                            // The lesson cards replace the starter hints.
+                            fresh.hinted_train = true;
+                            fresh.hinted_fight = true;
+                            game = keep_flags(fresh, &game);
+                            game.paused = false;
+                            tutorial = Some(tutorial::Tutorial::new());
+                            input.reset_session();
+                            mode = Mode::Playing;
+                        }
+                        3 => {
                             replay_shelf = saves::discover();
                             sub_menu = Menu::new(
                                 "REPLAYS",
@@ -710,7 +732,7 @@ async fn run() -> Result<()> {
                             );
                             mode = Mode::Replays { arming: None };
                         }
-                        3 => {
+                        4 => {
                             sub_menu = settings_menu(&config);
                             mode = Mode::Settings;
                         }
@@ -954,7 +976,22 @@ async fn run() -> Result<()> {
                 // Escape walks outward: deselect first, then the menu.
                 if escape_pressed && !had_selection {
                     game.paused = true;
+                    game.demo.paused_menu = true;
                     mode = Mode::PauseMenu;
+                }
+                if let Some(t) = tutorial.as_mut() {
+                    if !t.advance(&game.demo) {
+                        tutorial = None;
+                    } else {
+                        // A click on the card's dismiss box ends school.
+                        let dismiss = render::tutorial_dismiss_rect();
+                        if events.iter().any(|e| {
+                            matches!(e, RawEvent::MouseDown { button: MouseButton::Left, x, y }
+                                if dismiss.contains(vec2(*x, *y)))
+                        }) {
+                            tutorial = None;
+                        }
+                    }
                 }
                 game.advance_wall_clock(dt);
                 game.update_fx(dt);
@@ -969,6 +1006,9 @@ async fn run() -> Result<()> {
                         oxide_driver::stats::compute(&replay, (total / 48).max(1)).ok();
                 }
                 render::draw(&game, &sprites, &input);
+                if let Some(t) = &tutorial {
+                    render::draw_tutorial(t);
+                }
             }
             Mode::Playback => {
                 if let Some(pb) = playback.as_mut() {
