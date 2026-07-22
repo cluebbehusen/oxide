@@ -15,9 +15,9 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-FEATURES = 59
+FEATURES = 63
 ACTIONS = 21
-GYM_VERSION = 3
+GYM_VERSION = 4
 # Conditioning dims appended to the gym features as network input:
 # skill (0-1000; 1000 = full strength), aggression (0-1000; 500 =
 # balanced), and faction (0 = ferrous, 1000 = cupric). The world
@@ -60,15 +60,15 @@ SCALE_BY_NAME: dict[str, float] = {
     "my_strength": 500,
     "army_strength": 500,
     "enemy_strength": 500,
-    "home_x": 48,
-    "home_y": 32,
-    "enemy_site_x": 48,
-    "enemy_site_y": 32,
+    "home_x": 1000,
+    "home_y": 1000,
+    "enemy_site_x": 1000,
+    "enemy_site_y": 1000,
     "intel_age": 10_000,
     "seen_strength": 500,
     "seen_age": 10_000,
-    "seen_x": 48,
-    "seen_y": 32,
+    "seen_x": 1000,
+    "seen_y": 1000,
     "my_bombards": 6,
     "my_antiair": 8,
     "my_airground": 8,
@@ -83,12 +83,12 @@ SCALE_BY_NAME: dict[str, float] = {
     "my_aa_strength": 300,
     "enemy_aa_strength": 300,
     "blip_count": 10,
-    "nearest_blip_x": 48,
-    "nearest_blip_y": 32,
+    "nearest_blip_x": 1000,
+    "nearest_blip_y": 1000,
     "wreck_count": 20,
     "wreck_value": 500,
-    "nearest_wreck_x": 48,
-    "nearest_wreck_y": 32,
+    "nearest_wreck_x": 1000,
+    "nearest_wreck_y": 1000,
     "damaged_buildings": 5,
     "repair_deficit": 1_000,
     "ally_units": 30,
@@ -96,6 +96,12 @@ SCALE_BY_NAME: dict[str, float] = {
     "ally_foundry_hp": 800,
     "ally_distress": 1,
     "faction": 1,
+    # v4: relative 0-1000 coordinates above, plus map dims and shell
+    # observability. Dims scale by the largest shipped field.
+    "map_w": 100,
+    "map_h": 100,
+    "incoming_shells": 6,
+    "my_shells_in_flight": 8,
 }
 FEATURE_NAMES = list(SCALE_BY_NAME.keys())
 SCALES = np.array([SCALE_BY_NAME[n] for n in FEATURE_NAMES], dtype=np.float32)

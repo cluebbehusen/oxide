@@ -29,6 +29,8 @@ fn obs_base() -> Observation {
         known_wrecks: Vec::new(),
         blips: Vec::new(),
         faction: Faction::Ferrous,
+        my_shells: 0,
+        incoming_shells: Vec::new(),
     }
 }
 
