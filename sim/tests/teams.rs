@@ -300,3 +300,51 @@ fn a_2v2_scenario_reproduces_bit_identically() {
     };
     assert_eq!(run(), run(), "same seed, same commands, same world");
 }
+
+#[test]
+fn an_omitted_team_can_never_alias_an_explicit_one() {
+    // Seat 0 authors team 1 while seat 1 omits its team entirely. Raw
+    // values would alias them onto one side (and reject the map as one
+    // team); normalization keeps the omitted seat a genuine team of one.
+    let mut scenario = arena4(vec![
+        unit(0, UnitKind::Sentinel, 5, 5),
+        unit(1, UnitKind::Sentinel, 18, 5),
+    ]);
+    scenario.players.truncate(2);
+    scenario.map = vec![
+        "########################".into(),
+        "#1..................2..#".into(),
+        "#......................#".into(),
+        "#......................#".into(),
+        "#......................#".into(),
+        "#......................#".into(),
+        "#......................#".into(),
+        "########################".into(),
+    ];
+    scenario.players[0].team = Some(1);
+    scenario.players[1].team = None;
+    let state = scenario.build().expect("two distinct teams, not OneTeam");
+    let (a, b) = (state.players()[0].team, state.players()[1].team);
+    assert_ne!(a, b, "the omitted seat fights alone");
+}
+
+#[test]
+fn explicit_team_ids_group_by_value_whatever_numbers_authors_pick() {
+    // Sparse, out-of-order ids (7 and 3) group exactly like dense ones:
+    // the numbers are opaque labels, only the grouping is real.
+    let mut scenario = arena4(vec![
+        unit(0, UnitKind::Sentinel, 5, 5),
+        unit(1, UnitKind::Sentinel, 18, 5),
+        unit(2, UnitKind::Sentinel, 5, 8),
+        unit(3, UnitKind::Sentinel, 18, 8),
+    ]);
+    scenario.players[0].team = Some(7);
+    scenario.players[1].team = Some(3);
+    scenario.players[2].team = Some(7);
+    scenario.players[3].team = Some(3);
+    let state = scenario.build().unwrap();
+    let teams: Vec<u8> = state.players().iter().map(|p| p.team).collect();
+    assert_eq!(teams[0], teams[2], "the sevens stand together");
+    assert_eq!(teams[1], teams[3], "the threes stand together");
+    assert_ne!(teams[0], teams[1], "and the two sides stay enemies");
+}

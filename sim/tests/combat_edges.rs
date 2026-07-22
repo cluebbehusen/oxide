@@ -86,38 +86,42 @@ fn arena(units: Vec<UnitSpec>) -> Scenario {
 
 #[test]
 fn a_ground_chaser_stalls_when_no_standing_room_reaches_a_flyer_deep_in_rock() {
-    // A 9x9 rock block fills (5,3)-(13,11); its center (9,7) is Chebyshev-4
-    // from every edge, so *no* tile a ground unit could stand on lies
-    // within the chaser's stand-in radius. A Flakhound ordered onto a Wisp
-    // parked there can find neither range nor footing — its order must stall
-    // rather than path into the wall or spin forever. The chaser sits in
-    // sight of the flyer (vision 7) but out of its aggro/range (5), and the
-    // Wisp descends straight down its own column, never within 5 tiles of
-    // the chaser — so no mid-flight auto-acquire drags the fight open early.
+    // An 11x11 rock block fills (5,3)-(15,13); its center (10,8) is
+    // Chebyshev-5 from every edge, so every tile a ground unit could stand
+    // on lies outside both the stand-in scan and the weapon's reach (the
+    // nearest footing is 6.0 tiles out, past the Flakhound's 5). A
+    // Flakhound ordered onto a Wisp parked there can find neither range nor
+    // footing — its order must stall rather than path into the wall or spin
+    // forever. The chaser sits in sight of the flyer (vision 7) but out of
+    // its aggro/range (5), and the Wisp descends straight down its own
+    // column, never within 5 tiles of the chaser — so no mid-flight
+    // auto-acquire drags the fight open early.
     let scenario = Scenario {
         name: "walled-flyer".into(),
         seed: 42,
         map: vec![
-            "###################".into(),
-            "#1................#".into(),
-            "#.................#".into(),
-            "#....#########....#".into(),
-            "#....#########....#".into(),
-            "#....#########....#".into(),
-            "#....#########....#".into(),
-            "#....#########....#".into(),
-            "#....#########....#".into(),
-            "#....#########....#".into(),
-            "#....#########....#".into(),
-            "#....#########....#".into(),
-            "#..............2..#".into(),
-            "#.................#".into(),
-            "###################".into(),
+            "#####################".into(),
+            "#1..................#".into(),
+            "#...................#".into(),
+            "#....###########....#".into(),
+            "#....###########....#".into(),
+            "#....###########....#".into(),
+            "#....###########....#".into(),
+            "#....###########....#".into(),
+            "#....###########....#".into(),
+            "#....###########....#".into(),
+            "#....###########....#".into(),
+            "#....###########....#".into(),
+            "#....###########....#".into(),
+            "#....###########....#".into(),
+            "#.................2.#".into(),
+            "#...................#".into(),
+            "#####################".into(),
         ],
         players: players(),
         units: vec![
-            unit(0, UnitKind::Flakhound, 3, 7),
-            unit(1, UnitKind::Wisp, 9, 2),
+            unit(0, UnitKind::Flakhound, 4, 8),
+            unit(1, UnitKind::Wisp, 10, 1),
         ],
     };
     let mut state = scenario.build().unwrap();
@@ -128,12 +132,12 @@ fn a_ground_chaser_stalls_when_no_standing_room_reaches_a_flyer_deep_in_rock() {
         1,
         Command::Move {
             units: vec![wisp],
-            goal: TilePos::new(9, 7),
+            goal: TilePos::new(10, 8),
             queue: false,
         },
     )]);
     run_until(&mut state, 200, |s, _| {
-        s.unit(wisp).unwrap().tile() == TilePos::new(9, 7)
+        s.unit(wisp).unwrap().tile() == TilePos::new(10, 8)
     });
     assert_eq!(
         state.unit(flak).unwrap().order,
@@ -519,4 +523,68 @@ fn radar_detects_at_the_ring_and_goes_quiet_one_tile_beyond() {
         !view.contacts().contains(&past_tile),
         "one tile past the ring falls silent"
     );
+}
+
+#[test]
+fn a_ground_chaser_flanks_to_a_firing_position_it_can_actually_shoot_from() {
+    // A 7x7 rock block: the scan's first passable candidates are the ring-4
+    // corners at 5.66 tiles — past the Flakhound's 5 — but the ring's edge
+    // tiles sit at 4.0-5.0 and are honest firing positions. The chaser must
+    // reject the tempting-but-useless corner, route to a tile it can shoot
+    // from, and take the kill. (Before range-aware selection this soft-
+    // locked: the chaser parked on the corner forever, out of range.)
+    let scenario = Scenario {
+        name: "flanked-flyer".into(),
+        seed: 42,
+        map: vec![
+            "################".into(),
+            "#1.............#".into(),
+            "#..............#".into(),
+            "#...#######....#".into(),
+            "#...#######....#".into(),
+            "#...#######....#".into(),
+            "#...#######....#".into(),
+            "#...#######....#".into(),
+            "#...#######....#".into(),
+            "#...#######....#".into(),
+            "#..............#".into(),
+            "#...........2..#".into(),
+            "#..............#".into(),
+            "################".into(),
+        ],
+        players: players(),
+        units: vec![
+            unit(0, UnitKind::Flakhound, 1, 6),
+            unit(1, UnitKind::Wisp, 7, 1),
+        ],
+    };
+    let mut state = scenario.build().unwrap();
+    let (flak, wisp) = (state.units()[0].id, state.units()[1].id);
+
+    state.tick(&[cmd(
+        1,
+        Command::Move {
+            units: vec![wisp],
+            goal: TilePos::new(7, 6),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 200, |s, _| {
+        s.unit(wisp).unwrap().tile() == TilePos::new(7, 6)
+    });
+    assert_eq!(state.unit(flak).unwrap().order, Order::Idle);
+
+    state.tick(&[cmd(
+        0,
+        Command::Attack {
+            units: vec![flak],
+            target: Target::Unit(wisp),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 600, |_, events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == wisp))
+    });
 }

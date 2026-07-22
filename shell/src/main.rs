@@ -140,6 +140,21 @@ fn personality_knob(choice: usize) -> Option<u32> {
     }
 }
 
+/// Moves a seat onto a roster, keeping any faction-derived name honest:
+/// the shipped maps name seats after their faction ("Cupric", "West
+/// Ferrous"), and a stale name makes the victory banner announce the
+/// wrong side.
+fn retint_seat(seat: &mut oxide_sim::scenario::PlayerSpec, faction: oxide_sim::Faction) {
+    let label = |f: oxide_sim::Faction| match f {
+        oxide_sim::Faction::Ferrous => "Ferrous",
+        oxide_sim::Faction::Cupric => "Cupric",
+    };
+    if seat.faction != faction {
+        seat.name = seat.name.replace(label(seat.faction), label(faction));
+        seat.faction = faction;
+    }
+}
+
 /// A screenshot request parked until after this frame renders.
 struct PendingScreenshot {
     id: u64,
@@ -394,7 +409,7 @@ async fn run() -> Result<()> {
                         oxide_sim::Faction::Cupric => oxide_sim::Faction::Ferrous,
                     };
                     if let Some(human) = scenario.players.iter_mut().find(|p| !p.bot) {
-                        human.faction = faction;
+                        retint_seat(human, faction);
                     }
                     // In a duel, faction is also the only allegiance cue
                     // on screen — the opponent takes the other roster, or
@@ -404,7 +419,7 @@ async fn run() -> Result<()> {
                     if scenario.players.len() == 2
                         && let Some(bot) = scenario.players.iter_mut().find(|p| p.bot)
                     {
-                        bot.faction = complement;
+                        retint_seat(bot, complement);
                     }
                     let fresh = Game::new(scenario)?;
                     game = keep_flags(fresh, &game);

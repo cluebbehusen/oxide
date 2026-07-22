@@ -157,15 +157,38 @@ impl Scenario {
         {
             return Err(ScenarioError::ExtraAnchor(*player, self.players.len()));
         }
+        // Teams normalize to dense ids by first appearance: seats naming
+        // the same explicit id share one, and every omitted seat gets a
+        // fresh singleton — an authored id can never alias a "team of
+        // one" seat, whatever number it picked. For every shipped map
+        // (all-explicit in authored order, or all-omitted) the dense ids
+        // equal the raw values, so old hashes stand.
+        let mut team_ids: Vec<(Option<u8>, u8)> = Vec::new();
         let players: Vec<Player> = self
             .players
             .iter()
-            .enumerate()
-            .map(|(index, spec)| Player {
-                name: spec.name.clone(),
-                faction: spec.faction,
-                team: spec.team.unwrap_or(index as u8),
-                scrap: spec.scrap,
+            .map(|spec| {
+                let team = match spec.team {
+                    Some(id) => match team_ids.iter().find(|(k, _)| *k == Some(id)) {
+                        Some((_, dense)) => *dense,
+                        None => {
+                            let dense = team_ids.len() as u8;
+                            team_ids.push((Some(id), dense));
+                            dense
+                        }
+                    },
+                    None => {
+                        let dense = team_ids.len() as u8;
+                        team_ids.push((None, dense));
+                        dense
+                    }
+                };
+                Player {
+                    name: spec.name.clone(),
+                    faction: spec.faction,
+                    team,
+                    scrap: spec.scrap,
+                }
             })
             .collect();
         if self.players.len() > 1 {

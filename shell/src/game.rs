@@ -504,14 +504,23 @@ impl Game {
                     // its report either way. The weapon's character decides
                     // the report and whether the impact blooms.
                     let heard = sees(self, *attacker_pos) || sees(self, *target_pos);
-                    let (sound, heavy, splash) = match attacker_kind {
-                        oxide_sim::UnitKind::Lancer => (SoundKind::RailFire, true, None),
-                        oxide_sim::UnitKind::Bombard => (SoundKind::Artillery, true, Some(1.4)),
+                    let (sound, heavy) = match attacker_kind {
+                        oxide_sim::UnitKind::Lancer => (SoundKind::RailFire, true),
+                        oxide_sim::UnitKind::Bombard => (SoundKind::Artillery, true),
                         oxide_sim::UnitKind::Flakhound | oxide_sim::UnitKind::Stinger => {
-                            (SoundKind::Flak, false, Some(1.2))
+                            (SoundKind::Flak, false)
                         }
-                        _ => (SoundKind::Laser, false, None),
+                        _ => (SoundKind::Laser, false),
                     };
+                    // The burst radius comes from the kind's actual splash
+                    // stat, so the telegraphed area never overstates (or
+                    // hides) the damage the sim will deal.
+                    let splash = attacker_kind
+                        .stats()
+                        .weapons
+                        .iter()
+                        .find_map(|w| w.splash)
+                        .map(|s| s.to_num::<f32>());
                     if heard {
                         self.sounds_pending.push(sound);
                     }
@@ -534,16 +543,25 @@ impl Game {
                     }
                 }
                 Event::TurretFired {
-                    turret,
+                    kind,
                     turret_pos,
                     target_pos,
                     ..
                 } => {
-                    let (sound, splash) = match self.state.building(*turret).map(|b| b.kind) {
-                        Some(oxide_sim::BuildingKind::Bastion) => (SoundKind::Artillery, Some(1.3)),
-                        Some(oxide_sim::BuildingKind::FlakTurret) => (SoundKind::Flak, Some(1.2)),
-                        _ => (SoundKind::Laser, None),
+                    // Kind rides in the event: the turret may be rubble by
+                    // now (destroyed the tick it fired), and its shot still
+                    // deserves the right report and burst.
+                    let sound = match kind {
+                        oxide_sim::BuildingKind::Bastion => SoundKind::Artillery,
+                        oxide_sim::BuildingKind::FlakTurret => SoundKind::Flak,
+                        _ => SoundKind::Laser,
                     };
+                    let splash = kind
+                        .stats()
+                        .weapons
+                        .iter()
+                        .find_map(|w| w.splash)
+                        .map(|s| s.to_num::<f32>());
                     if sees(self, *turret_pos) || sees(self, *target_pos) {
                         self.sounds_pending.push(sound);
                     }

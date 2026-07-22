@@ -210,7 +210,7 @@ fn turret_fire(state: &mut State, events: &mut Vec<Event>, hits: &mut Vec<Pendin
         if !b.built || b.hp == 0 {
             continue;
         }
-        let (me, center, cooling) = (b.player, b.center(), b.cooldown > 0);
+        let (me, center, cooling, kind) = (b.player, b.center(), b.cooldown > 0, b.kind);
         if cooling {
             let b = state.building_mut(id).expect("just seen");
             b.cooldown -= 1;
@@ -260,6 +260,7 @@ fn turret_fire(state: &mut State, events: &mut Vec<Event>, hits: &mut Vec<Pendin
         );
         events.push(Event::TurretFired {
             turret: id,
+            kind,
             target: uid,
             turret_pos: center,
             target_pos: upos,
@@ -379,10 +380,11 @@ fn repair(
         unit.path = None;
         let p = unit.progress;
         unit.progress += 1;
-        if unit
-            .progress
-            .is_multiple_of(crate::stats::REPAIR_TICKS_PER_SCRAP)
-        {
+        // Bill at each interval's first tick, not its last — a weld
+        // shorter than a whole interval still pays for the torch (chip
+        // repairs were free otherwise), and the broke-stall above
+        // already guards the coin being spent here.
+        if p.is_multiple_of(crate::stats::REPAIR_TICKS_PER_SCRAP) {
             state.player_mut(me).scrap -= 1; // nonzero checked above
         }
         let step = (ramp * (p + 1) / ramp_ticks) - (ramp * p / ramp_ticks);
@@ -408,16 +410,25 @@ fn repair(
     }
 }
 
-/// The nearest tile of `domain` a chaser can stand around an
-/// unstandable victim tile, ring-scanned outward (row-major within a
-/// ring — the deterministic snap every goal uses). `None` when the
-/// victim sits deep inside ground no chaser of this domain can reach
-/// firing range of.
-fn chase_stand_in(state: &State, domain: Domain, around: TilePos) -> Option<TilePos> {
-    /// Furthest a chaser detours from the victim's tile hunting for
-    /// standing room — inside every anti-air weapon's range, so a
-    /// found tile is a firing position.
-    const CHASE_STAND_RADIUS: i32 = 4;
+/// Firing positions for a chaser around an unstandable victim tile:
+/// ring-scanned outward (row-major within a ring — the deterministic
+/// snap every goal uses), keeping only tiles the chaser can stand on
+/// AND shoot from — a stand-in beyond the weapon's Euclidean reach is
+/// no stand-in at all (ring corners sit √2 further out than their
+/// Chebyshev radius suggests). Candidates come back in scan order; the
+/// caller takes the first it can actually route to. Empty when the
+/// victim sits deeper in blocked ground than any weapon reaches.
+fn chase_stand_ins(
+    state: &State,
+    domain: Domain,
+    around: TilePos,
+    range: chassis::fx::Fx,
+) -> Vec<TilePos> {
+    /// Furthest ring hunted for standing room — covers the longest
+    /// anti-air reach (range 5 lands exactly on ring 5's axis tiles).
+    const CHASE_STAND_RADIUS: i32 = 5;
+    let aim = around.center();
+    let mut out = Vec::new();
     for r in 1..=CHASE_STAND_RADIUS {
         for dy in -r..=r {
             for dx in -r..=r {
@@ -425,13 +436,13 @@ fn chase_stand_in(state: &State, domain: Domain, around: TilePos) -> Option<Tile
                     continue;
                 }
                 let t = around.offset(dx, dy);
-                if state.passable_for(domain, t) {
-                    return Some(t);
+                if state.passable_for(domain, t) && t.center().dist_sq(aim) <= range * range {
+                    out.push(t);
                 }
             }
         }
     }
-    None
+    out
 }
 
 /// The nearest enemy this unit's weapons can cover, in aggro range —
@@ -868,30 +879,44 @@ fn attack(
     let reached = match target {
         Target::Unit(_) => {
             // A ground chaser cannot stand where a flyer hovers — over
-            // rock, over a roof — so it marches to the nearest tile it
-            // CAN stand instead; getting within weapon range is the
-            // job, occupying the victim's tile never was. Air chasers
-            // (and reachable tiles) keep the direct goal.
-            let desired = if state.passable_for(stats.domain, target_tile) {
-                Some(target_tile)
-            } else {
-                chase_stand_in(state, stats.domain, target_tile)
-            };
+            // rock, over a roof — so it marches to a tile it CAN stand
+            // on and shoot from instead; getting within weapon range is
+            // the job, occupying the victim's tile never was. Air
+            // chasers (and reachable tiles) keep the direct goal.
+            let direct = state.passable_for(stats.domain, target_tile);
             // Repath when the target has drifted a tile from the
             // path's goal — cheap pursuit without per-tick A*. A path
-            // already aimed at the stand-in stays fresh while the
-            // victim parks, or a grounded chaser would repath forever.
+            // already aimed at a firing position for this victim stays
+            // fresh while it parks, or a grounded chaser would repath
+            // forever.
             let stale = state
                 .unit(id)
                 .expect("caller checked")
                 .path
                 .as_ref()
-                .is_none_or(|p| Some(p.goal) != desired && p.goal.chebyshev(target_tile) > 1);
+                .is_none_or(|p| {
+                    if direct {
+                        p.goal != target_tile && p.goal.chebyshev(target_tile) > 1
+                    } else {
+                        !(state.passable_for(stats.domain, p.goal)
+                            && p.goal.center().dist_sq(target_tile.center())
+                                <= weapon.range * weapon.range)
+                    }
+                });
             if stale {
-                let path = desired.and_then(|goal| route_for(state, kind, tile, goal));
-                let unit = state.unit_mut(id).expect("caller checked");
-                match (path, desired) {
-                    (Some(waypoints), Some(goal)) => {
+                let routed = if direct {
+                    route_for(state, kind, tile, target_tile).map(|w| (target_tile, w))
+                } else {
+                    // Scan-order candidates, first one that routes wins:
+                    // an isolated pocket next to the victim must not
+                    // stall a chaser that could fire from the far side.
+                    chase_stand_ins(state, stats.domain, target_tile, weapon.range)
+                        .into_iter()
+                        .find_map(|goal| route_for(state, kind, tile, goal).map(|w| (goal, w)))
+                };
+                match routed {
+                    Some((goal, waypoints)) => {
+                        let unit = state.unit_mut(id).expect("caller checked");
                         unit.path = Some(PathFollow {
                             goal,
                             waypoints,
@@ -899,7 +924,7 @@ fn attack(
                         });
                         true
                     }
-                    _ => false,
+                    None => false,
                 }
             } else {
                 true

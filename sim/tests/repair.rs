@@ -375,3 +375,38 @@ fn reissued_repairs_still_pay_for_the_welding() {
         state.player(PlayerId(0)).scrap
     );
 }
+
+#[test]
+fn the_torch_bills_its_first_scrap_the_tick_it_lights() {
+    // Billing lands at each interval's start, not its end — a chip repair
+    // that finishes in under an interval still pays one scrap, or repeated
+    // small wounds would heal free forever.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 4, 2),
+        unit(1, UnitKind::Scuttler, 12, 6),
+        unit(1, UnitKind::Scuttler, 12, 7),
+    ])
+    .build()
+    .unwrap();
+    let builder = state.units()[0].id;
+    let raiders = vec![state.units()[1].id, state.units()[2].id];
+    let (turret, welder, _) = wounded_turret(&mut state, builder, raiders);
+    let bank_before = state.player(PlayerId(0)).scrap;
+    state.tick(&[cmd(
+        0,
+        Command::Repair {
+            units: vec![welder],
+            building: turret,
+        },
+    )]);
+    // The welder trained adjacent to the foundry and must walk over; give
+    // it until the first welding tick, which is when the first coin drops.
+    run_until(&mut state, 100, |s, _| {
+        s.player(PlayerId(0)).scrap < bank_before
+    });
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        bank_before - 1,
+        "exactly one scrap up front, not a free first interval"
+    );
+}

@@ -149,7 +149,9 @@ and test fixtures inside crate `tests/` directories.
   node, `S` rich node (double salvage), `1`-`8` Foundry anchors (top-left
   of 2x2). (`w` appears in *rendered* ASCII for wreck tiles but is never
   authorable.) `PlayerSpec.team` groups seats; omitted means a team of
-  one, and every-seat-one-team is a build error. Shipped maps are
+  one — genuinely: teams normalize to dense ids by first appearance,
+  so an authored id can never alias an omitted seat, whatever number
+  it picked — and every-seat-one-team is a build error. Shipped maps are
   180°-symmetric — author edits in mirrored pairs, and on 4-player maps
   every seat's unit list must be the exact image-transform of seat 0's,
   entry by entry (the 0.7 seat-fairness rule generalized). Faction
@@ -320,10 +322,12 @@ Hard < Expert forever).
   foundations, and accept any on-map tile as a goal — rock included.
   Group orders split by domain so each half routes sensibly. Terrain
   cover (the rock LOS rule) is ground-vs-ground only. A ground chaser
-  whose flying victim parks over impassable ground marches to the
-  nearest standable tile instead (ring scan inside AA range) —
-  reaching weapon range is the job; occupying the victim's tile never
-  was.
+  whose flying victim parks over impassable ground marches to a
+  stand-in instead: ring-scanned candidates filtered to the weapon's
+  Euclidean reach (ring corners sit √2 past their Chebyshev radius),
+  first routeable one wins — reaching weapon range is the job;
+  occupying the victim's tile never was. No candidate in reach stalls
+  the order honestly.
 - **Combat is a weapons matrix.** Every kind carries a weapon list
   (cap 2) with per-weapon cooldowns and target-domain masks; the weapon
   covering the ordered target is the primary, sidearms pick their own
@@ -349,7 +353,9 @@ Hard < Expert forever).
   walking and discovering.
 - **Repair reuses construction's machinery.** Welding feeds buffered
   hp gains through the same resolve path as building (fire wins ties),
-  costs a scrap trickle, stalls broke, and stacks across welders.
+  costs a scrap trickle billed at each interval's *start* (chip
+  repairs pay their coin; free healing was an exploit), stalls broke,
+  and stacks across welders.
 - **Radar blips detect without identifying.** The Array's outer ring
   surfaces hostile units as bare tiles in `Vision::contacts` — no kind,
   no owner, no memory, no license for a targeted attack. Team sight is
