@@ -179,6 +179,7 @@ impl<T> Grid<T> {
         Some(&mut self.cells[base..base + self.width as usize])
     }
 
+    /// Sets every cell to `value`.
     pub fn fill(&mut self, value: T)
     where
         T: Clone,
