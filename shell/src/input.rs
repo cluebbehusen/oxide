@@ -422,8 +422,7 @@ pub fn update_held(game: &mut Game, input: &InputState, dt: f32) {
         }
     }
     if dir != vec2(0.0, 0.0) {
-        let world_per_sec =
-            PAN_PX_PER_SEC * input.ui * input.camera_prefs.pan_speed / game.camera.zoom;
+        let world_per_sec = PAN_PX_PER_SEC * input.camera_prefs.pan_speed / game.camera.zoom;
         game.camera.pan(dir.normalize() * world_per_sec * dt);
     }
 }

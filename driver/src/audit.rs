@@ -7,7 +7,6 @@
 
 use anyhow::{Context, Result};
 use chassis::grid::TilePos;
-use chassis::path::astar;
 use oxide_sim::stats::BuildingKind;
 use oxide_sim::{Scenario, State};
 use serde::Serialize;
@@ -58,10 +57,6 @@ pub struct MapAudit {
     pub routes: Vec<RouteAudit>,
 }
 
-/// The audit never fights the pathfinder cap: bounded generously above
-/// any shipped or prototyped map size.
-const AUDIT_EXPANSION_CAP: u32 = 1_000_000;
-
 /// Longest artillery reach, straight from the stats of the two siege
 /// kinds — a rebalance moves the audit automatically; a new artillery
 /// kind joins this list.
@@ -108,26 +103,74 @@ fn reachable_from(state: &State, starts: &[TilePos]) -> usize {
                     continue;
                 }
                 let n = t.offset(dx, dy);
-                if n.x >= 0
-                    && n.y >= 0
-                    && n.x < w
-                    && n.y < h
-                    && !seen[index(n)]
-                    && state.passable(n)
-                {
-                    seen[index(n)] = true;
-                    queue.push_back(n);
+                let in_bounds = n.x >= 0 && n.y >= 0 && n.x < w && n.y < h;
+                if !in_bounds || seen[index(n)] || !state.passable(n) {
+                    continue;
                 }
+                // The sim's A* forbids corner cutting: a diagonal step
+                // is legal only when both cardinal companions are open.
+                // The audit must count rooms the way units walk them.
+                if dx != 0
+                    && dy != 0
+                    && !(state.passable(t.offset(dx, 0)) && state.passable(t.offset(0, dy)))
+                {
+                    continue;
+                }
+                seen[index(n)] = true;
+                queue.push_back(n);
             }
         }
     }
     count
 }
 
+/// Shortest ground route between two doorstep *sets*: multi-source BFS
+/// under the sim's movement rules (8-connected, no corner cutting).
+/// Row-major-first doorsteps understate or seal routes when a rock
+/// leans on one side of a Foundry; sets measure what units can walk.
 fn ground_route(state: &State, from: &[TilePos], to: &[TilePos]) -> Option<usize> {
-    let (a, b) = (from.first()?, to.first()?);
+    if from.is_empty() || to.is_empty() {
+        return None;
+    }
     let (w, h) = (state.map().width(), state.map().height());
-    astar(w, h, *a, *b, |t| state.passable(t), AUDIT_EXPANSION_CAP).map(|path| path.len())
+    let index = |t: TilePos| (t.y * w + t.x) as usize;
+    let mut dist: Vec<Option<usize>> = vec![None; (w * h) as usize];
+    let mut queue: std::collections::VecDeque<TilePos> = Default::default();
+    for &s in from {
+        dist[index(s)] = Some(0);
+        queue.push_back(s);
+    }
+    let mut target = vec![false; (w * h) as usize];
+    for t in to {
+        target[index(*t)] = true;
+    }
+    while let Some(t) = queue.pop_front() {
+        let d = dist[index(t)].expect("queued tiles have distances");
+        if target[index(t)] {
+            return Some(d);
+        }
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                let n = t.offset(dx, dy);
+                let in_bounds = n.x >= 0 && n.y >= 0 && n.x < w && n.y < h;
+                if !in_bounds || dist[index(n)].is_some() || !state.passable(n) {
+                    continue;
+                }
+                if dx != 0
+                    && dy != 0
+                    && !(state.passable(t.offset(dx, 0)) && state.passable(t.offset(0, dy)))
+                {
+                    continue;
+                }
+                dist[index(n)] = Some(d + 1);
+                queue.push_back(n);
+            }
+        }
+    }
+    None
 }
 
 /// Audits a built scenario.

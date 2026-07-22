@@ -80,6 +80,12 @@ impl Menu {
         let (_, _, _, visible) = self.layout();
         let max = self.items.len().saturating_sub(visible);
         self.scroll = (self.scroll as i64 + delta).clamp(0, max as i64) as usize;
+        // The selection rides inside the window: Enter must never
+        // activate a row the wheel has scrolled out of sight (a hidden
+        // Quit would be a nasty surprise).
+        self.selected = self
+            .selected
+            .clamp(self.scroll, self.scroll + visible.saturating_sub(1));
     }
 
     fn row_at(&self, point: Vec2) -> Option<usize> {

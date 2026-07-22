@@ -189,18 +189,17 @@ impl BindingMap {
         Self { bindings }
     }
 
-    /// Resolves a pressed key under the current modifier truth.
+    /// Resolves a pressed key under the current modifier truth. Graded
+    /// matching: exact chord, then same-Ctrl-ignoring-Shift, then bare —
+    /// so Ctrl+Shift+1 still assigns a group (Shift often lingers from
+    /// queueing orders) and a held modifier never mutes an unmodified
+    /// binding.
     pub fn resolve(&self, key: Key, ctrl: bool, shift: bool) -> Option<Action> {
-        let exact = self
-            .bindings
-            .iter()
-            .find(|b| b.chord.key == key && b.chord.ctrl == ctrl && b.chord.shift == shift);
-        if let Some(b) = exact {
-            return Some(b.action);
-        }
-        self.bindings
-            .iter()
-            .find(|b| b.chord.key == key && !b.chord.ctrl && !b.chord.shift)
+        let rows = || self.bindings.iter().filter(move |b| b.chord.key == key);
+        rows()
+            .find(|b| b.chord.ctrl == ctrl && b.chord.shift == shift)
+            .or_else(|| rows().find(|b| b.chord.ctrl == ctrl && !b.chord.shift))
+            .or_else(|| rows().find(|b| !b.chord.ctrl && !b.chord.shift))
             .map(|b| b.action)
     }
 
@@ -322,6 +321,17 @@ mod tests {
             map.resolve(Key::H, true, false),
             Some(Action::TrainSlot(0)),
             "a held modifier never mutes an unmodified binding"
+        );
+    }
+
+    #[test]
+    fn shift_never_flips_an_assign_into_a_recall() {
+        // Shift lingers after queueing orders; Ctrl+Shift+digit must
+        // still mean assign, as the classic layout always had it.
+        let map = BindingMap::classic();
+        assert_eq!(
+            map.resolve(Key::Num4, true, true),
+            Some(Action::AssignGroup(4))
         );
     }
 

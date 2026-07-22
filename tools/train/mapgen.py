@@ -18,9 +18,11 @@ Usage:
 """
 
 import json
+import os
 import pathlib
 import subprocess
 import tempfile
+import threading
 
 import numpy as np
 
@@ -261,7 +263,12 @@ def generate(
         return str(path)
     for attempt in range(16):
         candidate = _carve(seed + attempt * 10_000_019, players, teams)
-        trial = path.with_suffix(".candidate.json")
+        # Unique per caller: the map warmer and a foreground reset may
+        # generate the same seed concurrently, and a shared candidate
+        # name lets one unlink the other's file mid-rename. Both rename
+        # to the same target with identical bytes, which is safe.
+        tag = f"{os.getpid()}-{threading.get_ident()}"
+        trial = path.with_suffix(f".candidate-{tag}.json")
         trial.write_text(json.dumps(candidate))
         ok = (
             subprocess.run(

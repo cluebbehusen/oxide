@@ -634,9 +634,9 @@ def main() -> None:
         def warm() -> None:
             warmed = 0
             while True:
-                target = consumed[0] + 2 * args.workers
+                target = consumed[0] + 1 + 2 * args.workers
                 while warmed < target:
-                    warmed = max(warmed, consumed[0])
+                    warmed = max(warmed, consumed[0] + 1)
                     _generate(warmed % 100_000, cache_dir("oxide-maps-train"))
                     _generate(
                         warmed % 100_000, cache_dir("oxide-maps-train4"), players=4

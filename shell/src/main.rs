@@ -954,7 +954,7 @@ fn handle_request(
             game.paused = false;
             // Resuming implies gameplay: leave the pause menu too, or the
             // sim runs behind a menu that still claims it is paused.
-            if matches!(mode, Mode::PauseMenu) {
+            if matches!(mode, Mode::PauseMenu | Mode::ConfirmPause { .. }) {
                 *mode = Mode::Playing;
                 input.reset_transient();
             }
