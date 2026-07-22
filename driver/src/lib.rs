@@ -12,6 +12,7 @@
 //!
 //! The binary (`oxide-driver`) wraps all three in a CLI; see README.
 
+pub mod audit;
 pub mod client;
 pub mod gym;
 pub mod render;

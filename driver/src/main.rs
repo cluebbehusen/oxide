@@ -72,6 +72,15 @@ enum Cmd {
         #[arg(short, long)]
         out: PathBuf,
     },
+    /// Measure a map: room per seat, route lengths by domain, resources,
+    /// artillery pressure, spawn spacing.
+    MapAudit {
+        /// Scenario path, or "skirmish".
+        scenario: String,
+        /// Emit JSON instead of the table.
+        #[arg(long)]
+        json: bool,
+    },
     /// Talk to a running shell (`oxide-shell --debug-server`).
     Live {
         /// Shell debug-server address.
@@ -318,6 +327,23 @@ enum LiveCmd {
         /// f1, shift, ctrl, or 1-9.
         key: String,
     },
+    /// Inject a key press WITHOUT the release — held-key states (panning,
+    /// modifiers) stay held until inject-key-up.
+    InjectKeyDown {
+        /// A mapped key, as inject-key accepts.
+        key: String,
+    },
+    /// Inject a key release without a press.
+    InjectKeyUp {
+        /// A mapped key, as inject-key accepts.
+        key: String,
+    },
+    /// Inject a chord: every key pressed in order, then released in
+    /// reverse — `ctrl+1` assigns a control group exactly like a hand.
+    InjectChord {
+        /// Keys joined with '+', e.g. "ctrl+1" or "shift+f1".
+        keys: String,
+    },
     /// Inject a cursor move.
     InjectMouseMove {
         /// Window x.
@@ -372,6 +398,19 @@ enum LiveCmd {
         /// Output path (shell-relative unless absolute).
         #[arg(short, long)]
         out: Option<String>,
+    },
+    /// Capture a frame sequence with sim ticks between frames, plus a
+    /// downscaled contact sheet for reading motion at a glance.
+    CaptureSequence {
+        /// Frames to capture (2-64).
+        #[arg(long, default_value_t = 8)]
+        frames: u32,
+        /// Sim ticks advanced between frames.
+        #[arg(long, default_value_t = 5)]
+        ticks_between: u64,
+        /// Output directory for frame-NNN.png and sheet.png.
+        #[arg(short, long)]
+        out: std::path::PathBuf,
     },
     /// Toggle the debug overlay.
     Overlay,
@@ -450,7 +489,24 @@ fn main() -> Result<()> {
             render::save_png(&outcome.state, &out)?;
             eprintln!("wrote {}", out.display());
         }
+        Cmd::MapAudit { scenario, json } => {
+            let scenario = runner::load_scenario(&scenario)?;
+            let audit = oxide_driver::audit::audit(&scenario)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&audit)?);
+            } else {
+                print!("{}", audit.table());
+            }
+        }
         Cmd::Live { addr, cmd } => {
+            if let LiveCmd::CaptureSequence {
+                frames,
+                ticks_between,
+                out,
+            } = cmd
+            {
+                return capture_sequence(&addr, frames, ticks_between, &out);
+            }
             // Parse everything before touching the socket: a typo'd tile
             // should fail fast, not after connecting to a live game.
             let requests = live_requests(cmd)?;
@@ -787,6 +843,37 @@ fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
                 },
             ]);
         }
+        LiveCmd::InjectKeyDown { key } => Request::InjectEvent {
+            event: RawEvent::KeyDown {
+                key: parse_key(&key)?,
+            },
+        },
+        LiveCmd::InjectKeyUp { key } => Request::InjectEvent {
+            event: RawEvent::KeyUp {
+                key: parse_key(&key)?,
+            },
+        },
+        LiveCmd::InjectChord { keys } => {
+            let keys: Vec<Key> = keys
+                .split('+')
+                .map(|part| parse_key(part.trim()))
+                .collect::<Result<_>>()?;
+            if keys.is_empty() {
+                bail!("a chord needs at least one key");
+            }
+            // Down in written order, up in reverse — modifiers wrap the
+            // core key the way a hand holds them.
+            let mut requests: Vec<Request> = keys
+                .iter()
+                .map(|&key| Request::InjectEvent {
+                    event: RawEvent::KeyDown { key },
+                })
+                .collect();
+            requests.extend(keys.iter().rev().map(|&key| Request::InjectEvent {
+                event: RawEvent::KeyUp { key },
+            }));
+            return Ok(requests);
+        }
         LiveCmd::InjectMouseMove { x, y } => Request::InjectEvent {
             event: RawEvent::MouseMove { x, y },
         },
@@ -855,15 +942,113 @@ fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
             return Ok(requests);
         }
         LiveCmd::Screenshot { out } => Request::Screenshot { path: out },
+        LiveCmd::CaptureSequence { .. } => {
+            bail!("capture-sequence is executed directly, not mapped to requests")
+        }
         LiveCmd::Overlay => Request::ToggleOverlay,
         LiveCmd::Load { path } => Request::LoadScenario { path },
         LiveCmd::SaveReplay { path } => Request::SaveReplay { path },
     }])
 }
 
+/// Drives a capture run: advance, screenshot, repeat, then tile every
+/// frame (quarter scale) into one contact sheet for reading motion at a
+/// glance. Frames land as `frame-NNN.png` beside `sheet.png`.
+fn capture_sequence(
+    addr: &str,
+    frames: u32,
+    ticks_between: u64,
+    out: &std::path::Path,
+) -> Result<()> {
+    if !(2..=64).contains(&frames) {
+        bail!("frames must be within 2..=64");
+    }
+    std::fs::create_dir_all(out)?;
+    let out = out.canonicalize()?;
+    let mut client = Client::connect(addr)?;
+    let mut paths = Vec::new();
+    for i in 0..frames {
+        if i > 0 {
+            client.call(Request::AdvanceTicks {
+                ticks: ticks_between,
+            })?;
+        }
+        let path = out.join(format!("frame-{i:03}.png"));
+        client.call(Request::Screenshot {
+            path: Some(path.to_string_lossy().into_owned()),
+        })?;
+        paths.push(path);
+    }
+
+    let first = tiny_skia::Pixmap::decode_png(&std::fs::read(&paths[0])?)
+        .context("decoding first frame")?;
+    const SHEET_SCALE: f32 = 0.25;
+    let tile_w = (first.width() as f32 * SHEET_SCALE).ceil() as u32;
+    let tile_h = (first.height() as f32 * SHEET_SCALE).ceil() as u32;
+    let columns = (frames as f32).sqrt().ceil() as u32;
+    let rows = frames.div_ceil(columns);
+    let mut sheet = tiny_skia::Pixmap::new(columns * tile_w, rows * tile_h)
+        .context("allocating contact sheet")?;
+    for (i, path) in paths.iter().enumerate() {
+        let frame = tiny_skia::Pixmap::decode_png(&std::fs::read(path)?)
+            .with_context(|| format!("decoding {}", path.display()))?;
+        let (col, row) = (i as u32 % columns, i as u32 / columns);
+        sheet.draw_pixmap(
+            0,
+            0,
+            frame.as_ref(),
+            &tiny_skia::PixmapPaint::default(),
+            tiny_skia::Transform::from_scale(SHEET_SCALE, SHEET_SCALE)
+                .post_translate((col * tile_w) as f32, (row * tile_h) as f32),
+            None,
+        );
+    }
+    let sheet_path = out.join("sheet.png");
+    sheet.save_png(&sheet_path)?;
+    eprintln!("wrote {} frames and {}", frames, sheet_path.display());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chord_presses_in_order_and_releases_in_reverse() {
+        let requests = live_requests(LiveCmd::InjectChord {
+            keys: "ctrl+1".to_string(),
+        })
+        .unwrap();
+        let events: Vec<&RawEvent> = requests
+            .iter()
+            .map(|r| match r {
+                Request::InjectEvent { event } => event,
+                other => panic!("chords are pure injections, got {other:?}"),
+            })
+            .collect();
+        assert!(
+            matches!(
+                events[..],
+                [
+                    RawEvent::KeyDown { key: Key::Ctrl },
+                    RawEvent::KeyDown { key: Key::Num1 },
+                    RawEvent::KeyUp { key: Key::Num1 },
+                    RawEvent::KeyUp { key: Key::Ctrl },
+                ]
+            ),
+            "modifiers must wrap the core key: {events:?}"
+        );
+    }
+
+    #[test]
+    fn a_chord_of_nonsense_fails_before_touching_the_socket() {
+        assert!(
+            live_requests(LiveCmd::InjectChord {
+                keys: "ctrl+florb".to_string(),
+            })
+            .is_err()
+        );
+    }
 
     #[test]
     fn drag_expands_to_press_moves_and_release() {

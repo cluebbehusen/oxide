@@ -72,6 +72,32 @@ struct Args {
     /// Wall-clock speed multiplier.
     #[arg(long, default_value_t = 1.0, value_parser = parse_speed)]
     speed: f64,
+
+    /// Window size as WIDTHxHEIGHT (e.g. 800x600) — the UX matrix boots
+    /// the shell at every supported size.
+    #[arg(long, value_parser = parse_window)]
+    window: Option<(u32, u32)>,
+
+    /// Render at logical (non-retina) pixel density, exercising the 1x
+    /// layout path on high-DPI displays.
+    #[arg(long)]
+    no_high_dpi: bool,
+}
+
+/// Parses `WIDTHxHEIGHT` with sane floors — smaller than 640x400 and the
+/// fixed chrome cannot physically fit.
+fn parse_window(s: &str) -> Result<(u32, u32), String> {
+    let (w, h) = s
+        .split_once('x')
+        .ok_or_else(|| "expected WIDTHxHEIGHT, e.g. 800x600".to_string())?;
+    let (w, h): (u32, u32) = (
+        w.parse().map_err(|err| format!("{err}"))?,
+        h.parse().map_err(|err| format!("{err}"))?,
+    );
+    if w < 640 || h < 400 {
+        return Err("window must be at least 640x400".to_string());
+    }
+    Ok((w, h))
 }
 
 /// Same envelope the debug socket enforces — the CLI shouldn't accept less
@@ -86,13 +112,18 @@ fn parse_speed(s: &str) -> Result<f64, String> {
 }
 
 fn window_conf() -> Conf {
+    // The window is created before `run()` ever sees clap's output, so
+    // the size/DPI flags are parsed here too — clap is idempotent and
+    // errors surface identically on the second parse in `run()`.
+    let args = Args::parse();
+    let (width, height) = args.window.unwrap_or((1280, 800));
     Conf {
         window_title: "Oxide".to_string(),
-        window_width: 1280,
-        window_height: 800,
+        window_width: width as i32,
+        window_height: height as i32,
         // Render at native pixel density — pre-atlas this was too many
         // pixels to afford; post-atlas it's crisp text and art for free.
-        high_dpi: true,
+        high_dpi: !args.no_high_dpi,
         ..Default::default()
     }
 }
