@@ -983,18 +983,25 @@ fn draw_hud(game: &Game, input: &InputState) {
 
     // Endgame banner.
     if let Some(result) = game.state.result() {
-        let text = match result {
+        // The human's verdict first — the game knows whose screen this
+        // is; "FERROUS WINS" made every ending read like someone else's.
+        let winners = game.state.winners();
+        let (text, color) = match result {
+            GameResult::Victory { .. } if winners.contains(&game.human) => {
+                ("VICTORY".to_string(), SCRAP_COLOR)
+            }
+            GameResult::Victory { .. } => ("DEFEAT".to_string(), DANGER),
+            GameResult::Draw => ("MUTUAL DESTRUCTION".to_string(), BONE_FAINT),
+        };
+        let sub = match result {
             GameResult::Victory { .. } => {
-                // Name the winners: one seat by name, a team by roster.
-                let names: Vec<String> = game
-                    .state
-                    .winners()
+                let names: Vec<String> = winners
                     .into_iter()
                     .map(|p| game.state.player(p).name.to_uppercase())
                     .collect();
-                format!("{} WINS", names.join(" & "))
+                format!("{} take the field", names.join(" & "))
             }
-            GameResult::Draw => "MUTUAL DESTRUCTION".to_string(),
+            GameResult::Draw => "no foundry survived".to_string(),
         };
         let size = 56.0 * s;
         let dims = measure_text(&text, None, size as u16, 1.0);
@@ -1004,16 +1011,24 @@ fn draw_hud(game: &Game, input: &InputState) {
             x - 24.0 * s,
             y - 48.0 * s,
             dims.width + 48.0 * s,
-            100.0 * s,
+            124.0 * s,
             PANEL,
         );
-        draw_text(&text, x, y, size, SCRAP_COLOR);
+        draw_text(&text, x, y, size, color);
+        let sub_dims = measure_text(&sub, None, (20.0 * s) as u16, 1.0);
+        draw_text(
+            &sub,
+            (screen_width() - sub_dims.width) * 0.5,
+            y + 26.0 * s,
+            20.0 * s,
+            BONE_FAINT,
+        );
         let hint = "Esc — menu";
         let hint_dims = measure_text(hint, None, (20.0 * s) as u16, 1.0);
         draw_text(
             hint,
             (screen_width() - hint_dims.width) * 0.5,
-            y + 34.0 * s,
+            y + 52.0 * s,
             20.0 * s,
             BONE_FAINT,
         );
