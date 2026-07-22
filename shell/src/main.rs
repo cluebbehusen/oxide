@@ -21,6 +21,7 @@ mod config;
 mod debug_server;
 mod game;
 mod input;
+mod layout;
 mod menu;
 mod render;
 
@@ -261,6 +262,7 @@ impl Mixer {
 
 async fn run() -> Result<()> {
     let args = Args::parse();
+    render::set_user_scale(config::Config::load().ui_scale);
     let sprites = assets::Sprites::load().await?;
     let sounds = assets::Sounds::load().await?;
     let mut mixer = Mixer::default();

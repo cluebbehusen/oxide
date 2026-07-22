@@ -20,10 +20,23 @@ const HP_BACK: Color = color_u8!(20, 20, 24, 220);
 const DANGER: Color = color_u8!(217, 82, 74, 255);
 const PANEL: Color = color_u8!(20, 20, 24, 200);
 
+/// The user's UI scale preference, set once at startup from config —
+/// a OnceLock because ui_scale() is called from every draw and hit-test
+/// path and must not re-read a file.
+static USER_SCALE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+
+/// Installs the configured user scale factor (clamped to sane bounds;
+/// a config promising 0x or 10x chrome must not brick the window).
+pub fn set_user_scale(factor: f32) {
+    USER_SCALE.get_or_init(|| factor.clamp(0.5, 3.0));
+}
+
 /// UI scale factor: chrome (text, bars, minimap) is authored in logical
 /// pixels and multiplied by this so it reads the same on every display.
+/// DPI times the user preference, applied here and nowhere else.
 pub fn ui_scale() -> f32 {
-    macroquad::miniquad::window::dpi_scale().max(1.0)
+    let user = USER_SCALE.get().copied().unwrap_or(1.0);
+    macroquad::miniquad::window::dpi_scale().max(1.0) * user
 }
 
 /// Draws one frame.
@@ -914,8 +927,13 @@ fn draw_hud(game: &Game, input: &InputState) {
         }
         panel_shown = true;
     }
-    // Tell hit-testing how tall the panel actually is this frame.
-    game.panel_rows.set(panel_rows);
+    // Publish the frame's chrome geometry — the model hit-testing reads.
+    game.layout.set(crate::layout::LayoutModel::compute(
+        vec2(screen_width(), screen_height()),
+        s,
+        panel_rows,
+        minimap_rect(game),
+    ));
 
     // Controls hint — it lives in the same bottom band as the selection
     // panel, so it yields whenever a panel is up (the panel carries its
