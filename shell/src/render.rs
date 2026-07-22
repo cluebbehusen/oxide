@@ -1052,6 +1052,7 @@ fn draw_hud(game: &Game, input: &InputState) {
 
     let mut panel_shown = false;
     let mut panel_rows = 0;
+    let mut panel_slots = [Rect::new(0.0, 0.0, 0.0, 0.0); 9];
     // Selection panel.
     if let Some(id) = game.selection.building {
         if let Some(building) = game.state.building(id) {
@@ -1073,7 +1074,10 @@ fn draw_hud(game: &Game, input: &InputState) {
                     .enumerate()
                     .map(|(i, k)| format!("{}: {} ({})", i + 1, k.name(), k.stats().cost))
                     .collect();
-                let used = panel_rows_packed(&slots, 0);
+                let (used, rects) = panel_rows_packed_rects(&slots, 0);
+                for (i, r) in rects.into_iter().take(9).enumerate() {
+                    panel_slots[i] = r;
+                }
                 let header = vec![line, format!("queue [{}]", queue.join(", "))];
                 panel_rows = used + panel_rows_packed(&header, used);
             } else {
@@ -1105,7 +1109,10 @@ fn draw_hud(game: &Game, input: &InputState) {
                     format!("{}: {} ({})", i + 1, k.name(), cost)
                 })
                 .collect();
-            let used = panel_rows_packed(&palette, 0);
+            let (used, rects) = panel_rows_packed_rects(&palette, 0);
+            for (i, r) in rects.into_iter().take(9).enumerate() {
+                panel_slots[i] = r;
+            }
             panel_rows = used + panel_rows_packed(&line_items, used);
         } else {
             panel_rows = panel_rows_packed(&line_items, 0);
@@ -1119,6 +1126,7 @@ fn draw_hud(game: &Game, input: &InputState) {
         panel_rows,
         minimap_rect(game),
         idle_badge,
+        panel_slots,
     ));
 
     // Controls hint — it lives in the same bottom band as the selection
@@ -1263,35 +1271,60 @@ fn panel_row(text: &str, row: usize) {
 /// (and under the minimap) at retina scale — palette and production
 /// slots overflow real screens without this.
 fn panel_rows_packed(items: &[String], first: usize) -> usize {
+    panel_rows_packed_rects(items, first).0
+}
+
+/// The packing core: wraps items into rows AND reports each item's
+/// on-screen rect, so the same text the HUD draws can be a button — one
+/// geometry, drawn and clickable, per the layout law.
+fn panel_rows_packed_rects(items: &[String], first: usize) -> (usize, Vec<Rect>) {
     let s = ui_scale();
     let sep = "   ";
+    let sep_w = measure_text(sep, None, (20.0 * s) as u16, 1.0).width;
     let limit = (screen_width() - 240.0 * s).max(320.0 * s);
-    let fits = |line: &str| measure_text(line, None, (20.0 * s) as u16, 1.0).width < limit;
-    let mut lines: Vec<String> = Vec::new();
+    let width_of = |line: &str| measure_text(line, None, (20.0 * s) as u16, 1.0).width;
+    // Pack into lines, remembering which items landed on which line.
+    let mut lines: Vec<(String, Vec<usize>)> = Vec::new();
     let mut current = String::new();
-    for item in items {
+    let mut current_items: Vec<usize> = Vec::new();
+    for (idx, item) in items.iter().enumerate() {
         let candidate = if current.is_empty() {
             item.clone()
         } else {
             format!("{current}{sep}{item}")
         };
-        if fits(&candidate) || current.is_empty() {
+        if width_of(&candidate) < limit || current.is_empty() {
             current = candidate;
+            current_items.push(idx);
         } else {
-            lines.push(std::mem::take(&mut current));
+            lines.push((
+                std::mem::take(&mut current),
+                std::mem::take(&mut current_items),
+            ));
             current = item.clone();
+            current_items.push(idx);
         }
     }
     if !current.is_empty() {
-        lines.push(current);
+        lines.push((current, current_items));
     }
     // Stack bottom-up: the first packed line sits highest so reading
     // order stays top-to-bottom.
     let n = lines.len();
-    for (i, line) in lines.iter().enumerate() {
-        panel_row(line, first + (n - 1 - i));
+    let mut rects = vec![Rect::new(0.0, 0.0, 0.0, 0.0); items.len()];
+    for (i, (line, members)) in lines.iter().enumerate() {
+        let row = first + (n - 1 - i);
+        panel_row(line, row);
+        let base = screen_height() - 36.0 * s * (row as f32 + 1.0);
+        let mut x = 12.0 * s;
+        for &idx in members {
+            let w = width_of(&items[idx]);
+            rects[idx] = Rect::new(x, base + 4.0 * s, w, 28.0 * s);
+            x += w + sep_w;
+        }
+        let _ = line;
     }
-    n
+    (n, rects)
 }
 
 // --- Minimap ------------------------------------------------------------

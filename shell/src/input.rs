@@ -340,6 +340,16 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     }
                     continue;
                 }
+                // Panel slots are buttons: a click on a produce slot or
+                // palette entry means exactly what its digit means.
+                let slots = game.layout.get().panel_slots;
+                if let Some(slot) = slots
+                    .iter()
+                    .position(|r| r.w > 0.0 && r.contains(vec2(x, y)))
+                {
+                    digit_action(game, input, slot);
+                    continue;
+                }
                 // The idle badge cycles workers on click.
                 let badge = game.layout.get().idle_badge;
                 if badge.w > 0.0 && badge.contains(vec2(x, y)) {

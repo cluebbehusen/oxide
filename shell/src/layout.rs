@@ -22,6 +22,10 @@ pub struct LayoutModel {
     /// The idle-worker badge in the top bar; zero-sized when nobody
     /// idles. Clicking it cycles idle harvesters.
     pub idle_badge: Rect,
+    /// Clickable panel slots — the produce list or the open palette —
+    /// index-aligned with the digit that picks them. Zero-sized rects
+    /// are dead slots.
+    pub panel_slots: [Rect; 9],
 }
 
 impl Default for LayoutModel {
@@ -31,6 +35,7 @@ impl Default for LayoutModel {
             panel_top: f32::INFINITY,
             minimap: Rect::new(0.0, 0.0, 0.0, 0.0),
             idle_badge: Rect::new(0.0, 0.0, 0.0, 0.0),
+            panel_slots: [Rect::new(0.0, 0.0, 0.0, 0.0); 9],
         }
     }
 }
@@ -44,6 +49,7 @@ impl LayoutModel {
         panel_rows: usize,
         minimap: Rect,
         idle_badge: Rect,
+        panel_slots: [Rect; 9],
     ) -> Self {
         Self {
             top_bar_h: 32.0 * ui,
@@ -54,6 +60,7 @@ impl LayoutModel {
             },
             minimap,
             idle_badge,
+            panel_slots,
         }
     }
 
@@ -73,8 +80,8 @@ mod tests {
     #[test]
     fn the_panel_band_scales_with_its_row_count() {
         let mini = Rect::new(0.0, 0.0, 0.0, 0.0);
-        let one = LayoutModel::compute(vec2(1280.0, 800.0), 1.0, 1, mini, mini);
-        let three = LayoutModel::compute(vec2(1280.0, 800.0), 1.0, 3, mini, mini);
+        let one = LayoutModel::compute(vec2(1280.0, 800.0), 1.0, 1, mini, mini, [mini; 9]);
+        let three = LayoutModel::compute(vec2(1280.0, 800.0), 1.0, 3, mini, mini, [mini; 9]);
         assert!(one.chrome_owns(vec2(600.0, 770.0)));
         assert!(
             !one.chrome_owns(vec2(600.0, 700.0)),
@@ -94,6 +101,7 @@ mod tests {
             0,
             Rect::new(0.0, 0.0, 0.0, 0.0),
             Rect::new(0.0, 0.0, 0.0, 0.0),
+            [Rect::new(0.0, 0.0, 0.0, 0.0); 9],
         );
         assert!(!m.chrome_owns(vec2(600.0, 799.0)));
         assert!(m.chrome_owns(vec2(600.0, 30.0)), "the top bar always owns");
