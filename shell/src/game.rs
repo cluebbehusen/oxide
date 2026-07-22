@@ -541,6 +541,7 @@ impl Game {
             match event {
                 Event::AttackHit {
                     attacker_kind,
+                    weapon,
                     attacker_pos,
                     target,
                     target_pos,
@@ -572,14 +573,15 @@ impl Game {
                         }
                         _ => (SoundKind::Laser, false),
                     };
-                    // The burst radius comes from the kind's actual splash
-                    // stat, so the telegraphed area never overstates (or
-                    // hides) the damage the sim will deal.
+                    // The burst radius comes from the exact weapon that
+                    // fired — the event says which slot — so the
+                    // telegraphed area never overstates (or hides) the
+                    // damage the sim will deal.
                     let splash = attacker_kind
                         .stats()
                         .weapons
-                        .iter()
-                        .find_map(|w| w.splash)
+                        .get(*weapon)
+                        .and_then(|w| w.splash)
                         .map(|s| s.to_num::<f32>());
                     if heard {
                         self.sounds_pending.push(sound);

@@ -872,6 +872,7 @@ fn attack(
             events.push(Event::AttackHit {
                 attacker: id,
                 attacker_kind: kind,
+                weapon: pi,
                 target,
                 attacker_pos: pos,
                 target_pos: aim_point,
@@ -1027,6 +1028,7 @@ fn fire_sidearms(
         events.push(Event::AttackHit {
             attacker: id,
             attacker_kind: kind,
+            weapon: wi,
             target: Target::Unit(uid),
             attacker_pos: pos,
             target_pos: upos,

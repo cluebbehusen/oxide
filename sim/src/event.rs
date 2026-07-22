@@ -56,6 +56,9 @@ pub enum Event {
         /// What fired — carried in the event because presentation may run
         /// after the attacker itself died this tick.
         attacker_kind: crate::stats::UnitKind,
+        /// Which weapon slot fired (0 = primary), so presentation reads
+        /// the exact weapon's stats instead of guessing across the list.
+        weapon: usize,
         /// Who was hit.
         target: Target,
         /// Muzzle position at fire time.
