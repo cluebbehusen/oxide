@@ -309,6 +309,13 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     } else if !click_on_hud(game, vec2(x, y)) {
                         let world = game.camera.to_world(vec2(x, y));
                         let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+                        // The ghost already showed red; a misclick must
+                        // not throw away the armed mode on top of it.
+                        if !game.state.can_place(game.human, kind, anchor) {
+                            game.toast("can't build there — needs open, visible ground");
+                            game.sounds_pending.push(crate::game::SoundKind::Denied);
+                            continue;
+                        }
                         let units = game.selection.units.clone();
                         game.issue(Command::Build {
                             units,
@@ -316,7 +323,11 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                             anchor,
                         });
                         game.ping(world, PingKind::Rally);
-                        input.placing = None;
+                        // Shift keeps placing: walls go up one click at
+                        // a time, not one arming at a time.
+                        if !input.resolver.shift_held() {
+                            input.placing = None;
+                        }
                     }
                     continue;
                 }
@@ -946,6 +957,74 @@ mod tests {
             press(&mut game, &mut input);
         }
         assert_eq!(game.selection.units, vec![idle[0]], "and wraps");
+    }
+
+    #[test]
+    fn a_misclick_keeps_placement_armed_and_a_shift_click_repeats() {
+        let mut game = headless_game();
+        let mut input = InputState::new();
+        // Arm a turret with a harvester selected (the palette's path).
+        let harvester = game
+            .state
+            .units()
+            .iter()
+            .find(|u| u.kind == UnitKind::Harvester && u.player == game.human)
+            .unwrap()
+            .id;
+        game.selection.units = vec![harvester];
+        input.placing = Some(oxide_sim::BuildingKind::Turret);
+
+        // Skirmish's own foundry footprint is illegal ground: the
+        // misclick toasts and stays armed, staging nothing.
+        let foundry = game.state.buildings()[0].anchor;
+        let bad = game
+            .camera
+            .to_screen(vec2(foundry.x as f32 + 0.5, foundry.y as f32 + 0.5));
+        apply_events(
+            &mut game,
+            &mut input,
+            &[RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: bad.x,
+                y: bad.y,
+            }],
+        );
+        assert!(input.placing.is_some(), "a misclick must not disarm");
+        assert!(game.pending.is_empty(), "and must spend nothing");
+
+        // Shift-click on open visible ground stages and stays armed.
+        let open = game
+            .camera
+            .to_screen(vec2(foundry.x as f32 + 3.5, foundry.y as f32 + 3.5));
+        apply_events(
+            &mut game,
+            &mut input,
+            &[
+                RawEvent::KeyDown { key: Key::Shift },
+                RawEvent::MouseDown {
+                    button: MouseButton::Left,
+                    x: open.x,
+                    y: open.y,
+                },
+            ],
+        );
+        assert_eq!(game.pending.len(), 1, "legal ground stages the site");
+        assert!(input.placing.is_some(), "shift keeps the wall going up");
+
+        // A plain click disarms after staging.
+        apply_events(
+            &mut game,
+            &mut input,
+            &[
+                RawEvent::KeyUp { key: Key::Shift },
+                RawEvent::MouseDown {
+                    button: MouseButton::Left,
+                    x: open.x + 96.0,
+                    y: open.y,
+                },
+            ],
+        );
+        assert!(input.placing.is_none(), "a plain click finishes the job");
     }
 
     #[test]
