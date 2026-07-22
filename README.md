@@ -178,20 +178,22 @@ trade-off: replays only reproduce on the sim version that wrote them.
 ## Status and road ahead
 
 Working today: the full loop (harvest → train → fight → win) with fog of
-war and ghost memory, a four-unit roster behind a build-your-tech gate,
-harvester-built turrets and factories, order queues and patrols, solid
+war and ghost memory, the two-faction eleven-unit roster (ground, air,
+artillery) behind a build-your-tech gate, the harvester-built structure
+palette from turrets to radar to Reclaimers, wreck salvage and repair
+welding, 2v2 teams with shared sight, order queues and patrols, solid
 units that crowd without gridlocking, attack-move with line-of-sight
 fire, damage retaliation, rally points, control groups, shift-select,
-order feedback, a fog-aware minimap, sound, eight maps, menus, a trained
+order feedback, a fog-aware minimap, sound, ten maps, menus, a trained
 neural opponent with four difficulty levels and selectable personalities,
 save/resume via replays, and the agent tooling described above.
 
-Not yet: expansions (Foundries aren't buildable), formations, teams and
-free-for-all lobbies (the sim supports up to eight players; the menus
-don't, yet), and the mobile ports —
-macroquad makes iOS/Android plausible, and `RawEvent` already carries
-touch variants, but nothing is wired. The sim freezes at game end; the
-pause menu's Restart is the rematch.
+Not yet: expansions (Foundries aren't buildable), formations,
+free-for-all (the sim seats up to eight players and the menu lists any
+scenario it can parse, but no shipped map plays FFA), and the mobile
+ports — macroquad makes iOS/Android plausible, and `RawEvent` already
+carries touch variants, but nothing is wired. The sim freezes at game
+end; the pause menu's Restart is the rematch.
 
 Built with [macroquad](https://macroquad.rs/); simulation math on the
 [`fixed`](https://crates.io/crates/fixed) crate; goldens via

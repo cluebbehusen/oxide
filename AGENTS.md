@@ -214,7 +214,8 @@ Team training runs two flavors — self-team (`team`: the learner holds
 both chairs) and mixed-ally (`team2`: a scripted Brain drives the
 teammate) — and per-seat episode truncation pads a dead learner's
 lane on its frozen last view so batches stay rectangular while the
-teammate plays on. The scripted `Brain` tiers and the rush teacher
+teammate plays on; padded rows are masked out of the PPO update (GAE
+still spans them so the team payoff reaches the live prefix). The scripted `Brain` tiers and the rush teacher
 stay in-tree as league anchors, benchmarks, and the ladder-integrity
 yardstick (`sim/tests/neural_ladder.rs` enforces Easy < Medium <
 Hard < Expert forever).
@@ -229,7 +230,12 @@ Hard < Expert forever).
   fixed-point supercover walk): rock and non-target buildings block, scrap
   and units don't, endpoints never do. In range but blocked → keep
   approaching until range *and* line hold. Vision stays radius-based on
-  purpose — cover is a firing rule, not a stealth system.
+  purpose — cover is a firing rule, not a stealth system. The trace
+  saturates on hairline deltas (a 1-ulp segment once overflowed the
+  1/Δ step math); direction symmetry A→B vs B→A is *not* promised
+  (corner-graze rounding differs), mirror fairness *is* — a lattice
+  test pins it, so don't "fix" the asymmetry by canonicalizing
+  endpoints.
 - **Movement feel is tuned, not emergent** (`sim/src/stats.rs`): waypoints
   accept within `WAYPOINT_ACCEPT` (corner-safe), arrival propagates through
   contact with settled neighbors near a shared goal (`ARRIVAL_NEAR`), group
@@ -240,7 +246,10 @@ Hard < Expert forever).
 - **Orders are programs since 0.5**: every unit carries a bounded queue
   plus a looping flag; completion pops (or rotates — that's patrol),
   stalls drop the whole program with `OrderStalled`, plain orders replace
-  it wholesale. Patrol legs are attack-moves and never settle.
+  it wholesale — except that reissuing the unit's *exact current* order
+  is a no-op past the queue wipe, keeping path and progress (the
+  scripted tiers re-command every think; repair billing counts on the
+  meter surviving). Patrol legs are attack-moves and never settle.
 - **Combat resolves simultaneously since 0.6**: brains decide in id
   order (direction alternating by tick parity), but every shot is
   buffered and applied only after all brains and turrets have acted —
@@ -310,7 +319,11 @@ Hard < Expert forever).
   ground collision, collide only with each other, never block
   foundations, and accept any on-map tile as a goal — rock included.
   Group orders split by domain so each half routes sensibly. Terrain
-  cover (the rock LOS rule) is ground-vs-ground only.
+  cover (the rock LOS rule) is ground-vs-ground only. A ground chaser
+  whose flying victim parks over impassable ground marches to the
+  nearest standable tile instead (ring scan inside AA range) —
+  reaching weapon range is the job; occupying the victim's tile never
+  was.
 - **Combat is a weapons matrix.** Every kind carries a weapon list
   (cap 2) with per-weapon cooldowns and target-domain masks; the weapon
   covering the ordered target is the primary, sidearms pick their own
@@ -397,3 +410,13 @@ Hard < Expert forever).
 - A macroquad window on macOS must run on the main thread; the debug
   server therefore lives on socket threads and crosses to the frame loop
   by channel. Don't try to answer protocol requests off-thread.
+- macroquad 0.4 ships with `default = []` — audio is a feature. Without
+  `features = ["audio"]` every sound call is a silent stub that only
+  logs a warning (this repo shipped four versions that way).
+- Injected pointer events use *logical* coordinates (what
+  `screen_width()` reports); screenshots come back in *physical* pixels
+  (2× on retina). Don't dpi-scale injected clicks to match a screenshot
+  — halve the screenshot's coordinates instead.
+- A paused shell stages socket commands for the *next* tick; drive one
+  `AdvanceTicks` before asserting on their effects, or the assert races
+  the order.
