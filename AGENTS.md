@@ -365,6 +365,33 @@ Hard < Expert forever).
   contextual (palette first, then a selected factory's produce slots
   filtered to the seat's faction, then control groups). The old
   hardcoded B/N hotkeys are gone.
+- **Input is semantic since 0.9.** `poll_events` is the only hardware
+  reader; RawEvents resolve through a `BindingMap`
+  (shell/src/action.rs) into Actions — "Oxide Classic" is the default
+  profile, the Controls screen rebinds with conflict refusal, and
+  chord matching grades exact → same-Ctrl → bare. The frame loop
+  injects ui scale, wall clock, and camera prefs into `InputState`,
+  so the whole event path runs headless (input.rs has real
+  integration tests against the sim).
+- **Chrome geometry has one source.** The renderer computes a
+  `LayoutModel` (top bar, panel band + clickable slots, minimap, idle
+  badge) as it draws and publishes it on `Game`; hit-testing and
+  QueryUi read the same model. Never hand-roll a second copy of any
+  chrome rect — that class of bug (the 0.8 palette click-leak)
+  is structurally extinct only while this holds. ui_scale() is the
+  USER factor only: macroquad's coordinate space is logical, and
+  multiplying dpi in is the double-scaling disease (fixed 0.9).
+- **Presentation config persists** (shell/src/config.rs): bindings,
+  volumes, ui scale, camera feel, window size — platform config dir,
+  versioned separately from replays, silent defaults on any trouble.
+- **Screens are draft-driven.** The New Match wizard's choices live in
+  a NewMatchDraft that survives Back; destructive pause choices
+  confirm with Cancel preselected; menus scroll independently of
+  selection and activate on release-inside (menu_ux tests spawn real
+  windows and are #[ignore]d — run them explicitly, never in CI).
+- **Stalls carry reasons** (`StallReason`): own-state facts only —
+  routes, banks, footing. A reason must never derive from what fog
+  hides; the enum doc enforces the principle on future variants.
 
 ## Known issues (tracked, deliberate)
 

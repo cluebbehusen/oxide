@@ -20,6 +20,14 @@ replay that re-executes headless to a bit-identical state hash.
 
 ## Playing
 
+The front door offers Play, Settings, and Quit. Settings holds live
+volume buses, UI scale, camera feel, and full key remapping — every
+change applies immediately and persists. The map list shows each
+map's hook and pace badges with a fog-free preview, and every choice
+you make on the way to a match survives backing up a screen.
+Selected machines draw their weapon ranges (and radar rings); stalls
+and rejections say why in words.
+
 ```sh
 cargo run -p oxide-shell
 ```
@@ -81,7 +89,10 @@ only what's still standing — damage burns salvage.
 | `1`-`9` (factory selected) | Train by slot — the panel lists your faction's roster with prices |
 | `Space` | Jump to your Foundry |
 | `P` | Quick pause |
-| `Esc` | Deselect, then the pause menu (resume / restart / main menu / quit) |
+| `Esc` | Deselect, then the pause menu (destructive choices ask first) |
+| `N` | Select and center the next idle harvester (the top bar counts them) |
+| `A` | Jump to the last under-attack alert |
+| Ctrl + `F5`-`F8` / `F5`-`F8` | Set / recall camera bookmarks |
 | `F1` | Debug overlay (grid, ids, paths — and no fog) |
 
 Ranged fire needs a clear line: rock (and buildings) block ground
