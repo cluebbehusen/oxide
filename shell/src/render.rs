@@ -1167,6 +1167,30 @@ fn draw_hud(game: &Game, input: &InputState) {
         );
     }
 
+    // Spectator strip: a foundry-less seat on a living team stays in
+    // the match by design — masterless machines finish their orders and
+    // the team plays on — but the human deserves to be told the seat
+    // has no voice left. Commands still route; the sim rejects them.
+    if game.state.result().is_none()
+        && !game
+            .state
+            .buildings()
+            .iter()
+            .any(|b| b.player == game.human && b.kind == oxide_sim::BuildingKind::Foundry)
+    {
+        let text = "ELIMINATED — SPECTATING";
+        let dims = measure_text(text, None, (24.0 * s) as u16, 1.0);
+        let x = (screen_width() - dims.width) * 0.5;
+        draw_rectangle(
+            x - 12.0 * s,
+            40.0 * s,
+            dims.width + 24.0 * s,
+            30.0 * s,
+            PANEL,
+        );
+        draw_text(text, x, 60.0 * s, 24.0 * s, DANGER);
+    }
+
     // Endgame banner.
     if let Some(result) = game.state.result() {
         // The human's verdict first — the game knows whose screen this
