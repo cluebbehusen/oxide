@@ -146,28 +146,74 @@ impl Vision {
     }
 
     fn stamp_disc(&mut self, center: TilePos, radius: i32) {
+        let spans = disc_spans(radius);
         for dy in -radius..=radius {
-            for dx in -radius..=radius {
-                if dx * dx + dy * dy > radius * radius {
-                    continue;
-                }
-                let pos = center.offset(dx, dy);
-                if let Some(cell) = self.visible.get_mut(pos) {
-                    *cell = true;
-                }
-                if let Some(cell) = self.explored.get_mut(pos) {
-                    *cell = true;
-                }
-            }
+            let span = spans[dy.unsigned_abs() as usize];
+            let y = center.y + dy;
+            self.visible
+                .fill_row_span(y, center.x - span, center.x + span, true);
+            self.explored
+                .fill_row_span(y, center.x - span, center.x + span, true);
         }
     }
+
+    /// Stamps the union of discs centered on every tile of a `w`x`h`
+    /// footprint — the rectangle's Minkowski sum with the sight disc,
+    /// written row by row. Cell-identical to stamping each footprint
+    /// tile separately, without visiting the overlap four times.
+    fn stamp_rect(&mut self, anchor: TilePos, w: i32, h: i32, radius: i32) {
+        let spans = disc_spans(radius);
+        for dy in -radius..(h + radius) {
+            let vdist = (-dy).max(dy - (h - 1)).max(0);
+            let span = spans[vdist as usize];
+            let y = anchor.y + dy;
+            self.visible
+                .fill_row_span(y, anchor.x - span, anchor.x + (w - 1) + span, true);
+            self.explored
+                .fill_row_span(y, anchor.x - span, anchor.x + (w - 1) + span, true);
+        }
+    }
+}
+
+/// Horizontal half-spans of a sight disc, per |dy|: `spans[d]` is the
+/// widest `dx` with `dx*dx + d*d <= r*r`. Built once per process for
+/// every radius the stats can name — integer math, no libm.
+fn disc_spans(radius: i32) -> &'static [i32] {
+    use std::sync::OnceLock;
+    static TABLE: OnceLock<Vec<Vec<i32>>> = OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        (0..=32i32)
+            .map(|r| {
+                (0..=r)
+                    .map(|dy| {
+                        let mut span = r;
+                        while span * span + dy * dy > r * r {
+                            span -= 1;
+                        }
+                        span
+                    })
+                    .collect()
+            })
+            .collect()
+    });
+    &table[radius as usize]
 }
 
 /// Rebuilds every player's `visible` set from their live entities, then
 /// reconciles their building memory against what is now in sight.
 pub(crate) fn refresh(state: &mut State) {
     let mut vision = std::mem::take(&mut state.vision);
-    for (index, view) in vision.iter_mut().enumerate() {
+    for index in 0..vision.len() {
+        // Team sight is seat-symmetric by construction: every teammate
+        // stamps the same discs, reconciles the same memories, hears
+        // the same radar. A later seat on an already-computed team is
+        // a byte-for-byte clone — half the refresh on team maps.
+        if let Some(src) = (0..index).find(|&j| state.players[j].team == state.players[index].team)
+        {
+            vision[index] = vision[src].clone();
+            continue;
+        }
+        let view = &mut vision[index];
         let my_team = state.players[index].team;
         let allied = |p: PlayerId| state.players[p.0 as usize].team == my_team;
         view.visible.fill(false);
@@ -181,10 +227,8 @@ pub(crate) fn refresh(state: &mut State) {
             .iter()
             .filter(|b| allied(b.player) && b.built)
         {
-            let radius = building.kind.stats().vision;
-            for tile in building.tiles() {
-                view.stamp_disc(tile, radius);
-            }
+            let (w, h) = building.kind.stats().size;
+            view.stamp_rect(building.anchor, w, h, building.kind.stats().vision);
         }
 
         // Memory reconciliation. Wherever we have sight, live state is the
@@ -210,13 +254,22 @@ pub(crate) fn refresh(state: &mut State) {
 
         // Freeze-frame the economy the same way: wherever there is sight,
         // remember the salvage; everywhere else the old numbers stand.
-        for (pos, tile) in state.map.iter() {
-            if view.visible(pos) {
-                if let Some(cell) = view.remembered_scrap.get_mut(pos) {
-                    *cell = tile.scrap;
+        // Row slices, not per-cell lookups — this scan runs over the
+        // whole map for every team every tick.
+        for y in 0..state.map.height() {
+            let visible = view.visible.row(y).expect("row in range");
+            let tiles = state.map.grid().row(y).expect("row in range");
+            let scrap = view.remembered_scrap.row_mut(y).expect("row in range");
+            for (x, (&seen, tile)) in visible.iter().zip(tiles).enumerate() {
+                if seen {
+                    scrap[x] = tile.scrap;
                 }
-                if let Some(cell) = view.remembered_wreck.get_mut(pos) {
-                    *cell = tile.wreck;
+            }
+            let visible = view.visible.row(y).expect("row in range");
+            let wreck = view.remembered_wreck.row_mut(y).expect("row in range");
+            for (x, (&seen, tile)) in visible.iter().zip(tiles).enumerate() {
+                if seen {
+                    wreck[x] = tile.wreck;
                 }
             }
         }

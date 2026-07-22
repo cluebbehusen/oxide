@@ -226,6 +226,13 @@ impl Map {
             .is_some_and(|t| t.terrain == Terrain::Ground && t.scrap == 0)
     }
 
+    /// The raw tile grid — row-slice access for hot scans (vision's
+    /// memory reconciliation); everything else should prefer the
+    /// per-tile accessors.
+    pub(crate) fn grid(&self) -> &Grid<Tile> {
+        &self.grid
+    }
+
     /// Remaining scrap at `pos` (zero when out of bounds).
     pub fn scrap_at(&self, pos: TilePos) -> u32 {
         self.grid.get(pos).map_or(0, |t| t.scrap)
