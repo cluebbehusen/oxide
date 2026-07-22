@@ -340,3 +340,145 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
     }
     Some(panel)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use macroquad::prelude::vec2;
+    use oxide_sim::{Command, PlayerCommand, Scenario};
+
+    fn game() -> Game {
+        Game::with_viewport(Scenario::skirmish(), vec2(1280.0, 800.0), 1.0)
+            .expect("skirmish builds")
+    }
+
+    fn human_foundry(game: &Game) -> oxide_sim::BuildingId {
+        game.state
+            .buildings()
+            .iter()
+            .find(|b| b.player == game.human)
+            .expect("human foundry")
+            .id
+    }
+
+    #[test]
+    fn nothing_selected_builds_no_panel() {
+        let game = game();
+        assert!(build(&game, &BindingMap::classic()).is_none());
+    }
+
+    #[test]
+    fn the_foundry_panel_speaks_its_roster() {
+        let mut game = game();
+        game.selection.building = Some(human_foundry(&game));
+        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        assert_eq!(panel.title, "FOUNDRY");
+        assert_eq!(panel.cards.len(), 2, "harvester and sentinel");
+        assert_eq!(panel.cards[0].hotkey, "1");
+        assert_eq!(panel.cards[0].cost, Some(50));
+        assert!(panel.cards[0].enabled, "150 scrap affords a harvester");
+        assert_eq!(
+            panel.cards[0].action,
+            CardAction::Dispatch(Action::TrainSlot(0)),
+            "the card IS its hotkey"
+        );
+        assert!(panel.queue.is_empty(), "nothing queued yet");
+        // The harvester is unarmed — its card carries no weapon line;
+        // the sentinel's carries both of its guns.
+        assert!(!panel.cards[0].desc.iter().any(|l| l.contains("dmg")));
+        assert!(panel.cards[1].desc.iter().any(|l| l.contains("dmg")));
+    }
+
+    #[test]
+    fn poverty_and_capacity_disable_cards_with_reasons() {
+        let mut scenario = Scenario::skirmish();
+        // The bank must outlast the queue cap or poverty masks it.
+        scenario.players[0].scrap = 500;
+        let mut game =
+            Game::with_viewport(scenario, vec2(1280.0, 800.0), 1.0).expect("skirmish builds");
+        let foundry = human_foundry(&game);
+        game.selection.building = Some(foundry);
+        // Queue harvesters until 50 scrap remains: the sentinel card
+        // (75) must dim with the price named.
+        for _ in 0..3 {
+            game.state.tick(&[PlayerCommand {
+                player: game.human,
+                command: Command::Train {
+                    building: foundry,
+                    kind: oxide_sim::UnitKind::Harvester,
+                },
+            }]);
+        }
+        // 500 - 3x50 = 350: still rich, cards enabled, ghosts armed.
+        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        assert!(panel.cards[1].enabled);
+        assert_eq!(panel.queue.len(), 3);
+        assert_eq!(panel.queue[1].action, CardAction::CancelQueue(foundry, 1));
+        // Fill to the sim's cap: every production card refuses.
+        for _ in 0..oxide_sim::stats::QUEUE_CAP {
+            game.state.tick(&[PlayerCommand {
+                player: game.human,
+                command: Command::Train {
+                    building: foundry,
+                    kind: oxide_sim::UnitKind::Harvester,
+                },
+            }]);
+        }
+        let queued = game.state.building(foundry).unwrap().queue.len();
+        assert_eq!(queued, oxide_sim::stats::QUEUE_CAP, "the sim capped it");
+        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        assert!(panel.cards.iter().all(|c| !c.enabled));
+        assert!(
+            panel
+                .cards
+                .iter()
+                .all(|c| c.why.as_deref() == Some("queue is full")),
+            "the reason names the cap, not the bank"
+        );
+    }
+
+    #[test]
+    fn the_harvester_panel_is_the_same_grammar() {
+        let mut game = game();
+        let harvester = game
+            .state
+            .units()
+            .iter()
+            .find(|u| u.player == game.human && u.kind == oxide_sim::UnitKind::Harvester)
+            .expect("starting harvester")
+            .id;
+        game.selection.units = vec![harvester];
+        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        assert_eq!(panel.title, "HARVESTER");
+        assert_eq!(panel.cards[0].title, "Stop");
+        assert_eq!(panel.cards[1].title, "Patrol");
+        let builds: Vec<_> = panel
+            .cards
+            .iter()
+            .filter(|c| matches!(c.action, CardAction::ArmBuild(_)))
+            .collect();
+        assert_eq!(builds.len(), crate::input::BUILD_PALETTE.len());
+        assert!(
+            builds[0].hotkey.starts_with("B,"),
+            "palette cards teach their chord"
+        );
+        // The order strip shows the program; an idle unit shows Idle.
+        assert_eq!(panel.queue.len(), 1);
+        assert_eq!(
+            panel.queue[0].action,
+            CardAction::None,
+            "orders are display-only"
+        );
+    }
+
+    #[test]
+    fn weapon_lines_read_from_the_stats_table() {
+        let sentinel = weapon_lines(oxide_sim::UnitKind::Sentinel);
+        assert_eq!(sentinel.len(), 2, "main gun and the anti-air poke");
+        assert!(sentinel[0].contains("vs ground"));
+        assert!(sentinel[1].contains("vs air"));
+        let bombard = weapon_lines(oxide_sim::UnitKind::Bombard);
+        assert!(bombard[0].contains("live shell"));
+        assert!(bombard[0].contains("splash"));
+    }
+}

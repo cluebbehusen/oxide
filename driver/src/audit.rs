@@ -436,6 +436,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_peak_detour_never_reads_shorter_than_the_straight_line() {
+        // Foundries on a diagonal with a peak blob astride the line:
+        // the detour branch must speak the same Euclidean-ish unit as
+        // open sky. A hop-counting BFS once made this exact geometry
+        // read CLOSER than an unobstructed flight (diagonal hops cost
+        // 1), inverting pace comparisons between maps.
+        let mut rows = vec!["####################".to_string()];
+        for y in 1..13 {
+            let mut row = String::from("#");
+            for x in 1..19 {
+                row.push(match (x, y) {
+                    (2, 2) => '1',
+                    (16, 10) => '2',
+                    (9..=10, 6..=7) => '^',
+                    _ => '.',
+                });
+            }
+            row.push('#');
+            rows.push(row);
+        }
+        rows.push("####################".to_string());
+        let scenario = Scenario {
+            name: "detour".into(),
+            seed: 5,
+            map: rows,
+            players: Scenario::skirmish().players.clone(),
+            units: Vec::new(),
+            meta: None,
+        };
+        let report = audit(&scenario).unwrap();
+        let air = report.routes[0].air_tiles.expect("sky routes around");
+        // Centers: (3,3) and (17,11) -> straight line ~16.1 tiles.
+        let euclid = (14.0f64 * 14.0 + 8.0 * 8.0).sqrt();
+        assert!(
+            air >= euclid - 1.0,
+            "detour {air:.1} reads shorter than the straight line {euclid:.1}"
+        );
+    }
+
+    #[test]
     fn mirrored_seats_measure_identically() {
         // Shipped maps are 180-degree symmetric; an audit that reports
         // different room or spacing for mirror-identical seats would send

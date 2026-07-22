@@ -1019,3 +1019,63 @@ impl Game {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxide_sim::{Command, Scenario, UnitKind};
+
+    #[test]
+    fn every_weapon_family_fires_its_own_bolt() {
+        assert_eq!(unit_bolt_style(UnitKind::Lancer, 0), BoltStyle::Rail);
+        assert_eq!(unit_bolt_style(UnitKind::Flakhound, 0), BoltStyle::Flak);
+        assert_eq!(unit_bolt_style(UnitKind::Stinger, 0), BoltStyle::Flak);
+        // The Sentinel's main gun is a tracer; its sidearm slot is the
+        // anti-air poke.
+        assert_eq!(unit_bolt_style(UnitKind::Sentinel, 0), BoltStyle::Tracer);
+        assert_eq!(unit_bolt_style(UnitKind::Sentinel, 1), BoltStyle::Flak);
+        assert_eq!(unit_bolt_style(UnitKind::Buzzard, 0), BoltStyle::AirStrike);
+        assert_eq!(unit_bolt_style(UnitKind::Wisp, 0), BoltStyle::AirStrike);
+        assert_eq!(unit_bolt_style(UnitKind::Scuttler, 0), BoltStyle::Tracer);
+    }
+
+    #[test]
+    fn demo_flags_read_only_the_humans_commands() {
+        let mut game = Game::with_viewport(
+            Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+            1.0,
+        )
+        .expect("skirmish builds");
+        assert!(!game.demo.trained);
+        let foundry = game
+            .state
+            .buildings()
+            .iter()
+            .find(|b| b.player == game.human)
+            .unwrap()
+            .id;
+        game.issue(Command::Train {
+            building: foundry,
+            kind: UnitKind::Harvester,
+        });
+        game.do_tick();
+        assert!(game.demo.trained, "the human trained");
+        assert!(!game.demo.trained_fighter, "a harvester is not a fighter");
+        game.issue(Command::Train {
+            building: foundry,
+            kind: UnitKind::Sentinel,
+        });
+        game.do_tick();
+        assert!(game.demo.trained_fighter);
+        // The opponent bot issues commands every think; none of them
+        // may grade the human's homework (flags above already proved
+        // the human path; run a few bot-only ticks and check the
+        // unrelated flags stay cold).
+        for _ in 0..20 {
+            game.do_tick();
+        }
+        assert!(!game.demo.attack_moved);
+        assert!(!game.demo.built);
+    }
+}

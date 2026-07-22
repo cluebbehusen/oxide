@@ -101,3 +101,21 @@ pub fn discover() -> Vec<ReplayEntry> {
     found.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
     found.into_iter().map(|(_, e)| e).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_calendar_is_honest_without_a_time_crate() {
+        assert_eq!(civil_date(0), "1970-01-01");
+        assert_eq!(civil_date(86_399), "1970-01-01", "last second of day one");
+        assert_eq!(civil_date(86_400), "1970-01-02");
+        // Leap handling around the century rule: 2000-02-29 existed.
+        // 951_782_400 = 2000-02-29T00:00:00Z; 951_868_800 = 2000-03-01.
+        assert_eq!(civil_date(951_782_400), "2000-02-29");
+        assert_eq!(civil_date(951_868_800), "2000-03-01");
+        // A modern spot check: 2026-07-22T12:00:00Z.
+        assert_eq!(civil_date(1_784_721_600), "2026-07-22");
+    }
+}

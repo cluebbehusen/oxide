@@ -126,6 +126,32 @@ mod tests {
     use oxide_sim::Scenario;
 
     #[test]
+    fn a_claimed_billion_ticks_is_an_error_not_a_hang() {
+        let mut scenario = Scenario::skirmish();
+        for p in scenario.players.iter_mut() {
+            p.bot = true;
+        }
+        let outcome = runner::run_scenario(&scenario, 60, true, true).unwrap();
+        let mut replay = outcome.replay.unwrap();
+        replay.meta.ticks = Some(1_000_000_000);
+        assert!(compute(&replay, 100).is_err());
+    }
+
+    #[test]
+    fn the_final_state_is_always_sampled() {
+        let mut scenario = Scenario::skirmish();
+        for p in scenario.players.iter_mut() {
+            p.bot = true;
+        }
+        // 100 ticks with stride 41: without the closing sample the last
+        // column would sit at tick 82 and closing numbers would be stale.
+        let outcome = runner::run_scenario(&scenario, 100, true, true).unwrap();
+        let stats = compute(&outcome.replay.unwrap(), 41).unwrap();
+        assert_eq!(stats.sample_ticks.last(), Some(&100));
+        assert_eq!(stats.final_tick, 100);
+    }
+
+    #[test]
     fn stats_recompute_identically_from_the_record() {
         let mut scenario = Scenario::skirmish();
         for p in scenario.players.iter_mut() {

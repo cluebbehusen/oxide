@@ -186,6 +186,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn saving_twice_replaces_instead_of_failing() {
+        // Windows refuses rename-onto-existing; the fallback must make
+        // the second save land, and its content must win.
+        let dir = std::env::temp_dir().join(format!("oxide-config-twice-{}", std::process::id()));
+        let path = dir.join("config.json");
+        let mut config = Config::default();
+        config.save_to(&path).expect("first save");
+        config.ui_scale = 1.5;
+        config.save_to(&path).expect("second save replaces");
+        let loaded = Config::load_from(Some(path.clone()));
+        assert!((loaded.ui_scale - 1.5).abs() < 1e-6, "the newer config won");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn a_config_round_trips_through_disk() {
         let dir = std::env::temp_dir().join(format!("oxide-config-test-{}", std::process::id()));
         let path = dir.join("config.json");

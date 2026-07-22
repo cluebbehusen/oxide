@@ -35,6 +35,15 @@ pub struct Playback {
     total: u64,
 }
 
+/// Ticks between retained checkpoints for a record of `total` ticks:
+/// never denser than [`CHECKPOINT_EVERY`], never more than
+/// [`MAX_CHECKPOINTS`] clones, power-of-two for stable stamping.
+fn checkpoint_cadence(total: u64) -> u64 {
+    CHECKPOINT_EVERY
+        .max(total.div_ceil(MAX_CHECKPOINTS))
+        .next_power_of_two()
+}
+
 impl Playback {
     /// Validates and opens a replay at tick 0. Cross-version records are
     /// refused — replays reproduce only on the sim that wrote them.
@@ -56,9 +65,7 @@ impl Playback {
             total <= MAX_INTERACTIVE_TICKS,
             "replay spans {total} ticks — beyond the {MAX_INTERACTIVE_TICKS}-tick interactive limit"
         );
-        let cadence = CHECKPOINT_EVERY
-            .max(total.div_ceil(MAX_CHECKPOINTS))
-            .next_power_of_two();
+        let cadence = checkpoint_cadence(total);
         Ok(Self {
             replay,
             state,
@@ -176,6 +183,29 @@ mod tests {
         seeker.seek(123); // backward into the first checkpoint span
         seeker.seek(700); // and forward again
         assert_eq!(seeker.state.hash(), truth);
+    }
+
+    #[test]
+    fn checkpoint_memory_is_bounded_at_every_length() {
+        for total in [0, 900, 40_000, 500_000, 2_000_000] {
+            let cadence = checkpoint_cadence(total);
+            assert!(cadence >= CHECKPOINT_EVERY);
+            assert!(cadence.is_power_of_two());
+            assert!(
+                total / cadence <= MAX_CHECKPOINTS,
+                "{total} ticks at cadence {cadence} keeps too many clones"
+            );
+        }
+    }
+
+    #[test]
+    fn an_absurd_claimed_length_is_refused_interactively() {
+        let mut replay = recorded_match();
+        replay.meta.ticks = Some(1_000_000_000);
+        assert!(
+            Playback::load(replay).is_err(),
+            "a billion-tick claim must not hang the first End press"
+        );
     }
 
     #[test]

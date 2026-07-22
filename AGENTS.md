@@ -126,7 +126,9 @@ Replay UX in the shell: cold launches land on Home; `Replays` browses
 autosaves and `replays/` (watch, delete, honest version badges);
 `oxide-shell --watch <replay>` opens the read-only playback viewer
 (pause, seek, speed — no recorder; backward seek restores an
-in-memory checkpoint and re-simulates). The pause menu's Watch
+in-memory checkpoint and re-simulates; checkpoint cadence stretches
+with record length so no replay retains more than 64 state clones,
+and interactive loads cap at 2M claimed ticks). The pause menu's Watch
 Replay plays the live session so far. `sh tools/package_macos.sh`
 builds `dist/Oxide.app` (resources resolve executable-relative when
 bundled, cwd otherwise).
@@ -324,7 +326,14 @@ Hard < Expert forever).
 - **Sound follows sight.** Positional clips require the event's tile to be
   visible to the human; own losses and milestones are always audible. The
   queue is dropped after `advance_ticks` bulk jumps, and a per-kind rate
-  limiter keeps battles from clipping into noise.
+  limiter keeps battles from clipping into noise. Since 0.9 sounds carry
+  a world position and attenuate with camera distance (volume only —
+  macroquad has no pan). One deliberate bend: a hostile artillery launch
+  whose muzzle is fogged still plays, anchored at its IMPACT point — the
+  warning survives, loudest when shells fall on you, and nothing about
+  the sound tracks the hidden gun. That is the same information boundary
+  the gym's incoming-shell sense draws (impact tile visible, never the
+  launch), and the arc renderer clips hostile trails the same way.
 - **Rally points are role-aware**: a rallied scrap node sends fresh
   harvesters straight to `Harvest`; combat units attack-move to the rally;
   the goal snaps at spawn time, not set time. Whether the rally counts as
@@ -427,8 +436,10 @@ Hard < Expert forever).
   USER factor only: macroquad's coordinate space is logical, and
   multiplying dpi in is the double-scaling disease (fixed 0.9).
 - **Presentation config persists** (shell/src/config.rs): bindings,
-  volumes, ui scale, camera feel, window size — platform config dir,
-  versioned separately from replays, silent defaults on any trouble.
+  volumes, ui scale, camera feel, window size, reduced motion —
+  platform config dir, versioned separately from replays, silent
+  defaults on any trouble (and replace-not-rename on save, for
+  Windows).
 - **Screens are draft-driven.** The New Match wizard's choices live in
   a NewMatchDraft that survives Back; destructive pause choices
   confirm with Cancel preselected; menus scroll independently of

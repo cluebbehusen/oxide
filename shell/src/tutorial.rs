@@ -111,3 +111,37 @@ impl Tutorial {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_lesson_waits_for_its_demonstration() {
+        let mut t = Tutorial::new();
+        let mut demo = Demo::default();
+        assert!(t.advance(&demo), "school is in session");
+        assert_eq!(t.step, 0);
+        demo.trained = true;
+        assert!(t.advance(&demo));
+        assert_eq!(t.step, 1, "training graduates lesson one only");
+        demo.harvested = true;
+        demo.built = true;
+        assert!(t.advance(&demo));
+        assert_eq!(t.step, 3, "already-demonstrated steps skip in one pass");
+    }
+
+    #[test]
+    fn a_prodigy_graduates_immediately() {
+        let mut t = Tutorial::new();
+        let demo = Demo {
+            trained: true,
+            trained_fighter: true,
+            harvested: true,
+            built: true,
+            attack_moved: true,
+            paused_menu: true,
+        };
+        assert!(!t.advance(&demo), "nothing left to teach");
+    }
+}
