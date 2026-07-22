@@ -345,6 +345,7 @@ fn settings_menu(config: &config::Config) -> Menu {
             format!("UI scale: {}", pct(config.ui_scale)),
             format!("Edge pan: {}", onoff(config.camera.edge_pan)),
             format!("Invert zoom: {}", onoff(config.camera.zoom_inverted)),
+            format!("Reduced motion: {}", onoff(config.reduced_motion)),
             "Controls...".to_string(),
             "Back".to_string(),
         ],
@@ -375,6 +376,10 @@ fn cycle_setting(config: &mut config::Config, row: usize) -> bool {
         }
         4 => config.camera.edge_pan = !config.camera.edge_pan,
         5 => config.camera.zoom_inverted = !config.camera.zoom_inverted,
+        6 => {
+            config.reduced_motion = !config.reduced_motion;
+            render::set_reduced_motion(config.reduced_motion);
+        }
         _ => return false, // Controls... and Back route in the arm
     }
     true
@@ -561,6 +566,7 @@ async fn run() -> Result<()> {
     let args = Args::parse();
     let mut config = config::Config::load();
     render::set_user_scale(config.ui_scale);
+    render::set_reduced_motion(config.reduced_motion);
     let sprites = assets::Sprites::load().await?;
     let sounds = assets::Sounds::load().await?;
     let mut mixer = Mixer::default();
@@ -709,7 +715,7 @@ async fn run() -> Result<()> {
                         let selected = sub_menu.selected;
                         sub_menu = settings_menu(&config);
                         sub_menu.select(selected);
-                    } else if row == 6 {
+                    } else if row == 7 {
                         sub_menu = controls_menu(&config);
                         mode = Mode::Controls { rebinding: None };
                     } else {

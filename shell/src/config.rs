@@ -77,6 +77,11 @@ pub struct Config {
     pub camera: CameraPrefs,
     /// Window size at startup, WIDTHxHEIGHT.
     pub window: (u32, u32),
+    /// Accessibility: damp decorative animation (alert pulses, ping
+    /// rings, muzzle flashes). Informational motion — unit movement,
+    /// shell arcs — always stays.
+    #[serde(default)]
+    pub reduced_motion: bool,
 }
 
 impl Default for Config {
@@ -88,6 +93,7 @@ impl Default for Config {
             ui_scale: 1.0,
             camera: CameraPrefs::default(),
             window: (1280, 800),
+            reduced_motion: false,
         }
     }
 }

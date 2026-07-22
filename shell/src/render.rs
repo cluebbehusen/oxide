@@ -35,6 +35,19 @@ pub fn set_user_scale(factor: f32) {
     );
 }
 
+static REDUCED_MOTION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Installs the accessibility damp: decorative animation (alert
+/// pulses, ping rings, muzzle flashes) holds still when set.
+pub fn set_reduced_motion(on: bool) {
+    REDUCED_MOTION.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether decorative animation is damped.
+pub fn reduced_motion() -> bool {
+    REDUCED_MOTION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// UI scale factor: chrome (text, bars, minimap) is authored in logical
 /// pixels, and `screen_width()`/mouse coordinates are ALREADY logical —
 /// macroquad's high-dpi backing store absorbs the retina multiple
@@ -782,7 +795,7 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
                         );
                     }
                 }
-                if fx.age < 0.07 {
+                if fx.age < 0.07 && !reduced_motion() {
                     let dir = b - a;
                     let rotation = dir.y.atan2(dir.x) + std::f32::consts::FRAC_PI_2;
                     let flash = game.camera.zoom * 0.5;
@@ -992,7 +1005,13 @@ fn draw_pings(game: &Game) {
         };
         let center = game.camera.to_screen(at);
         let progress = (fx.age / 0.5).clamp(0.0, 1.0);
-        let radius = game.camera.zoom * (0.65 * (1.0 - progress) + 0.12);
+        // Damped: a still ring instead of a collapsing one — the verb
+        // color still says what was ordered.
+        let radius = if reduced_motion() {
+            game.camera.zoom * 0.4
+        } else {
+            game.camera.zoom * (0.65 * (1.0 - progress) + 0.12)
+        };
         let base = match kind {
             crate::game::PingKind::Move => color_u8!(120, 200, 130, 255),
             crate::game::PingKind::Attack => DANGER,
@@ -1726,15 +1745,23 @@ fn draw_minimap(game: &Game) {
     let y2 = rect.y + hi.y.min(game.state.map().height() as f32) * scale;
     draw_rectangle_lines(x, y, (x2 - x).max(4.0), (y2 - y).max(4.0), 1.5, BONE);
 
-    // Under-attack pulses: an expanding, fading ring where trouble is.
+    // Under-attack pulses: an expanding, fading ring where trouble is —
+    // or, damped, a steady marker that fades without expanding.
     for (world, age) in &game.alerts {
         let center = vec2(rect.x + world.x * scale, rect.y + world.y * scale);
-        let pulse = (age * 1.5).fract();
-        let alpha = (1.0 - pulse) * (1.0 - (age / 6.0)).max(0.0);
+        let (radius, alpha) = if reduced_motion() {
+            (5.0, (1.0 - (age / 6.0)).max(0.0))
+        } else {
+            let pulse = (age * 1.5).fract();
+            (
+                2.0 + pulse * 10.0,
+                (1.0 - pulse) * (1.0 - (age / 6.0)).max(0.0),
+            )
+        };
         draw_circle_lines(
             center.x,
             center.y,
-            2.0 + pulse * 10.0,
+            radius,
             1.5,
             Color::new(0.85, 0.32, 0.29, alpha),
         );
