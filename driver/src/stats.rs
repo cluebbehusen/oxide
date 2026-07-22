@@ -58,7 +58,7 @@ pub fn compute(replay: &GameReplay, every: u64) -> Result<MatchStats> {
         .collect();
     let mut sample_ticks = Vec::new();
 
-    let mut sample = |state: &State, stats: &mut Vec<PlayerStats>, ticks: &mut Vec<u64>| {
+    let sample = |state: &State, stats: &mut Vec<PlayerStats>, ticks: &mut Vec<u64>| {
         ticks.push(state.current_tick());
         for (seat, entry) in stats.iter_mut().enumerate() {
             entry.scrap.push(state.players()[seat].scrap);
