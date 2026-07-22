@@ -142,6 +142,15 @@ pub enum EffectKind {
         /// Impact, world coords.
         to: Vec2,
     },
+    /// A downed flyer: the sprite drops, spins, and shrinks out.
+    Falling {
+        /// Where it was hit, world coords.
+        at: Vec2,
+        /// What fell.
+        unit: oxide_sim::UnitKind,
+        /// Whose colors it wears.
+        faction: oxide_sim::Faction,
+    },
     /// A death pop.
     Puff {
         /// Center, world coords.
@@ -199,6 +208,12 @@ pub struct Game {
     pub prev_pos: HashMap<u32, Vec2>,
     /// Sprite rotation per unit (radians; 0 = up).
     pub facing: HashMap<u32, f32>,
+    /// Combat aim overrides: unit id -> (angle, fx-clock stamp). A shot
+    /// turns the shooter toward its victim and holds briefly; movement
+    /// facing resumes when the hold expires. Presentation only.
+    pub aim_units: HashMap<u32, (f32, f32)>,
+    /// Same for buildings (turret mounts track their last victim).
+    pub aim_buildings: HashMap<u32, (f32, f32)>,
     /// Live effects.
     pub fx: Vec<Effect>,
     /// Clips queued by this frame's ticks; the main loop drains and plays.
@@ -292,6 +307,8 @@ impl Game {
             overlay: false,
             prev_pos: HashMap::new(),
             facing: HashMap::new(),
+            aim_units: HashMap::new(),
+            aim_buildings: HashMap::new(),
             fx: Vec::new(),
             sounds_pending: Vec::new(),
             toasts: Vec::new(),
@@ -422,11 +439,20 @@ impl Game {
         let state = &self.state;
         self.facing
             .retain(|id, _| state.unit(UnitId(*id)).is_some());
+        self.aim_units
+            .retain(|id, _| state.unit(UnitId(*id)).is_some());
+        self.aim_buildings
+            .retain(|id, _| state.building(oxide_sim::BuildingId(*id)).is_some());
         if let Some(b) = self.selection.building
             && self.state.building(b).is_none()
         {
             self.selection.building = None;
         }
+    }
+
+    /// The effect clock — what aim holds and recoil age against.
+    pub fn fx_time(&self) -> f32 {
+        self.fx_clock
     }
 
     /// How far the presentation clock sits between the last executed
@@ -568,6 +594,7 @@ impl Game {
                 < match fx.kind {
                     EffectKind::Bolt { style, .. } => style.life(),
                     EffectKind::Puff { .. } => 0.4,
+                    EffectKind::Falling { .. } => 0.7,
                     EffectKind::Ping { .. } => 0.5,
                     EffectKind::Burst { .. } => 0.35,
                 }
@@ -593,6 +620,7 @@ impl Game {
         for event in events {
             match event {
                 Event::AttackHit {
+                    attacker,
                     attacker_kind,
                     weapon,
                     attacker_pos,
@@ -600,6 +628,16 @@ impl Game {
                     target_pos,
                     ..
                 } => {
+                    // The shooter turns to its work: aim overrides
+                    // movement facing for a beat, and recoil ages off
+                    // the same stamp.
+                    let d = world_vec(*target_pos) - world_vec(*attacker_pos);
+                    if d.length_squared() > 1e-6 {
+                        self.aim_units.insert(
+                            attacker.0,
+                            (d.y.atan2(d.x) + std::f32::consts::FRAC_PI_2, self.fx_clock),
+                        );
+                    }
                     let own_target = match target {
                         oxide_sim::Target::Unit(uid) => self
                             .state
@@ -659,11 +697,19 @@ impl Game {
                 }
                 Event::TurretFired {
                     kind,
+                    turret,
                     turret_pos,
                     target_pos,
                     target,
                     ..
                 } => {
+                    let d = world_vec(*target_pos) - world_vec(*turret_pos);
+                    if d.length_squared() > 1e-6 {
+                        self.aim_buildings.insert(
+                            turret.0,
+                            (d.y.atan2(d.x) + std::f32::consts::FRAC_PI_2, self.fx_clock),
+                        );
+                    }
                     // A turret chewing on our unit is an attack like any
                     // other; the death case is UnitDied's alert.
                     if self
@@ -719,7 +765,21 @@ impl Game {
                 Event::BuildCancelled { player, refund, .. } if *player == self.human => {
                     self.toast(format!("site salvaged (+{refund} scrap)"));
                 }
-                Event::UnitDied { pos, player, .. } => {
+                Event::UnitDied {
+                    pos, player, kind, ..
+                } => {
+                    if kind.stats().domain == oxide_sim::stats::Domain::Air
+                        && !crate::render::reduced_motion()
+                    {
+                        self.fx.push(Effect {
+                            kind: EffectKind::Falling {
+                                at: world_vec(*pos),
+                                unit: *kind,
+                                faction: self.state.player(*player).faction,
+                            },
+                            age: 0.0,
+                        });
+                    }
                     if *player == self.human {
                         self.raise_alert(world_vec(*pos));
                     }
@@ -794,6 +854,26 @@ impl Game {
                 Event::ShellLaunched {
                     player, from, to, ..
                 } => {
+                    // The event names no shooter; the gun standing at
+                    // the muzzle is a presentation-only guess.
+                    let muzzle = world_vec(*from);
+                    let shooter = self
+                        .state
+                        .units()
+                        .iter()
+                        .filter(|u| u.player == *player)
+                        .map(|u| (world_vec(u.pos).distance_squared(muzzle), u.id))
+                        .filter(|(d, _)| *d < 1.5)
+                        .min_by(|a, b| a.0.total_cmp(&b.0));
+                    if let Some((_, id)) = shooter {
+                        let d = world_vec(*to) - muzzle;
+                        if d.length_squared() > 1e-6 {
+                            self.aim_units.insert(
+                                id.0,
+                                (d.y.atan2(d.x) + std::f32::consts::FRAC_PI_2, self.fx_clock),
+                            );
+                        }
+                    }
                     // No effect spawned: in-flight shells render from
                     // `state.shells()` directly, aged by sim ticks — a
                     // paused shell hangs in the air, a loaded replay

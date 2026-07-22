@@ -489,11 +489,19 @@ fn draw_buildings(game: &Game, sprites: &Sprites) {
             .to_screen(vec2(building.anchor.x as f32, building.anchor.y as f32));
         let (w, h) = building.kind.stats().size;
         let dest = vec2(w as f32 * zoom, h as f32 * zoom);
-        // Sites render translucent — scaffolding, not structure.
+        // Sites render translucent and solidify as they rise — the
+        // alpha IS the construction stage.
         let tint = if building.built {
             WHITE
         } else {
-            Color::new(1.0, 1.0, 1.0, 0.45)
+            let ticks = building
+                .kind
+                .stats()
+                .construction
+                .map(|c| c.build_ticks)
+                .unwrap_or(1);
+            let frac = (building.progress as f32 / ticks as f32).clamp(0.0, 1.0);
+            Color::new(1.0, 1.0, 1.0, 0.35 + 0.45 * frac)
         };
         draw_texture_ex(
             sprites.texture(),
@@ -519,6 +527,86 @@ fn draw_buildings(game: &Game, sprites: &Sprites) {
                 dest.x * 0.22 * (1.0 + 0.08 * pulse),
                 glow,
             );
+        }
+        if building.built {
+            let center = vec2(screen.x + dest.x * 0.5, screen.y + dest.y * 0.5);
+            match building.kind {
+                // Guns wear their aim: a barrel tracking the last victim
+                // (default up), with recoil in the first tenth-second.
+                oxide_sim::BuildingKind::Turret
+                | oxide_sim::BuildingKind::FlakTurret
+                | oxide_sim::BuildingKind::Bastion => {
+                    let (angle, age) = game
+                        .aim_buildings
+                        .get(&building.id.0)
+                        .map(|(a, at)| (*a, game.fx_time() - at))
+                        .unwrap_or((0.0, f32::MAX));
+                    let dir = vec2(angle.sin(), -angle.cos());
+                    let heavy = building.kind == oxide_sim::BuildingKind::Bastion;
+                    let len = dest.x * if heavy { 0.5 } else { 0.42 };
+                    let width = dest.x * if heavy { 0.13 } else { 0.09 };
+                    let kick = if !reduced_motion() && age < 0.12 {
+                        -dir * dest.x * 0.06 * (1.0 - age / 0.12)
+                    } else {
+                        vec2(0.0, 0.0)
+                    };
+                    let base = center + kick;
+                    let tip = base + dir * len;
+                    draw_line(
+                        base.x,
+                        base.y,
+                        tip.x,
+                        tip.y,
+                        width,
+                        Color::new(0.15, 0.15, 0.18, 1.0),
+                    );
+                    draw_line(base.x, base.y, tip.x, tip.y, width * 0.45, BONE_FAINT);
+                }
+                // The radar sweeps its ring — damped to a steady mast.
+                oxide_sim::BuildingKind::Array => {
+                    if !reduced_motion() {
+                        let sweep = (get_time() * 1.1) as f32 % (2.0 * std::f32::consts::PI);
+                        let reach = zoom * 4.0;
+                        let tip = center + vec2(sweep.cos(), sweep.sin()) * reach;
+                        draw_line(
+                            center.x,
+                            center.y,
+                            tip.x,
+                            tip.y,
+                            1.5,
+                            Color::new(0.55, 0.87, 0.78, 0.20),
+                        );
+                    }
+                }
+                // The reclaimer breathes its trickle.
+                oxide_sim::BuildingKind::Reclaimer => {
+                    let pulse = if reduced_motion() {
+                        0.5
+                    } else {
+                        ((get_time() * 1.7 + f64::from(building.id.0)).sin() * 0.5 + 0.5) as f32
+                    };
+                    draw_circle(
+                        center.x,
+                        center.y,
+                        dest.x * 0.18 * (1.0 + 0.1 * pulse),
+                        Color::new(0.75, 0.68, 0.4, 0.08 + 0.08 * pulse),
+                    );
+                }
+                // The fabricator's work light blinks.
+                oxide_sim::BuildingKind::Fabricator => {
+                    let on = reduced_motion()
+                        || ((get_time() * 1.4 + f64::from(building.id.0)).fract() < 0.5);
+                    if on {
+                        draw_circle(
+                            screen.x + dest.x * 0.82,
+                            screen.y + dest.y * 0.18,
+                            2.5 * ui_scale(),
+                            SCRAP_COLOR,
+                        );
+                    }
+                }
+                _ => {}
+            }
         }
         if !building.built {
             // Construction progress in bone, distinct from training amber.
@@ -626,20 +714,43 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                 Color::new(0.95, 0.95, 0.9, 0.55),
             );
         }
+        // A recent shot owns the heading: the mount tracks its victim
+        // for a beat, with a recoil nudge fading over the first tenth
+        // of a second, then movement facing resumes.
+        let aim = game.aim_units.get(&unit.id.0).copied();
+        let rotation = match aim {
+            Some((angle, at)) if game.fx_time() - at < 1.2 => angle,
+            _ => game.facing.get(&unit.id.0).copied().unwrap_or(0.0),
+        };
+        let mut body = screen;
+        if !reduced_motion()
+            && let Some((angle, at)) = aim
+        {
+            let age = game.fx_time() - at;
+            if age < 0.12 {
+                let dir = vec2(angle.sin(), -angle.cos());
+                body -= dir * zoom * 0.07 * (1.0 - age / 0.12);
+            }
+        }
         draw_texture_ex(
             sprites.texture(),
-            screen.x - dest * 0.5,
-            screen.y - dest * 0.5,
+            body.x - dest * 0.5,
+            body.y - dest * 0.5,
             WHITE,
             DrawTextureParams {
                 dest_size: Some(vec2(dest, dest)),
                 source: Some(sprites.unit(unit.kind, faction)),
-                rotation: game.facing.get(&unit.id.0).copied().unwrap_or(0.0),
+                rotation,
                 ..Default::default()
             },
         );
         if unit.kind == UnitKind::Harvester && unit.carrying > 0 {
-            draw_circle(screen.x, screen.y, zoom * 0.09, SCRAP_COLOR);
+            let bob = if reduced_motion() {
+                0.0
+            } else {
+                ((get_time() * 7.0 + f64::from(unit.id.0)).sin() * 0.015) as f32
+            };
+            draw_circle(screen.x, screen.y, zoom * (0.09 + bob), SCRAP_COLOR);
         }
         let max_hp = unit.kind.stats().max_hp;
         if unit.hp < max_hp {
@@ -742,6 +853,7 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
         let in_sight = match fx.kind {
             EffectKind::Bolt { from, to, .. } => sees(from) && sees(to),
             EffectKind::Puff { at } => sees(at),
+            EffectKind::Falling { at, .. } => sees(at),
             EffectKind::Burst { at, .. } => sees(at),
             // Own-order acknowledgments always show; fogged targets are
             // already impossible to order onto.
@@ -813,6 +925,26 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
                         },
                     );
                 }
+            }
+            EffectKind::Falling { at, unit, faction } => {
+                // Gravity takes the wreck: drop accelerates, the hull
+                // spins and shrinks, and the ground swallows it.
+                let t = (fx.age / 0.7).clamp(0.0, 1.0);
+                let world = vec2(at.x, at.y + t * t * 1.4);
+                let screen = game.camera.to_screen(world);
+                let size = game.camera.zoom * 1.05 * (1.0 - t * 0.55);
+                draw_texture_ex(
+                    sprites.texture(),
+                    screen.x - size * 0.5,
+                    screen.y - size * 0.5,
+                    Color::new(1.0, 1.0, 1.0, 1.0 - t * 0.8),
+                    DrawTextureParams {
+                        dest_size: Some(vec2(size, size)),
+                        source: Some(sprites.unit(unit, faction)),
+                        rotation: t * 5.2,
+                        ..Default::default()
+                    },
+                );
             }
             EffectKind::Puff { at } => {
                 let center = game.camera.to_screen(at);
