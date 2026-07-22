@@ -158,11 +158,15 @@ fn a_ground_chaser_stalls_when_no_standing_room_reaches_a_flyer_deep_in_rock() {
         },
     )]);
     assert!(
-        report
-            .events
-            .iter()
-            .any(|e| matches!(e, Event::OrderStalled { unit, .. } if *unit == flak)),
-        "no standing room in reach ends the order in a stall"
+        report.events.iter().any(|e| matches!(
+            e,
+            Event::OrderStalled {
+                unit,
+                reason: oxide_sim::StallReason::NoFiringPosition,
+                ..
+            } if *unit == flak
+        )),
+        "no standing room in reach ends the order in a stall that says so"
     );
     assert_eq!(
         state.unit(flak).unwrap().order,

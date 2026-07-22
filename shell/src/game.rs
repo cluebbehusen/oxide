@@ -719,8 +719,19 @@ impl Game {
                     self.toast(why);
                     self.sounds_pending.push(SoundKind::Denied);
                 }
-                Event::OrderStalled { player, pos, .. } if *player == self.human => {
-                    self.toast("a unit can't reach its order");
+                Event::OrderStalled {
+                    player,
+                    pos,
+                    reason,
+                    ..
+                } if *player == self.human => {
+                    // Own-state facts only — a stall reason must never
+                    // whisper about what fog hides.
+                    self.toast(match reason {
+                        oxide_sim::StallReason::NoRoute => "no route to that order",
+                        oxide_sim::StallReason::NoFiringPosition => "no ground to fire from there",
+                        oxide_sim::StallReason::InsufficientScrap => "out of scrap",
+                    });
                     self.fx.push(Effect {
                         kind: EffectKind::Ping {
                             at: world_vec(*pos),

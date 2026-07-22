@@ -126,6 +126,9 @@ pub enum Event {
         player: PlayerId,
         /// Where it stood when it gave up.
         pos: Vec2Fx,
+        /// Why the program died — own-state facts only (routes, banks,
+        /// footing); a reason must never reveal what fog hides.
+        reason: StallReason,
     },
     /// The match ended.
     GameOver {
@@ -141,4 +144,19 @@ pub struct TickReport {
     pub tick: Tick,
     /// Events in the order they occurred.
     pub events: Vec<Event>,
+}
+
+/// Why an order program stalled. Every variant derives from the acting
+/// player's own situation — pathing, funds, footing — never from
+/// hidden enemy state, so the shell can voice any of these verbatim
+/// without leaking intelligence through the fog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StallReason {
+    /// No route to the goal (or to any doorstep of the work site).
+    NoRoute,
+    /// No standable tile within weapon reach of the victim.
+    NoFiringPosition,
+    /// The bank ran dry mid-job.
+    InsufficientScrap,
 }

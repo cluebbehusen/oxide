@@ -11,7 +11,7 @@
 //! exactly one possible choice.
 
 use super::{rect_adjacent_tiles, route_for, tile_adjacent_to_rect};
-use crate::event::Event;
+use crate::event::{Event, StallReason};
 use crate::ids::{PlayerId, Target, UnitId};
 use crate::state::{Order, PathFollow, State};
 use crate::stats::{Domain, RETARGET_RADIUS, WeaponStats};
@@ -327,6 +327,7 @@ fn build(
             unit: id,
             player,
             pos,
+            reason: StallReason::NoRoute,
         });
     }
 }
@@ -378,6 +379,7 @@ fn repair(
                     unit: id,
                     player,
                     pos,
+                    reason: StallReason::InsufficientScrap,
                 });
                 return;
             }
@@ -407,6 +409,7 @@ fn repair(
             unit: id,
             player,
             pos,
+            reason: StallReason::NoRoute,
         });
     }
 }
@@ -545,6 +548,7 @@ fn walk(state: &mut State, id: UnitId, goal: TilePos, events: &mut Vec<Event>) {
                 unit: id,
                 player,
                 pos,
+                reason: StallReason::NoRoute,
             });
         }
     }
@@ -605,6 +609,7 @@ fn harvest(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
                 unit: id,
                 player,
                 pos,
+                reason: StallReason::NoRoute,
             });
         }
     } else if node_wreck > 0 {
@@ -635,6 +640,7 @@ fn harvest(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
                             unit: id,
                             player,
                             pos,
+                            reason: StallReason::NoRoute,
                         });
                     }
                 }
@@ -747,6 +753,7 @@ fn deliver(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
             unit: id,
             player,
             pos,
+            reason: StallReason::NoRoute,
         });
     }
 }
@@ -877,7 +884,7 @@ fn attack(
     fire_sidearms(state, id, pi, hits, events);
 
     // Out of range (or blind, or blocked): chase.
-    let reached = match target {
+    let reached: Result<(), StallReason> = match target {
         Target::Unit(_) => {
             // A ground chaser cannot stand where a flyer hovers — over
             // rock, over a roof — so it marches to a tile it CAN stand
@@ -923,21 +930,31 @@ fn attack(
                             waypoints,
                             next: 0,
                         });
-                        true
+                        Ok(())
                     }
-                    None => false,
+                    None if !direct
+                        && chase_stand_ins(state, stats.domain, target_tile, weapon.range)
+                            .is_empty() =>
+                    {
+                        Err(StallReason::NoFiringPosition)
+                    }
+                    None => Err(StallReason::NoRoute),
                 }
             } else {
-                true
+                Ok(())
             }
         }
         Target::Building(bid) => {
             let b = state.building(bid).expect("resolved above");
             let (anchor, size) = (b.anchor, b.kind.stats().size);
-            approach_rect(state, id, anchor, size)
+            if approach_rect(state, id, anchor, size) {
+                Ok(())
+            } else {
+                Err(StallReason::NoRoute)
+            }
         }
     };
-    if !reached {
+    if let Err(reason) = reached {
         let unit = state.unit_mut(id).expect("caller checked");
         let (player, pos) = (unit.player, unit.pos);
         unit.clear_program();
@@ -945,6 +962,7 @@ fn attack(
             unit: id,
             player,
             pos,
+            reason,
         });
     }
 }
