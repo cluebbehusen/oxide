@@ -148,6 +148,11 @@ enum Mode {
     /// Settings: Enter cycles a row's value; changes apply live and
     /// persist on the spot.
     Settings,
+    /// Key remapping: Enter arms a row, the next key becomes its chord.
+    Controls {
+        /// The action row armed for rebinding, if any.
+        rebinding: Option<usize>,
+    },
     /// Scenario picker (the first New Match screen).
     MainMenu,
     /// Difficulty picker for the chosen scenario.
@@ -319,6 +324,7 @@ fn settings_menu(config: &config::Config) -> Menu {
             format!("UI scale: {}", pct(config.ui_scale)),
             format!("Edge pan: {}", onoff(config.camera.edge_pan)),
             format!("Invert zoom: {}", onoff(config.camera.zoom_inverted)),
+            "Controls...".to_string(),
             "Back".to_string(),
         ],
     )
@@ -348,9 +354,41 @@ fn cycle_setting(config: &mut config::Config, row: usize) -> bool {
         }
         4 => config.camera.edge_pan = !config.camera.edge_pan,
         5 => config.camera.zoom_inverted = !config.camera.zoom_inverted,
-        _ => return false,
+        _ => return false, // Controls... and Back route in the arm
     }
     true
+}
+
+/// The remappable actions, in display order. Digits and structural keys
+/// (Back, Confirm, group slots) stay fixed — their meaning is
+/// positional, not preferential.
+const REMAPPABLE: [(action::Action, &str); 10] = [
+    (action::Action::StopOrScrap, "Stop / scrap site"),
+    (action::Action::TrainSlot(0), "Train slot 1"),
+    (action::Action::TrainSlot(1), "Train slot 2"),
+    (action::Action::TogglePause, "Pause"),
+    (action::Action::ToggleBuildPalette, "Build palette"),
+    (action::Action::Patrol, "Patrol"),
+    (action::Action::HomeCamera, "Center home"),
+    (action::Action::ToggleOverlay, "Debug overlay"),
+    (action::Action::PanLeft, "Pan left"),
+    (action::Action::PanRight, "Pan right"),
+];
+
+fn controls_menu(config: &config::Config) -> Menu {
+    let mut items: Vec<String> = REMAPPABLE
+        .iter()
+        .map(|(action, label)| {
+            let chord = config
+                .bindings
+                .chord_for(*action)
+                .map(action::BindingMap::chord_label)
+                .unwrap_or_else(|| "unbound".to_string());
+            format!("{label}: {chord}")
+        })
+        .collect();
+    items.push("Back".to_string());
+    Menu::new("CONTROLS", items)
 }
 
 const PAUSE_ITEMS: [&str; 4] = ["Resume", "Restart", "Main Menu", "Quit"];
@@ -549,6 +587,9 @@ async fn run() -> Result<()> {
                         let selected = sub_menu.selected;
                         sub_menu = settings_menu(&config);
                         sub_menu.select(selected);
+                    } else if row == 6 {
+                        sub_menu = controls_menu(&config);
+                        mode = Mode::Controls { rebinding: None };
                     } else {
                         mode = Mode::Home;
                     }
@@ -556,6 +597,63 @@ async fn run() -> Result<()> {
                 render::draw(&game, &sprites, &input);
                 veil();
                 sub_menu.draw("Enter cycles a value - changes stick immediately");
+            }
+            Mode::Controls { rebinding } => {
+                let escaped = events
+                    .iter()
+                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
+                if let Some(row) = rebinding {
+                    // Armed: the next key IS the answer — raw, before any
+                    // binding resolution, or the old meaning would fire.
+                    let pressed = events.iter().find_map(|e| match e {
+                        RawEvent::KeyDown { key } => Some(*key),
+                        _ => None,
+                    });
+                    match pressed {
+                        Some(Key::Escape) => {
+                            mode = Mode::Controls { rebinding: None };
+                        }
+                        Some(key) if !matches!(key, Key::Shift | Key::Ctrl) => {
+                            let (target, _) = REMAPPABLE[row];
+                            let chord = action::Chord::bare(key);
+                            if config.bindings.rebind(target, chord) {
+                                config.save().ok();
+                                input.bindings = config.bindings.clone();
+                                sub_menu = controls_menu(&config);
+                                sub_menu.select(row);
+                                mode = Mode::Controls { rebinding: None };
+                            } else {
+                                game.toast("that key already means something");
+                                game.sounds_pending.push(SoundKind::Denied);
+                                mode = Mode::Controls { rebinding: None };
+                            }
+                        }
+                        _ => {}
+                    }
+                } else if escaped {
+                    sub_menu = settings_menu(&config);
+                    sub_menu.select(6);
+                    mode = Mode::Settings;
+                } else if let Some(row) = sub_menu.handle(&events, &mut input.mouse) {
+                    game.sounds_pending.push(SoundKind::Click);
+                    if row < REMAPPABLE.len() {
+                        mode = Mode::Controls {
+                            rebinding: Some(row),
+                        };
+                    } else {
+                        sub_menu = settings_menu(&config);
+                        sub_menu.select(6);
+                        mode = Mode::Settings;
+                    }
+                }
+                render::draw(&game, &sprites, &input);
+                veil();
+                let hint = if matches!(mode, Mode::Controls { rebinding: Some(_) }) {
+                    "press the new key - Escape cancels"
+                } else {
+                    "Enter arms a row, then press its new key"
+                };
+                sub_menu.draw(hint);
             }
             Mode::MainMenu => {
                 let (menu, entries) = main_menu.get_or_insert_with(|| build_main_menu(&draft));
@@ -825,6 +923,7 @@ fn capture_ui(
     let (mode_name, menu) = match mode {
         Mode::Home => ("home", Some(home)),
         Mode::Settings => ("settings", Some(sub_menu)),
+        Mode::Controls { .. } => ("controls", Some(sub_menu)),
         Mode::MainMenu => ("main_menu", main_menu.as_ref().map(|(menu, _)| menu)),
         Mode::DifficultyMenu => ("difficulty_menu", Some(sub_menu)),
         Mode::PersonalityMenu => ("personality_menu", Some(sub_menu)),

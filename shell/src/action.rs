@@ -204,8 +204,6 @@ impl BindingMap {
     }
 
     /// The chord bound to an action, for labels and the remap screen.
-    // Consumed by the Phase D settings screens; tests exercise it now.
-    #[allow(dead_code)]
     pub fn chord_for(&self, action: Action) -> Option<Chord> {
         self.bindings
             .iter()
@@ -230,10 +228,54 @@ impl BindingMap {
     }
 
     /// All bindings, for rendering the remap screen.
-    // Consumed by the Phase D settings screens; tests exercise it now.
-    #[allow(dead_code)]
     pub fn bindings(&self) -> &[Binding] {
         &self.bindings
+    }
+
+    /// Rebinds an action's chord. Refused (false) when the chord would
+    /// collide with a different action's exact chord — the remap screen
+    /// reports the conflict instead of silently shadowing a binding.
+    pub fn rebind(&mut self, action: Action, chord: Chord) -> bool {
+        if self
+            .bindings
+            .iter()
+            .any(|b| b.chord == chord && b.action != action)
+        {
+            return false;
+        }
+        match self.bindings.iter_mut().find(|b| b.action == action) {
+            Some(binding) => binding.chord = chord,
+            None => self.bindings.push(Binding { chord, action }),
+        }
+        true
+    }
+
+    /// Human label for a chord, e.g. "Ctrl+3" or "Space".
+    pub fn chord_label(chord: Chord) -> String {
+        let key = match chord.key {
+            Key::Num1 => "1",
+            Key::Num2 => "2",
+            Key::Num3 => "3",
+            Key::Num4 => "4",
+            Key::Num5 => "5",
+            Key::Num6 => "6",
+            Key::Num7 => "7",
+            Key::Num8 => "8",
+            Key::Num9 => "9",
+            other => return Self::modifier_prefix(chord) + &format!("{other:?}"),
+        };
+        Self::modifier_prefix(chord) + key
+    }
+
+    fn modifier_prefix(chord: Chord) -> String {
+        let mut out = String::new();
+        if chord.ctrl {
+            out.push_str("Ctrl+");
+        }
+        if chord.shift {
+            out.push_str("Shift+");
+        }
+        out
     }
 }
 
@@ -321,6 +363,22 @@ mod tests {
             map.resolve(Key::H, true, false),
             Some(Action::TrainSlot(0)),
             "a held modifier never mutes an unmodified binding"
+        );
+    }
+
+    #[test]
+    fn rebinding_refuses_collisions_and_moves_the_chord() {
+        let mut map = BindingMap::classic();
+        assert!(
+            !map.rebind(Action::StopOrScrap, Chord::bare(Key::H)),
+            "H belongs to train slot 0; shadowing must be refused"
+        );
+        assert!(map.rebind(Action::StopOrScrap, Chord::bare(Key::N)));
+        assert_eq!(map.resolve(Key::N, false, false), Some(Action::StopOrScrap));
+        assert_eq!(
+            map.resolve(Key::X, false, false),
+            None,
+            "the old chord is gone, not shadowed"
         );
     }
 
