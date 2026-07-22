@@ -359,4 +359,34 @@ mod tests {
         let remaining = b.ticks_remaining.unwrap();
         assert!(remaining > 0 && remaining <= UnitKind::Harvester.stats().train_ticks);
     }
+
+    #[test]
+    fn the_overlaid_debug_map_is_a_picture_not_a_parseable_scenario() {
+        let state = oxide_sim::Scenario::skirmish().build().unwrap();
+        let view = StateView::capture(
+            &state,
+            StateFilter {
+                map: true,
+                ..StateFilter::default()
+            },
+        );
+        let rows = view.map.expect("map requested");
+        let flat: String = rows.concat();
+        assert!(
+            flat.contains('A') || flat.contains('a'),
+            "the overlay paints entities as letters"
+        );
+        // Those entity letters are not in the terrain legend, so the debug
+        // map never round-trips back through the scenario parser — the same
+        // reason the render-only wreck glyph stays out of authorable maps.
+        match oxide_sim::map::Map::parse(&rows) {
+            Err(oxide_sim::map::MapError::UnknownChar { c, .. }) => {
+                assert!(
+                    c.is_ascii_alphabetic(),
+                    "rejected on an entity glyph, got {c:?}"
+                );
+            }
+            other => panic!("expected the overlay to be unparseable terrain, got {other:?}"),
+        }
+    }
 }

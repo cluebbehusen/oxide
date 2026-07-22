@@ -13,9 +13,13 @@ package = false
 
 [dependency-groups]
 dev = [
+    "pytest~=9.0.3",
     "ruff~=0.15.4",
     "ty~=0.0.56",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.ruff]
 target-version = "py314"
@@ -39,6 +43,7 @@ select = [
     "ISC",   # flake8-implicit-str-concat
     "ICN",   # flake8-import-conventions
     "PIE",   # flake8-pie
+    "PT",    # flake8-pytest-style
     "Q",     # flake8-quotes
     "RSE",   # flake8-raise
     "RET",   # flake8-return
@@ -66,6 +71,11 @@ ignore = [
     "PLR0912", # splitting them into fragments would hide the sequence
     "PLR0915", # they exist to express
     "TRY003",  # CLI tools raise with messages, not exception taxonomies
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "S101", # assert is the pytest idiom; bandit's -O caveat is moot here
 ]
 
 [tool.ruff.format]

@@ -857,4 +857,65 @@ mod tests {
         // The cap also catches fast trackpad flicks below the notch cutoff.
         assert_eq!(normalize_wheel(39.9), 3.0);
     }
+
+    #[test]
+    fn every_build_palette_entry_costs_scrap_to_raise() {
+        // The palette is exactly what a harvester can place, so each entry
+        // must carry construction stats with a real price. A `None` (a
+        // Foundry-style scenario-only kind) or a zero cost would offer a
+        // ghost the sim can never accept.
+        for kind in BUILD_PALETTE {
+            let cost = kind
+                .stats()
+                .construction
+                .unwrap_or_else(|| {
+                    panic!("{} is in the palette but not constructable", kind.name())
+                })
+                .cost;
+            assert!(cost > 0, "{} is free to build", kind.name());
+        }
+    }
+
+    #[test]
+    fn the_build_palette_has_no_duplicate_structures() {
+        // A repeated kind would burn a digit slot on a structure already
+        // reachable by another digit.
+        for (i, a) in BUILD_PALETTE.iter().enumerate() {
+            for b in BUILD_PALETTE.iter().skip(i + 1) {
+                assert_ne!(a, b, "{} appears twice", a.name());
+            }
+        }
+    }
+
+    #[test]
+    fn the_build_palette_fits_the_digit_selectors() {
+        // `digit_action` indexes the palette with slots 0..=8 (number keys
+        // 1-9); an entry past the ninth could never be selected.
+        assert!(
+            BUILD_PALETTE.len() <= 9,
+            "palette overflows the 1-9 digit range"
+        );
+    }
+
+    #[test]
+    fn key_map_binds_each_logical_key_at_most_once() {
+        // Two rows sharing a logical Key would leave one keycode's binding
+        // dead — whichever row `poll_events` reaches second is unreachable.
+        for (i, a) in KEY_MAP.iter().enumerate() {
+            for b in KEY_MAP.iter().skip(i + 1) {
+                assert_ne!(a.0, b.0, "logical key bound twice: {:?}", a.0);
+            }
+        }
+    }
+
+    #[test]
+    fn each_physical_key_drives_at_most_one_logical_key() {
+        // A repeated keycode silently shadows: `poll_events` emits the first
+        // row's logical key and the second row never fires.
+        for (i, a) in KEY_MAP.iter().enumerate() {
+            for b in KEY_MAP.iter().skip(i + 1) {
+                assert_ne!(a.1, b.1, "keycode bound twice: {:?}", a.1);
+            }
+        }
+    }
 }

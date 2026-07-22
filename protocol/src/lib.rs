@@ -347,4 +347,151 @@ mod tests {
     fn hash_hex_is_fixed_width() {
         assert_eq!(hash_hex(0x1234), "0x0000000000001234");
     }
+
+    fn reply_roundtrip(reply: &Reply) -> Reply {
+        let json = serde_json::to_string(&ResponseEnvelope::ok(9, reply.clone())).unwrap();
+        let back: ResponseEnvelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, 9);
+        back.into_result().expect("an ok envelope yields its reply")
+    }
+
+    #[test]
+    fn every_request_variant_survives_an_envelope_roundtrip() {
+        let requests = vec![
+            Request::Status,
+            Request::QueryState {
+                filter: StateFilter::default(),
+            },
+            Request::QueryCamera,
+            Request::StateHash,
+            Request::AdvanceTicks { ticks: 12 },
+            Request::Pause,
+            Request::Resume,
+            Request::SetSpeed { multiplier: 2.5 },
+            Request::SendCommand {
+                player: PlayerId(1),
+                command: Command::Stop {
+                    units: vec![UnitId(4)],
+                },
+            },
+            Request::InjectEvent {
+                event: RawEvent::KeyDown { key: Key::Space },
+            },
+            Request::Screenshot {
+                path: Some("shots/tick-1.png".into()),
+            },
+            Request::ToggleOverlay,
+            Request::LoadScenario {
+                path: "scenarios/x.json".into(),
+            },
+            Request::LoadReplay {
+                path: "replays/x.json".into(),
+            },
+            Request::SaveReplay {
+                path: "replays/y.json".into(),
+            },
+        ];
+        // A new method with no entry here escapes the wire round-trip.
+        assert_eq!(requests.len(), 15);
+        for req in requests {
+            assert_eq!(
+                roundtrip(&req),
+                req,
+                "request variant did not survive: {req:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_reply_variant_survives_an_envelope_roundtrip() {
+        let state = oxide_sim::Scenario::skirmish().build().unwrap();
+        let full = StateView::capture(
+            &state,
+            StateFilter {
+                map: true,
+                ..StateFilter::default()
+            },
+        );
+        let replies = vec![
+            Reply::Ok,
+            Reply::Status(StatusView {
+                tick: 5,
+                paused: true,
+                speed: 1.0,
+                scenario: "skirmish".into(),
+                sim_version: "9.9.9".into(),
+                result: Some(oxide_sim::GameResult::Victory { team: 1 }),
+                recorded_commands: 3,
+            }),
+            Reply::State(full),
+            Reply::Camera(CameraView {
+                center: [1.0, 2.0],
+                zoom: 32.0,
+                viewport: [800.0, 600.0],
+                world_rect: [0.0, 0.0, 25.0, 18.0],
+            }),
+            Reply::Hash(HashView {
+                tick: 5,
+                hash: hash_hex(0x1234),
+            }),
+            Reply::Advanced(AdvancedView {
+                ticks: 10,
+                tick: 15,
+                hash: hash_hex(0xabcd),
+            }),
+            Reply::Screenshot(ScreenshotView {
+                path: "shots/x.png".into(),
+                width: 800,
+                height: 600,
+            }),
+            Reply::Overlay(OverlayView { enabled: true }),
+            Reply::Saved(SavedView {
+                path: "replays/x.json".into(),
+                commands: 42,
+            }),
+        ];
+        // A new reply kind with no entry here escapes the wire round-trip.
+        assert_eq!(replies.len(), 9);
+        for reply in replies {
+            assert_eq!(
+                reply_roundtrip(&reply),
+                reply,
+                "reply variant did not survive: {reply:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_request_lines_error_instead_of_panicking() {
+        // A debug socket feeds untrusted lines; every one of these must come
+        // back as a parse error, never a panic that takes the shell down.
+        for line in [
+            r#"{"id":3,"method":"nonsense"}"#,            // unknown method tag
+            "this is not json at all",                    // not JSON
+            r#"{"method":"status"}"#,                     // missing id
+            r#"{"id":"not-a-number","method":"status"}"#, // id wrong type
+            r#"{"id":4,"method":"advance_ticks"}"#,       // required params absent
+        ] {
+            assert!(
+                serde_json::from_str::<RequestEnvelope>(line).is_err(),
+                "expected a parse error for {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_response_with_both_ok_and_err_is_rejected() {
+        // The envelope is an enum on the wire: "ok and err at once" is a
+        // corrupt frame, not two answers.
+        let err =
+            serde_json::from_str::<ResponseEnvelope>(r#"{"id":1,"ok":{"kind":"ok"},"err":"boom"}"#)
+                .unwrap_err();
+        assert!(err.to_string().contains("both"), "{err}");
+    }
+
+    #[test]
+    fn a_response_with_neither_ok_nor_err_is_rejected() {
+        let err = serde_json::from_str::<ResponseEnvelope>(r#"{"id":1}"#).unwrap_err();
+        assert!(err.to_string().contains("neither"), "{err}");
+    }
 }
