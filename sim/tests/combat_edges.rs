@@ -81,6 +81,7 @@ fn arena(units: Vec<UnitSpec>) -> Scenario {
         ],
         players: players(),
         units,
+        meta: None,
     }
 }
 
@@ -123,6 +124,7 @@ fn a_ground_chaser_stalls_when_no_standing_room_reaches_a_flyer_deep_in_rock() {
             unit(0, UnitKind::Flakhound, 4, 8),
             unit(1, UnitKind::Wisp, 10, 1),
         ],
+        meta: None,
     };
     let mut state = scenario.build().unwrap();
     let (flak, wisp) = (state.units()[0].id, state.units()[1].id);
@@ -340,6 +342,7 @@ fn a_dead_attacker_draws_no_answer_and_the_earliest_survivor_gets_it() {
             unit(0, UnitKind::Lancer, 4, 9),     // executioner
             unit(0, UnitKind::Lancer, 4, 10),    // executioner
         ],
+        meta: None,
     };
     let mut state = scenario.build().unwrap();
     let ids: Vec<_> = state.units().iter().map(|u| u.id).collect();
@@ -484,6 +487,7 @@ fn radar_detects_at_the_ring_and_goes_quiet_one_tile_beyond() {
             unit(1, UnitKind::Harvester, 20, 4), // on the ring: dx16 dy0
             unit(1, UnitKind::Harvester, 20, 5), // one deeper: dx16 dy1
         ],
+        meta: None,
     };
     let mut state = scenario.build().unwrap();
     let (builder, on_ring, past_ring) = (
@@ -557,6 +561,7 @@ fn a_ground_chaser_flanks_to_a_firing_position_it_can_actually_shoot_from() {
             unit(0, UnitKind::Flakhound, 1, 6),
             unit(1, UnitKind::Wisp, 7, 1),
         ],
+        meta: None,
     };
     let mut state = scenario.build().unwrap();
     let (flak, wisp) = (state.units()[0].id, state.units()[1].id);

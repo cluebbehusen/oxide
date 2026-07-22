@@ -45,6 +45,7 @@ fn arena4(units: Vec<UnitSpec>) -> Scenario {
             seat("East Cupric", Faction::Cupric, 1),
         ],
         units,
+        meta: None,
     }
 }
 

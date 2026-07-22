@@ -43,6 +43,7 @@ fn arena(units: Vec<UnitSpec>) -> Scenario {
             },
         ],
         units,
+        meta: None,
     }
 }
 

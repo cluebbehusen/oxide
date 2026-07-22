@@ -46,6 +46,7 @@ fn arena(units: Vec<UnitSpec>) -> Scenario {
             },
         ],
         units,
+        meta: None,
     }
 }
 
@@ -382,6 +383,7 @@ fn long_guns_fire_on_a_spotters_eyes_and_go_quiet_without_them() {
             unit(0, UnitKind::Scuttler, 10, 3),
             unit(1, UnitKind::Harvester, 12, 4),
         ],
+        meta: None,
     };
     let mut state = scenario.build().unwrap();
     let (bombard, spotter, victim) = (
