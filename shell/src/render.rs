@@ -1358,6 +1358,33 @@ fn draw_hud(game: &Game, input: &InputState) {
             20.0 * s,
             BONE_FAINT,
         );
+        // The match in numbers: one line per seat from the recomputed
+        // record — losses and the peak army it ever fielded.
+        if let Some(stats) = &game.end_stats {
+            for (i, seat) in stats.players.iter().enumerate() {
+                let name = game
+                    .state
+                    .players()
+                    .get(i)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| format!("seat {i}"));
+                let peak = seat.army_value.iter().copied().max().unwrap_or(0);
+                let line = format!(
+                    "{name}: lost {} units, {} buildings · peak army {peak} · scrap {}",
+                    seat.units_lost,
+                    seat.buildings_lost,
+                    seat.scrap.last().copied().unwrap_or(0),
+                );
+                let dims = measure_text(&line, None, (16.0 * s) as u16, 1.0);
+                draw_text(
+                    &line,
+                    (screen_width() - dims.width) * 0.5,
+                    y + (86.0 + 22.0 * i as f32) * s,
+                    16.0 * s,
+                    BONE_FAINT,
+                );
+            }
+        }
         let hint = "Esc — menu";
         let hint_dims = measure_text(hint, None, (20.0 * s) as u16, 1.0);
         draw_text(

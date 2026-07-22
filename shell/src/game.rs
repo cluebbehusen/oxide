@@ -184,6 +184,9 @@ pub struct Game {
     /// model hit-testing reads, so drawn and clickable can never
     /// disagree. A `Cell` because drawing holds `&Game`.
     pub layout: std::cell::Cell<crate::layout::LayoutModel>,
+    /// End-of-match statistics, computed once from the recorder when
+    /// the result lands (the record IS the match — a re-execution).
+    pub end_stats: Option<oxide_driver::stats::MatchStats>,
     accum: f32,
     /// True during bulk fast-forwards: presentation (fx, sounds, facing)
     /// is skipped entirely instead of accumulated-then-discarded — a
@@ -258,6 +261,7 @@ impl Game {
             hinted_train: false,
             hinted_fight: false,
             layout: std::cell::Cell::new(crate::layout::LayoutModel::default()),
+            end_stats: None,
             accum: 0.0,
             suppress_presentation: false,
         })

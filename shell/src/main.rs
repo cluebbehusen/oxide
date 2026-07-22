@@ -928,6 +928,16 @@ async fn run() -> Result<()> {
                 }
                 game.advance_wall_clock(dt);
                 game.update_fx(dt);
+                if game.state.result().is_some() && game.end_stats.is_none() {
+                    // One re-execution of the record at match end; the
+                    // sim replays thousands of ticks per second, so the
+                    // hitch hides inside the banner's arrival.
+                    let mut replay = game.recorder.clone();
+                    let total = game.state.current_tick();
+                    replay.meta.ticks = Some(total);
+                    game.end_stats =
+                        oxide_driver::stats::compute(&replay, (total / 48).max(1)).ok();
+                }
                 render::draw(&game, &sprites, &input);
             }
             Mode::Playback => {
