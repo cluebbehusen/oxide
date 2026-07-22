@@ -201,7 +201,7 @@ fn draw_breadcrumbs(game: &Game, input: &InputState) {
             // Numbered waypoints once a program has legs.
             if points.len() > 1 {
                 draw_text(
-                    &format!("{}", i + 1),
+                    format!("{}", i + 1),
                     p.x + 6.0 * s,
                     p.y - 4.0 * s,
                     14.0 * s,
