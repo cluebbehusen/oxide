@@ -833,6 +833,14 @@ fn dispatch_action(game: &mut Game, input: &mut InputState, action: Action) {
             game.selection.building = None;
         }
         Action::CycleIdleWorker => cycle_idle_worker(game),
+        Action::JumpToLastAlert => {
+            if let Some(world) = game.last_alert {
+                game.camera.center = world;
+                game.camera.pan(Vec2::ZERO); // re-clamp
+            } else {
+                game.toast("no recent alerts");
+            }
+        }
         Action::HomeCamera => {
             if let Some(center) = game.home_foundry().map(|b| b.center()) {
                 let target = vec2(center.x.to_num::<f32>(), center.y.to_num::<f32>());

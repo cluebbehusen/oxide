@@ -1369,6 +1369,20 @@ fn draw_minimap(game: &Game) {
     let x2 = rect.x + hi.x.min(game.state.map().width() as f32) * scale;
     let y2 = rect.y + hi.y.min(game.state.map().height() as f32) * scale;
     draw_rectangle_lines(x, y, (x2 - x).max(4.0), (y2 - y).max(4.0), 1.5, BONE);
+
+    // Under-attack pulses: an expanding, fading ring where trouble is.
+    for (world, age) in &game.alerts {
+        let center = vec2(rect.x + world.x * scale, rect.y + world.y * scale);
+        let pulse = (age * 1.5).fract();
+        let alpha = (1.0 - pulse) * (1.0 - (age / 6.0)).max(0.0);
+        draw_circle_lines(
+            center.x,
+            center.y,
+            2.0 + pulse * 10.0,
+            1.5,
+            Color::new(0.85, 0.32, 0.29, alpha),
+        );
+    }
 }
 
 #[cfg(test)]

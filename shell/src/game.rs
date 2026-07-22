@@ -165,6 +165,16 @@ pub struct Game {
     pub toasts: Vec<Toast>,
     /// Scorch decals where buildings died: (world pos, seconds old).
     pub scorches: Vec<(Vec2, f32)>,
+    /// Live under-attack alerts: world position and seconds of age.
+    /// Pulsed on the minimap, jumpable, aged out by update_fx.
+    pub alerts: Vec<(Vec2, f32)>,
+    /// Where trouble last landed — the jump key's target.
+    pub last_alert: Option<Vec2>,
+    /// Per-region rate limiter for alerts (8-tile cells -> last raise
+    /// time in fx-seconds), so a running battle nags once, not per hit.
+    alert_gate: HashMap<(i32, i32), f32>,
+    /// Presentation clock: seconds of fx time since session start.
+    fx_clock: f32,
     /// Session flags for the starter hint strip: cleared once the player
     /// has trained something / sent fighters somewhere.
     pub hinted_train: bool,
@@ -241,6 +251,10 @@ impl Game {
             sounds_pending: Vec::new(),
             toasts: Vec::new(),
             scorches: Vec::new(),
+            alerts: Vec::new(),
+            last_alert: None,
+            alert_gate: HashMap::new(),
+            fx_clock: 0.0,
             hinted_train: false,
             hinted_fight: false,
             layout: std::cell::Cell::new(crate::layout::LayoutModel::default()),
@@ -469,7 +483,30 @@ impl Game {
     }
 
     /// Ages and prunes effects and toasts.
+    /// Raises an under-attack alert, rate-limited per 8-tile region —
+    /// a running battle nags once, not once per hit.
+    fn raise_alert(&mut self, world: Vec2) {
+        let cell = ((world.x / 8.0) as i32, (world.y / 8.0) as i32);
+        let now = self.fx_clock;
+        if self
+            .alert_gate
+            .get(&cell)
+            .is_some_and(|&last| now - last < 6.0)
+        {
+            return;
+        }
+        self.alert_gate.insert(cell, now);
+        self.alerts.push((world, 0.0));
+        self.last_alert = Some(world);
+        self.toast("under attack");
+    }
+
     pub fn update_fx(&mut self, dt: f32) {
+        self.fx_clock += dt;
+        for (_, age) in &mut self.alerts {
+            *age += dt;
+        }
+        self.alerts.retain(|(_, age)| *age < 6.0);
         for fx in &mut self.fx {
             fx.age += dt;
         }
@@ -505,9 +542,23 @@ impl Game {
                 Event::AttackHit {
                     attacker_kind,
                     attacker_pos,
+                    target,
                     target_pos,
                     ..
                 } => {
+                    let own_target = match target {
+                        oxide_sim::Target::Unit(uid) => self
+                            .state
+                            .unit(*uid)
+                            .is_some_and(|u| u.player == self.human),
+                        oxide_sim::Target::Building(bid) => self
+                            .state
+                            .building(*bid)
+                            .is_some_and(|b| b.player == self.human),
+                    };
+                    if own_target {
+                        self.raise_alert(world_vec(*target_pos));
+                    }
                     // Kind rides in the event: the attacker itself may have
                     // died later this same tick, and a rail shot deserves
                     // its report either way. The weapon's character decides
@@ -600,6 +651,9 @@ impl Game {
                     self.toast(format!("site salvaged (+{refund} scrap)"));
                 }
                 Event::UnitDied { pos, player, .. } => {
+                    if *player == self.human {
+                        self.raise_alert(world_vec(*pos));
+                    }
                     if *player == self.human || sees(self, *pos) {
                         self.sounds_pending.push(SoundKind::UnitDeath);
                     }
