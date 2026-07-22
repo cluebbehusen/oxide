@@ -122,6 +122,12 @@ pub enum ScenarioError {
     /// Every seat on one team: nobody to fight, no way to win.
     #[error("all players share one team — the match could never end")]
     OneTeam,
+    /// A teamed seat asked for the config-less classic bot, which is
+    /// team-blind by design and would spend the match targeting allies.
+    #[error(
+        "player {0} shares a team but fields the classic bot — teamed bot seats need a bot_config"
+    )]
+    TeamBotNeedsConfig(PlayerId),
 }
 
 impl Scenario {
@@ -195,6 +201,19 @@ impl Scenario {
             let first = players[0].team;
             if players.iter().all(|p| p.team == first) {
                 return Err(ScenarioError::OneTeam);
+            }
+        }
+        // The config-less classic bot is team-blind by design (frozen for
+        // pre-0.7 replay reproduction); on a seat with a genuine teammate
+        // it would spend the match targeting allies. A team of one is
+        // fine — everyone really is its enemy there.
+        for (index, spec) in self.players.iter().enumerate() {
+            let teamed = players
+                .iter()
+                .enumerate()
+                .any(|(j, p)| j != index && p.team == players[index].team);
+            if teamed && spec.bot && spec.bot_config.is_none() {
+                return Err(ScenarioError::TeamBotNeedsConfig(PlayerId(index as u8)));
             }
         }
         let mut state = State::assemble(map, players, self.seed);

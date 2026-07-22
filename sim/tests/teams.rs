@@ -348,3 +348,39 @@ fn explicit_team_ids_group_by_value_whatever_numbers_authors_pick() {
     assert_eq!(teams[1], teams[3], "the threes stand together");
     assert_ne!(teams[0], teams[1], "and the two sides stay enemies");
 }
+
+#[test]
+fn a_teamed_seat_cannot_field_the_classic_bot() {
+    // The config-less fallback is the frozen 0.6 bot, which is team-blind
+    // and would spend the match targeting its own allies. A teamed bot
+    // seat without a bot_config is a build error, not a crippled match.
+    let mut scenario = arena4(vec![unit(0, UnitKind::Sentinel, 5, 5)]);
+    scenario.players[1].bot = true;
+    scenario.players[1].bot_config = None;
+    let err = scenario.build().unwrap_err();
+    assert!(
+        err.to_string().contains("p1"),
+        "the error names the offending seat: {err}"
+    );
+
+    // A team of one keeps the classic fallback: everyone really is its
+    // enemy there, and pre-0.7 content depends on it.
+    let mut duel = arena4(vec![unit(0, UnitKind::Sentinel, 5, 5)]);
+    duel.players.truncate(2);
+    duel.map = vec![
+        "########################".into(),
+        "#1..................2..#".into(),
+        "#......................#".into(),
+        "#......................#".into(),
+        "#......................#".into(),
+        "#......................#".into(),
+        "#......................#".into(),
+        "########################".into(),
+    ];
+    duel.players[0].team = None;
+    duel.players[1].team = None;
+    duel.players[1].bot = true;
+    duel.players[1].bot_config = None;
+    duel.build()
+        .expect("a lone-team classic bot is still legal");
+}

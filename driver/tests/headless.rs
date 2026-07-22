@@ -40,6 +40,14 @@ fn every_shipped_scenario_builds_and_plays() {
             Scenario::load(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
         for player in &mut scenario.players {
             player.bot = true;
+            // The shipped default opponent; a configless flip would field
+            // the team-blind classic bot, which team maps now reject.
+            player
+                .bot_config
+                .get_or_insert(oxide_sim::scenario::BotConfig {
+                    level: oxide_sim::bot::Level::Medium,
+                    aggression: None,
+                });
         }
         // Playable means *alive*, not merely parseable: after 12k ticks of
         // bot-vs-bot the match must either be decided or still producing —
