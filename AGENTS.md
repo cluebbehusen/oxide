@@ -118,7 +118,18 @@ Headless, no window needed:
 ```sh
 driver run skirmish --ticks 2000 --bots --map     # summary + ASCII map
 driver render skirmish --ticks 1200 --bots -o out.png
+driver replay-stats replays/session.json          # per-seat series + losses
+driver map-audit scenarios/basalt-spine.json      # routes, fairness, pressure
 ```
+
+Replay UX in the shell: cold launches land on Home; `Replays` browses
+autosaves and `replays/` (watch, delete, honest version badges);
+`oxide-shell --watch <replay>` opens the read-only playback viewer
+(pause, seek, speed — no recorder; backward seek restores an
+in-memory checkpoint and re-simulates). The pause menu's Watch
+Replay plays the live session so far. `sh tools/package_macos.sh`
+builds `dist/Oxide.app` (resources resolve executable-relative when
+bundled, cwd otherwise).
 
 `screenshots/` and `replays/` are gitignored scratch output; keep goldens
 and test fixtures inside crate `tests/` directories.
@@ -145,7 +156,8 @@ and test fixtures inside crate `tests/` directories.
   appear in `driver/src/render.rs` and `shell/src/render.rs` — keep them
   in sync.
 - **Scenarios** are JSON with ASCII maps: `.` ground, `,` rubble (cosmetic
-  ground; the byte is hashed but nothing else changes), `#` rock, `s` scrap
+  ground; the byte is hashed but nothing else changes), `#` rock, `^` peak
+  (blocks ground, air, and fire — see the design bullet), `s` scrap
   node, `S` rich node (double salvage), `1`-`8` Foundry anchors (top-left
   of 2x2). (`w` appears in *rendered* ASCII for wreck tiles but is never
   authorable.) `PlayerSpec.team` groups seats; omitted means a team of
@@ -178,12 +190,17 @@ in via `PlayerSpec.bot_config`; a seat without one gets the legacy
 rule-cascade bot, which is what keeps pre-0.7 replays reproducing
 (that bot is team-blind by design — team seats must set a config).
 
-The gym contract (v3) is 59 named integer features and 21 masked
+The gym contract (v4) is 63 named integer features and 21 masked
 macro actions; training slots are role-indexed where the factions
-differ, so one action space serves both rosters. `FEATURE_NAMES`
-rides in the gym hello and the Python wrapper asserts its own list
-against it — Rust/Python column skew dies at handshake, not in a
-silently mistrained run.
+differ, so one action space serves both rosters. Since v4 every
+positional feature rides as relative 0-1000 against the actual map
+dimensions (fixed scales broke on the large map classes), map dims
+ride along (march timing is an absolute-distance skill), and two
+fog-safe shell senses report incoming shells near the economy
+(impact tile currently visible — the arc renderer's rule) and own
+shells in flight. `FEATURE_NAMES` rides in the gym hello and the
+Python wrapper asserts its own list against it — Rust/Python column
+skew dies at handshake, not in a silently mistrained run.
 
 The weights are a generated artifact with a regeneration ritual, like
 the goldens. From `tools/train/` (uv + PyTorch):
@@ -319,15 +336,27 @@ Hard < Expert forever).
 - **Air is a second movement domain, not a special case.** Flyers take
   the straight line (no A*), ignore terrain, construction claims, and
   ground collision, collide only with each other, never block
-  foundations, and accept any on-map tile as a goal — rock included.
-  Group orders split by domain so each half routes sensibly. Terrain
-  cover (the rock LOS rule) is ground-vs-ground only. A ground chaser
+  foundations, and accept any on-map tile as a goal — rock included,
+  peaks excluded (goals ring-snap off them). Group orders split by
+  domain so each half routes sensibly. Terrain cover (the rock LOS
+  rule) is ground-vs-ground only; peaks are the exception below. A ground chaser
   whose flying victim parks over impassable ground marches to a
   stand-in instead: ring-scanned candidates filtered to the weapon's
   Euclidean reach (ring corners sit √2 past their Chebyshev radius),
   first routeable one wins — reaching weapon range is the job;
   occupying the victim's tile never was. No candidate in reach stalls
   the order honestly.
+- **Peaks (`^`) are the mountain nothing crosses.** A third terrain:
+  blocks ground movement (like rock), blocks air (the one thing the
+  sky routes around — flyers A* over air passability when a peak
+  breaks their straight line), blocks direct fire in every domain
+  pairing, and breaks Bombard/Bastion arcs — siege-safe geography.
+  Vision deliberately ignores peaks (cover is a firing rule, not a
+  stealth system). Wrecks never land on them; `known_rock` in the bot
+  observation includes them as known impassable terrain. Authoring:
+  the map border is rock and rock is open sky, so a ridge meant to
+  wall flyers must claim its border cells too; a rock plug inside a
+  peak wall makes an air-only door (Basalt Spine's centerpiece).
 - **Combat is a weapons matrix.** Every kind carries a weapon list
   (cap 2) with per-weapon cooldowns and target-domain masks; the weapon
   covering the ordered target is the primary, sidearms pick their own
