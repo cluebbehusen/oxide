@@ -9,6 +9,12 @@ use std::path::PathBuf;
 /// How many autosaves survive rotation.
 const KEEP: usize = 5;
 
+/// The autosave directory for this platform, if resolvable. Public so
+/// the replay browser can shelve what lives here.
+pub fn dir() -> Option<PathBuf> {
+    autosave_dir()
+}
+
 fn autosave_dir() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {

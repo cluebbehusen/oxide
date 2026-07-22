@@ -25,6 +25,7 @@ mod input;
 mod layout;
 mod menu;
 mod render;
+mod saves;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -171,6 +172,12 @@ enum Mode {
     Playing,
     /// Read-only replay playback: the log is the match, seek included.
     Playback,
+    /// The replay shelf: autosaves and local records, watch or delete.
+    Replays {
+        /// Row armed for deletion — X once arms, X again on the same
+        /// row deletes.
+        arming: Option<usize>,
+    },
     /// Game visible but veiled; the pause menu owns input.
     PauseMenu,
     /// A destructive pause choice awaiting explicit confirmation.
@@ -319,7 +326,7 @@ fn home_menu() -> (Menu, bool) {
     if resumable {
         items.push("Continue".to_string());
     }
-    items.extend(["Play", "Settings", "Quit"].map(str::to_string));
+    items.extend(["Play", "Replays", "Settings", "Quit"].map(str::to_string));
     (Menu::new("OXIDE", items), resumable)
 }
 
@@ -409,7 +416,7 @@ fn controls_menu(config: &config::Config) -> Menu {
     Menu::new("CONTROLS", items)
 }
 
-const PAUSE_ITEMS: [&str; 4] = ["Resume", "Restart", "Main Menu", "Quit"];
+const PAUSE_ITEMS: [&str; 5] = ["Resume", "Watch Replay", "Restart", "Main Menu", "Quit"];
 
 /// Cancel sits first and preselected: confirming destruction takes a
 /// deliberate second motion, never a double-tap.
@@ -504,6 +511,10 @@ struct PlaybackSession {
 impl PlaybackSession {
     fn open(path: &str) -> Result<Self> {
         let replay = GameReplay::load(path).with_context(|| format!("loading replay {path}"))?;
+        Self::from_replay(replay)
+    }
+
+    fn from_replay(replay: GameReplay) -> Result<Self> {
         let scenario = replay.setup.clone();
         let engine = oxide_driver::playback::Playback::load(replay)?;
         let mut game = Game::new(scenario)?;
@@ -572,6 +583,7 @@ async fn run() -> Result<()> {
     // alike — starts cold at the Home front door.
     let (mut home, mut home_resumable) = home_menu();
     let mut playback: Option<PlaybackSession> = None;
+    let mut replay_shelf: Vec<saves::ReplayEntry> = Vec::new();
     if let Some(path) = &args.watch {
         playback = Some(PlaybackSession::open(path)?);
     }
@@ -661,6 +673,14 @@ async fn run() -> Result<()> {
                             mode = Mode::MainMenu;
                         }
                         2 => {
+                            replay_shelf = saves::discover();
+                            sub_menu = Menu::new(
+                                "REPLAYS",
+                                replay_shelf.iter().map(|e| e.label.clone()).collect(),
+                            );
+                            mode = Mode::Replays { arming: None };
+                        }
+                        3 => {
                             sub_menu = settings_menu(&config);
                             mode = Mode::Settings;
                         }
@@ -950,8 +970,15 @@ async fn run() -> Result<()> {
                     }
                     if leave {
                         playback = None;
-                        (home, home_resumable) = home_menu();
-                        mode = Mode::Home;
+                        // Opened from a live pause? Return there; the
+                        // match is still waiting. Cold --watch or the
+                        // shelf goes back Home.
+                        if game.state.current_tick() > 0 && game.state.result().is_none() {
+                            mode = Mode::PauseMenu;
+                        } else {
+                            (home, home_resumable) = home_menu();
+                            mode = Mode::Home;
+                        }
                         continue;
                     }
                     let mut dir = vec2(0.0, 0.0);
@@ -992,6 +1019,65 @@ async fn run() -> Result<()> {
                     mode = Mode::Home;
                 }
             }
+            Mode::Replays { arming } => {
+                let escaped = events
+                    .iter()
+                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
+                let x_pressed = events
+                    .iter()
+                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::X }));
+                let picked = sub_menu.handle(&events, &mut input.mouse);
+                if escaped {
+                    mode = Mode::Home;
+                } else if let Some(row) = picked {
+                    game.sounds_pending.push(SoundKind::Click);
+                    match replay_shelf.get(row) {
+                        Some(entry) if entry.compatible => {
+                            match PlaybackSession::open(&entry.path.to_string_lossy()) {
+                                Ok(session) => {
+                                    playback = Some(session);
+                                    mode = Mode::Playback;
+                                }
+                                Err(_) => {
+                                    game.sounds_pending.push(SoundKind::Denied);
+                                }
+                            }
+                        }
+                        Some(_) => game.sounds_pending.push(SoundKind::Denied),
+                        None => {}
+                    }
+                } else if x_pressed && !replay_shelf.is_empty() {
+                    let row = sub_menu.selected;
+                    if arming == Some(row) {
+                        if let Some(entry) = replay_shelf.get(row) {
+                            std::fs::remove_file(&entry.path).ok();
+                        }
+                        replay_shelf = saves::discover();
+                        sub_menu = Menu::new(
+                            "REPLAYS",
+                            replay_shelf.iter().map(|e| e.label.clone()).collect(),
+                        );
+                        (home, home_resumable) = home_menu();
+                        mode = Mode::Replays { arming: None };
+                    } else {
+                        mode = Mode::Replays { arming: Some(row) };
+                    }
+                }
+                render::draw(&game, &sprites, &input);
+                veil();
+                let subtitle = if replay_shelf.is_empty() {
+                    "nothing recorded yet — finish a match or quit one mid-way".to_string()
+                } else if matches!(mode, Mode::Replays { arming: Some(row) } if row == sub_menu.selected)
+                {
+                    "press X again to delete this record".to_string()
+                } else {
+                    replay_shelf
+                        .get(sub_menu.selected)
+                        .map(|e| e.blurb.clone())
+                        .unwrap_or_default()
+                };
+                sub_menu.draw(&subtitle);
+            }
             Mode::PauseMenu => {
                 let escape_pressed = events
                     .iter()
@@ -1007,6 +1093,20 @@ async fn run() -> Result<()> {
                     Some(0) => {
                         game.paused = false;
                         mode = Mode::Playing;
+                    }
+                    Some(1) => {
+                        // Watch the session so far: the recorder IS the
+                        // record — clone it, stamp its length, play it
+                        // back. Non-destructive; the live match waits.
+                        let mut replay = game.recorder.clone();
+                        replay.meta.ticks = Some(game.state.current_tick());
+                        match PlaybackSession::from_replay(replay) {
+                            Ok(session) => {
+                                playback = Some(session);
+                                mode = Mode::Playback;
+                            }
+                            Err(err) => game.toast(format!("cannot open playback: {err}")),
+                        }
                     }
                     Some(destructive) => {
                         // Restart, Main Menu, and Quit all throw away a
@@ -1036,14 +1136,14 @@ async fn run() -> Result<()> {
                     mode = Mode::PauseMenu;
                 } else if picked == Some(1) {
                     match choice {
-                        1 => {
+                        2 => {
                             let fresh = Game::new(game.scenario.clone())?;
                             game = keep_flags(fresh, &game);
                             game.paused = false;
                             mode = Mode::Playing;
                             input.reset_session();
                         }
-                        2 => {
+                        3 => {
                             autosave::save(&mut game);
                             (home, home_resumable) = home_menu();
                             main_menu = None;
@@ -1119,6 +1219,7 @@ fn capture_ui(
         Mode::FactionMenu => ("faction_menu", Some(sub_menu)),
         Mode::Playing => ("playing", None),
         Mode::Playback => ("playback", None),
+        Mode::Replays { .. } => ("replays", Some(sub_menu)),
         Mode::PauseMenu => ("pause_menu", Some(pause_menu)),
         Mode::ConfirmPause { .. } => ("confirm_pause", Some(sub_menu)),
     };
