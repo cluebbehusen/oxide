@@ -188,6 +188,13 @@ class Job:
             # convention) learns as one team against scripted tiers.
             self.learner_seats = [0, 2]
             self.opp_seat = None
+        elif kind == "team2":
+            # 2v2 beside a scripted ally: the learner holds one west
+            # chair, a tier Brain drives its teammate (and both foes) —
+            # the robustness half of team training, so the policy
+            # learns to fight NEXT TO conventions it doesn't share.
+            self.learner_seats = [seat * 2]  # 0 or 2, the west chairs
+            self.opp_seat = None
         elif kind in ("tier", "ffa"):
             self.learner_seats = [seat]
             self.opp_seat = None
@@ -231,7 +238,7 @@ class Job:
                 scenario=scenario,
             )
             return
-        if self.kind == "team":
+        if self.kind in ("team", "team2"):
             scenario = generate(
                 seed % 100_000, cache_dir("oxide-maps-train2v2"), players=4, teams=True
             )
@@ -308,6 +315,9 @@ def assign_roles(
     jobs = []
     i = 0
     for kind, count in zip(kinds, counts, strict=False):
+        # team2 alternates its single learner between the two west
+        # chairs (k % 2 -> seat 0 or 2 inside the Job), everything else
+        # keeps its established seat arithmetic.
         seats = 4 if kind in ("ffa", "team") else 2
         for k in range(count):
             jobs.append(Job(workers[i], kind, k % seats, pool_dir, rng, device, maps))

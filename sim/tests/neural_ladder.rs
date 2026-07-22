@@ -44,7 +44,6 @@ fn embedded_weights_parse() {
 }
 
 #[test]
-#[ignore = "bridge weights (BC warm start only) do not hold skill monotonicity; re-enable with the final 0.8 artifact"]
 fn each_level_beats_the_one_below() {
     for pair in Level::LADDER.windows(2) {
         let (lo, hi) = (pair[0], pair[1]);

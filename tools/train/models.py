@@ -42,6 +42,10 @@ def make_policy(arch: str) -> Mlp:
         return Mlp(256, 3)
     if arch == "deep":
         return Mlp(384, 3)
+    if arch == "deep512":
+        return Mlp(512, 3)
+    if arch == "deep4":
+        return Mlp(384, 4)
     raise KeyError(arch)
 
 

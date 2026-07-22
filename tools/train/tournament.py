@@ -119,6 +119,13 @@ def main() -> None:
         default=0,
         help="evaluate as 1-of-4 on N generated FFA maps (seat rotates)",
     )
+    ap.add_argument(
+        "--team-maps",
+        type=int,
+        default=0,
+        help="evaluate on N generated 2v2 maps: the learner takes one "
+        "west seat, a scripted tier drives its teammate and both foes",
+    )
     args = ap.parse_args()
 
     policy, blob = load_policy(args.ckpt)
@@ -128,7 +135,21 @@ def main() -> None:
     try:
         jobs: list[tuple[int, str | None]]
         ffa = args.ffa_maps > 0
-        if ffa:
+        team = args.team_maps > 0
+        if team:
+            jobs = [
+                (
+                    9800 + i,
+                    generate(
+                        9800 + i,
+                        cache_dir("oxide-maps2v2"),
+                        players=4,
+                        teams=True,
+                    ),
+                )
+                for i in range(args.team_maps)
+            ]
+        elif ffa:
             jobs = [
                 (9500 + i, generate(9500 + i, cache_dir("oxide-maps4"), players=4))
                 for i in range(args.ffa_maps)
@@ -141,7 +162,7 @@ def main() -> None:
         else:
             jobs = [(seed, args.scenario) for seed in range(3000, 3000 + args.seeds)]
         for opponent in args.opponents.split(","):
-            if ffa and opponent == "rusher":
+            if (ffa or team) and opponent == "rusher":
                 # The scripted rusher is a duel-era probe; in FFA its
                 # seat shares the episode's fate with the learner's,
                 # which muddies the classification. Skip it.
@@ -150,7 +171,13 @@ def main() -> None:
             wins = draws = games = 0
             ticks = []
             for seed, scenario in jobs:
-                for seat in (0, 1) if not ffa else (seed % 4,):
+                if team:
+                    seats: tuple[int, ...] = (0, 2)  # both west chairs
+                elif ffa:
+                    seats = (seed % 4,)
+                else:
+                    seats = (0, 1)
+                for seat in seats:
                     won, t = play(
                         policy,
                         worker,
@@ -159,7 +186,7 @@ def main() -> None:
                         seat,
                         scenario,
                         (args.skill, args.aggression),
-                        seats=4 if ffa else 2,
+                        seats=4 if (ffa or team) else 2,
                     )
                     games += 1
                     ticks.append(t)
