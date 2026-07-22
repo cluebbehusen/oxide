@@ -507,6 +507,8 @@ async fn run() -> Result<()> {
                 let escape_pressed = events
                     .iter()
                     .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
+                input.ui = render::ui_scale();
+                input.now = get_time();
                 input::apply_events(&mut game, &mut input, &events);
                 input::update_held(&mut game, &input, dt);
                 // Escape walks outward: deselect first, then the menu.

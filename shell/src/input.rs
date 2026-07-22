@@ -17,14 +17,14 @@ use oxide_sim::{Command, Target, UnitId, UnitKind};
 /// click (scaled by dpi at use).
 const CLICK_SLOP: f32 = 6.0;
 
-fn click_slop() -> f32 {
-    CLICK_SLOP * crate::render::ui_scale()
+fn click_slop(ui: f32) -> f32 {
+    CLICK_SLOP * ui
 }
 
 /// Shared with the drag-rectangle renderer, so what draws as a drag is
 /// exactly what selects as one.
-pub fn drag_threshold() -> f32 {
-    click_slop()
+pub fn drag_threshold(ui: f32) -> f32 {
+    click_slop(ui)
 }
 /// World-unit pick radius around a unit's center.
 const PICK_RADIUS: f32 = 0.6;
@@ -49,6 +49,12 @@ pub struct InputState {
     pub(crate) placing: Option<oxide_sim::BuildingKind>,
     /// Whether the build palette is open (`B`; digits pick a structure).
     pub(crate) build_menu: bool,
+    /// This frame's chrome scale (dpi x user), injected by the frame
+    /// loop so hit math never queries the window.
+    pub(crate) ui: f32,
+    /// This frame's wall clock, injected likewise (double-click and
+    /// double-tap timing).
+    pub(crate) now: f64,
     /// The active binding profile (Classic until settings can edit it).
     pub(crate) bindings: BindingMap,
     /// Chord state: modifier truth and held actions.
@@ -78,6 +84,8 @@ impl InputState {
             patrol_route: None,
             placing: None,
             build_menu: false,
+            ui: 1.0,
+            now: 0.0,
             bindings: crate::config::Config::load().bindings,
             resolver: ActionResolver::default(),
         }
@@ -214,8 +222,8 @@ pub fn poll_events(input: &InputState) -> Vec<RawEvent> {
 
 /// World-space pick radius around a unit: generous when zoomed out so
 /// units never need tweezers (at least 10 logical px on screen).
-fn pick_radius(game: &Game) -> f32 {
-    (10.0 * crate::render::ui_scale() / game.camera.zoom).max(0.6)
+fn pick_radius(game: &Game, ui: f32) -> f32 {
+    (10.0 * ui / game.camera.zoom).max(0.6)
 }
 
 /// HUD chrome that swallows clicks: the top bar always; the bottom panel
@@ -278,17 +286,16 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 if let Some(origin) = input.drag_origin.take() {
                     let release = vec2(x, y);
                     let additive = input.resolver.shift_held();
-                    if origin.distance(release) <= click_slop() {
-                        let now = mq::get_time();
+                    if origin.distance(release) <= click_slop(input.ui) {
+                        let now = input.now;
                         let double = !additive
                             && input.last_click.take().is_some_and(|(t, p)| {
-                                now - t < 0.35
-                                    && p.distance(release) <= 12.0 * crate::render::ui_scale()
+                                now - t < 0.35 && p.distance(release) <= 12.0 * input.ui
                             });
                         if double {
-                            select_all_of_kind_on_screen(game, release);
+                            select_all_of_kind_on_screen(game, release, input.ui);
                         } else {
-                            click_select(game, release, additive);
+                            click_select(game, release, additive, input.ui);
                         }
                         input.last_click = Some((now, release));
                     } else {
@@ -384,18 +391,18 @@ pub fn update_held(game: &mut Game, input: &InputState, dt: f32) {
         dir.x += 1.0;
     }
     if dir != vec2(0.0, 0.0) {
-        let world_per_sec = PAN_PX_PER_SEC * crate::render::ui_scale() / game.camera.zoom;
+        let world_per_sec = PAN_PX_PER_SEC * input.ui / game.camera.zoom;
         game.camera.pan(dir.normalize() * world_per_sec * dt);
     }
 }
 
-fn click_select(game: &mut Game, screen: Vec2, additive: bool) {
+fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f32) {
     let world = game.camera.to_world(screen);
     if !additive {
         game.selection.building = None;
     }
     // Nearest own unit within pick range wins…
-    let radius = pick_radius(game);
+    let radius = pick_radius(game, ui);
     let picked = game
         .state
         .units()
@@ -461,9 +468,9 @@ fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2, additive: bool) {
 }
 
 /// Double-click: everyone of the clicked unit's kind currently on screen.
-fn select_all_of_kind_on_screen(game: &mut Game, screen: Vec2) {
+fn select_all_of_kind_on_screen(game: &mut Game, screen: Vec2, ui: f32) {
     let world = game.camera.to_world(screen);
-    let radius = pick_radius(game);
+    let radius = pick_radius(game, ui);
     let kind = game
         .state
         .units()
@@ -541,7 +548,7 @@ fn group_action(game: &mut Game, input: &mut InputState, slot: usize) {
     }
     game.selection.units = alive.clone();
     game.selection.building = None;
-    let now = mq::get_time();
+    let now = input.now;
     if input
         .last_recall
         .is_some_and(|(s, t)| s == slot && now - t < 0.4)
@@ -809,6 +816,103 @@ fn normalize_wheel(raw: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn headless_game() -> Game {
+        Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0), 1.0)
+            .expect("embedded skirmish builds")
+    }
+
+    fn click(x: f32, y: f32) -> [RawEvent; 2] {
+        [
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+            },
+        ]
+    }
+
+    #[test]
+    fn a_click_on_a_unit_selects_it_headlessly() {
+        // The whole event path — resolver, hit-testing, selection —
+        // exercised with no window: the C5 extraction's proof.
+        let mut game = headless_game();
+        let mut input = InputState::new();
+        let unit = game.state.units()[0].id;
+        let pos = game.state.units()[0].pos;
+        let screen = game
+            .camera
+            .to_screen(vec2(pos.x.to_num::<f32>(), pos.y.to_num::<f32>()));
+        apply_events(&mut game, &mut input, &click(screen.x, screen.y));
+        assert_eq!(game.selection.units, vec![unit]);
+    }
+
+    #[test]
+    fn a_right_click_on_ground_stages_an_attack_move() {
+        let mut game = headless_game();
+        let mut input = InputState::new();
+        let pos = game.state.units()[0].pos;
+        let screen = game
+            .camera
+            .to_screen(vec2(pos.x.to_num::<f32>(), pos.y.to_num::<f32>()));
+        apply_events(&mut game, &mut input, &click(screen.x, screen.y));
+        let mid = game.camera.to_screen(vec2(
+            pos.x.to_num::<f32>() + 4.0,
+            pos.y.to_num::<f32>() + 2.0,
+        ));
+        apply_events(
+            &mut game,
+            &mut input,
+            &[RawEvent::MouseDown {
+                button: MouseButton::Right,
+                x: mid.x,
+                y: mid.y,
+            }],
+        );
+        assert!(
+            game.pending
+                .iter()
+                .any(|c| matches!(c.command, Command::AttackMove { .. })),
+            "fire-at-will ground order staged: {:?}",
+            game.pending
+        );
+    }
+
+    #[test]
+    fn double_click_timing_obeys_the_injected_clock() {
+        let mut game = headless_game();
+        let mut input = InputState::new();
+        let u = &game.state.units()[0];
+        let (kind, pos) = (u.kind, u.pos);
+        let same_kind_total = game
+            .state
+            .units()
+            .iter()
+            .filter(|o| o.kind == kind && o.player == game.human)
+            .count();
+        assert!(same_kind_total > 1, "premise: kin on screen to sweep up");
+        let screen = game
+            .camera
+            .to_screen(vec2(pos.x.to_num::<f32>(), pos.y.to_num::<f32>()));
+        input.now = 10.0;
+        apply_events(&mut game, &mut input, &click(screen.x, screen.y));
+        // A slow second click is just a click...
+        input.now = 11.0;
+        apply_events(&mut game, &mut input, &click(screen.x, screen.y));
+        assert_eq!(game.selection.units.len(), 1, "1.0s apart is two clicks");
+        // ...a fast one is a kind-sweep.
+        input.now = 11.2;
+        apply_events(&mut game, &mut input, &click(screen.x, screen.y));
+        assert!(
+            game.selection.units.len() > 1,
+            "0.2s apart double-clicks into a kind sweep"
+        );
+    }
 
     #[test]
     fn wheel_notches_and_trackpad_swipes_land_in_the_same_range() {

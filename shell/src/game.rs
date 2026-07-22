@@ -188,6 +188,19 @@ fn world_vec(pos: chassis::fx::Vec2Fx) -> Vec2 {
 impl Game {
     /// Starts a session from a scenario.
     pub fn new(scenario: Scenario) -> Result<Self> {
+        Self::with_viewport(
+            scenario,
+            macroquad::prelude::vec2(
+                macroquad::prelude::screen_width(),
+                macroquad::prelude::screen_height(),
+            ),
+            macroquad::miniquad::window::dpi_scale(),
+        )
+    }
+
+    /// `new` with the window injected — the only constructor tests use,
+    /// because it never touches macroquad.
+    pub fn with_viewport(scenario: Scenario, viewport: Vec2, dpi: f32) -> Result<Self> {
         let state = scenario.build()?;
         let bots = seat_bots(&scenario);
         let recorder = Replay::new(SIM_VERSION, scenario.clone());
@@ -207,11 +220,8 @@ impl Game {
             focus,
             state.map().width(),
             state.map().height(),
-            macroquad::prelude::vec2(
-                macroquad::prelude::screen_width(),
-                macroquad::prelude::screen_height(),
-            ),
-            macroquad::miniquad::window::dpi_scale(),
+            viewport,
+            dpi,
         );
         Ok(Self {
             scenario,

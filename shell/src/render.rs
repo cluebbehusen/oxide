@@ -742,7 +742,7 @@ fn draw_rally_marker(game: &Game) {
 fn draw_drag_rect(game: &Game, input: &InputState) {
     if let Some(origin) = input.drag_origin {
         let now = input.mouse;
-        if origin.distance(now) > crate::input::drag_threshold() {
+        if origin.distance(now) > crate::input::drag_threshold(ui_scale()) {
             let lo = origin.min(now);
             let size = (origin - now).abs();
             draw_rectangle_lines(lo.x, lo.y, size.x, size.y, 1.5, BONE);
@@ -1132,7 +1132,10 @@ pub fn minimap_rect(game: &Game) -> Rect {
 /// The world point under a screen position, if it lies on the minimap —
 /// how clicks jump the camera (and where armed attack-moves land).
 pub fn minimap_world_at(game: &Game, screen: Vec2) -> Option<Vec2> {
-    minimap_world_in(minimap_rect(game), game.state.map().width(), screen)
+    // The *published* rect, not a recomputation — hit-testing reads the
+    // LayoutModel like all chrome, and never touches the window (which
+    // also keeps the whole click path headless-testable).
+    minimap_world_in(game.layout.get().minimap, game.state.map().width(), screen)
 }
 
 /// Testable core of [`minimap_world_at`] (no window queries).
