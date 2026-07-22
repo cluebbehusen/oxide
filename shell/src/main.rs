@@ -17,6 +17,7 @@
 mod action;
 mod assets;
 mod camera;
+mod config;
 mod debug_server;
 mod game;
 mod input;
@@ -117,7 +118,7 @@ fn window_conf() -> Conf {
     // the size/DPI flags are parsed here too — clap is idempotent and
     // errors surface identically on the second parse in `run()`.
     let args = Args::parse();
-    let (width, height) = args.window.unwrap_or((1280, 800));
+    let (width, height) = args.window.unwrap_or(config::Config::load().window);
     Conf {
         window_title: "Oxide".to_string(),
         window_width: width as i32,

@@ -78,7 +78,7 @@ impl InputState {
             patrol_route: None,
             placing: None,
             build_menu: false,
-            bindings: BindingMap::classic(),
+            bindings: crate::config::Config::load().bindings,
             resolver: ActionResolver::default(),
         }
     }
