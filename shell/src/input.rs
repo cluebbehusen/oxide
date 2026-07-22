@@ -214,15 +214,18 @@ fn pick_radius(game: &Game) -> f32 {
 }
 
 /// HUD chrome that swallows clicks: the top bar always; the bottom panel
-/// only while it is actually shown.
+/// only while it is actually shown — and as tall as it actually drew
+/// (the packed palette wraps to several rows on narrow windows; clicks
+/// on the upper rows must not fall through to the world).
 fn click_on_hud(game: &mut Game, screen: Vec2) -> bool {
     let s = crate::render::ui_scale();
     let viewport = game.camera.viewport();
     if screen.y <= 32.0 * s {
         return true;
     }
+    let rows = game.panel_rows.get().max(1);
     let panel_shown = game.selection.building.is_some() || !game.selection.units.is_empty();
-    panel_shown && screen.y >= viewport.y - 36.0 * s
+    panel_shown && screen.y >= viewport.y - 36.0 * s * rows as f32
 }
 
 /// Applies a frame's events — hardware and injected alike — to the game.

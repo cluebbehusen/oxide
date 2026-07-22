@@ -853,6 +853,7 @@ fn draw_hud(game: &Game, input: &InputState) {
     }
 
     let mut panel_shown = false;
+    let mut panel_rows = 0;
     // Selection panel.
     if let Some(id) = game.selection.building {
         if let Some(building) = game.state.building(id) {
@@ -862,7 +863,7 @@ fn draw_hud(game: &Game, input: &InputState) {
             let mut line = format!("{name} {}/{} hp", building.hp, stats.max_hp);
             if !building.built {
                 line.push_str("   under construction   X: scrap site");
-                panel_rows_packed(std::slice::from_ref(&line), 0);
+                panel_rows = panel_rows_packed(std::slice::from_ref(&line), 0);
             } else if !stats.produces.is_empty() {
                 // Number keys train; the list is the seat's own roster
                 // (the other faction's variants never show).
@@ -876,9 +877,10 @@ fn draw_hud(game: &Game, input: &InputState) {
                     .collect();
                 let used = panel_rows_packed(&slots, 0);
                 let header = vec![line, format!("queue [{}]", queue.join(", "))];
-                panel_rows_packed(&header, used);
+                panel_rows = used + panel_rows_packed(&header, used);
             } else {
                 panel_line(&line);
+                panel_rows = 1;
             }
             panel_shown = true;
         }
@@ -906,12 +908,14 @@ fn draw_hud(game: &Game, input: &InputState) {
                 })
                 .collect();
             let used = panel_rows_packed(&palette, 0);
-            panel_rows_packed(&line_items, used);
+            panel_rows = used + panel_rows_packed(&line_items, used);
         } else {
-            panel_rows_packed(&line_items, 0);
+            panel_rows = panel_rows_packed(&line_items, 0);
         }
         panel_shown = true;
     }
+    // Tell hit-testing how tall the panel actually is this frame.
+    game.panel_rows.set(panel_rows);
 
     // Controls hint — it lives in the same bottom band as the selection
     // panel, so it yields whenever a panel is up (the panel carries its

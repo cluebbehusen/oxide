@@ -129,6 +129,15 @@ fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) -> bool {
     if !queue {
         unit.queue.clear();
         unit.looping = false;
+        // Reissuing the exact current order is a no-op past the queue
+        // wipe: progress and path survive. Resetting them let a
+        // re-commanded welder heal forever without ever crossing a
+        // billing tick, dropped a re-clicked harvester's half-extracted
+        // scrap, and threw away perfectly good paths on every army
+        // re-push.
+        if unit.order == order {
+            return true;
+        }
     }
     unit.order = order;
     unit.path = None;

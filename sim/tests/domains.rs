@@ -757,3 +757,47 @@ fn splash_hits_the_unseen_but_reveals_nothing() {
         "it cannot chase a shooter it never saw"
     );
 }
+
+#[test]
+fn ground_anti_air_reaches_a_flyer_parked_over_rock() {
+    // The wisp hovers over the rock block; the flakhound cannot stand
+    // there — it must take the nearest standable tile and shoot from
+    // range instead of stalling forever while the flyer sits immune.
+    // Geometry matters: the flakhound sits in sight of the rock
+    // (vision 7) but out of range and aggro (5), and the wisp's whole
+    // descent stays outside aggro too — so no mid-flight auto-acquire
+    // drags the chaser into range before the wisp parks. The kill then
+    // requires an approach toward a tile no ground unit can stand on.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Flakhound, 13, 2),
+        unit(1, UnitKind::Wisp, 7, 1),
+    ])
+    .build()
+    .unwrap();
+    let (flak, wisp) = (state.units()[0].id, state.units()[1].id);
+    // Park the wisp on the rock at (6,3)-(7,4).
+    state.tick(&[cmd(
+        1,
+        Command::Move {
+            units: vec![wisp],
+            goal: TilePos::new(7, 4),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 200, |s, _| {
+        s.unit(wisp).unwrap().tile() == TilePos::new(7, 4)
+    });
+    state.tick(&[cmd(
+        0,
+        Command::Attack {
+            units: vec![flak],
+            target: Target::Unit(wisp),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 600, |_, events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == wisp))
+    });
+}

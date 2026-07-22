@@ -170,6 +170,11 @@ pub struct Game {
     pub hinted_train: bool,
     /// See [`Game::hinted_train`].
     pub hinted_fight: bool,
+    /// Bottom-panel rows the HUD drew last frame (the packed palette can
+    /// wrap to several). Written by the renderer, read by click
+    /// hit-testing so every drawn row swallows clicks — a `Cell` because
+    /// drawing holds `&Game`.
+    pub panel_rows: std::cell::Cell<usize>,
     accum: f32,
     /// True during bulk fast-forwards: presentation (fx, sounds, facing)
     /// is skipped entirely instead of accumulated-then-discarded — a
@@ -229,6 +234,7 @@ impl Game {
             scorches: Vec::new(),
             hinted_train: false,
             hinted_fight: false,
+            panel_rows: std::cell::Cell::new(0),
             accum: 0.0,
             suppress_presentation: false,
         })

@@ -144,6 +144,10 @@ class Lane:
         self.seat = seat
         self.obs, self.mask, self.act = [], [], []
         self.logp, self.val, self.rew, self.done = [], [], [], []
+        # False on rows collected while the seat was dead (frozen-view
+        # padding): they stay in the batch so GAE can flow the episode's
+        # team payoff backward, but the update must not learn from them.
+        self.valid: list[bool] = []
         self.last_pot = 0.0
 
 
@@ -177,7 +181,8 @@ class Job:
         # Team episodes truncate per seat: a dead learner's lane pads on
         # its frozen last view (zero reward, policy still queried so the
         # batch stays rectangular) until the episode really ends and the
-        # team outcome pays every lane its truth.
+        # team outcome pays every lane its truth. Padded rows are marked
+        # invalid and masked out of the PPO update.
         self.dead: set[int] = set()
         self.last_views: dict[int, SeatView] = {}
         if kind == "self":
@@ -345,11 +350,13 @@ def rollout(
     for _ in range(steps):
         views = []
         keys = []
+        live = []
         for j in jobs:
             for s in j.learner_seats:
                 v = j.seat_view(s)
                 views.append(v)
                 keys.append((id(j), s))
+                live.append(s not in j.dead)
         obs = np.stack([v.obs for v in views])
         mask = np.stack([v.mask for v in views])
         with torch.no_grad():
@@ -371,6 +378,7 @@ def rollout(
             lane.act.append(action[k])
             lane.logp.append(logp[k])
             lane.val.append(value[k])
+            lane.valid.append(live[k])
 
         row = {key: k for k, key in enumerate(keys)}
         for j in jobs:
@@ -441,6 +449,7 @@ def rollout(
         np.stack([np.asarray(lane.val, dtype=np.float32) for lane in ordered], axis=1),
         np.stack([np.asarray(lane.rew, dtype=np.float32) for lane in ordered], axis=1),
         np.stack([np.asarray(lane.done) for lane in ordered], axis=1),
+        np.stack([np.asarray(lane.valid) for lane in ordered], axis=1),
     )
     return batch, last_val, finished_rewards
 
@@ -566,15 +575,19 @@ def main() -> None:
             batch, last_val, finals = rollout(
                 policy, jobs, seeds, args.steps, device, rng
             )
-            obs_b, mask_b, act_b, logp_b, val_b, rew_b, done_b = batch
+            obs_b, mask_b, act_b, logp_b, val_b, rew_b, done_b, valid_b = batch
             adv, ret = gae(rew_b, done_b, val_b, last_val)
+            # GAE ran over the full rectangle so a dead teammate's lane
+            # still carries the episode's team payoff backward; the
+            # frozen-view padding rows themselves train nothing.
+            rows = valid_b.reshape(-1)
             flat = (
-                obs_b.reshape(-1, NET_FEATURES),
-                mask_b.reshape(-1, ACTIONS),
-                act_b.reshape(-1),
-                logp_b.reshape(-1),
-                adv.reshape(-1),
-                ret.reshape(-1),
+                obs_b.reshape(-1, NET_FEATURES)[rows],
+                mask_b.reshape(-1, ACTIONS)[rows],
+                act_b.reshape(-1)[rows],
+                logp_b.reshape(-1)[rows],
+                adv.reshape(-1)[rows],
+                ret.reshape(-1)[rows],
             )
             # The anchor is scaffolding: essential while the policy is a
             # fragile clone, a straitjacket once the league is teaching —

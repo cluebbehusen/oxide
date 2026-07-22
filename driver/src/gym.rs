@@ -335,9 +335,14 @@ pub fn neural_cup(
                     }
                 }
                 ticks.push(state.current_tick());
+                // Score by seat membership, not team id — a team number
+                // only coincides with the seat index on default-team maps.
                 match state.result() {
-                    Some(GameResult::Victory { team }) if team == seat => wins += 1,
-                    Some(GameResult::Victory { .. }) => {}
+                    Some(GameResult::Victory { .. }) => {
+                        if state.winners().contains(&PlayerId(seat)) {
+                            wins += 1;
+                        }
+                    }
                     _ => draws += 1,
                 }
             }

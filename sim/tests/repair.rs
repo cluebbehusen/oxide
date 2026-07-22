@@ -329,3 +329,49 @@ fn reclaimers_trickle_scrap_forever() {
         "a reclaimer must take at least three minutes to repay itself"
     );
 }
+
+#[test]
+fn reissued_repairs_still_pay_for_the_welding() {
+    // The scripted tiers re-command their welder every think; the
+    // reissue must not reset the billing counter, or badly damaged
+    // buildings heal for free.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 4, 2),
+        unit(1, UnitKind::Scuttler, 12, 6),
+        unit(1, UnitKind::Scuttler, 12, 7),
+    ])
+    .build()
+    .unwrap();
+    let builder = state.units()[0].id;
+    let raiders = vec![state.units()[1].id, state.units()[2].id];
+    let (turret, welder, _) = wounded_turret(&mut state, builder, raiders);
+    let bank_before = state.player(PlayerId(0)).scrap;
+    // Reissue the identical repair every 4 ticks — the bot-think cadence
+    // that used to reset the billing counter before it ever reached a
+    // whole scrap.
+    let mut healed = false;
+    for _ in 0..150 {
+        state.tick(&[cmd(
+            0,
+            Command::Repair {
+                units: vec![welder],
+                building: turret,
+            },
+        )]);
+        for _ in 0..3 {
+            state.tick(&[]);
+        }
+        let b = state.building(turret).unwrap();
+        if b.hp == BuildingKind::Turret.stats().max_hp {
+            healed = true;
+            break;
+        }
+    }
+    assert!(healed, "the weld must finish under re-command");
+    assert!(
+        state.player(PlayerId(0)).scrap < bank_before,
+        "and the torch must have been paid for ({} -> {})",
+        bank_before,
+        state.player(PlayerId(0)).scrap
+    );
+}
