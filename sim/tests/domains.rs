@@ -801,3 +801,18 @@ fn ground_anti_air_reaches_a_flyer_parked_over_rock() {
             .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == wisp))
     });
 }
+
+#[test]
+fn air_units_may_start_on_ground_no_walker_could() {
+    // Spawn validation runs in the unit's own movement domain: a flyer may
+    // open the match hovering over rock, exactly where play could take it
+    // one tick later; walkers still need open ground.
+    let state = arena(vec![unit(1, UnitKind::Wisp, 7, 4)]).build().unwrap();
+    assert_eq!(state.units()[0].tile(), TilePos::new(7, 4));
+    assert!(
+        arena(vec![unit(0, UnitKind::Scuttler, 7, 4)])
+            .build()
+            .is_err(),
+        "rock still rejects a walker's spawn"
+    );
+}

@@ -237,7 +237,11 @@ impl Scenario {
 
         for (index, spec) in self.units.iter().enumerate() {
             let tile = TilePos::new(spec.x, spec.y);
-            if (spec.player as usize) >= self.players.len() || !state.passable(tile) {
+            // Validated in the unit's own movement domain: a flyer may
+            // legally start over any on-map tile it could hover over in
+            // play — rock included — while walkers need open ground.
+            let standable = state.passable_for(spec.kind.stats().domain, tile);
+            if (spec.player as usize) >= self.players.len() || !standable {
                 return Err(ScenarioError::BadUnit(index));
             }
             state.spawn_unit(PlayerId(spec.player), spec.kind, tile.center());

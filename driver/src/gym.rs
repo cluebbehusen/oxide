@@ -114,15 +114,27 @@ impl Episode {
             .any(|b| b.player == seat && b.kind == oxide_sim::BuildingKind::Foundry)
     }
 
-    /// True while the match is live, *any* controlled seat stands, and
-    /// the tick cap is unmet. A dead learner drops out of the per-frame
-    /// `seats` list (its `alive` flag goes false) while surviving
-    /// teammates play on — per-seat trajectory truncation is the
-    /// trainer's bookkeeping.
+    /// Whether any seat on this seat's *team* still holds a Foundry —
+    /// the episode a dead learner belongs to lives while its team does.
+    fn team_alive(&self, seat: PlayerId) -> bool {
+        let team = self.state.player(seat).team;
+        self.state.buildings().iter().any(|b| {
+            b.kind == oxide_sim::BuildingKind::Foundry && self.state.player(b.player).team == team
+        })
+    }
+
+    /// True while the match is live, any controlled seat's *team*
+    /// stands, and the tick cap is unmet. A dead learner drops out of
+    /// the per-frame `seats` list (its `alive` flag goes false) but its
+    /// episode runs on to the team outcome — ending it at the learner's
+    /// own death would score every self-sacrifice as a loss, even when
+    /// the scripted ally goes on to win (the mixed-ally `team2` role
+    /// fields exactly that shape). Per-seat trajectory truncation is
+    /// the trainer's bookkeeping.
     fn live(&self) -> bool {
         self.state.result().is_none()
             && self.state.current_tick() < self.max_ticks
-            && self.gyms.iter().any(|g| self.seat_alive(g.player()))
+            && self.gyms.iter().any(|g| self.team_alive(g.player()))
     }
 
     fn cadence(&self) -> u64 {

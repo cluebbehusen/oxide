@@ -67,6 +67,10 @@ pub struct PlayerView {
     pub name: String,
     /// Sprite tint.
     pub faction: Faction,
+    /// Normalized team id — the only way a debug client can tell allies
+    /// apart (factions repeat across teams) or map a victory's team back
+    /// to its seats.
+    pub team: u8,
     /// Banked scrap.
     pub scrap: u32,
     /// Living units.
@@ -192,6 +196,7 @@ impl StateView {
                             id: i as u8,
                             name: p.name.clone(),
                             faction: p.faction,
+                            team: p.team,
                             scrap: p.scrap,
                             units: state
                                 .units()

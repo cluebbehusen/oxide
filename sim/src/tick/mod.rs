@@ -112,6 +112,17 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
         if state.buildings.iter().any(|b| b.contains(tile)) {
             continue;
         }
+        // Rock never opens up, so salvage there is bait no harvester
+        // can ever strip — a downed flyer's value is simply lost. Scrap
+        // node tiles keep their deposits: they become standable the
+        // moment the node exhausts.
+        if state
+            .map
+            .tile(tile)
+            .is_none_or(|t| t.terrain == crate::map::Terrain::Rock)
+        {
+            continue;
+        }
         state.map.add_wreck(tile, value);
     }
 }

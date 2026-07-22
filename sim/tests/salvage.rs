@@ -408,3 +408,65 @@ fn a_flyer_downed_over_a_roof_leaves_nothing_strippable() {
         assert!(state.map().wreck_at(grave) > 0);
     }
 }
+
+#[test]
+fn a_flyer_downed_over_rock_leaves_no_wreck_bait() {
+    // Rock never opens up, so a deposit there would sit in vision and bot
+    // salvage selection as value no harvester can ever stand on — orders
+    // would stall against it until decay. The value is simply lost. Air
+    // spawn validation runs in the flyer's own domain, so the wisp starts
+    // parked on the rock directly.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Flakhound, 4, 3),
+        unit(1, UnitKind::Wisp, 7, 4),
+    ])
+    .build()
+    .unwrap();
+    let (flak, wisp) = (state.units()[0].id, state.units()[1].id);
+    let roost = TilePos::new(7, 4);
+    state.tick(&[cmd(
+        0,
+        Command::Attack {
+            units: vec![flak],
+            target: Target::Unit(wisp),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 600, |_, events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == wisp))
+    });
+    assert_eq!(
+        state.map().wreck_at(roost),
+        0,
+        "no salvage recorded on ground nobody can strip"
+    );
+
+    // The control: the same kill over open ground deposits normally.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Flakhound, 4, 3),
+        unit(1, UnitKind::Wisp, 9, 3),
+    ])
+    .build()
+    .unwrap();
+    let (flak, wisp) = (state.units()[0].id, state.units()[1].id);
+    let sky = TilePos::new(9, 3);
+    state.tick(&[cmd(
+        0,
+        Command::Attack {
+            units: vec![flak],
+            target: Target::Unit(wisp),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 600, |_, events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == wisp))
+    });
+    assert!(
+        state.map().wreck_at(sky) > 0,
+        "open ground takes the deposit as before"
+    );
+}

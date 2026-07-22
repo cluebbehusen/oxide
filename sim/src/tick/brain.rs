@@ -362,31 +362,32 @@ fn repair(
         .map_or(crate::stats::FOUNDRY_REPAIR_TICKS, |c| c.build_ticks);
     let tile = state.unit(id).expect("caller checked").tile();
     if tile_adjacent_to_rect(tile, anchor, size) {
-        if state.player(me).scrap == 0 {
-            // Broke stalls the torch.
-            let unit = state.unit_mut(id).expect("caller checked");
-            let (player, pos) = (unit.player, unit.pos);
-            unit.clear_program();
-            events.push(Event::OrderStalled {
-                unit: id,
-                player,
-                pos,
-            });
-            return;
+        // The bank is consulted only at billing boundaries: the coin
+        // paid at an interval's start has prepaid the whole interval,
+        // so the torch burns it to the end before broke can stall it —
+        // and a weld shorter than an interval still pays (chip repairs
+        // were free when billing landed at the interval's close).
+        let p = state.unit(id).expect("caller checked").progress;
+        if p.is_multiple_of(crate::stats::REPAIR_TICKS_PER_SCRAP) {
+            if state.player(me).scrap == 0 {
+                // Broke stalls the torch.
+                let unit = state.unit_mut(id).expect("caller checked");
+                let (player, pos) = (unit.player, unit.pos);
+                unit.clear_program();
+                events.push(Event::OrderStalled {
+                    unit: id,
+                    player,
+                    pos,
+                });
+                return;
+            }
+            state.player_mut(me).scrap -= 1;
         }
         let start_hp = stats.max_hp / 5;
         let ramp = stats.max_hp - start_hp;
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = None;
-        let p = unit.progress;
         unit.progress += 1;
-        // Bill at each interval's first tick, not its last — a weld
-        // shorter than a whole interval still pays for the torch (chip
-        // repairs were free otherwise), and the broke-stall above
-        // already guards the coin being spent here.
-        if p.is_multiple_of(crate::stats::REPAIR_TICKS_PER_SCRAP) {
-            state.player_mut(me).scrap -= 1; // nonzero checked above
-        }
         let step = (ramp * (p + 1) / ramp_ticks) - (ramp * p / ramp_ticks);
         if step > 0 {
             builds.push(PendingHpGain {

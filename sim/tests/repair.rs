@@ -410,3 +410,51 @@ fn the_torch_bills_its_first_scrap_the_tick_it_lights() {
         "exactly one scrap up front, not a free first interval"
     );
 }
+
+#[test]
+fn the_last_coin_welds_its_whole_prepaid_interval() {
+    // The coin spent at an interval's start buys all ten welding ticks:
+    // broke may only stall the torch at the next billing boundary, never
+    // mid-interval. One coin in the bank must therefore heal exactly the
+    // ramp's first full interval before the stall.
+    let mut scenario = arena(vec![
+        unit(0, UnitKind::Harvester, 4, 2),
+        unit(1, UnitKind::Scuttler, 12, 6),
+        unit(1, UnitKind::Scuttler, 12, 7),
+    ]);
+    // Turret (100) + welder (50) leave exactly one coin.
+    scenario.players[0].scrap = 151;
+    let mut state = scenario.build().unwrap();
+    let builder = state.units()[0].id;
+    let raiders = vec![state.units()[1].id, state.units()[2].id];
+    let (turret, welder, _) = wounded_turret(&mut state, builder, raiders);
+    assert_eq!(state.player(PlayerId(0)).scrap, 1, "test premise: one coin");
+    let hp_before = state.building(turret).unwrap().hp;
+
+    state.tick(&[cmd(
+        0,
+        Command::Repair {
+            units: vec![welder],
+            building: turret,
+        },
+    )]);
+    run_until(&mut state, 300, |_, events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::OrderStalled { unit, .. } if *unit == welder))
+    });
+
+    let stats = BuildingKind::Turret.stats();
+    let ramp = stats.max_hp - stats.max_hp / 5;
+    let ramp_ticks = stats.construction.unwrap().build_ticks;
+    // Ten ticks of the linear ramp from progress zero telescope to
+    // exactly ramp * 10 / ramp_ticks hp.
+    let interval = ramp * 10 / ramp_ticks;
+    assert!(interval > 0, "test premise: an interval heals something");
+    assert_eq!(
+        state.building(turret).unwrap().hp,
+        hp_before + interval,
+        "one coin buys the full interval, not a single tick"
+    );
+    assert_eq!(state.player(PlayerId(0)).scrap, 0);
+}
