@@ -81,7 +81,7 @@ pub enum Domain {
 }
 
 /// Which movement domains a weapon can hit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DomainMask {
     /// Can hit ground units and buildings.
     pub ground: bool,
@@ -134,6 +134,10 @@ pub struct WeaponStats {
     /// Indirect fire arcs over terrain: the line-of-sight trace that lets
     /// rock and buildings block direct shots is skipped.
     pub indirect: bool,
+    /// The shot is a real projectile: a Shell entity travels to the
+    /// victim's fire-time position and resolves on arrival — dodgeable
+    /// by movement, never guided. Hitscan when false.
+    pub projectile: bool,
 }
 
 /// Gathering parameters for units that can harvest.
@@ -356,6 +360,7 @@ const SENTINEL: UnitStats = UnitStats {
             targets: DomainMask::GROUND,
             splash: None,
             indirect: false,
+            projectile: false,
         },
         // A weak skyward poke: the tier-0 reason a pure air ball cannot
         // blank the core army — dedicated anti-air still hard-counters.
@@ -366,6 +371,7 @@ const SENTINEL: UnitStats = UnitStats {
             targets: DomainMask::AIR,
             splash: None,
             indirect: false,
+            projectile: false,
         },
     ],
     aggro_range: Fx::lit("5"),
@@ -387,6 +393,7 @@ const SCUTTLER: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
+        projectile: false,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
@@ -407,6 +414,7 @@ const LANCER: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
+        projectile: false,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
@@ -427,6 +435,7 @@ const BOMBARD: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: Some(Fx::lit("1.4")),
         indirect: true,
+        projectile: true,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
@@ -447,6 +456,7 @@ const FLAKHOUND: UnitStats = UnitStats {
         targets: DomainMask::AIR,
         splash: Some(Fx::lit("1.2")),
         indirect: false,
+        projectile: false,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
@@ -467,6 +477,7 @@ const STINGER: UnitStats = UnitStats {
         targets: DomainMask::AIR,
         splash: Some(Fx::lit("1")),
         indirect: false,
+        projectile: false,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
@@ -487,6 +498,7 @@ const BUZZARD: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
+        projectile: false,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
@@ -507,6 +519,7 @@ const DARTER: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
+        projectile: false,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
@@ -527,6 +540,7 @@ const TALON: UnitStats = UnitStats {
         targets: DomainMask::AIR,
         splash: None,
         indirect: false,
+        projectile: false,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
@@ -547,6 +561,7 @@ const WISP: UnitStats = UnitStats {
         targets: DomainMask::AIR,
         splash: None,
         indirect: false,
+        projectile: false,
     }],
     aggro_range: Fx::lit("5"),
     harvest: None,
@@ -574,6 +589,7 @@ const TURRET: BuildingStats = BuildingStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
+        projectile: false,
     }],
     construction: Some(ConstructionStats {
         cost: 100,
@@ -617,6 +633,7 @@ const FLAK_TURRET: BuildingStats = BuildingStats {
         targets: DomainMask::AIR,
         splash: Some(Fx::lit("1.2")),
         indirect: false,
+        projectile: false,
     }],
     construction: Some(ConstructionStats {
         cost: 90,
@@ -636,6 +653,7 @@ const BASTION: BuildingStats = BuildingStats {
         targets: DomainMask::GROUND,
         splash: Some(Fx::lit("1.3")),
         indirect: true,
+        projectile: true,
     }],
     construction: Some(ConstructionStats {
         cost: 250,
@@ -736,6 +754,12 @@ pub const WRECK_DECAY_TICKS: u64 = 40;
 /// but out of true sight appear as blips — a tile, no kind, no owner.
 /// Blips never satisfy targeted-attack visibility.
 pub const RADAR_DETECT_RADIUS: i32 = 16;
+
+/// Shell flight speed in tiles per tick. Tuned so a reacting light
+/// unit walks clear of the splash radius over a full-range lob (a
+/// 9.5-tile shot takes ~32 ticks; a Scuttler covers 4+ tiles in that
+/// window) while anything standing still eats the hit.
+pub const SHELL_SPEED: Fx = Fx::lit("0.30");
 
 /// Ticks per scrap credited by each built Reclaimer. At this rate the
 /// building repays its own price in roughly four minutes — insurance and

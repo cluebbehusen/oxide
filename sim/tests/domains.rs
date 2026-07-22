@@ -262,10 +262,16 @@ fn ground_only_weapons_cannot_answer_air() {
 #[test]
 fn splash_kills_the_cluster_in_one_shell() {
     let mut state = arena(vec![
-        unit(0, UnitKind::Bombard, 4, 2),
+        // Beyond every scuttler's aggro (5) so the cluster stands its
+        // ground through the flight; the Foundry's vision does the
+        // spotting.
+        unit(0, UnitKind::Bombard, 2, 6),
+        // One tile further out than looks necessary: at (7,2) the left
+        // scuttler sits 4.5 from the p0 Foundry's wall and marches on
+        // it — buildings are ground targets — right out of the blast.
+        unit(1, UnitKind::Scuttler, 9, 2),
         unit(1, UnitKind::Scuttler, 8, 2),
-        unit(1, UnitKind::Scuttler, 7, 2),
-        unit(1, UnitKind::Scuttler, 8, 3),
+        unit(1, UnitKind::Scuttler, 9, 3),
     ])
     .build()
     .unwrap();
@@ -278,18 +284,33 @@ fn splash_kills_the_cluster_in_one_shell() {
             queue: false,
         },
     )]);
-    let died = report
-        .events
-        .iter()
-        .filter(|e| matches!(e, Event::UnitDied { .. }))
-        .count();
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::ShellLaunched { .. })),
+        "the shell leaves the gun at once"
+    );
+    // Flight is real now: the cluster stands (idle scuttlers hold
+    // their ground) until the shell arrives.
+    let mut died = 0;
+    for _ in 0..40 {
+        died += state
+            .tick(&[])
+            .events
+            .iter()
+            .filter(|e| matches!(e, Event::UnitDied { .. }))
+            .count();
+    }
     assert_eq!(died, 3, "one shell, three wrecks — that is what splash is");
 }
 
 #[test]
 fn splash_victims_all_turn_on_the_shooter() {
     let mut state = arena(vec![
-        unit(0, UnitKind::Bombard, 4, 2),
+        // In the (aggro, vision] window: the sentinels stand through
+        // the flight yet see the gun, so their answer is fog-legal.
+        unit(0, UnitKind::Bombard, 3, 3),
         unit(1, UnitKind::Sentinel, 8, 2),
         unit(1, UnitKind::Sentinel, 9, 2),
     ])
@@ -308,6 +329,11 @@ fn splash_victims_all_turn_on_the_shooter() {
             queue: false,
         },
     )]);
+    run_until(&mut state, 30, |_, events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::ShellLanded { .. }))
+    });
     for id in [s1, s2] {
         let u = state.unit(id).unwrap();
         assert!(u.hp < 100, "both sentinels took the shell");
@@ -345,8 +371,18 @@ fn indirect_fire_arcs_over_rock() {
         report
             .events
             .iter()
-            .any(|e| matches!(e, Event::AttackHit { attacker, .. } if *attacker == bombard)),
+            .any(|e| matches!(e, Event::ShellLaunched { .. })),
         "indirect fire ignores the rock between"
+    );
+    let hp_before = state.unit(victim).unwrap().hp;
+    run_until(&mut state, 30, |_, events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::ShellLanded { .. }))
+    });
+    assert!(
+        state.unit(victim).is_none_or(|u| u.hp < hp_before),
+        "the arc pays off on arrival"
     );
     assert_eq!(
         state.unit(bombard).unwrap().tile(),
@@ -403,9 +439,14 @@ fn long_guns_fire_on_a_spotters_eyes_and_go_quiet_without_them() {
         report
             .events
             .iter()
-            .any(|e| matches!(e, Event::AttackHit { attacker, .. } if *attacker == bombard)),
+            .any(|e| matches!(e, Event::ShellLaunched { .. })),
         "with a spotter, the shell flies beyond the gun's own sight"
     );
+    run_until(&mut state, 40, |_, events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::ShellLanded { .. }))
+    });
     let hp_after_first = state.unit(victim).unwrap().hp;
     assert!(hp_after_first < 60);
 
@@ -421,16 +462,16 @@ fn long_guns_fire_on_a_spotters_eyes_and_go_quiet_without_them() {
             queue: false,
         },
     )]);
-    let mut blind_hits = 0;
+    let mut blind_launches = 0;
     for _ in 0..119 {
         let report = state.tick(&[]);
-        blind_hits += report
+        blind_launches += report
             .events
             .iter()
-            .filter(|e| matches!(e, Event::AttackHit { attacker, .. } if *attacker == bombard))
+            .filter(|e| matches!(e, Event::ShellLaunched { .. }))
             .count();
     }
-    assert_eq!(blind_hits, 0, "no eyes, no shells");
+    assert_eq!(blind_launches, 0, "no eyes, no shells");
     assert_eq!(state.unit(victim).unwrap().hp, hp_after_first);
 
     // The gun is not broken, just blind: once its crawl brings the
@@ -438,7 +479,7 @@ fn long_guns_fire_on_a_spotters_eyes_and_go_quiet_without_them() {
     run_until(&mut state, 400, |_, events| {
         events
             .iter()
-            .any(|e| matches!(e, Event::AttackHit { attacker, .. } if *attacker == bombard))
+            .any(|e| matches!(e, Event::ShellLaunched { .. }))
     });
 }
 
@@ -710,7 +751,7 @@ fn splash_hits_the_unseen_but_reveals_nothing() {
     // the gun itself (vision 5, range 9.5) sits exactly 9 tiles out.
     let mut scenario = arena(vec![
         unit(0, UnitKind::Bombard, 4, 5),
-        unit(0, UnitKind::Scuttler, 9, 1),
+        unit(0, UnitKind::Harvester, 9, 1),
         unit(1, UnitKind::Harvester, 13, 5),
         unit(1, UnitKind::Sentinel, 13, 6),
     ]);
@@ -734,7 +775,7 @@ fn splash_hits_the_unseen_but_reveals_nothing() {
     // Premise: the aimed victim is seen (spotter), the bystander is not.
     assert!(state.can_see(PlayerId(0), state.unit(victim).unwrap().tile()));
     assert!(!state.can_see(PlayerId(0), state.unit(bystander).unwrap().tile()));
-    let report = state.tick(&[cmd(
+    state.tick(&[cmd(
         0,
         Command::Attack {
             units: vec![bombard],
@@ -742,16 +783,27 @@ fn splash_hits_the_unseen_but_reveals_nothing() {
             queue: false,
         },
     )]);
+    let mut named_bystander = false;
+    let mut landed = false;
+    for _ in 0..40 {
+        let report = state.tick(&[]);
+        landed |= report
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::ShellLanded { .. }));
+        named_bystander |= report.events.iter().any(
+            |e| matches!(e, Event::AttackHit { target: Target::Unit(u), .. } if *u == bystander),
+        );
+        if landed {
+            break;
+        }
+    }
+    assert!(landed, "the shell arrived");
     assert!(
         state.unit(bystander).unwrap().hp < UnitKind::Sentinel.stats().max_hp,
         "the blast does not check papers"
     );
-    assert!(
-        !report.events.iter().any(
-            |e| matches!(e, Event::AttackHit { target: Target::Unit(u), .. } if *u == bystander)
-        ),
-        "no event names the unseen bystander"
-    );
+    assert!(!named_bystander, "no event names the unseen bystander");
     state.tick(&[]);
     assert_eq!(
         state.unit(bystander).unwrap().order,

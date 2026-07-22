@@ -44,6 +44,7 @@ struct PendingHpGain {
 pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
     let mut hits: Vec<PendingHit> = Vec::new();
     let mut builds: Vec<PendingHpGain> = Vec::new();
+    let mut launches: Vec<crate::state::Shell> = Vec::new();
     // Alternate direction by tick parity: sequential phases must not hand
     // one seat a standing first-mover edge (with damage buffered, the
     // remaining coupling is small — shared scrap, own-side order state —
@@ -68,14 +69,18 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
             Order::Move { goal } => walk(state, id, goal, events),
             Order::Harvest { node } => harvest(state, id, node, events),
             Order::Attack { target, resume } => {
-                attack(state, id, target, resume, events, &mut hits)
+                attack(state, id, target, resume, events, &mut hits, &mut launches)
             }
             Order::AttackMove { goal } => attack_move(state, id, goal, events),
             Order::Build { site } => build(state, id, site, events, &mut builds),
             Order::Repair { building } => repair(state, id, building, events, &mut builds),
         }
     }
-    turret_fire(state, events, &mut hits);
+    turret_fire(state, events, &mut hits, &mut launches);
+    // Arrivals join this tick's volley; launches land on later ticks
+    // (flight is at least one tick), so ordering here cannot matter.
+    land_shells(state, &mut hits, events);
+    state.shells.extend(launches);
     resolve_hits(state, hits, builds, events);
 }
 
@@ -161,6 +166,97 @@ fn traces_terrain(weapon: &WeaponStats, shooter: Domain, victim: Domain) -> bool
 /// the aimed victim, and retaliation stays gated on the sufferer seeing
 /// the shooter, so an unseen bystander takes damage silently and nobody
 /// learns anything they could not already see.
+/// Launches a real projectile at the victim's fire-time position:
+/// unguided from this instant, arriving after a distance-proportional
+/// flight, resolving against whatever stands there then. Returns the
+/// flight length for the launch event.
+fn launch_shell(
+    state: &State,
+    launches: &mut Vec<crate::state::Shell>,
+    attacker: Target,
+    attacker_owner: PlayerId,
+    from: Vec2Fx,
+    aim: Vec2Fx,
+    weapon: &WeaponStats,
+) -> u64 {
+    let dist = from.dist(aim);
+    let flight = (dist / crate::stats::SHELL_SPEED)
+        .ceil()
+        .to_num::<u64>()
+        .max(1);
+    launches.push(crate::state::Shell {
+        shooter: attacker,
+        player: attacker_owner,
+        launch: from,
+        impact: aim,
+        arrival: state.tick + flight,
+        damage: weapon.damage,
+        targets: weapon.targets,
+        splash: weapon.splash,
+    });
+    flight
+}
+
+/// Arrived shells join this tick's volley, computed against the same
+/// start-of-tick world every buffered shot uses. The direct hit lands
+/// on the hostile building whose footprint covers the impact tile
+/// (buildings cannot dodge — sieges are preserved); units take splash
+/// only, which is the standing splash rule. No fire gate here: the
+/// gate cleared at launch, and a shell in flight chooses nothing.
+fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events: &mut Vec<Event>) {
+    let now = state.tick;
+    let mut due = Vec::new();
+    state.shells.retain(|shell| {
+        if shell.arrival <= now {
+            due.push(shell.clone());
+            false
+        } else {
+            true
+        }
+    });
+    for shell in due {
+        events.push(Event::ShellLanded {
+            at: shell.impact,
+            splash: shell.splash,
+        });
+        // The direct hit is distance-zero to a footprint, not tile
+        // containment: a shell aimed at a building lands on the
+        // footprint's closest EDGE point, whose exact coordinate floors
+        // into the neighboring tile — containment alone made sieges
+        // deal nothing. First hostile footprint touching the impact
+        // (id order) takes the hit.
+        let direct = state.buildings.iter().find(|b| {
+            b.hp > 0
+                && state.hostile(shell.player, b.player)
+                && b.closest_point_to(shell.impact).dist_sq(shell.impact)
+                    <= chassis::fx::Fx::lit("0.0001")
+        });
+        if let Some(b) = direct {
+            hits.push(PendingHit {
+                attacker: shell.shooter,
+                victim: Target::Building(b.id),
+                damage: shell.damage,
+            });
+        }
+        let Some(radius) = shell.splash else { continue };
+        let radius_sq = radius * radius;
+        for u in state.units.iter() {
+            if u.hp == 0
+                || !state.hostile(shell.player, u.player)
+                || !shell.targets.covers(u.kind.stats().domain)
+                || u.pos.dist_sq(shell.impact) > radius_sq
+            {
+                continue;
+            }
+            hits.push(PendingHit {
+                attacker: shell.shooter,
+                victim: Target::Unit(u.id),
+                damage: shell.damage,
+            });
+        }
+    }
+}
+
 fn buffer_shot(
     state: &State,
     attacker: Target,
@@ -198,7 +294,12 @@ fn buffer_shot(
 /// clear line (buildings can't chase, so out-of-line targets are simply
 /// ignored until they move). Stateless — target choice re-evaluates every
 /// shot, in building-id order.
-fn turret_fire(state: &mut State, events: &mut Vec<Event>, hits: &mut Vec<PendingHit>) {
+fn turret_fire(
+    state: &mut State,
+    events: &mut Vec<Event>,
+    hits: &mut Vec<PendingHit>,
+    launches: &mut Vec<crate::state::Shell>,
+) {
     let ids: Vec<crate::ids::BuildingId> = state.buildings.iter().map(|b| b.id).collect();
     for id in ids {
         let Some(b) = state.building(id) else {
@@ -249,22 +350,32 @@ fn turret_fire(state: &mut State, events: &mut Vec<Event>, hits: &mut Vec<Pendin
         };
         let b = state.building_mut(id).expect("just seen");
         b.cooldown = atk.cooldown_ticks;
-        buffer_shot(
-            state,
-            Target::Building(id),
-            me,
-            Target::Unit(uid),
-            upos,
-            atk,
-            hits,
-        );
-        events.push(Event::TurretFired {
-            turret: id,
-            kind,
-            target: uid,
-            turret_pos: center,
-            target_pos: upos,
-        });
+        if atk.projectile {
+            let flight = launch_shell(state, launches, Target::Building(id), me, center, upos, atk);
+            events.push(Event::ShellLaunched {
+                player: me,
+                from: center,
+                to: upos,
+                flight,
+            });
+        } else {
+            buffer_shot(
+                state,
+                Target::Building(id),
+                me,
+                Target::Unit(uid),
+                upos,
+                atk,
+                hits,
+            );
+            events.push(Event::TurretFired {
+                turret: id,
+                kind,
+                target: uid,
+                turret_pos: center,
+                target_pos: upos,
+            });
+        }
     }
 }
 
@@ -769,6 +880,7 @@ fn attack(
     resume: Option<TilePos>,
     events: &mut Vec<Event>,
     hits: &mut Vec<PendingHit>,
+    launches: &mut Vec<crate::state::Shell>,
 ) {
     let unit = state.unit(id).expect("caller checked");
     let stats = unit.kind.stats();
@@ -868,15 +980,33 @@ fn attack(
         unit.path = None;
         if cooldowns[pi] == 0 {
             unit.cooldowns[pi] = weapon.cooldown_ticks;
-            buffer_shot(state, Target::Unit(id), me, target, aim_point, weapon, hits);
-            events.push(Event::AttackHit {
-                attacker: id,
-                attacker_kind: kind,
-                weapon: pi,
-                target,
-                attacker_pos: pos,
-                target_pos: aim_point,
-            });
+            if weapon.projectile {
+                let flight = launch_shell(
+                    state,
+                    launches,
+                    Target::Unit(id),
+                    me,
+                    pos,
+                    aim_point,
+                    weapon,
+                );
+                events.push(Event::ShellLaunched {
+                    player: me,
+                    from: pos,
+                    to: aim_point,
+                    flight,
+                });
+            } else {
+                buffer_shot(state, Target::Unit(id), me, target, aim_point, weapon, hits);
+                events.push(Event::AttackHit {
+                    attacker: id,
+                    attacker_kind: kind,
+                    weapon: pi,
+                    target,
+                    attacker_pos: pos,
+                    target_pos: aim_point,
+                });
+            }
         }
         fire_sidearms(state, id, pi, hits, events);
         return;

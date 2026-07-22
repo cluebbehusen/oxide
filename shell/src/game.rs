@@ -108,6 +108,8 @@ pub enum EffectKind {
         from: Vec2,
         /// Impact, world coords.
         to: Vec2,
+        /// Seconds of flight (the sim's ticks over cadence).
+        secs: f32,
     },
     /// A death pop.
     Puff {
@@ -523,7 +525,7 @@ impl Game {
             fx.age
                 < match fx.kind {
                     EffectKind::Laser { .. } => 0.15,
-                    EffectKind::ShellArc { .. } => 0.45,
+                    EffectKind::ShellArc { secs, .. } => secs,
                     EffectKind::Puff { .. } => 0.4,
                     EffectKind::Ping { .. } => 0.5,
                     EffectKind::Burst { .. } => 0.35,
@@ -596,23 +598,11 @@ impl Game {
                     if heard {
                         self.sounds_pending.push(sound);
                     }
-                    let indirect = attacker_kind
-                        .stats()
-                        .weapons
-                        .get(*weapon)
-                        .is_some_and(|w| w.indirect);
                     self.fx.push(Effect {
-                        kind: if indirect {
-                            EffectKind::ShellArc {
-                                from: world_vec(*attacker_pos),
-                                to: world_vec(*target_pos),
-                            }
-                        } else {
-                            EffectKind::Laser {
-                                heavy,
-                                from: world_vec(*attacker_pos),
-                                to: world_vec(*target_pos),
-                            }
+                        kind: EffectKind::Laser {
+                            heavy,
+                            from: world_vec(*attacker_pos),
+                            to: world_vec(*target_pos),
                         },
                         age: 0.0,
                     });
@@ -649,19 +639,11 @@ impl Game {
                     if sees(self, *turret_pos) || sees(self, *target_pos) {
                         self.sounds_pending.push(sound);
                     }
-                    let indirect = kind.stats().weapons.first().is_some_and(|w| w.indirect);
                     self.fx.push(Effect {
-                        kind: if indirect {
-                            EffectKind::ShellArc {
-                                from: world_vec(*turret_pos),
-                                to: world_vec(*target_pos),
-                            }
-                        } else {
-                            EffectKind::Laser {
-                                heavy: splash.is_some(),
-                                from: world_vec(*turret_pos),
-                                to: world_vec(*target_pos),
-                            }
+                        kind: EffectKind::Laser {
+                            heavy: splash.is_some(),
+                            from: world_vec(*turret_pos),
+                            to: world_vec(*target_pos),
                         },
                         age: 0.0,
                     });
@@ -750,6 +732,37 @@ impl Game {
                     };
                     self.toast(why);
                     self.sounds_pending.push(SoundKind::Denied);
+                }
+                Event::ShellLaunched {
+                    player,
+                    from,
+                    to,
+                    flight,
+                } => {
+                    let heard = sees(self, *from) || sees(self, *to);
+                    if heard || *player == self.human {
+                        self.sounds_pending.push(SoundKind::Artillery);
+                    }
+                    self.fx.push(Effect {
+                        kind: EffectKind::ShellArc {
+                            from: world_vec(*from),
+                            to: world_vec(*to),
+                            secs: *flight as f32 / 20.0,
+                        },
+                        age: 0.0,
+                    });
+                }
+                Event::ShellLanded { at, splash } => {
+                    if sees(self, *at) {
+                        self.sounds_pending.push(SoundKind::Artillery);
+                    }
+                    self.fx.push(Effect {
+                        kind: EffectKind::Burst {
+                            at: world_vec(*at),
+                            radius: splash.map_or(0.8, |r| r.to_num::<f32>()),
+                        },
+                        age: 0.0,
+                    });
                 }
                 Event::OrderStalled {
                     player,

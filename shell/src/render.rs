@@ -645,7 +645,7 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
         // pinpoint an unseen combatant at its far end.
         let in_sight = match fx.kind {
             EffectKind::Laser { from, to, .. } => sees(from) && sees(to),
-            EffectKind::ShellArc { from, to } => sees(from) || sees(to),
+            EffectKind::ShellArc { from, to, .. } => sees(from) || sees(to),
             EffectKind::Puff { at } => sees(at),
             EffectKind::Burst { at, .. } => sees(at),
             // Own-order acknowledgments always show; fogged targets are
@@ -656,11 +656,13 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
             continue;
         }
         match fx.kind {
-            EffectKind::ShellArc { from, to } => {
+            EffectKind::ShellArc { from, to, secs } => {
                 // A dot rides a lobbed arc; the trail fades behind it.
                 let a = game.camera.to_screen(from);
                 let b = game.camera.to_screen(to);
-                let t = (fx.age / 0.45).clamp(0.0, 1.0);
+                // The timing is the sim's own: arrival on screen IS
+                // arrival in the rules.
+                let t = (fx.age / secs.max(0.05)).clamp(0.0, 1.0);
                 let dist = (b - a).length();
                 let lift = (dist * 0.22).min(game.camera.zoom * 3.0);
                 let at = |t: f32| {

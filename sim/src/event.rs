@@ -94,6 +94,24 @@ pub enum Event {
         /// Impact position.
         target_pos: chassis::fx::Vec2Fx,
     },
+    /// A shell left its gun: real flight, resolving at `arrival`.
+    ShellLaunched {
+        /// The firing seat.
+        player: PlayerId,
+        /// Muzzle position.
+        from: Vec2Fx,
+        /// Where it will land.
+        to: Vec2Fx,
+        /// Ticks of flight ahead of it.
+        flight: u64,
+    },
+    /// A shell arrived and resolved.
+    ShellLanded {
+        /// Impact point.
+        at: Vec2Fx,
+        /// Splash radius, when the shell splashes.
+        splash: Option<chassis::fx::Fx>,
+    },
     /// A construction site reached full function.
     BuildingCompleted {
         /// The finished building.
