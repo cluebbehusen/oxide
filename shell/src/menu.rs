@@ -346,7 +346,7 @@ pub struct ScenarioEntry {
 /// binary outside the repo).
 pub fn discover_scenarios() -> Vec<ScenarioEntry> {
     let mut entries: Vec<ScenarioEntry> = Vec::new();
-    if let Ok(dir) = std::fs::read_dir("scenarios") {
+    if let Ok(dir) = std::fs::read_dir(crate::assets::resource_root().join("scenarios")) {
         let mut paths: Vec<PathBuf> = dir
             .filter_map(|e| e.ok())
             .map(|e| e.path())

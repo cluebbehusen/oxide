@@ -54,15 +54,36 @@ fn faction_index(faction: Faction) -> usize {
     }
 }
 
+/// Where game data lives. A macOS .app bundle keeps it in
+/// Contents/Resources beside Contents/MacOS/<exe>; development runs
+/// from the workspace root. Resolved once by probing for the atlas —
+/// the one file no build ships without.
+pub fn resource_root() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let bundled = dir.join("../Resources");
+        if bundled.join("assets/sprites/atlas.png").exists() {
+            return bundled;
+        }
+    }
+    std::path::PathBuf::from(".")
+}
+
+/// A resource path as a string macroquad's loaders accept.
+pub fn resource(rel: &str) -> String {
+    resource_root().join(rel).to_string_lossy().into_owned()
+}
+
 impl Sprites {
     /// Loads the atlas up front; a missing or incomplete atlas is a
     /// startup error, not a mid-game pop.
     pub async fn load() -> Result<Self> {
-        let texture = load_texture("assets/sprites/atlas.png")
+        let texture = load_texture(&resource("assets/sprites/atlas.png"))
             .await
             .context("loading assets/sprites/atlas.png (run from the workspace root)")?;
         texture.set_filter(FilterMode::Linear);
-        let manifest = macroquad::file::load_string("assets/sprites/atlas.json")
+        let manifest = macroquad::file::load_string(&resource("assets/sprites/atlas.json"))
             .await
             .context("loading assets/sprites/atlas.json")?;
         let rects: std::collections::HashMap<String, [f32; 4]> =
@@ -260,7 +281,7 @@ pub struct Sounds {
 }
 
 async fn clip(name: &str) -> Result<Sound> {
-    let path = format!("assets/sounds/{name}.wav");
+    let path = resource(&format!("assets/sounds/{name}.wav"));
     load_sound(&path)
         .await
         .with_context(|| format!("loading {path} (run from the workspace root)"))
