@@ -1671,7 +1671,15 @@ fn draw_panel(
     } else {
         screen_width()
     };
-    draw_rectangle(0.0, top, right, 128.0 * s, PANEL);
+    // Opaque, unlike the translucent HUD panels: machines drifting
+    // beneath the band would ghost through the cards.
+    draw_rectangle(
+        0.0,
+        top,
+        right,
+        128.0 * s,
+        Color::from_rgba(20, 20, 24, 255),
+    );
     draw_rectangle(0.0, top, right, 1.5 * s, Color::new(0.6, 0.6, 0.65, 0.4));
 
     let faction = game.state.player(game.human).faction;
