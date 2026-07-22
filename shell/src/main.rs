@@ -16,6 +16,7 @@
 
 mod action;
 mod assets;
+mod autosave;
 mod camera;
 mod config;
 mod debug_server;
@@ -303,10 +304,16 @@ struct PendingScreenshot {
     reply: Sender<ResponseEnvelope>,
 }
 
-const HOME_ITEMS: [&str; 3] = ["Play", "Settings", "Quit"];
-
-fn home_menu() -> Menu {
-    Menu::new("OXIDE", HOME_ITEMS.iter().map(|s| s.to_string()).collect())
+/// Home rows; Continue appears only when a compatible autosave exists,
+/// so the returned flag says whether row indices are shifted by one.
+fn home_menu() -> (Menu, bool) {
+    let resumable = autosave::latest_compatible().is_some();
+    let mut items = Vec::new();
+    if resumable {
+        items.push("Continue".to_string());
+    }
+    items.extend(["Play", "Settings", "Quit"].map(str::to_string));
+    (Menu::new("OXIDE", items), resumable)
 }
 
 /// The settings rows: label, the value steps it cycles through, and a
@@ -496,7 +503,7 @@ async fn run() -> Result<()> {
 
     // Launched for a purpose (a scenario, a resume, or an agent socket)?
     // Straight into the game; the menu is for humans starting cold.
-    let mut home = home_menu();
+    let (mut home, mut home_resumable) = home_menu();
     let mut mode = if args.automation {
         Mode::Home
     } else if args.debug_server || args.scenario.is_some() || args.replay.is_some() {
@@ -558,16 +565,36 @@ async fn run() -> Result<()> {
             Mode::Home => {
                 if let Some(choice) = home.handle(&events, &mut input.mouse) {
                     game.sounds_pending.push(SoundKind::Click);
-                    match choice {
+                    let base = if home_resumable { choice } else { choice + 1 };
+                    match base {
                         0 => {
+                            // Continue: resume the newest autosave — a
+                            // replay load, so it cannot desync from its
+                            // own history.
+                            if let Some(path) = autosave::latest_compatible()
+                                && let Ok(replay) = GameReplay::load(&path)
+                                && let Ok(fresh) = Game::from_replay(replay)
+                            {
+                                game = keep_flags(fresh, &game);
+                                game.paused = false;
+                                mode = Mode::Playing;
+                                input.reset_session();
+                            } else {
+                                game.toast("that save no longer loads");
+                            }
+                        }
+                        1 => {
                             main_menu = None;
                             mode = Mode::MainMenu;
                         }
-                        1 => {
+                        2 => {
                             sub_menu = settings_menu(&config);
                             mode = Mode::Settings;
                         }
-                        _ => std::process::exit(0),
+                        _ => {
+                            autosave::save(&mut game);
+                            std::process::exit(0);
+                        }
                     }
                 }
                 render::draw(&game, &sprites, &input);
@@ -862,10 +889,15 @@ async fn run() -> Result<()> {
                             input.reset_session();
                         }
                         2 => {
+                            autosave::save(&mut game);
+                            (home, home_resumable) = home_menu();
                             main_menu = None;
                             mode = Mode::Home;
                         }
-                        _ => std::process::exit(0),
+                        _ => {
+                            autosave::save(&mut game);
+                            std::process::exit(0);
+                        }
                     }
                 }
             }
