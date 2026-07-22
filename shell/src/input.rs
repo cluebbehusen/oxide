@@ -37,6 +37,9 @@ pub struct InputState {
     pub mouse: Vec2,
     /// Where the current left-drag started, if any.
     pub drag_origin: Option<Vec2>,
+    /// Whether a left-drag is steering the camera via the minimap —
+    /// clicks there never start a selection box, they drive the view.
+    pub(crate) minimap_drag: bool,
     /// Control groups 1..=5 (assigned with Ctrl+N, recalled with N).
     groups: [Vec<UnitId>; 5],
     /// Previous click, for double-click detection.
@@ -83,6 +86,7 @@ impl InputState {
         Self {
             mouse: vec2(0.0, 0.0),
             drag_origin: None,
+            minimap_drag: false,
             groups: Default::default(),
             last_click: None,
             last_recall: None,
@@ -111,6 +115,7 @@ impl InputState {
     pub fn reset_transient(&mut self) {
         self.resolver.clear();
         self.drag_origin = None;
+        self.minimap_drag = false;
         self.patrol_route = None;
         self.placing = None;
         self.build_menu = false;
@@ -315,7 +320,23 @@ fn click_on_hud(game: &mut Game, screen: Vec2) -> bool {
 pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]) {
     for event in events {
         match *event {
-            RawEvent::MouseMove { x, y } => input.mouse = vec2(x, y),
+            RawEvent::MouseMove { x, y } => {
+                input.mouse = vec2(x, y);
+                // A held minimap press keeps steering: clamp the cursor
+                // into the minimap so sliding off its edge doesn't stall
+                // the pan mid-gesture.
+                if input.minimap_drag {
+                    let rect = crate::render::minimap_rect(game);
+                    let clamped = vec2(
+                        x.clamp(rect.x, rect.x + rect.w - 1.0),
+                        y.clamp(rect.y, rect.y + rect.h - 1.0),
+                    );
+                    if let Some(world) = crate::render::minimap_world_at(game, clamped) {
+                        game.camera.center = world;
+                        game.camera.pan(Vec2::ZERO);
+                    }
+                }
+            }
             RawEvent::Wheel { delta } => {
                 let delta = if input.camera_prefs.zoom_inverted {
                     -delta
@@ -384,6 +405,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 if let Some(world) = crate::render::minimap_world_at(game, vec2(x, y)) {
                     game.camera.center = world;
                     game.camera.pan(Vec2::ZERO); // re-clamp
+                    input.minimap_drag = true;
                 } else if !click_on_hud(game, vec2(x, y)) {
                     input.drag_origin = Some(vec2(x, y));
                 }
@@ -394,6 +416,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 y,
             } => {
                 input.mouse = vec2(x, y);
+                input.minimap_drag = false;
                 if let Some(origin) = input.drag_origin.take() {
                     let release = vec2(x, y);
                     let additive = input.resolver.shift_held();
