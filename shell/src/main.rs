@@ -14,6 +14,7 @@
 //! tick-stamped commands. If a feature can't be expressed that way, it
 //! belongs in the sim.
 
+mod action;
 mod assets;
 mod camera;
 mod debug_server;

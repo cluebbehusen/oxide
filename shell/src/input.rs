@@ -6,12 +6,12 @@
 //! selection, or sim commands. If input behavior ever bypasses this module,
 //! injected tests stop meaning anything — don't.
 
+use crate::action::{Action, ActionEvent, ActionResolver, BindingMap};
 use crate::game::{Game, PingKind};
 use chassis::grid::TilePos;
 use macroquad::prelude::{self as mq, Vec2, vec2};
 use oxide_protocol::{Key, MouseButton, RawEvent};
 use oxide_sim::{Command, Target, UnitId, UnitKind};
-use std::collections::HashSet;
 
 /// Logical pixels of mouse travel under which a press+release counts as a
 /// click (scaled by dpi at use).
@@ -49,7 +49,10 @@ pub struct InputState {
     pub(crate) placing: Option<oxide_sim::BuildingKind>,
     /// Whether the build palette is open (`B`; digits pick a structure).
     pub(crate) build_menu: bool,
-    held: HashSet<Key>,
+    /// The active binding profile (Classic until settings can edit it).
+    pub(crate) bindings: BindingMap,
+    /// Chord state: modifier truth and held actions.
+    pub(crate) resolver: ActionResolver,
 }
 
 /// Everything a harvester can put in the ground, in palette order — the
@@ -75,12 +78,14 @@ impl InputState {
             patrol_route: None,
             placing: None,
             build_menu: false,
-            held: HashSet::new(),
+            bindings: BindingMap::classic(),
+            resolver: ActionResolver::default(),
         }
     }
 
-    fn is_held(&self, key: Key) -> bool {
-        self.held.contains(&key)
+    /// Feeds a key edge through the binding map.
+    fn key_edge(&mut self, key: Key, down: bool) -> Option<ActionEvent> {
+        self.resolver.key_edge(&self.bindings, key, down)
     }
 
     /// Drops everything that assumes continuity — held keys and any open
@@ -89,7 +94,7 @@ impl InputState {
     /// held-state otherwise pans the camera forever (or fires a phantom
     /// box-select) after resuming.
     pub fn reset_transient(&mut self) {
-        self.held.clear();
+        self.resolver.clear();
         self.drag_origin = None;
         self.patrol_route = None;
         self.placing = None;
@@ -279,7 +284,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 input.mouse = vec2(x, y);
                 if let Some(origin) = input.drag_origin.take() {
                     let release = vec2(x, y);
-                    let additive = input.is_held(Key::Shift);
+                    let additive = input.resolver.shift_held();
                     if origin.distance(release) <= click_slop() {
                         let now = mq::get_time();
                         let double = !additive
@@ -308,7 +313,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // (ground semantics — entities can't be picked at that
                 // scale); anywhere else, full context ordering. HUD chrome
                 // swallows the click.
-                let queue = input.is_held(Key::Shift);
+                let queue = input.resolver.shift_held();
                 if let Some(world) = crate::render::minimap_world_at(game, vec2(x, y)) {
                     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
                     if let Some(route) = &mut input.patrol_route {
@@ -357,22 +362,12 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 ..
             } => {}
             RawEvent::KeyDown { key } => {
-                input.held.insert(key);
-                match key {
-                    Key::Num1 => digit_action(game, input, 0),
-                    Key::Num2 => digit_action(game, input, 1),
-                    Key::Num3 => digit_action(game, input, 2),
-                    Key::Num4 => digit_action(game, input, 3),
-                    Key::Num5 => digit_action(game, input, 4),
-                    Key::Num6 => digit_action(game, input, 5),
-                    Key::Num7 => digit_action(game, input, 6),
-                    Key::Num8 => digit_action(game, input, 7),
-                    Key::Num9 => digit_action(game, input, 8),
-                    _ => key_action(game, input, key),
+                if let Some(ActionEvent::Pressed(action)) = input.key_edge(key, true) {
+                    dispatch_action(game, input, action);
                 }
             }
             RawEvent::KeyUp { key } => {
-                input.held.remove(&key);
+                let _ = input.key_edge(key, false);
             }
             // Desktop shell; the mobile shell will map these.
             RawEvent::TouchDown { .. } | RawEvent::TouchMove { .. } | RawEvent::TouchUp { .. } => {}
@@ -383,16 +378,16 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
 /// Continuous per-frame input (held-key panning).
 pub fn update_held(game: &mut Game, input: &InputState, dt: f32) {
     let mut dir = vec2(0.0, 0.0);
-    if input.is_held(Key::Up) {
+    if input.resolver.is_held(Action::PanUp) {
         dir.y -= 1.0;
     }
-    if input.is_held(Key::Down) {
+    if input.resolver.is_held(Action::PanDown) {
         dir.y += 1.0;
     }
-    if input.is_held(Key::Left) {
+    if input.resolver.is_held(Action::PanLeft) {
         dir.x -= 1.0;
     }
-    if input.is_held(Key::Right) {
+    if input.resolver.is_held(Action::PanRight) {
         dir.x += 1.0;
     }
     if dir != vec2(0.0, 0.0) {
@@ -540,10 +535,6 @@ fn digit_action(game: &mut Game, input: &mut InputState, slot: usize) {
 /// Recall (or with Ctrl, assign) a control group; a quick double-tap on
 /// the same slot centers the camera on the group.
 fn group_action(game: &mut Game, input: &mut InputState, slot: usize) {
-    if input.is_held(Key::Ctrl) {
-        input.groups[slot] = game.selection.units.clone();
-        return;
-    }
     // Ownership, not mere existence: after a session change a stale id
     // could name anyone's unit (belt to reset_session's suspenders).
     let alive: Vec<UnitId> = input.groups[slot]
@@ -681,9 +672,21 @@ fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     game.ping(world, PingKind::Move);
 }
 
-fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
-    match key {
-        Key::X => {
+fn dispatch_action(game: &mut Game, input: &mut InputState, action: Action) {
+    match action {
+        // Continuous pans live in update_held; Confirm belongs to menus.
+        Action::PanLeft | Action::PanRight | Action::PanUp | Action::PanDown => {}
+        Action::Confirm => {}
+        Action::Slot(n) => digit_action(game, input, (n - 1) as usize),
+        Action::AssignGroup(n) => {
+            // Groups 1-5, like the recall side; the classic layout never
+            // had more.
+            let slot = (n - 1) as usize;
+            if slot < input.groups.len() {
+                input.groups[slot] = game.selection.units.clone();
+            }
+        }
+        Action::StopOrScrap => {
             // Contextual: units selected halt in place; a selected own
             // unfinished site is scrapped for its refund.
             if !game.selection.units.is_empty() {
@@ -699,10 +702,9 @@ fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
                 game.selection.building = None;
             }
         }
-        Key::H => train(game, 0),
-        Key::S => train(game, 1),
-        Key::P => game.paused = !game.paused,
-        Key::B => {
+        Action::TrainSlot(n) => train(game, n as usize),
+        Action::TogglePause => game.paused = !game.paused,
+        Action::ToggleBuildPalette => {
             if input.build_menu {
                 input.build_menu = false;
                 return;
@@ -719,7 +721,7 @@ fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
                 game.toast("select a harvester to build");
             }
         }
-        Key::R => {
+        Action::Patrol => {
             // First press arms a route; the second sends the circuit.
             match input.patrol_route.take() {
                 None if !game.selection.units.is_empty() => {
@@ -736,8 +738,8 @@ fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
                 }
             }
         }
-        Key::F1 => game.overlay = !game.overlay,
-        Key::Escape => {
+        Action::ToggleOverlay => game.overlay = !game.overlay,
+        Action::Back => {
             // Arming something? Escape abandons that first.
             if input.build_menu {
                 input.build_menu = false;
@@ -754,34 +756,13 @@ fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
             game.selection.units.clear();
             game.selection.building = None;
         }
-        Key::Space => {
+        Action::HomeCamera => {
             if let Some(center) = game.home_foundry().map(|b| b.center()) {
                 let target = vec2(center.x.to_num::<f32>(), center.y.to_num::<f32>());
                 game.camera.center = target;
                 game.camera.pan(vec2(0.0, 0.0)); // re-clamp
             }
         }
-        // Pan keys are continuous (update_held); Enter is menu-only;
-        // modifiers and group digits are handled in apply_events; A is
-        // reserved.
-        Key::Up
-        | Key::Down
-        | Key::Left
-        | Key::Right
-        | Key::A
-        | Key::N
-        | Key::Enter
-        | Key::Shift
-        | Key::Ctrl
-        | Key::Num1
-        | Key::Num2
-        | Key::Num3
-        | Key::Num4
-        | Key::Num5
-        | Key::Num6
-        | Key::Num7
-        | Key::Num8
-        | Key::Num9 => {}
     }
 }
 
