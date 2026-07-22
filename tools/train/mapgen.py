@@ -82,6 +82,26 @@ def _carve(seed: int, players: int = 2, teams: bool = False) -> dict:
             if 1 < x < w - 2 and 1 < y < h - 2 and grid[y][x] == ".":
                 set_pair(x, y, "#")
 
+    # Peak ridges, sometimes: short mirrored segments of '^' that block
+    # ground, air, and artillery arcs alike — the curriculum's exposure
+    # to siege-safe geography. Validation (a driver build per candidate)
+    # rejects any draw that seals the seats apart.
+    if rng.random() < 0.4:
+        ridges = int(rng.integers(1, 3))
+        for _ in range(ridges):
+            cx = int(rng.integers(4, w - 4))
+            cy = int(rng.integers(2, h // 2 + 1))
+            if abs(cx - ax) + abs(cy - ay) < 8:
+                continue
+            if abs(cx - (mx - 1)) + abs(cy - (my - 1)) < 8:
+                continue
+            dx, dy = [(1, 0), (0, 1), (1, 1), (1, -1)][int(rng.integers(0, 4))]
+            length = int(rng.integers(4, 9))
+            for i in range(length):
+                x, y = cx + dx * i, cy + dy * i
+                if 1 < x < w - 2 and 1 < y < h - 2 and grid[y][x] == ".":
+                    set_pair(x, y, "^")
+
     # Scrap: a home cluster near each base (mirrored) plus contested
     # center nodes, rich ones sometimes.
     home_nodes = int(rng.integers(3, 5))
@@ -188,6 +208,18 @@ def _carve4(
             x, y = cx + dx, cy + dy
             if 1 < x < w - 2 and 1 < y < h - 2 and grid[y][x] == ".":
                 set_all(x, y, "#")
+
+    # Peak ridges, sometimes — quadrant-reflected like everything else,
+    # so each corner seat faces the same geography.
+    if rng.random() < 0.4:
+        cx = int(rng.integers(4, w // 2))
+        cy = int(rng.integers(3, h // 2))
+        if abs(cx - ax) + abs(cy - ay) >= 8:
+            dx, dy = [(1, 0), (0, 1), (1, 1)][int(rng.integers(0, 3))]
+            for i in range(int(rng.integers(3, 7))):
+                x, y = cx + dx * i, cy + dy * i
+                if 1 < x < w - 2 and 1 < y < h - 2 and grid[y][x] == ".":
+                    set_all(x, y, "^")
 
     placed = 0
     for _ in range(40):
