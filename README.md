@@ -20,20 +20,26 @@ replay that re-executes headless to a bit-identical state hash.
 
 ## Playing
 
-The front door offers Play, Settings, and Quit. Settings holds live
-volume buses, UI scale, camera feel, and full key remapping — every
-change applies immediately and persists. The map list shows each
-map's hook and pace badges with a fog-free preview, and every choice
-you make on the way to a match survives backing up a screen.
-Selected machines draw their weapon ranges (and radar rings); stalls
-and rejections say why in words.
+The front door offers Play, Replays, Settings, and Quit (plus
+Continue when an autosave waits). Settings holds live volume buses,
+UI scale, camera feel, and full key remapping — every change applies
+immediately and persists. The map list shows each map's hook and pace
+badges with a fog-free, theme-graded preview, and every choice you
+make on the way to a match survives backing up a screen. Selected
+machines draw their weapon ranges (and radar rings); stalls and
+rejections say why in words. When a match ends, the banner carries
+the numbers: losses, peak army, closing scrap, and each side's army
+curve over the whole fight.
 
 ```sh
 cargo run -p oxide-shell
 ```
 
-A menu lists the shipped maps — the classic duels plus two 2v2 maps,
-Twin Forges and Open Quarry — then asks three questions: how hard
+A menu lists the shipped maps — the classic duels, the quick 2v2s
+Twin Forges and Open Quarry, and the new big fields: Basalt Spine
+(a peak ridge splits the map; two ground passes, one air-only door),
+Ferric Reach (three lanes, long logistics), and Parallel Works (a
+large 2v2 built on quadrant symmetry) — then asks three questions: how hard
 should the opponent think (**Easy, Medium, Hard, Expert**), who is it
 (**turtle, balanced, aggressive**, or let the map decide), and which
 faction you run (**Ferrous, Cupric**, or let the seed decide). Every
@@ -52,8 +58,12 @@ own eyes — someone must spot for it — and its blasts hurt everything
 in the radius. The factions split on the sky: Ferrous flies the heavy
 **Buzzard**, hunts with the **Talon**, and guards with the tanky
 **Flakhound**; Cupric answers with the darting **Darter**, the swarm
-**Wisp**, and the cheap **Stinger**. Air ignores terrain entirely —
-and only anti-air weapons can touch it.
+**Wisp**, and the cheap **Stinger**. Air ignores terrain almost
+entirely — only **peaks** (`^` on the map, mountains on screen) wall
+the sky, block every shot across them, and break artillery arcs; only
+anti-air weapons can touch a flyer. Bombard and Bastion shells are
+real projectiles now: they fly, they can be dodged, and they land
+where the target *was*.
 
 Buildings: the **Foundry** trains the basics and anchors your defeat
 condition; the **Fabricator** unlocks everything advanced including
@@ -185,6 +195,15 @@ long game takes well under a second — then keeps playing and recording
 from exactly where you stood. Unlike a state snapshot, the save stays
 replayable end-to-end and can never desync from its own history. The
 trade-off: replays only reproduce on the sim version that wrote them.
+
+The shell wraps all of this: quitting a live match autosaves it and
+Home offers Continue; the Replays screen lists every autosave and
+local record with honest version badges (watch, or delete with a
+deliberate double-X); the pause menu's Watch Replay replays the
+session so far; and `--watch file.json` opens any record in the
+read-only viewer — pause, seek both directions, speed steps, free
+camera. Seeking backward restores an in-memory checkpoint and
+re-simulates, so the viewer can never diverge from the record.
 
 ## Status and road ahead
 
