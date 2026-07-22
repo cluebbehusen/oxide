@@ -12,10 +12,14 @@ use crate::runner::GameReplay;
 use anyhow::Result;
 use oxide_sim::{SIM_VERSION, State};
 
-/// Checkpoint cadence in ticks. At thousands of ticks per second the
-/// worst-case backward seek re-simulates well under a second of work;
-/// a 40k-tick match holds ~40 clones.
+/// Minimum checkpoint cadence in ticks; the real cadence stretches so
+/// no record ever holds more than [`MAX_CHECKPOINTS`] clones — a
+/// 2M-tick replay of a 256x256 world must not exhaust memory for
+/// seek convenience.
 const CHECKPOINT_EVERY: u64 = 1024;
+
+/// Upper bound on retained state clones.
+const MAX_CHECKPOINTS: u64 = 64;
 
 /// A loaded replay with a current position.
 pub struct Playback {
@@ -26,6 +30,8 @@ pub struct Playback {
     next_cmd: usize,
     /// Forward checkpoints, ascending by tick.
     checkpoints: Vec<(u64, State)>,
+    /// Ticks between retained checkpoints for this record.
+    cadence: u64,
     total: u64,
 }
 
@@ -50,11 +56,15 @@ impl Playback {
             total <= MAX_INTERACTIVE_TICKS,
             "replay spans {total} ticks — beyond the {MAX_INTERACTIVE_TICKS}-tick interactive limit"
         );
+        let cadence = CHECKPOINT_EVERY
+            .max(total.div_ceil(MAX_CHECKPOINTS))
+            .next_power_of_two();
         Ok(Self {
             replay,
             state,
             next_cmd: 0,
             checkpoints: vec![],
+            cadence,
             total,
         })
     }
@@ -111,7 +121,7 @@ impl Playback {
 
     fn step(&mut self) {
         let tick = self.state.current_tick();
-        if tick.is_multiple_of(CHECKPOINT_EVERY)
+        if tick.is_multiple_of(self.cadence)
             && self.checkpoints.last().map(|(t, _)| *t) != Some(tick)
         {
             self.checkpoints.push((tick, self.state.clone()));

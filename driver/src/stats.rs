@@ -43,6 +43,12 @@ pub fn compute(replay: &GameReplay, every: u64) -> Result<MatchStats> {
         .validate(Some(oxide_sim::SIM_VERSION))
         .map_err(|err| anyhow::anyhow!("{err}"))?;
     let every = every.max(1);
+    let total_claimed = replay.meta.ticks.unwrap_or(0);
+    anyhow::ensure!(
+        total_claimed <= crate::runner::MAX_REPLAY_TICKS,
+        "replay claims {total_claimed} ticks — beyond the {}-tick bound",
+        crate::runner::MAX_REPLAY_TICKS
+    );
     let mut state = replay.setup.build().context("building scenario")?;
     let mut cursor = replay.cursor();
     let total = replay

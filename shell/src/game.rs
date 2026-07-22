@@ -910,10 +910,20 @@ impl Game {
                     // `state.shells()` directly, aged by sim ticks — a
                     // paused shell hangs in the air, a loaded replay
                     // restores its arc, and speed changes track.
-                    let heard = sees(self, *from) || sees(self, *to);
-                    if heard || *player == self.human {
+                    // Sound follows sight — but an incoming shell is a
+                    // warning worth keeping. A hostile launch whose
+                    // muzzle is fogged plays anchored at its IMPACT:
+                    // the same information the sim's incoming-shell
+                    // sense grants (impact tile visible), loudest when
+                    // it is falling on you, and nothing tracks the gun.
+                    let muzzle_seen = sees(self, *from);
+                    let impact_seen = sees(self, *to);
+                    if muzzle_seen || *player == self.human {
                         self.sounds_pending
                             .push((SoundKind::ArtilleryLaunch, Some(world_vec(*from))));
+                    } else if impact_seen {
+                        self.sounds_pending
+                            .push((SoundKind::ArtilleryLaunch, Some(world_vec(*to))));
                     }
                 }
                 Event::ShellLanded { player, at, splash } => {

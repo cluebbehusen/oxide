@@ -671,6 +671,7 @@ async fn run() -> Result<()> {
                     &mut injected,
                     &mut pending_shots,
                     &ui_view,
+                    &mut tutorial,
                 );
             }
         }
@@ -697,6 +698,7 @@ async fn run() -> Result<()> {
                                 && let Ok(replay) = GameReplay::load(&path)
                                 && let Ok(fresh) = Game::from_replay(replay)
                             {
+                                tutorial = None;
                                 game = keep_flags(fresh, &game);
                                 game.paused = false;
                                 mode = Mode::Playing;
@@ -958,6 +960,7 @@ async fn run() -> Result<()> {
                     game.sounds_pending.push((SoundKind::Click, None));
                     draft.faction_choice = choice;
                     let fresh = launch(&draft)?;
+                    tutorial = None;
                     game = keep_flags(fresh, &game);
                     game.paused = false;
                     mode = Mode::Playing;
@@ -973,19 +976,21 @@ async fn run() -> Result<()> {
                 // it once deselected armies and even placed buildings.
                 if let Some(t) = &tutorial {
                     let dismiss = render::tutorial_dismiss_rect();
+                    let card = render::tutorial_card_rect(t);
                     if events.iter().any(|e| {
                         matches!(e, RawEvent::MouseDown { button: MouseButton::Left, x, y }
                             if dismiss.contains(vec2(*x, *y)))
                     }) {
                         tutorial = None;
-                    } else {
-                        let card = render::tutorial_card_rect(t);
-                        events.retain(|e| {
-                            !matches!(e,
-                                RawEvent::MouseDown { x, y, .. } | RawEvent::MouseUp { x, y, .. }
-                                    if card.contains(vec2(*x, *y)))
-                        });
                     }
+                    // Card clicks (the dismiss press included) never
+                    // reach the world — an armed placement once spent
+                    // scrap under the X.
+                    events.retain(|e| {
+                        !matches!(e,
+                            RawEvent::MouseDown { x, y, .. } | RawEvent::MouseUp { x, y, .. }
+                                if card.contains(vec2(*x, *y)))
+                    });
                 }
                 let had_selection =
                     !game.selection.units.is_empty() || game.selection.building.is_some();
@@ -1247,6 +1252,7 @@ async fn run() -> Result<()> {
                     match choice {
                         2 => {
                             let fresh = Game::new(game.scenario.clone())?;
+                            tutorial = None;
                             game = keep_flags(fresh, &game);
                             game.paused = false;
                             mode = Mode::Playing;
@@ -1414,6 +1420,7 @@ fn write_png(image: &Image, path: &str) -> Result<(u32, u32)> {
 
 /// Answers one debug request. Screenshots are parked; everything else
 /// responds immediately, between frames, against a settled world.
+#[allow(clippy::too_many_arguments)]
 fn handle_request(
     incoming: IncomingRequest,
     game: &mut Game,
@@ -1422,6 +1429,7 @@ fn handle_request(
     injected: &mut Vec<RawEvent>,
     pending_shots: &mut Vec<PendingScreenshot>,
     ui_view: &UiView,
+    tutorial: &mut Option<tutorial::Tutorial>,
 ) {
     let IncomingRequest { id, request, reply } = incoming;
     let outcome: Result<Reply, String> = match request {
@@ -1510,6 +1518,7 @@ fn handle_request(
                 Game::new(scenario).map_err(|err| format!("building scenario: {err:#}"))
             })
             .map(|fresh| {
+                *tutorial = None;
                 *game = keep_flags(fresh, game);
                 *mode = Mode::Playing;
                 input.reset_session();
@@ -1521,6 +1530,7 @@ fn handle_request(
                 Game::from_replay(replay).map_err(|err| format!("resuming replay: {err:#}"))
             })
             .map(|fresh| {
+                *tutorial = None;
                 *game = keep_flags(fresh, game);
                 *mode = Mode::Playing;
                 input.reset_session();

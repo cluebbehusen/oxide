@@ -209,7 +209,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             return Some(panel);
         }
         let scrap = game.state.player(game.human).scrap;
-        let queue_full = building.queue.len() >= 2;
+        let queue_full = building.queue.len() >= oxide_sim::stats::QUEUE_CAP;
         for (i, &kind) in stats
             .produces
             .iter()
