@@ -100,6 +100,15 @@ pub enum EffectKind {
         /// Impact, world coords.
         to: Vec2,
     },
+    /// A lobbed shell: a dot rides an arc from muzzle to impact —
+    /// cosmetic travel ahead of the real projectiles, damage already
+    /// resolved underneath.
+    ShellArc {
+        /// Muzzle, world coords.
+        from: Vec2,
+        /// Impact, world coords.
+        to: Vec2,
+    },
     /// A death pop.
     Puff {
         /// Center, world coords.
@@ -514,6 +523,7 @@ impl Game {
             fx.age
                 < match fx.kind {
                     EffectKind::Laser { .. } => 0.15,
+                    EffectKind::ShellArc { .. } => 0.45,
                     EffectKind::Puff { .. } => 0.4,
                     EffectKind::Ping { .. } => 0.5,
                     EffectKind::Burst { .. } => 0.35,
@@ -586,11 +596,23 @@ impl Game {
                     if heard {
                         self.sounds_pending.push(sound);
                     }
+                    let indirect = attacker_kind
+                        .stats()
+                        .weapons
+                        .get(*weapon)
+                        .is_some_and(|w| w.indirect);
                     self.fx.push(Effect {
-                        kind: EffectKind::Laser {
-                            heavy,
-                            from: world_vec(*attacker_pos),
-                            to: world_vec(*target_pos),
+                        kind: if indirect {
+                            EffectKind::ShellArc {
+                                from: world_vec(*attacker_pos),
+                                to: world_vec(*target_pos),
+                            }
+                        } else {
+                            EffectKind::Laser {
+                                heavy,
+                                from: world_vec(*attacker_pos),
+                                to: world_vec(*target_pos),
+                            }
                         },
                         age: 0.0,
                     });
@@ -627,11 +649,19 @@ impl Game {
                     if sees(self, *turret_pos) || sees(self, *target_pos) {
                         self.sounds_pending.push(sound);
                     }
+                    let indirect = kind.stats().weapons.first().is_some_and(|w| w.indirect);
                     self.fx.push(Effect {
-                        kind: EffectKind::Laser {
-                            heavy: splash.is_some(),
-                            from: world_vec(*turret_pos),
-                            to: world_vec(*target_pos),
+                        kind: if indirect {
+                            EffectKind::ShellArc {
+                                from: world_vec(*turret_pos),
+                                to: world_vec(*target_pos),
+                            }
+                        } else {
+                            EffectKind::Laser {
+                                heavy: splash.is_some(),
+                                from: world_vec(*turret_pos),
+                                to: world_vec(*target_pos),
+                            }
                         },
                         age: 0.0,
                     });

@@ -645,6 +645,7 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
         // pinpoint an unseen combatant at its far end.
         let in_sight = match fx.kind {
             EffectKind::Laser { from, to, .. } => sees(from) && sees(to),
+            EffectKind::ShellArc { from, to } => sees(from) || sees(to),
             EffectKind::Puff { at } => sees(at),
             EffectKind::Burst { at, .. } => sees(at),
             // Own-order acknowledgments always show; fogged targets are
@@ -655,6 +656,40 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
             continue;
         }
         match fx.kind {
+            EffectKind::ShellArc { from, to } => {
+                // A dot rides a lobbed arc; the trail fades behind it.
+                let a = game.camera.to_screen(from);
+                let b = game.camera.to_screen(to);
+                let t = (fx.age / 0.45).clamp(0.0, 1.0);
+                let dist = (b - a).length();
+                let lift = (dist * 0.22).min(game.camera.zoom * 3.0);
+                let at = |t: f32| {
+                    let flat = a.lerp(b, t);
+                    vec2(flat.x, flat.y - lift * 4.0 * t * (1.0 - t))
+                };
+                let mut prev = at(0.0);
+                let steps = 10;
+                for i in 1..=((t * steps as f32) as usize).max(1) {
+                    let p = at(i as f32 / steps as f32);
+                    let fade = 0.35 * (1.0 - t);
+                    draw_line(
+                        prev.x,
+                        prev.y,
+                        p.x,
+                        p.y,
+                        1.5,
+                        Color::new(0.95, 0.75, 0.5, fade),
+                    );
+                    prev = p;
+                }
+                let dot = at(t);
+                draw_circle(
+                    dot.x,
+                    dot.y,
+                    3.0,
+                    Color::new(0.98, 0.93, 0.8, 1.0 - t * 0.5),
+                );
+            }
             EffectKind::Laser { heavy, from, to } => {
                 let a = game.camera.to_screen(from);
                 let b = game.camera.to_screen(to);
