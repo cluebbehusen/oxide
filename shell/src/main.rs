@@ -155,6 +155,12 @@ enum Mode {
     Playing,
     /// Game visible but veiled; the pause menu owns input.
     PauseMenu,
+    /// A destructive pause choice awaiting explicit confirmation.
+    ConfirmPause {
+        /// The pause-menu row being confirmed (restart / main menu /
+        /// quit).
+        choice: usize,
+    },
 }
 
 /// Everything New Match has chosen so far. The draft outlives every
@@ -288,6 +294,16 @@ struct PendingScreenshot {
 }
 
 const PAUSE_ITEMS: [&str; 4] = ["Resume", "Restart", "Main Menu", "Quit"];
+
+/// Cancel sits first and preselected: confirming destruction takes a
+/// deliberate second motion, never a double-tap.
+fn confirm_menu(choice: usize) -> Menu {
+    let verb = PAUSE_ITEMS.get(choice).copied().unwrap_or("Quit");
+    Menu::new(
+        format!("{}?", verb.to_uppercase()),
+        vec!["Cancel".to_string(), verb.to_string()],
+    )
+}
 
 fn build_main_menu(draft: &NewMatchDraft) -> (Menu, Vec<ScenarioEntry>) {
     let entries = menu::discover_scenarios();
@@ -536,23 +552,47 @@ async fn run() -> Result<()> {
                         game.paused = false;
                         mode = Mode::Playing;
                     }
-                    Some(1) => {
-                        let fresh = Game::new(game.scenario.clone())?;
-                        game = keep_flags(fresh, &game);
-                        game.paused = false;
-                        mode = Mode::Playing;
-                        input.reset_session();
+                    Some(destructive) => {
+                        // Restart, Main Menu, and Quit all throw away a
+                        // live match — each asks first, with Cancel
+                        // preselected so a double-tap cannot destroy.
+                        sub_menu = confirm_menu(destructive);
+                        mode = Mode::ConfirmPause {
+                            choice: destructive,
+                        };
                     }
-                    Some(2) => {
-                        main_menu = None;
-                        mode = Mode::MainMenu;
-                    }
-                    Some(_) => std::process::exit(0),
                     None if escape_pressed => {
                         game.paused = false;
                         mode = Mode::Playing;
                     }
                     None => {}
+                }
+            }
+            Mode::ConfirmPause { choice } => {
+                let escaped = events
+                    .iter()
+                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
+                let picked = sub_menu.handle(&events, &mut input.mouse);
+                render::draw(&game, &sprites, &input);
+                veil();
+                sub_menu.draw("this throws the current match away");
+                if escaped || picked == Some(0) {
+                    mode = Mode::PauseMenu;
+                } else if picked == Some(1) {
+                    match choice {
+                        1 => {
+                            let fresh = Game::new(game.scenario.clone())?;
+                            game = keep_flags(fresh, &game);
+                            game.paused = false;
+                            mode = Mode::Playing;
+                            input.reset_session();
+                        }
+                        2 => {
+                            main_menu = None;
+                            mode = Mode::MainMenu;
+                        }
+                        _ => std::process::exit(0),
+                    }
                 }
             }
         }
@@ -614,6 +654,7 @@ fn capture_ui(
         Mode::FactionMenu => ("faction_menu", Some(sub_menu)),
         Mode::Playing => ("playing", None),
         Mode::PauseMenu => ("pause_menu", Some(pause_menu)),
+        Mode::ConfirmPause { .. } => ("confirm_pause", Some(sub_menu)),
     };
     UiView {
         mode: mode_name.to_string(),
