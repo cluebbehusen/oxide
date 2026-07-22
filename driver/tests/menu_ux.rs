@@ -1,11 +1,7 @@
 //! Menu interaction regressions, driven through the automation harness
-//! against a real spawned shell. Both tests pin bugs the 0.9 screen
-//! rework must fix and are `#[ignore]`d until Phase D lands the fix —
-//! they need a window, so they run locally, not in CI:
-//!
-//! ```sh
-//! cargo test -p oxide-driver --test menu_ux -- --ignored
-//! ```
+//! against a real spawned shell. Written failing against the 0.8 widget
+//! (hover drove selection, activation on press), turned green by the
+//! 0.9 rebuild. They need a window, so they run locally, not in CI.
 
 use anyhow::{Context, Result, bail};
 use oxide_driver::client::Client;
@@ -67,25 +63,24 @@ fn hover(client: &mut Client, x: f32, y: f32) -> Result<()> {
     Ok(())
 }
 
-/// Sweeps the window's vertical axis and returns every y where hovering
-/// changed the menu selection — one entry per row boundary crossed, in
+/// Sweeps the window's vertical axis and returns every y where the
+/// hover highlight changed — one entry per row boundary crossed, in
 /// top-to-bottom order. Resolution-independent row discovery.
 fn find_rows(client: &mut Client) -> Result<Vec<(f32, usize)>> {
-    // Only a *change* in selection proves the cursor crossed onto a row
-    // — the first swept y sits above the menu and reads back whatever
-    // was already selected, which must not count as a hit.
-    let mut prev = ui(client)?.selected;
+    // Row discovery watches the hover highlight — the pointer's only
+    // effect on a healthy menu.
+    let mut prev = ui(client)?.hover;
     let mut hits: Vec<(f32, usize)> = Vec::new();
     for step in 0..40 {
         let y = 200.0 + step as f32 * 15.0;
         hover(client, 640.0, y)?;
-        let selected = ui(client)?.selected;
-        if selected != prev
-            && let Some(s) = selected
+        let hovered = ui(client)?.hover;
+        if hovered != prev
+            && let Some(h) = hovered
         {
-            hits.push((y, s));
+            hits.push((y, h));
         }
-        prev = selected;
+        prev = hovered;
     }
     if hits.len() < 3 {
         bail!("could not locate menu rows by sweeping ({hits:?})");
@@ -104,35 +99,35 @@ fn press_key(client: &mut Client, key: Key) -> Result<()> {
 }
 
 #[test]
-#[ignore = "pins the 0.8 hover/scroll feedback loop; un-ignore when Phase D separates scroll state from selection"]
 fn a_stationary_pointer_never_changes_the_row_beneath_it() -> Result<()> {
     let (_guard, mut client) = spawn_shell(4141)?;
     let rows = find_rows(&mut client)?;
     let top_row_y = rows[0].0;
 
-    // Park the selection deep by hovering the lowest discovered row so
-    // the scroll window shifts away from the top, then park the pointer
-    // on the topmost visible row and wiggle it by one pixel — a real
-    // cursor at rest. The item under the pointer must not change: today
-    // hover drives selection, the scroll window recenters on selection,
-    // and the list crawls upward beneath the still cursor.
-    let deep_row_y = rows[rows.len() - 1].0;
-    hover(&mut client, 640.0, deep_row_y)?;
+    // Push the keyboard cursor deep so the window scrolls away from the
+    // top, then park the pointer on the topmost visible row and wiggle
+    // it by one pixel — a real cursor at rest. Nothing about the row
+    // under the pointer may change: not the hover, not the selection,
+    // not the window. The 0.8 widget failed all three.
+    for _ in 0..6 {
+        press_key(&mut client, Key::Down)?;
+    }
     hover(&mut client, 640.0, top_row_y)?;
-    let settled = ui(&mut client)?.selected;
+    let settled = ui(&mut client)?;
     for i in 0..6 {
         hover(&mut client, 640.0, top_row_y + (i % 2) as f32)?;
-        let now = ui(&mut client)?.selected;
+        let now = ui(&mut client)?;
+        assert_eq!(now.hover, settled.hover, "the hover crawled");
+        assert_eq!(now.selected, settled.selected, "the selection crawled");
         assert_eq!(
-            now, settled,
-            "the list crawled beneath a stationary pointer"
+            now.visible_range, settled.visible_range,
+            "the window crawled beneath a stationary pointer"
         );
     }
     Ok(())
 }
 
 #[test]
-#[ignore = "pins mouse-down menu activation; un-ignore when Phase D activates on release inside the same control"]
 fn menu_rows_activate_on_release_not_on_press() -> Result<()> {
     let (_guard, mut client) = spawn_shell(4142)?;
     // A high row: always a scenario, never Quit — pressing Quit would
@@ -166,7 +161,30 @@ fn menu_rows_activate_on_release_not_on_press() -> Result<()> {
     let released = ui(&mut client)?.mode;
     assert_eq!(released, before, "a drag-away release still activated");
 
-    // Escape resets any state the probe left behind.
+    // And the honest path works: press and release inside the same row
+    // advances to the difficulty screen.
+    client.call(Request::InjectEvent {
+        event: RawEvent::MouseMove { x: 640.0, y: row_y },
+    })?;
+    client.call(Request::InjectEvent {
+        event: RawEvent::MouseDown {
+            button: MouseButton::Left,
+            x: 640.0,
+            y: row_y,
+        },
+    })?;
+    client.call(Request::InjectEvent {
+        event: RawEvent::MouseUp {
+            button: MouseButton::Left,
+            x: 640.0,
+            y: row_y,
+        },
+    })?;
+    assert_eq!(
+        ui(&mut client)?.mode,
+        "difficulty_menu",
+        "release inside the row activates"
+    );
     press_key(&mut client, Key::Escape)?;
     Ok(())
 }

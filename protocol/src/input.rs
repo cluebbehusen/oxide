@@ -224,4 +224,12 @@ pub enum Key {
     Num8,
     /// Ninth contextual digit.
     Num9,
+    /// Page up (menu scrolling).
+    PageUp,
+    /// Page down (menu scrolling).
+    PageDown,
+    /// Home (jump to list start).
+    Home,
+    /// End (jump to list end).
+    End,
 }

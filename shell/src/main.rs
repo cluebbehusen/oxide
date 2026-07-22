@@ -192,7 +192,7 @@ fn difficulty_menu(draft: &NewMatchDraft) -> Menu {
         "DIFFICULTY",
         DIFFICULTY_ITEMS.iter().map(|s| s.to_string()).collect(),
     );
-    menu.selected = draft.level_choice.min(DIFFICULTY_ITEMS.len() - 1);
+    menu.select(draft.level_choice.min(DIFFICULTY_ITEMS.len() - 1));
     menu
 }
 
@@ -201,7 +201,7 @@ fn personality_menu(draft: &NewMatchDraft) -> Menu {
         "OPPONENT",
         PERSONALITY_ITEMS.iter().map(|s| s.to_string()).collect(),
     );
-    menu.selected = draft.personality_choice.min(PERSONALITY_ITEMS.len() - 1);
+    menu.select(draft.personality_choice.min(PERSONALITY_ITEMS.len() - 1));
     menu
 }
 
@@ -210,7 +210,7 @@ fn faction_menu(draft: &NewMatchDraft) -> Menu {
         "FACTION",
         FACTION_ITEMS.iter().map(|s| s.to_string()).collect(),
     );
-    menu.selected = draft.faction_choice.min(FACTION_ITEMS.len() - 1);
+    menu.select(draft.faction_choice.min(FACTION_ITEMS.len() - 1));
     menu
 }
 
@@ -294,7 +294,7 @@ fn build_main_menu(draft: &NewMatchDraft) -> (Menu, Vec<ScenarioEntry>) {
     let mut items: Vec<String> = entries.iter().map(|e| e.label.clone()).collect();
     items.push("Quit".to_string());
     let mut menu = Menu::new("OXIDE", items);
-    menu.selected = draft.scenario_choice.min(entries.len());
+    menu.select(draft.scenario_choice.min(entries.len()));
     (menu, entries)
 }
 
@@ -621,6 +621,7 @@ fn capture_ui(
         selected: menu.map(|menu| menu.selected),
         items: menu.map_or_else(Vec::new, |menu| menu.items.clone()),
         visible_range: menu.map(Menu::visible_range),
+        hover: menu.and_then(Menu::hover),
         chrome: matches!(mode, Mode::Playing).then(|| {
             let l = game.layout.get();
             let m = l.minimap;

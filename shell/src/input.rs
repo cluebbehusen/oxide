@@ -122,7 +122,7 @@ impl InputState {
     }
 }
 
-const KEY_MAP: [(Key, mq::KeyCode); 15] = [
+const KEY_MAP: [(Key, mq::KeyCode); 19] = [
     (Key::Up, mq::KeyCode::Up),
     (Key::Down, mq::KeyCode::Down),
     (Key::Left, mq::KeyCode::Left),
@@ -138,6 +138,10 @@ const KEY_MAP: [(Key, mq::KeyCode); 15] = [
     (Key::Space, mq::KeyCode::Space),
     (Key::F1, mq::KeyCode::F1),
     (Key::Enter, mq::KeyCode::Enter),
+    (Key::PageUp, mq::KeyCode::PageUp),
+    (Key::PageDown, mq::KeyCode::PageDown),
+    (Key::Home, mq::KeyCode::Home),
+    (Key::End, mq::KeyCode::End),
 ];
 
 /// Converts this frame's hardware input into events. Purely a poll→event

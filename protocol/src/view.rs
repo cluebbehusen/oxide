@@ -200,6 +200,9 @@ pub struct UiView {
     /// Half-open item-index range currently visible on screen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible_range: Option<[usize; 2]>,
+    /// Row under the pointer (highlight only — never the selection).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hover: Option<usize>,
     /// Gameplay chrome geometry as [top_bar_h, panel_top, minimap x/y/w/h]
     /// in window pixels — the same LayoutModel hit-testing reads, so an
     /// agent can aim clicks at (or away from) real chrome. Menu modes
