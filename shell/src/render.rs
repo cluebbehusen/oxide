@@ -1359,8 +1359,57 @@ fn draw_hud(game: &Game, input: &InputState) {
             BONE_FAINT,
         );
         // The match in numbers: one line per seat from the recomputed
-        // record — losses and the peak army it ever fielded.
+        // record — losses and the peak army it ever fielded — then the
+        // army curves themselves, seat-colored, so the shape of the
+        // game (the swing, the collapse, the long grind) reads at a
+        // glance.
         if let Some(stats) = &game.end_stats {
+            let curves_y = y + (92.0 + 22.0 * stats.players.len() as f32) * s;
+            let (gw, gh) = (360.0 * s, 96.0 * s);
+            let gx = (screen_width() - gw) * 0.5;
+            draw_rectangle(
+                gx - 8.0 * s,
+                curves_y - 8.0 * s,
+                gw + 16.0 * s,
+                gh + 16.0 * s,
+                PANEL,
+            );
+            let top = stats
+                .players
+                .iter()
+                .flat_map(|p| p.army_value.iter().copied())
+                .max()
+                .unwrap_or(1)
+                .max(1) as f32;
+            for (i, seat) in stats.players.iter().enumerate() {
+                let faction = game
+                    .state
+                    .players()
+                    .get(i)
+                    .map(|p| p.faction)
+                    .unwrap_or(oxide_sim::Faction::Ferrous);
+                let color = mini_faction_color(faction);
+                let n = seat.army_value.len().max(2);
+                let mut prev: Option<macroquad::prelude::Vec2> = None;
+                for (k, &v) in seat.army_value.iter().enumerate() {
+                    let px = gx + gw * k as f32 / (n - 1) as f32;
+                    let py = curves_y + gh - gh * (v as f32 / top);
+                    let point = vec2(px, py);
+                    if let Some(a) = prev {
+                        draw_line(a.x, a.y, point.x, point.y, 1.5 * s, color);
+                    }
+                    prev = Some(point);
+                }
+            }
+            let cap = "army value over the match";
+            let cap_dims = measure_text(cap, None, (13.0 * s) as u16, 1.0);
+            draw_text(
+                cap,
+                (screen_width() - cap_dims.width) * 0.5,
+                curves_y + gh + 14.0 * s,
+                13.0 * s,
+                BONE_FAINT,
+            );
             for (i, seat) in stats.players.iter().enumerate() {
                 let name = game
                     .state
