@@ -32,11 +32,14 @@ pub fn set_user_scale(factor: f32) {
 }
 
 /// UI scale factor: chrome (text, bars, minimap) is authored in logical
-/// pixels and multiplied by this so it reads the same on every display.
-/// DPI times the user preference, applied here and nowhere else.
+/// pixels, and `screen_width()`/mouse coordinates are ALREADY logical —
+/// macroquad's high-dpi backing store absorbs the retina multiple
+/// underneath. Multiplying dpi in here double-sized every piece of
+/// chrome for four releases (the audit's giant menus and viewport-
+/// swallowing minimap, root-caused by a live probe: screen_w=1280 on a
+/// 2560-pixel display). The user preference is the only factor.
 pub fn ui_scale() -> f32 {
-    let user = USER_SCALE.get().copied().unwrap_or(1.0);
-    macroquad::miniquad::window::dpi_scale().max(1.0) * user
+    USER_SCALE.get().copied().unwrap_or(1.0)
 }
 
 /// Draws one frame.

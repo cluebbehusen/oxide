@@ -576,6 +576,7 @@ dependencies = [
  "chassis",
  "clap",
  "macroquad",
+ "oxide-driver",
  "oxide-protocol",
  "oxide-sim",
  "png",

@@ -31,7 +31,7 @@ use debug_server::IncomingRequest;
 use game::{Game, GameReplay, SoundKind};
 use macroquad::audio::{PlaySoundParams, play_sound};
 use macroquad::prelude::*;
-use menu::{Menu, ScenarioEntry};
+use menu::{Menu, PreviewCache, ScenarioEntry};
 use oxide_protocol::{
     AdvancedView, CameraView, HashView, Key, OverlayView, RawEvent, Reply, Request,
     ResponseEnvelope, SavedView, ScreenshotView, StateView, StatusView, UiView,
@@ -390,6 +390,7 @@ async fn run() -> Result<()> {
         Mode::MainMenu
     };
     let mut draft = NewMatchDraft::default();
+    let mut previews = PreviewCache::default();
     let mut main_menu = matches!(mode, Mode::MainMenu).then(|| build_main_menu(&draft));
     let mut sub_menu = Menu::new("", Vec::new());
     let mut pause_menu = Menu::new(
@@ -469,6 +470,43 @@ async fn run() -> Result<()> {
                         .and_then(|e| e.blurb.as_deref())
                         .unwrap_or("machines eating a dead world");
                     menu.draw(subtitle);
+                    // Fog-free preview of the highlighted map, softly
+                    // panelled on the right.
+                    if let Some(entry) = entries.get(focus)
+                        && let Some(tex) = previews.get(focus, entry)
+                    {
+                        let s = render::ui_scale();
+                        // Strictly right of the menu's own row rects —
+                        // shared geometry, no independent arithmetic to
+                        // drift out of sync. Too narrow? No panel.
+                        let left_bound = menu.rows_right_edge() + 24.0 * s;
+                        let avail = screen_width() - left_bound - 24.0 * s;
+                        let max_w = avail.min(screen_width() * 0.26);
+                        let max_h = screen_height() * 0.34;
+                        if max_w >= 96.0 * s {
+                            let scale = (max_w / tex.width()).min(max_h / tex.height());
+                            let (w, h) = (tex.width() * scale, tex.height() * scale);
+                            let x = screen_width() - w - 24.0 * s;
+                            let y = screen_height() * 0.5 - h * 0.5;
+                            draw_rectangle(
+                                x - 8.0 * s,
+                                y - 8.0 * s,
+                                w + 16.0 * s,
+                                h + 16.0 * s,
+                                Color::from_rgba(20, 20, 24, 230),
+                            );
+                            draw_texture_ex(
+                                tex,
+                                x,
+                                y,
+                                WHITE,
+                                DrawTextureParams {
+                                    dest_size: Some(vec2(w, h)),
+                                    ..Default::default()
+                                },
+                            );
+                        }
+                    }
                 }
             }
             Mode::DifficultyMenu => {

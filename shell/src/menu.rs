@@ -125,6 +125,14 @@ impl Menu {
         self.hover
     }
 
+    /// Right edge of the row boxes — side panels place themselves
+    /// strictly beyond it, using the same rect the rows draw with, so
+    /// overlap is impossible by construction.
+    pub fn rows_right_edge(&self) -> f32 {
+        let (_, _, first, _) = self.layout();
+        self.item_rect(first).map_or(0.0, |r| r.x + r.w)
+    }
+
     /// Half-open range of rows currently drawn by the scroll window.
     pub fn visible_range(&self) -> [usize; 2] {
         let (_, _, first, visible) = self.layout();
@@ -219,7 +227,7 @@ impl Menu {
         // spilling off both window edges reads as a defect, not a hook.
         let mut sub_size = 20.0 * s;
         let mut sub_dims = measure_text(subtitle, None, sub_size as u16, 1.0);
-        let max_width = screen_width() * 0.92;
+        let max_width = screen_width() * 0.55;
         if sub_dims.width > max_width {
             sub_size = (sub_size * max_width / sub_dims.width).max(12.0 * s);
             sub_dims = measure_text(subtitle, None, sub_size as u16, 1.0);
@@ -275,6 +283,41 @@ impl Menu {
             18.0 * s,
             DIM,
         );
+    }
+}
+
+/// Lazily rendered fog-free map previews, one per scenario row. The
+/// driver's software rasterizer draws the built state (the same pixels
+/// the golden tests pin), uploaded once as a texture and kept for the
+/// session.
+#[derive(Default)]
+pub struct PreviewCache {
+    slots: std::collections::HashMap<usize, Option<Texture2D>>,
+}
+
+impl PreviewCache {
+    /// The preview for a row, rendering on first request. `None` when
+    /// the scenario fails to load or build — the browser just shows no
+    /// panel for it.
+    pub fn get(&mut self, index: usize, entry: &ScenarioEntry) -> Option<&Texture2D> {
+        self.slots
+            .entry(index)
+            .or_insert_with(|| {
+                let scenario = match &entry.path {
+                    Some(path) => Scenario::load(path).ok()?,
+                    None => Scenario::skirmish(),
+                };
+                let state = scenario.build().ok()?;
+                let pixmap = oxide_driver::render::render_state(&state);
+                let texture = Texture2D::from_rgba8(
+                    pixmap.width() as u16,
+                    pixmap.height() as u16,
+                    pixmap.data(),
+                );
+                texture.set_filter(FilterMode::Nearest);
+                Some(texture)
+            })
+            .as_ref()
     }
 }
 
