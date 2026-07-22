@@ -1906,7 +1906,7 @@ pub fn draw_tutorial(t: &crate::tutorial::Tutorial) {
     draw_rectangle(x, y, w, h, Color::from_rgba(14, 14, 18, 235));
     draw_rectangle_lines(x, y, w, h, 1.5 * s, Color::new(0.85, 0.65, 0.35, 0.9));
     draw_text(
-        &format!(
+        format!(
             "TUTORIAL {}/{}  ·  {}",
             t.step + 1,
             crate::tutorial::STEPS.len(),
