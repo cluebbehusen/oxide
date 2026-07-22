@@ -227,8 +227,12 @@ what lowering will see; never build a reward out of what the agent
 happens to know about the enemy — under fog, "known" is an
 information artifact, and shaping on it teaches blindness; and
 teammate skill is bought with duel sharpness unless consolidated from
-an already-strong parent (the 0.8 artifact's lineage: BC bridge →
-league peak → anchored peak → team-consolidated peak, gated 300/300).
+an already-strong parent (the 0.9 artifact's lineage: v4 BC bridge →
+league peak ckpt-750 → anchored team consolidation ckpt-875, gated
+1200/1200 with zero draws; the 0.8 lineage read the same way). A
+resumed league's KL anchor anneals off the ABSOLUTE update clock —
+re-normalize the coefficient to the resume point (0.1/0.995^N) or a
+consolidation run starts effectively unanchored and collapses.
 Team training runs two flavors — self-team (`team`: the learner holds
 both chairs) and mixed-ally (`team2`: a scripted Brain drives the
 teammate) — and per-seat episode truncation pads a dead learner's
@@ -438,9 +442,15 @@ Hard < Expert forever).
   identical-dial neural mirror matches; win-rate gates neutralize it by
   scoring seat-swapped pairs, and shipped matches deal varied
   personalities, so no seat holds a standing edge in practice.
-- **The 0.7 Standard-stall blemish is gone in 0.8** — the promoted
-  artifact swept its gate 300/300 with zero draws; air harass gave the
-  policy the anti-turtle tool the old roster lacked.
+- **The 0.7 Standard-stall blemish stayed gone in 0.9** — the
+  promoted artifact swept 1200/1200 with zero draws (ckpt-900 of the
+  same run resurrected the stall with 13 tick-cap draws and was
+  disqualified for it; the draw rule keeps earning its keep).
+- **Parallel Works leaned 10-2 east under the BRIDGE artifact at
+  Medium** (faction asymmetry on a geometrically exact map — the
+  air-transparent belts rewarded the Cupric roster). Re-probed with
+  the shipped 0.9 artifact: 6/6 decisive at 3-3. Bot-vs-bot leans are
+  artifact-specific; re-measure per artifact before blaming a map.
 - **All-neural Expert 2v2 can stall on open maps and leans west on
   Twin Forges** (measured: 12/12 thirty-k-tick draws on Open Quarry at
   Expert; 12-2 west in decisive Twin Forges games). Both are artifacts
