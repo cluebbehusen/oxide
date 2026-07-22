@@ -7,6 +7,7 @@
 //! drawing and hit-testing each kept their own arithmetic. New screens
 //! and widgets grow this model rather than freehand math.
 
+use crate::panel::CardAction;
 use macroquad::prelude::{Rect, Vec2};
 
 /// Where the persistent HUD chrome sits, in window pixels.
@@ -22,10 +23,15 @@ pub struct LayoutModel {
     /// The idle-worker badge in the top bar; zero-sized when nobody
     /// idles. Clicking it cycles idle harvesters.
     pub idle_badge: Rect,
-    /// Clickable panel slots — the produce list or the open palette —
-    /// index-aligned with the digit that picks them. Zero-sized rects
-    /// are dead slots.
-    pub panel_slots: [Rect; 9],
+    /// Command cards: rect plus the action a click performs — the
+    /// renderer lays them out, hit-testing replays them verbatim.
+    pub cards: [(Rect, CardAction); 16],
+    /// How many cards are live this frame.
+    pub card_count: usize,
+    /// Queue thumbnails (production or orders), same contract.
+    pub queue_slots: [(Rect, CardAction); 8],
+    /// How many queue slots are live this frame.
+    pub queue_count: usize,
 }
 
 impl Default for LayoutModel {
@@ -35,32 +41,38 @@ impl Default for LayoutModel {
             panel_top: f32::INFINITY,
             minimap: Rect::new(0.0, 0.0, 0.0, 0.0),
             idle_badge: Rect::new(0.0, 0.0, 0.0, 0.0),
-            panel_slots: [Rect::new(0.0, 0.0, 0.0, 0.0); 9],
+            cards: [(Rect::new(0.0, 0.0, 0.0, 0.0), CardAction::None); 16],
+            card_count: 0,
+            queue_slots: [(Rect::new(0.0, 0.0, 0.0, 0.0), CardAction::None); 8],
+            queue_count: 0,
         }
     }
 }
 
 impl LayoutModel {
-    /// Computes the frame's chrome geometry. `panel_rows` is how many
-    /// bottom rows the HUD actually drew (zero = no panel).
+    /// Computes the frame's chrome geometry. `panel_top` is the band's
+    /// top edge (`f32::INFINITY` when no panel is shown).
+    #[allow(clippy::too_many_arguments)]
     pub fn compute(
-        viewport: Vec2,
+        _viewport: Vec2,
         ui: f32,
-        panel_rows: usize,
+        panel_top: f32,
         minimap: Rect,
         idle_badge: Rect,
-        panel_slots: [Rect; 9],
+        cards: [(Rect, CardAction); 16],
+        card_count: usize,
+        queue_slots: [(Rect, CardAction); 8],
+        queue_count: usize,
     ) -> Self {
         Self {
             top_bar_h: 32.0 * ui,
-            panel_top: if panel_rows == 0 {
-                f32::INFINITY
-            } else {
-                viewport.y - 36.0 * ui * panel_rows as f32
-            },
+            panel_top,
             minimap,
             idle_badge,
-            panel_slots,
+            cards,
+            card_count,
+            queue_slots,
+            queue_count,
         }
     }
 
@@ -77,32 +89,35 @@ mod tests {
     use super::*;
     use macroquad::prelude::vec2;
 
+    fn compute_at(panel_top: f32, ui: f32) -> LayoutModel {
+        let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
+        LayoutModel::compute(
+            vec2(1280.0, 800.0),
+            ui,
+            panel_top,
+            zero,
+            zero,
+            [(zero, CardAction::None); 16],
+            0,
+            [(zero, CardAction::None); 8],
+            0,
+        )
+    }
+
     #[test]
-    fn the_panel_band_scales_with_its_row_count() {
-        let mini = Rect::new(0.0, 0.0, 0.0, 0.0);
-        let one = LayoutModel::compute(vec2(1280.0, 800.0), 1.0, 1, mini, mini, [mini; 9]);
-        let three = LayoutModel::compute(vec2(1280.0, 800.0), 1.0, 3, mini, mini, [mini; 9]);
-        assert!(one.chrome_owns(vec2(600.0, 770.0)));
+    fn the_panel_band_owns_exactly_below_its_top() {
+        let m = compute_at(700.0, 1.0);
+        assert!(m.chrome_owns(vec2(600.0, 770.0)));
+        assert!(m.chrome_owns(vec2(600.0, 700.0)));
         assert!(
-            !one.chrome_owns(vec2(600.0, 700.0)),
-            "a single row must not swallow the midfield"
-        );
-        assert!(
-            three.chrome_owns(vec2(600.0, 700.0)),
-            "three rows reach higher"
+            !m.chrome_owns(vec2(600.0, 699.0)),
+            "the band must not swallow the midfield"
         );
     }
 
     #[test]
     fn no_panel_means_no_band_at_all() {
-        let m = LayoutModel::compute(
-            vec2(1280.0, 800.0),
-            2.0,
-            0,
-            Rect::new(0.0, 0.0, 0.0, 0.0),
-            Rect::new(0.0, 0.0, 0.0, 0.0),
-            [Rect::new(0.0, 0.0, 0.0, 0.0); 9],
-        );
+        let m = compute_at(f32::INFINITY, 2.0);
         assert!(!m.chrome_owns(vec2(600.0, 799.0)));
         assert!(m.chrome_owns(vec2(600.0, 30.0)), "the top bar always owns");
     }

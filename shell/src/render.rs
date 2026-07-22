@@ -90,8 +90,9 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     draw_placement_ghost(game, sprites, input);
     draw_drag_rect(game, input);
     draw_salvage_tooltip(game, input);
-    draw_hud(game, input);
+    draw_hud(game, sprites, input);
     draw_minimap(game);
+    draw_panel_tooltip(game, input);
 }
 
 /// The armed building follows the cursor as a translucent footprint,
@@ -1118,7 +1119,7 @@ fn draw_overlay(game: &Game, alpha: f32) {
     draw_text(&info, screen_width() - 420.0 * s, 54.0 * s, 18.0 * s, BONE);
 }
 
-fn draw_hud(game: &Game, input: &InputState) {
+fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
     let s = ui_scale();
     // Top bar.
     draw_rectangle(0.0, 0.0, screen_width(), 32.0 * s, PANEL);
@@ -1174,93 +1175,33 @@ fn draw_hud(game: &Game, input: &InputState) {
         );
     }
 
-    let mut panel_shown = false;
-    let mut panel_rows = 0;
-    let mut panel_slots = [Rect::new(0.0, 0.0, 0.0, 0.0); 9];
-    // Selection panel.
-    if let Some(id) = game.selection.building {
-        if let Some(building) = game.state.building(id) {
-            let queue: Vec<&str> = building.queue.iter().map(|k| k.name()).collect();
-            let stats = building.kind.stats();
-            let name = building.kind.name().to_uppercase();
-            let mut line = format!("{name} {}/{} hp", building.hp, stats.max_hp);
-            if !building.built {
-                line.push_str("   under construction   X: scrap site");
-                panel_rows = panel_rows_packed(std::slice::from_ref(&line), 0);
-            } else if !stats.produces.is_empty() {
-                // Number keys train; the list is the seat's own roster
-                // (the other faction's variants never show).
-                let faction = game.state.player(game.human).faction;
-                let slots: Vec<String> = stats
-                    .produces
-                    .iter()
-                    .filter(|k| k.faction().is_none_or(|f| f == faction))
-                    .enumerate()
-                    .map(|(i, k)| format!("{}: {} ({})", i + 1, k.name(), k.stats().cost))
-                    .collect();
-                let (used, rects) = panel_rows_packed_rects(&slots, 0);
-                for (i, r) in rects.into_iter().take(9).enumerate() {
-                    panel_slots[i] = r;
-                }
-                let header = vec![line, format!("queue [{}]", queue.join(", "))];
-                panel_rows = used + panel_rows_packed(&header, used);
-            } else {
-                panel_line(&line);
-                panel_rows = 1;
-            }
-            panel_shown = true;
-        }
-    } else if !game.selection.units.is_empty() {
-        let has_builder = game.selection.units.iter().any(|id| {
-            game.state
-                .unit(*id)
-                .is_some_and(|u| u.kind == UnitKind::Harvester)
-        });
-        let label = |a: crate::action::Action| {
-            input
-                .bindings
-                .chord_for(a)
-                .map(crate::action::BindingMap::chord_label)
-                .unwrap_or_else(|| "unbound".to_string())
-        };
-        let mut line_items = vec![
-            format!("{} unit(s) selected", game.selection.units.len()),
-            format!("{}: stop", label(crate::action::Action::StopOrScrap)),
-            format!("{}: patrol", label(crate::action::Action::Patrol)),
-        ];
-        if has_builder {
-            line_items.push(format!(
-                "{}: build",
-                label(crate::action::Action::ToggleBuildPalette)
-            ));
-        }
-        if input.build_menu {
-            let palette: Vec<String> = crate::input::BUILD_PALETTE
-                .iter()
-                .enumerate()
-                .map(|(i, k)| {
-                    let cost = k.stats().construction.map(|c| c.cost).unwrap_or(0);
-                    format!("{}: {} ({})", i + 1, k.name(), cost)
-                })
-                .collect();
-            let (used, rects) = panel_rows_packed_rects(&palette, 0);
-            for (i, r) in rects.into_iter().take(9).enumerate() {
-                panel_slots[i] = r;
-            }
-            panel_rows = used + panel_rows_packed(&line_items, used);
-        } else {
-            panel_rows = panel_rows_packed(&line_items, 0);
-        }
-        panel_shown = true;
+    let panel = crate::panel::build(game, &input.bindings);
+    let panel_shown = panel.is_some();
+    let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
+    let mut cards = [(zero, crate::panel::CardAction::None); 16];
+    let mut card_count = 0;
+    let mut queue_slots = [(zero, crate::panel::CardAction::None); 8];
+    let mut queue_count = 0;
+    let mut panel_top = f32::INFINITY;
+    if let Some(panel) = &panel {
+        let (c, cc, q, qc, top) = draw_panel(game, sprites, input, panel);
+        cards = c;
+        card_count = cc;
+        queue_slots = q;
+        queue_count = qc;
+        panel_top = top;
     }
     // Publish the frame's chrome geometry — the model hit-testing reads.
     game.layout.set(crate::layout::LayoutModel::compute(
         vec2(screen_width(), screen_height()),
         s,
-        panel_rows,
+        panel_top,
         minimap_rect(game),
         idle_badge,
-        panel_slots,
+        cards,
+        card_count,
+        queue_slots,
+        queue_count,
     ));
 
     // Controls hint — it lives in the same bottom band as the selection
@@ -1488,80 +1429,6 @@ fn draw_hud(game: &Game, input: &InputState) {
     }
 }
 
-fn panel_line(text: &str) {
-    panel_row(text, 0);
-}
-
-/// A bottom panel band; `row` 0 is the lowest, higher rows stack above.
-fn panel_row(text: &str, row: usize) {
-    let s = ui_scale();
-    let base = screen_height() - 36.0 * s * (row as f32 + 1.0);
-    draw_rectangle(0.0, base, screen_width(), 36.0 * s, PANEL);
-    draw_text(text, 12.0 * s, base + 24.0 * s, 20.0 * s, BONE);
-}
-
-/// Lays `items` into as many panel rows as they need, packed greedily
-/// to fit left of the minimap, stacked above row `first`. Returns how
-/// many rows it used. A single long line would run off the right edge
-/// (and under the minimap) at retina scale — palette and production
-/// slots overflow real screens without this.
-fn panel_rows_packed(items: &[String], first: usize) -> usize {
-    panel_rows_packed_rects(items, first).0
-}
-
-/// The packing core: wraps items into rows AND reports each item's
-/// on-screen rect, so the same text the HUD draws can be a button — one
-/// geometry, drawn and clickable, per the layout law.
-fn panel_rows_packed_rects(items: &[String], first: usize) -> (usize, Vec<Rect>) {
-    let s = ui_scale();
-    let sep = "   ";
-    let sep_w = measure_text(sep, None, (20.0 * s) as u16, 1.0).width;
-    let limit = (screen_width() - 240.0 * s).max(320.0 * s);
-    let width_of = |line: &str| measure_text(line, None, (20.0 * s) as u16, 1.0).width;
-    // Pack into lines, remembering which items landed on which line.
-    let mut lines: Vec<(String, Vec<usize>)> = Vec::new();
-    let mut current = String::new();
-    let mut current_items: Vec<usize> = Vec::new();
-    for (idx, item) in items.iter().enumerate() {
-        let candidate = if current.is_empty() {
-            item.clone()
-        } else {
-            format!("{current}{sep}{item}")
-        };
-        if width_of(&candidate) < limit || current.is_empty() {
-            current = candidate;
-            current_items.push(idx);
-        } else {
-            lines.push((
-                std::mem::take(&mut current),
-                std::mem::take(&mut current_items),
-            ));
-            current = item.clone();
-            current_items.push(idx);
-        }
-    }
-    if !current.is_empty() {
-        lines.push((current, current_items));
-    }
-    // Stack bottom-up: the first packed line sits highest so reading
-    // order stays top-to-bottom.
-    let n = lines.len();
-    let mut rects = vec![Rect::new(0.0, 0.0, 0.0, 0.0); items.len()];
-    for (i, (line, members)) in lines.iter().enumerate() {
-        let row = first + (n - 1 - i);
-        panel_row(line, row);
-        let base = screen_height() - 36.0 * s * (row as f32 + 1.0);
-        let mut x = 12.0 * s;
-        for &idx in members {
-            let w = width_of(&items[idx]);
-            rects[idx] = Rect::new(x, base + 4.0 * s, w, 28.0 * s);
-            x += w + sep_w;
-        }
-        let _ = line;
-    }
-    (n, rects)
-}
-
 // --- Minimap ------------------------------------------------------------
 
 const MINIMAP_MAX: Vec2 = vec2(220.0, 150.0);
@@ -1646,6 +1513,317 @@ pub fn minimap_world_in(rect: Rect, map_w: i32, screen: Vec2) -> Option<Vec2> {
 
 /// The whole war at a glance, under the same fog rules as the world view
 /// (and, like everything else, omniscient while the F1 overlay is up).
+/// The panel's clickable geometry: cards, card count, queue slots,
+/// queue count, band top.
+type PanelGeometry = (
+    [(Rect, crate::panel::CardAction); 16],
+    usize,
+    [(Rect, crate::panel::CardAction); 8],
+    usize,
+    f32,
+);
+
+/// Draws the command panel band and returns its clickable geometry.
+fn draw_panel(
+    game: &Game,
+    sprites: &Sprites,
+    input: &InputState,
+    panel: &crate::panel::Panel,
+) -> PanelGeometry {
+    use crate::panel::{CardAction, CardIcon};
+    let s = ui_scale();
+    let top = screen_height() - 128.0 * s;
+    let mini = minimap_rect(game);
+    let right = if mini.w > 0.0 {
+        (mini.x - 8.0 * s).max(300.0 * s)
+    } else {
+        screen_width()
+    };
+    draw_rectangle(0.0, top, right, 128.0 * s, PANEL);
+    draw_rectangle(0.0, top, right, 1.5 * s, Color::new(0.6, 0.6, 0.65, 0.4));
+
+    let faction = game.state.player(game.human).faction;
+    let icon_source = |icon: &CardIcon| match icon {
+        CardIcon::Unit(kind) => Some(sprites.unit(*kind, faction)),
+        CardIcon::Building(kind) => Some(sprites.building(*kind, faction)),
+        CardIcon::Glyph(_) => None,
+    };
+
+    // Portrait block: sprite, name, status.
+    let psize = 56.0 * s;
+    if let Some(source) = icon_source(&panel.portrait) {
+        draw_texture_ex(
+            sprites.texture(),
+            12.0 * s,
+            top + 12.0 * s,
+            WHITE,
+            DrawTextureParams {
+                dest_size: Some(vec2(psize, psize)),
+                source: Some(source),
+                ..Default::default()
+            },
+        );
+    }
+    draw_text(&panel.title, 12.0 * s, top + 88.0 * s, 17.0 * s, BONE);
+    draw_text(&panel.sub, 12.0 * s, top + 106.0 * s, 14.0 * s, BONE_FAINT);
+
+    // Command cards: one row of up to eight buttons.
+    let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
+    let mut cards = [(zero, CardAction::None); 16];
+    let mut card_count = 0;
+    let (cw, ch, gap) = (52.0 * s, 62.0 * s, 6.0 * s);
+    let cards_x = 150.0 * s;
+    for (i, card) in panel.cards.iter().take(8).enumerate() {
+        let rect = Rect::new(cards_x + i as f32 * (cw + gap), top + 10.0 * s, cw, ch);
+        if rect.x + rect.w > right {
+            break;
+        }
+        let hovered = rect.contains(input.mouse);
+        let bg = if hovered && card.enabled {
+            Color::new(0.28, 0.28, 0.33, 1.0)
+        } else {
+            Color::new(0.16, 0.16, 0.20, 1.0)
+        };
+        draw_rectangle(rect.x, rect.y, rect.w, rect.h, bg);
+        let border = if !card.enabled {
+            Color::new(0.4, 0.4, 0.45, 0.5)
+        } else if hovered {
+            BONE
+        } else {
+            Color::new(0.55, 0.55, 0.62, 0.9)
+        };
+        draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.5 * s, border);
+        let tint = if card.enabled {
+            WHITE
+        } else {
+            Color::new(1.0, 1.0, 1.0, 0.35)
+        };
+        match &card.icon {
+            CardIcon::Glyph(g) => {
+                let dims = measure_text(g, None, (26.0 * s) as u16, 1.0);
+                draw_text(
+                    g,
+                    rect.x + (rect.w - dims.width) * 0.5,
+                    rect.y + 30.0 * s,
+                    26.0 * s,
+                    if card.enabled { BONE } else { BONE_FAINT },
+                );
+            }
+            icon => {
+                if let Some(source) = icon_source(icon) {
+                    let isz = 34.0 * s;
+                    draw_texture_ex(
+                        sprites.texture(),
+                        rect.x + (rect.w - isz) * 0.5,
+                        rect.y + 4.0 * s,
+                        tint,
+                        DrawTextureParams {
+                            dest_size: Some(vec2(isz, isz)),
+                            source: Some(source),
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
+        }
+        if let Some(cost) = card.cost {
+            let label = format!("{cost}");
+            let dims = measure_text(&label, None, (13.0 * s) as u16, 1.0);
+            draw_text(
+                &label,
+                rect.x + (rect.w - dims.width) * 0.5,
+                rect.y + rect.h - 5.0 * s,
+                13.0 * s,
+                if card.enabled {
+                    SCRAP_COLOR
+                } else {
+                    BONE_FAINT
+                },
+            );
+        }
+        if !card.hotkey.is_empty() {
+            draw_text(
+                &card.hotkey,
+                rect.x + 3.0 * s,
+                rect.y + 12.0 * s,
+                11.0 * s,
+                BONE_FAINT,
+            );
+        }
+        cards[card_count] = (
+            rect,
+            if card.enabled {
+                card.action
+            } else {
+                CardAction::None
+            },
+        );
+        card_count += 1;
+    }
+
+    // Queue strip along the bottom: production ghosts or order chips.
+    let mut queue_slots = [(zero, CardAction::None); 8];
+    let mut queue_count = 0;
+    if !panel.queue.is_empty() {
+        draw_text(
+            panel.queue_label,
+            150.0 * s,
+            top + 92.0 * s,
+            13.0 * s,
+            BONE_FAINT,
+        );
+        let (qw, qgap) = (34.0 * s, 4.0 * s);
+        let qx0 = 205.0 * s;
+        for (i, card) in panel.queue.iter().take(8).enumerate() {
+            let rect = Rect::new(qx0 + i as f32 * (qw + qgap), top + 82.0 * s, qw, qw);
+            if rect.x + rect.w > right {
+                break;
+            }
+            let hovered = rect.contains(input.mouse);
+            draw_rectangle(
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                Color::new(0.14, 0.14, 0.18, 1.0),
+            );
+            draw_rectangle_lines(
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                1.2 * s,
+                if hovered {
+                    BONE
+                } else {
+                    Color::new(0.45, 0.45, 0.52, 0.8)
+                },
+            );
+            match &card.icon {
+                CardIcon::Glyph(g) => {
+                    let dims = measure_text(g, None, (18.0 * s) as u16, 1.0);
+                    draw_text(
+                        g,
+                        rect.x + (rect.w - dims.width) * 0.5,
+                        rect.y + 22.0 * s,
+                        18.0 * s,
+                        BONE,
+                    );
+                }
+                icon => {
+                    if let Some(source) = icon_source(icon) {
+                        let isz = 26.0 * s;
+                        draw_texture_ex(
+                            sprites.texture(),
+                            rect.x + (rect.w - isz) * 0.5,
+                            rect.y + 4.0 * s,
+                            WHITE,
+                            DrawTextureParams {
+                                dest_size: Some(vec2(isz, isz)),
+                                source: Some(source),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                }
+            }
+            // The head of a production queue wears its progress.
+            if i == 0
+                && let Some(bid) = game.selection.building
+                && let Some(building) = game.state.building(bid)
+                && let Some(&kind) = building.queue.front()
+            {
+                let total = kind.stats().train_ticks.max(1);
+                let frac = (building.progress as f32 / total as f32).clamp(0.0, 1.0);
+                draw_rectangle(
+                    rect.x,
+                    rect.y + rect.h - 3.0 * s,
+                    rect.w * frac,
+                    3.0 * s,
+                    SCRAP_COLOR,
+                );
+            }
+            queue_slots[queue_count] = (rect, card.action);
+            queue_count += 1;
+        }
+    }
+    (cards, card_count, queue_slots, queue_count, top)
+}
+
+/// The hover tooltip for panel cards, drawn over everything: name,
+/// hotkey, cost, description, weapon lines, and why a disabled card
+/// refuses. Rebuilt from the same panel model the frame drew.
+fn draw_panel_tooltip(game: &Game, input: &InputState) {
+    let Some(panel) = crate::panel::build(game, &input.bindings) else {
+        return;
+    };
+    let layout = game.layout.get();
+    if !layout.panel_top.is_finite() {
+        return;
+    }
+    let s = ui_scale();
+    let hovered = layout.cards[..layout.card_count]
+        .iter()
+        .enumerate()
+        .find(|(_, (r, _))| r.w > 0.0 && r.contains(input.mouse))
+        .and_then(|(i, _)| panel.cards.get(i))
+        .or_else(|| {
+            layout.queue_slots[..layout.queue_count]
+                .iter()
+                .enumerate()
+                .find(|(_, (r, _))| r.w > 0.0 && r.contains(input.mouse))
+                .and_then(|(i, _)| panel.queue.get(i))
+        });
+    let Some(card) = hovered else {
+        return;
+    };
+    let mut lines: Vec<(String, Color)> = Vec::new();
+    let header = if card.hotkey.is_empty() {
+        card.title.clone()
+    } else {
+        format!("{}   [{}]", card.title, card.hotkey)
+    };
+    lines.push((header, BONE));
+    if let Some(cost) = card.cost {
+        lines.push((format!("{cost} scrap"), SCRAP_COLOR));
+    }
+    for d in &card.desc {
+        lines.push((d.clone(), BONE_FAINT));
+    }
+    if let Some(why) = &card.why {
+        lines.push((why.clone(), DANGER));
+    }
+    let size = 15.0 * s;
+    let pad = 8.0 * s;
+    let width = lines
+        .iter()
+        .map(|(l, _)| measure_text(l, None, size as u16, 1.0).width)
+        .fold(0.0f32, f32::max)
+        + pad * 2.0;
+    let line_h = 18.0 * s;
+    let height = lines.len() as f32 * line_h + pad * 1.5;
+    let x = input.mouse.x.min(screen_width() - width - 4.0 * s).max(0.0);
+    let y = layout.panel_top - height - 6.0 * s;
+    draw_rectangle(x, y, width, height, Color::from_rgba(12, 12, 16, 240));
+    draw_rectangle_lines(
+        x,
+        y,
+        width,
+        height,
+        1.2 * s,
+        Color::new(0.55, 0.55, 0.62, 0.9),
+    );
+    for (i, (line, color)) in lines.iter().enumerate() {
+        draw_text(
+            line,
+            x + pad,
+            y + pad + (i as f32 + 0.6) * line_h,
+            size,
+            *color,
+        );
+    }
+}
+
 fn draw_minimap(game: &Game) {
     let rect = minimap_rect(game);
     let scale = rect.w / game.state.map().width() as f32;

@@ -24,6 +24,7 @@ mod game;
 mod input;
 mod layout;
 mod menu;
+mod panel;
 mod render;
 mod saves;
 

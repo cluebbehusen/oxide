@@ -396,14 +396,34 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     }
                     continue;
                 }
-                // Panel slots are buttons: a click on a produce slot or
-                // palette entry means exactly what its digit means.
-                let slots = game.layout.get().panel_slots;
-                if let Some(slot) = slots
+                // Panel cards are buttons: each carries the exact action
+                // its click performs — the same action its hotkey routes.
+                let layout = game.layout.get();
+                let card_hit = layout.cards[..layout.card_count]
                     .iter()
-                    .position(|r| r.w > 0.0 && r.contains(vec2(x, y)))
-                {
-                    digit_action(game, input, slot);
+                    .chain(layout.queue_slots[..layout.queue_count].iter())
+                    .find(|(r, _)| r.w > 0.0 && r.contains(vec2(x, y)))
+                    .map(|(_, a)| *a);
+                if let Some(action) = card_hit {
+                    match action {
+                        crate::panel::CardAction::Dispatch(a) => {
+                            dispatch_action(game, input, a);
+                        }
+                        crate::panel::CardAction::ArmBuild(kind) => {
+                            input.build_menu = false;
+                            input.placing = Some(kind);
+                            let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
+                            game.toast(format!(
+                                "placing {} ({} scrap): click to build, Esc to cancel",
+                                kind.name(),
+                                cost
+                            ));
+                        }
+                        crate::panel::CardAction::CancelQueue(building, index) => {
+                            game.issue(Command::CancelTrain { building, index });
+                        }
+                        crate::panel::CardAction::None => {}
+                    }
                     continue;
                 }
                 // The idle badge cycles workers on click.

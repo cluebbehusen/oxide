@@ -3423,3 +3423,75 @@ fn a_doomed_site_never_comes_online() {
     );
     assert!(state.building(site).is_none());
 }
+
+#[test]
+fn cancel_train_refunds_and_resets_the_head() {
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 4, 6)])
+        .build()
+        .unwrap();
+    let foundry = state
+        .buildings()
+        .iter()
+        .find(|b| b.player == PlayerId(0))
+        .unwrap()
+        .id;
+    let bank = state.players()[0].scrap;
+    state.tick(&[
+        cmd(
+            0,
+            Command::Train {
+                building: foundry,
+                kind: UnitKind::Harvester,
+            },
+        ),
+        cmd(
+            0,
+            Command::Train {
+                building: foundry,
+                kind: UnitKind::Sentinel,
+            },
+        ),
+    ]);
+    for _ in 0..10 {
+        state.tick(&[]);
+    }
+    let b = state.building(foundry).unwrap();
+    assert_eq!(b.queue.len(), 2);
+    assert!(b.progress > 0, "the head has been training");
+    // Cancel the head: full refund, progress resets, the sentinel steps up.
+    state.tick(&[cmd(
+        0,
+        Command::CancelTrain {
+            building: foundry,
+            index: 0,
+        },
+    )]);
+    let b = state.building(foundry).unwrap();
+    assert_eq!(b.queue.len(), 1);
+    assert_eq!(b.queue[0], UnitKind::Sentinel);
+    // The cancel tick's own production phase already advances the
+    // fresh head by one — without the reset this would still read 11+.
+    assert!(b.progress <= 1, "the next machine starts from parts");
+    let cost_h = UnitKind::Harvester.stats().cost;
+    let cost_s = UnitKind::Sentinel.stats().cost;
+    assert_eq!(
+        state.players()[0].scrap,
+        bank - cost_s,
+        "the harvester's {cost_h} came back; only the sentinel stays paid"
+    );
+    // Out-of-range and foreign cancels bounce.
+    let report = state.tick(&[cmd(
+        0,
+        Command::CancelTrain {
+            building: foundry,
+            index: 5,
+        },
+    )]);
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::CommandRejected { .. })),
+        "a phantom queue slot is refused"
+    );
+}
