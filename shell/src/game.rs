@@ -916,7 +916,7 @@ impl Game {
                             .push((SoundKind::ArtilleryLaunch, Some(world_vec(*from))));
                     }
                 }
-                Event::ShellLanded { at, splash } => {
+                Event::ShellLanded { player, at, splash } => {
                     // The event names no victim on purpose (a shell in
                     // flight chooses nothing), so ask the post-tick world
                     // whether the blast reached anything of ours —
@@ -924,12 +924,14 @@ impl Game {
                     // events.
                     let reach = splash.map_or(1.0, |r| r.to_num::<f32>().max(1.0));
                     let world = world_vec(*at);
-                    let own_hurt = self
-                        .state
-                        .units()
-                        .iter()
-                        .filter(|u| u.player == self.human)
-                        .any(|u| world_vec(u.pos).distance(world) <= reach)
+                    let hostile_shell = self.state.hostile(self.human, *player);
+                    let own_hurt = hostile_shell
+                        && self
+                            .state
+                            .units()
+                            .iter()
+                            .filter(|u| u.player == self.human)
+                            .any(|u| world_vec(u.pos).distance(world) <= reach)
                         || self
                             .state
                             .buildings()

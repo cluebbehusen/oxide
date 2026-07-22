@@ -148,6 +148,12 @@ impl Menu {
     /// Feeds a frame of events through the menu; returns the activated row,
     /// if any. Mouse position updates come along in the same events.
     pub fn handle(&mut self, events: &[RawEvent], mouse: &mut Vec2) -> Option<usize> {
+        // An empty list has nothing to select, scroll, or activate —
+        // and its wrap-around arithmetic divides by zero. The shelf can
+        // legitimately be empty on a fresh profile.
+        if self.items.is_empty() {
+            return None;
+        }
         for event in events {
             match *event {
                 RawEvent::MouseMove { x, y } => {

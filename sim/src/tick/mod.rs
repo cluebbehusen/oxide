@@ -187,6 +187,16 @@ pub(crate) fn route_for(
     match kind.stats().domain {
         crate::stats::Domain::Ground => astar_for(state, from, to),
         crate::stats::Domain::Air => {
+            // Goals ring-snap off peaks here, at the one funnel every
+            // air route passes: group orders pre-snap via spread_goals,
+            // but patrol waypoints and rally tiles arrive raw — and
+            // line_blocked ignores endpoints by design, so an unsnapped
+            // peak goal would hand the flyer the mountain itself.
+            let to = if state.passable_for(crate::stats::Domain::Air, to) {
+                to
+            } else {
+                snap_air_goal(state, to)?
+            };
             let peak_free = |t: TilePos| {
                 state
                     .map
@@ -206,6 +216,26 @@ pub(crate) fn route_for(
             )
         }
     }
+}
+
+/// The nearest air-passable tile to `goal`, ring-scanned outward in the
+/// same deterministic order group goals use. `None` when nothing within
+/// reach is open sky (a map that is all mountain has bigger problems).
+fn snap_air_goal(state: &State, goal: TilePos) -> Option<TilePos> {
+    for r in 0..=crate::stats::GOAL_SNAP_RADIUS + 3 {
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs().max(dy.abs()) != r {
+                    continue;
+                }
+                let t = goal.offset(dx, dy);
+                if state.passable_for(crate::stats::Domain::Air, t) {
+                    return Some(t);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// The ring of tiles surrounding a rectangle, row-major (deterministic).

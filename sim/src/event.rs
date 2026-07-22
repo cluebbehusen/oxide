@@ -107,6 +107,11 @@ pub enum Event {
     },
     /// A shell arrived and resolved.
     ShellLanded {
+        /// The seat that fired it — presentation uses this to tell a
+        /// hostile impact from a harmless friendly one. Never names a
+        /// sufferer; the impact itself was already visible by the arc
+        /// renderer's rule.
+        player: PlayerId,
         /// Impact point.
         at: Vec2Fx,
         /// Splash radius, when the shell splashes.

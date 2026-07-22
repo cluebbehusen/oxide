@@ -48,18 +48,19 @@ pub fn save(game: &mut Game) -> bool {
         return false;
     }
     game.recorder.meta.ticks = Some(game.state.current_tick());
-    let path = dir.join(format!("autosave-{:010}.json", game.state.current_tick()));
-    // Tick-stamped names collide across sessions; uniquify with the
-    // scenario seed so two matches at the same tick both survive.
-    let path = if path.exists() {
-        dir.join(format!(
-            "autosave-{:010}-{}.json",
-            game.state.current_tick(),
+    // Tick-stamped names collide across sessions (same map, same quit
+    // tick); walk a counter until a free name turns up so rotation
+    // always keeps the newest sessions instead of overwriting one.
+    let tick = game.state.current_tick();
+    let mut path = dir.join(format!("autosave-{tick:010}.json"));
+    let mut n = 0u32;
+    while path.exists() && n < 1000 {
+        n += 1;
+        path = dir.join(format!(
+            "autosave-{tick:010}-{}-{n}.json",
             game.scenario.seed
-        ))
-    } else {
-        path
-    };
+        ));
+    }
     if game.recorder.save(&path).is_err() {
         return false;
     }

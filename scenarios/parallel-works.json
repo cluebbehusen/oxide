@@ -67,22 +67,31 @@
    "name": "Seat1",
    "faction": "cupric",
    "scrap": 150,
-   "bot": false,
-   "team": 1
+   "bot": true,
+   "team": 1,
+   "bot_config": {
+    "level": "medium"
+   }
   },
   {
    "name": "Seat2",
    "faction": "ferrous",
    "scrap": 150,
-   "bot": false,
-   "team": 0
+   "bot": true,
+   "team": 0,
+   "bot_config": {
+    "level": "medium"
+   }
   },
   {
    "name": "Seat3",
    "faction": "cupric",
    "scrap": 150,
-   "bot": false,
-   "team": 1
+   "bot": true,
+   "team": 1,
+   "bot_config": {
+    "level": "medium"
+   }
   }
  ],
  "units": [

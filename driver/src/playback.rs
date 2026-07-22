@@ -43,6 +43,13 @@ impl Playback {
                 .last()
                 .map_or(0, |c| c.tick.saturating_add(1))
         });
+        // Seeking is synchronous: a structurally valid file claiming an
+        // absurd length would hang the viewer at the first End press.
+        const MAX_INTERACTIVE_TICKS: u64 = 2_000_000;
+        anyhow::ensure!(
+            total <= MAX_INTERACTIVE_TICKS,
+            "replay spans {total} ticks — beyond the {MAX_INTERACTIVE_TICKS}-tick interactive limit"
+        );
         Ok(Self {
             replay,
             state,

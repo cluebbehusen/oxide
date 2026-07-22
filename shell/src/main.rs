@@ -536,6 +536,10 @@ struct PlaybackSession {
     paused: bool,
     accum: f32,
     held: [bool; 4],
+    /// Whether the viewer was opened from a live pause menu — leaving
+    /// returns there; every other origin goes Home. A tick-count
+    /// heuristic resurrected matches Main Menu had already discarded.
+    from_pause: bool,
 }
 
 impl PlaybackSession {
@@ -560,6 +564,7 @@ impl PlaybackSession {
             paused: false,
             accum: 0.0,
             held: [false; 4],
+            from_pause: false,
         })
     }
 }
@@ -1049,11 +1054,12 @@ async fn run() -> Result<()> {
                         }
                     }
                     if leave {
+                        let back_to_pause = pb.from_pause;
                         playback = None;
                         // Opened from a live pause? Return there; the
                         // match is still waiting. Cold --watch or the
                         // shelf goes back Home.
-                        if game.state.current_tick() > 0 && game.state.result().is_none() {
+                        if back_to_pause {
                             mode = Mode::PauseMenu;
                         } else {
                             (home, home_resumable) = home_menu();
@@ -1092,6 +1098,9 @@ async fn run() -> Result<()> {
                     if pb.game.state.current_tick() != pb.engine.position() {
                         pb.game.state = pb.engine.state.clone();
                     }
+                    pb.game
+                        .camera
+                        .set_viewport(vec2(screen_width(), screen_height()));
                     pb.game.camera.update(dt);
                     render::draw(&pb.game, &sprites, &input);
                     playback_hud(pb);
@@ -1181,7 +1190,8 @@ async fn run() -> Result<()> {
                         let mut replay = game.recorder.clone();
                         replay.meta.ticks = Some(game.state.current_tick());
                         match PlaybackSession::from_replay(replay) {
-                            Ok(session) => {
+                            Ok(mut session) => {
+                                session.from_pause = true;
                                 playback = Some(session);
                                 mode = Mode::Playback;
                             }

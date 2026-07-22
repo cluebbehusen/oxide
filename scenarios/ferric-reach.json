@@ -58,7 +58,10 @@
    "name": "Cupric",
    "faction": "cupric",
    "scrap": 150,
-   "bot": false
+   "bot": true,
+   "bot_config": {
+    "level": "medium"
+   }
   }
  ],
  "units": [

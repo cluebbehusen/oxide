@@ -218,6 +218,7 @@ fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events: &mut Vec<E
     });
     for shell in due {
         events.push(Event::ShellLanded {
+            player: shell.player,
             at: shell.impact,
             splash: shell.splash,
         });

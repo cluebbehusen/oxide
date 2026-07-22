@@ -37,6 +37,11 @@ pub struct MatchStats {
 /// Re-executes a replay, sampling every `every` ticks. Deterministic:
 /// the same replay yields the same report, bit for bit.
 pub fn compute(replay: &GameReplay, every: u64) -> Result<MatchStats> {
+    // Untrusted input: an out-of-order or cross-version record would
+    // otherwise produce a plausible, wrong report instead of an error.
+    replay
+        .validate(Some(oxide_sim::SIM_VERSION))
+        .map_err(|err| anyhow::anyhow!("{err}"))?;
     let every = every.max(1);
     let mut state = replay.setup.build().context("building scenario")?;
     let mut cursor = replay.cursor();
@@ -95,6 +100,11 @@ pub fn compute(replay: &GameReplay, every: u64) -> Result<MatchStats> {
         if state.current_tick().is_multiple_of(every) {
             sample(&state, &mut stats, &mut sample_ticks);
         }
+    }
+    // The outcome always makes the record: without this, any length not
+    // divisible by the stride reports stale closing numbers.
+    if sample_ticks.last() != Some(&state.current_tick()) {
+        sample(&state, &mut stats, &mut sample_ticks);
     }
     Ok(MatchStats {
         sample_ticks,

@@ -345,3 +345,30 @@ fn a_ridge_match_stays_bit_identical() {
     };
     assert_eq!(build(), build(), "same ridge, same bits");
 }
+
+#[test]
+fn a_patrol_leg_on_the_ridge_snaps_to_open_sky() {
+    // Patrol waypoints skip the group-order goal snap, and line_blocked
+    // ignores endpoints by design — the route funnel itself must refuse
+    // to hand a flyer the mountain.
+    let mut state = ridge(true, vec![unit(0, UnitKind::Wisp, 9, 5)])
+        .build()
+        .unwrap();
+    let flyer = state.units()[0].id;
+    state.tick(&[cmd(
+        0,
+        Command::Patrol {
+            units: vec![flyer],
+            waypoints: vec![TilePos::new(12, 5), TilePos::new(9, 5)],
+        },
+    )]);
+    for _ in 0..300 {
+        state.tick(&[]);
+        let tile = state.unit(flyer).unwrap().tile();
+        assert_ne!(
+            state.map().tile(tile).unwrap().terrain,
+            Terrain::Peak,
+            "the patrol never parks on the ridge"
+        );
+    }
+}

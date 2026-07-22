@@ -237,6 +237,11 @@ fn air_route(state: &State, a: &oxide_sim::Building, b: &oxide_sim::Building) ->
                 if !in_bounds || dist[index(n)].is_some() || !open(n) {
                     continue;
                 }
+                // The sim's air A* refuses to cut a diagonal between two
+                // touching peaks; the metric must walk the same sky.
+                if dx != 0 && dy != 0 && !(open(t.offset(dx, 0)) && open(t.offset(0, dy))) {
+                    continue;
+                }
                 dist[index(n)] = Some(d + 1);
                 queue.push_back(n);
             }

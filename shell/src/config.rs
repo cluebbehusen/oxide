@@ -167,7 +167,17 @@ impl Config {
             &tmp,
             serde_json::to_string_pretty(self).expect("config serializes"),
         )?;
-        std::fs::rename(&tmp, path)
+        // Windows refuses to rename onto an existing file; removing the
+        // old config first costs atomicity only in the crash window
+        // between the two calls, and the loader falls back to defaults
+        // on any unreadable file.
+        match std::fs::rename(&tmp, path) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                std::fs::remove_file(path).ok();
+                std::fs::rename(&tmp, path)
+            }
+        }
     }
 }
 
