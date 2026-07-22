@@ -145,6 +145,9 @@ async fn main() {
 enum Mode {
     /// The front door: play, settings, quit.
     Home,
+    /// Settings: Enter cycles a row's value; changes apply live and
+    /// persist on the spot.
+    Settings,
     /// Scenario picker (the first New Match screen).
     MainMenu,
     /// Difficulty picker for the chosen scenario.
@@ -301,6 +304,55 @@ fn home_menu() -> Menu {
     Menu::new("OXIDE", HOME_ITEMS.iter().map(|s| s.to_string()).collect())
 }
 
+/// The settings rows: label, the value steps it cycles through, and a
+/// getter/setter pair over the config. Enter advances to the next step;
+/// every change applies live and saves.
+fn settings_menu(config: &config::Config) -> Menu {
+    let pct = |v: f32| format!("{}%", (v * 100.0).round());
+    let onoff = |v: bool| if v { "on" } else { "off" };
+    Menu::new(
+        "SETTINGS",
+        vec![
+            format!("Master volume: {}", pct(config.volumes.master)),
+            format!("Effects volume: {}", pct(config.volumes.effects)),
+            format!("UI volume: {}", pct(config.volumes.ui)),
+            format!("UI scale: {}", pct(config.ui_scale)),
+            format!("Edge pan: {}", onoff(config.camera.edge_pan)),
+            format!("Invert zoom: {}", onoff(config.camera.zoom_inverted)),
+            "Back".to_string(),
+        ],
+    )
+}
+
+/// Advances one settings row to its next value step. Returns false on
+/// the Back row.
+fn cycle_setting(config: &mut config::Config, row: usize) -> bool {
+    let step = |v: f32| {
+        // 0 -> 25 -> 50 -> 75 -> 100 -> 0, tolerant of odd stored values.
+        let next = ((v * 4.0).round() as u32 + 1) % 5;
+        next as f32 / 4.0
+    };
+    match row {
+        0 => config.volumes.master = step(config.volumes.master),
+        1 => config.volumes.effects = step(config.volumes.effects),
+        2 => config.volumes.ui = step(config.volumes.ui),
+        3 => {
+            // 75 -> 100 -> 125 -> 150 -> 75.
+            config.ui_scale = match (config.ui_scale * 100.0).round() as u32 {
+                75 => 1.0,
+                100 => 1.25,
+                125 => 1.5,
+                _ => 0.75,
+            };
+            render::set_user_scale(config.ui_scale);
+        }
+        4 => config.camera.edge_pan = !config.camera.edge_pan,
+        5 => config.camera.zoom_inverted = !config.camera.zoom_inverted,
+        _ => return false,
+    }
+    true
+}
+
 const PAUSE_ITEMS: [&str; 4] = ["Resume", "Restart", "Main Menu", "Quit"];
 
 /// Cancel sits first and preselected: confirming destruction takes a
@@ -330,7 +382,16 @@ struct Mixer {
 }
 
 impl Mixer {
-    fn play(&mut self, sounds: &assets::Sounds, kind: SoundKind) {
+    /// Which settings bus a clip bills against.
+    fn bus(volumes: &config::Volumes, kind: SoundKind) -> f32 {
+        let bus = match kind {
+            SoundKind::Click | SoundKind::Denied => volumes.ui,
+            _ => volumes.effects,
+        };
+        volumes.master * bus
+    }
+
+    fn play(&mut self, sounds: &assets::Sounds, kind: SoundKind, volumes: &config::Volumes) {
         let now = get_time();
         let min_gap = match kind {
             SoundKind::Laser => 0.09,
@@ -358,6 +419,10 @@ impl Mixer {
             SoundKind::Flak => (&sounds.flak, 0.3),
             SoundKind::Artillery => (&sounds.artillery_boom, 0.5),
         };
+        let volume = volume * Self::bus(volumes, kind);
+        if volume <= 0.0 {
+            return;
+        }
         play_sound(
             sound,
             PlaySoundParams {
@@ -370,7 +435,8 @@ impl Mixer {
 
 async fn run() -> Result<()> {
     let args = Args::parse();
-    render::set_user_scale(config::Config::load().ui_scale);
+    let mut config = config::Config::load();
+    render::set_user_scale(config.ui_scale);
     let sprites = assets::Sprites::load().await?;
     let sounds = assets::Sounds::load().await?;
     let mut mixer = Mixer::default();
@@ -458,7 +524,8 @@ async fn run() -> Result<()> {
                             mode = Mode::MainMenu;
                         }
                         1 => {
-                            game.toast("settings land with the next slice");
+                            sub_menu = settings_menu(&config);
+                            mode = Mode::Settings;
                         }
                         _ => std::process::exit(0),
                     }
@@ -466,6 +533,29 @@ async fn run() -> Result<()> {
                 render::draw(&game, &sprites, &input);
                 veil();
                 home.draw("machines eating a dead world");
+            }
+            Mode::Settings => {
+                let escaped = events
+                    .iter()
+                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
+                if escaped {
+                    mode = Mode::Home;
+                } else if let Some(row) = sub_menu.handle(&events, &mut input.mouse) {
+                    game.sounds_pending.push(SoundKind::Click);
+                    if cycle_setting(&mut config, row) {
+                        // Apply live, persist immediately, keep the
+                        // cursor on the row being tuned.
+                        config.save().ok();
+                        let selected = sub_menu.selected;
+                        sub_menu = settings_menu(&config);
+                        sub_menu.select(selected);
+                    } else {
+                        mode = Mode::Home;
+                    }
+                }
+                render::draw(&game, &sprites, &input);
+                veil();
+                sub_menu.draw("Enter cycles a value - changes stick immediately");
             }
             Mode::MainMenu => {
                 let (menu, entries) = main_menu.get_or_insert_with(|| build_main_menu(&draft));
@@ -690,7 +780,7 @@ async fn run() -> Result<()> {
 
         let queued: Vec<SoundKind> = game.sounds_pending.drain(..).collect();
         for kind in queued {
-            mixer.play(&sounds, kind);
+            mixer.play(&sounds, kind, &config.volumes);
         }
 
         if !pending_shots.is_empty() {
@@ -733,6 +823,7 @@ fn capture_ui(
 ) -> UiView {
     let (mode_name, menu) = match mode {
         Mode::Home => ("home", Some(home)),
+        Mode::Settings => ("settings", Some(sub_menu)),
         Mode::MainMenu => ("main_menu", main_menu.as_ref().map(|(menu, _)| menu)),
         Mode::DifficultyMenu => ("difficulty_menu", Some(sub_menu)),
         Mode::PersonalityMenu => ("personality_menu", Some(sub_menu)),

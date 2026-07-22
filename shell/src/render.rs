@@ -20,15 +20,19 @@ const HP_BACK: Color = color_u8!(20, 20, 24, 220);
 const DANGER: Color = color_u8!(217, 82, 74, 255);
 const PANEL: Color = color_u8!(20, 20, 24, 200);
 
-/// The user's UI scale preference, set once at startup from config —
-/// a OnceLock because ui_scale() is called from every draw and hit-test
-/// path and must not re-read a file.
-static USER_SCALE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+/// The user's UI scale preference — atomic f32 bits so the settings
+/// screen can retune it live while every draw and hit-test path reads
+/// it lock-free.
+static USER_SCALE: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(f32::to_bits(1.0));
 
-/// Installs the configured user scale factor (clamped to sane bounds;
-/// a config promising 0x or 10x chrome must not brick the window).
+/// Installs the user scale factor (clamped to sane bounds; a config
+/// promising 0x or 10x chrome must not brick the window).
 pub fn set_user_scale(factor: f32) {
-    USER_SCALE.get_or_init(|| factor.clamp(0.5, 3.0));
+    USER_SCALE.store(
+        f32::to_bits(factor.clamp(0.5, 3.0)),
+        std::sync::atomic::Ordering::Relaxed,
+    );
 }
 
 /// UI scale factor: chrome (text, bars, minimap) is authored in logical
@@ -39,7 +43,7 @@ pub fn set_user_scale(factor: f32) {
 /// swallowing minimap, root-caused by a live probe: screen_w=1280 on a
 /// 2560-pixel display). The user preference is the only factor.
 pub fn ui_scale() -> f32 {
-    USER_SCALE.get().copied().unwrap_or(1.0)
+    f32::from_bits(USER_SCALE.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 /// Draws one frame.
