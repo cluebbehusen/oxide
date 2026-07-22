@@ -1,7 +1,13 @@
 //! Menu interaction regressions, driven through the automation harness
 //! against a real spawned shell. Written failing against the 0.8 widget
 //! (hover drove selection, activation on press), turned green by the
-//! 0.9 rebuild. They need a window, so they run locally, not in CI.
+//! 0.9 rebuild. `#[ignore]`d because they spawn real windows — CI has
+//! no display and the workspace suite must stay headless. The phase-end
+//! battery runs them explicitly:
+//!
+//! ```sh
+//! cargo test -p oxide-driver --test menu_ux -- --ignored --test-threads 1
+//! ```
 
 use anyhow::{Context, Result, bail};
 use oxide_driver::client::Client;
@@ -20,6 +26,14 @@ impl Drop for ShellGuard {
 
 /// Spawns an automation-mode shell on `port` and connects, retrying
 /// while cargo builds and the window boots.
+/// Spawns, connects, and walks Home -> Play so tests operate on the
+/// scenario list (the widget with enough rows to scroll).
+fn spawn_at_map_list(port: u16) -> Result<(ShellGuard, Client)> {
+    let (guard, mut client) = spawn_shell(port)?;
+    press_key(&mut client, Key::Enter)?;
+    Ok((guard, client))
+}
+
 fn spawn_shell(port: u16) -> Result<(ShellGuard, Client)> {
     // Tests run with the crate dir as cwd, but the shell loads assets and
     // scenarios relative to the workspace root — spawn it from there.
@@ -99,8 +113,9 @@ fn press_key(client: &mut Client, key: Key) -> Result<()> {
 }
 
 #[test]
+#[ignore = "spawns a real window; run explicitly in the phase battery"]
 fn a_stationary_pointer_never_changes_the_row_beneath_it() -> Result<()> {
-    let (_guard, mut client) = spawn_shell(4141)?;
+    let (_guard, mut client) = spawn_at_map_list(4141)?;
     let rows = find_rows(&mut client)?;
     let top_row_y = rows[0].0;
 
@@ -128,8 +143,9 @@ fn a_stationary_pointer_never_changes_the_row_beneath_it() -> Result<()> {
 }
 
 #[test]
+#[ignore = "spawns a real window; run explicitly in the phase battery"]
 fn menu_rows_activate_on_release_not_on_press() -> Result<()> {
-    let (_guard, mut client) = spawn_shell(4142)?;
+    let (_guard, mut client) = spawn_at_map_list(4142)?;
     // A high row: always a scenario, never Quit — pressing Quit would
     // close the shell before any assert could speak.
     let row_y = find_rows(&mut client)?[1].0;

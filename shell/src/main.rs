@@ -143,7 +143,9 @@ async fn main() {
 /// [`NewMatchDraft`] does, which is what lets Back walk the flow
 /// without losing anything.
 enum Mode {
-    /// Scenario picker.
+    /// The front door: play, settings, quit.
+    Home,
+    /// Scenario picker (the first New Match screen).
     MainMenu,
     /// Difficulty picker for the chosen scenario.
     DifficultyMenu,
@@ -293,6 +295,12 @@ struct PendingScreenshot {
     reply: Sender<ResponseEnvelope>,
 }
 
+const HOME_ITEMS: [&str; 3] = ["Play", "Settings", "Quit"];
+
+fn home_menu() -> Menu {
+    Menu::new("OXIDE", HOME_ITEMS.iter().map(|s| s.to_string()).collect())
+}
+
 const PAUSE_ITEMS: [&str; 4] = ["Resume", "Restart", "Main Menu", "Quit"];
 
 /// Cancel sits first and preselected: confirming destruction takes a
@@ -308,7 +316,7 @@ fn confirm_menu(choice: usize) -> Menu {
 fn build_main_menu(draft: &NewMatchDraft) -> (Menu, Vec<ScenarioEntry>) {
     let entries = menu::discover_scenarios();
     let mut items: Vec<String> = entries.iter().map(|e| e.label.clone()).collect();
-    items.push("Quit".to_string());
+    items.push("Back".to_string());
     let mut menu = Menu::new("OXIDE", items);
     menu.select(draft.scenario_choice.min(entries.len()));
     (menu, entries)
@@ -382,8 +390,9 @@ async fn run() -> Result<()> {
 
     // Launched for a purpose (a scenario, a resume, or an agent socket)?
     // Straight into the game; the menu is for humans starting cold.
+    let mut home = home_menu();
     let mut mode = if args.automation {
-        Mode::MainMenu
+        Mode::Home
     } else if args.debug_server || args.scenario.is_some() || args.replay.is_some() {
         Mode::Playing
     } else {
@@ -391,7 +400,7 @@ async fn run() -> Result<()> {
     };
     let mut draft = NewMatchDraft::default();
     let mut previews = PreviewCache::default();
-    let mut main_menu = matches!(mode, Mode::MainMenu).then(|| build_main_menu(&draft));
+    let mut main_menu: Option<(Menu, Vec<ScenarioEntry>)> = None;
     let mut sub_menu = Menu::new("", Vec::new());
     let mut pause_menu = Menu::new(
         "PAUSED",
@@ -406,7 +415,7 @@ async fn run() -> Result<()> {
     let mut input = input::InputState::new();
     let mut injected: Vec<RawEvent> = Vec::new();
     let mut pending_shots: Vec<PendingScreenshot> = Vec::new();
-    let mut ui_view = capture_ui(&mode, &main_menu, &sub_menu, &pause_menu, &game);
+    let mut ui_view = capture_ui(&mode, &home, &main_menu, &sub_menu, &pause_menu, &game);
 
     loop {
         let dt = get_frame_time();
@@ -440,12 +449,40 @@ async fn run() -> Result<()> {
 
         let mode_before = std::mem::discriminant(&mode);
         match mode {
+            Mode::Home => {
+                if let Some(choice) = home.handle(&events, &mut input.mouse) {
+                    game.sounds_pending.push(SoundKind::Click);
+                    match choice {
+                        0 => {
+                            main_menu = None;
+                            mode = Mode::MainMenu;
+                        }
+                        1 => {
+                            game.toast("settings land with the next slice");
+                        }
+                        _ => std::process::exit(0),
+                    }
+                }
+                render::draw(&game, &sprites, &input);
+                veil();
+                home.draw("machines eating a dead world");
+            }
             Mode::MainMenu => {
                 let (menu, entries) = main_menu.get_or_insert_with(|| build_main_menu(&draft));
-                if let Some(choice) = menu.handle(&events, &mut input.mouse) {
+                let escaped = events
+                    .iter()
+                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
+                if escaped {
+                    mode = Mode::Home;
+                } else if let Some(choice) = menu.handle(&events, &mut input.mouse) {
                     game.sounds_pending.push(SoundKind::Click);
                     if choice >= entries.len() {
-                        std::process::exit(0); // the appended Quit row
+                        // The appended Back row returns to the front door.
+                        mode = Mode::Home;
+                        render::draw(&game, &sprites, &input);
+                        veil();
+                        home.draw("machines eating a dead world");
+                        continue;
                     }
                     let scenario = match &entries[choice].path {
                         Some(path) => Scenario::load(path)
@@ -635,7 +672,7 @@ async fn run() -> Result<()> {
                         }
                         2 => {
                             main_menu = None;
-                            mode = Mode::MainMenu;
+                            mode = Mode::Home;
                         }
                         _ => std::process::exit(0),
                     }
@@ -649,7 +686,7 @@ async fn run() -> Result<()> {
         if matches!(mode, Mode::MainMenu) && main_menu.is_none() {
             main_menu = Some(build_main_menu(&draft));
         }
-        ui_view = capture_ui(&mode, &main_menu, &sub_menu, &pause_menu, &game);
+        ui_view = capture_ui(&mode, &home, &main_menu, &sub_menu, &pause_menu, &game);
 
         let queued: Vec<SoundKind> = game.sounds_pending.drain(..).collect();
         for kind in queued {
@@ -688,12 +725,14 @@ fn keep_flags(mut fresh: Game, old: &Game) -> Game {
 
 fn capture_ui(
     mode: &Mode,
+    home: &Menu,
     main_menu: &Option<(Menu, Vec<ScenarioEntry>)>,
     sub_menu: &Menu,
     pause_menu: &Menu,
     game: &Game,
 ) -> UiView {
     let (mode_name, menu) = match mode {
+        Mode::Home => ("home", Some(home)),
         Mode::MainMenu => ("main_menu", main_menu.as_ref().map(|(menu, _)| menu)),
         Mode::DifficultyMenu => ("difficulty_menu", Some(sub_menu)),
         Mode::PersonalityMenu => ("personality_menu", Some(sub_menu)),
