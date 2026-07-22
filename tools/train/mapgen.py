@@ -36,9 +36,20 @@ def cache_dir(name: str) -> str:
 
 def _carve(seed: int, players: int = 2, teams: bool = False) -> dict:
     rng = np.random.default_rng(seed)
-    w = int(rng.integers(30, 46))
-    h = int(rng.integers(18, 28))
+    # Size classes: the v4 schema rides relative coordinates, so the
+    # curriculum must actually vary the field. Quick, standard, and a
+    # large stretch that exercises the 0-1000 range like the shipped
+    # Ferric Reach class does.
+    roll = rng.random()
+    if roll < 0.25:
+        w, h = int(rng.integers(26, 36)), int(rng.integers(16, 24))
+    elif roll < 0.80:
+        w, h = int(rng.integers(36, 50)), int(rng.integers(22, 32))
+    else:
+        w, h = int(rng.integers(50, 64)), int(rng.integers(30, 40))
     if players == 4:
+        # Four bases need more floor: widen the draw a class.
+        w, h = int(w * 1.3), int(h * 1.3)
         return _carve4(rng, seed, w, h, teams)
     grid = [["." for _ in range(w)] for _ in range(h)]
 
@@ -66,8 +77,9 @@ def _carve(seed: int, players: int = 2, teams: bool = False) -> dict:
     grid[my - 1][mx - 1] = "2"
 
     # Rock formations: blobs authored in the top half, mirrored, kept
-    # away from both bases.
-    blobs = int(rng.integers(4, 9))
+    # away from both bases. Density scales with floor area so large
+    # fields don't come out empty.
+    blobs = int(rng.integers(4, 9)) * max(1, (w * h) // 1100)
     for _ in range(blobs):
         cx = int(rng.integers(2, w - 2))
         cy = int(rng.integers(2, h // 2 + 1))
