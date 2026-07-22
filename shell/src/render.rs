@@ -64,6 +64,7 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     // Own-order acknowledgments, rally flags, and radar blips sit above
     // the fog: they are the player's intent and intel, not world state.
     draw_pings(game);
+    draw_range_rings(game, input);
     draw_blips(game);
     draw_rally_marker(game);
     draw_breadcrumbs(game, input);
@@ -714,6 +715,90 @@ fn draw_blips(game: &Game) {
 
 /// Order-acknowledgment rings, drawn above the fog: they are the player's
 /// own intent echoed back, not world intel to be hidden.
+/// The range language: what a selected machine can shoot, see, and
+/// detect — and the same rings under a placement ghost, because siting
+/// a Flak Turret or Bastion IS the decision its rings describe. Weapon
+/// reach draws in danger red, own vision in bone, the Array's radar
+/// detection in patina teal; where a gun outranges its own eyes
+/// (Bombard, Bastion), the gap between red and bone is the spotter's
+/// job, made visible.
+fn draw_range_rings(game: &Game, input: &InputState) {
+    let s = ui_scale();
+    let ring = |world: Vec2, radius: f32, color: Color| {
+        if radius <= 0.0 {
+            return;
+        }
+        let center = game.camera.to_screen(world);
+        draw_circle_lines(
+            center.x,
+            center.y,
+            radius * game.camera.zoom,
+            1.5 * s,
+            color,
+        );
+    };
+    let weapon_color = Color::new(0.85, 0.32, 0.29, 0.55);
+    let sidearm_color = Color::new(0.85, 0.32, 0.29, 0.30);
+    let vision_color = Color::new(0.91, 0.89, 0.85, 0.25);
+    let radar_color = Color::new(0.25, 0.58, 0.51, 0.45);
+
+    let unit_rings = |world: Vec2, stats: &oxide_sim::stats::UnitStats| {
+        for (i, weapon) in stats.weapons.iter().enumerate() {
+            let color = if i == 0 { weapon_color } else { sidearm_color };
+            ring(world, weapon.range.to_num::<f32>(), color);
+        }
+        // Guns past their own eyes need a spotter: show the gap.
+        if stats
+            .weapons
+            .iter()
+            .any(|w| w.range.to_num::<f32>() > stats.vision as f32)
+        {
+            ring(world, stats.vision as f32, vision_color);
+        }
+    };
+    let building_rings = |world: Vec2, kind: oxide_sim::BuildingKind| {
+        let stats = kind.stats();
+        if let Some(weapon) = stats.weapons.first() {
+            ring(world, weapon.range.to_num::<f32>(), weapon_color);
+            if weapon.range.to_num::<f32>() > stats.vision as f32 {
+                ring(world, stats.vision as f32, vision_color);
+            }
+        }
+        if kind == oxide_sim::BuildingKind::Array {
+            ring(world, stats.vision as f32, vision_color);
+            ring(
+                world,
+                oxide_sim::stats::RADAR_DETECT_RADIUS as f32,
+                radar_color,
+            );
+        }
+    };
+
+    for id in &game.selection.units {
+        if let Some(unit) = game.state.unit(*id) {
+            let world = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
+            unit_rings(world, unit.kind.stats());
+        }
+    }
+    if let Some(id) = game.selection.building
+        && let Some(building) = game.state.building(id)
+    {
+        let center = building.center();
+        building_rings(
+            vec2(center.x.to_num::<f32>(), center.y.to_num::<f32>()),
+            building.kind,
+        );
+    }
+    // The armed placement ghost carries its rings to the cursor.
+    if let Some(kind) = input.placing {
+        let world = game.camera.to_world(input.mouse);
+        let size = kind.stats().size;
+        let anchor = vec2(world.x.floor(), world.y.floor());
+        let center = anchor + vec2(size.0 as f32 * 0.5, size.1 as f32 * 0.5);
+        building_rings(center, kind);
+    }
+}
+
 fn draw_pings(game: &Game) {
     for fx in &game.fx {
         let EffectKind::Ping { at, kind } = fx.kind else {
