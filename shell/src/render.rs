@@ -133,28 +133,58 @@ fn draw_breadcrumbs(game: &Game, input: &InputState) {
         };
         // Only explored targets draw: the harvest brain can retarget to a
         // node the player has never seen, and a breadcrumb there would
-        // leak it through the fog.
+        // leak it through the fog. Each verb speaks its own color: bone
+        // walks, danger fights, scrap-gold harvests, patina builds and
+        // welds — the program reads at a glance instead of as one gray
+        // chain.
+        let verb_color = |order: &oxide_sim::Order| match order {
+            oxide_sim::Order::Move { .. } => BONE_FAINT,
+            oxide_sim::Order::AttackMove { .. } | oxide_sim::Order::Attack { .. } => {
+                Color::new(0.85, 0.32, 0.29, 0.55)
+            }
+            oxide_sim::Order::Harvest { .. } => Color::new(0.85, 0.64, 0.25, 0.55),
+            oxide_sim::Order::Build { .. } | oxide_sim::Order::Repair { .. } => {
+                Color::new(0.25, 0.58, 0.51, 0.55)
+            }
+            oxide_sim::Order::Idle => BONE_FAINT,
+        };
         let goal_of = |order: &oxide_sim::Order| {
             let goal = match order {
                 oxide_sim::Order::Move { goal } | oxide_sim::Order::AttackMove { goal } => *goal,
                 oxide_sim::Order::Harvest { node } => *node,
-                _ => return None,
+                oxide_sim::Order::Build { site } => game.state.building(*site)?.anchor,
+                oxide_sim::Order::Repair { building } => game.state.building(*building)?.anchor,
+                oxide_sim::Order::Attack { target, .. } => {
+                    // A chase target draws only while its ground is
+                    // seen — the victim may have slipped back into fog.
+                    let tile = match target {
+                        oxide_sim::Target::Unit(uid) => game.state.unit(*uid)?.tile(),
+                        oxide_sim::Target::Building(bid) => game.state.building(*bid)?.anchor,
+                    };
+                    if game.overlay || game.my_vision().visible(tile) {
+                        return Some((tile, verb_color(order)));
+                    }
+                    return None;
+                }
+                oxide_sim::Order::Idle => return None,
             };
-            (game.overlay || game.my_vision().explored(goal)).then_some(goal)
+            (game.overlay || game.my_vision().explored(goal)).then_some((goal, verb_color(order)))
         };
-        let mut points: Vec<Vec2> = Vec::new();
-        if let Some(g) = goal_of(&unit.order) {
-            points.push(
+        let mut points: Vec<(Vec2, Color)> = Vec::new();
+        if let Some((g, c)) = goal_of(&unit.order) {
+            points.push((
                 game.camera
                     .to_screen(vec2(g.x as f32 + 0.5, g.y as f32 + 0.5)),
-            );
+                c,
+            ));
         }
         for order in &unit.queue {
-            if let Some(g) = goal_of(order) {
-                points.push(
+            if let Some((g, c)) = goal_of(order) {
+                points.push((
                     game.camera
                         .to_screen(vec2(g.x as f32 + 0.5, g.y as f32 + 0.5)),
-                );
+                    c,
+                ));
             }
         }
         if points.is_empty() {
@@ -163,16 +193,27 @@ fn draw_breadcrumbs(game: &Game, input: &InputState) {
         let start = game
             .camera
             .to_screen(vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>()));
+        let s = ui_scale();
         let mut prev = start;
-        for p in &points {
-            draw_line(prev.x, prev.y, p.x, p.y, 1.0, BONE_FAINT);
-            dot(*p, BONE_FAINT);
+        for (i, (p, color)) in points.iter().enumerate() {
+            draw_line(prev.x, prev.y, p.x, p.y, 1.0, *color);
+            dot(*p, *color);
+            // Numbered waypoints once a program has legs.
+            if points.len() > 1 {
+                draw_text(
+                    &format!("{}", i + 1),
+                    p.x + 6.0 * s,
+                    p.y - 4.0 * s,
+                    14.0 * s,
+                    *color,
+                );
+            }
             prev = *p;
         }
         // A patrol is a circuit: close it.
         if unit.looping && points.len() > 1 {
-            let first = points[0];
-            draw_line(prev.x, prev.y, first.x, first.y, 1.0, BONE_FAINT);
+            let (first, color) = points[0];
+            draw_line(prev.x, prev.y, first.x, first.y, 1.0, color);
         }
     }
 }
