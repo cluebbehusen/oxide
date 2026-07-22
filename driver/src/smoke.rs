@@ -305,8 +305,16 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
 
     // Armed placement must not misread a minimap click as world ground —
     // that once spent scrap on a bogus tile. Reproduce the exact input
-    // sequence through the real funnel: select a harvester, arm a turret,
-    // click the minimap; the camera must jump and the bank must not move.
+    // sequence through the real funnel: select a harvester, arm a turret
+    // through the palette, click the minimap; the camera must jump and
+    // the bank must not move. Reset to a fresh skirmish first — the
+    // replay checks above left the world hundreds of ticks in, where
+    // wandering machines can sit on any tile this block would target.
+    let scenario_path = std::env::current_dir()?.join("scenarios/skirmish.json");
+    client.call(Request::LoadScenario {
+        path: scenario_path.to_string_lossy().into_owned(),
+    })?;
+    std::thread::sleep(Duration::from_millis(200));
     let Reply::State(view) = client.call(Request::QueryState {
         filter: StateFilter {
             map: true,
@@ -328,6 +336,11 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         bail!("query_camera returned the wrong reply kind");
     };
     let [lo_x, lo_y, hi_x, hi_y] = cam.world_rect;
+    // Injected pointer events speak LOGICAL points — the same space the
+    // camera reply uses. (The dpi factor below scales the minimap RECT,
+    // mirroring the shell's ui_scale on that widget; it is not a
+    // coordinate-space conversion.)
+    let dpi = (f64::from(shot.width) / cam.viewport[0]).max(1.0);
     let to_screen = |wx: f64, wy: f64| {
         (
             ((wx - lo_x) / (hi_x - lo_x) * cam.viewport[0]) as f32,
@@ -352,13 +365,21 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         RawEvent::KeyUp {
             key: oxide_protocol::Key::B,
         },
+        // B opens the build palette; the digit actually arms a Turret.
+        // Without it the whole check would pass vacuously against an
+        // unarmed cursor.
+        RawEvent::KeyDown {
+            key: oxide_protocol::Key::Num1,
+        },
+        RawEvent::KeyUp {
+            key: oxide_protocol::Key::Num1,
+        },
     ] {
         client.call(Request::InjectEvent { event })?;
     }
     std::thread::sleep(Duration::from_millis(200));
     // The minimap's viewport rect mirrors the shell's own formula
     // (bottom-right, MINIMAP_MAX scaled by dpi = physical/logical width).
-    let dpi = (f64::from(shot.width) / cam.viewport[0]).max(1.0);
     let map_aspect_scale = (220.0 * dpi / map_w).min(150.0 * dpi / map_h);
     let (mm_w, mm_h) = (map_w * map_aspect_scale, map_h * map_aspect_scale);
     let mm_x = cam.viewport[0] - mm_w - 12.0 * dpi;
@@ -396,7 +417,105 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
             scrap_before, view_after.players[0].scrap, cam.center, cam_after.center
         ),
     );
-    // Disarm placement so nothing lingers.
+    // Prove the palette actually armed something: commit the build on
+    // VISIBLE open ground and watch the scrap move — the half of the
+    // contract the minimap check alone cannot see. The minimap jump
+    // left the camera over fog (where can_place refuses), so recenter
+    // home first and aim beside the foundry, inside its vision.
+    for event in [
+        RawEvent::KeyDown {
+            key: oxide_protocol::Key::Space,
+        },
+        RawEvent::KeyUp {
+            key: oxide_protocol::Key::Space,
+        },
+    ] {
+        client.call(Request::InjectEvent { event })?;
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    let Reply::Camera(cam2) = client.call(Request::QueryCamera)? else {
+        bail!("query_camera returned the wrong reply kind");
+    };
+    let [lo_x2, lo_y2, hi_x2, hi_y2] = cam2.world_rect;
+    let to_screen2 = |wx: f64, wy: f64| {
+        (
+            ((wx - lo_x2) / (hi_x2 - lo_x2) * cam2.viewport[0]) as f32,
+            ((wy - lo_y2) / (hi_y2 - lo_y2) * cam2.viewport[1]) as f32,
+        )
+    };
+    // A commit tile chosen from data, not guesswork: open ground ('.')
+    // near the foundry (inside its vision), clear of every unit's tile.
+    let foundry = view
+        .buildings
+        .iter()
+        .find(|b| b.player == 0)
+        .context("no own foundry in view")?;
+    let occupied: Vec<(i32, i32)> = view
+        .units
+        .iter()
+        .map(|u| (u.pos[0].floor() as i32, u.pos[1].floor() as i32))
+        .collect();
+    let (fx, fy) = (foundry.anchor[0], foundry.anchor[1]);
+    let mut commit: Option<(i32, i32)> = None;
+    'scan: for r in 2..6i32 {
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs().max(dy.abs()) != r {
+                    continue;
+                }
+                let (tx, ty) = (fx + dx, fy + dy);
+                let open = rows
+                    .get(ty as usize)
+                    .and_then(|row| row.chars().nth(tx as usize))
+                    .is_some_and(|c| c == '.' || c == ',');
+                if open && !occupied.contains(&(tx, ty)) {
+                    commit = Some((tx, ty));
+                    break 'scan;
+                }
+            }
+        }
+    }
+    let (tx, ty) = commit.context("no open tile near the foundry")?;
+    let (bx, by) = to_screen2(f64::from(tx) + 0.5, f64::from(ty) + 0.5);
+    for event in [
+        RawEvent::MouseDown {
+            button: oxide_protocol::MouseButton::Left,
+            x: bx,
+            y: by,
+        },
+        RawEvent::MouseUp {
+            button: oxide_protocol::MouseButton::Left,
+            x: bx,
+            y: by,
+        },
+    ] {
+        client.call(Request::InjectEvent { event })?;
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    // The shell is paused: issued commands stage for the NEXT tick, so
+    // the world only reflects the click once the sim advances.
+    client.call(Request::AdvanceTicks { ticks: 1 })?;
+    let Reply::State(view_committed) = client.call(Request::QueryState {
+        filter: StateFilter::default(),
+    })?
+    else {
+        bail!("query_state returned the wrong reply kind");
+    };
+    let turret_cost = 100;
+    let spent = scrap_before.saturating_sub(view_committed.players[0].scrap);
+    let site_up = view_committed
+        .buildings
+        .iter()
+        .any(|b| b.kind == oxide_sim::BuildingKind::Turret && b.player == 0);
+    checks.note(
+        "armed palette placement commits a turret site on click",
+        spent == turret_cost && site_up,
+        format!(
+            "scrap {} -> {} (want -{turret_cost}), turret site present: {site_up}",
+            scrap_before, view_committed.players[0].scrap
+        ),
+    );
+    // Disarm anything lingering.
     for event in [
         RawEvent::KeyDown {
             key: oxide_protocol::Key::Escape,

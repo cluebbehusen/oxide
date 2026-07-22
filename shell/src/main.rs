@@ -382,17 +382,29 @@ async fn run() -> Result<()> {
                     // The human seat plays the chosen roster; "surprise"
                     // lets the scenario seed pick.
                     let faction = match choice {
-                        0 => Some(oxide_sim::Faction::Ferrous),
-                        1 => Some(oxide_sim::Faction::Cupric),
+                        0 => oxide_sim::Faction::Ferrous,
+                        1 => oxide_sim::Faction::Cupric,
                         _ => match scenario.seed % 2 {
-                            0 => Some(oxide_sim::Faction::Ferrous),
-                            _ => Some(oxide_sim::Faction::Cupric),
+                            0 => oxide_sim::Faction::Ferrous,
+                            _ => oxide_sim::Faction::Cupric,
                         },
                     };
-                    if let (Some(f), Some(human)) =
-                        (faction, scenario.players.iter_mut().find(|p| !p.bot))
+                    let complement = match faction {
+                        oxide_sim::Faction::Ferrous => oxide_sim::Faction::Cupric,
+                        oxide_sim::Faction::Cupric => oxide_sim::Faction::Ferrous,
+                    };
+                    if let Some(human) = scenario.players.iter_mut().find(|p| !p.bot) {
+                        human.faction = faction;
+                    }
+                    // In a duel, faction is also the only allegiance cue
+                    // on screen — the opponent takes the other roster, or
+                    // two same-color armies would fight an unreadable
+                    // war. Team maps author their own mixed factions and
+                    // carry an explicit ally marker instead.
+                    if scenario.players.len() == 2
+                        && let Some(bot) = scenario.players.iter_mut().find(|p| p.bot)
                     {
-                        human.faction = f;
+                        bot.faction = complement;
                     }
                     let fresh = Game::new(scenario)?;
                     game = keep_flags(fresh, &game);

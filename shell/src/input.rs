@@ -600,7 +600,7 @@ fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         .state
         .units()
         .iter()
-        .filter(|u| u.player != game.human && game.my_vision().visible(u.tile()))
+        .filter(|u| game.state.hostile(game.human, u.player) && game.my_vision().visible(u.tile()))
         .map(|u| {
             let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
             (p.distance(world), u.id)
@@ -622,7 +622,7 @@ fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         return;
     }
     if let Some(building) = game.state.building_at(tile)
-        && building.player != game.human
+        && game.state.hostile(game.human, building.player)
         && building.tiles().any(|t| game.my_vision().visible(t))
     {
         let target = Target::Building(building.id);

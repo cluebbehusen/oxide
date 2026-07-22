@@ -508,6 +508,17 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                 2.0,
                 BONE,
             );
+        } else if unit.player != game.human && !game.state.hostile(game.human, unit.player) {
+            // Teammates wear a soft whitened ring — same language as the
+            // minimap's ally lift, because two teams can field the same
+            // faction and sprite color alone cannot say friend or foe.
+            draw_circle_lines(
+                screen.x,
+                screen.y,
+                unit.kind.stats().radius.to_num::<f32>() * zoom + 3.0,
+                1.5,
+                Color::new(0.95, 0.95, 0.9, 0.55),
+            );
         }
         draw_texture_ex(
             sprites.texture(),
@@ -851,7 +862,7 @@ fn draw_hud(game: &Game, input: &InputState) {
             let mut line = format!("{name} {}/{} hp", building.hp, stats.max_hp);
             if !building.built {
                 line.push_str("   under construction   X: scrap site");
-                panel_line(&line);
+                panel_rows_packed(std::slice::from_ref(&line), 0);
             } else if !stats.produces.is_empty() {
                 // Number keys train; the list is the seat's own roster
                 // (the other faction's variants never show).
@@ -863,9 +874,9 @@ fn draw_hud(game: &Game, input: &InputState) {
                     .enumerate()
                     .map(|(i, k)| format!("{}: {} ({})", i + 1, k.name(), k.stats().cost))
                     .collect();
-                line.push_str(&format!("   queue [{}]", queue.join(", ")));
-                panel_row(&slots.join("   "), 0);
-                panel_row(&line, 1);
+                let used = panel_rows_packed(&slots, 0);
+                let header = vec![line, format!("queue [{}]", queue.join(", "))];
+                panel_rows_packed(&header, used);
             } else {
                 panel_line(&line);
             }
@@ -877,11 +888,14 @@ fn draw_hud(game: &Game, input: &InputState) {
                 .unit(*id)
                 .is_some_and(|u| u.kind == UnitKind::Harvester)
         });
-        let line = format!(
-            "{} unit(s) selected   X: stop   R: patrol{}",
-            game.selection.units.len(),
-            if has_builder { "   B: build" } else { "" }
-        );
+        let mut line_items = vec![
+            format!("{} unit(s) selected", game.selection.units.len()),
+            "X: stop".to_string(),
+            "R: patrol".to_string(),
+        ];
+        if has_builder {
+            line_items.push("B: build".to_string());
+        }
         if input.build_menu {
             let palette: Vec<String> = crate::input::BUILD_PALETTE
                 .iter()
@@ -891,10 +905,10 @@ fn draw_hud(game: &Game, input: &InputState) {
                     format!("{}: {} ({})", i + 1, k.name(), cost)
                 })
                 .collect();
-            panel_row(&palette.join("   "), 0);
-            panel_row(&line, 1);
+            let used = panel_rows_packed(&palette, 0);
+            panel_rows_packed(&line_items, used);
         } else {
-            panel_line(&line);
+            panel_rows_packed(&line_items, 0);
         }
         panel_shown = true;
     }
@@ -994,6 +1008,43 @@ fn panel_row(text: &str, row: usize) {
     let base = screen_height() - 36.0 * s * (row as f32 + 1.0);
     draw_rectangle(0.0, base, screen_width(), 36.0 * s, PANEL);
     draw_text(text, 12.0 * s, base + 24.0 * s, 20.0 * s, BONE);
+}
+
+/// Lays `items` into as many panel rows as they need, packed greedily
+/// to fit left of the minimap, stacked above row `first`. Returns how
+/// many rows it used. A single long line would run off the right edge
+/// (and under the minimap) at retina scale — palette and production
+/// slots overflow real screens without this.
+fn panel_rows_packed(items: &[String], first: usize) -> usize {
+    let s = ui_scale();
+    let sep = "   ";
+    let limit = (screen_width() - 240.0 * s).max(320.0 * s);
+    let fits = |line: &str| measure_text(line, None, (20.0 * s) as u16, 1.0).width < limit;
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for item in items {
+        let candidate = if current.is_empty() {
+            item.clone()
+        } else {
+            format!("{current}{sep}{item}")
+        };
+        if fits(&candidate) || current.is_empty() {
+            current = candidate;
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current = item.clone();
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    // Stack bottom-up: the first packed line sits highest so reading
+    // order stays top-to-bottom.
+    let n = lines.len();
+    for (i, line) in lines.iter().enumerate() {
+        panel_row(line, first + (n - 1 - i));
+    }
+    n
 }
 
 // --- Minimap ------------------------------------------------------------
