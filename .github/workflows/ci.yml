@@ -98,3 +98,6 @@ jobs:
       - name: Type check
         working-directory: tools/train
         run: uv run ty check
+      - name: Tests
+        working-directory: tools/train
+        run: uv run pytest -q
