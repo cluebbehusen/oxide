@@ -336,6 +336,9 @@ pub struct ScenarioEntry {
     pub blurb: Option<String>,
     /// File path; `None` means the embedded skirmish.
     pub path: Option<PathBuf>,
+    /// Theme key from the authored metadata — the preview panel grades
+    /// its thumbnail with the same tint the match will wear.
+    pub theme: String,
 }
 
 /// Lists playable scenarios: everything parseable under `scenarios/`, or
@@ -356,10 +359,16 @@ pub fn discover_scenarios() -> Vec<ScenarioEntry> {
                     .meta
                     .as_ref()
                     .map(|m| format!("{}  [{} - {} - {}]", m.hook, m.pace, m.mode, m.richness));
+                let theme = scenario
+                    .meta
+                    .as_ref()
+                    .map(|m| m.theme.clone())
+                    .unwrap_or_default();
                 entries.push(ScenarioEntry {
                     label: scenario.name,
                     blurb,
                     path: Some(path),
+                    theme,
                 });
             }
         }
@@ -369,6 +378,7 @@ pub fn discover_scenarios() -> Vec<ScenarioEntry> {
             label: Scenario::skirmish().name,
             blurb: None,
             path: None,
+            theme: String::new(),
         });
     }
     entries

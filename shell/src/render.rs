@@ -264,9 +264,31 @@ fn visible_tiles(game: &Game) -> (TilePos, TilePos) {
     (min, max)
 }
 
+/// Per-theme terrain grading: a subtle multiplier on ground-layer
+/// sprites only. Units, chrome, the minimap, and the golden renderer
+/// stay untinted — grading is atmosphere, never information.
+pub fn theme_tint(theme: &str) -> Color {
+    match theme {
+        "rusted-yard" => Color::new(1.0, 0.95, 0.88, 1.0),
+        "cold-circuitry" => Color::new(0.89, 0.95, 1.0, 1.0),
+        "quarry-dust" => Color::new(1.0, 0.97, 0.90, 1.0),
+        "basalt" => Color::new(0.92, 0.91, 1.0, 1.0),
+        "slag" => Color::new(1.0, 0.92, 0.92, 1.0),
+        "verdigris" => Color::new(0.90, 1.0, 0.94, 1.0),
+        _ => WHITE,
+    }
+}
+
 fn draw_tiles(game: &Game, sprites: &Sprites) {
     let zoom = game.camera.zoom;
     let size = zoom.ceil() + 1.0; // slight overlap kills seam hairlines
+    let tint = theme_tint(
+        game.scenario
+            .meta
+            .as_ref()
+            .map(|m| m.theme.as_str())
+            .unwrap_or(""),
+    );
     let (min, max) = visible_tiles(game);
     for y in min.y..max.y {
         for x in min.x..max.x {
@@ -281,7 +303,7 @@ fn draw_tiles(game: &Game, sprites: &Sprites) {
                 sprites.texture(),
                 screen.x.floor(),
                 screen.y.floor(),
-                WHITE,
+                tint,
                 DrawTextureParams {
                     dest_size: Some(vec2(size, size)),
                     source: Some(sprites.ground(variant)),
@@ -302,7 +324,7 @@ fn draw_tiles(game: &Game, sprites: &Sprites) {
                     sprites.texture(),
                     screen.x.floor(),
                     screen.y.floor(),
-                    WHITE,
+                    tint,
                     DrawTextureParams {
                         dest_size: Some(vec2(size, size)),
                         source: Some(source),
@@ -329,7 +351,7 @@ fn draw_tiles(game: &Game, sprites: &Sprites) {
                             sprites.texture(),
                             screen.x.floor(),
                             screen.y.floor(),
-                            WHITE,
+                            tint,
                             DrawTextureParams {
                                 dest_size: Some(vec2(size, size)),
                                 source: Some(sprites.rock_skirt()),
@@ -367,7 +389,7 @@ fn draw_tiles(game: &Game, sprites: &Sprites) {
                     sprites.texture(),
                     screen.x.floor(),
                     screen.y.floor(),
-                    WHITE,
+                    tint,
                     DrawTextureParams {
                         dest_size: Some(vec2(size, size)),
                         source: Some(source),

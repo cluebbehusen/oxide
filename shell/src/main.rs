@@ -756,7 +756,7 @@ async fn run() -> Result<()> {
                                 tex,
                                 x,
                                 y,
-                                WHITE,
+                                render::theme_tint(&entry.theme),
                                 DrawTextureParams {
                                     dest_size: Some(vec2(w, h)),
                                     ..Default::default()
