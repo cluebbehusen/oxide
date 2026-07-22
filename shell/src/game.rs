@@ -925,22 +925,25 @@ impl Game {
                     let reach = splash.map_or(1.0, |r| r.to_num::<f32>().max(1.0));
                     let world = world_vec(*at);
                     let hostile_shell = self.state.hostile(self.human, *player);
+                    // Parenthesized deliberately: && binds tighter than
+                    // ||, and an unguarded building branch once alarmed
+                    // on the player's own defensive artillery.
                     let own_hurt = hostile_shell
-                        && self
+                        && (self
                             .state
                             .units()
                             .iter()
                             .filter(|u| u.player == self.human)
                             .any(|u| world_vec(u.pos).distance(world) <= reach)
-                        || self
-                            .state
-                            .buildings()
-                            .iter()
-                            .filter(|b| b.player == self.human)
-                            .any(|b| {
-                                let c = world_vec(b.center());
-                                c.distance(world) <= reach + 1.5
-                            });
+                            || self
+                                .state
+                                .buildings()
+                                .iter()
+                                .filter(|b| b.player == self.human)
+                                .any(|b| {
+                                    let c = world_vec(b.center());
+                                    c.distance(world) <= reach + 1.5
+                                }));
                     if own_hurt {
                         self.raise_alert(world);
                     }

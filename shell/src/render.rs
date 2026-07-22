@@ -808,7 +808,15 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
             shell.impact.x.to_num::<f32>(),
             shell.impact.y.to_num::<f32>(),
         );
-        if !game.overlay && !(sees(from) || sees(to)) {
+        // Fog rule: own and allied shells draw whole; a hostile arc
+        // draws only segments crossing ground the player can see.
+        // Anchoring a trail at a fogged muzzle would pinpoint exactly
+        // the hidden artillery the spotter-weapon design protects —
+        // the sim's incoming-shell sense exposes the impact tile,
+        // never the launch, and the renderer must match it.
+        let mine = !game.state.hostile(game.human, shell.player);
+        let flat_seen = |k: f32| sees(from.lerp(to, k));
+        if !game.overlay && !mine && !(0..=10).any(|i| flat_seen(i as f32 / 10.0)) {
             continue;
         }
         // Reconstruct flight length the way the launch computed it, so
@@ -828,16 +836,24 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
         let steps = 10;
         for i in 1..=((t * steps as f32) as usize).max(1) {
             let p = at(i as f32 / steps as f32);
-            let fade = 0.35 * (1.0 - t);
-            draw_line(
-                prev.x,
-                prev.y,
-                p.x,
-                p.y,
-                1.5,
-                Color::new(0.95, 0.75, 0.5, fade),
-            );
+            let visible = game.overlay
+                || mine
+                || (flat_seen((i - 1) as f32 / steps as f32) && flat_seen(i as f32 / steps as f32));
+            if visible {
+                let fade = 0.35 * (1.0 - t);
+                draw_line(
+                    prev.x,
+                    prev.y,
+                    p.x,
+                    p.y,
+                    1.5,
+                    Color::new(0.95, 0.75, 0.5, fade),
+                );
+            }
             prev = p;
+        }
+        if !(game.overlay || mine || flat_seen(t)) {
+            continue;
         }
         let dot = at(t);
         draw_circle(
@@ -1890,8 +1906,21 @@ fn draw_panel(
     (cards, card_count, queue_slots, queue_count, top)
 }
 
-/// Where the tutorial card's dismiss box sits this frame — pure
-/// geometry shared by drawing and the click test.
+/// The tutorial card's full rectangle — pure geometry shared by
+/// drawing and input, which treats the card as chrome (clicks on an
+/// instructional card must never reach the world).
+pub fn tutorial_card_rect(t: &crate::tutorial::Tutorial) -> Rect {
+    let s = ui_scale();
+    let w = 460.0 * s;
+    let x = (screen_width() - w) * 0.5;
+    let lines = crate::tutorial::STEPS
+        .get(t.step)
+        .map(|step| step.body.len())
+        .unwrap_or(0) as f32;
+    Rect::new(x, 36.0 * s, w, 34.0 * s + lines * 18.0 * s + 10.0 * s)
+}
+
+/// Where the tutorial card's dismiss box sits this frame.
 pub fn tutorial_dismiss_rect() -> Rect {
     let s = ui_scale();
     let w = 460.0 * s;

@@ -212,20 +212,33 @@ fn air_route(state: &State, a: &oxide_sim::Building, b: &oxide_sim::Building) ->
             .tile(t)
             .is_some_and(|tile| tile.terrain != oxide_sim::map::Terrain::Peak)
     };
-    let mut dist: Vec<Option<usize>> = vec![None; (w * h) as usize];
-    let mut queue: std::collections::VecDeque<TilePos> = Default::default();
+    // Uniform-cost search with diagonals at sqrt(2), so the detour
+    // branch reports the same Euclidean-ish tile unit as the straight
+    // line — a hop-counting BFS made peak maps read closer than open
+    // ones on diagonal geometry.
+    const SQRT2: f64 = std::f64::consts::SQRT_2;
+    let mut dist: Vec<f64> = vec![f64::INFINITY; (w * h) as usize];
+    let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<(u64, i32, i32)>> =
+        Default::default();
+    // Costs are ordered through their raw bit patterns: all values are
+    // non-negative finite floats, where the IEEE ordering agrees with
+    // the numeric one.
     for t in a.tiles() {
-        dist[index(t)] = Some(0);
-        queue.push_back(t);
+        dist[index(t)] = 0.0;
+        heap.push(std::cmp::Reverse((0u64, t.x, t.y)));
     }
     let mut target = vec![false; (w * h) as usize];
     for t in b.tiles() {
         target[index(t)] = true;
     }
-    while let Some(t) = queue.pop_front() {
-        let d = dist[index(t)].expect("queued tiles have distances");
+    while let Some(std::cmp::Reverse((bits, x, y))) = heap.pop() {
+        let t = TilePos::new(x, y);
+        let d = f64::from_bits(bits);
+        if d > dist[index(t)] {
+            continue; // stale entry
+        }
         if target[index(t)] {
-            return Some(d as f64);
+            return Some(d);
         }
         for dy in -1..=1 {
             for dx in -1..=1 {
@@ -234,7 +247,7 @@ fn air_route(state: &State, a: &oxide_sim::Building, b: &oxide_sim::Building) ->
                 }
                 let n = t.offset(dx, dy);
                 let in_bounds = n.x >= 0 && n.y >= 0 && n.x < w && n.y < h;
-                if !in_bounds || dist[index(n)].is_some() || !open(n) {
+                if !in_bounds || !open(n) {
                     continue;
                 }
                 // The sim's air A* refuses to cut a diagonal between two
@@ -242,8 +255,12 @@ fn air_route(state: &State, a: &oxide_sim::Building, b: &oxide_sim::Building) ->
                 if dx != 0 && dy != 0 && !(open(t.offset(dx, 0)) && open(t.offset(0, dy))) {
                     continue;
                 }
-                dist[index(n)] = Some(d + 1);
-                queue.push_back(n);
+                let step = if dx != 0 && dy != 0 { SQRT2 } else { 1.0 };
+                let nd = d + step;
+                if nd < dist[index(n)] {
+                    dist[index(n)] = nd;
+                    heap.push(std::cmp::Reverse((nd.to_bits(), n.x, n.y)));
+                }
             }
         }
     }

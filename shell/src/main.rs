@@ -811,7 +811,7 @@ async fn run() -> Result<()> {
                     }
                 } else if escaped {
                     sub_menu = settings_menu(&config);
-                    sub_menu.select(6);
+                    sub_menu.select(7);
                     mode = Mode::Settings;
                 } else if let Some(row) = sub_menu.handle(&events, &mut input.mouse) {
                     game.sounds_pending.push((SoundKind::Click, None));
@@ -821,7 +821,7 @@ async fn run() -> Result<()> {
                         };
                     } else {
                         sub_menu = settings_menu(&config);
-                        sub_menu.select(6);
+                        sub_menu.select(7);
                         mode = Mode::Settings;
                     }
                 }
@@ -968,6 +968,25 @@ async fn run() -> Result<()> {
                 sub_menu.draw("which roster do your machines run?");
             }
             Mode::Playing => {
+                // The tutorial card is chrome: a click on it (the
+                // dismiss box included) must never reach the world —
+                // it once deselected armies and even placed buildings.
+                if let Some(t) = &tutorial {
+                    let dismiss = render::tutorial_dismiss_rect();
+                    if events.iter().any(|e| {
+                        matches!(e, RawEvent::MouseDown { button: MouseButton::Left, x, y }
+                            if dismiss.contains(vec2(*x, *y)))
+                    }) {
+                        tutorial = None;
+                    } else {
+                        let card = render::tutorial_card_rect(t);
+                        events.retain(|e| {
+                            !matches!(e,
+                                RawEvent::MouseDown { x, y, .. } | RawEvent::MouseUp { x, y, .. }
+                                    if card.contains(vec2(*x, *y)))
+                        });
+                    }
+                }
                 let had_selection =
                     !game.selection.units.is_empty() || game.selection.building.is_some();
                 let escape_pressed = events
