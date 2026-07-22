@@ -304,7 +304,7 @@ async fn run() -> Result<()> {
     let mut input = input::InputState::new();
     let mut injected: Vec<RawEvent> = Vec::new();
     let mut pending_shots: Vec<PendingScreenshot> = Vec::new();
-    let mut ui_view = capture_ui(&mode, &main_menu, &sub_menu, &pause_menu);
+    let mut ui_view = capture_ui(&mode, &main_menu, &sub_menu, &pause_menu, &game);
 
     loop {
         let dt = get_frame_time();
@@ -543,7 +543,7 @@ async fn run() -> Result<()> {
         if matches!(mode, Mode::MainMenu) && main_menu.is_none() {
             main_menu = Some(build_main_menu());
         }
-        ui_view = capture_ui(&mode, &main_menu, &sub_menu, &pause_menu);
+        ui_view = capture_ui(&mode, &main_menu, &sub_menu, &pause_menu, &game);
 
         let queued: Vec<SoundKind> = game.sounds_pending.drain(..).collect();
         for kind in queued {
@@ -585,6 +585,7 @@ fn capture_ui(
     main_menu: &Option<(Menu, Vec<ScenarioEntry>)>,
     sub_menu: &Menu,
     pause_menu: &Menu,
+    game: &Game,
 ) -> UiView {
     let (mode_name, menu) = match mode {
         Mode::MainMenu => ("main_menu", main_menu.as_ref().map(|(menu, _)| menu)),
@@ -600,6 +601,11 @@ fn capture_ui(
         selected: menu.map(|menu| menu.selected),
         items: menu.map_or_else(Vec::new, |menu| menu.items.clone()),
         visible_range: menu.map(Menu::visible_range),
+        chrome: matches!(mode, Mode::Playing).then(|| {
+            let l = game.layout.get();
+            let m = l.minimap;
+            [l.top_bar_h, l.panel_top, m.x, m.y, m.w, m.h]
+        }),
     }
 }
 

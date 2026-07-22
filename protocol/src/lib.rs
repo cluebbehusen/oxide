@@ -442,6 +442,7 @@ mod tests {
                 selected: Some(2),
                 items: vec!["Skirmish".into(), "Quit".into()],
                 visible_range: Some([0, 2]),
+                chrome: Some([32.0, 764.0, 1048.0, 616.0, 220.0, 150.0]),
             }),
             Reply::Hash(HashView {
                 tick: 5,
