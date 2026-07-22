@@ -129,7 +129,15 @@ impl Config {
             return Self::default();
         };
         match serde_json::from_str::<Self>(&text) {
-            Ok(config) if config.version == CONFIG_VERSION => config,
+            Ok(mut config) if config.version == CONFIG_VERSION => {
+                // A hand-edited config with no bindings parses fine and
+                // would strip every shortcut — restore the profile
+                // rather than ship a keyboardless game.
+                if config.bindings.bindings().is_empty() {
+                    config.bindings = BindingMap::classic();
+                }
+                config
+            }
             _ => Self::default(),
         }
     }

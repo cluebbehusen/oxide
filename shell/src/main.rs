@@ -698,6 +698,7 @@ async fn run() -> Result<()> {
                     .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
                 input.ui = render::ui_scale();
                 input.now = get_time();
+                input.camera_prefs = config.camera;
                 input::apply_events(&mut game, &mut input, &events);
                 input::update_held(&mut game, &input, dt);
                 // Escape walks outward: deselect first, then the menu.

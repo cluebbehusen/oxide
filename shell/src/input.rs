@@ -55,6 +55,8 @@ pub struct InputState {
     /// This frame's wall clock, injected likewise (double-click and
     /// double-tap timing).
     pub(crate) now: f64,
+    /// Camera feel from settings, injected per frame.
+    pub(crate) camera_prefs: crate::config::CameraPrefs,
     /// The active binding profile (Classic until settings can edit it).
     pub(crate) bindings: BindingMap,
     /// Chord state: modifier truth and held actions.
@@ -86,6 +88,7 @@ impl InputState {
             build_menu: false,
             ui: 1.0,
             now: 0.0,
+            camera_prefs: crate::config::CameraPrefs::default(),
             bindings: crate::config::Config::load().bindings,
             resolver: ActionResolver::default(),
         }
@@ -243,7 +246,14 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
     for event in events {
         match *event {
             RawEvent::MouseMove { x, y } => input.mouse = vec2(x, y),
-            RawEvent::Wheel { delta } => game.camera.zoom_at(input.mouse, delta),
+            RawEvent::Wheel { delta } => {
+                let delta = if input.camera_prefs.zoom_inverted {
+                    -delta
+                } else {
+                    delta
+                };
+                game.camera.zoom_at(input.mouse, delta);
+            }
             RawEvent::MouseDown {
                 button: MouseButton::Left,
                 x,
@@ -394,8 +404,26 @@ pub fn update_held(game: &mut Game, input: &InputState, dt: f32) {
     if input.resolver.is_held(Action::PanRight) {
         dir.x += 1.0;
     }
+    if input.camera_prefs.edge_pan && dir == vec2(0.0, 0.0) {
+        // The pointer at a window edge pans — opt-in, because it fights
+        // windowed-mode mousing; keyboard panning always wins when both
+        // speak.
+        const EDGE: f32 = 8.0;
+        let viewport = game.camera.viewport();
+        if input.mouse.x <= EDGE {
+            dir.x -= 1.0;
+        } else if input.mouse.x >= viewport.x - EDGE {
+            dir.x += 1.0;
+        }
+        if input.mouse.y <= EDGE {
+            dir.y -= 1.0;
+        } else if input.mouse.y >= viewport.y - EDGE {
+            dir.y += 1.0;
+        }
+    }
     if dir != vec2(0.0, 0.0) {
-        let world_per_sec = PAN_PX_PER_SEC * input.ui / game.camera.zoom;
+        let world_per_sec =
+            PAN_PX_PER_SEC * input.ui * input.camera_prefs.pan_speed / game.camera.zoom;
         game.camera.pan(dir.normalize() * world_per_sec * dt);
     }
 }
