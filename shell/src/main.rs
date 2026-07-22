@@ -51,6 +51,11 @@ struct Args {
     #[arg(long)]
     replay: Option<String>,
 
+    /// Open a replay in the read-only playback viewer (pause, speed,
+    /// seek — no recorder, no commands).
+    #[arg(long, conflicts_with_all = ["scenario", "replay", "automation"])]
+    watch: Option<String>,
+
     /// Serve the debug protocol on --port (skips the menu unless automated).
     #[arg(long)]
     debug_server: bool,
@@ -164,6 +169,8 @@ enum Mode {
     FactionMenu,
     /// The game proper.
     Playing,
+    /// Read-only replay playback: the log is the match, seek included.
+    Playback,
     /// Game visible but veiled; the pause menu owns input.
     PauseMenu,
     /// A destructive pause choice awaiting explicit confirmation.
@@ -482,6 +489,63 @@ impl Mixer {
     }
 }
 
+/// A playback viewing session: the engine owns truth, the `Game` is a
+/// render vehicle whose state gets replaced after every advance — its
+/// recorder, sounds, and effects are simply never fed.
+struct PlaybackSession {
+    engine: oxide_driver::playback::Playback,
+    game: Game,
+    speed: f32,
+    paused: bool,
+    accum: f32,
+    held: [bool; 4],
+}
+
+impl PlaybackSession {
+    fn open(path: &str) -> Result<Self> {
+        let replay = GameReplay::load(path).with_context(|| format!("loading replay {path}"))?;
+        let scenario = replay.setup.clone();
+        let engine = oxide_driver::playback::Playback::load(replay)?;
+        let mut game = Game::new(scenario)?;
+        // Spectator truth: playback renders the whole record fog-free.
+        game.overlay = true;
+        // Starter hints coach players, not spectators.
+        game.hinted_train = true;
+        game.hinted_fight = true;
+        Ok(Self {
+            engine,
+            game,
+            speed: 1.0,
+            paused: false,
+            accum: 0.0,
+            held: [false; 4],
+        })
+    }
+}
+
+fn playback_hud(pb: &PlaybackSession) {
+    let s = render::ui_scale();
+    let line = format!(
+        "PLAYBACK  {} / {}  ·  {}x{}  ·  Space pause · PgUp/PgDn seek · Home/End · 1/2/3 speed · Esc leave",
+        pb.engine.position(),
+        pb.engine.total(),
+        pb.speed,
+        if pb.paused { "  ·  PAUSED" } else { "" },
+    );
+    let size = 18.0 * s;
+    let width = measure_text(&line, None, size as u16, 1.0).width;
+    let x = (screen_width() - width) * 0.5;
+    let y = screen_height() - 14.0 * s;
+    draw_rectangle(
+        x - 10.0 * s,
+        y - size,
+        width + 20.0 * s,
+        size + 10.0 * s,
+        Color::from_rgba(15, 15, 19, 220),
+    );
+    draw_text(&line, x, y, size, Color::from_rgba(232, 228, 216, 255));
+}
+
 async fn run() -> Result<()> {
     let args = Args::parse();
     let mut config = config::Config::load();
@@ -507,9 +571,15 @@ async fn run() -> Result<()> {
     // Straight into the game. Everyone else — automation and humans
     // alike — starts cold at the Home front door.
     let (mut home, mut home_resumable) = home_menu();
+    let mut playback: Option<PlaybackSession> = None;
+    if let Some(path) = &args.watch {
+        playback = Some(PlaybackSession::open(path)?);
+    }
     let purposeful =
         (args.debug_server && !args.automation) || args.scenario.is_some() || args.replay.is_some();
-    let mut mode = if purposeful {
+    let mut mode = if playback.is_some() {
+        Mode::Playback
+    } else if purposeful {
         Mode::Playing
     } else {
         Mode::Home
@@ -840,6 +910,88 @@ async fn run() -> Result<()> {
                 game.update_fx(dt);
                 render::draw(&game, &sprites, &input);
             }
+            Mode::Playback => {
+                if let Some(pb) = playback.as_mut() {
+                    let mut seek_to: Option<u64> = None;
+                    let mut leave = false;
+                    for e in &events {
+                        match e {
+                            RawEvent::MouseMove { x, y } => input.mouse = vec2(*x, *y),
+                            RawEvent::Wheel { delta } => {
+                                pb.game.camera.zoom_at(input.mouse, *delta);
+                            }
+                            RawEvent::KeyDown { key } => match key {
+                                Key::Escape => leave = true,
+                                Key::Space => pb.paused = !pb.paused,
+                                Key::PageUp => {
+                                    seek_to = Some(pb.engine.position().saturating_sub(500));
+                                }
+                                Key::PageDown => seek_to = Some(pb.engine.position() + 500),
+                                Key::Home => seek_to = Some(0),
+                                Key::End => seek_to = Some(pb.engine.total()),
+                                Key::Num1 => pb.speed = 0.5,
+                                Key::Num2 => pb.speed = 1.0,
+                                Key::Num3 => pb.speed = 4.0,
+                                Key::Up => pb.held[0] = true,
+                                Key::Down => pb.held[1] = true,
+                                Key::Left => pb.held[2] = true,
+                                Key::Right => pb.held[3] = true,
+                                _ => {}
+                            },
+                            RawEvent::KeyUp { key } => match key {
+                                Key::Up => pb.held[0] = false,
+                                Key::Down => pb.held[1] = false,
+                                Key::Left => pb.held[2] = false,
+                                Key::Right => pb.held[3] = false,
+                                _ => {}
+                            },
+                            _ => {}
+                        }
+                    }
+                    if leave {
+                        playback = None;
+                        (home, home_resumable) = home_menu();
+                        mode = Mode::Home;
+                        continue;
+                    }
+                    let mut dir = vec2(0.0, 0.0);
+                    if pb.held[0] {
+                        dir.y -= 1.0;
+                    }
+                    if pb.held[1] {
+                        dir.y += 1.0;
+                    }
+                    if pb.held[2] {
+                        dir.x -= 1.0;
+                    }
+                    if pb.held[3] {
+                        dir.x += 1.0;
+                    }
+                    if dir != vec2(0.0, 0.0) {
+                        let world_per_sec = 240.0 * config.camera.pan_speed / pb.game.camera.zoom;
+                        pb.game.camera.pan(dir.normalize() * world_per_sec * dt);
+                    }
+                    if let Some(target) = seek_to {
+                        pb.engine.seek(target);
+                        pb.accum = 0.0;
+                    } else if !pb.paused && !pb.engine.at_end() {
+                        pb.accum += dt * pb.speed;
+                        let ticks = (pb.accum / game::TICK_DT) as u64;
+                        if ticks > 0 {
+                            pb.accum -= ticks as f32 * game::TICK_DT;
+                            pb.engine.advance(ticks);
+                        }
+                    }
+                    if pb.game.state.current_tick() != pb.engine.position() {
+                        pb.game.state = pb.engine.state.clone();
+                    }
+                    pb.game.camera.update(dt);
+                    render::draw(&pb.game, &sprites, &input);
+                    playback_hud(pb);
+                } else {
+                    mode = Mode::Home;
+                }
+            }
             Mode::PauseMenu => {
                 let escape_pressed = events
                     .iter()
@@ -966,6 +1118,7 @@ fn capture_ui(
         Mode::PersonalityMenu => ("personality_menu", Some(sub_menu)),
         Mode::FactionMenu => ("faction_menu", Some(sub_menu)),
         Mode::Playing => ("playing", None),
+        Mode::Playback => ("playback", None),
         Mode::PauseMenu => ("pause_menu", Some(pause_menu)),
         Mode::ConfirmPause { .. } => ("confirm_pause", Some(sub_menu)),
     };

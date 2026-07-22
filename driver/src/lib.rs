@@ -15,6 +15,7 @@
 pub mod audit;
 pub mod client;
 pub mod gym;
+pub mod playback;
 pub mod render;
 pub mod runner;
 pub mod smoke;
