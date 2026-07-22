@@ -43,6 +43,9 @@ pub struct InputState {
     last_click: Option<(f64, Vec2)>,
     /// Previous group recall, for double-tap camera centering.
     last_recall: Option<(usize, f64)>,
+    /// Camera bookmarks (Ctrl+F5..F8 set, F5..F8 recall). Session
+    /// state: a new match's coordinates mean different ground.
+    pub(crate) bookmarks: [Option<Vec2>; 4],
     /// Waypoints collected while arming a patrol (`R`), if any.
     pub(crate) patrol_route: Option<Vec<TilePos>>,
     /// Building kind armed for placement, if any.
@@ -89,6 +92,7 @@ impl InputState {
             ui: 1.0,
             now: 0.0,
             camera_prefs: crate::config::CameraPrefs::default(),
+            bookmarks: [None; 4],
             bindings: crate::config::Config::load().bindings,
             resolver: ActionResolver::default(),
         }
@@ -120,12 +124,13 @@ impl InputState {
     pub fn reset_session(&mut self) {
         self.reset_transient();
         self.groups = Default::default();
+        self.bookmarks = [None; 4];
         self.last_click = None;
         self.last_recall = None;
     }
 }
 
-const KEY_MAP: [(Key, mq::KeyCode); 19] = [
+const KEY_MAP: [(Key, mq::KeyCode); 23] = [
     (Key::Up, mq::KeyCode::Up),
     (Key::Down, mq::KeyCode::Down),
     (Key::Left, mq::KeyCode::Left),
@@ -145,6 +150,10 @@ const KEY_MAP: [(Key, mq::KeyCode); 19] = [
     (Key::PageDown, mq::KeyCode::PageDown),
     (Key::Home, mq::KeyCode::Home),
     (Key::End, mq::KeyCode::End),
+    (Key::F5, mq::KeyCode::F5),
+    (Key::F6, mq::KeyCode::F6),
+    (Key::F7, mq::KeyCode::F7),
+    (Key::F8, mq::KeyCode::F8),
 ];
 
 /// Converts this frame's hardware input into events. Purely a poll→event
@@ -843,6 +852,16 @@ fn dispatch_action(game: &mut Game, input: &mut InputState, action: Action) {
             game.selection.units.clear();
             game.selection.building = None;
         }
+        Action::SetBookmark(slot) => {
+            input.bookmarks[slot as usize] = Some(game.camera.center);
+            game.toast(format!("bookmark {} set", slot + 1));
+        }
+        Action::RecallBookmark(slot) => {
+            if let Some(center) = input.bookmarks[slot as usize] {
+                game.camera.center = center;
+                game.camera.pan(Vec2::ZERO); // re-clamp
+            }
+        }
         Action::CycleIdleWorker => cycle_idle_worker(game),
         Action::JumpToLastAlert => {
             if let Some(world) = game.last_alert {
@@ -931,6 +950,37 @@ mod tests {
                 y,
             },
         ]
+    }
+
+    #[test]
+    fn bookmarks_remember_and_recall_camera_ground() {
+        let mut game = headless_game();
+        let mut input = InputState::new();
+        let saved = game.camera.center;
+        let chord = |game: &mut Game, input: &mut InputState, ctrl: bool, key: Key| {
+            let mut ev = Vec::new();
+            if ctrl {
+                ev.push(RawEvent::KeyDown { key: Key::Ctrl });
+            }
+            ev.push(RawEvent::KeyDown { key });
+            ev.push(RawEvent::KeyUp { key });
+            if ctrl {
+                ev.push(RawEvent::KeyUp { key: Key::Ctrl });
+            }
+            apply_events(game, input, &ev);
+        };
+        chord(&mut game, &mut input, true, Key::F5);
+        game.camera.center = saved + vec2(6.0, 4.0);
+        chord(&mut game, &mut input, false, Key::F5);
+        assert!(
+            (game.camera.center - saved).length() < 1e-4,
+            "recall returns to the remembered ground"
+        );
+        chord(&mut game, &mut input, false, Key::F6);
+        assert!(
+            (game.camera.center - saved).length() < 1e-4,
+            "an empty slot recalls nothing"
+        );
     }
 
     #[test]

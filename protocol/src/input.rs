@@ -232,4 +232,12 @@ pub enum Key {
     Home,
     /// End (jump to list end).
     End,
+    /// Camera bookmark keys.
+    F5,
+    /// Camera bookmark keys.
+    F6,
+    /// Camera bookmark keys.
+    F7,
+    /// Camera bookmark keys.
+    F8,
 }

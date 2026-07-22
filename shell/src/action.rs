@@ -51,6 +51,10 @@ pub enum Action {
     CycleIdleWorker,
     /// Center the camera where trouble last landed.
     JumpToLastAlert,
+    /// Remember the camera position in slot 0-3.
+    SetBookmark(u8),
+    /// Return the camera to a remembered slot.
+    RecallBookmark(u8),
 }
 
 /// A physical chord: one key plus the modifier truth that must hold.
@@ -187,6 +191,16 @@ impl BindingMap {
                 action: Action::JumpToLastAlert,
             },
         ];
+        for (i, key) in [Key::F5, Key::F6, Key::F7, Key::F8].into_iter().enumerate() {
+            bindings.push(Binding {
+                chord: Chord::ctrl(key),
+                action: Action::SetBookmark(i as u8),
+            });
+            bindings.push(Binding {
+                chord: Chord::bare(key),
+                action: Action::RecallBookmark(i as u8),
+            });
+        }
         for (i, key) in digits.into_iter().enumerate() {
             let n = (i + 1) as u8;
             bindings.push(Binding {
