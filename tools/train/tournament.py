@@ -67,21 +67,28 @@ def play(
         )
     rng = np.random.default_rng(seed * 2 + seat)
     while not frame.done:
-        view = frame.seats[seat]
-        with torch.no_grad():
-            logits, _ = policy(
-                torch.as_tensor(view.obs[None]),
-                torch.as_tensor(view.mask[None]),
-            )
-        # The shipped weakening is knob input + forced near-best
-        # blunders, exactly as trained — evaluate that mechanism.
-        intended = int(logits.argmax())
-        acts = {
-            seat: maybe_blunder(
-                intended, logits[0].numpy(), view.mask, condition[0], rng
-            )
-        }
-        if rusher_seat is not None:
+        view = frame.seats.get(seat)
+        if view is None:
+            # Team games: the seat's foundry fell while its team plays
+            # on — the gym stops shipping views for dead seats and
+            # expects no actions for them. Step the world empty and let
+            # the final team outcome classify the game.
+            acts = {}
+        else:
+            with torch.no_grad():
+                logits, _ = policy(
+                    torch.as_tensor(view.obs[None]),
+                    torch.as_tensor(view.mask[None]),
+                )
+            # The shipped weakening is knob input + forced near-best
+            # blunders, exactly as trained — evaluate that mechanism.
+            intended = int(logits.argmax())
+            acts = {
+                seat: maybe_blunder(
+                    intended, logits[0].numpy(), view.mask, condition[0], rng
+                )
+            }
+        if rusher_seat is not None and rusher_seat in frame.seats:
             ov = frame.seats[rusher_seat]
             acts[rusher_seat] = rusher(ov.raw, ov.mask, frame.tick)
         frame = worker.step(acts)
