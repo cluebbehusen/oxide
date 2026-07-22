@@ -139,35 +139,117 @@ async fn main() {
     }
 }
 
-/// Which screen owns input this frame.
+/// Which screen owns input this frame. Screens carry no choices — the
+/// [`NewMatchDraft`] does, which is what lets Back walk the flow
+/// without losing anything.
 enum Mode {
     /// Scenario picker.
     MainMenu,
     /// Difficulty picker for the chosen scenario.
-    DifficultyMenu {
-        /// The scenario about to start.
-        scenario: Box<Scenario>,
-    },
+    DifficultyMenu,
     /// Personality picker (after difficulty).
-    PersonalityMenu {
-        /// The scenario about to start.
-        scenario: Box<Scenario>,
-        /// The chosen ladder level.
-        level: oxide_sim::bot::Level,
-    },
+    PersonalityMenu,
     /// Faction picker (after personality) — which roster the human plays.
-    FactionMenu {
-        /// The scenario about to start.
-        scenario: Box<Scenario>,
-        /// The chosen ladder level.
-        level: oxide_sim::bot::Level,
-        /// The chosen personality knob.
-        aggression: Option<u32>,
-    },
+    FactionMenu,
     /// The game proper.
     Playing,
     /// Game visible but veiled; the pause menu owns input.
     PauseMenu,
+}
+
+/// Everything New Match has chosen so far. The draft outlives every
+/// screen transition: backing from Faction to Difficulty to the map
+/// list and forward again re-offers each earlier answer instead of
+/// forgetting it.
+struct NewMatchDraft {
+    /// The loaded map, once picked.
+    scenario: Option<Box<Scenario>>,
+    /// Map-list row, for re-preselection.
+    scenario_choice: usize,
+    /// Difficulty row (indexes `Level::LADDER`).
+    level_choice: usize,
+    /// Personality row (feeds `personality_knob`).
+    personality_choice: usize,
+    /// Faction row (Ferrous / Cupric / surprise).
+    faction_choice: usize,
+}
+
+impl Default for NewMatchDraft {
+    fn default() -> Self {
+        Self {
+            scenario: None,
+            scenario_choice: 0,
+            level_choice: 1, // Medium is the fair default
+            personality_choice: 0,
+            faction_choice: 0,
+        }
+    }
+}
+
+/// The wizard's menus, each preselected from the draft.
+fn difficulty_menu(draft: &NewMatchDraft) -> Menu {
+    let mut menu = Menu::new(
+        "DIFFICULTY",
+        DIFFICULTY_ITEMS.iter().map(|s| s.to_string()).collect(),
+    );
+    menu.selected = draft.level_choice.min(DIFFICULTY_ITEMS.len() - 1);
+    menu
+}
+
+fn personality_menu(draft: &NewMatchDraft) -> Menu {
+    let mut menu = Menu::new(
+        "OPPONENT",
+        PERSONALITY_ITEMS.iter().map(|s| s.to_string()).collect(),
+    );
+    menu.selected = draft.personality_choice.min(PERSONALITY_ITEMS.len() - 1);
+    menu
+}
+
+fn faction_menu(draft: &NewMatchDraft) -> Menu {
+    let mut menu = Menu::new(
+        "FACTION",
+        FACTION_ITEMS.iter().map(|s| s.to_string()).collect(),
+    );
+    menu.selected = draft.faction_choice.min(FACTION_ITEMS.len() - 1);
+    menu
+}
+
+/// Builds the game the draft describes.
+fn launch(draft: &NewMatchDraft) -> Result<Game> {
+    let mut scenario = (**draft.scenario.as_ref().context("draft has a map")?).clone();
+    let level = oxide_sim::bot::Level::LADDER[draft.level_choice.min(3)];
+    let aggression = personality_knob(draft.personality_choice);
+    let config = oxide_sim::scenario::BotConfig { level, aggression };
+    for player in scenario.players.iter_mut().filter(|p| p.bot) {
+        player.bot_config = Some(config);
+    }
+    // The human seat plays the chosen roster; "surprise" lets the
+    // scenario seed pick.
+    let faction = match draft.faction_choice {
+        0 => oxide_sim::Faction::Ferrous,
+        1 => oxide_sim::Faction::Cupric,
+        _ => match scenario.seed % 2 {
+            0 => oxide_sim::Faction::Ferrous,
+            _ => oxide_sim::Faction::Cupric,
+        },
+    };
+    let complement = match faction {
+        oxide_sim::Faction::Ferrous => oxide_sim::Faction::Cupric,
+        oxide_sim::Faction::Cupric => oxide_sim::Faction::Ferrous,
+    };
+    if let Some(human) = scenario.players.iter_mut().find(|p| !p.bot) {
+        retint_seat(human, faction);
+    }
+    // In a duel, faction is also the only allegiance cue on screen —
+    // the opponent takes the other roster, or two same-color armies
+    // would fight an unreadable war. Team maps author their own mixed
+    // factions and carry an explicit ally marker instead.
+    if scenario.players.len() == 2
+        && let Some(bot) = scenario.players.iter_mut().find(|p| p.bot)
+    {
+        retint_seat(bot, complement);
+    }
+    Game::new(scenario)
 }
 
 const DIFFICULTY_ITEMS: [&str; 4] = ["Easy", "Medium", "Hard", "Expert"];
@@ -207,11 +289,13 @@ struct PendingScreenshot {
 
 const PAUSE_ITEMS: [&str; 4] = ["Resume", "Restart", "Main Menu", "Quit"];
 
-fn build_main_menu() -> (Menu, Vec<ScenarioEntry>) {
+fn build_main_menu(draft: &NewMatchDraft) -> (Menu, Vec<ScenarioEntry>) {
     let entries = menu::discover_scenarios();
     let mut items: Vec<String> = entries.iter().map(|e| e.label.clone()).collect();
     items.push("Quit".to_string());
-    (Menu::new("OXIDE", items), entries)
+    let mut menu = Menu::new("OXIDE", items);
+    menu.selected = draft.scenario_choice.min(entries.len());
+    (menu, entries)
 }
 
 /// Plays queued clips with a per-kind rate limit, so twenty simultaneous
@@ -289,7 +373,8 @@ async fn run() -> Result<()> {
     } else {
         Mode::MainMenu
     };
-    let mut main_menu = matches!(mode, Mode::MainMenu).then(build_main_menu);
+    let mut draft = NewMatchDraft::default();
+    let mut main_menu = matches!(mode, Mode::MainMenu).then(|| build_main_menu(&draft));
     let mut sub_menu = Menu::new("", Vec::new());
     let mut pause_menu = Menu::new(
         "PAUSED",
@@ -339,7 +424,7 @@ async fn run() -> Result<()> {
         let mode_before = std::mem::discriminant(&mode);
         match mode {
             Mode::MainMenu => {
-                let (menu, entries) = main_menu.get_or_insert_with(build_main_menu);
+                let (menu, entries) = main_menu.get_or_insert_with(|| build_main_menu(&draft));
                 if let Some(choice) = menu.handle(&events, &mut input.mouse) {
                     game.sounds_pending.push(SoundKind::Click);
                     if choice >= entries.len() {
@@ -350,14 +435,10 @@ async fn run() -> Result<()> {
                             .with_context(|| format!("loading {}", path.display()))?,
                         None => Scenario::skirmish(),
                     };
-                    sub_menu = Menu::new(
-                        "DIFFICULTY",
-                        DIFFICULTY_ITEMS.iter().map(|s| s.to_string()).collect(),
-                    );
-                    sub_menu.selected = 1; // Medium is the fair default
-                    mode = Mode::DifficultyMenu {
-                        scenario: Box::new(scenario),
-                    };
+                    draft.scenario = Some(Box::new(scenario));
+                    draft.scenario_choice = choice;
+                    sub_menu = difficulty_menu(&draft);
+                    mode = Mode::DifficultyMenu;
                     main_menu = None;
                 }
                 render::draw(&game, &sprites, &input);
@@ -366,114 +447,51 @@ async fn run() -> Result<()> {
                     menu.draw("machines eating a dead world");
                 }
             }
-            Mode::DifficultyMenu { ref scenario } => {
-                let _ = scenario;
+            Mode::DifficultyMenu => {
                 let escaped = events
                     .iter()
                     .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
                 if escaped {
-                    // Escape walks backward through the flow.
+                    // Escape walks backward; the draft keeps every answer.
                     mode = Mode::MainMenu;
                 } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
                     game.sounds_pending.push(SoundKind::Click);
-                    let level = oxide_sim::bot::Level::LADDER[choice.min(3)];
-                    let scenario = scenario.clone();
-                    sub_menu = Menu::new(
-                        "OPPONENT",
-                        PERSONALITY_ITEMS.iter().map(|s| s.to_string()).collect(),
-                    );
-                    mode = Mode::PersonalityMenu { scenario, level };
+                    draft.level_choice = choice;
+                    sub_menu = personality_menu(&draft);
+                    mode = Mode::PersonalityMenu;
                 }
                 render::draw(&game, &sprites, &input);
                 veil();
                 sub_menu.draw("how hard should it think?");
             }
-            Mode::PersonalityMenu {
-                ref scenario,
-                level,
-            } => {
+            Mode::PersonalityMenu => {
                 let escaped = events
                     .iter()
                     .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
                 if escaped {
-                    let scenario = scenario.clone();
-                    sub_menu = Menu::new(
-                        "DIFFICULTY",
-                        DIFFICULTY_ITEMS.iter().map(|s| s.to_string()).collect(),
-                    );
-                    sub_menu.selected = oxide_sim::bot::Level::LADDER
-                        .iter()
-                        .position(|l| *l == level)
-                        .unwrap_or(1);
-                    mode = Mode::DifficultyMenu { scenario };
+                    sub_menu = difficulty_menu(&draft);
+                    mode = Mode::DifficultyMenu;
                 } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
                     game.sounds_pending.push(SoundKind::Click);
-                    let scenario = scenario.clone();
-                    let aggression = personality_knob(choice);
-                    sub_menu = Menu::new(
-                        "FACTION",
-                        FACTION_ITEMS.iter().map(|s| s.to_string()).collect(),
-                    );
-                    mode = Mode::FactionMenu {
-                        scenario,
-                        level,
-                        aggression,
-                    };
+                    draft.personality_choice = choice;
+                    sub_menu = faction_menu(&draft);
+                    mode = Mode::FactionMenu;
                 }
                 render::draw(&game, &sprites, &input);
                 veil();
                 sub_menu.draw("every one is the same mind, dialed differently");
             }
-            Mode::FactionMenu {
-                ref scenario,
-                level,
-                aggression,
-            } => {
+            Mode::FactionMenu => {
                 let escaped = events
                     .iter()
                     .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
                 if escaped {
-                    let scenario = scenario.clone();
-                    sub_menu = Menu::new(
-                        "OPPONENT",
-                        PERSONALITY_ITEMS.iter().map(|s| s.to_string()).collect(),
-                    );
-                    mode = Mode::PersonalityMenu { scenario, level };
+                    sub_menu = personality_menu(&draft);
+                    mode = Mode::PersonalityMenu;
                 } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
                     game.sounds_pending.push(SoundKind::Click);
-                    let mut scenario = (**scenario).clone();
-                    let config = oxide_sim::scenario::BotConfig { level, aggression };
-                    for player in scenario.players.iter_mut().filter(|p| p.bot) {
-                        player.bot_config = Some(config);
-                    }
-                    // The human seat plays the chosen roster; "surprise"
-                    // lets the scenario seed pick.
-                    let faction = match choice {
-                        0 => oxide_sim::Faction::Ferrous,
-                        1 => oxide_sim::Faction::Cupric,
-                        _ => match scenario.seed % 2 {
-                            0 => oxide_sim::Faction::Ferrous,
-                            _ => oxide_sim::Faction::Cupric,
-                        },
-                    };
-                    let complement = match faction {
-                        oxide_sim::Faction::Ferrous => oxide_sim::Faction::Cupric,
-                        oxide_sim::Faction::Cupric => oxide_sim::Faction::Ferrous,
-                    };
-                    if let Some(human) = scenario.players.iter_mut().find(|p| !p.bot) {
-                        retint_seat(human, faction);
-                    }
-                    // In a duel, faction is also the only allegiance cue
-                    // on screen — the opponent takes the other roster, or
-                    // two same-color armies would fight an unreadable
-                    // war. Team maps author their own mixed factions and
-                    // carry an explicit ally marker instead.
-                    if scenario.players.len() == 2
-                        && let Some(bot) = scenario.players.iter_mut().find(|p| p.bot)
-                    {
-                        retint_seat(bot, complement);
-                    }
-                    let fresh = Game::new(scenario)?;
+                    draft.faction_choice = choice;
+                    let fresh = launch(&draft)?;
                     game = keep_flags(fresh, &game);
                     game.paused = false;
                     mode = Mode::Playing;
@@ -541,7 +559,7 @@ async fn run() -> Result<()> {
             input.reset_transient();
         }
         if matches!(mode, Mode::MainMenu) && main_menu.is_none() {
-            main_menu = Some(build_main_menu());
+            main_menu = Some(build_main_menu(&draft));
         }
         ui_view = capture_ui(&mode, &main_menu, &sub_menu, &pause_menu, &game);
 
@@ -589,9 +607,9 @@ fn capture_ui(
 ) -> UiView {
     let (mode_name, menu) = match mode {
         Mode::MainMenu => ("main_menu", main_menu.as_ref().map(|(menu, _)| menu)),
-        Mode::DifficultyMenu { .. } => ("difficulty_menu", Some(sub_menu)),
-        Mode::PersonalityMenu { .. } => ("personality_menu", Some(sub_menu)),
-        Mode::FactionMenu { .. } => ("faction_menu", Some(sub_menu)),
+        Mode::DifficultyMenu => ("difficulty_menu", Some(sub_menu)),
+        Mode::PersonalityMenu => ("personality_menu", Some(sub_menu)),
+        Mode::FactionMenu => ("faction_menu", Some(sub_menu)),
         Mode::Playing => ("playing", None),
         Mode::PauseMenu => ("pause_menu", Some(pause_menu)),
     };
@@ -604,7 +622,14 @@ fn capture_ui(
         chrome: matches!(mode, Mode::Playing).then(|| {
             let l = game.layout.get();
             let m = l.minimap;
-            [l.top_bar_h, l.panel_top, m.x, m.y, m.w, m.h]
+            // JSON has no Infinity: an absent panel reports the window
+            // bottom, a band no click can land in.
+            let panel_top = if l.panel_top.is_finite() {
+                l.panel_top
+            } else {
+                screen_height()
+            };
+            [l.top_bar_h, panel_top, m.x, m.y, m.w, m.h]
         }),
     }
 }
