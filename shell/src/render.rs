@@ -726,7 +726,7 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
         // A beam needs BOTH endpoints in sight: a half-fogged laser would
         // pinpoint an unseen combatant at its far end.
         let in_sight = match fx.kind {
-            EffectKind::Laser { from, to, .. } => sees(from) && sees(to),
+            EffectKind::Bolt { from, to, .. } => sees(from) && sees(to),
             EffectKind::Puff { at } => sees(at),
             EffectKind::Burst { at, .. } => sees(at),
             // Own-order acknowledgments always show; fogged targets are
@@ -737,28 +737,51 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
             continue;
         }
         match fx.kind {
-            EffectKind::Laser { heavy, from, to } => {
+            EffectKind::Bolt { style, from, to } => {
+                use crate::game::BoltStyle;
                 let a = game.camera.to_screen(from);
                 let b = game.camera.to_screen(to);
-                let fade = (1.0 - fx.age / 0.15).clamp(0.0, 1.0);
-                let w = if heavy { 2.0 } else { 1.0 };
-                // Wide glow under a hot core.
-                draw_line(
-                    a.x,
-                    a.y,
-                    b.x,
-                    b.y,
-                    7.0 * w * fade.max(0.3),
-                    Color::new(0.95, 0.75, 0.5, 0.22 * fade),
-                );
-                draw_line(
-                    a.x,
-                    a.y,
-                    b.x,
-                    b.y,
-                    2.5 * w * fade.max(0.2),
-                    Color::new(0.98, 0.93, 0.8, fade),
-                );
+                let fade = (1.0 - fx.age / style.life()).clamp(0.0, 1.0);
+                let (w, glow, core) = match style {
+                    BoltStyle::Tracer => (
+                        1.0,
+                        Color::new(0.95, 0.75, 0.5, 0.22 * fade),
+                        Color::new(0.98, 0.93, 0.8, fade),
+                    ),
+                    BoltStyle::Rail => (
+                        2.0,
+                        Color::new(0.75, 0.85, 1.0, 0.28 * fade),
+                        Color::new(0.92, 0.96, 1.0, fade),
+                    ),
+                    BoltStyle::Flak => (
+                        0.8,
+                        Color::new(0.85, 0.85, 0.75, 0.15 * fade),
+                        Color::new(0.9, 0.9, 0.82, 0.7 * fade),
+                    ),
+                    BoltStyle::AirStrike => (
+                        1.4,
+                        Color::new(0.55, 0.9, 0.8, 0.25 * fade),
+                        Color::new(0.8, 1.0, 0.94, fade),
+                    ),
+                };
+                draw_line(a.x, a.y, b.x, b.y, 7.0 * w * fade.max(0.3), glow);
+                draw_line(a.x, a.y, b.x, b.y, 2.5 * w * fade.max(0.2), core);
+                // Flak detonates in the air around its target: three
+                // pseudo-random puffs blooming outward as the bolt ages.
+                if style == BoltStyle::Flak {
+                    let h = (to.x * 31.7 + to.y * 17.3).abs();
+                    for i in 0..3 {
+                        let angle = h + i as f32 * 2.1;
+                        let reach = (fx.age / style.life()) * game.camera.zoom * 0.6;
+                        let puff = b + vec2(angle.cos(), angle.sin()) * reach;
+                        draw_circle(
+                            puff.x,
+                            puff.y,
+                            game.camera.zoom * 0.12 * (1.0 - fx.age / style.life() * 0.5),
+                            Color::new(0.88, 0.88, 0.8, 0.5 * fade),
+                        );
+                    }
+                }
                 if fx.age < 0.07 {
                     let dir = b - a;
                     let rotation = dir.y.atan2(dir.x) + std::f32::consts::FRAC_PI_2;

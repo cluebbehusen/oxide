@@ -89,12 +89,54 @@ pub enum PingKind {
     Spawn,
 }
 
+/// The visual family of a direct-fire shot — mapped from the exact
+/// (shooter kind, weapon slot) the hit event names, so every weapon
+/// reads as itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoltStyle {
+    /// The line infantry's thin fast tracer.
+    Tracer,
+    /// The Lancer's rail: heavy, bright, lingering.
+    Rail,
+    /// Anti-air flak: a faint line and puffs bursting at the target.
+    Flak,
+    /// Air-to-ground ordnance: a cooler, steeper bolt.
+    AirStrike,
+}
+
+impl BoltStyle {
+    /// Seconds the bolt stays on screen.
+    pub fn life(self) -> f32 {
+        match self {
+            BoltStyle::Tracer => 0.15,
+            BoltStyle::Rail => 0.28,
+            BoltStyle::Flak => 0.20,
+            BoltStyle::AirStrike => 0.18,
+        }
+    }
+}
+
+/// Which bolt family a unit's weapon slot fires.
+fn unit_bolt_style(kind: oxide_sim::UnitKind, weapon: usize) -> BoltStyle {
+    use oxide_sim::UnitKind;
+    match (kind, weapon) {
+        (UnitKind::Lancer, _) => BoltStyle::Rail,
+        (UnitKind::Flakhound | UnitKind::Stinger, _) => BoltStyle::Flak,
+        // The Sentinel's sidearm is its anti-air poke.
+        (UnitKind::Sentinel, 1) => BoltStyle::Flak,
+        (UnitKind::Buzzard | UnitKind::Darter | UnitKind::Talon | UnitKind::Wisp, _) => {
+            BoltStyle::AirStrike
+        }
+        _ => BoltStyle::Tracer,
+    }
+}
+
 /// Effect shapes.
 pub enum EffectKind {
-    /// An attack beam.
-    Laser {
-        /// Rendered thicker and brighter — the Lancer's rail.
-        heavy: bool,
+    /// A direct-fire shot, styled by the weapon family that spoke.
+    Bolt {
+        /// Visual family (tracer, rail, flak, air strike).
+        style: BoltStyle,
         /// Muzzle, world coords.
         from: Vec2,
         /// Impact, world coords.
@@ -524,7 +566,7 @@ impl Game {
         self.fx.retain(|fx| {
             fx.age
                 < match fx.kind {
-                    EffectKind::Laser { .. } => 0.15,
+                    EffectKind::Bolt { style, .. } => style.life(),
                     EffectKind::Puff { .. } => 0.4,
                     EffectKind::Ping { .. } => 0.5,
                     EffectKind::Burst { .. } => 0.35,
@@ -576,13 +618,13 @@ impl Game {
                     // its report either way. The weapon's character decides
                     // the report and whether the impact blooms.
                     let heard = sees(self, *attacker_pos) || sees(self, *target_pos);
-                    let (sound, heavy) = match attacker_kind {
-                        oxide_sim::UnitKind::Lancer => (SoundKind::RailFire, true),
-                        oxide_sim::UnitKind::Bombard => (SoundKind::Artillery, true),
+                    let sound = match attacker_kind {
+                        oxide_sim::UnitKind::Lancer => SoundKind::RailFire,
+                        oxide_sim::UnitKind::Bombard => SoundKind::Artillery,
                         oxide_sim::UnitKind::Flakhound | oxide_sim::UnitKind::Stinger => {
-                            (SoundKind::Flak, false)
+                            SoundKind::Flak
                         }
-                        _ => (SoundKind::Laser, false),
+                        _ => SoundKind::Laser,
                     };
                     // The burst radius comes from the exact weapon that
                     // fired — the event says which slot — so the
@@ -598,8 +640,8 @@ impl Game {
                         self.sounds_pending.push(sound);
                     }
                     self.fx.push(Effect {
-                        kind: EffectKind::Laser {
-                            heavy,
+                        kind: EffectKind::Bolt {
+                            style: unit_bolt_style(*attacker_kind, *weapon),
                             from: world_vec(*attacker_pos),
                             to: world_vec(*target_pos),
                         },
@@ -649,8 +691,12 @@ impl Game {
                         self.sounds_pending.push(sound);
                     }
                     self.fx.push(Effect {
-                        kind: EffectKind::Laser {
-                            heavy: splash.is_some(),
+                        kind: EffectKind::Bolt {
+                            style: match kind {
+                                oxide_sim::BuildingKind::FlakTurret => BoltStyle::Flak,
+                                oxide_sim::BuildingKind::Bastion => BoltStyle::Rail,
+                                _ => BoltStyle::Tracer,
+                            },
                             from: world_vec(*turret_pos),
                             to: world_vec(*target_pos),
                         },
