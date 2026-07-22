@@ -448,6 +448,9 @@ fn build_main_menu(draft: &NewMatchDraft) -> (Menu, Vec<ScenarioEntry>) {
 #[derive(Default)]
 struct Mixer {
     last_played: std::collections::HashMap<SoundKind, f64>,
+    /// Alternates the basic zap between two clips so volleys read as
+    /// many guns, not one sample looping.
+    laser_flip: bool,
 }
 
 impl Mixer {
@@ -460,7 +463,13 @@ impl Mixer {
         volumes.master * bus
     }
 
-    fn play(&mut self, sounds: &assets::Sounds, kind: SoundKind, volumes: &config::Volumes) {
+    fn play(
+        &mut self,
+        sounds: &assets::Sounds,
+        kind: SoundKind,
+        volumes: &config::Volumes,
+        attenuation: f32,
+    ) {
         let now = get_time();
         let min_gap = match kind {
             SoundKind::Laser => 0.09,
@@ -468,6 +477,8 @@ impl Mixer {
             SoundKind::UnitDeath => 0.12,
             SoundKind::Flak => 0.12,
             SoundKind::Artillery => 0.2,
+            SoundKind::ArtilleryLaunch => 0.2,
+            SoundKind::Ack => 0.15,
             _ => 0.05,
         };
         if now - self.last_played.get(&kind).copied().unwrap_or(f64::MIN) < min_gap {
@@ -475,7 +486,17 @@ impl Mixer {
         }
         self.last_played.insert(kind, now);
         let (sound, volume) = match kind {
-            SoundKind::Laser => (&sounds.laser, 0.18),
+            SoundKind::Laser => {
+                self.laser_flip = !self.laser_flip;
+                (
+                    if self.laser_flip {
+                        &sounds.laser
+                    } else {
+                        &sounds.laser2
+                    },
+                    0.18,
+                )
+            }
             SoundKind::RailFire => (&sounds.rail_fire, 0.4),
             SoundKind::UnitDeath => (&sounds.unit_death, 0.35),
             SoundKind::BuildingBoom => (&sounds.building_boom, 0.6),
@@ -487,8 +508,10 @@ impl Mixer {
             SoundKind::Defeat => (&sounds.defeat, 0.6),
             SoundKind::Flak => (&sounds.flak, 0.3),
             SoundKind::Artillery => (&sounds.artillery_boom, 0.5),
+            SoundKind::ArtilleryLaunch => (&sounds.artillery_launch, 0.35),
+            SoundKind::Ack => (&sounds.ack, 0.18),
         };
-        let volume = volume * Self::bus(volumes, kind);
+        let volume = volume * Self::bus(volumes, kind) * attenuation;
         if volume <= 0.0 {
             return;
         }
@@ -656,7 +679,7 @@ async fn run() -> Result<()> {
         match mode {
             Mode::Home => {
                 if let Some(choice) = home.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push(SoundKind::Click);
+                    game.sounds_pending.push((SoundKind::Click, None));
                     let base = if home_resumable { choice } else { choice + 1 };
                     match base {
                         0 => {
@@ -708,7 +731,7 @@ async fn run() -> Result<()> {
                 if escaped {
                     mode = Mode::Home;
                 } else if let Some(row) = sub_menu.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push(SoundKind::Click);
+                    game.sounds_pending.push((SoundKind::Click, None));
                     if cycle_setting(&mut config, row) {
                         // Apply live, persist immediately, keep the
                         // cursor on the row being tuned.
@@ -753,7 +776,7 @@ async fn run() -> Result<()> {
                                 mode = Mode::Controls { rebinding: None };
                             } else {
                                 game.toast("that key already means something");
-                                game.sounds_pending.push(SoundKind::Denied);
+                                game.sounds_pending.push((SoundKind::Denied, None));
                                 mode = Mode::Controls { rebinding: None };
                             }
                         }
@@ -764,7 +787,7 @@ async fn run() -> Result<()> {
                     sub_menu.select(6);
                     mode = Mode::Settings;
                 } else if let Some(row) = sub_menu.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push(SoundKind::Click);
+                    game.sounds_pending.push((SoundKind::Click, None));
                     if row < REMAPPABLE.len() {
                         mode = Mode::Controls {
                             rebinding: Some(row),
@@ -792,7 +815,7 @@ async fn run() -> Result<()> {
                 if escaped {
                     mode = Mode::Home;
                 } else if let Some(choice) = menu.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push(SoundKind::Click);
+                    game.sounds_pending.push((SoundKind::Click, None));
                     if choice >= entries.len() {
                         // The appended Back row returns to the front door.
                         mode = Mode::Home;
@@ -871,7 +894,7 @@ async fn run() -> Result<()> {
                     // Escape walks backward; the draft keeps every answer.
                     mode = Mode::MainMenu;
                 } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push(SoundKind::Click);
+                    game.sounds_pending.push((SoundKind::Click, None));
                     draft.level_choice = choice;
                     sub_menu = personality_menu(&draft);
                     mode = Mode::PersonalityMenu;
@@ -888,7 +911,7 @@ async fn run() -> Result<()> {
                     sub_menu = difficulty_menu(&draft);
                     mode = Mode::DifficultyMenu;
                 } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push(SoundKind::Click);
+                    game.sounds_pending.push((SoundKind::Click, None));
                     draft.personality_choice = choice;
                     sub_menu = faction_menu(&draft);
                     mode = Mode::FactionMenu;
@@ -905,7 +928,7 @@ async fn run() -> Result<()> {
                     sub_menu = personality_menu(&draft);
                     mode = Mode::PersonalityMenu;
                 } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push(SoundKind::Click);
+                    game.sounds_pending.push((SoundKind::Click, None));
                     draft.faction_choice = choice;
                     let fresh = launch(&draft)?;
                     game = keep_flags(fresh, &game);
@@ -1047,7 +1070,7 @@ async fn run() -> Result<()> {
                 if escaped {
                     mode = Mode::Home;
                 } else if let Some(row) = picked {
-                    game.sounds_pending.push(SoundKind::Click);
+                    game.sounds_pending.push((SoundKind::Click, None));
                     match replay_shelf.get(row) {
                         Some(entry) if entry.compatible => {
                             match PlaybackSession::open(&entry.path.to_string_lossy()) {
@@ -1056,11 +1079,11 @@ async fn run() -> Result<()> {
                                     mode = Mode::Playback;
                                 }
                                 Err(_) => {
-                                    game.sounds_pending.push(SoundKind::Denied);
+                                    game.sounds_pending.push((SoundKind::Denied, None));
                                 }
                             }
                         }
-                        Some(_) => game.sounds_pending.push(SoundKind::Denied),
+                        Some(_) => game.sounds_pending.push((SoundKind::Denied, None)),
                         None => {}
                     }
                 } else if x_pressed && !replay_shelf.is_empty() {
@@ -1101,7 +1124,7 @@ async fn run() -> Result<()> {
                     .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
                 let choice = pause_menu.handle(&events, &mut input.mouse);
                 if choice.is_some() {
-                    game.sounds_pending.push(SoundKind::Click);
+                    game.sounds_pending.push((SoundKind::Click, None));
                 }
                 render::draw(&game, &sprites, &input);
                 veil();
@@ -1183,9 +1206,22 @@ async fn run() -> Result<()> {
         }
         ui_view = capture_ui(&mode, &home, &main_menu, &sub_menu, &pause_menu, &game);
 
-        let queued: Vec<SoundKind> = game.sounds_pending.drain(..).collect();
-        for kind in queued {
-            mixer.play(&sounds, kind, &config.volumes);
+        let queued: Vec<(SoundKind, Option<Vec2>)> = game.sounds_pending.drain(..).collect();
+        for (kind, world) in queued {
+            // Distance dims the battlefield: full volume on screen,
+            // fading to a quarter around 1.5 viewports out. Unpositioned
+            // sounds (UI, own milestones) play flat.
+            let attenuation = world.map_or(1.0, |p| {
+                let center = game.camera.center;
+                let half_w = game.camera.viewport().x / game.camera.zoom * 0.5;
+                let d = (p - center).length();
+                if d <= half_w {
+                    1.0
+                } else {
+                    (1.0 - (d - half_w) / (2.0 * half_w)).clamp(0.25, 1.0)
+                }
+            });
+            mixer.play(&sounds, kind, &config.volumes, attenuation);
         }
 
         if !pending_shots.is_empty() {

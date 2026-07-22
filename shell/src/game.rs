@@ -72,6 +72,10 @@ pub enum SoundKind {
     Flak,
     /// An artillery shell landing.
     Artillery,
+    /// An artillery gun firing (distinct from the landing boom).
+    ArtilleryLaunch,
+    /// An order acknowledged.
+    Ack,
 }
 
 /// What an order-acknowledgment ping means (decides its color).
@@ -217,7 +221,7 @@ pub struct Game {
     /// Live effects.
     pub fx: Vec<Effect>,
     /// Clips queued by this frame's ticks; the main loop drains and plays.
-    pub sounds_pending: Vec<SoundKind>,
+    pub sounds_pending: Vec<(SoundKind, Option<Vec2>)>,
     /// Transient HUD messages, newest last.
     pub toasts: Vec<Toast>,
     /// Scorch decals where buildings died: (world pos, seconds old).
@@ -526,6 +530,9 @@ impl Game {
 
     /// Drops an order-acknowledgment ping at a world point.
     pub fn ping(&mut self, at: Vec2, kind: PingKind) {
+        // An order the sim accepted deserves an answer in the ear as
+        // well as the eye (the mixer rate-limits volley spam).
+        self.sounds_pending.push((SoundKind::Ack, None));
         self.fx.push(Effect {
             kind: EffectKind::Ping { at, kind },
             age: 0.0,
@@ -675,7 +682,8 @@ impl Game {
                         .and_then(|w| w.splash)
                         .map(|s| s.to_num::<f32>());
                     if heard {
-                        self.sounds_pending.push(sound);
+                        self.sounds_pending
+                            .push((sound, Some(world_vec(*target_pos))));
                     }
                     self.fx.push(Effect {
                         kind: EffectKind::Bolt {
@@ -734,7 +742,8 @@ impl Game {
                         .find_map(|w| w.splash)
                         .map(|s| s.to_num::<f32>());
                     if sees(self, *turret_pos) || sees(self, *target_pos) {
-                        self.sounds_pending.push(sound);
+                        self.sounds_pending
+                            .push((sound, Some(world_vec(*target_pos))));
                     }
                     self.fx.push(Effect {
                         kind: EffectKind::Bolt {
@@ -759,7 +768,7 @@ impl Game {
                     }
                 }
                 Event::BuildingCompleted { player, kind, .. } if *player == self.human => {
-                    self.sounds_pending.push(SoundKind::TrainDone);
+                    self.sounds_pending.push((SoundKind::TrainDone, None));
                     self.toast(format!("{} online", kind.name()));
                 }
                 Event::BuildCancelled { player, refund, .. } if *player == self.human => {
@@ -784,7 +793,8 @@ impl Game {
                         self.raise_alert(world_vec(*pos));
                     }
                     if *player == self.human || sees(self, *pos) {
-                        self.sounds_pending.push(SoundKind::UnitDeath);
+                        self.sounds_pending
+                            .push((SoundKind::UnitDeath, Some(world_vec(*pos))));
                     }
                     self.fx.push(Effect {
                         kind: EffectKind::Puff {
@@ -798,7 +808,8 @@ impl Game {
                         self.raise_alert(world_vec(*pos));
                     }
                     if *player == self.human || sees(self, *pos) {
-                        self.sounds_pending.push(SoundKind::BuildingBoom);
+                        self.sounds_pending
+                            .push((SoundKind::BuildingBoom, Some(world_vec(*pos))));
                     }
                     self.fx.push(Effect {
                         kind: EffectKind::Puff {
@@ -813,7 +824,7 @@ impl Game {
                     }
                 }
                 Event::UnitTrained { unit, player, .. } if *player == self.human => {
-                    self.sounds_pending.push(SoundKind::TrainDone);
+                    self.sounds_pending.push((SoundKind::TrainDone, None));
                     if let Some(u) = self.state.unit(*unit) {
                         self.fx.push(Effect {
                             kind: EffectKind::Ping {
@@ -825,7 +836,7 @@ impl Game {
                     }
                 }
                 Event::ScrapDeposited { player, .. } if *player == self.human => {
-                    self.sounds_pending.push(SoundKind::Deposit);
+                    self.sounds_pending.push((SoundKind::Deposit, None));
                 }
                 Event::CommandRejected { player, reason } if *player == self.human => {
                     let why = match reason {
@@ -849,7 +860,7 @@ impl Game {
                         oxide_sim::command::RejectReason::Eliminated => "you are eliminated",
                     };
                     self.toast(why);
-                    self.sounds_pending.push(SoundKind::Denied);
+                    self.sounds_pending.push((SoundKind::Denied, None));
                 }
                 Event::ShellLaunched {
                     player, from, to, ..
@@ -880,7 +891,8 @@ impl Game {
                     // restores its arc, and speed changes track.
                     let heard = sees(self, *from) || sees(self, *to);
                     if heard || *player == self.human {
-                        self.sounds_pending.push(SoundKind::Artillery);
+                        self.sounds_pending
+                            .push((SoundKind::ArtilleryLaunch, Some(world_vec(*from))));
                     }
                 }
                 Event::ShellLanded { at, splash } => {
@@ -910,7 +922,8 @@ impl Game {
                         self.raise_alert(world);
                     }
                     if sees(self, *at) {
-                        self.sounds_pending.push(SoundKind::Artillery);
+                        self.sounds_pending
+                            .push((SoundKind::Artillery, Some(world_vec(*at))));
                     }
                     self.fx.push(Effect {
                         kind: EffectKind::Burst {
@@ -947,11 +960,14 @@ impl Game {
                         oxide_sim::GameResult::Victory { team }
                             if *team == self.state.player(self.human).team
                     );
-                    self.sounds_pending.push(if won {
-                        SoundKind::Victory
-                    } else {
-                        SoundKind::Defeat
-                    });
+                    self.sounds_pending.push((
+                        if won {
+                            SoundKind::Victory
+                        } else {
+                            SoundKind::Defeat
+                        },
+                        None,
+                    ));
                 }
                 _ => {}
             }

@@ -378,7 +378,8 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         // not throw away the armed mode on top of it.
                         if !game.state.can_place(game.human, kind, anchor) {
                             game.toast("can't build there — needs open, visible ground");
-                            game.sounds_pending.push(crate::game::SoundKind::Denied);
+                            game.sounds_pending
+                                .push((crate::game::SoundKind::Denied, None));
                             continue;
                         }
                         let units = game.selection.units.clone();

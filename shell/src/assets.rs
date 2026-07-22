@@ -278,6 +278,12 @@ pub struct Sounds {
     pub flak: Sound,
     /// An artillery shell landing.
     pub artillery_boom: Sound,
+    /// The gun speaking (the boom belongs to the impact).
+    pub artillery_launch: Sound,
+    /// Order acknowledged.
+    pub ack: Sound,
+    /// The zap's lower sibling, alternated per shot.
+    pub laser2: Sound,
 }
 
 async fn clip(name: &str) -> Result<Sound> {
@@ -303,6 +309,9 @@ impl Sounds {
             defeat: clip("defeat").await?,
             flak: clip("flak").await?,
             artillery_boom: clip("artillery_boom").await?,
+            artillery_launch: clip("artillery_launch").await?,
+            ack: clip("ack").await?,
+            laser2: clip("laser2").await?,
         })
     }
 }
