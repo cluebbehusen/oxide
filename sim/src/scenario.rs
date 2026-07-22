@@ -27,6 +27,33 @@ pub struct Scenario {
     /// Starting units.
     #[serde(default)]
     pub units: Vec<UnitSpec>,
+    /// Authored presentation metadata for browsers and previews. The
+    /// sim ignores it entirely; it is hashed with the scenario text like
+    /// any other byte, and absent on older files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<ScenarioMeta>,
+}
+
+/// Presentation-only facts a map browser shows before anyone commits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ScenarioMeta {
+    /// One-sentence strategic hook.
+    #[serde(default)]
+    pub hook: String,
+    /// Pace label: "quick", "standard", or "large" — map-audit's route
+    /// bands hold each label honest.
+    #[serde(default)]
+    pub pace: String,
+    /// Mode support, e.g. "1v1" or "2v2".
+    #[serde(default)]
+    pub mode: String,
+    /// Resource richness in plain words ("lean", "standard", "rich").
+    #[serde(default)]
+    pub richness: String,
+    /// Tileset/theme key for grading and previews.
+    #[serde(default)]
+    pub theme: String,
 }
 
 /// One player's starting conditions.
