@@ -179,6 +179,29 @@ pub struct CameraView {
     pub world_rect: [f64; 4],
 }
 
+/// Snapshot of the shell screen that currently owns input.
+///
+/// Menu rows use a half-open `visible_range`, so `[2, 7]` means item
+/// indices 2 through 6 are currently drawn. Gameplay has no active menu and
+/// reports `None` for the menu-specific fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiView {
+    /// Stable snake-case mode name, such as `main_menu` or `playing`.
+    pub mode: String,
+    /// Active menu heading, when this mode has a menu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Highlighted row index, when this mode has a menu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected: Option<usize>,
+    /// Every row label, including rows outside the current scroll window.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<String>,
+    /// Half-open item-index range currently visible on screen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_range: Option<[usize; 2]>,
+}
+
 impl StateView {
     /// Captures a filtered snapshot of `state`.
     pub fn capture(state: &State, filter: StateFilter) -> Self {

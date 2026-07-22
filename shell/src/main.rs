@@ -31,7 +31,7 @@ use macroquad::prelude::*;
 use menu::{Menu, ScenarioEntry};
 use oxide_protocol::{
     AdvancedView, CameraView, HashView, Key, OverlayView, RawEvent, Reply, Request,
-    ResponseEnvelope, SavedView, ScreenshotView, StateView, StatusView,
+    ResponseEnvelope, SavedView, ScreenshotView, StateView, StatusView, UiView,
 };
 use oxide_sim::{PlayerCommand, SIM_VERSION, Scenario};
 use std::sync::mpsc::{Receiver, Sender};
@@ -47,9 +47,18 @@ struct Args {
     #[arg(long)]
     replay: Option<String>,
 
-    /// Serve the debug protocol on --port (skips the menu).
+    /// Serve the debug protocol on --port (skips the menu unless automated).
     #[arg(long)]
     debug_server: bool,
+
+    /// Deterministic UI-driving mode: start at the main menu and accept only
+    /// injected input, never hardware input.
+    #[arg(
+        long,
+        requires = "debug_server",
+        conflicts_with_all = ["scenario", "replay"]
+    )]
+    automation: bool,
 
     /// Debug server port.
     #[arg(long, default_value_t = oxide_protocol::DEFAULT_PORT)]
@@ -238,12 +247,14 @@ async fn run() -> Result<()> {
 
     // Launched for a purpose (a scenario, a resume, or an agent socket)?
     // Straight into the game; the menu is for humans starting cold.
-    let mut mode = if args.debug_server || args.scenario.is_some() || args.replay.is_some() {
+    let mut mode = if args.automation {
+        Mode::MainMenu
+    } else if args.debug_server || args.scenario.is_some() || args.replay.is_some() {
         Mode::Playing
     } else {
         Mode::MainMenu
     };
-    let mut main_menu: Option<(Menu, Vec<ScenarioEntry>)> = None;
+    let mut main_menu = matches!(mode, Mode::MainMenu).then(build_main_menu);
     let mut sub_menu = Menu::new("", Vec::new());
     let mut pause_menu = Menu::new(
         "PAUSED",
@@ -258,6 +269,7 @@ async fn run() -> Result<()> {
     let mut input = input::InputState::new();
     let mut injected: Vec<RawEvent> = Vec::new();
     let mut pending_shots: Vec<PendingScreenshot> = Vec::new();
+    let mut ui_view = capture_ui(&mode, &main_menu, &sub_menu, &pause_menu);
 
     loop {
         let dt = get_frame_time();
@@ -277,11 +289,16 @@ async fn run() -> Result<()> {
                     &mut input,
                     &mut injected,
                     &mut pending_shots,
+                    &ui_view,
                 );
             }
         }
 
-        let mut events = input::poll_events(&input);
+        let mut events = if args.automation {
+            Vec::new()
+        } else {
+            input::poll_events(&input)
+        };
         events.append(&mut injected);
 
         let mode_before = std::mem::discriminant(&mode);
@@ -488,6 +505,10 @@ async fn run() -> Result<()> {
         if std::mem::discriminant(&mode) != mode_before {
             input.reset_transient();
         }
+        if matches!(mode, Mode::MainMenu) && main_menu.is_none() {
+            main_menu = Some(build_main_menu());
+        }
+        ui_view = capture_ui(&mode, &main_menu, &sub_menu, &pause_menu);
 
         let queued: Vec<SoundKind> = game.sounds_pending.drain(..).collect();
         for kind in queued {
@@ -522,6 +543,29 @@ fn keep_flags(mut fresh: Game, old: &Game) -> Game {
     fresh.speed = old.speed;
     fresh.overlay = old.overlay;
     fresh
+}
+
+fn capture_ui(
+    mode: &Mode,
+    main_menu: &Option<(Menu, Vec<ScenarioEntry>)>,
+    sub_menu: &Menu,
+    pause_menu: &Menu,
+) -> UiView {
+    let (mode_name, menu) = match mode {
+        Mode::MainMenu => ("main_menu", main_menu.as_ref().map(|(menu, _)| menu)),
+        Mode::DifficultyMenu { .. } => ("difficulty_menu", Some(sub_menu)),
+        Mode::PersonalityMenu { .. } => ("personality_menu", Some(sub_menu)),
+        Mode::FactionMenu { .. } => ("faction_menu", Some(sub_menu)),
+        Mode::Playing => ("playing", None),
+        Mode::PauseMenu => ("pause_menu", Some(pause_menu)),
+    };
+    UiView {
+        mode: mode_name.to_string(),
+        title: menu.map(|menu| menu.title.clone()),
+        selected: menu.map(|menu| menu.selected),
+        items: menu.map_or_else(Vec::new, |menu| menu.items.clone()),
+        visible_range: menu.map(Menu::visible_range),
+    }
 }
 
 /// Dark translucent layer between the world and a menu.
@@ -578,6 +622,7 @@ fn handle_request(
     input: &mut input::InputState,
     injected: &mut Vec<RawEvent>,
     pending_shots: &mut Vec<PendingScreenshot>,
+    ui_view: &UiView,
 ) {
     let IncomingRequest { id, request, reply } = incoming;
     let outcome: Result<Reply, String> = match request {
@@ -600,6 +645,7 @@ fn handle_request(
                 ],
             }))
         }
+        Request::QueryUi => Ok(Reply::Ui(ui_view.clone())),
         Request::StateHash => Ok(Reply::Hash(HashView {
             tick: game.state.current_tick(),
             hash: game.hash_hex(),
@@ -714,5 +760,19 @@ fn status_view(game: &Game) -> StatusView {
         sim_version: SIM_VERSION.to_string(),
         result: game.state.result(),
         recorded_commands: game.recorder.commands.len(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn automation_requires_debug_server() {
+        assert!(Args::try_parse_from(["oxide-shell", "--automation"]).is_err());
+        let args = Args::try_parse_from(["oxide-shell", "--debug-server", "--automation"])
+            .expect("automation with the debug server should parse");
+        assert!(args.debug_server);
+        assert!(args.automation);
     }
 }

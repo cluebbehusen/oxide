@@ -80,6 +80,12 @@ impl Menu {
         ))
     }
 
+    /// Half-open range of rows currently drawn by the scroll window.
+    pub fn visible_range(&self) -> [usize; 2] {
+        let (_, _, first, visible) = self.layout();
+        [first, first + visible]
+    }
+
     /// Feeds a frame of events through the menu; returns the activated row,
     /// if any. Mouse position updates come along in the same events.
     pub fn handle(&mut self, events: &[RawEvent], mouse: &mut Vec2) -> Option<usize> {

@@ -130,6 +130,8 @@ enum LiveCmd {
     },
     /// Camera pose and visible world rect.
     Camera,
+    /// Shell mode and active menu state.
+    Ui,
     /// Canonical state fingerprint.
     Hash,
     /// Fast-forward N ticks (works while paused — that's the point).
@@ -312,7 +314,8 @@ enum LiveCmd {
     },
     /// Inject a key press (and release).
     InjectKey {
-        /// up/down/left/right/h/s/p/escape/space/f1.
+        /// A mapped key: arrows, h/s/a/p/r/b/n/x, enter, escape, space,
+        /// f1, shift, ctrl, or 1-9.
         key: String,
     },
     /// Inject a cursor move.
@@ -322,14 +325,47 @@ enum LiveCmd {
         /// Window y.
         y: f32,
     },
-    /// Inject a full click (down + up) at a window position.
-    InjectClick {
-        /// "left" or "right".
+    /// Inject a mouse-button press without releasing it.
+    InjectMouseDown {
+        /// "left", "right", or "middle".
         button: String,
         /// Window x.
         x: f32,
         /// Window y.
         y: f32,
+    },
+    /// Inject a mouse-button release without pressing it.
+    InjectMouseUp {
+        /// "left", "right", or "middle".
+        button: String,
+        /// Window x.
+        x: f32,
+        /// Window y.
+        y: f32,
+    },
+    /// Inject a full click (down + up) at a window position.
+    InjectClick {
+        /// "left", "right", or "middle".
+        button: String,
+        /// Window x.
+        x: f32,
+        /// Window y.
+        y: f32,
+    },
+    /// Drag between two window positions over several rendered frames.
+    InjectDrag {
+        /// Start as "x,y" window coordinates.
+        #[arg(long)]
+        from: String,
+        /// End as "x,y" window coordinates.
+        #[arg(long)]
+        to: String,
+        /// Mouse-move events between press and release (1-120).
+        #[arg(long, default_value_t = 6)]
+        steps: u32,
+        /// "left", "right", or "middle".
+        #[arg(long, default_value = "left")]
+        button: String,
     },
     /// Capture the current frame to a PNG.
     Screenshot {
@@ -454,6 +490,27 @@ fn parse_tile(s: &str) -> Result<chassis::grid::TilePos> {
     ))
 }
 
+fn parse_point(s: &str) -> Result<(f32, f32)> {
+    let (x, y) = s
+        .split_once(',')
+        .with_context(|| format!("expected \"x,y\", got {s:?}"))?;
+    let point = (x.trim().parse::<f32>()?, y.trim().parse::<f32>()?);
+    if point.0.is_finite() && point.1.is_finite() {
+        Ok(point)
+    } else {
+        bail!("point coordinates must be finite")
+    }
+}
+
+fn parse_mouse_button(s: &str) -> Result<MouseButton> {
+    Ok(match s.to_ascii_lowercase().as_str() {
+        "left" => MouseButton::Left,
+        "right" => MouseButton::Right,
+        "middle" => MouseButton::Middle,
+        other => bail!("unknown button {other:?}"),
+    })
+}
+
 /// Clap-native unit kinds — typos die in argument parsing with the full
 /// list of choices, before anything touches the socket.
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -561,6 +618,7 @@ fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
             },
         },
         LiveCmd::Camera => Request::QueryCamera,
+        LiveCmd::Ui => Request::QueryUi,
         LiveCmd::Hash => Request::StateHash,
         LiveCmd::Advance { ticks } => Request::AdvanceTicks { ticks },
         LiveCmd::Pause => Request::Pause,
@@ -732,12 +790,22 @@ fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
         LiveCmd::InjectMouseMove { x, y } => Request::InjectEvent {
             event: RawEvent::MouseMove { x, y },
         },
+        LiveCmd::InjectMouseDown { button, x, y } => Request::InjectEvent {
+            event: RawEvent::MouseDown {
+                button: parse_mouse_button(&button)?,
+                x,
+                y,
+            },
+        },
+        LiveCmd::InjectMouseUp { button, x, y } => Request::InjectEvent {
+            event: RawEvent::MouseUp {
+                button: parse_mouse_button(&button)?,
+                x,
+                y,
+            },
+        },
         LiveCmd::InjectClick { button, x, y } => {
-            let button = match button.as_str() {
-                "left" => MouseButton::Left,
-                "right" => MouseButton::Right,
-                other => bail!("unknown button {other:?}"),
-            };
+            let button = parse_mouse_button(&button)?;
             // A click is a pair; the shell treats a lone down as a drag start.
             return Ok(vec![
                 Request::InjectEvent {
@@ -748,9 +816,112 @@ fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
                 },
             ]);
         }
+        LiveCmd::InjectDrag {
+            from,
+            to,
+            steps,
+            button,
+        } => {
+            if !(1..=120).contains(&steps) {
+                bail!("drag steps must be within 1..=120");
+            }
+            let (from_x, from_y) = parse_point(&from)?;
+            let (to_x, to_y) = parse_point(&to)?;
+            let button = parse_mouse_button(&button)?;
+            let mut requests = Vec::with_capacity(steps as usize + 2);
+            requests.push(Request::InjectEvent {
+                event: RawEvent::MouseDown {
+                    button,
+                    x: from_x,
+                    y: from_y,
+                },
+            });
+            for step in 1..=steps {
+                let t = step as f32 / steps as f32;
+                requests.push(Request::InjectEvent {
+                    event: RawEvent::MouseMove {
+                        x: from_x + (to_x - from_x) * t,
+                        y: from_y + (to_y - from_y) * t,
+                    },
+                });
+            }
+            requests.push(Request::InjectEvent {
+                event: RawEvent::MouseUp {
+                    button,
+                    x: to_x,
+                    y: to_y,
+                },
+            });
+            return Ok(requests);
+        }
         LiveCmd::Screenshot { out } => Request::Screenshot { path: out },
         LiveCmd::Overlay => Request::ToggleOverlay,
         LiveCmd::Load { path } => Request::LoadScenario { path },
         LiveCmd::SaveReplay { path } => Request::SaveReplay { path },
     }])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drag_expands_to_press_moves_and_release() {
+        let requests = live_requests(LiveCmd::InjectDrag {
+            from: "10,20".to_string(),
+            to: "40,50".to_string(),
+            steps: 3,
+            button: "left".to_string(),
+        })
+        .unwrap();
+        assert_eq!(requests.len(), 5);
+        assert_eq!(
+            requests[0],
+            Request::InjectEvent {
+                event: RawEvent::MouseDown {
+                    button: MouseButton::Left,
+                    x: 10.0,
+                    y: 20.0,
+                }
+            }
+        );
+        assert_eq!(
+            requests[2],
+            Request::InjectEvent {
+                event: RawEvent::MouseMove { x: 30.0, y: 40.0 }
+            }
+        );
+        assert_eq!(
+            requests[4],
+            Request::InjectEvent {
+                event: RawEvent::MouseUp {
+                    button: MouseButton::Left,
+                    x: 40.0,
+                    y: 50.0,
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn drag_rejects_unbounded_event_counts() {
+        let err = live_requests(LiveCmd::InjectDrag {
+            from: "0,0".to_string(),
+            to: "1,1".to_string(),
+            steps: 121,
+            button: "left".to_string(),
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("1..=120"));
+    }
+
+    #[test]
+    fn every_protocol_key_is_cli_addressable() {
+        for key in [
+            "up", "down", "left", "right", "h", "s", "a", "p", "r", "b", "n", "x", "enter",
+            "escape", "space", "f1", "shift", "ctrl", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+        ] {
+            assert!(parse_key(key).is_ok(), "missing CLI spelling for {key}");
+        }
+    }
 }
