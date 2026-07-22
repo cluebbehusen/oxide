@@ -174,7 +174,20 @@ class Worker:
             )
 
     def _rpc(self, request: dict) -> Frame:
+        self.send(request)
+        return self.recv()
+
+    def send(self, request: dict) -> None:
+        """Writes a request without waiting for its reply. Exactly one
+        request may be in flight per worker — the driver is a strict
+        read-compute-reply loop — but *across* workers, sending to all
+        before collecting from any turns N blocking round-trips into N
+        concurrent simulations. The pipelined loops in league.py exist
+        because of this split."""
         self._stdin.write(json.dumps(request) + "\n")
+
+    def recv(self) -> Frame:
+        """Blocks for the reply to the outstanding request."""
         reply = json.loads(self._stdout.readline())
         if "error" in reply:
             raise RuntimeError(reply["error"])
@@ -229,8 +242,13 @@ class Worker:
         the dict send nothing — the driver expects exactly one action
         per *living* controlled seat, and a dead teammate's seat has
         dropped out of the frame."""
+        self.send_step(actions)
+        return self.recv()
+
+    def send_step(self, actions: dict[int, int]) -> None:
+        """The write half of `step`, for pipelining across workers."""
         ordered = [int(actions[s]) for s in self.control if s in actions]
-        return self._rpc({"cmd": "step", "actions": ordered})
+        self.send({"cmd": "step", "actions": ordered})
 
     def close(self) -> None:
         with contextlib.suppress(OSError, ValueError):

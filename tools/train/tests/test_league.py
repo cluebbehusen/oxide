@@ -27,20 +27,45 @@ if TYPE_CHECKING:
 
 
 class _ScriptedWorker:
-    """Returns a fixed sequence of frames from step(); the Job's frame is
-    preset so reset() is never reached."""
+    """Returns a fixed sequence of frames; the Job's frame is preset so
+    reset() is never reached. Implements the pipelined send/recv split
+    the way the real Worker does, and journals every call into `log`
+    (shared across workers when provided) so tests can prove ordering."""
 
-    def __init__(self, frames: list[Frame]) -> None:
+    def __init__(
+        self, frames: list[Frame], name: str = "w", log: list[str] | None = None
+    ) -> None:
         self._frames = frames
         self._i = 0
+        self._pending = False
+        self.name = name
+        self.log = log if log is not None else []
 
-    def step(self, _actions: dict[int, int]) -> Frame:
+    def step(self, actions: dict[int, int]) -> Frame:
+        self.send_step(actions)
+        return self.recv()
+
+    def send_step(self, _actions: dict[int, int]) -> None:
+        assert not self._pending, "one request in flight per worker"
+        self._pending = True
+        self.log.append(f"send:{self.name}")
+
+    def recv(self) -> Frame:
+        assert self._pending, "recv without a send"
+        self._pending = False
+        self.log.append(f"recv:{self.name}")
         frame = self._frames[self._i]
         self._i += 1
         return frame
 
     def reset(self, *_args: object, **_kwargs: object) -> Frame:
         raise AssertionError("reset must not run: the Job's frame is preset")
+
+
+def _view(fill: float) -> SeatView:
+    obs = np.full(NET_FEATURES, fill, dtype=np.float32)
+    mask = np.ones(ACTIONS, dtype=bool)
+    return SeatView(obs, mask, [0] * FEATURES)
 
 
 @pytest.fixture
@@ -203,3 +228,37 @@ class TestJobSeatView:
         job.seat_view(0)  # remembered while alive
         job.frame = Frame(False, 16, seats={})  # seat 0 no longer reported
         assert job.seat_view(0) is live  # frozen, not a KeyError
+
+
+class TestRolloutPipelining:
+    def test_every_send_lands_before_any_recv_within_a_step(self) -> None:
+        # Two jobs sharing one journal: the pipelined loop must write
+        # both workers' steps before it blocks on either reply, every
+        # step — that concurrency is the entire point of the split.
+        log: list[str] = []
+        torch.manual_seed(0)
+        policy = make_policy("mlp")
+        policy.eval()
+
+        def scripted(name: str) -> Job:
+            frames = [
+                Frame(False, 16 * (t + 1), seats={0: _view(1.0), 1: _view(2.0)})
+                for t in range(3)
+            ]
+            worker = cast("Worker", _ScriptedWorker(frames, name, log))
+            job = Job(
+                worker, "self", 0, pathlib.Path("."), np.random.default_rng(0), "cpu"
+            )
+            job.frame = Frame(False, 0, seats={0: _view(1.0), 1: _view(2.0)})
+            job.conditions = {0: (1000, 500, 0), 1: (1000, 500, 1000)}
+            return job
+
+        jobs = [scripted("a"), scripted("b")]
+        rollout(policy, jobs, itertools.repeat(0), 3, "cpu", np.random.default_rng(1))
+
+        steps = [log[i : i + 4] for i in range(0, len(log), 4)]
+        assert len(steps) == 3
+        for chunk in steps:
+            assert chunk == ["send:a", "send:b", "recv:a", "recv:b"], (
+                f"pipelining broke: {chunk}"
+            )

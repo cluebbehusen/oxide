@@ -24,9 +24,12 @@ Usage (from tools/train/):
 """
 
 import argparse
+import contextlib
 import json
 import pathlib
+import threading
 import time
+from collections import Counter
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -36,7 +39,8 @@ import numpy as np
 import torch
 from torch import nn
 
-from mapgen import cache_dir, generate
+from mapgen import cache_dir
+from mapgen import generate as _generate
 from models import load_policy, make_policy, save_policy
 from oxide_gym import (
     ACTIONS,
@@ -50,6 +54,28 @@ from oxide_gym import (
 from ppo import gae, ppo_update
 
 TIERS = ["scrapheap", "standard", "veteran", "prime"]
+
+# Per-update phase clocks, drained into every log entry — optimization
+# without a stable meter is guessing. Keys: env_sec (worker RPC),
+# policy_sec (learner forward passes), mapgen_sec, reset_sec, resets.
+TEL: Counter = Counter()
+
+
+@contextlib.contextmanager
+def timed(key: str) -> Iterator[None]:
+    """Accumulates wall time under a telemetry key."""
+    t = time.perf_counter()
+    try:
+        yield
+    finally:
+        TEL[key] += time.perf_counter() - t
+
+
+def generate(seed: int, out_dir: str, players: int = 2, teams: bool = False) -> str:
+    """mapgen.generate with its wall time metered."""
+    with timed("mapgen_sec"):
+        return _generate(seed, out_dir, players=players, teams=teams)
+
 
 # Potential-based shaping: a small dense signal that guides the value
 # net through the thousand-decision desert between terminal rewards.
@@ -224,6 +250,11 @@ class Job:
         return self.last_views[seat]
 
     def reset(self, seed: int) -> None:
+        TEL["resets"] += 1
+        with timed("reset_sec"):
+            self._reset(seed)
+
+    def _reset(self, seed: int) -> None:
         self.dead = set()
         self.last_views = {}
         self.conditions = {s: sample_condition(self.rng, s) for s in self.learner_seats}
@@ -359,7 +390,7 @@ def rollout(
                 live.append(s not in j.dead)
         obs = np.stack([v.obs for v in views])
         mask = np.stack([v.mask for v in views])
-        with torch.no_grad():
+        with timed("policy_sec"), torch.no_grad():
             logits, value = policy(
                 torch.as_tensor(obs, device=device),
                 torch.as_tensor(mask, device=device),
@@ -381,6 +412,14 @@ def rollout(
             lane.valid.append(live[k])
 
         row = {key: k for k, key in enumerate(keys)}
+        # Pipelined env step: every job's actions — opponent minds
+        # included — are computed before any worker hears from us, then
+        # all sends go out, then replies collect in the same
+        # deterministic job order. Eight simulations advance
+        # concurrently instead of one at a time; the batch is
+        # bit-identical to the serial loop because nothing about a
+        # job's step depends on another job's reply.
+        all_acts = []
         for j in jobs:
             acts = {}
             for s in j.learner_seats:
@@ -395,7 +434,13 @@ def rollout(
                     noise_rng,
                 )
             acts.update(j.opponent_action(device))
-            frame = j.worker.step(acts)
+            all_acts.append(acts)
+        with timed("env_sec"):
+            for j, acts in zip(jobs, all_acts, strict=True):
+                j.worker.send_step(acts)
+        for j in jobs:
+            with timed("env_sec"):
+                frame = j.worker.recv()
             if frame.done:
                 for s in j.learner_seats:
                     lane = lanes[(id(j), s)]
@@ -491,12 +536,19 @@ def evaluate(
                     torch.as_tensor(mask, device=device),
                 )
                 action = logits.argmax(dim=-1).cpu().numpy()
+            # Send-all, collect-in-order: the eval bracket's games are
+            # independent, so the workers may as well all be simulating.
+            sends = []
             for k, (i, seat, frame) in enumerate(live):
                 acts = {seat: int(action[k])}
                 if opponent == "rusher":
                     ov = frame.seats[1 - seat]
                     acts[1 - seat] = rusher(ov.raw, ov.mask, frame.tick)
-                nxt = workers[i].step(acts)
+                sends.append((i, seat, acts))
+            for i, _seat, acts in sends:
+                workers[i].send_step(acts)
+            for i, seat, _acts in sends:
+                nxt = workers[i].recv()
                 if nxt.done:
                     games += 1
                     wins += 1 if nxt.winner == seat else 0
@@ -559,22 +611,57 @@ def main() -> None:
     workers = [Worker(args.driver) for _ in range(args.workers)]
     rng = np.random.default_rng(0)
 
+    # A one-cell cursor the warmer reads without locking: worst case it
+    # warms a seed twice, and generate() is idempotent per seed.
+    consumed = [50_000]
+
     def seed_stream() -> Iterator[int]:
         s = 50_000
         while True:
+            consumed[0] = s
             yield s
             s += 1
 
     seeds = seed_stream()
+
+    if args.maps == "random":
+        # Cold-cache map generation costs a driver subprocess per map
+        # (~34% of an update when the cache is empty). A daemon warmer
+        # stays a few seeds ahead of the cursor so the hot path only
+        # ever sees cache hits; generate() is atomic-rename safe, so
+        # the race with a foreground miss is harmless. Determinism is
+        # untouched: same seed, same file, whoever writes it.
+        def warm() -> None:
+            warmed = 0
+            while True:
+                target = consumed[0] + 2 * args.workers
+                while warmed < target:
+                    warmed = max(warmed, consumed[0])
+                    _generate(warmed % 100_000, cache_dir("oxide-maps-train"))
+                    _generate(
+                        warmed % 100_000, cache_dir("oxide-maps-train4"), players=4
+                    )
+                    _generate(
+                        warmed % 100_000,
+                        cache_dir("oxide-maps-train2v2"),
+                        players=4,
+                        teams=True,
+                    )
+                    warmed += 1
+                time.sleep(0.25)
+
+        threading.Thread(target=warm, daemon=True, name="map-warmer").start()
     log = (run_dir / "log.jsonl").open("a")
 
     try:
         jobs = assign_roles(workers, mix, pool_dir, rng, device, args.maps)
         for update in range(start_update + 1, start_update + args.updates + 1):
             t0 = time.time()
+            TEL.clear()
             batch, last_val, finals = rollout(
                 policy, jobs, seeds, args.steps, device, rng
             )
+            rollout_sec = time.time() - t0
             obs_b, mask_b, act_b, logp_b, val_b, rew_b, done_b, valid_b = batch
             adv, ret = gae(rew_b, done_b, val_b, last_val)
             # GAE ran over the full rectangle so a dead teammate's lane
@@ -593,6 +680,7 @@ def main() -> None:
             # fragile clone, a straitjacket once the league is teaching —
             # and it pins every knob setting to the teacher's one style.
             # Anneal it away (halves roughly every 140 updates).
+            t_update = time.time()
             stats = ppo_update(
                 policy,
                 opt,
@@ -602,6 +690,7 @@ def main() -> None:
                 anchor=anchor,
                 anchor_coef=args.anchor_coef * (0.995**update),
             )
+            decisions = int(obs_b.shape[0]) * int(obs_b.shape[1])
             entry = {
                 "update": update,
                 "kinds": sorted(j.kind for j in jobs),
@@ -610,6 +699,15 @@ def main() -> None:
                 "ent": round(stats["ent"] / max(stats["batches"], 1), 3),
                 "kl": round(stats["kl"], 4),
                 "sec": round(time.time() - t0, 1),
+                # The phase clocks: where an update's wall time actually
+                # went, so optimization is measurement, not folklore.
+                "rollout_sec": round(rollout_sec, 2),
+                "update_sec": round(time.time() - t_update, 2),
+                "decisions_s": round(decisions / max(rollout_sec, 1e-9)),
+                **{
+                    k: (int(v) if k == "resets" else round(v, 2))
+                    for k, v in sorted(TEL.items())
+                },
             }
             if update % args.pool_every == 0:
                 save_policy(
