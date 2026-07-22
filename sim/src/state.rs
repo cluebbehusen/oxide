@@ -503,12 +503,16 @@ impl State {
     }
 
     /// Whether a unit of the given movement domain may stand on `pos`.
-    /// Ground units need open terrain and no building; air units only need
-    /// the map itself — rock, scrap, and roofs mean nothing up there.
+    /// Ground units need open terrain and no building; air units need the
+    /// map itself minus peaks — rock, scrap, and roofs mean nothing up
+    /// there, but a mountain owns its column of sky.
     pub fn passable_for(&self, domain: crate::stats::Domain, pos: TilePos) -> bool {
         match domain {
             crate::stats::Domain::Ground => self.passable(pos),
-            crate::stats::Domain::Air => self.map.tile(pos).is_some(),
+            crate::stats::Domain::Air => self
+                .map
+                .tile(pos)
+                .is_some_and(|t| t.terrain != crate::map::Terrain::Peak),
         }
     }
 

@@ -36,6 +36,9 @@ GROUND_LIGHT = (44, 44, 52)
 ROCK = (82, 82, 94)
 ROCK_DARK = (58, 58, 68)
 ROCK_LIGHT = (104, 104, 118)
+PEAK = (66, 64, 82)
+PEAK_DARK = (46, 44, 58)
+PEAK_LIGHT = (118, 114, 138)
 SCRAP = (217, 164, 65)
 SCRAP_DARK = (140, 106, 47)
 SCRAP_LIGHT = (240, 200, 120)
@@ -206,6 +209,49 @@ def rock(variant: int) -> None:
         tone = ROCK if i < 2 else ROCK_DARK
         boulder(cx, cy, r, tone, ROCK_DARK, ROCK_LIGHT if i < 2 else ROCK)
     finish(img, px, f"rock_{variant}")
+
+
+def peak(variant: int) -> None:
+    """A mountain tile: full-bleed dark mass, broad overlapping ridges
+    back-to-front with a modest lit west facet and one pale crest — the
+    terrain nothing crosses and nothing shoots past."""
+    px = 64
+    img, d = canvas(px, color=(*PEAK_DARK, 255))
+    rng = random.Random(97 + variant * 17)
+
+    def mix(a, b, t):
+        return tuple(int(x + (y - x) * t) for x, y in zip(a, b))
+
+    ridges = [
+        [(14, 34, 18), (52, 40, 8)],
+        [(50, 36, 16), (12, 42, 6)],
+    ][variant % 2]
+    tones = [mix(PEAK_DARK, PEAK, 0.55), PEAK]
+    for (cx, half, apex_y), tone in zip(ridges, tones):
+        apex_x = cx + rng.randrange(-3, 4)
+        left_x = apex_x - half - rng.randrange(0, 8)
+        right_x = apex_x + half + rng.randrange(0, 8)
+        d.polygon(
+            [(s(left_x), s(66)), (s(apex_x), s(apex_y)), (s(right_x), s(66))],
+            fill=(*tone, 255),
+        )
+        # A modest lit facet on the west face, not the whole slope.
+        fall_x = left_x + (apex_x - left_x) * 0.4
+        d.polygon(
+            [(s(left_x), s(66)), (s(apex_x), s(apex_y)), (s(fall_x), s(66))],
+            fill=(*mix(tone, PEAK_LIGHT, 0.45), 255),
+        )
+    # One pale crest on the taller ridge only.
+    tall_x, _, tall_y = min(ridges, key=lambda r: r[2])
+    d.polygon(
+        [
+            (s(tall_x - 3), s(tall_y + 8)),
+            (s(tall_x), s(tall_y - 1)),
+            (s(tall_x + 3), s(tall_y + 8)),
+        ],
+        fill=(*mix(PEAK_LIGHT, BONE, 0.5), 255),
+    )
+    finish(img, px, f"peak_{variant}")
 
 
 def scrap_pile(name: str, seed: int, pieces: int, spread: float, lift: float) -> None:
@@ -839,6 +885,8 @@ def main() -> None:
     for i in range(4):
         rock(i)
     rock_skirt()
+    for i in range(2):
+        peak(i)
     decal("decal_crack", 41, "crack")
     decal("decal_plate", 42, "plate")
     decal("decal_stain", 43, "stain")

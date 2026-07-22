@@ -15,6 +15,7 @@ pub struct Sprites {
     texture: Texture2D,
     ground: [Rect; 6],
     rock: [Rect; 4],
+    peak: [Rect; 2],
     rock_skirt: Rect,
     decals: [Rect; 4],
     scrap_full: Rect,
@@ -89,6 +90,7 @@ impl Sprites {
                 rect("rock_2")?,
                 rect("rock_3")?,
             ],
+            peak: [rect("peak_0")?, rect("peak_1")?],
             rock_skirt: rect("rock_skirt")?,
             decals: [
                 rect("decal_crack")?,
@@ -139,6 +141,11 @@ impl Sprites {
     /// A rock variant's atlas region.
     pub fn rock(&self, variant: usize) -> Rect {
         self.rock[variant % self.rock.len()]
+    }
+
+    /// A peak variant's atlas region.
+    pub fn peak(&self, variant: usize) -> Rect {
+        self.peak[variant % self.peak.len()]
     }
 
     /// The soft shadow a rock casts on a neighboring ground tile

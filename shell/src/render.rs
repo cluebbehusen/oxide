@@ -351,6 +351,7 @@ fn draw_tiles(game: &Game, sprites: &Sprites) {
             };
             let (overlay, flip) = match (tile.terrain, scrap) {
                 (oxide_sim::map::Terrain::Rock, _) => (Some(sprites.rock(h % 4)), h % 7 < 3),
+                (oxide_sim::map::Terrain::Peak, _) => (Some(sprites.peak(h % 2)), h % 7 < 3),
                 (_, 0) if wreck > 0 => (Some(sprites.wreck_pile()), h % 5 < 2),
                 (_, 0) => (None, false),
                 (_, s) => (Some(sprites.scrap(s, SCRAP_NODE_AMOUNT)), false),
@@ -1370,6 +1371,7 @@ const MINIMAP_MAX: Vec2 = vec2(220.0, 150.0);
 const MINI_VOID: Color = color_u8!(10, 10, 13, 255);
 const MINI_GROUND: Color = color_u8!(44, 44, 52, 255);
 const MINI_ROCK: Color = color_u8!(84, 84, 96, 255);
+const MINI_PEAK: Color = color_u8!(108, 104, 126, 255);
 
 /// Minimap allegiance color: faction color, lifted toward white for
 /// teammates — "friendly, not yours" at a glance (a 2v2 fields the same
@@ -1479,6 +1481,7 @@ fn draw_minimap(game: &Game) {
             };
             let base = match (tile.terrain, scrap) {
                 (oxide_sim::map::Terrain::Rock, _) => MINI_ROCK,
+                (oxide_sim::map::Terrain::Peak, _) => MINI_PEAK,
                 (_, 0) => MINI_GROUND,
                 (_, _) => SCRAP_COLOR,
             };

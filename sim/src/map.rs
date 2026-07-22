@@ -24,8 +24,12 @@ pub const MAX_MAP_EDGE: usize = 256;
 pub enum Terrain {
     /// Walkable.
     Ground,
-    /// Never walkable.
+    /// Never walkable (flyable — rock is clutter, not altitude).
     Rock,
+    /// A mountain: blocks ground, air, direct fire that involves
+    /// aircraft, and artillery arcs — the one terrain that makes
+    /// genuinely siege-safe geography.
+    Peak,
 }
 
 /// One tile of the map.
@@ -138,6 +142,12 @@ impl Map {
                     },
                     '#' => Tile {
                         terrain: Terrain::Rock,
+                        scrap: 0,
+                        wreck: 0,
+                        cosmetic: 0,
+                    },
+                    '^' => Tile {
+                        terrain: Terrain::Peak,
                         scrap: 0,
                         wreck: 0,
                         cosmetic: 0,
@@ -287,6 +297,7 @@ impl Map {
         for (pos, tile) in self.grid.iter() {
             let c = match (tile.terrain, tile.scrap) {
                 (Terrain::Rock, _) => '#',
+                (Terrain::Peak, _) => '^',
                 // Render-only: wrecks are never authored, so `w` stays out
                 // of the parse legend.
                 (Terrain::Ground, 0) if tile.wreck > 0 => 'w',

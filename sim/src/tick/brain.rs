@@ -147,9 +147,11 @@ fn target_domain(state: &State, target: Target) -> Domain {
     }
 }
 
-/// Whether terrain cover applies to a shot: only direct fire between two
-/// ground parties traces the line — rock reaches nobody in the air, and
-/// indirect shells arc over it.
+/// Whether full terrain cover applies to a shot: only direct fire between
+/// two ground parties traces rock and buildings — rock reaches nobody in
+/// the air, and indirect shells arc over it. Peaks are checked on every
+/// shot regardless (see the `shot_open` closures): a mountain outreaches
+/// any arc.
 fn traces_terrain(weapon: &WeaponStats, shooter: Domain, victim: Domain) -> bool {
     !weapon.indirect && shooter == Domain::Ground && victim == Domain::Ground
 }
@@ -321,13 +323,16 @@ fn turret_fire(
             // Reached zero this tick: fire now, like unit cooldowns do.
         }
         let range_sq = atk.range * atk.range;
-        let clear_shot = |t: TilePos| {
-            let terrain_open = state
-                .map
-                .tile(t)
-                .is_some_and(|tile| tile.terrain != crate::map::Terrain::Rock);
-            let building_open = state.building_at(t).is_none_or(|other| other.id == id);
-            terrain_open && building_open
+        let shot_open = |t: TilePos, full: bool| {
+            let Some(tile) = state.map.tile(t) else {
+                return false;
+            };
+            if tile.terrain == crate::map::Terrain::Peak {
+                return false;
+            }
+            !full
+                || (tile.terrain == crate::map::Terrain::Ground
+                    && state.building_at(t).is_none_or(|other| other.id == id))
         };
         // The owner must see the victim's tile — a turret that outranges
         // its own mast fires on a spotter's eyes, never into fog.
@@ -341,8 +346,8 @@ fn turret_fire(
             .map(|u| (center.dist_sq(u.pos), u.id, u.pos, u.kind.stats().domain))
             .filter(|(d, _, _, _)| *d <= range_sq)
             .filter(|(_, _, pos, dom)| {
-                !traces_terrain(atk, Domain::Ground, *dom)
-                    || !chassis::path::line_blocked(center, *pos, clear_shot)
+                let full = traces_terrain(atk, Domain::Ground, *dom);
+                !chassis::path::line_blocked(center, *pos, |t| shot_open(t, full))
             })
             .min_by_key(|&(d, uid, _, _)| (d, uid));
         let Some((_, uid, upos, _)) = victim else {
@@ -946,20 +951,26 @@ fn attack(
     // In range only counts with a clear line — and with eyes. Terrain
     // cover (rock, non-victim buildings) applies to direct ground-vs-
     // ground fire only; shots to or from the air and indirect shells arc
-    // past it. The owner must currently *see* the victim's tile: a gun
-    // that outranges its own vision fires on a spotter's sight (scrap
-    // piles are low junk — fire passes over them). No shot → keep
-    // approaching; the chase path already routes around what's in the way.
-    let clear_shot = |t: TilePos| {
-        let terrain_open = state
-            .map
-            .tile(t)
-            .is_some_and(|tile| tile.terrain != crate::map::Terrain::Rock);
+    // past it — but nothing arcs past a peak. The owner must currently
+    // *see* the victim's tile: a gun that outranges its own vision fires
+    // on a spotter's sight (scrap piles are low junk — fire passes over
+    // them). No shot → keep approaching; the chase path already routes
+    // around what's in the way.
+    let shot_open = |t: TilePos, full: bool| {
+        let Some(tile) = state.map.tile(t) else {
+            return false;
+        };
+        if tile.terrain == crate::map::Terrain::Peak {
+            return false;
+        }
+        if !full {
+            return true;
+        }
         let building_open = match target {
             Target::Building(bid) => state.building_at(t).is_none_or(|b| b.id == bid),
             _ => state.building_at(t).is_none(),
         };
-        terrain_open && building_open
+        tile.terrain == crate::map::Terrain::Ground && building_open
     };
     // Sight of any footprint tile serves for a building (matching attack
     // validation); a unit is seen at its own tile. The line trace runs
@@ -971,11 +982,8 @@ fn attack(
             .is_some_and(|b| b.tiles().any(|t| state.can_see(me, t))),
     };
     let in_range = pos.dist_sq(aim_point) <= weapon.range * weapon.range;
-    if in_range
-        && seen
-        && (!traces_terrain(weapon, stats.domain, victim_domain)
-            || !chassis::path::line_blocked(pos, aim_point, clear_shot))
-    {
+    let full = traces_terrain(weapon, stats.domain, victim_domain);
+    if in_range && seen && !chassis::path::line_blocked(pos, aim_point, |t| shot_open(t, full)) {
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = None;
         if cooldowns[pi] == 0 {
@@ -1119,12 +1127,14 @@ fn fire_sidearms(
             continue;
         }
         let range_sq = weapon.range * weapon.range;
-        let clear_shot = |t: TilePos| {
-            let terrain_open = state
-                .map
-                .tile(t)
-                .is_some_and(|tile| tile.terrain != crate::map::Terrain::Rock);
-            terrain_open && state.building_at(t).is_none()
+        let shot_open = |t: TilePos, full: bool| {
+            let Some(tile) = state.map.tile(t) else {
+                return false;
+            };
+            if tile.terrain == crate::map::Terrain::Peak {
+                return false;
+            }
+            !full || (tile.terrain == crate::map::Terrain::Ground && state.building_at(t).is_none())
         };
         let victim = state
             .units
@@ -1138,8 +1148,8 @@ fn fire_sidearms(
             .map(|u| (pos.dist_sq(u.pos), u.id, u.pos, u.kind.stats().domain))
             .filter(|(d, _, _, _)| *d <= range_sq)
             .filter(|(_, _, upos, dom)| {
-                !traces_terrain(weapon, stats.domain, *dom)
-                    || !chassis::path::line_blocked(pos, *upos, clear_shot)
+                let full = traces_terrain(weapon, stats.domain, *dom);
+                !chassis::path::line_blocked(pos, *upos, |t| shot_open(t, full))
             })
             .min_by_key(|&(d, uid, _, _)| (d, uid));
         let Some((_, uid, upos, _)) = victim else {
