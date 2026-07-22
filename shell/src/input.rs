@@ -40,6 +40,8 @@ pub struct InputState {
     /// Whether a left-drag is steering the camera via the minimap —
     /// clicks there never start a selection box, they drive the view.
     pub(crate) minimap_drag: bool,
+    /// Middle-drag pan anchor: the world follows the hand.
+    pub(crate) mmb_anchor: Option<Vec2>,
     /// Control groups 1..=5 (assigned with Ctrl+N, recalled with N).
     groups: [Vec<UnitId>; 5],
     /// Previous click, for double-click detection.
@@ -87,6 +89,7 @@ impl InputState {
             mouse: vec2(0.0, 0.0),
             drag_origin: None,
             minimap_drag: false,
+            mmb_anchor: None,
             groups: Default::default(),
             last_click: None,
             last_recall: None,
@@ -116,6 +119,7 @@ impl InputState {
         self.resolver.clear();
         self.drag_origin = None;
         self.minimap_drag = false;
+        self.mmb_anchor = None;
         self.patrol_route = None;
         self.placing = None;
         self.build_menu = false;
@@ -197,6 +201,7 @@ pub fn poll_events(input: &InputState) -> Vec<RawEvent> {
     for (button, mq_button) in [
         (MouseButton::Left, mq::MouseButton::Left),
         (MouseButton::Right, mq::MouseButton::Right),
+        (MouseButton::Middle, mq::MouseButton::Middle),
     ] {
         if mq::is_mouse_button_pressed(mq_button) {
             events.push(RawEvent::MouseDown {
@@ -335,6 +340,14 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         game.camera.center = world;
                         game.camera.pan(Vec2::ZERO);
                     }
+                }
+                // Middle-drag: the world follows the hand, so the pan
+                // moves against the cursor delta, scaled out of screen
+                // space by the zoom.
+                if let Some(anchor) = input.mmb_anchor {
+                    let delta = vec2(x, y) - anchor;
+                    game.camera.pan(-delta / game.camera.zoom);
+                    input.mmb_anchor = Some(vec2(x, y));
                 }
             }
             RawEvent::Wheel { delta } => {
@@ -486,15 +499,20 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
             RawEvent::MouseUp {
                 button: MouseButton::Right,
                 ..
-            }
-            | RawEvent::MouseDown {
-                button: MouseButton::Middle,
-                ..
-            }
-            | RawEvent::MouseUp {
-                button: MouseButton::Middle,
-                ..
             } => {}
+            RawEvent::MouseDown {
+                button: MouseButton::Middle,
+                x,
+                y,
+            } => {
+                input.mmb_anchor = Some(vec2(x, y));
+            }
+            RawEvent::MouseUp {
+                button: MouseButton::Middle,
+                ..
+            } => {
+                input.mmb_anchor = None;
+            }
             RawEvent::KeyDown { key } => {
                 if let Some(ActionEvent::Pressed(action)) = input.key_edge(key, true) {
                     dispatch_action(game, input, action);
