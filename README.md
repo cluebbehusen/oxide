@@ -27,7 +27,16 @@ immediately and persists. The map list shows each map's hook and pace
 badges with a fog-free, theme-graded preview, and every choice you
 make on the way to a match survives backing up a screen. Selected
 machines draw their weapon ranges (and radar rings); stalls and
-rejections say why in words. When a match ends, the banner carries
+rejections say why in words. Clicking anything opens its command
+panel: portrait, sprite cards for everything it can do (costs,
+hotkeys in the corner, reasons in red when a card refuses), and the
+queue along the bottom — production ghosts with progress you can
+click to cancel, or a unit's order program. Hovering a card tells
+you what the machine is and exactly how it fights. A six-step
+tutorial (Home → Tutorial) teaches by watching you actually do each
+thing; guns aim at what they shoot, turrets track, downed flyers
+fall, and battle sound sits in space — launches thump at the gun,
+booms land at the impact, and distance dims both. When a match ends, the banner carries
 the numbers: losses, peak army, closing scrap, and each side's army
 curve over the whole fight.
 

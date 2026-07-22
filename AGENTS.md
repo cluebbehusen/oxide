@@ -394,6 +394,18 @@ Hard < Expert forever).
   no owner, no memory, no license for a targeted attack. Team sight is
   shared by stamping every teammate's discs into each seat's view;
   `State::hostile` routes every allegiance decision.
+- **The command panel is one grammar** (shell/src/panel.rs): a pure
+  model (portrait, sprite cards carrying the exact Action their
+  hotkey dispatches, queue thumbnails carrying CancelQueue) built
+  from the selection, drawn by the renderer, hit-tested through the
+  LayoutModel's card rects. Buildings and units share it; tooltips
+  derive weapon lines from stats and name the live chord. The sim
+  gained `CancelTrain` (full refund, head progress resets) for the
+  queue ghosts.
+- **The tutorial advances on demonstration** (shell/src/tutorial.rs):
+  six cards watching `Game::demo` flags set from the human's own
+  command stream — never a timer, never a "next" button. Dismissible;
+  re-entry is another tutorial match from Home.
 - **The build palette is data-driven.** `B` opens it; digits are
   contextual (palette first, then a selected factory's produce slots
   filtered to the seat's faction, then control groups). The old
