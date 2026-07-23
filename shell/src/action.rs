@@ -223,6 +223,36 @@ impl BindingMap {
         Self { bindings }
     }
 
+    /// The left-handed profile: every verb mirrored onto the right
+    /// hand (mouse in the left), pans staying on the arrows. Same
+    /// grammar, other hemisphere.
+    pub fn left_handed() -> Self {
+        let mut map = Self::classic();
+        for (action, key) in [
+            (Action::TrainSlot(0), Key::K),
+            (Action::TrainSlot(1), Key::L),
+            (Action::StopOrScrap, Key::M),
+            (Action::ToggleBuildPalette, Key::N),
+            (Action::Patrol, Key::O),
+            (Action::CycleIdleWorker, Key::U),
+            (Action::JumpToLastAlert, Key::I),
+            (Action::TogglePause, Key::P),
+        ] {
+            // Order matters: unbind the target key's old meaning first
+            // so the rebind never reports a conflict.
+            if let Some(holder) = map
+                .bindings
+                .iter()
+                .find(|b| b.chord == Chord::bare(key) && b.action != action)
+                .map(|b| b.action)
+            {
+                map.unbind(holder);
+            }
+            map.rebind(action, Chord::bare(key));
+        }
+        map
+    }
+
     /// Resolves a pressed key under the current modifier truth. Graded
     /// matching: exact chord, then same-Ctrl-ignoring-Shift, then bare —
     /// so Ctrl+Shift+1 still assigns a group (Shift often lingers from

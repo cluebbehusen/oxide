@@ -78,6 +78,7 @@ fn settings_menu(config: &Config) -> Menu {
             format!("Edge pan: {}", onoff(config.camera.edge_pan)),
             format!("Invert zoom: {}", onoff(config.camera.zoom_inverted)),
             format!("Reduced motion: {}", onoff(config.reduced_motion)),
+            "Apply left-handed bindings".to_string(),
             "Controls...".to_string(),
             "Back".to_string(),
         ],
@@ -112,7 +113,7 @@ fn cycle_setting(config: &mut Config, row: usize) -> bool {
             config.reduced_motion = !config.reduced_motion;
             render::set_reduced_motion(config.reduced_motion);
         }
-        _ => return false, // Controls... and Back route in update
+        _ => return false, // preset, Controls..., and Back route in update
     }
     true
 }
@@ -214,6 +215,17 @@ impl SettingsScreen {
                         self.menu = settings_menu(config);
                         self.menu.select(selected);
                     } else if row == 7 {
+                        // The left-handed preset replaces the whole
+                        // profile (custom rebinds included — Controls'
+                        // Reset row walks back to Classic).
+                        config.bindings = BindingMap::left_handed();
+                        update.dirty = true;
+                        *live = config.bindings.clone();
+                        update.toast = Some("left-handed profile applied");
+                        let selected = self.menu.selected;
+                        self.menu = settings_menu(config);
+                        self.menu.select(selected);
+                    } else if row == 8 {
                         self.goto_controls(config, 0);
                     } else {
                         update.out = Out::Home;
@@ -410,6 +422,33 @@ mod tests {
         assert!(!up.dirty);
         assert_eq!(up.toast, Some("that key already means something"));
         assert_eq!(config.bindings.chord_for(Action::Patrol), before);
+    }
+
+    #[test]
+    fn the_left_handed_preset_moves_the_verbs_and_reset_walks_home() {
+        let mut config = Config::default();
+        let mut live = config.bindings.clone();
+        let mut s = SettingsScreen::open(&config);
+        for _ in 0..7 {
+            drive(&mut s, &mut config, &mut live, &press(Key::Down), false);
+        }
+        let up = drive(&mut s, &mut config, &mut live, &press(Key::Enter), false);
+        assert!(up.dirty);
+        assert_eq!(
+            config.bindings.chord_for(Action::TrainSlot(0)),
+            Some(Chord::bare(Key::K)),
+            "training moved to the right hand"
+        );
+        assert_eq!(
+            config.bindings.chord_for(Action::PanLeft),
+            Some(Chord::bare(Key::Left)),
+            "pans stay on the arrows"
+        );
+        assert!(
+            config.bindings.conflicts().is_empty(),
+            "the preset must be conflict-free"
+        );
+        assert_eq!(live.chord_for(Action::Patrol), Some(Chord::bare(Key::O)));
     }
 
     #[test]
