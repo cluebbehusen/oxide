@@ -8,6 +8,7 @@
 
 pub mod home;
 pub mod pause;
+pub mod playback;
 pub mod settings;
 pub mod shelf;
 pub mod wizard;

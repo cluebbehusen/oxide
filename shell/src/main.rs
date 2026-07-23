@@ -337,86 +337,6 @@ impl Mixer {
     }
 }
 
-/// A playback viewing session: the engine owns truth, the `Game` is a
-/// render vehicle whose state gets replaced after every advance — its
-/// recorder, sounds, and effects are simply never fed.
-struct PlaybackSession {
-    engine: oxide_kit::playback::Playback,
-    game: Game,
-    speed: f32,
-    paused: bool,
-    accum: f32,
-    held: [bool; 4],
-    /// A held minimap press steers the camera, like live play.
-    minimap_drag: bool,
-    /// Whether the viewer was opened from a live pause menu — leaving
-    /// returns there; every other origin goes Home. A tick-count
-    /// heuristic resurrected matches Main Menu had already discarded.
-    from_pause: bool,
-}
-
-impl PlaybackSession {
-    fn open(path: &str) -> Result<Self> {
-        let replay = GameReplay::load(path).with_context(|| format!("loading replay {path}"))?;
-        Self::from_replay(replay)
-    }
-
-    fn from_replay(replay: GameReplay) -> Result<Self> {
-        let scenario = replay.setup.clone();
-        let engine = oxide_kit::playback::Playback::load(replay)?;
-        let mut game = Game::new(scenario)?;
-        // Spectator truth: fog-free, but NOT the developer overlay —
-        // playback must look like the game, not the debugger.
-        game.spectate = true;
-        Ok(Self {
-            engine,
-            game,
-            speed: 1.0,
-            paused: false,
-            accum: 0.0,
-            held: [false; 4],
-            minimap_drag: false,
-            from_pause: false,
-        })
-    }
-}
-
-fn playback_hud(pb: &PlaybackSession) {
-    let s = render::ui_scale();
-    let size = 18.0 * s;
-    let full = format!(
-        "PLAYBACK  {} / {}  ·  {}x{}  ·  Space pause · PgUp/PgDn seek · Home/End · 1/2/3 speed · Esc leave",
-        pb.engine.position(),
-        pb.engine.total(),
-        pb.speed,
-        if pb.paused { "  ·  PAUSED" } else { "" },
-    );
-    // A 640px window cannot seat the controls hint; the transport
-    // numbers alone must never run off both edges.
-    let line = if measure_text(&full, None, size as u16, 1.0).width > screen_width() - 16.0 * s {
-        format!(
-            "PLAYBACK  {} / {}  ·  {}x{}",
-            pb.engine.position(),
-            pb.engine.total(),
-            pb.speed,
-            if pb.paused { "  ·  PAUSED" } else { "" },
-        )
-    } else {
-        full
-    };
-    let width = measure_text(&line, None, size as u16, 1.0).width;
-    let x = (screen_width() - width) * 0.5;
-    let y = screen_height() - 14.0 * s;
-    draw_rectangle(
-        x - 10.0 * s,
-        y - size,
-        width + 20.0 * s,
-        size + 10.0 * s,
-        Color::from_rgba(15, 15, 19, 220),
-    );
-    draw_text(&line, x, y, size, Color::from_rgba(232, 228, 216, 255));
-}
-
 async fn run() -> Result<()> {
     let args = Args::parse();
     let mut config = config::Config::load();
@@ -443,7 +363,7 @@ async fn run() -> Result<()> {
     // Straight into the game. Everyone else — automation and humans
     // alike — starts cold at the Home front door.
     let mut home = screens::home::HomeScreen::open();
-    let mut playback: Option<PlaybackSession> = None;
+    let mut playback: Option<screens::playback::PlaybackSession> = None;
     let mut tutorial: Option<tutorial::Tutorial> = None;
     // Window-size persistence: written once the size has been stable
     // for a second — a live resize is a burst of intermediate sizes
@@ -456,7 +376,7 @@ async fn run() -> Result<()> {
     // captures phantom bare chords.
     let (mut capture_ctrl, mut capture_shift) = (false, false);
     if let Some(path) = &args.watch {
-        let mut session = PlaybackSession::open(path)?;
+        let mut session = screens::playback::PlaybackSession::open(path)?;
         // The clock flags drive whichever session is visible: a viewer
         // launch applies them to the transport, not the hidden match.
         session.paused = args.paused;
@@ -500,8 +420,7 @@ async fn run() -> Result<()> {
         // their update logic runs headless in tests on the default size.
         game.camera
             .set_viewport(vec2(screen_width(), screen_height()));
-        menu::set_viewport(screen_width(), screen_height());
-        render::set_view_width(screen_width());
+        render::set_viewport(screen_width(), screen_height());
         game.camera.update(dt);
 
         if let Some(rx) = &debug_rx {
@@ -808,81 +727,14 @@ async fn run() -> Result<()> {
             }
             Mode::Playback => {
                 if let Some(pb) = playback.as_mut() {
-                    let mut seek_to: Option<u64> = None;
-                    let mut leave = false;
-                    for e in &events {
-                        match e {
-                            RawEvent::MouseMove { x, y } => {
-                                input.mouse = vec2(*x, *y);
-                                // A held minimap press keeps steering,
-                                // clamped so sliding off the edge doesn't
-                                // stall the pan — same feel as live play.
-                                if pb.minimap_drag {
-                                    let rect = render::minimap_rect(&pb.game);
-                                    let clamped = vec2(
-                                        x.clamp(rect.x, rect.x + rect.w - 1.0),
-                                        y.clamp(rect.y, rect.y + rect.h - 1.0),
-                                    );
-                                    if let Some(world) = render::minimap_world_at(&pb.game, clamped)
-                                    {
-                                        pb.game.camera.center = world;
-                                        pb.game.camera.pan(vec2(0.0, 0.0));
-                                    }
-                                }
-                            }
-                            RawEvent::MouseDown {
-                                button: MouseButton::Left,
-                                x,
-                                y,
-                            } => {
-                                input.mouse = vec2(*x, *y);
-                                if let Some(world) = render::minimap_world_at(&pb.game, input.mouse)
-                                {
-                                    pb.game.camera.center = world;
-                                    pb.game.camera.pan(vec2(0.0, 0.0));
-                                    pb.minimap_drag = true;
-                                }
-                            }
-                            RawEvent::MouseUp {
-                                button: MouseButton::Left,
-                                ..
-                            } => pb.minimap_drag = false,
-                            RawEvent::Wheel { delta } => {
-                                let delta = if config.camera.zoom_inverted {
-                                    -*delta
-                                } else {
-                                    *delta
-                                };
-                                pb.game.camera.zoom_at(input.mouse, delta);
-                            }
-                            RawEvent::KeyDown { key } => match key {
-                                Key::Escape => leave = true,
-                                Key::Space => pb.paused = !pb.paused,
-                                Key::PageUp => {
-                                    seek_to = Some(pb.engine.position().saturating_sub(500));
-                                }
-                                Key::PageDown => seek_to = Some(pb.engine.position() + 500),
-                                Key::Home => seek_to = Some(0),
-                                Key::End => seek_to = Some(pb.engine.total()),
-                                Key::Num1 => pb.speed = 0.5,
-                                Key::Num2 => pb.speed = 1.0,
-                                Key::Num3 => pb.speed = 4.0,
-                                Key::Up => pb.held[0] = true,
-                                Key::Down => pb.held[1] = true,
-                                Key::Left => pb.held[2] = true,
-                                Key::Right => pb.held[3] = true,
-                                _ => {}
-                            },
-                            RawEvent::KeyUp { key } => match key {
-                                Key::Up => pb.held[0] = false,
-                                Key::Down => pb.held[1] = false,
-                                Key::Left => pb.held[2] = false,
-                                Key::Right => pb.held[3] = false,
-                                _ => {}
-                            },
-                            _ => {}
-                        }
-                    }
+                    let leave = pb.update(
+                        &events,
+                        dt,
+                        vec2(screen_width(), screen_height()),
+                        config.camera.zoom_inverted,
+                        config.camera.pan_speed,
+                        &mut input.mouse,
+                    );
                     if leave {
                         let back_to_pause = pb.from_pause;
                         playback = None;
@@ -898,59 +750,8 @@ async fn run() -> Result<()> {
                         }
                         continue;
                     }
-                    let mut dir = vec2(0.0, 0.0);
-                    if pb.held[0] {
-                        dir.y -= 1.0;
-                    }
-                    if pb.held[1] {
-                        dir.y += 1.0;
-                    }
-                    if pb.held[2] {
-                        dir.x -= 1.0;
-                    }
-                    if pb.held[3] {
-                        dir.x += 1.0;
-                    }
-                    if dir != vec2(0.0, 0.0) {
-                        let world_per_sec = 240.0 * config.camera.pan_speed / pb.game.camera.zoom;
-                        pb.game.camera.pan(dir.normalize() * world_per_sec * dt);
-                    }
-                    if let Some(target) = seek_to {
-                        pb.engine.seek(target);
-                        pb.accum = 0.0;
-                        // A seek is a bulk jump: presentation resyncs
-                        // silently instead of replaying a burst.
-                        pb.game.drop_presentation();
-                        pb.game.state = pb.engine.state.clone();
-                    } else if !pb.paused && !pb.engine.at_end() {
-                        pb.accum += dt * pb.speed;
-                        let ticks = (pb.accum / game::TICK_DT) as u64;
-                        if ticks > 0 {
-                            pb.accum -= ticks as f32 * game::TICK_DT;
-                            // One tick per present: fog is per-tick truth,
-                            // and batching sight checks against the final
-                            // state judged sounds by the wrong tick's
-                            // sight. Ticks past the cap are dropped debt,
-                            // exactly like the live clock after a hitch.
-                            for _ in 0..ticks.min(24) {
-                                let events = pb.engine.advance(1);
-                                pb.game.playback_present(&pb.engine.state, &events);
-                                if pb.engine.at_end() {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    if pb.game.state.current_tick() != pb.engine.position() {
-                        pb.game.state = pb.engine.state.clone();
-                    }
-                    pb.game.update_fx(dt);
-                    pb.game
-                        .camera
-                        .set_viewport(vec2(screen_width(), screen_height()));
-                    pb.game.camera.update(dt);
                     render::draw(&pb.game, &sprites, &input);
-                    playback_hud(pb);
+                    screens::playback::playback_hud(pb);
                 } else {
                     mode = Mode::Home;
                 }
@@ -970,7 +771,7 @@ async fn run() -> Result<()> {
                         continue;
                     }
                     screens::shelf::Out::Watch(path) => {
-                        match PlaybackSession::open(&path.to_string_lossy()) {
+                        match screens::playback::PlaybackSession::open(&path.to_string_lossy()) {
                             Ok(session) => {
                                 playback = Some(session);
                                 shelf = None;
@@ -1016,7 +817,7 @@ async fn run() -> Result<()> {
                         // live match waits.
                         let mut replay = game.recorder.clone();
                         replay.meta.ticks = Some(game.state.current_tick());
-                        match PlaybackSession::from_replay(replay) {
+                        match screens::playback::PlaybackSession::from_replay(replay) {
                             Ok(mut session) => {
                                 session.from_pause = true;
                                 playback = Some(session);
@@ -1271,7 +1072,7 @@ fn handle_request(
     pending_shots: &mut Vec<PendingScreenshot>,
     ui_view: &UiView,
     tutorial: &mut Option<tutorial::Tutorial>,
-    playback: &mut Option<PlaybackSession>,
+    playback: &mut Option<screens::playback::PlaybackSession>,
 ) {
     let IncomingRequest { id, request, reply } = incoming;
     // A viewer session owns the screen: state-shaped questions and the

@@ -50,32 +50,12 @@ pub struct Menu {
     pressed: Option<usize>,
 }
 
-use std::sync::atomic::{AtomicU32, Ordering};
-
-static VIEW_W: AtomicU32 = AtomicU32::new(0);
-static VIEW_H: AtomicU32 = AtomicU32::new(0);
-
-/// The frame loop injects the window size once per frame; menus never
-/// query the window themselves. That one seam is what lets every
-/// menu-driven screen's update logic run headless in tests — with no
-/// injection, geometry falls back to the 1280x800 default window.
-pub fn set_viewport(w: f32, h: f32) {
-    VIEW_W.store(w.to_bits(), Ordering::Relaxed);
-    VIEW_H.store(h.to_bits(), Ordering::Relaxed);
-}
-
 fn view_w() -> f32 {
-    match VIEW_W.load(Ordering::Relaxed) {
-        0 => 1280.0,
-        bits => f32::from_bits(bits),
-    }
+    crate::render::viewport().x
 }
 
 fn view_h() -> f32 {
-    match VIEW_H.load(Ordering::Relaxed) {
-        0 => 800.0,
-        bits => f32::from_bits(bits),
-    }
+    crate::render::viewport().y
 }
 
 impl Menu {

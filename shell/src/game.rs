@@ -267,15 +267,10 @@ fn world_vec(pos: chassis::fx::Vec2Fx) -> Vec2 {
 }
 
 impl Game {
-    /// Starts a session from a scenario.
+    /// Starts a session from a scenario, at the injected window size
+    /// (headless callers get the default without a window).
     pub fn new(scenario: Scenario) -> Result<Self> {
-        Self::with_viewport(
-            scenario,
-            macroquad::prelude::vec2(
-                macroquad::prelude::screen_width(),
-                macroquad::prelude::screen_height(),
-            ),
-        )
+        Self::with_viewport(scenario, crate::render::viewport())
     }
 
     /// `new` with the window injected — the only constructor tests use,

@@ -67,16 +67,32 @@ pub fn ui_scale() -> f32 {
 }
 
 static VIEW_WIDTH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static VIEW_HEIGHT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// The frame loop hands the window width in once per frame; chrome
-/// scale math never queries the window itself.
-pub fn set_view_width(w: f32) {
+/// The frame loop hands the window size in once per frame; chrome
+/// scale math, menus, and session construction never query the window
+/// themselves — which is what lets all of them run headless (the
+/// default is the 1280x800 window).
+pub fn set_viewport(w: f32, h: f32) {
     VIEW_WIDTH.store(w.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    VIEW_HEIGHT.store(h.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The injected window size.
+pub fn viewport() -> macroquad::prelude::Vec2 {
+    macroquad::prelude::vec2(view_width(), view_height())
 }
 
 fn view_width() -> f32 {
     match VIEW_WIDTH.load(std::sync::atomic::Ordering::Relaxed) {
         0 => 1280.0,
+        bits => f32::from_bits(bits),
+    }
+}
+
+fn view_height() -> f32 {
+    match VIEW_HEIGHT.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => 800.0,
         bits => f32::from_bits(bits),
     }
 }
