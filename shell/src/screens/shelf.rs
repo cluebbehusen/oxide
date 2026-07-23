@@ -78,7 +78,9 @@ impl Shelf {
                 return Out::Home;
             }
             return match self.entries.get(row) {
-                Some(entry) if entry.compatible => Out::Watch(entry.path.clone()),
+                Some(entry) if entry.compatible && entry.watchable => {
+                    Out::Watch(entry.path.clone())
+                }
                 Some(_) => {
                     sounds.push((SoundKind::Denied, None));
                     Out::Stay
@@ -126,6 +128,7 @@ mod tests {
             label: name.to_string(),
             blurb: format!("{name} blurb"),
             compatible,
+            watchable: true,
         }
     }
 
@@ -177,6 +180,18 @@ mod tests {
         assert_eq!(
             drive(&mut shelf, Key::Enter),
             Out::Watch("/nowhere/new.json".into())
+        );
+    }
+
+    #[test]
+    fn a_live_autosave_is_continue_only_never_a_mid_match_scout() {
+        let mut live = entry("live", true, "/nowhere/autosave-1.json".into());
+        live.watchable = false;
+        let mut shelf = Shelf::from_entries(vec![live]);
+        assert_eq!(
+            drive(&mut shelf, Key::Enter),
+            Out::Stay,
+            "watching an unfinished session would be a fog-free scout"
         );
     }
 }

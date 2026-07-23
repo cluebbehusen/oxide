@@ -692,7 +692,9 @@ async fn run() -> Result<()> {
                 if escape_pressed && (!had_selection || game.state.result().is_some()) {
                     game.paused = true;
                     game.demo.paused_menu = true;
-                    pause = Some(screens::pause::PauseScreen::open());
+                    pause = Some(screens::pause::PauseScreen::open(
+                        game.state.result().is_some(),
+                    ));
                     mode = Mode::Pause;
                 }
                 if let Some(t) = tutorial.as_mut() {
@@ -742,7 +744,9 @@ async fn run() -> Result<()> {
                         // match is still waiting. Cold --watch or the
                         // shelf goes back Home.
                         if back_to_pause {
-                            pause = Some(screens::pause::PauseScreen::open());
+                            pause = Some(screens::pause::PauseScreen::open(
+                                game.state.result().is_some(),
+                            ));
                             mode = Mode::Pause;
                         } else {
                             home = screens::home::HomeScreen::open();

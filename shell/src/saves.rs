@@ -18,6 +18,10 @@ pub struct ReplayEntry {
     pub blurb: String,
     /// Whether this sim can honestly replay it.
     pub compatible: bool,
+    /// Whether watching is allowed. An `autosave-` record is a LIVE
+    /// session: watching one fog-free mid-match would scout the enemy,
+    /// so its verb is Continue, never Watch.
+    pub watchable: bool,
 }
 
 /// Days-since-epoch to a civil date (Howard Hinnant's algorithm) —
@@ -78,12 +82,15 @@ fn scan(dir: &std::path::Path, out: &mut Vec<(std::time::SystemTime, ReplayEntry
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("replay");
+        let watchable = !stem.starts_with("autosave-");
         let stem_short = elide(stem);
         let label = format!(
             "{} · t{} · {} · {}",
             replay.setup.name, ticks, date, stem_short
         );
-        let blurb = if compatible {
+        let blurb = if compatible && !watchable {
+            "a live session: Continue resumes it · X twice deletes".to_string()
+        } else if compatible {
             format!(
                 "{} seats · sim v{} · Enter watches · X twice deletes",
                 replay.setup.players.len(),
@@ -102,6 +109,7 @@ fn scan(dir: &std::path::Path, out: &mut Vec<(std::time::SystemTime, ReplayEntry
                 label,
                 blurb,
                 compatible,
+                watchable,
             },
         ));
     }

@@ -72,7 +72,7 @@ pub const STEPS: [Step; 6] = [
     Step {
         title: "The rest is yours",
         body: &[
-            "Esc pauses: watch the replay so far, restart, or bow out.",
+            "Esc pauses: restart, head back Home, or bow out.",
             "Destroy every enemy Foundry to win. Good hunting.",
         ],
     },

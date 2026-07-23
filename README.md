@@ -210,8 +210,10 @@ trade-off: replays only reproduce on the sim version that wrote them.
 The shell wraps all of this: quitting a live match autosaves it and
 Home offers Continue; the Replays screen lists every autosave and
 local record with honest version badges (watch, or delete with a
-deliberate double-X); the pause menu's Watch Replay replays the
-session so far; and `--watch file.json` opens any record in the
+deliberate double-X); once a match is decided the pause
+menu's Watch Replay plays it back (replays are an end-of-match
+affair — mid-match playback would scout the enemy through the fog);
+and `--watch file.json` opens any record in the
 read-only viewer — pause, seek both directions, speed steps, free
 camera. Seeking backward restores an in-memory checkpoint and
 re-simulates, so the viewer can never diverge from the record.

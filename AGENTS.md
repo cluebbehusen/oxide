@@ -129,8 +129,10 @@ autosaves and `replays/` (watch, delete, honest version badges);
 (pause, seek, speed — no recorder; backward seek restores an
 in-memory checkpoint and re-simulates; checkpoint cadence stretches
 with record length so no replay retains more than 64 state clones,
-and interactive loads cap at 2M claimed ticks). The pause menu's Watch
-Replay plays the live session so far. `sh tools/package_macos.sh`
+and interactive loads cap at 2M claimed ticks). Watch Replay appears on the
+pause menu only once the match is decided — mid-match playback was
+a fog-free scout of the enemy — and `autosave-` records (live
+sessions) are Continue-only on the shelf. `sh tools/package_macos.sh`
 builds `dist/Oxide.app` (resources resolve executable-relative when
 bundled, cwd otherwise).
 
