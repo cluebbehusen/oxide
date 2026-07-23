@@ -569,7 +569,9 @@ const WISP: UnitStats = UnitStats {
 };
 
 const FOUNDRY: BuildingStats = BuildingStats {
-    max_hp: 800,
+    // 0.10 pacing: doubled so a rush can pressure but rarely close a
+    // match in single-digit minutes (measured: +60-75% match length).
+    max_hp: 1600,
     size: (2, 2),
     vision: 8,
     produces: &[UnitKind::Harvester, UnitKind::Sentinel],
@@ -616,8 +618,8 @@ const FABRICATOR: BuildingStats = BuildingStats {
     ],
     weapons: &[],
     construction: Some(ConstructionStats {
-        cost: 150,
-        build_ticks: 400, // 20 s
+        cost: 120,
+        build_ticks: 280, // 14 s — the tech window must fit inside the rush window
     }),
 };
 

@@ -396,7 +396,7 @@ fn destroying_the_last_foundry_wins_and_freezes() {
         },
     )]);
     // 800 hp / 30 dps → ~27 s ≈ 540 ticks, plus approach.
-    let events = run_until(&mut state, 800, |s, _| s.result().is_some());
+    let events = run_until(&mut state, 2_000, |s, _| s.result().is_some());
     assert_eq!(state.result(), Some(GameResult::Victory { team: 0 }));
     assert!(events.iter().any(|e| matches!(e, Event::GameOver { .. })));
 
