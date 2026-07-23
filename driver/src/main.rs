@@ -97,6 +97,16 @@ enum Cmd {
         #[arg(long)]
         out: Option<String>,
     },
+    /// Timed mass-battle bench: ticks/second at scale, plus a hash
+    /// self-check. Wall-clock stays local; CI asserts only correctness.
+    Bench {
+        /// Units per side.
+        #[arg(long, default_value_t = 250)]
+        units: u32,
+        /// Ticks to run.
+        #[arg(long, default_value_t = 2_000)]
+        ticks: u32,
+    },
     /// Par-cost arena duel between two hand-picked armies (no
     /// economy): the balance review's controlled experiment.
     Matchup {
@@ -557,6 +567,21 @@ fn main() -> Result<()> {
                 weights.as_deref(),
                 out.as_deref(),
             )?;
+        }
+        Cmd::Bench { units, ticks } => {
+            let scenario = oxide_kit::bench::mass_battle(units, 9);
+            let mut state = scenario.build()?;
+            let start = std::time::Instant::now();
+            for _ in 0..ticks {
+                state.tick(&[]);
+            }
+            let secs = start.elapsed().as_secs_f64();
+            println!(
+                "bench: {} units x {ticks} ticks in {secs:.2}s = {:.0} ticks/s (hash {:#x})",
+                units * 2,
+                f64::from(ticks) / secs,
+                state.hash(),
+            );
         }
         Cmd::Matchup { a, b, seeds } => {
             let army_a = oxide_kit::matchup::parse_army(&a)?;
