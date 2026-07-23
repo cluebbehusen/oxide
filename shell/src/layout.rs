@@ -18,6 +18,13 @@ pub struct LayoutModel {
     /// Top edge of the bottom panel band; the band runs to the window
     /// bottom. `f32::INFINITY` when no panel is shown.
     pub panel_top: f32,
+    /// Right edge of the bottom panel band — the band hugs its content
+    /// instead of spanning the window, so clicks past it reach the
+    /// world. Zero when no panel is shown.
+    pub panel_right: f32,
+    /// The orders dock on the left edge (production ghosts / order
+    /// chips); zero-sized when the queue is empty.
+    pub orders: Rect,
     /// The minimap rectangle.
     pub minimap: Rect,
     /// The idle-worker badge in the top bar; zero-sized when nobody
@@ -39,6 +46,8 @@ impl Default for LayoutModel {
         Self {
             top_bar_h: 0.0,
             panel_top: f32::INFINITY,
+            panel_right: 0.0,
+            orders: Rect::new(0.0, 0.0, 0.0, 0.0),
             minimap: Rect::new(0.0, 0.0, 0.0, 0.0),
             idle_badge: Rect::new(0.0, 0.0, 0.0, 0.0),
             cards: [(Rect::new(0.0, 0.0, 0.0, 0.0), CardAction::None); 16],
@@ -57,6 +66,8 @@ impl LayoutModel {
         _viewport: Vec2,
         ui: f32,
         panel_top: f32,
+        panel_right: f32,
+        orders: Rect,
         minimap: Rect,
         idle_badge: Rect,
         cards: [(Rect, CardAction); 16],
@@ -67,6 +78,8 @@ impl LayoutModel {
         Self {
             top_bar_h: 32.0 * ui,
             panel_top,
+            panel_right,
+            orders,
             minimap,
             idle_badge,
             cards,
@@ -80,7 +93,9 @@ impl LayoutModel {
     /// point — such clicks must never reach the world. The minimap has
     /// its own richer meaning and is tested separately.
     pub fn chrome_owns(&self, p: Vec2) -> bool {
-        p.y <= self.top_bar_h || p.y >= self.panel_top
+        p.y <= self.top_bar_h
+            || (p.y >= self.panel_top && p.x <= self.panel_right)
+            || (self.orders.w > 0.0 && self.orders.contains(p))
     }
 }
 
@@ -95,6 +110,8 @@ mod tests {
             vec2(1280.0, 800.0),
             ui,
             panel_top,
+            1280.0,
+            zero,
             zero,
             zero,
             [(zero, CardAction::None); 16],
@@ -112,6 +129,26 @@ mod tests {
         assert!(
             !m.chrome_owns(vec2(600.0, 699.0)),
             "the band must not swallow the midfield"
+        );
+    }
+
+    #[test]
+    fn the_band_owns_its_width_and_the_dock_its_rect() {
+        let mut m = compute_at(700.0, 1.0);
+        m.panel_right = 600.0;
+        m.orders = Rect::new(0.0, 500.0, 60.0, 200.0);
+        assert!(m.chrome_owns(vec2(400.0, 750.0)), "inside the band");
+        assert!(
+            !m.chrome_owns(vec2(900.0, 750.0)),
+            "right of a content-width band is world, not chrome"
+        );
+        assert!(
+            m.chrome_owns(vec2(30.0, 600.0)),
+            "the orders dock is chrome"
+        );
+        assert!(
+            !m.chrome_owns(vec2(100.0, 600.0)),
+            "beside the dock stays world"
         );
     }
 

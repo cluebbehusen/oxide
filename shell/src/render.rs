@@ -1475,19 +1475,25 @@ fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
     let mut queue_slots = [(zero, crate::panel::CardAction::None); 8];
     let mut queue_count = 0;
     let mut panel_top = f32::INFINITY;
+    let mut panel_right = 0.0;
+    let mut orders_dock = Rect::new(0.0, 0.0, 0.0, 0.0);
     if let Some(panel) = panel.as_ref() {
-        let (c, cc, q, qc, top) = draw_panel(game, sprites, input, panel);
+        let (c, cc, q, qc, top, right, dock) = draw_panel(game, sprites, input, panel);
         cards = c;
         card_count = cc;
         queue_slots = q;
         queue_count = qc;
         panel_top = top;
+        panel_right = right;
+        orders_dock = dock;
     }
     // Publish the frame's chrome geometry — the model hit-testing reads.
     game.layout.set(crate::layout::LayoutModel::compute(
         vec2(screen_width(), screen_height()),
         s,
         panel_top,
+        panel_right,
+        orders_dock,
         minimap_rect(game),
         idle_badge,
         cards,
@@ -1763,6 +1769,8 @@ type PanelGeometry = (
     [(Rect, crate::panel::CardAction); 8],
     usize,
     f32,
+    f32,
+    Rect,
 );
 
 /// Draws the command panel band and returns its clickable geometry.
@@ -1775,9 +1783,10 @@ fn draw_panel(
     use crate::panel::{CardAction, CardIcon};
     let s = ui_scale();
     let mini = minimap_rect(game);
-    // Cards stop short of the minimap, but the band itself spans the
-    // whole width and runs under it — one bottom strip, no sliver of
-    // world showing beneath the minimap while the band sits flush.
+    // Cards stop short of the minimap on narrow windows; the band
+    // itself hugs its content instead of spanning the screen — a
+    // full-width bar left a dead stretch between the cards and the
+    // minimap, which floats in the corner at its own size.
     let right = if mini.w > 0.0 {
         (mini.x - 8.0 * s).max(300.0 * s)
     } else {
@@ -1785,33 +1794,27 @@ fn draw_panel(
     };
     // Cards wrap instead of vanishing: a 640px window must keep every
     // command reachable, so the band grows taller as rows accumulate.
-    let (cw, ch, gap) = (52.0 * s, 62.0 * s, 6.0 * s);
+    let (cw, ch, gap) = (66.0 * s, 80.0 * s, 6.0 * s);
     let cards_x = 150.0 * s;
     let available = (right - cards_x).max(cw);
     let per_row = (((available + gap) / (cw + gap)).floor() as usize).max(1);
     let shown = panel.cards.len().min(16);
     let rows = shown.div_ceil(per_row).max(1);
-    let queue_h = if panel.queue.is_empty() {
-        0.0
-    } else {
-        44.0 * s
-    };
-    let band_h = (20.0 * s + rows as f32 * (ch + 4.0 * s) + queue_h).max(128.0 * s);
+    let band_h = (20.0 * s + rows as f32 * (ch + 4.0 * s)).max(120.0 * s);
     let top = screen_height() - band_h;
+    let used_cols = shown.min(per_row).max(1) as f32;
+    let band_w = (cards_x + used_cols * (cw + gap)).max(220.0 * s) + 6.0 * s;
     // Opaque, unlike the translucent HUD panels: machines drifting
-    // beneath the band would ghost through the cards.
+    // beneath the band would ghost through the cards. Top and right
+    // edges get the same line — a content-width band needs a corner,
+    // not a fill that falls off mid-screen.
+    draw_rectangle(0.0, top, band_w, band_h, Color::from_rgba(20, 20, 24, 255));
+    draw_rectangle(0.0, top, band_w, 1.5 * s, Color::new(0.6, 0.6, 0.65, 0.4));
     draw_rectangle(
-        0.0,
+        band_w - 1.5 * s,
         top,
-        screen_width(),
-        band_h,
-        Color::from_rgba(20, 20, 24, 255),
-    );
-    draw_rectangle(
-        0.0,
-        top,
-        screen_width(),
         1.5 * s,
+        band_h,
         Color::new(0.6, 0.6, 0.65, 0.4),
     );
 
@@ -1876,32 +1879,32 @@ fn draw_panel(
             // The stop square draws as a real filled square — the
             // glyph rendered like a missing character in this font.
             CardIcon::Glyph("■") => {
-                let sq = 14.0 * s;
+                let sq = 18.0 * s;
                 draw_rectangle(
                     rect.x + (rect.w - sq) * 0.5,
-                    rect.y + 10.0 * s,
+                    rect.y + 14.0 * s,
                     sq,
                     sq,
                     if card.enabled { BONE } else { BONE_FAINT },
                 );
             }
             CardIcon::Glyph(g) => {
-                let dims = measure_text(g, None, (24.0 * s) as u16, 1.0);
+                let dims = measure_text(g, None, (30.0 * s) as u16, 1.0);
                 draw_text(
                     g,
                     rect.x + (rect.w - dims.width) * 0.5,
-                    rect.y + 26.0 * s,
-                    24.0 * s,
+                    rect.y + 34.0 * s,
+                    30.0 * s,
                     if card.enabled { BONE } else { BONE_FAINT },
                 );
             }
             icon => {
                 if let Some(source) = icon_source(icon) {
-                    let isz = 30.0 * s;
+                    let isz = 42.0 * s;
                     draw_texture_ex(
                         sprites.texture(),
                         rect.x + (rect.w - isz) * 0.5,
-                        rect.y + 4.0 * s,
+                        rect.y + 6.0 * s,
                         tint,
                         DrawTextureParams {
                             dest_size: Some(vec2(isz, isz)),
@@ -1915,27 +1918,27 @@ fn draw_panel(
         // The name lives on the card, not only in the tooltip — and it
         // stays whole: a long name shrinks to fit instead of losing its
         // tail ("fabricato", "flak turr").
-        let mut nsize = 10.0 * s;
+        let mut nsize = 12.0 * s;
         let mut ndims = measure_text(&card.title, None, nsize as u16, 1.0);
-        while ndims.width > rect.w - 4.0 * s && nsize > 7.0 * s {
+        while ndims.width > rect.w - 4.0 * s && nsize > 8.0 * s {
             nsize -= 1.0;
             ndims = measure_text(&card.title, None, nsize as u16, 1.0);
         }
         draw_text(
             &card.title,
             rect.x + (rect.w - ndims.width) * 0.5,
-            rect.y + rect.h - 15.0 * s,
+            rect.y + rect.h - 17.0 * s,
             nsize,
             if card.enabled { BONE } else { BONE_FAINT },
         );
         if let Some(cost) = card.cost {
             let label = format!("{cost}");
-            let dims = measure_text(&label, None, (12.0 * s) as u16, 1.0);
+            let dims = measure_text(&label, None, (14.0 * s) as u16, 1.0);
             draw_text(
                 &label,
                 rect.x + (rect.w - dims.width) * 0.5,
-                rect.y + rect.h - 4.0 * s,
-                12.0 * s,
+                rect.y + rect.h - 5.0 * s,
+                14.0 * s,
                 if card.enabled {
                     SCRAP_COLOR
                 } else {
@@ -1947,8 +1950,8 @@ fn draw_panel(
             draw_text(
                 &card.hotkey,
                 rect.x + 3.0 * s,
-                rect.y + 12.0 * s,
-                11.0 * s,
+                rect.y + 13.0 * s,
+                12.0 * s,
                 BONE_FAINT,
             );
         }
@@ -1963,25 +1966,49 @@ fn draw_panel(
         card_count += 1;
     }
 
-    // Queue strip along the bottom: production ghosts or order chips.
+    // Orders dock on the left edge: production ghosts or order chips,
+    // stacked above the band's corner so the band itself stays short.
     let mut queue_slots = [(zero, CardAction::None); 8];
     let mut queue_count = 0;
+    let mut dock = Rect::new(0.0, 0.0, 0.0, 0.0);
     if !panel.queue.is_empty() {
-        let queue_y = top + 14.0 * s + rows as f32 * (ch + 4.0 * s);
+        let (qw, qgap) = (44.0 * s, 4.0 * s);
+        let n = panel.queue.len().min(8);
+        let label_h = 22.0 * s;
+        let dock_h = label_h + n as f32 * (qw + qgap) + 6.0 * s;
+        let dock_w = qw + 16.0 * s;
+        let dock_top = top - dock_h;
+        dock = Rect::new(0.0, dock_top, dock_w, dock_h);
+        draw_rectangle(
+            dock.x,
+            dock.y,
+            dock.w,
+            dock.h,
+            Color::from_rgba(20, 20, 24, 255),
+        );
+        draw_rectangle(
+            dock.x,
+            dock.y,
+            dock.w,
+            1.5 * s,
+            Color::new(0.6, 0.6, 0.65, 0.4),
+        );
+        draw_rectangle(
+            dock.x + dock.w - 1.5 * s,
+            dock.y,
+            1.5 * s,
+            dock.h,
+            Color::new(0.6, 0.6, 0.65, 0.4),
+        );
         draw_text(
             panel.queue_label,
-            150.0 * s,
-            queue_y + 10.0 * s,
+            8.0 * s,
+            dock_top + 15.0 * s,
             13.0 * s,
             BONE_FAINT,
         );
-        let (qw, qgap) = (34.0 * s, 4.0 * s);
-        let qx0 = 205.0 * s;
         for (i, card) in panel.queue.iter().take(8).enumerate() {
-            let rect = Rect::new(qx0 + i as f32 * (qw + qgap), queue_y, qw, qw);
-            if rect.x + rect.w > right {
-                break;
-            }
+            let rect = Rect::new(8.0 * s, dock_top + label_h + i as f32 * (qw + qgap), qw, qw);
             let hovered = rect.contains(input.mouse);
             draw_rectangle(
                 rect.x,
@@ -2004,22 +2031,22 @@ fn draw_panel(
             );
             match &card.icon {
                 CardIcon::Glyph(g) => {
-                    let dims = measure_text(g, None, (18.0 * s) as u16, 1.0);
+                    let dims = measure_text(g, None, (22.0 * s) as u16, 1.0);
                     draw_text(
                         g,
                         rect.x + (rect.w - dims.width) * 0.5,
-                        rect.y + 22.0 * s,
-                        18.0 * s,
+                        rect.y + 28.0 * s,
+                        22.0 * s,
                         BONE,
                     );
                 }
                 icon => {
                     if let Some(source) = icon_source(icon) {
-                        let isz = 26.0 * s;
+                        let isz = 34.0 * s;
                         draw_texture_ex(
                             sprites.texture(),
                             rect.x + (rect.w - isz) * 0.5,
-                            rect.y + 4.0 * s,
+                            rect.y + 5.0 * s,
                             WHITE,
                             DrawTextureParams {
                                 dest_size: Some(vec2(isz, isz)),
@@ -2050,7 +2077,15 @@ fn draw_panel(
             queue_count += 1;
         }
     }
-    (cards, card_count, queue_slots, queue_count, top)
+    (
+        cards,
+        card_count,
+        queue_slots,
+        queue_count,
+        top,
+        band_w,
+        dock,
+    )
 }
 
 /// The tutorial card's full rectangle — pure geometry shared by
