@@ -17,8 +17,19 @@ pub fn balance_probe(
     level: Level,
     seeds: u64,
     max_ticks: u64,
+    weights: Option<&str>,
     out: Option<&str>,
 ) -> Result<()> {
+    // A candidate artifact probes exactly like the embedded one, just
+    // with its net loaded from disk — the fun gate runs this before a
+    // campaign checkpoint is ever embedded.
+    let net = weights
+        .map(|path| -> Result<oxide_sim::bot::QuantNet> {
+            let json =
+                std::fs::read_to_string(path).with_context(|| format!("reading weights {path}"))?;
+            oxide_sim::bot::QuantNet::from_json(&json).map_err(|e| anyhow::anyhow!(e))
+        })
+        .transpose()?;
     let mut paths: Vec<_> = std::fs::read_dir(dir)
         .with_context(|| format!("reading {dir}"))?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -42,8 +53,38 @@ pub fn balance_probe(
                     aggression: None,
                 });
             }
-            let m = composition::sample_match(&sc, max_ticks, 20)
-                .with_context(|| format!("sampling {}", sc.name))?;
+            let m = match &net {
+                None => composition::sample_match(&sc, max_ticks, 20)
+                    .with_context(|| format!("sampling {}", sc.name))?,
+                Some(net) => {
+                    use oxide_sim::bot::NeuralBot;
+                    let mut bots: Vec<NeuralBot> = sc
+                        .players
+                        .iter()
+                        .enumerate()
+                        .map(|(seat, player)| {
+                            NeuralBot::with_profile(
+                                oxide_sim::PlayerId(seat as u8),
+                                16,
+                                net.clone(),
+                                level.skill(),
+                                500,
+                                player.faction,
+                                0,
+                                sc.seed,
+                            )
+                        })
+                        .collect();
+                    composition::sample_driven(&sc, max_ticks, 20, |state| {
+                        let mut commands = Vec::new();
+                        for bot in bots.iter_mut() {
+                            commands.extend(bot.act(state));
+                        }
+                        state.tick(&commands);
+                    })
+                    .with_context(|| format!("sampling {}", sc.name))?
+                }
+            };
             eprintln!("  {} seed {} · {} ticks", m.scenario, m.seed, m.ticks);
             matches.push(m);
         }

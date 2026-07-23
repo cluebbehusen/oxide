@@ -90,6 +90,9 @@ enum Cmd {
         /// Tick cap per match.
         #[arg(long, default_value_t = 20_000)]
         ticks: u64,
+        /// Candidate weights JSON (defaults to the embedded artifact).
+        #[arg(long)]
+        weights: Option<String>,
         /// Raw JSON output path.
         #[arg(long)]
         out: Option<String>,
@@ -536,6 +539,7 @@ fn main() -> Result<()> {
             level,
             seeds,
             ticks,
+            weights,
             out,
         } => {
             let level = match level.as_str() {
@@ -545,7 +549,14 @@ fn main() -> Result<()> {
                 "expert" => oxide_sim::bot::Level::Expert,
                 other => anyhow::bail!("unknown level '{other}'"),
             };
-            oxide_driver::balance::balance_probe(&dir, level, seeds, ticks, out.as_deref())?;
+            oxide_driver::balance::balance_probe(
+                &dir,
+                level,
+                seeds,
+                ticks,
+                weights.as_deref(),
+                out.as_deref(),
+            )?;
         }
         Cmd::Matchup { a, b, seeds } => {
             let army_a = oxide_kit::matchup::parse_army(&a)?;

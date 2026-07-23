@@ -33,13 +33,26 @@ pub fn sample_match(
     max_ticks: u64,
     sample_every: u64,
 ) -> Result<MatchComposition> {
-    let mut state = scenario.build()?;
     let mut bots = oxide_sim::bot::seat_bots(scenario);
+    sample_driven(scenario, max_ticks, sample_every, |state| {
+        runner::step(state, &mut bots, None);
+    })
+}
+
+/// Like [`sample_match`], but the caller drives each tick — how a
+/// candidate weights artifact (not yet embedded) gets probed.
+pub fn sample_driven(
+    scenario: &Scenario,
+    max_ticks: u64,
+    sample_every: u64,
+    mut tick_fn: impl FnMut(&mut oxide_sim::State),
+) -> Result<MatchComposition> {
+    let mut state = scenario.build()?;
     let seats = scenario.players.len();
     let mut acc: Vec<BTreeMap<UnitKind, u64>> = vec![BTreeMap::new(); seats];
     let mut ran = 0;
     for tick in 0..max_ticks {
-        runner::step(&mut state, &mut bots, None);
+        tick_fn(&mut state);
         ran = tick + 1;
         if tick % sample_every == 0 {
             for unit in state.units() {

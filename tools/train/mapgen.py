@@ -28,7 +28,7 @@ import numpy as np
 
 # Bump when _carve's output distribution changes (sizes, terrain
 # alphabet, densities): cache identity is schema + mode + seed.
-MAPGEN_SCHEMA = 2
+MAPGEN_SCHEMA = 3
 
 DRIVER = "../../target/release/oxide-driver"
 
@@ -44,13 +44,18 @@ def _carve(seed: int, players: int = 2, teams: bool = False) -> dict:
     # curriculum must actually vary the field. Quick, standard, and a
     # large stretch that exercises the 0-1000 range like the shipped
     # Ferric Reach class does.
+    # Schema 3 (0.10): the vast class joins the draw — the pacing work
+    # aims matches at tens of minutes, and the curriculum has to teach
+    # marches that long or the ladder never fights them well.
     roll = rng.random()
-    if roll < 0.25:
+    if roll < 0.20:
         w, h = int(rng.integers(26, 36)), int(rng.integers(16, 24))
-    elif roll < 0.80:
+    elif roll < 0.60:
         w, h = int(rng.integers(36, 50)), int(rng.integers(22, 32))
-    else:
+    elif roll < 0.85:
         w, h = int(rng.integers(50, 64)), int(rng.integers(30, 40))
+    else:
+        w, h = int(rng.integers(84, 108)), int(rng.integers(48, 64))
     if players == 4:
         # Four bases need more floor: widen the draw a class.
         w, h = int(w * 1.3), int(h * 1.3)
