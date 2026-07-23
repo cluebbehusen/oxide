@@ -25,6 +25,9 @@ pub struct PlaybackSession {
     /// returns there; every other origin goes Home. A tick-count
     /// heuristic resurrected matches Main Menu had already discarded.
     pub from_pause: bool,
+    /// A seek in flight: the target tick, chipped away a budget per
+    /// frame so the render thread never freezes on a long jump.
+    pub seeking: Option<u64>,
 }
 
 impl PlaybackSession {
@@ -49,6 +52,7 @@ impl PlaybackSession {
             held: [false; 4],
             minimap_drag: false,
             from_pause: false,
+            seeking: None,
         })
     }
 }
@@ -56,6 +60,29 @@ impl PlaybackSession {
 pub fn playback_hud(pb: &PlaybackSession) {
     let s = render::ui_scale();
     let size = 18.0 * s;
+    if let Some(target) = pb.seeking {
+        // Mid-seek the transport numbers would lie (the state is
+        // sprinting through the record); show honest progress instead.
+        let line = format!("SEEKING  {} / {target}", pb.engine.position());
+        let width = measure_text(&line, None, size as u16, 1.0).width;
+        let x = (screen_width() - width) * 0.5;
+        let y = screen_height() - 14.0 * s;
+        draw_rectangle(
+            x - 10.0 * s,
+            y - size,
+            width + 20.0 * s,
+            size + 10.0 * s,
+            macroquad::prelude::Color::from_rgba(15, 15, 18, 235),
+        );
+        draw_text(
+            &line,
+            x,
+            y,
+            size,
+            macroquad::prelude::Color::new(0.9, 0.88, 0.84, 1.0),
+        );
+        return;
+    }
     let full = format!(
         "PLAYBACK  {} / {}  ·  {}x{}  ·  Space pause · PgUp/PgDn seek · Home/End · 1/2/3 speed · Esc leave",
         pb.engine.position(),
@@ -192,11 +219,20 @@ impl PlaybackSession {
             self.game.camera.pan(dir.normalize() * world_per_sec * dt);
         }
         if let Some(target) = seek_to {
-            self.engine.seek(target);
+            // A fresh transport command replaces any seek in flight.
+            self.seeking = Some(target);
             self.accum = 0.0;
-            // A seek is a bulk jump: presentation resyncs silently
-            // instead of replaying a burst.
-            self.game.drop_presentation();
+        }
+        if let Some(target) = self.seeking {
+            // Budgeted: a slice per frame keeps a long first jump from
+            // hitching the render thread; sim ticks run thousands per
+            // second, so 2000 is comfortably under a frame.
+            if self.engine.seek_step(target, 2_000) {
+                self.seeking = None;
+                // A seek is a bulk jump: presentation resyncs silently
+                // instead of replaying a burst.
+                self.game.drop_presentation();
+            }
             self.game.state = self.engine.state.clone();
         } else if !self.paused && !self.engine.at_end() {
             self.accum += dt * self.speed;
@@ -244,14 +280,23 @@ mod tests {
 
     fn key(session: &mut PlaybackSession, key: Key) -> bool {
         let mut mouse = vec2(0.0, 0.0);
-        session.update(
+        let leave = session.update(
             &[RawEvent::KeyDown { key }, RawEvent::KeyUp { key }],
             0.0,
             vec2(1280.0, 800.0),
             false,
             1.0,
             &mut mouse,
-        )
+        );
+        // Seeks are budgeted across frames; drain any pending one so
+        // asserts see the settled position.
+        let mut frames = 0;
+        while session.seeking.is_some() {
+            session.update(&[], 0.0, vec2(1280.0, 800.0), false, 1.0, &mut mouse);
+            frames += 1;
+            assert!(frames < 1_000, "a pending seek must finish");
+        }
+        leave
     }
 
     #[test]
