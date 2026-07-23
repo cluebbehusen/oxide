@@ -11,6 +11,12 @@ use oxide_protocol::Key;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// How many control groups exist. The classic map authors Ctrl+digit
+/// only this far: an exact chord to a group dispatch ignores would
+/// outrank the bare-digit fallback and swallow palette picks whenever
+/// Ctrl is held.
+pub const CONTROL_GROUPS: usize = 5;
+
 /// Something the player can mean. Payload-free variants bind directly;
 /// numbered variants bind per index (digits, group slots).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -207,10 +213,12 @@ impl BindingMap {
                 chord: Chord::bare(key),
                 action: Action::Slot(n),
             });
-            bindings.push(Binding {
-                chord: Chord::ctrl(key),
-                action: Action::AssignGroup(n),
-            });
+            if (n as usize) <= CONTROL_GROUPS {
+                bindings.push(Binding {
+                    chord: Chord::ctrl(key),
+                    action: Action::AssignGroup(n),
+                });
+            }
         }
         Self { bindings }
     }
@@ -410,6 +418,23 @@ mod tests {
             map.resolve(Key::X, false, false),
             None,
             "the old chord is gone, not shadowed"
+        );
+    }
+
+    #[test]
+    fn ctrl_digits_past_the_group_count_fall_through_to_slots() {
+        let map = BindingMap::classic();
+        assert!(
+            map.bindings().iter().all(|b| match b.action {
+                Action::AssignGroup(n) => (n as usize) <= CONTROL_GROUPS,
+                _ => true,
+            }),
+            "no chord may point at a group dispatch ignores"
+        );
+        assert_eq!(
+            map.resolve(Key::Num7, true, false),
+            Some(Action::Slot(7)),
+            "ctrl+7 reaches the palette, not a phantom group"
         );
     }
 

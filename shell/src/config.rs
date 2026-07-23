@@ -168,6 +168,16 @@ impl Config {
                 if config.bindings.bindings().is_empty() || !payload_sane {
                     config.bindings = BindingMap::classic();
                 }
+                // Configs saved before the classic map stopped authoring
+                // Ctrl+6..9 carry exact chords to control groups that
+                // don't exist; the exact match outranks the bare digit
+                // and swallows palette picks with Ctrl held. Stale rows
+                // drop; the rest of the profile survives untouched.
+                for n in (crate::action::CONTROL_GROUPS as u8 + 1)..=9 {
+                    config
+                        .bindings
+                        .unbind(crate::action::Action::AssignGroup(n));
+                }
                 config.window = Self::sane_window(config.window);
                 config
             }
@@ -233,6 +243,39 @@ mod tests {
             loaded.bindings.chord_for(crate::action::Action::Patrol),
             Some(crate::action::Chord::bare(oxide_protocol::Key::J)),
             "the customization survived validation"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn stale_group_chords_drop_without_resetting_the_profile() {
+        // A config saved before the classic map trimmed Ctrl+6..9 keeps
+        // a chord to a group dispatch ignores; loading must shed that
+        // row alone, never the user's own customizations with it.
+        let dir = std::env::temp_dir().join(format!("oxide-config-stale-{}", std::process::id()));
+        let path = dir.join("config.json");
+        let mut config = Config::default();
+        assert!(config.bindings.rebind(
+            crate::action::Action::AssignGroup(7),
+            crate::action::Chord::ctrl(oxide_protocol::Key::Num7)
+        ));
+        assert!(config.bindings.rebind(
+            crate::action::Action::Patrol,
+            crate::action::Chord::bare(oxide_protocol::Key::J)
+        ));
+        config.save_to(&path).expect("save");
+        let loaded = Config::load_from(Some(path.clone()));
+        assert_eq!(
+            loaded
+                .bindings
+                .chord_for(crate::action::Action::AssignGroup(7)),
+            None,
+            "the stale chord is gone"
+        );
+        assert_eq!(
+            loaded.bindings.chord_for(crate::action::Action::Patrol),
+            Some(crate::action::Chord::bare(oxide_protocol::Key::J)),
+            "the customization survived the strip"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

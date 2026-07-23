@@ -43,7 +43,7 @@ pub struct InputState {
     /// Middle-drag pan anchor: the world follows the hand.
     pub(crate) mmb_anchor: Option<Vec2>,
     /// Control groups 1..=5 (assigned with Ctrl+N, recalled with N).
-    groups: [Vec<UnitId>; 5],
+    groups: [Vec<UnitId>; crate::action::CONTROL_GROUPS],
     /// Previous click, for double-click detection.
     last_click: Option<(f64, Vec2)>,
     /// Previous group recall, for double-tap camera centering.

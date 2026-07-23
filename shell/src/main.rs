@@ -833,18 +833,23 @@ async fn run() -> Result<()> {
                     // Armed: the next key IS the answer — raw, before any
                     // binding resolution, or the old meaning would fire.
                     // Held modifiers ride along, so Ctrl+K binds as the
-                    // chord it looks like.
+                    // chord it looks like. Modifier edges are skipped,
+                    // not taken: the adapter emits them first, so a chord
+                    // pressed whole in one frame would otherwise capture
+                    // Ctrl itself as the key and drop the real one.
                     let ctrl_held = capture_ctrl;
                     let shift_held = capture_shift;
                     let pressed = events.iter().find_map(|e| match e {
-                        RawEvent::KeyDown { key } => Some(*key),
+                        RawEvent::KeyDown { key } if !matches!(key, Key::Shift | Key::Ctrl) => {
+                            Some(*key)
+                        }
                         _ => None,
                     });
                     match pressed {
                         Some(Key::Escape) => {
                             mode = Mode::Controls { rebinding: None };
                         }
-                        Some(key) if !matches!(key, Key::Shift | Key::Ctrl) => {
+                        Some(key) => {
                             let (target, _) = REMAPPABLE[row];
                             let chord = action::Chord {
                                 key,
@@ -1289,17 +1294,21 @@ async fn run() -> Result<()> {
                         Some(_) => game.sounds_pending.push((SoundKind::Denied, None)),
                         None => {}
                     }
-                } else if x_pressed && !replay_shelf.is_empty() {
+                } else if x_pressed && sub_menu.selected < replay_shelf.len() {
                     let row = sub_menu.selected;
                     if arming == Some(row) {
                         if let Some(entry) = replay_shelf.get(row) {
                             std::fs::remove_file(&entry.path).ok();
                         }
                         replay_shelf = saves::discover();
-                        sub_menu = Menu::new(
-                            "REPLAYS",
-                            replay_shelf.iter().map(|e| e.label.clone()).collect(),
-                        );
+                        // Rebuilt like the front door builds it: labels
+                        // plus the Back row, or a mouse-only player is
+                        // stranded — deleting the last record once left
+                        // an empty, exitless menu.
+                        let mut rows: Vec<String> =
+                            replay_shelf.iter().map(|e| e.label.clone()).collect();
+                        rows.push("Back".to_string());
+                        sub_menu = Menu::new("REPLAYS", rows);
                         (home, home_resumable) = home_menu();
                         mode = Mode::Replays { arming: None };
                     } else {

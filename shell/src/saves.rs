@@ -37,6 +37,18 @@ fn civil_date(secs: u64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// Shortens a long file stem for the browser row. Counts chars, not
+/// bytes — replay files are user-named, and a byte slice once panicked
+/// mid-multibyte-character and took the whole shelf down with it.
+fn elide(stem: &str) -> String {
+    if stem.chars().count() > 26 {
+        let head: String = stem.chars().take(25).collect();
+        format!("{head}…")
+    } else {
+        stem.to_string()
+    }
+}
+
 fn scan(dir: &std::path::Path, out: &mut Vec<(std::time::SystemTime, ReplayEntry)>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -66,11 +78,7 @@ fn scan(dir: &std::path::Path, out: &mut Vec<(std::time::SystemTime, ReplayEntry
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("replay");
-        let stem_short = if stem.len() > 26 {
-            format!("{}…", &stem[..25])
-        } else {
-            stem.to_string()
-        };
+        let stem_short = elide(stem);
         let label = format!(
             "{} · t{} · {} · {}",
             replay.setup.name, ticks, date, stem_short
@@ -125,5 +133,16 @@ mod tests {
         assert_eq!(civil_date(951_868_800), "2000-03-01");
         // A modern spot check: 2026-07-22T12:00:00Z.
         assert_eq!(civil_date(1_784_721_600), "2026-07-22");
+    }
+
+    #[test]
+    fn long_stems_elide_at_char_boundaries() {
+        assert_eq!(elide("short"), "short");
+        let long_ascii = "a".repeat(30);
+        assert_eq!(elide(&long_ascii), format!("{}…", "a".repeat(25)));
+        // 27 chars, with byte offset 25 landing inside the first é —
+        // the byte-sliced version panicked exactly here.
+        let multibyte = format!("{}ééé", "a".repeat(24));
+        assert_eq!(elide(&multibyte), format!("{}é…", "a".repeat(24)));
     }
 }
