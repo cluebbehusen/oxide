@@ -157,5 +157,12 @@
    "x": 27,
    "y": 2
   }
- ]
+ ],
+ "meta": {
+  "hook": "Paired foundries back to back; hold the seam.",
+  "pace": "quick",
+  "mode": "2v2",
+  "richness": "standard",
+  "theme": "quarry-dust"
+ }
 }

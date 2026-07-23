@@ -45,6 +45,7 @@ fn arena4(units: Vec<UnitSpec>) -> Scenario {
             seat("East Cupric", Faction::Cupric, 1),
         ],
         units,
+        meta: None,
     }
 }
 
@@ -121,11 +122,13 @@ fn allied_fighters_ignore_and_cannot_target_each_other() {
 
 #[test]
 fn splash_spares_the_teammate_in_the_blast() {
-    // The enemy scuttler stands one tile from the allied sentinel; the
-    // shell's radius covers both, and only the enemy dies.
+    // The enemy harvester stands one tile from the allied sentinel;
+    // the shell's radius covers both, and only the enemy dies. (A
+    // pacifist foe: a scuttler would brawl the sentinel through the
+    // flight and muddy the hp ledger the assert reads.)
     let mut state = arena4(vec![
         unit(1, UnitKind::Sentinel, 9, 5),
-        unit(2, UnitKind::Scuttler, 10, 5),
+        unit(2, UnitKind::Harvester, 10, 5),
         unit(0, UnitKind::Bombard, 8, 8),
     ])
     .build()
@@ -136,7 +139,9 @@ fn splash_spares_the_teammate_in_the_blast() {
         state.units()[2].id,
     );
     let ally_hp = state.unit(ally).unwrap().hp;
-    // The first shell lands on the command tick itself — keep its report.
+    // The shell launches on the command tick and lands after real
+    // flight; the ally's sentinel chews the pacifist foe meanwhile,
+    // which touches no ledger the asserts read.
     let report = state.tick(&[cmd(
         0,
         Command::Attack {
@@ -149,10 +154,15 @@ fn splash_spares_the_teammate_in_the_blast() {
         report
             .events
             .iter()
-            .any(|e| matches!(e, Event::AttackHit { attacker, .. } if *attacker == bombard)),
+            .any(|e| matches!(e, Event::ShellLaunched { .. })),
         "the shell flies on the command tick"
     );
-    state.tick(&[]);
+    for _ in 0..30 {
+        state.tick(&[]);
+        if state.unit(foe).is_none() {
+            break;
+        }
+    }
     assert!(
         state.unit(foe).is_none(),
         "the shell deletes the raider it was aimed at"

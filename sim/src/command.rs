@@ -109,6 +109,15 @@ pub enum Command {
         /// The patient.
         building: BuildingId,
     },
+    /// Remove one queued unit from a producer, refunding its full cost
+    /// (scrap was paid on enqueue; training spends only time). Cancelling
+    /// the head also resets its progress.
+    CancelTrain {
+        /// The producing building.
+        building: BuildingId,
+        /// Queue position (0 = currently training).
+        index: u8,
+    },
     /// Point a building's fresh units somewhere (`None` clears the rally).
     SetRally {
         /// The building.

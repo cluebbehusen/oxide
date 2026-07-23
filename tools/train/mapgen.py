@@ -18,11 +18,17 @@ Usage:
 """
 
 import json
+import os
 import pathlib
 import subprocess
 import tempfile
+import threading
 
 import numpy as np
+
+# Bump when _carve's output distribution changes (sizes, terrain
+# alphabet, densities): cache identity is schema + mode + seed.
+MAPGEN_SCHEMA = 2
 
 DRIVER = "../../target/release/oxide-driver"
 
@@ -34,9 +40,20 @@ def cache_dir(name: str) -> str:
 
 def _carve(seed: int, players: int = 2, teams: bool = False) -> dict:
     rng = np.random.default_rng(seed)
-    w = int(rng.integers(30, 46))
-    h = int(rng.integers(18, 28))
+    # Size classes: the v4 schema rides relative coordinates, so the
+    # curriculum must actually vary the field. Quick, standard, and a
+    # large stretch that exercises the 0-1000 range like the shipped
+    # Ferric Reach class does.
+    roll = rng.random()
+    if roll < 0.25:
+        w, h = int(rng.integers(26, 36)), int(rng.integers(16, 24))
+    elif roll < 0.80:
+        w, h = int(rng.integers(36, 50)), int(rng.integers(22, 32))
+    else:
+        w, h = int(rng.integers(50, 64)), int(rng.integers(30, 40))
     if players == 4:
+        # Four bases need more floor: widen the draw a class.
+        w, h = int(w * 1.3), int(h * 1.3)
         return _carve4(rng, seed, w, h, teams)
     grid = [["." for _ in range(w)] for _ in range(h)]
 
@@ -64,8 +81,9 @@ def _carve(seed: int, players: int = 2, teams: bool = False) -> dict:
     grid[my - 1][mx - 1] = "2"
 
     # Rock formations: blobs authored in the top half, mirrored, kept
-    # away from both bases.
-    blobs = int(rng.integers(4, 9))
+    # away from both bases. Density scales with floor area so large
+    # fields don't come out empty.
+    blobs = int(rng.integers(4, 9)) * max(1, (w * h) // 1100)
     for _ in range(blobs):
         cx = int(rng.integers(2, w - 2))
         cy = int(rng.integers(2, h // 2 + 1))
@@ -79,6 +97,26 @@ def _carve(seed: int, players: int = 2, teams: bool = False) -> dict:
             x, y = cx + dx, cy + dy
             if 1 < x < w - 2 and 1 < y < h - 2 and grid[y][x] == ".":
                 set_pair(x, y, "#")
+
+    # Peak ridges, sometimes: short mirrored segments of '^' that block
+    # ground, air, and artillery arcs alike — the curriculum's exposure
+    # to siege-safe geography. Validation (a driver build per candidate)
+    # rejects any draw that seals the seats apart.
+    if rng.random() < 0.4:
+        ridges = int(rng.integers(1, 3))
+        for _ in range(ridges):
+            cx = int(rng.integers(4, w - 4))
+            cy = int(rng.integers(2, h // 2 + 1))
+            if abs(cx - ax) + abs(cy - ay) < 8:
+                continue
+            if abs(cx - (mx - 1)) + abs(cy - (my - 1)) < 8:
+                continue
+            dx, dy = [(1, 0), (0, 1), (1, 1), (1, -1)][int(rng.integers(0, 4))]
+            length = int(rng.integers(4, 9))
+            for i in range(length):
+                x, y = cx + dx * i, cy + dy * i
+                if 1 < x < w - 2 and 1 < y < h - 2 and grid[y][x] == ".":
+                    set_pair(x, y, "^")
 
     # Scrap: a home cluster near each base (mirrored) plus contested
     # center nodes, rich ones sometimes.
@@ -187,6 +225,18 @@ def _carve4(
             if 1 < x < w - 2 and 1 < y < h - 2 and grid[y][x] == ".":
                 set_all(x, y, "#")
 
+    # Peak ridges, sometimes — quadrant-reflected like everything else,
+    # so each corner seat faces the same geography.
+    if rng.random() < 0.4:
+        cx = int(rng.integers(4, w // 2))
+        cy = int(rng.integers(3, h // 2))
+        if abs(cx - ax) + abs(cy - ay) >= 8:
+            dx, dy = [(1, 0), (0, 1), (1, 1)][int(rng.integers(0, 3))]
+            for i in range(int(rng.integers(3, 7))):
+                x, y = cx + dx * i, cy + dy * i
+                if 1 < x < w - 2 and 1 < y < h - 2 and grid[y][x] == ".":
+                    set_all(x, y, "^")
+
     placed = 0
     for _ in range(40):
         if placed >= 3:
@@ -256,12 +306,23 @@ def generate(
     out = pathlib.Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     tag = "2v2" if teams else (str(players) if players != 2 else "")
-    path = out / f"gen{tag}-{seed}.json"
+    # The schema fingerprint invalidates every cached map when the
+    # generator's output changes shape — without it, a retrain quietly
+    # reused tens of thousands of pre-peak small-class maps whose seeds
+    # matched, training on a curriculum the code no longer describes.
+    path = out / f"gen{tag}-s{MAPGEN_SCHEMA}-{seed}.json"
     if path.exists():
         return str(path)
     for attempt in range(16):
         candidate = _carve(seed + attempt * 10_000_019, players, teams)
-        trial = path.with_suffix(".candidate.json")
+        # Unique per caller: the map warmer and a foreground reset may
+        # generate the same seed concurrently, and a shared candidate
+        # name lets one unlink the other's file mid-rename. Both publish
+        # identical bytes, so replace semantics (not rename — Windows
+        # raises FileExistsError when the loser finishes second) make
+        # the race harmless on every platform.
+        tag = f"{os.getpid()}-{threading.get_ident()}"
+        trial = path.with_suffix(f".candidate-{tag}.json")
         trial.write_text(json.dumps(candidate))
         ok = (
             subprocess.run(
@@ -272,7 +333,7 @@ def generate(
             == 0
         )
         if ok:
-            trial.rename(path)
+            trial.replace(path)
             return str(path)
         trial.unlink(missing_ok=True)
     raise RuntimeError(f"no valid map within 16 attempts of seed {seed}")

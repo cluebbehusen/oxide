@@ -6,10 +6,17 @@ rust-version.workspace = true
 publish.workspace = true
 description = "macroquad renderer and debug server for Oxide"
 
+# The binary is what the OS names the process — the dock and menu bar
+# say "Oxide", not the crate's dev-facing package name.
+[[bin]]
+name = "Oxide"
+path = "src/main.rs"
+
 [dependencies]
 chassis = { workspace = true }
 oxide-sim = { workspace = true }
 oxide-protocol = { workspace = true }
+oxide-driver = { path = "../driver" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
@@ -28,4 +35,7 @@ png = "0.17"
 disallowed_types = "allow"
 
 [lints.rust]
+# The dev-run dock icon is a touch soft for this (miniquad's icon path
+# caps at 64px, and sharpening it means an AppKit call): the bundled
+# .app is crisp via its icns, and that trade keeps the shell unsafe-free.
 unsafe_code = "forbid"

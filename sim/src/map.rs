@@ -24,8 +24,12 @@ pub const MAX_MAP_EDGE: usize = 256;
 pub enum Terrain {
     /// Walkable.
     Ground,
-    /// Never walkable.
+    /// Never walkable (flyable — rock is clutter, not altitude).
     Rock,
+    /// A mountain: blocks ground, air, direct fire that involves
+    /// aircraft, and artillery arcs — the one terrain that makes
+    /// genuinely siege-safe geography.
+    Peak,
 }
 
 /// One tile of the map.
@@ -142,6 +146,12 @@ impl Map {
                         wreck: 0,
                         cosmetic: 0,
                     },
+                    '^' => Tile {
+                        terrain: Terrain::Peak,
+                        scrap: 0,
+                        wreck: 0,
+                        cosmetic: 0,
+                    },
                     's' => Tile {
                         terrain: Terrain::Ground,
                         scrap: SCRAP_NODE_AMOUNT,
@@ -216,6 +226,13 @@ impl Map {
             .is_some_and(|t| t.terrain == Terrain::Ground && t.scrap == 0)
     }
 
+    /// The raw tile grid — row-slice access for hot scans (vision's
+    /// memory reconciliation); everything else should prefer the
+    /// per-tile accessors.
+    pub(crate) fn grid(&self) -> &Grid<Tile> {
+        &self.grid
+    }
+
     /// Remaining scrap at `pos` (zero when out of bounds).
     pub fn scrap_at(&self, pos: TilePos) -> u32 {
         self.grid.get(pos).map_or(0, |t| t.scrap)
@@ -240,9 +257,11 @@ impl Map {
     /// Deposits salvage on plain ground. Rock and live nodes swallow it —
     /// a machine downed where nothing can stand leaves nothing to strip.
     pub(crate) fn add_wreck(&mut self, pos: TilePos, amount: u32) {
+        // Wreck coexists with a live node — the cleanup rules promise a
+        // node tile keeps its deposits, and a flyer downed over one
+        // must not evaporate.
         if let Some(tile) = self.grid.get_mut(pos)
             && tile.terrain == Terrain::Ground
-            && tile.scrap == 0
         {
             tile.wreck = tile.wreck.saturating_add(amount);
         }
@@ -287,6 +306,7 @@ impl Map {
         for (pos, tile) in self.grid.iter() {
             let c = match (tile.terrain, tile.scrap) {
                 (Terrain::Rock, _) => '#',
+                (Terrain::Peak, _) => '^',
                 // Render-only: wrecks are never authored, so `w` stays out
                 // of the parse legend.
                 (Terrain::Ground, 0) if tile.wreck > 0 => 'w',

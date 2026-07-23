@@ -25,6 +25,8 @@ fn rgb(hex: u32) -> Color {
 
 const GROUND: u32 = 0x232329;
 const ROCK: u32 = 0x52525E;
+const PEAK: u32 = 0x424052;
+const PEAK_CREST: u32 = 0x76728A;
 const SCRAP_FULL: u32 = 0xD9A441;
 const SCRAP_LOW: u32 = 0x8C6A2F;
 const HP_BACK: u32 = 0x141418;
@@ -86,6 +88,20 @@ pub fn render_state(state: &State) -> Pixmap {
         let (x, y) = (pos.x as f32 * TILE_PX, pos.y as f32 * TILE_PX);
         match (tile.terrain, tile.scrap) {
             (Terrain::Rock, _) => fill_rect(&mut pixmap, x, y, TILE_PX, TILE_PX, ROCK),
+            // Peaks: darker mass than rock with a pale crest square, so
+            // goldens and previews tell mountain from boulder at a glance.
+            (Terrain::Peak, _) => {
+                fill_rect(&mut pixmap, x, y, TILE_PX, TILE_PX, PEAK);
+                let inset = TILE_PX * 0.3;
+                fill_rect(
+                    &mut pixmap,
+                    x + inset,
+                    y + inset * 0.5,
+                    TILE_PX - 2.0 * inset,
+                    TILE_PX - 2.0 * inset,
+                    PEAK_CREST,
+                );
+            }
             // Rubble: a faint lightening so the goldens register it.
             // Wreck salvage: a small dim-amber square, unmistakably not a
             // node (nodes render bigger and brighter below).

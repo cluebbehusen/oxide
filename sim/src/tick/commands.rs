@@ -67,6 +67,9 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
             Command::Repair { units, building } => apply_repair(state, pc.player, units, *building),
             Command::Stop { units } => apply_stop(state, pc.player, units),
             Command::Train { building, kind } => apply_train(state, pc.player, *building, *kind),
+            Command::CancelTrain { building, index } => {
+                apply_cancel_train(state, pc.player, *building, *index)
+            }
             Command::SetRally { building, rally } => {
                 apply_set_rally(state, pc.player, *building, *rally)
             }
@@ -566,6 +569,35 @@ fn apply_stop(state: &mut State, player: PlayerId, units: &[UnitId]) -> Result<(
     (applied > 0)
         .then_some(())
         .ok_or(RejectReason::NoValidUnits)
+}
+
+fn apply_cancel_train(
+    state: &mut State,
+    player: PlayerId,
+    building: crate::ids::BuildingId,
+    index: u8,
+) -> Result<(), RejectReason> {
+    let kind = {
+        let b = state
+            .building(building)
+            .ok_or(RejectReason::NotYourBuilding)?;
+        if b.player != player {
+            return Err(RejectReason::NotYourBuilding);
+        }
+        *b.queue
+            .get(index as usize)
+            .ok_or(RejectReason::InvalidTarget)?
+    };
+    let b = state.building_mut(building).expect("checked above");
+    b.queue.remove(index as usize);
+    if index == 0 {
+        // The next in line starts fresh; half-built progress is not a
+        // thing that transfers between machines.
+        b.progress = 0;
+    }
+    let bank = &mut state.player_mut(player).scrap;
+    *bank = bank.saturating_add(kind.stats().cost);
+    Ok(())
 }
 
 fn apply_train(

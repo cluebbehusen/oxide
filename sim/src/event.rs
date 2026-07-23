@@ -56,6 +56,9 @@ pub enum Event {
         /// What fired — carried in the event because presentation may run
         /// after the attacker itself died this tick.
         attacker_kind: crate::stats::UnitKind,
+        /// Which weapon slot fired (0 = primary), so presentation reads
+        /// the exact weapon's stats instead of guessing across the list.
+        weapon: usize,
         /// Who was hit.
         target: Target,
         /// Muzzle position at fire time.
@@ -90,6 +93,35 @@ pub enum Event {
         turret_pos: chassis::fx::Vec2Fx,
         /// Impact position.
         target_pos: chassis::fx::Vec2Fx,
+    },
+    /// A shell left its gun: real flight, resolving at `arrival`.
+    ShellLaunched {
+        /// The gun itself — a unit's mount or a building's emplacement;
+        /// presentation turns it toward the work.
+        shooter: crate::ids::Target,
+        /// The firing seat.
+        player: PlayerId,
+        /// Muzzle position.
+        from: Vec2Fx,
+        /// Where it will land.
+        to: Vec2Fx,
+        /// Ticks of flight ahead of it.
+        flight: u64,
+    },
+    /// A shell arrived and resolved.
+    ShellLanded {
+        /// The seat that fired it — presentation uses this to tell a
+        /// hostile impact from a harmless friendly one. Never names a
+        /// sufferer; the impact itself was already visible by the arc
+        /// renderer's rule.
+        player: PlayerId,
+        /// Which movement domains the splash can hurt — a ground-only
+        /// shell near a flyer is noise, not an attack.
+        targets: crate::stats::DomainMask,
+        /// Impact point.
+        at: Vec2Fx,
+        /// Splash radius, when the shell splashes.
+        splash: Option<chassis::fx::Fx>,
     },
     /// A construction site reached full function.
     BuildingCompleted {
@@ -126,6 +158,9 @@ pub enum Event {
         player: PlayerId,
         /// Where it stood when it gave up.
         pos: Vec2Fx,
+        /// Why the program died — own-state facts only (routes, banks,
+        /// footing); a reason must never reveal what fog hides.
+        reason: StallReason,
     },
     /// The match ended.
     GameOver {
@@ -141,4 +176,19 @@ pub struct TickReport {
     pub tick: Tick,
     /// Events in the order they occurred.
     pub events: Vec<Event>,
+}
+
+/// Why an order program stalled. Every variant derives from the acting
+/// player's own situation — pathing, funds, footing — never from
+/// hidden enemy state, so the shell can voice any of these verbatim
+/// without leaking intelligence through the fog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StallReason {
+    /// No route to the goal (or to any doorstep of the work site).
+    NoRoute,
+    /// No standable tile within weapon reach of the victim.
+    NoFiringPosition,
+    /// The bank ran dry mid-job.
+    InsufficientScrap,
 }

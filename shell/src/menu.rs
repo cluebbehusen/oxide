@@ -24,13 +24,30 @@ fn ui() -> f32 {
 }
 
 /// A titled, selectable list.
+///
+/// Three independent pieces of state, deliberately: `selected` is the
+/// keyboard cursor and activation target, `scroll` is which window of
+/// rows is shown, and `hover` is only a highlight. The 0.8 widget fused
+/// them — hover moved selection, the window derived from selection —
+/// and a stationary pointer could walk the whole list by itself.
 pub struct Menu {
     /// Heading above the list.
     pub title: String,
     /// One label per row.
     pub items: Vec<String>,
-    /// Highlighted row.
+    /// Keyboard cursor; what Enter activates.
     pub selected: usize,
+    /// First visible row — moved by the wheel, paging keys, and
+    /// `ensure_visible`; never by the pointer.
+    scroll: usize,
+    /// Row under the pointer, highlight only.
+    hover: Option<usize>,
+    /// Fractional wheel accumulation: trackpads deliver hundredths per
+    /// frame, and treating each as a full row made scrolling frantic.
+    wheel_accum: f32,
+    /// Row armed by a press; activation happens on release inside the
+    /// same row, so dragging away cancels.
+    pressed: Option<usize>,
 }
 
 impl Menu {
@@ -40,7 +57,43 @@ impl Menu {
             title: title.into(),
             items,
             selected: 0,
+            scroll: 0,
+            hover: None,
+            wheel_accum: 0.0,
+            pressed: None,
         }
+    }
+
+    /// Moves the keyboard cursor and scrolls just enough to show it —
+    /// the only coupling between selection and the scroll window.
+    pub fn select(&mut self, index: usize) {
+        self.selected = index.min(self.items.len().saturating_sub(1));
+        self.ensure_visible();
+    }
+
+    fn ensure_visible(&mut self) {
+        let (_, _, _, visible) = self.layout();
+        if self.selected < self.scroll {
+            self.scroll = self.selected;
+        } else if self.selected >= self.scroll + visible {
+            self.scroll = self.selected + 1 - visible;
+        }
+    }
+
+    fn scroll_by(&mut self, delta: i64) {
+        let (_, _, _, visible) = self.layout();
+        let max = self.items.len().saturating_sub(visible);
+        self.scroll = (self.scroll as i64 + delta).clamp(0, max as i64) as usize;
+        // The selection rides inside the window: Enter must never
+        // activate a row the wheel has scrolled out of sight (a hidden
+        // Quit would be a nasty surprise).
+        self.selected = self
+            .selected
+            .clamp(self.scroll, self.scroll + visible.saturating_sub(1));
+    }
+
+    fn row_at(&self, point: Vec2) -> Option<usize> {
+        (0..self.items.len()).find(|i| self.item_rect(*i).is_some_and(|r| r.contains(point)))
     }
 
     /// Where the list lives this frame: top edge, row height, and the
@@ -56,12 +109,9 @@ impl Menu {
         let n = self.items.len().max(1);
         let row = (avail / n as f32).clamp(30.0 * s, ITEM_HEIGHT * s);
         let visible = ((avail / row).floor() as usize).clamp(1, n);
-        let first = if n <= visible {
-            0
-        } else {
-            // Keep the selection comfortably inside the window.
-            self.selected.saturating_sub(visible / 2).min(n - visible)
-        };
+        // The window is scroll state, clamped — never a function of the
+        // selection, or hovering near an edge walks the list.
+        let first = self.scroll.min(n.saturating_sub(visible));
         let top = top_bound + (avail - visible as f32 * row) * 0.5;
         (top, row, first, visible)
     }
@@ -80,41 +130,108 @@ impl Menu {
         ))
     }
 
+    /// Row under the pointer, if any.
+    pub fn hover(&self) -> Option<usize> {
+        self.hover
+    }
+
+    /// Right edge of the row boxes — side panels place themselves
+    /// strictly beyond it, using the same rect the rows draw with, so
+    /// overlap is impossible by construction.
+    pub fn rows_right_edge(&self) -> f32 {
+        let (_, _, first, _) = self.layout();
+        self.item_rect(first).map_or(0.0, |r| r.x + r.w)
+    }
+
+    /// Half-open range of rows currently drawn by the scroll window.
+    pub fn visible_range(&self) -> [usize; 2] {
+        let (_, _, first, visible) = self.layout();
+        [first, first + visible]
+    }
+
     /// Feeds a frame of events through the menu; returns the activated row,
     /// if any. Mouse position updates come along in the same events.
     pub fn handle(&mut self, events: &[RawEvent], mouse: &mut Vec2) -> Option<usize> {
-        // Hit-testing uses one frozen snapshot of the row layout: when
-        // the list scrolls, the layout depends on the selection, so
-        // mutating the selection mid-scan would shift rows under the
-        // pointer and let one coordinate match several of them.
-        let rects: Vec<Option<Rect>> = (0..self.items.len()).map(|i| self.item_rect(i)).collect();
+        // An empty list has nothing to select, scroll, or activate —
+        // and its wrap-around arithmetic divides by zero. The shelf can
+        // legitimately be empty on a fresh profile.
+        if self.items.is_empty() {
+            return None;
+        }
         for event in events {
             match *event {
                 RawEvent::MouseMove { x, y } => {
                     *mouse = vec2(x, y);
-                    if let Some(index) = (0..self.items.len())
-                        .find(|i| rects[*i].is_some_and(|r| r.contains(*mouse)))
-                    {
-                        self.selected = index;
+                    self.hover = self.row_at(*mouse);
+                }
+                RawEvent::Wheel { delta } => {
+                    // Wheel up shows earlier rows; the pointer stays put
+                    // and the hover follows whatever slid beneath it.
+                    // Whole notches only — fractions accumulate.
+                    self.wheel_accum += delta;
+                    let steps = self.wheel_accum.trunc();
+                    if steps == 0.0 {
+                        continue;
                     }
+                    self.wheel_accum -= steps;
+                    self.scroll_by(if steps > 0.0 { -1 } else { 1 });
+                    self.hover = self.row_at(*mouse);
                 }
                 RawEvent::MouseDown {
                     button: MouseButton::Left,
                     x,
                     y,
                 } => {
-                    let click = vec2(x, y);
-                    if let Some(index) =
-                        (0..self.items.len()).find(|i| rects[*i].is_some_and(|r| r.contains(click)))
+                    self.pressed = self.row_at(vec2(x, y));
+                }
+                RawEvent::MouseUp {
+                    button: MouseButton::Left,
+                    x,
+                    y,
+                } => {
+                    let released_on = self.row_at(vec2(x, y));
+                    let armed = self.pressed.take();
+                    if let (Some(a), Some(r)) = (armed, released_on)
+                        && a == r
                     {
-                        return Some(index);
+                        // A press commits only when it releases inside
+                        // the same row.
+                        self.selected = a;
+                        return Some(a);
                     }
                 }
                 RawEvent::KeyDown { key: Key::Up } => {
+                    self.hover = None;
                     self.selected = self.selected.checked_sub(1).unwrap_or(self.items.len() - 1);
+                    self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::Down } => {
+                    self.hover = None;
                     self.selected = (self.selected + 1) % self.items.len();
+                    self.ensure_visible();
+                }
+                RawEvent::KeyDown { key: Key::PageUp } => {
+                    self.hover = None;
+                    let (_, _, _, visible) = self.layout();
+                    self.selected = self.selected.saturating_sub(visible);
+                    self.ensure_visible();
+                }
+                RawEvent::KeyDown { key: Key::PageDown } => {
+                    self.hover = None;
+                    let (_, _, _, visible) = self.layout();
+                    self.selected =
+                        (self.selected + visible).min(self.items.len().saturating_sub(1));
+                    self.ensure_visible();
+                }
+                RawEvent::KeyDown { key: Key::Home } => {
+                    self.hover = None;
+                    self.selected = 0;
+                    self.ensure_visible();
+                }
+                RawEvent::KeyDown { key: Key::End } => {
+                    self.hover = None;
+                    self.selected = self.items.len().saturating_sub(1);
+                    self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::Enter } => return Some(self.selected),
                 _ => {}
@@ -135,12 +252,20 @@ impl Menu {
             title_size,
             TITLE_COLOR,
         );
-        let sub_dims = measure_text(subtitle, None, (20.0 * s) as u16, 1.0);
+        // The subtitle shrinks to fit — map blurbs run long, and text
+        // spilling off both window edges reads as a defect, not a hook.
+        let mut sub_size = 20.0 * s;
+        let mut sub_dims = measure_text(subtitle, None, sub_size as u16, 1.0);
+        let max_width = screen_width() * 0.55;
+        if sub_dims.width > max_width {
+            sub_size = (sub_size * max_width / sub_dims.width).max(12.0 * s);
+            sub_dims = measure_text(subtitle, None, sub_size as u16, 1.0);
+        }
         draw_text(
             subtitle,
             (screen_width() - sub_dims.width) * 0.5,
             screen_height() * 0.28 + 34.0 * s,
-            20.0 * s,
+            sub_size,
             DIM,
         );
 
@@ -151,9 +276,12 @@ impl Menu {
                 continue;
             };
             let selected = index == self.selected;
+            let hovered = self.hover == Some(index);
             if selected {
                 draw_rectangle(rect.x, rect.y, rect.w, rect.h, PANEL);
                 draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 2.0, TITLE_COLOR);
+            } else if hovered {
+                draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, DIM);
             }
             let color = if selected { SELECTED_COLOR } else { ITEM_COLOR };
             draw_text(
@@ -187,12 +315,53 @@ impl Menu {
     }
 }
 
+/// Lazily rendered fog-free map previews, one per scenario row. The
+/// driver's software rasterizer draws the built state (the same pixels
+/// the golden tests pin), uploaded once as a texture and kept for the
+/// session.
+#[derive(Default)]
+pub struct PreviewCache {
+    slots: std::collections::HashMap<usize, Option<Texture2D>>,
+}
+
+impl PreviewCache {
+    /// The preview for a row, rendering on first request. `None` when
+    /// the scenario fails to load or build — the browser just shows no
+    /// panel for it.
+    pub fn get(&mut self, index: usize, entry: &ScenarioEntry) -> Option<&Texture2D> {
+        self.slots
+            .entry(index)
+            .or_insert_with(|| {
+                let scenario = match &entry.path {
+                    Some(path) => Scenario::load(path).ok()?,
+                    None => Scenario::skirmish(),
+                };
+                let state = scenario.build().ok()?;
+                let pixmap = oxide_driver::render::render_state(&state);
+                let texture = Texture2D::from_rgba8(
+                    pixmap.width() as u16,
+                    pixmap.height() as u16,
+                    pixmap.data(),
+                );
+                texture.set_filter(FilterMode::Nearest);
+                Some(texture)
+            })
+            .as_ref()
+    }
+}
+
 /// A startable entry on the main menu.
 pub struct ScenarioEntry {
     /// Display name (from the file's own `name` field).
     pub label: String,
+    /// One-line browser blurb from the authored metadata, when present:
+    /// hook plus pace/mode/richness badges.
+    pub blurb: Option<String>,
     /// File path; `None` means the embedded skirmish.
     pub path: Option<PathBuf>,
+    /// Theme key from the authored metadata — the preview panel grades
+    /// its thumbnail with the same tint the match will wear.
+    pub theme: String,
 }
 
 /// Lists playable scenarios: everything parseable under `scenarios/`, or
@@ -200,7 +369,7 @@ pub struct ScenarioEntry {
 /// binary outside the repo).
 pub fn discover_scenarios() -> Vec<ScenarioEntry> {
     let mut entries: Vec<ScenarioEntry> = Vec::new();
-    if let Ok(dir) = std::fs::read_dir("scenarios") {
+    if let Ok(dir) = std::fs::read_dir(crate::assets::resource_root().join("scenarios")) {
         let mut paths: Vec<PathBuf> = dir
             .filter_map(|e| e.ok())
             .map(|e| e.path())
@@ -209,9 +378,20 @@ pub fn discover_scenarios() -> Vec<ScenarioEntry> {
         paths.sort();
         for path in paths {
             if let Ok(scenario) = Scenario::load(&path) {
+                let blurb = scenario
+                    .meta
+                    .as_ref()
+                    .map(|m| format!("{}  [{} - {} - {}]", m.hook, m.pace, m.mode, m.richness));
+                let theme = scenario
+                    .meta
+                    .as_ref()
+                    .map(|m| m.theme.clone())
+                    .unwrap_or_default();
                 entries.push(ScenarioEntry {
                     label: scenario.name,
+                    blurb,
                     path: Some(path),
+                    theme,
                 });
             }
         }
@@ -219,8 +399,29 @@ pub fn discover_scenarios() -> Vec<ScenarioEntry> {
     if entries.is_empty() {
         entries.push(ScenarioEntry {
             label: Scenario::skirmish().name,
+            blurb: None,
             path: None,
+            theme: String::new(),
         });
     }
     entries
+}
+
+#[cfg(test)]
+mod empty_tests {
+    use super::*;
+    use macroquad::prelude::vec2;
+    use oxide_protocol::{Key, RawEvent};
+
+    #[test]
+    fn an_empty_menu_survives_every_key() {
+        // A fresh profile's replay shelf has zero rows; wrap-around
+        // arithmetic on an empty list once divided by zero.
+        let mut menu = Menu::new("EMPTY", Vec::new());
+        let mut mouse = vec2(0.0, 0.0);
+        for key in [Key::Up, Key::Down, Key::Enter, Key::PageDown, Key::End] {
+            let events = [RawEvent::KeyDown { key }];
+            assert_eq!(menu.handle(&events, &mut mouse), None);
+        }
+    }
 }

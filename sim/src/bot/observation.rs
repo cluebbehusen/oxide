@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 /// Observation schema version — bump when the shape changes so recorded
 /// training data and shipped policies can refuse mismatched worlds.
-pub const OBSERVATION_VERSION: u32 = 3;
+pub const OBSERVATION_VERSION: u32 = 4;
 
 /// One unit as a bot sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,10 +107,10 @@ pub struct Observation {
     /// omniscient builder, remembered amounts under the fog-honest one.
     /// Sorted by (y, x).
     pub known_scrap: Vec<(TilePos, u32)>,
-    /// Rock tiles as known — all of them omnisciently, explored ground
-    /// only fog-honestly (rock is static, so once seen it is known
-    /// forever). What placement and staging decisions steer around;
-    /// sorted by (y, x).
+    /// Impassable terrain as known (rock and peaks alike) — all of it
+    /// omnisciently, explored tiles only fog-honestly (terrain is
+    /// static, so once seen it is known forever). What placement and
+    /// staging decisions steer around; sorted by (y, x).
     pub known_rock: Vec<TilePos>,
     /// Wreck salvage as known: `(tile, amount)` — live under the
     /// omniscient builder, remembered under the fog-honest one. Sorted
@@ -124,6 +124,13 @@ pub struct Observation {
     /// The seat's faction — which variants of the varied roles it may
     /// train.
     pub faction: Faction,
+    /// Own shells in flight, counted not located — the policy knows
+    /// its guns spoke.
+    pub my_shells: usize,
+    /// Impact tiles of hostile shells this seat can currently justify
+    /// seeing (fog-honest: the impact tile must be visible — the same
+    /// rule the arc renderer draws by). Sorted by (y, x).
+    pub incoming_shells: Vec<TilePos>,
 }
 
 impl Observation {
@@ -175,10 +182,18 @@ impl Observation {
             if tile.wreck > 0 {
                 obs.known_wrecks.push((pos, tile.wreck));
             }
-            if tile.terrain == crate::map::Terrain::Rock {
+            if tile.terrain != crate::map::Terrain::Ground {
                 obs.known_rock.push(pos);
             }
         }
+        obs.my_shells = state.shells().iter().filter(|s| s.player == me).count();
+        obs.incoming_shells = state
+            .shells()
+            .iter()
+            .filter(|s| state.hostile(me, s.player))
+            .map(|s| TilePos::containing(s.impact))
+            .collect();
+        obs.incoming_shells.sort_by_key(|p| (p.y, p.x));
         obs
     }
 
@@ -272,12 +287,21 @@ impl Observation {
             if wreck > 0 {
                 obs.known_wrecks.push((pos, wreck));
             }
-            if tile.terrain == crate::map::Terrain::Rock && vision.explored(pos) {
+            if tile.terrain != crate::map::Terrain::Ground && vision.explored(pos) {
                 obs.known_rock.push(pos);
             }
         }
         // Blips ride through untouched: tiles only, by construction.
         obs.blips = vision.contacts().to_vec();
+        obs.my_shells = state.shells().iter().filter(|s| s.player == me).count();
+        obs.incoming_shells = state
+            .shells()
+            .iter()
+            .filter(|s| state.hostile(me, s.player))
+            .map(|s| TilePos::containing(s.impact))
+            .filter(|t| vision.visible(*t))
+            .collect();
+        obs.incoming_shells.sort_by_key(|p| (p.y, p.x));
         obs
     }
 
@@ -301,6 +325,8 @@ impl Observation {
             known_wrecks: Vec::new(),
             blips: Vec::new(),
             faction: state.player(me).faction,
+            my_shells: 0,
+            incoming_shells: Vec::new(),
         }
     }
 }

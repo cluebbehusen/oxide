@@ -11,7 +11,7 @@
 //! exactly one possible choice.
 
 use super::{rect_adjacent_tiles, route_for, tile_adjacent_to_rect};
-use crate::event::Event;
+use crate::event::{Event, StallReason};
 use crate::ids::{PlayerId, Target, UnitId};
 use crate::state::{Order, PathFollow, State};
 use crate::stats::{Domain, RETARGET_RADIUS, WeaponStats};
@@ -44,6 +44,7 @@ struct PendingHpGain {
 pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
     let mut hits: Vec<PendingHit> = Vec::new();
     let mut builds: Vec<PendingHpGain> = Vec::new();
+    let mut launches: Vec<crate::state::Shell> = Vec::new();
     // Alternate direction by tick parity: sequential phases must not hand
     // one seat a standing first-mover edge (with damage buffered, the
     // remaining coupling is small — shared scrap, own-side order state —
@@ -68,14 +69,18 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
             Order::Move { goal } => walk(state, id, goal, events),
             Order::Harvest { node } => harvest(state, id, node, events),
             Order::Attack { target, resume } => {
-                attack(state, id, target, resume, events, &mut hits)
+                attack(state, id, target, resume, events, &mut hits, &mut launches)
             }
             Order::AttackMove { goal } => attack_move(state, id, goal, events),
             Order::Build { site } => build(state, id, site, events, &mut builds),
             Order::Repair { building } => repair(state, id, building, events, &mut builds),
         }
     }
-    turret_fire(state, events, &mut hits);
+    turret_fire(state, events, &mut hits, &mut launches);
+    // Arrivals join this tick's volley; launches land on later ticks
+    // (flight is at least one tick), so ordering here cannot matter.
+    land_shells(state, &mut hits, events);
+    state.shells.extend(launches);
     resolve_hits(state, hits, builds, events);
 }
 
@@ -142,9 +147,11 @@ fn target_domain(state: &State, target: Target) -> Domain {
     }
 }
 
-/// Whether terrain cover applies to a shot: only direct fire between two
-/// ground parties traces the line — rock reaches nobody in the air, and
-/// indirect shells arc over it.
+/// Whether full terrain cover applies to a shot: only direct fire between
+/// two ground parties traces rock and buildings — rock reaches nobody in
+/// the air, and indirect shells arc over it. Peaks are checked on every
+/// shot regardless (see the `shot_open` closures): a mountain outreaches
+/// any arc.
 fn traces_terrain(weapon: &WeaponStats, shooter: Domain, victim: Domain) -> bool {
     !weapon.indirect && shooter == Domain::Ground && victim == Domain::Ground
 }
@@ -161,6 +168,99 @@ fn traces_terrain(weapon: &WeaponStats, shooter: Domain, victim: Domain) -> bool
 /// the aimed victim, and retaliation stays gated on the sufferer seeing
 /// the shooter, so an unseen bystander takes damage silently and nobody
 /// learns anything they could not already see.
+/// Launches a real projectile at the victim's fire-time position:
+/// unguided from this instant, arriving after a distance-proportional
+/// flight, resolving against whatever stands there then. Returns the
+/// flight length for the launch event.
+fn launch_shell(
+    state: &State,
+    launches: &mut Vec<crate::state::Shell>,
+    attacker: Target,
+    attacker_owner: PlayerId,
+    from: Vec2Fx,
+    aim: Vec2Fx,
+    weapon: &WeaponStats,
+) -> u64 {
+    let dist = from.dist(aim);
+    let flight = (dist / crate::stats::SHELL_SPEED)
+        .ceil()
+        .to_num::<u64>()
+        .max(1);
+    launches.push(crate::state::Shell {
+        shooter: attacker,
+        player: attacker_owner,
+        launch: from,
+        impact: aim,
+        arrival: state.tick + flight,
+        damage: weapon.damage,
+        targets: weapon.targets,
+        splash: weapon.splash,
+    });
+    flight
+}
+
+/// Arrived shells join this tick's volley, computed against the same
+/// start-of-tick world every buffered shot uses. The direct hit lands
+/// on the hostile building whose footprint covers the impact tile
+/// (buildings cannot dodge — sieges are preserved); units take splash
+/// only, which is the standing splash rule. No fire gate here: the
+/// gate cleared at launch, and a shell in flight chooses nothing.
+fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events: &mut Vec<Event>) {
+    let now = state.tick;
+    let mut due = Vec::new();
+    state.shells.retain(|shell| {
+        if shell.arrival <= now {
+            due.push(shell.clone());
+            false
+        } else {
+            true
+        }
+    });
+    for shell in due {
+        events.push(Event::ShellLanded {
+            player: shell.player,
+            targets: shell.targets,
+            at: shell.impact,
+            splash: shell.splash,
+        });
+        // The direct hit is distance-zero to a footprint, not tile
+        // containment: a shell aimed at a building lands on the
+        // footprint's closest EDGE point, whose exact coordinate floors
+        // into the neighboring tile — containment alone made sieges
+        // deal nothing. First hostile footprint touching the impact
+        // (id order) takes the hit.
+        let direct = state.buildings.iter().find(|b| {
+            b.hp > 0
+                && state.hostile(shell.player, b.player)
+                && b.closest_point_to(shell.impact).dist_sq(shell.impact)
+                    <= chassis::fx::Fx::lit("0.0001")
+        });
+        if let Some(b) = direct {
+            hits.push(PendingHit {
+                attacker: shell.shooter,
+                victim: Target::Building(b.id),
+                damage: shell.damage,
+            });
+        }
+        let Some(radius) = shell.splash else { continue };
+        let radius_sq = radius * radius;
+        for u in state.units.iter() {
+            if u.hp == 0
+                || !state.hostile(shell.player, u.player)
+                || !shell.targets.covers(u.kind.stats().domain)
+                || u.pos.dist_sq(shell.impact) > radius_sq
+            {
+                continue;
+            }
+            hits.push(PendingHit {
+                attacker: shell.shooter,
+                victim: Target::Unit(u.id),
+                damage: shell.damage,
+            });
+        }
+    }
+}
+
 fn buffer_shot(
     state: &State,
     attacker: Target,
@@ -198,7 +298,12 @@ fn buffer_shot(
 /// clear line (buildings can't chase, so out-of-line targets are simply
 /// ignored until they move). Stateless — target choice re-evaluates every
 /// shot, in building-id order.
-fn turret_fire(state: &mut State, events: &mut Vec<Event>, hits: &mut Vec<PendingHit>) {
+fn turret_fire(
+    state: &mut State,
+    events: &mut Vec<Event>,
+    hits: &mut Vec<PendingHit>,
+    launches: &mut Vec<crate::state::Shell>,
+) {
     let ids: Vec<crate::ids::BuildingId> = state.buildings.iter().map(|b| b.id).collect();
     for id in ids {
         let Some(b) = state.building(id) else {
@@ -220,13 +325,16 @@ fn turret_fire(state: &mut State, events: &mut Vec<Event>, hits: &mut Vec<Pendin
             // Reached zero this tick: fire now, like unit cooldowns do.
         }
         let range_sq = atk.range * atk.range;
-        let clear_shot = |t: TilePos| {
-            let terrain_open = state
-                .map
-                .tile(t)
-                .is_some_and(|tile| tile.terrain != crate::map::Terrain::Rock);
-            let building_open = state.building_at(t).is_none_or(|other| other.id == id);
-            terrain_open && building_open
+        let shot_open = |t: TilePos, full: bool| {
+            let Some(tile) = state.map.tile(t) else {
+                return false;
+            };
+            if tile.terrain == crate::map::Terrain::Peak {
+                return false;
+            }
+            !full
+                || (tile.terrain == crate::map::Terrain::Ground
+                    && state.building_at(t).is_none_or(|other| other.id == id))
         };
         // The owner must see the victim's tile — a turret that outranges
         // its own mast fires on a spotter's eyes, never into fog.
@@ -240,8 +348,8 @@ fn turret_fire(state: &mut State, events: &mut Vec<Event>, hits: &mut Vec<Pendin
             .map(|u| (center.dist_sq(u.pos), u.id, u.pos, u.kind.stats().domain))
             .filter(|(d, _, _, _)| *d <= range_sq)
             .filter(|(_, _, pos, dom)| {
-                !traces_terrain(atk, Domain::Ground, *dom)
-                    || !chassis::path::line_blocked(center, *pos, clear_shot)
+                let full = traces_terrain(atk, Domain::Ground, *dom);
+                !chassis::path::line_blocked(center, *pos, |t| shot_open(t, full))
             })
             .min_by_key(|&(d, uid, _, _)| (d, uid));
         let Some((_, uid, upos, _)) = victim else {
@@ -249,22 +357,33 @@ fn turret_fire(state: &mut State, events: &mut Vec<Event>, hits: &mut Vec<Pendin
         };
         let b = state.building_mut(id).expect("just seen");
         b.cooldown = atk.cooldown_ticks;
-        buffer_shot(
-            state,
-            Target::Building(id),
-            me,
-            Target::Unit(uid),
-            upos,
-            atk,
-            hits,
-        );
-        events.push(Event::TurretFired {
-            turret: id,
-            kind,
-            target: uid,
-            turret_pos: center,
-            target_pos: upos,
-        });
+        if atk.projectile {
+            let flight = launch_shell(state, launches, Target::Building(id), me, center, upos, atk);
+            events.push(Event::ShellLaunched {
+                shooter: Target::Building(id),
+                player: me,
+                from: center,
+                to: upos,
+                flight,
+            });
+        } else {
+            buffer_shot(
+                state,
+                Target::Building(id),
+                me,
+                Target::Unit(uid),
+                upos,
+                atk,
+                hits,
+            );
+            events.push(Event::TurretFired {
+                turret: id,
+                kind,
+                target: uid,
+                turret_pos: center,
+                target_pos: upos,
+            });
+        }
     }
 }
 
@@ -327,6 +446,7 @@ fn build(
             unit: id,
             player,
             pos,
+            reason: StallReason::NoRoute,
         });
     }
 }
@@ -378,6 +498,7 @@ fn repair(
                     unit: id,
                     player,
                     pos,
+                    reason: StallReason::InsufficientScrap,
                 });
                 return;
             }
@@ -407,6 +528,7 @@ fn repair(
             unit: id,
             player,
             pos,
+            reason: StallReason::NoRoute,
         });
     }
 }
@@ -545,6 +667,7 @@ fn walk(state: &mut State, id: UnitId, goal: TilePos, events: &mut Vec<Event>) {
                 unit: id,
                 player,
                 pos,
+                reason: StallReason::NoRoute,
             });
         }
     }
@@ -605,6 +728,7 @@ fn harvest(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
                 unit: id,
                 player,
                 pos,
+                reason: StallReason::NoRoute,
             });
         }
     } else if node_wreck > 0 {
@@ -635,6 +759,7 @@ fn harvest(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
                             unit: id,
                             player,
                             pos,
+                            reason: StallReason::NoRoute,
                         });
                     }
                 }
@@ -747,6 +872,7 @@ fn deliver(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
             unit: id,
             player,
             pos,
+            reason: StallReason::NoRoute,
         });
     }
 }
@@ -762,6 +888,7 @@ fn attack(
     resume: Option<TilePos>,
     events: &mut Vec<Event>,
     hits: &mut Vec<PendingHit>,
+    launches: &mut Vec<crate::state::Shell>,
 ) {
     let unit = state.unit(id).expect("caller checked");
     let stats = unit.kind.stats();
@@ -827,20 +954,26 @@ fn attack(
     // In range only counts with a clear line — and with eyes. Terrain
     // cover (rock, non-victim buildings) applies to direct ground-vs-
     // ground fire only; shots to or from the air and indirect shells arc
-    // past it. The owner must currently *see* the victim's tile: a gun
-    // that outranges its own vision fires on a spotter's sight (scrap
-    // piles are low junk — fire passes over them). No shot → keep
-    // approaching; the chase path already routes around what's in the way.
-    let clear_shot = |t: TilePos| {
-        let terrain_open = state
-            .map
-            .tile(t)
-            .is_some_and(|tile| tile.terrain != crate::map::Terrain::Rock);
+    // past it — but nothing arcs past a peak. The owner must currently
+    // *see* the victim's tile: a gun that outranges its own vision fires
+    // on a spotter's sight (scrap piles are low junk — fire passes over
+    // them). No shot → keep approaching; the chase path already routes
+    // around what's in the way.
+    let shot_open = |t: TilePos, full: bool| {
+        let Some(tile) = state.map.tile(t) else {
+            return false;
+        };
+        if tile.terrain == crate::map::Terrain::Peak {
+            return false;
+        }
+        if !full {
+            return true;
+        }
         let building_open = match target {
             Target::Building(bid) => state.building_at(t).is_none_or(|b| b.id == bid),
             _ => state.building_at(t).is_none(),
         };
-        terrain_open && building_open
+        tile.terrain == crate::map::Terrain::Ground && building_open
     };
     // Sight of any footprint tile serves for a building (matching attack
     // validation); a unit is seen at its own tile. The line trace runs
@@ -852,23 +985,52 @@ fn attack(
             .is_some_and(|b| b.tiles().any(|t| state.can_see(me, t))),
     };
     let in_range = pos.dist_sq(aim_point) <= weapon.range * weapon.range;
+    let full = traces_terrain(weapon, stats.domain, victim_domain);
+    // The line trace skips endpoint tiles by design — but a building's
+    // closest-footprint aim point is an exact edge coordinate that can
+    // floor into the NEIGHBORING tile. Flush against a peak, that
+    // neighbor is the mountain itself, and an unchecked endpoint let
+    // direct fire through it. The endpoint tile must be open for this
+    // shot too (a unit's aim point is its own standable tile, and a
+    // footprint tile passes through shot_open's own-target exemption).
+    let endpoint_open = shot_open(chassis::grid::TilePos::containing(aim_point), full);
     if in_range
         && seen
-        && (!traces_terrain(weapon, stats.domain, victim_domain)
-            || !chassis::path::line_blocked(pos, aim_point, clear_shot))
+        && endpoint_open
+        && !chassis::path::line_blocked(pos, aim_point, |t| shot_open(t, full))
     {
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = None;
         if cooldowns[pi] == 0 {
             unit.cooldowns[pi] = weapon.cooldown_ticks;
-            buffer_shot(state, Target::Unit(id), me, target, aim_point, weapon, hits);
-            events.push(Event::AttackHit {
-                attacker: id,
-                attacker_kind: kind,
-                target,
-                attacker_pos: pos,
-                target_pos: aim_point,
-            });
+            if weapon.projectile {
+                let flight = launch_shell(
+                    state,
+                    launches,
+                    Target::Unit(id),
+                    me,
+                    pos,
+                    aim_point,
+                    weapon,
+                );
+                events.push(Event::ShellLaunched {
+                    shooter: Target::Unit(id),
+                    player: me,
+                    from: pos,
+                    to: aim_point,
+                    flight,
+                });
+            } else {
+                buffer_shot(state, Target::Unit(id), me, target, aim_point, weapon, hits);
+                events.push(Event::AttackHit {
+                    attacker: id,
+                    attacker_kind: kind,
+                    weapon: pi,
+                    target,
+                    attacker_pos: pos,
+                    target_pos: aim_point,
+                });
+            }
         }
         fire_sidearms(state, id, pi, hits, events);
         return;
@@ -877,7 +1039,7 @@ fn attack(
     fire_sidearms(state, id, pi, hits, events);
 
     // Out of range (or blind, or blocked): chase.
-    let reached = match target {
+    let reached: Result<(), StallReason> = match target {
         Target::Unit(_) => {
             // A ground chaser cannot stand where a flyer hovers — over
             // rock, over a roof — so it marches to a tile it CAN stand
@@ -923,21 +1085,37 @@ fn attack(
                             waypoints,
                             next: 0,
                         });
-                        true
+                        Ok(())
                     }
-                    None => false,
+                    // NoFiringPosition derives from the victim's footing;
+                    // speak it only while the team sees that ground, or
+                    // the stall toast leaks where a fogged flyer parked.
+                    // Unseen, the honest own-state fact is that no route
+                    // worked.
+                    None if !direct
+                        && state.can_see(me, target_tile)
+                        && chase_stand_ins(state, stats.domain, target_tile, weapon.range)
+                            .is_empty() =>
+                    {
+                        Err(StallReason::NoFiringPosition)
+                    }
+                    None => Err(StallReason::NoRoute),
                 }
             } else {
-                true
+                Ok(())
             }
         }
         Target::Building(bid) => {
             let b = state.building(bid).expect("resolved above");
             let (anchor, size) = (b.anchor, b.kind.stats().size);
-            approach_rect(state, id, anchor, size)
+            if approach_rect(state, id, anchor, size) {
+                Ok(())
+            } else {
+                Err(StallReason::NoRoute)
+            }
         }
     };
-    if !reached {
+    if let Err(reason) = reached {
         let unit = state.unit_mut(id).expect("caller checked");
         let (player, pos) = (unit.player, unit.pos);
         unit.clear_program();
@@ -945,6 +1123,7 @@ fn attack(
             unit: id,
             player,
             pos,
+            reason,
         });
     }
 }
@@ -970,12 +1149,14 @@ fn fire_sidearms(
             continue;
         }
         let range_sq = weapon.range * weapon.range;
-        let clear_shot = |t: TilePos| {
-            let terrain_open = state
-                .map
-                .tile(t)
-                .is_some_and(|tile| tile.terrain != crate::map::Terrain::Rock);
-            terrain_open && state.building_at(t).is_none()
+        let shot_open = |t: TilePos, full: bool| {
+            let Some(tile) = state.map.tile(t) else {
+                return false;
+            };
+            if tile.terrain == crate::map::Terrain::Peak {
+                return false;
+            }
+            !full || (tile.terrain == crate::map::Terrain::Ground && state.building_at(t).is_none())
         };
         let victim = state
             .units
@@ -989,8 +1170,8 @@ fn fire_sidearms(
             .map(|u| (pos.dist_sq(u.pos), u.id, u.pos, u.kind.stats().domain))
             .filter(|(d, _, _, _)| *d <= range_sq)
             .filter(|(_, _, upos, dom)| {
-                !traces_terrain(weapon, stats.domain, *dom)
-                    || !chassis::path::line_blocked(pos, *upos, clear_shot)
+                let full = traces_terrain(weapon, stats.domain, *dom);
+                !chassis::path::line_blocked(pos, *upos, |t| shot_open(t, full))
             })
             .min_by_key(|&(d, uid, _, _)| (d, uid));
         let Some((_, uid, upos, _)) = victim else {
@@ -1009,6 +1190,7 @@ fn fire_sidearms(
         events.push(Event::AttackHit {
             attacker: id,
             attacker_kind: kind,
+            weapon: wi,
             target: Target::Unit(uid),
             attacker_pos: pos,
             target_pos: upos,

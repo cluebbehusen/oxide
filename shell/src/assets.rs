@@ -15,6 +15,11 @@ pub struct Sprites {
     texture: Texture2D,
     ground: [Rect; 6],
     rock: [Rect; 4],
+    /// Skyline row of a range, indexed `w_conn * 4 + e_conn * 2 + variant`.
+    peak_sky: [Rect; 8],
+    peak_lone: [Rect; 2],
+    peak_body: [Rect; 2],
+    turret_barrel: [Rect; 2],
     rock_skirt: Rect,
     decals: [Rect; 4],
     scrap_full: Rect,
@@ -53,15 +58,36 @@ fn faction_index(faction: Faction) -> usize {
     }
 }
 
+/// Where game data lives. A macOS .app bundle keeps it in
+/// Contents/Resources beside Contents/MacOS/<exe>; development runs
+/// from the workspace root. Resolved once by probing for the atlas —
+/// the one file no build ships without.
+pub fn resource_root() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let bundled = dir.join("../Resources");
+        if bundled.join("assets/sprites/atlas.png").exists() {
+            return bundled;
+        }
+    }
+    std::path::PathBuf::from(".")
+}
+
+/// A resource path as a string macroquad's loaders accept.
+pub fn resource(rel: &str) -> String {
+    resource_root().join(rel).to_string_lossy().into_owned()
+}
+
 impl Sprites {
     /// Loads the atlas up front; a missing or incomplete atlas is a
     /// startup error, not a mid-game pop.
     pub async fn load() -> Result<Self> {
-        let texture = load_texture("assets/sprites/atlas.png")
+        let texture = load_texture(&resource("assets/sprites/atlas.png"))
             .await
             .context("loading assets/sprites/atlas.png (run from the workspace root)")?;
         texture.set_filter(FilterMode::Linear);
-        let manifest = macroquad::file::load_string("assets/sprites/atlas.json")
+        let manifest = macroquad::file::load_string(&resource("assets/sprites/atlas.json"))
             .await
             .context("loading assets/sprites/atlas.json")?;
         let rects: std::collections::HashMap<String, [f32; 4]> =
@@ -88,6 +114,22 @@ impl Sprites {
                 rect("rock_1")?,
                 rect("rock_2")?,
                 rect("rock_3")?,
+            ],
+            peak_sky: [
+                rect("peak_sky_00_0")?,
+                rect("peak_sky_00_1")?,
+                rect("peak_sky_01_0")?,
+                rect("peak_sky_01_1")?,
+                rect("peak_sky_10_0")?,
+                rect("peak_sky_10_1")?,
+                rect("peak_sky_11_0")?,
+                rect("peak_sky_11_1")?,
+            ],
+            peak_lone: [rect("peak_lone_0")?, rect("peak_lone_1")?],
+            peak_body: [rect("peak_body_0")?, rect("peak_body_1")?],
+            turret_barrel: [
+                rect("turret_barrel_ferrous")?,
+                rect("turret_barrel_cupric")?,
             ],
             rock_skirt: rect("rock_skirt")?,
             decals: [
@@ -139,6 +181,32 @@ impl Sprites {
     /// A rock variant's atlas region.
     pub fn rock(&self, variant: usize) -> Rect {
         self.rock[variant % self.rock.len()]
+    }
+
+    /// The turret's rotating gun, per faction.
+    pub fn turret_barrel(&self, faction: oxide_sim::Faction) -> Rect {
+        self.turret_barrel[match faction {
+            oxide_sim::Faction::Ferrous => 0,
+            oxide_sim::Faction::Cupric => 1,
+        }]
+    }
+
+    /// The skyline row of a mountain range: crests against open sky.
+    /// `w_conn`/`e_conn` say whether the ridge continues into the
+    /// neighboring tile on that side; connected sides meet the edge at
+    /// a fixed height so adjacent tiles join without a seam.
+    pub fn peak_sky(&self, w_conn: bool, e_conn: bool, variant: usize) -> Rect {
+        self.peak_sky[(w_conn as usize) * 4 + (e_conn as usize) * 2 + (variant % 2)]
+    }
+
+    /// A single standing peak with inset feet.
+    pub fn peak_lone(&self, variant: usize) -> Rect {
+        self.peak_lone[variant % self.peak_lone.len()]
+    }
+
+    /// Interior of a mountain wall: solid rock, seamless on every edge.
+    pub fn peak_body(&self, variant: usize) -> Rect {
+        self.peak_body[variant % self.peak_body.len()]
     }
 
     /// The soft shadow a rock casts on a neighboring ground tile
@@ -250,10 +318,16 @@ pub struct Sounds {
     pub flak: Sound,
     /// An artillery shell landing.
     pub artillery_boom: Sound,
+    /// The gun speaking (the boom belongs to the impact).
+    pub artillery_launch: Sound,
+    /// Order acknowledged.
+    pub ack: Sound,
+    /// The zap's lower sibling, alternated per shot.
+    pub laser2: Sound,
 }
 
 async fn clip(name: &str) -> Result<Sound> {
-    let path = format!("assets/sounds/{name}.wav");
+    let path = resource(&format!("assets/sounds/{name}.wav"));
     load_sound(&path)
         .await
         .with_context(|| format!("loading {path} (run from the workspace root)"))
@@ -275,6 +349,9 @@ impl Sounds {
             defeat: clip("defeat").await?,
             flak: clip("flak").await?,
             artillery_boom: clip("artillery_boom").await?,
+            artillery_launch: clip("artillery_launch").await?,
+            ack: clip("ack").await?,
+            laser2: clip("laser2").await?,
         })
     }
 }

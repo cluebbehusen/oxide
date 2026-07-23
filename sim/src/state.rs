@@ -276,6 +276,7 @@ pub struct State {
     pub(crate) vision: Vec<crate::vision::Vision>,
     pub(crate) units: Vec<Unit>,
     pub(crate) buildings: Vec<Building>,
+    pub(crate) shells: Vec<Shell>,
     pub(crate) result: Option<GameResult>,
     next_unit_id: u32,
     next_building_id: u32,
@@ -297,6 +298,7 @@ impl State {
             vision,
             units: Vec::new(),
             buildings: Vec::new(),
+            shells: Vec::new(),
             result: None,
             next_unit_id: 0,
             next_building_id: 0,
@@ -404,6 +406,11 @@ impl State {
         {
             return Err(StateIntegrityError::ForeignBuildingOwner);
         }
+        // Shells carry a seat too: hostile() indexes the player table on
+        // impact, so a foreign owner would panic ticks after acceptance.
+        if self.shells.iter().any(|s| (s.player.0 as usize) >= players) {
+            return Err(StateIntegrityError::ForeignShellOwner);
+        }
         // Nested grids: derived Deserialize accepts any cell count, and a
         // short one panics deep inside vision refresh instead of here.
         if !self.map.is_consistent() {
@@ -426,6 +433,11 @@ impl State {
     /// valid victims, and a seat is never hostile to itself.
     pub fn hostile(&self, a: PlayerId, b: PlayerId) -> bool {
         self.players[a.0 as usize].team != self.players[b.0 as usize].team
+    }
+
+    /// Shells currently in flight, in launch order.
+    pub fn shells(&self) -> &[Shell] {
+        &self.shells
     }
 
     /// The seats on the winning team, in id order — empty until a
@@ -496,12 +508,16 @@ impl State {
     }
 
     /// Whether a unit of the given movement domain may stand on `pos`.
-    /// Ground units need open terrain and no building; air units only need
-    /// the map itself — rock, scrap, and roofs mean nothing up there.
+    /// Ground units need open terrain and no building; air units need the
+    /// map itself minus peaks — rock, scrap, and roofs mean nothing up
+    /// there, but a mountain owns its column of sky.
     pub fn passable_for(&self, domain: crate::stats::Domain, pos: TilePos) -> bool {
         match domain {
             crate::stats::Domain::Ground => self.passable(pos),
-            crate::stats::Domain::Air => self.map.tile(pos).is_some(),
+            crate::stats::Domain::Air => self
+                .map
+                .tile(pos)
+                .is_some_and(|t| t.terrain != crate::map::Terrain::Peak),
         }
     }
 
@@ -713,6 +729,9 @@ pub enum StateIntegrityError {
     /// A building is owned by a player outside the table.
     #[error("building owned by a player outside the table")]
     ForeignBuildingOwner,
+    /// A shell in flight is owned by a player outside the table.
+    #[error("shell owned by a player outside the table")]
+    ForeignShellOwner,
     /// The map grid's dimensions disagree with its cells.
     #[error("map grid dimensions disagree with its cells")]
     MalformedMapGrid,
@@ -727,6 +746,30 @@ pub enum StateIntegrityError {
 /// unvalidated constructor to call by accident. The exhaustive `From`
 /// below keeps the mirror honest: if `State` grows or loses a field, this
 /// module stops compiling instead of silently desyncing.
+/// A shell in flight: launched at the victim's fire-time position,
+/// unguided from that instant ("a shell in flight chooses nothing" —
+/// literal since 0.9), resolving on its arrival tick against whatever
+/// stands there. Outlives its shooter.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Shell {
+    /// Who fired it (may be dead by impact; retaliation copes).
+    pub shooter: crate::ids::Target,
+    /// The firing seat.
+    pub player: crate::ids::PlayerId,
+    /// Where it launched, for presentation.
+    pub launch: Vec2Fx,
+    /// Where it will land — fixed at fire time.
+    pub impact: Vec2Fx,
+    /// The tick it resolves on.
+    pub arrival: Tick,
+    /// Damage on the direct hit.
+    pub damage: u32,
+    /// Which movement domains the splash covers.
+    pub targets: crate::stats::DomainMask,
+    /// Splash radius, if the weapon splashes.
+    pub splash: Option<chassis::fx::Fx>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename = "State")]
 struct StateWire {
@@ -737,6 +780,7 @@ struct StateWire {
     vision: Vec<crate::vision::Vision>,
     units: Vec<Unit>,
     buildings: Vec<Building>,
+    shells: Vec<Shell>,
     result: Option<GameResult>,
     next_unit_id: u32,
     next_building_id: u32,
@@ -753,6 +797,7 @@ impl From<StateWire> for State {
             vision,
             units,
             buildings,
+            shells,
             result,
             next_unit_id,
             next_building_id,
@@ -765,6 +810,7 @@ impl From<StateWire> for State {
             vision,
             units,
             buildings,
+            shells,
             result,
             next_unit_id,
             next_building_id,

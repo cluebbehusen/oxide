@@ -72,6 +72,10 @@ pub enum SoundKind {
     Flak,
     /// An artillery shell landing.
     Artillery,
+    /// An artillery gun firing (distinct from the landing boom).
+    ArtilleryLaunch,
+    /// An order acknowledged.
+    Ack,
 }
 
 /// What an order-acknowledgment ping means (decides its color).
@@ -89,16 +93,67 @@ pub enum PingKind {
     Spawn,
 }
 
+/// The visual family of a direct-fire shot — mapped from the exact
+/// (shooter kind, weapon slot) the hit event names, so every weapon
+/// reads as itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoltStyle {
+    /// The line infantry's thin fast tracer.
+    Tracer,
+    /// The Lancer's rail: heavy, bright, lingering.
+    Rail,
+    /// Anti-air flak: a faint line and puffs bursting at the target.
+    Flak,
+    /// Air-to-ground ordnance: a cooler, steeper bolt.
+    AirStrike,
+}
+
+impl BoltStyle {
+    /// Seconds the bolt stays on screen.
+    pub fn life(self) -> f32 {
+        match self {
+            BoltStyle::Tracer => 0.15,
+            BoltStyle::Rail => 0.28,
+            BoltStyle::Flak => 0.20,
+            BoltStyle::AirStrike => 0.18,
+        }
+    }
+}
+
+/// Which bolt family a unit's weapon slot fires.
+fn unit_bolt_style(kind: oxide_sim::UnitKind, weapon: usize) -> BoltStyle {
+    use oxide_sim::UnitKind;
+    match (kind, weapon) {
+        (UnitKind::Lancer, _) => BoltStyle::Rail,
+        (UnitKind::Flakhound | UnitKind::Stinger, _) => BoltStyle::Flak,
+        // The Sentinel's sidearm is its anti-air poke.
+        (UnitKind::Sentinel, 1) => BoltStyle::Flak,
+        (UnitKind::Buzzard | UnitKind::Darter | UnitKind::Talon | UnitKind::Wisp, _) => {
+            BoltStyle::AirStrike
+        }
+        _ => BoltStyle::Tracer,
+    }
+}
+
 /// Effect shapes.
 pub enum EffectKind {
-    /// An attack beam.
-    Laser {
-        /// Rendered thicker and brighter — the Lancer's rail.
-        heavy: bool,
+    /// A direct-fire shot, styled by the weapon family that spoke.
+    Bolt {
+        /// Visual family (tracer, rail, flak, air strike).
+        style: BoltStyle,
         /// Muzzle, world coords.
         from: Vec2,
         /// Impact, world coords.
         to: Vec2,
+    },
+    /// A downed flyer: the sprite drops, spins, and shrinks out.
+    Falling {
+        /// Where it was hit, world coords.
+        at: Vec2,
+        /// What fell.
+        unit: oxide_sim::UnitKind,
+        /// Whose colors it wears.
+        faction: oxide_sim::Faction,
     },
     /// A death pop.
     Puff {
@@ -157,24 +212,50 @@ pub struct Game {
     pub prev_pos: HashMap<u32, Vec2>,
     /// Sprite rotation per unit (radians; 0 = up).
     pub facing: HashMap<u32, f32>,
+    /// Combat aim overrides: unit id -> (angle, fx-clock stamp). A shot
+    /// turns the shooter toward its victim and holds briefly; movement
+    /// facing resumes when the hold expires. Presentation only.
+    pub aim_units: HashMap<u32, (f32, f32)>,
+    /// Same for buildings (turret mounts track their last victim).
+    pub aim_buildings: HashMap<u32, (f32, f32)>,
     /// Live effects.
     pub fx: Vec<Effect>,
     /// Clips queued by this frame's ticks; the main loop drains and plays.
-    pub sounds_pending: Vec<SoundKind>,
+    pub sounds_pending: Vec<(SoundKind, Option<Vec2>)>,
     /// Transient HUD messages, newest last.
     pub toasts: Vec<Toast>,
     /// Scorch decals where buildings died: (world pos, seconds old).
     pub scorches: Vec<(Vec2, f32)>,
-    /// Session flags for the starter hint strip: cleared once the player
-    /// has trained something / sent fighters somewhere.
-    pub hinted_train: bool,
-    /// See [`Game::hinted_train`].
-    pub hinted_fight: bool,
-    /// Bottom-panel rows the HUD drew last frame (the packed palette can
-    /// wrap to several). Written by the renderer, read by click
-    /// hit-testing so every drawn row swallows clicks — a `Cell` because
-    /// drawing holds `&Game`.
-    pub panel_rows: std::cell::Cell<usize>,
+    /// Live under-attack alerts: world position and seconds of age.
+    /// Pulsed on the minimap, jumpable, aged out by update_fx.
+    pub alerts: Vec<(Vec2, f32)>,
+    /// Where trouble last landed — the jump key's target.
+    pub last_alert: Option<Vec2>,
+    /// Per-region rate limiter for alerts (8-tile cells -> last raise
+    /// time in fx-seconds), so a running battle nags once, not per hit.
+    alert_gate: HashMap<(i32, i32), f32>,
+    /// Presentation clock: seconds of fx time since session start.
+    fx_clock: f32,
+    /// Whether the current session content is already autosaved; a new
+    /// tick makes it stale again. Guards double-writes when Main Menu
+    /// saves and the same game then quits as the Home backdrop.
+    pub autosave_done: bool,
+    /// The chrome geometry the renderer computed last frame — the one
+    /// model hit-testing reads, so drawn and clickable can never
+    /// disagree. A `Cell` because drawing holds `&Game`.
+    pub layout: std::cell::Cell<crate::layout::LayoutModel>,
+    /// The frame's command panel, built once in draw_hud and read by
+    /// the tooltip pass — building it twice per frame was pure waste.
+    pub panel_model: std::cell::RefCell<Option<crate::panel::Panel>>,
+    /// End-of-match statistics, computed once from the recorder when
+    /// the result lands (the record IS the match — a re-execution).
+    pub end_stats: Option<oxide_driver::stats::MatchStats>,
+    /// What the player has demonstrably done — the tutorial's evidence.
+    pub demo: crate::tutorial::Demo,
+    /// Fog-free viewing without the debug chrome — the playback
+    /// viewer's stance. `overlay` remains the developer's F1 (grid,
+    /// ids, camera internals) and implies this.
+    pub spectate: bool,
     accum: f32,
     /// True during bulk fast-forwards: presentation (fx, sounds, facing)
     /// is skipped entirely instead of accumulated-then-discarded — a
@@ -189,6 +270,18 @@ fn world_vec(pos: chassis::fx::Vec2Fx) -> Vec2 {
 impl Game {
     /// Starts a session from a scenario.
     pub fn new(scenario: Scenario) -> Result<Self> {
+        Self::with_viewport(
+            scenario,
+            macroquad::prelude::vec2(
+                macroquad::prelude::screen_width(),
+                macroquad::prelude::screen_height(),
+            ),
+        )
+    }
+
+    /// `new` with the window injected — the only constructor tests use,
+    /// because it never touches macroquad.
+    pub fn with_viewport(scenario: Scenario, viewport: Vec2) -> Result<Self> {
         let state = scenario.build()?;
         let bots = seat_bots(&scenario);
         let recorder = Replay::new(SIM_VERSION, scenario.clone());
@@ -204,16 +297,7 @@ impl Game {
                     state.map().height() as f32 * 0.5,
                 )
             });
-        let camera = Camera::new(
-            focus,
-            state.map().width(),
-            state.map().height(),
-            macroquad::prelude::vec2(
-                macroquad::prelude::screen_width(),
-                macroquad::prelude::screen_height(),
-            ),
-            macroquad::miniquad::window::dpi_scale(),
-        );
+        let camera = Camera::new(focus, state.map().width(), state.map().height(), viewport);
         Ok(Self {
             scenario,
             state,
@@ -228,13 +312,22 @@ impl Game {
             overlay: false,
             prev_pos: HashMap::new(),
             facing: HashMap::new(),
+            aim_units: HashMap::new(),
+            aim_buildings: HashMap::new(),
             fx: Vec::new(),
             sounds_pending: Vec::new(),
+            autosave_done: false,
             toasts: Vec::new(),
             scorches: Vec::new(),
-            hinted_train: false,
-            hinted_fight: false,
-            panel_rows: std::cell::Cell::new(0),
+            alerts: Vec::new(),
+            last_alert: None,
+            alert_gate: HashMap::new(),
+            fx_clock: 0.0,
+            layout: std::cell::Cell::new(crate::layout::LayoutModel::default()),
+            panel_model: std::cell::RefCell::new(None),
+            end_stats: None,
+            demo: crate::tutorial::Demo::default(),
+            spectate: false,
             accum: 0.0,
             suppress_presentation: false,
         })
@@ -265,7 +358,7 @@ impl Game {
         const MAX_LOAD_TICKS: u64 = 2_000_000;
         anyhow::ensure!(
             total <= MAX_LOAD_TICKS,
-            "replay spans {total} ticks — beyond the {MAX_LOAD_TICKS}-tick interactive load limit \
+            "replay spans {total} ticks, beyond the {MAX_LOAD_TICKS}-tick interactive load limit \
              (the headless driver replays without one)"
         );
         // Bots carry memory since 0.5 (raid flags, node blacklists), so
@@ -311,6 +404,8 @@ impl Game {
     /// is recorded, presentation caches update. The only place `state.current_tick()`
     /// is called.
     pub fn do_tick(&mut self) {
+        // New ticks make any earlier autosave stale.
+        self.autosave_done = false;
         // Interpolation cache; pointless during suppressed bulk advances
         // (advance_ticks rebuilds it once at the end).
         if !self.suppress_presentation {
@@ -323,6 +418,11 @@ impl Game {
         }
 
         let mut commands = std::mem::take(&mut self.pending);
+        let human_commands: Vec<Command> = commands
+            .iter()
+            .filter(|pc| pc.player == self.human)
+            .map(|pc| pc.command.clone())
+            .collect();
         for bot in &mut self.bots {
             commands.extend(bot.act(&self.state));
         }
@@ -331,6 +431,33 @@ impl Game {
                 .record(self.state.current_tick(), command.clone());
         }
         let report = self.state.tick(&commands);
+
+        // The tutorial's evidence: what the human actually asked for
+        // AND the sim accepted. A tick carrying any rejection for the
+        // human grades nothing — the deliberately-illegal placement
+        // the building lesson invites must not graduate it.
+        let human_rejected = report
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::CommandRejected { player, .. } if *player == self.human));
+        if !human_rejected {
+            for command in &human_commands {
+                match command {
+                    Command::Train { kind, .. } => {
+                        self.demo.trained = true;
+                        if kind.stats().can_fight() {
+                            self.demo.trained_fighter = true;
+                        }
+                    }
+                    Command::Harvest { .. } => self.demo.harvested = true,
+                    Command::Build { .. } => self.demo.built = true,
+                    // The march lesson teaches attack-move specifically;
+                    // a targeted attack is a different verb.
+                    Command::AttackMove { .. } => self.demo.attack_moved = true,
+                    _ => {}
+                }
+            }
+        }
 
         if !self.suppress_presentation {
             for unit in self.state.units() {
@@ -353,11 +480,74 @@ impl Game {
         let state = &self.state;
         self.facing
             .retain(|id, _| state.unit(UnitId(*id)).is_some());
+        self.aim_units
+            .retain(|id, _| state.unit(UnitId(*id)).is_some());
+        self.aim_buildings
+            .retain(|id, _| state.building(oxide_sim::BuildingId(*id)).is_some());
         if let Some(b) = self.selection.building
             && self.state.building(b).is_none()
         {
             self.selection.building = None;
         }
+    }
+
+    /// Whether rendering should ignore fog: the debug overlay or a
+    /// spectator stance (playback). Chrome decides separately.
+    pub fn all_seeing(&self) -> bool {
+        self.overlay || self.spectate
+    }
+
+    /// Absorbs one batch of replayed ticks for presentation: the world
+    /// the engine produced plus the events it emitted on the way —
+    /// bolts, deaths, aim, and sound work in playback exactly as live.
+    pub fn playback_present(&mut self, state: &oxide_sim::State, events: &[Event]) {
+        self.prev_pos = self
+            .state
+            .units()
+            .iter()
+            .map(|u| (u.id.0, world_vec(u.pos)))
+            .collect();
+        self.state = state.clone();
+        for unit in self.state.units() {
+            let now = world_vec(unit.pos);
+            if let Some(prev) = self.prev_pos.get(&unit.id.0) {
+                let delta = now - *prev;
+                if delta.length_squared() > 1e-6 {
+                    self.facing.insert(
+                        unit.id.0,
+                        delta.y.atan2(delta.x) + std::f32::consts::FRAC_PI_2,
+                    );
+                }
+            }
+        }
+        self.spawn_fx(events);
+        let state = &self.state;
+        self.facing
+            .retain(|id, _| state.unit(UnitId(*id)).is_some());
+        self.aim_units
+            .retain(|id, _| state.unit(UnitId(*id)).is_some());
+        self.aim_buildings
+            .retain(|id, _| state.building(oxide_sim::BuildingId(*id)).is_some());
+    }
+
+    /// Drops queued transient presentation — what a bulk jump (a seek)
+    /// must not replay as a burst of noise.
+    pub fn drop_presentation(&mut self) {
+        self.fx.clear();
+        self.sounds_pending.clear();
+        self.toasts.clear();
+    }
+
+    /// The effect clock — what aim holds and recoil age against.
+    pub fn fx_time(&self) -> f32 {
+        self.fx_clock
+    }
+
+    /// How far the presentation clock sits between the last executed
+    /// tick and the next, 0..1 — frozen while paused. Interpolation
+    /// fuel for anything that must move on sim time, not wall time.
+    pub fn tick_fraction(&self) -> f32 {
+        (self.accum / TICK_DT).clamp(0.0, 1.0)
     }
 
     /// Advances the sim from wall time (the normal play path).
@@ -411,11 +601,6 @@ impl Game {
 
     /// Stages a command from the local player for the next tick.
     pub fn issue(&mut self, command: Command) {
-        match &command {
-            Command::Train { .. } => self.hinted_train = true,
-            Command::AttackMove { .. } | Command::Attack { .. } => self.hinted_fight = true,
-            _ => {}
-        }
         self.pending.push(PlayerCommand {
             player: self.human,
             command,
@@ -424,6 +609,9 @@ impl Game {
 
     /// Drops an order-acknowledgment ping at a world point.
     pub fn ping(&mut self, at: Vec2, kind: PingKind) {
+        // An order the sim accepted deserves an answer in the ear as
+        // well as the eye (the mixer rate-limits volley spam).
+        self.sounds_pending.push((SoundKind::Ack, None));
         self.fx.push(Effect {
             kind: EffectKind::Ping { at, kind },
             age: 0.0,
@@ -446,7 +634,7 @@ impl Game {
         self.state
             .buildings()
             .iter()
-            .find(|b| b.player == self.human)
+            .find(|b| b.player == self.human && b.kind == oxide_sim::BuildingKind::Foundry)
     }
 
     /// Current state fingerprint, protocol-formatted.
@@ -460,15 +648,39 @@ impl Game {
     }
 
     /// Ages and prunes effects and toasts.
+    /// Raises an under-attack alert, rate-limited per 8-tile region —
+    /// a running battle nags once, not once per hit.
+    fn raise_alert(&mut self, world: Vec2) {
+        let cell = ((world.x / 8.0) as i32, (world.y / 8.0) as i32);
+        let now = self.fx_clock;
+        if self
+            .alert_gate
+            .get(&cell)
+            .is_some_and(|&last| now - last < 6.0)
+        {
+            return;
+        }
+        self.alert_gate.insert(cell, now);
+        self.alerts.push((world, 0.0));
+        self.last_alert = Some(world);
+        self.toast("under attack");
+    }
+
     pub fn update_fx(&mut self, dt: f32) {
+        self.fx_clock += dt;
+        for (_, age) in &mut self.alerts {
+            *age += dt;
+        }
+        self.alerts.retain(|(_, age)| *age < 6.0);
         for fx in &mut self.fx {
             fx.age += dt;
         }
         self.fx.retain(|fx| {
             fx.age
                 < match fx.kind {
-                    EffectKind::Laser { .. } => 0.15,
+                    EffectKind::Bolt { style, .. } => style.life(),
                     EffectKind::Puff { .. } => 0.4,
+                    EffectKind::Falling { .. } => 0.7,
                     EffectKind::Ping { .. } => 0.5,
                     EffectKind::Burst { .. } => 0.35,
                 }
@@ -494,39 +706,67 @@ impl Game {
         for event in events {
             match event {
                 Event::AttackHit {
+                    attacker,
                     attacker_kind,
+                    weapon,
                     attacker_pos,
+                    target,
                     target_pos,
                     ..
                 } => {
+                    // The shooter turns to its work: aim overrides
+                    // movement facing for a beat, and recoil ages off
+                    // the same stamp.
+                    let d = world_vec(*target_pos) - world_vec(*attacker_pos);
+                    if d.length_squared() > 1e-6 {
+                        self.aim_units.insert(
+                            attacker.0,
+                            (d.y.atan2(d.x) + std::f32::consts::FRAC_PI_2, self.fx_clock),
+                        );
+                    }
+                    let own_target = match target {
+                        oxide_sim::Target::Unit(uid) => self
+                            .state
+                            .unit(*uid)
+                            .is_some_and(|u| u.player == self.human),
+                        oxide_sim::Target::Building(bid) => self
+                            .state
+                            .building(*bid)
+                            .is_some_and(|b| b.player == self.human),
+                    };
+                    if own_target {
+                        self.raise_alert(world_vec(*target_pos));
+                    }
                     // Kind rides in the event: the attacker itself may have
                     // died later this same tick, and a rail shot deserves
                     // its report either way. The weapon's character decides
                     // the report and whether the impact blooms.
                     let heard = sees(self, *attacker_pos) || sees(self, *target_pos);
-                    let (sound, heavy) = match attacker_kind {
-                        oxide_sim::UnitKind::Lancer => (SoundKind::RailFire, true),
-                        oxide_sim::UnitKind::Bombard => (SoundKind::Artillery, true),
+                    let sound = match attacker_kind {
+                        oxide_sim::UnitKind::Lancer => SoundKind::RailFire,
+                        oxide_sim::UnitKind::Bombard => SoundKind::Artillery,
                         oxide_sim::UnitKind::Flakhound | oxide_sim::UnitKind::Stinger => {
-                            (SoundKind::Flak, false)
+                            SoundKind::Flak
                         }
-                        _ => (SoundKind::Laser, false),
+                        _ => SoundKind::Laser,
                     };
-                    // The burst radius comes from the kind's actual splash
-                    // stat, so the telegraphed area never overstates (or
-                    // hides) the damage the sim will deal.
+                    // The burst radius comes from the exact weapon that
+                    // fired — the event says which slot — so the
+                    // telegraphed area never overstates (or hides) the
+                    // damage the sim will deal.
                     let splash = attacker_kind
                         .stats()
                         .weapons
-                        .iter()
-                        .find_map(|w| w.splash)
+                        .get(*weapon)
+                        .and_then(|w| w.splash)
                         .map(|s| s.to_num::<f32>());
                     if heard {
-                        self.sounds_pending.push(sound);
+                        self.sounds_pending
+                            .push((sound, Some(world_vec(*target_pos))));
                     }
                     self.fx.push(Effect {
-                        kind: EffectKind::Laser {
-                            heavy,
+                        kind: EffectKind::Bolt {
+                            style: unit_bolt_style(*attacker_kind, *weapon),
                             from: world_vec(*attacker_pos),
                             to: world_vec(*target_pos),
                         },
@@ -544,10 +784,28 @@ impl Game {
                 }
                 Event::TurretFired {
                     kind,
+                    turret,
                     turret_pos,
                     target_pos,
+                    target,
                     ..
                 } => {
+                    let d = world_vec(*target_pos) - world_vec(*turret_pos);
+                    if d.length_squared() > 1e-6 {
+                        self.aim_buildings.insert(
+                            turret.0,
+                            (d.y.atan2(d.x) + std::f32::consts::FRAC_PI_2, self.fx_clock),
+                        );
+                    }
+                    // A turret chewing on our unit is an attack like any
+                    // other; the death case is UnitDied's alert.
+                    if self
+                        .state
+                        .unit(*target)
+                        .is_some_and(|u| u.player == self.human)
+                    {
+                        self.raise_alert(world_vec(*target_pos));
+                    }
                     // Kind rides in the event: the turret may be rubble by
                     // now (destroyed the tick it fired), and its shot still
                     // deserves the right report and burst.
@@ -563,11 +821,16 @@ impl Game {
                         .find_map(|w| w.splash)
                         .map(|s| s.to_num::<f32>());
                     if sees(self, *turret_pos) || sees(self, *target_pos) {
-                        self.sounds_pending.push(sound);
+                        self.sounds_pending
+                            .push((sound, Some(world_vec(*target_pos))));
                     }
                     self.fx.push(Effect {
-                        kind: EffectKind::Laser {
-                            heavy: splash.is_some(),
+                        kind: EffectKind::Bolt {
+                            style: match kind {
+                                oxide_sim::BuildingKind::FlakTurret => BoltStyle::Flak,
+                                oxide_sim::BuildingKind::Bastion => BoltStyle::Rail,
+                                _ => BoltStyle::Tracer,
+                            },
                             from: world_vec(*turret_pos),
                             to: world_vec(*target_pos),
                         },
@@ -584,15 +847,33 @@ impl Game {
                     }
                 }
                 Event::BuildingCompleted { player, kind, .. } if *player == self.human => {
-                    self.sounds_pending.push(SoundKind::TrainDone);
+                    self.sounds_pending.push((SoundKind::TrainDone, None));
                     self.toast(format!("{} online", kind.name()));
                 }
                 Event::BuildCancelled { player, refund, .. } if *player == self.human => {
                     self.toast(format!("site salvaged (+{refund} scrap)"));
                 }
-                Event::UnitDied { pos, player, .. } => {
+                Event::UnitDied {
+                    pos, player, kind, ..
+                } => {
+                    if kind.stats().domain == oxide_sim::stats::Domain::Air
+                        && !crate::render::reduced_motion()
+                    {
+                        self.fx.push(Effect {
+                            kind: EffectKind::Falling {
+                                at: world_vec(*pos),
+                                unit: *kind,
+                                faction: self.state.player(*player).faction,
+                            },
+                            age: 0.0,
+                        });
+                    }
+                    if *player == self.human {
+                        self.raise_alert(world_vec(*pos));
+                    }
                     if *player == self.human || sees(self, *pos) {
-                        self.sounds_pending.push(SoundKind::UnitDeath);
+                        self.sounds_pending
+                            .push((SoundKind::UnitDeath, Some(world_vec(*pos))));
                     }
                     self.fx.push(Effect {
                         kind: EffectKind::Puff {
@@ -602,8 +883,12 @@ impl Game {
                     });
                 }
                 Event::BuildingDestroyed { pos, player, .. } => {
+                    if *player == self.human {
+                        self.raise_alert(world_vec(*pos));
+                    }
                     if *player == self.human || sees(self, *pos) {
-                        self.sounds_pending.push(SoundKind::BuildingBoom);
+                        self.sounds_pending
+                            .push((SoundKind::BuildingBoom, Some(world_vec(*pos))));
                     }
                     self.fx.push(Effect {
                         kind: EffectKind::Puff {
@@ -618,7 +903,7 @@ impl Game {
                     }
                 }
                 Event::UnitTrained { unit, player, .. } if *player == self.human => {
-                    self.sounds_pending.push(SoundKind::TrainDone);
+                    self.sounds_pending.push((SoundKind::TrainDone, None));
                     if let Some(u) = self.state.unit(*unit) {
                         self.fx.push(Effect {
                             kind: EffectKind::Ping {
@@ -630,7 +915,7 @@ impl Game {
                     }
                 }
                 Event::ScrapDeposited { player, .. } if *player == self.human => {
-                    self.sounds_pending.push(SoundKind::Deposit);
+                    self.sounds_pending.push((SoundKind::Deposit, None));
                 }
                 Event::CommandRejected { player, reason } if *player == self.human => {
                     let why = match reason {
@@ -654,10 +939,113 @@ impl Game {
                         oxide_sim::command::RejectReason::Eliminated => "you are eliminated",
                     };
                     self.toast(why);
-                    self.sounds_pending.push(SoundKind::Denied);
+                    self.sounds_pending.push((SoundKind::Denied, None));
                 }
-                Event::OrderStalled { player, pos, .. } if *player == self.human => {
-                    self.toast("a unit can't reach its order");
+                Event::ShellLaunched {
+                    shooter,
+                    player,
+                    from,
+                    to,
+                    ..
+                } => {
+                    // The gun turns to its work — a Bastion's mount as
+                    // much as a Bombard's chassis.
+                    let d = world_vec(*to) - world_vec(*from);
+                    if d.length_squared() > 1e-6 {
+                        let angle = d.y.atan2(d.x) + std::f32::consts::FRAC_PI_2;
+                        match shooter {
+                            oxide_sim::Target::Unit(uid) => {
+                                self.aim_units.insert(uid.0, (angle, self.fx_clock));
+                            }
+                            oxide_sim::Target::Building(bid) => {
+                                self.aim_buildings.insert(bid.0, (angle, self.fx_clock));
+                            }
+                        }
+                    }
+                    // No effect spawned: in-flight shells render from
+                    // `state.shells()` directly, aged by sim ticks — a
+                    // paused shell hangs in the air, a loaded replay
+                    // restores its arc, and speed changes track.
+                    // Sound follows sight — but an incoming shell is a
+                    // warning worth keeping. A hostile launch whose
+                    // muzzle is fogged plays anchored at its IMPACT:
+                    // the same information the sim's incoming-shell
+                    // sense grants (impact tile visible), loudest when
+                    // it is falling on you, and nothing tracks the gun.
+                    let muzzle_seen = sees(self, *from);
+                    let impact_seen = sees(self, *to);
+                    if muzzle_seen || *player == self.human {
+                        self.sounds_pending
+                            .push((SoundKind::ArtilleryLaunch, Some(world_vec(*from))));
+                    } else if impact_seen {
+                        self.sounds_pending
+                            .push((SoundKind::ArtilleryLaunch, Some(world_vec(*to))));
+                    }
+                }
+                Event::ShellLanded {
+                    player,
+                    targets,
+                    at,
+                    splash,
+                } => {
+                    // The event names no victim on purpose (a shell in
+                    // flight chooses nothing), so ask the post-tick world
+                    // whether the blast reached anything of ours —
+                    // survivors alert here, the dead through their own
+                    // events.
+                    let reach = splash.map_or(1.0, |r| r.to_num::<f32>().max(1.0));
+                    let world = world_vec(*at);
+                    let hostile_shell = self.state.hostile(self.human, *player);
+                    // Parenthesized deliberately: && binds tighter than
+                    // ||, and an unguarded building branch once alarmed
+                    // on the player's own defensive artillery.
+                    let own_hurt = hostile_shell
+                        && (self
+                            .state
+                            .units()
+                            .iter()
+                            .filter(|u| {
+                                u.player == self.human && targets.covers(u.kind.stats().domain)
+                            })
+                            .any(|u| world_vec(u.pos).distance(world) <= reach)
+                            || (targets.covers(oxide_sim::stats::Domain::Ground)
+                                && self
+                                    .state
+                                    .buildings()
+                                    .iter()
+                                    .filter(|b| b.player == self.human)
+                                    .any(|b| {
+                                        let c = world_vec(b.center());
+                                        c.distance(world) <= reach + 1.5
+                                    })));
+                    if own_hurt {
+                        self.raise_alert(world);
+                    }
+                    if sees(self, *at) {
+                        self.sounds_pending
+                            .push((SoundKind::Artillery, Some(world_vec(*at))));
+                    }
+                    self.fx.push(Effect {
+                        kind: EffectKind::Burst {
+                            at: world_vec(*at),
+                            radius: splash.map_or(0.8, |r| r.to_num::<f32>()),
+                        },
+                        age: 0.0,
+                    });
+                }
+                Event::OrderStalled {
+                    player,
+                    pos,
+                    reason,
+                    ..
+                } if *player == self.human => {
+                    // Own-state facts only — a stall reason must never
+                    // whisper about what fog hides.
+                    self.toast(match reason {
+                        oxide_sim::StallReason::NoRoute => "no route to that order",
+                        oxide_sim::StallReason::NoFiringPosition => "no ground to fire from there",
+                        oxide_sim::StallReason::InsufficientScrap => "out of scrap",
+                    });
                     self.fx.push(Effect {
                         kind: EffectKind::Ping {
                             at: world_vec(*pos),
@@ -672,11 +1060,14 @@ impl Game {
                         oxide_sim::GameResult::Victory { team }
                             if *team == self.state.player(self.human).team
                     );
-                    self.sounds_pending.push(if won {
-                        SoundKind::Victory
-                    } else {
-                        SoundKind::Defeat
-                    });
+                    self.sounds_pending.push((
+                        if won {
+                            SoundKind::Victory
+                        } else {
+                            SoundKind::Defeat
+                        },
+                        None,
+                    ));
                 }
                 _ => {}
             }
@@ -690,5 +1081,64 @@ impl Game {
             Some(prev) => prev.lerp(now, alpha),
             None => now,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxide_sim::{Command, Scenario, UnitKind};
+
+    #[test]
+    fn every_weapon_family_fires_its_own_bolt() {
+        assert_eq!(unit_bolt_style(UnitKind::Lancer, 0), BoltStyle::Rail);
+        assert_eq!(unit_bolt_style(UnitKind::Flakhound, 0), BoltStyle::Flak);
+        assert_eq!(unit_bolt_style(UnitKind::Stinger, 0), BoltStyle::Flak);
+        // The Sentinel's main gun is a tracer; its sidearm slot is the
+        // anti-air poke.
+        assert_eq!(unit_bolt_style(UnitKind::Sentinel, 0), BoltStyle::Tracer);
+        assert_eq!(unit_bolt_style(UnitKind::Sentinel, 1), BoltStyle::Flak);
+        assert_eq!(unit_bolt_style(UnitKind::Buzzard, 0), BoltStyle::AirStrike);
+        assert_eq!(unit_bolt_style(UnitKind::Wisp, 0), BoltStyle::AirStrike);
+        assert_eq!(unit_bolt_style(UnitKind::Scuttler, 0), BoltStyle::Tracer);
+    }
+
+    #[test]
+    fn demo_flags_read_only_the_humans_commands() {
+        let mut game = Game::with_viewport(
+            Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("skirmish builds");
+        assert!(!game.demo.trained);
+        let foundry = game
+            .state
+            .buildings()
+            .iter()
+            .find(|b| b.player == game.human)
+            .unwrap()
+            .id;
+        game.issue(Command::Train {
+            building: foundry,
+            kind: UnitKind::Harvester,
+        });
+        game.do_tick();
+        assert!(game.demo.trained, "the human trained");
+        assert!(!game.demo.trained_fighter, "a harvester is not a fighter");
+        game.issue(Command::Train {
+            building: foundry,
+            kind: UnitKind::Sentinel,
+        });
+        game.do_tick();
+        assert!(game.demo.trained_fighter);
+        // The opponent bot issues commands every think; none of them
+        // may grade the human's homework (flags above already proved
+        // the human path; run a few bot-only ticks and check the
+        // unrelated flags stay cold).
+        for _ in 0..20 {
+            game.do_tick();
+        }
+        assert!(!game.demo.attack_moved);
+        assert!(!game.demo.built);
     }
 }

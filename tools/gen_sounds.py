@@ -148,11 +148,41 @@ def chime(name: str, freqs: list[float], each: float, volume: float, dark: bool 
     write(name, out)
 
 
+def laser_alt() -> None:
+    # The zap's sibling, a step lower — alternated per shot so volleys
+    # read as many guns, not one clip on repeat.
+    n = int(0.09 * RATE)
+    phase = 0.0
+    out = []
+    for i in range(n):
+        freq = 1280.0 - (700.0 * i / n)
+        phase += freq / RATE
+        square = 1.0 if (phase % 1.0) < 0.5 else -1.0
+        out.append(0.5 * square * decay(i, n, 4.0))
+    write("laser2", out)
+
+
+def artillery_launch() -> None:
+    # The gun speaking, not the shell arriving: a short muffled thump
+    # with a breath of low noise — the boom belongs to the impact clip.
+    n = int(0.14 * RATE)
+    out = []
+    seed = 1234567
+    for i in range(n):
+        seed = (seed * 1103515245 + 12345) % (2**31)
+        noise = (seed / 2**31) * 2.0 - 1.0
+        thump = math.sin(2 * math.pi * 62.0 * i / RATE)
+        out.append((0.55 * thump + 0.18 * noise) * decay(i, n, 6.0))
+    write("artillery_launch", out)
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     print(f"writing {OUT}")
     laser()
+    laser_alt()
     rail_fire()
+    artillery_launch()
     unit_death()
     building_boom()
     flak()
@@ -160,6 +190,7 @@ def main() -> None:
     chime("deposit", [780.0, 1170.0], 0.06, 0.4)
     chime("train_done", [520.0, 660.0, 880.0], 0.05, 0.4)
     chime("click", [1100.0], 0.03, 0.35)
+    chime("ack", [880.0, 990.0], 0.03, 0.3)
     chime("denied", [233.08, 174.61], 0.09, 0.4, dark=True)
     chime("victory", [523.25, 659.25, 783.99, 1046.5], 0.16, 0.45)
     chime("defeat", [392.0, 329.63, 261.63, 196.0], 0.16, 0.45, dark=True)

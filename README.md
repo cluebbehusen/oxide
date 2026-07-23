@@ -20,12 +20,35 @@ replay that re-executes headless to a bit-identical state hash.
 
 ## Playing
 
+The front door offers Play, Replays, Settings, and Quit (plus
+Continue when an autosave waits). Settings holds live volume buses,
+UI scale, camera feel, and full key remapping — every change applies
+immediately and persists. The map list shows each map's hook and pace
+badges with a fog-free, theme-graded preview, and every choice you
+make on the way to a match survives backing up a screen. Selected
+machines draw their weapon ranges (and radar rings); stalls and
+rejections say why in words. Clicking anything opens its command
+panel: portrait, sprite cards for everything it can do (costs,
+hotkeys in the corner, reasons in red when a card refuses), and the
+queue along the bottom — production ghosts with progress you can
+click to cancel, or a unit's order program. Hovering a card tells
+you what the machine is and exactly how it fights. A six-step
+tutorial (Home → Tutorial) teaches by watching you actually do each
+thing; guns aim at what they shoot, turrets track, downed flyers
+fall, and battle sound sits in space — launches thump at the gun,
+booms land at the impact, and distance dims both. When a match ends, the banner carries
+the numbers: losses, peak army, closing scrap, and each side's army
+curve over the whole fight.
+
 ```sh
 cargo run -p oxide-shell
 ```
 
-A menu lists the shipped maps — the classic duels plus two 2v2 maps,
-Twin Forges and Open Quarry — then asks three questions: how hard
+A menu lists the shipped maps — the classic duels, the quick 2v2s
+Twin Forges and Open Quarry, and the new big fields: Basalt Spine
+(a peak ridge splits the map; two ground passes, one air-only door),
+Ferric Reach (three lanes, long logistics), and Parallel Works (a
+large 2v2 built on quadrant symmetry) — then asks three questions: how hard
 should the opponent think (**Easy, Medium, Hard, Expert**), who is it
 (**turtle, balanced, aggressive**, or let the map decide), and which
 faction you run (**Ferrous, Cupric**, or let the seed decide). Every
@@ -44,8 +67,12 @@ own eyes — someone must spot for it — and its blasts hurt everything
 in the radius. The factions split on the sky: Ferrous flies the heavy
 **Buzzard**, hunts with the **Talon**, and guards with the tanky
 **Flakhound**; Cupric answers with the darting **Darter**, the swarm
-**Wisp**, and the cheap **Stinger**. Air ignores terrain entirely —
-and only anti-air weapons can touch it.
+**Wisp**, and the cheap **Stinger**. Air ignores terrain almost
+entirely — only **peaks** (`^` on the map, mountains on screen) wall
+the sky, block every shot across them, and break artillery arcs; only
+anti-air weapons can touch a flyer. Bombard and Bastion shells are
+real projectiles now: they fly, they can be dodged, and they land
+where the target _was_.
 
 Buildings: the **Foundry** trains the basics and anchors your defeat
 condition; the **Fabricator** unlocks everything advanced including
@@ -59,30 +86,33 @@ and throwing an army away literally funds the enemy. Construction
 sites are attackable from the first tick, and cancelling one refunds
 only what's still standing — damage burns salvage.
 
-| Input | Action |
-|---|---|
-| Left click / drag | Select your units (click a Foundry to select it) |
-| Shift + click / drag | Add to (or remove from) the selection |
-| Double-click a unit | Select all visible units of that kind |
-| Ctrl + `1`-`5` | Assign the selection to a control group |
-| `1`-`5` | Recall the group — tap again to center the camera on it |
-| Left click on minimap | Jump the camera there |
-| Right click | Contextual order: enemy → attack, scrap → harvest, ground → **move engaging everything on the way** (fire at will is the only stance; combat units always defend themselves) |
-| Shift + right click | Queue the order behind the current one |
-| `R` | Arm a patrol: right-click waypoints, `R` again to start the loop — patrollers engage everything met and never settle |
-| `B` | With a harvester selected: open the build palette — digits pick the structure, the ghost shows validity on ground you can currently see, click commits, Esc cancels |
-| Right click a damaged own building | With harvesters selected: weld it (costs a scrap trickle) |
-| `X` | Units selected: stop in place. Construction site selected: scrap it for a partial refund |
-| Right click on minimap | Send the selection there, fighting through |
-| Right click (Foundry selected) | Set the rally point — rally a scrap node and fresh harvesters mine it; fresh Sentinels attack-move to it |
-| Mouse wheel | Zoom (toward the cursor) |
-| Arrow keys | Pan |
-| `H` / `S` | Train the selected factory's first / second unit |
-| `1`-`9` (factory selected) | Train by slot — the panel lists your faction's roster with prices |
-| `Space` | Jump to your Foundry |
-| `P` | Quick pause |
-| `Esc` | Deselect, then the pause menu (resume / restart / main menu / quit) |
-| `F1` | Debug overlay (grid, ids, paths — and no fog) |
+| Input                              | Action                                                                                                                                                                       |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Left click / drag                  | Select your units (click a Foundry to select it)                                                                                                                             |
+| Shift + click / drag               | Add to (or remove from) the selection                                                                                                                                        |
+| Double-click a unit                | Select all visible units of that kind                                                                                                                                        |
+| Ctrl + `1`-`5`                     | Assign the selection to a control group                                                                                                                                      |
+| `1`-`5`                            | Recall the group — tap again to center the camera on it                                                                                                                      |
+| Left click on minimap              | Jump the camera there                                                                                                                                                        |
+| Right click                        | Contextual order: enemy → attack, scrap → harvest, ground → **move engaging everything on the way** (fire at will is the only stance; combat units always defend themselves) |
+| Shift + right click                | Queue the order behind the current one                                                                                                                                       |
+| `R`                                | Arm a patrol: right-click waypoints, `R` again to start the loop — patrollers engage everything met and never settle                                                         |
+| `B`                                | With a harvester selected: open the build palette — digits pick the structure, the ghost shows validity on ground you can currently see, click commits, Esc cancels          |
+| Right click a damaged own building | With harvesters selected: weld it (costs a scrap trickle)                                                                                                                    |
+| `X`                                | Units selected: stop in place. Construction site selected: scrap it for a partial refund                                                                                     |
+| Right click on minimap             | Send the selection there, fighting through                                                                                                                                   |
+| Right click (Foundry selected)     | Set the rally point — rally a scrap node and fresh harvesters mine it; fresh Sentinels attack-move to it                                                                     |
+| Mouse wheel                        | Zoom (toward the cursor)                                                                                                                                                     |
+| Arrow keys                         | Pan                                                                                                                                                                          |
+| `H` / `S`                          | Train the selected factory's first / second unit                                                                                                                             |
+| `1`-`9` (factory selected)         | Train by slot — the panel lists your faction's roster with prices                                                                                                            |
+| `Space`                            | Jump to your Foundry                                                                                                                                                         |
+| `P`                                | Quick pause                                                                                                                                                                  |
+| `Esc`                              | Deselect, then the pause menu (destructive choices ask first)                                                                                                                |
+| `N`                                | Select and center the next idle harvester (the top bar counts them)                                                                                                          |
+| `A`                                | Jump to the last under-attack alert                                                                                                                                          |
+| Ctrl + `F5`-`F8` / `F5`-`F8`       | Set / recall camera bookmarks                                                                                                                                                |
+| `F1`                               | Debug overlay (grid, ids, paths — and no fog)                                                                                                                                |
 
 Ranged fire needs a clear line: rock (and buildings) block ground
 shots, so a Sentinel behind cover must step out to fire — and so must
@@ -122,7 +152,7 @@ assets/     the generated sprites and sounds, committed
 The load-bearing rule: **same scenario + same command log ⇒ bit-identical
 state, on every platform**. Commands are tick-stamped and everything that
 issues them — mouse, bot, debug socket — goes through one funnel, so a
-replay (`setup + commands`) *is* the session. The determinism rules and the
+replay (`setup + commands`) _is_ the session. The determinism rules and the
 tooling contract live in [AGENTS.md](AGENTS.md).
 
 ## Driving it without hands
@@ -167,13 +197,22 @@ cross-platform determinism proof.
 ## Saving games
 
 There is no separate save format, on purpose. In a deterministic sim a
-replay *is* a save: `save-replay` writes the session's command log, and
+replay _is_ a save: `save-replay` writes the session's command log, and
 loading it (`--replay file.json`, or `live load-replay`) rebuilds the
 scenario and re-runs every tick — thousands per second, so "loading" a
 long game takes well under a second — then keeps playing and recording
 from exactly where you stood. Unlike a state snapshot, the save stays
 replayable end-to-end and can never desync from its own history. The
 trade-off: replays only reproduce on the sim version that wrote them.
+
+The shell wraps all of this: quitting a live match autosaves it and
+Home offers Continue; the Replays screen lists every autosave and
+local record with honest version badges (watch, or delete with a
+deliberate double-X); the pause menu's Watch Replay replays the
+session so far; and `--watch file.json` opens any record in the
+read-only viewer — pause, seek both directions, speed steps, free
+camera. Seeking backward restores an in-memory checkpoint and
+re-simulates, so the viewer can never diverge from the record.
 
 ## Status and road ahead
 

@@ -157,5 +157,12 @@
    "x": 27,
    "y": 2
   }
- ]
+ ],
+ "meta": {
+  "hook": "Team lanes over open ground; cover is your ally.",
+  "pace": "quick",
+  "mode": "2v2",
+  "richness": "rich",
+  "theme": "quarry-dust"
+ }
 }

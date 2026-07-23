@@ -112,14 +112,14 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
         if state.buildings.iter().any(|b| b.contains(tile)) {
             continue;
         }
-        // Rock never opens up, so salvage there is bait no harvester
-        // can ever strip — a downed flyer's value is simply lost. Scrap
-        // node tiles keep their deposits: they become standable the
-        // moment the node exhausts.
+        // Rock and peaks never open up, so salvage there is bait no
+        // harvester can ever strip — a downed flyer's value is simply
+        // lost. Scrap node tiles keep their deposits: they become
+        // standable the moment the node exhausts.
         if state
             .map
             .tile(tile)
-            .is_none_or(|t| t.terrain == crate::map::Terrain::Rock)
+            .is_none_or(|t| t.terrain != crate::map::Terrain::Ground)
         {
             continue;
         }
@@ -175,7 +175,9 @@ pub(crate) fn astar_for(state: &State, from: TilePos, to: TilePos) -> Option<Vec
 }
 
 /// A route for a unit of the given kind: ground units A* around the
-/// world, air units fly the straight line — one waypoint, landed exactly.
+/// world; air units fly the straight line — one waypoint, landed exactly —
+/// unless a peak stands in it, in which case they A* over air passability
+/// (peaks are the only thing the sky routes around).
 pub(crate) fn route_for(
     state: &State,
     kind: crate::stats::UnitKind,
@@ -184,8 +186,56 @@ pub(crate) fn route_for(
 ) -> Option<Vec<TilePos>> {
     match kind.stats().domain {
         crate::stats::Domain::Ground => astar_for(state, from, to),
-        crate::stats::Domain::Air => Some(vec![to]),
+        crate::stats::Domain::Air => {
+            // Goals ring-snap off peaks here, at the one funnel every
+            // air route passes: group orders pre-snap via spread_goals,
+            // but patrol waypoints and rally tiles arrive raw — and
+            // line_blocked ignores endpoints by design, so an unsnapped
+            // peak goal would hand the flyer the mountain itself.
+            let to = if state.passable_for(crate::stats::Domain::Air, to) {
+                to
+            } else {
+                snap_air_goal(state, to)?
+            };
+            let peak_free = |t: TilePos| {
+                state
+                    .map
+                    .tile(t)
+                    .is_none_or(|tile| tile.terrain != crate::map::Terrain::Peak)
+            };
+            if !chassis::path::line_blocked(from.center(), to.center(), peak_free) {
+                return Some(vec![to]);
+            }
+            astar(
+                state.map.width(),
+                state.map.height(),
+                from,
+                to,
+                |p| state.passable_for(crate::stats::Domain::Air, p),
+                PATH_EXPANSION_CAP,
+            )
+        }
     }
+}
+
+/// The nearest air-passable tile to `goal`, ring-scanned outward in the
+/// same deterministic order group goals use. `None` when nothing within
+/// reach is open sky (a map that is all mountain has bigger problems).
+fn snap_air_goal(state: &State, goal: TilePos) -> Option<TilePos> {
+    for r in 0..=crate::stats::GOAL_SNAP_RADIUS + 3 {
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs().max(dy.abs()) != r {
+                    continue;
+                }
+                let t = goal.offset(dx, dy);
+                if state.passable_for(crate::stats::Domain::Air, t) {
+                    return Some(t);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// The ring of tiles surrounding a rectangle, row-major (deterministic).
@@ -234,10 +284,22 @@ pub(crate) fn domain_goal(
         crate::stats::Domain::Ground => {
             find_nearby_passable(state, goal, crate::stats::GOAL_SNAP_RADIUS)
         }
-        crate::stats::Domain::Air => Some(TilePos::new(
-            goal.x.clamp(0, state.map.width() - 1),
-            goal.y.clamp(0, state.map.height() - 1),
-        )),
+        crate::stats::Domain::Air => {
+            // Clamp to the map, then off any peak: this is the funnel
+            // patrol waypoints and rally orders lower through, and a
+            // stored peak goal deadlocks the flyer — it reaches the
+            // route's snapped endpoint, compares against the original
+            // order goal, and repaths to the same tile forever.
+            let clamped = TilePos::new(
+                goal.x.clamp(0, state.map.width() - 1),
+                goal.y.clamp(0, state.map.height() - 1),
+            );
+            if state.passable_for(crate::stats::Domain::Air, clamped) {
+                Some(clamped)
+            } else {
+                snap_air_goal(state, clamped)
+            }
+        }
     }
 }
 

@@ -34,6 +34,12 @@ pub fn run(addr: &str, spawn: bool) -> Result<()> {
                     "--",
                     "--debug-server",
                     "--paused",
+                    // Pin the window: the persisted config carries whatever
+                    // size the user last dragged, and a large-enough window
+                    // clamps the camera immovable on the smoke's map —
+                    // which turns the minimap-jump check into a coin flip.
+                    "--window",
+                    "1280x800",
                     "--port",
                     port,
                 ])
@@ -326,7 +332,6 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     };
     let scrap_before = view.players[0].scrap;
     let rows = view.map.as_ref().context("asked for the map")?;
-    let (map_w, map_h) = (rows[0].chars().count() as f64, rows.len() as f64);
     let harvester = view
         .units
         .iter()
@@ -337,10 +342,7 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     };
     let [lo_x, lo_y, hi_x, hi_y] = cam.world_rect;
     // Injected pointer events speak LOGICAL points — the same space the
-    // camera reply uses. (The dpi factor below scales the minimap RECT,
-    // mirroring the shell's ui_scale on that widget; it is not a
-    // coordinate-space conversion.)
-    let dpi = (f64::from(shot.width) / cam.viewport[0]).max(1.0);
+    // camera reply uses.
     let to_screen = |wx: f64, wy: f64| {
         (
             ((wx - lo_x) / (hi_x - lo_x) * cam.viewport[0]) as f32,
@@ -378,12 +380,22 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         client.call(Request::InjectEvent { event })?;
     }
     std::thread::sleep(Duration::from_millis(200));
-    // The minimap's viewport rect mirrors the shell's own formula
-    // (bottom-right, MINIMAP_MAX scaled by dpi = physical/logical width).
-    let map_aspect_scale = (220.0 * dpi / map_w).min(150.0 * dpi / map_h);
-    let (mm_w, mm_h) = (map_w * map_aspect_scale, map_h * map_aspect_scale);
-    let mm_x = cam.viewport[0] - mm_w - 12.0 * dpi;
-    let mm_y = cam.viewport[1] - mm_h - 34.0 * dpi;
+    // The minimap rect comes from the shell's published layout — the
+    // QueryUi chrome is the same model hit-testing reads, so geometry
+    // changes can never strand this check on a stale mirror of the
+    // formula (the 0.9 flush-minimap move did exactly that once).
+    let Reply::Ui(ui) = client.call(Request::QueryUi)? else {
+        bail!("query_ui returned the wrong reply kind");
+    };
+    let Some(chrome) = ui.chrome else {
+        bail!("playing mode reports chrome geometry");
+    };
+    let (mm_x, mm_y, mm_w, mm_h) = (
+        f64::from(chrome[2]),
+        f64::from(chrome[3]),
+        f64::from(chrome[4]),
+        f64::from(chrome[5]),
+    );
     let (cx, cy) = ((mm_x + mm_w * 0.8) as f32, (mm_y + mm_h * 0.8) as f32);
     for event in [
         RawEvent::MouseDown {

@@ -6,25 +6,25 @@
 //! selection, or sim commands. If input behavior ever bypasses this module,
 //! injected tests stop meaning anything — don't.
 
+use crate::action::{Action, ActionEvent, ActionResolver, BindingMap};
 use crate::game::{Game, PingKind};
 use chassis::grid::TilePos;
 use macroquad::prelude::{self as mq, Vec2, vec2};
 use oxide_protocol::{Key, MouseButton, RawEvent};
 use oxide_sim::{Command, Target, UnitId, UnitKind};
-use std::collections::HashSet;
 
 /// Logical pixels of mouse travel under which a press+release counts as a
 /// click (scaled by dpi at use).
 const CLICK_SLOP: f32 = 6.0;
 
-fn click_slop() -> f32 {
-    CLICK_SLOP * crate::render::ui_scale()
+fn click_slop(ui: f32) -> f32 {
+    CLICK_SLOP * ui
 }
 
 /// Shared with the drag-rectangle renderer, so what draws as a drag is
 /// exactly what selects as one.
-pub fn drag_threshold() -> f32 {
-    click_slop()
+pub fn drag_threshold(ui: f32) -> f32 {
+    click_slop(ui)
 }
 /// World-unit pick radius around a unit's center.
 const PICK_RADIUS: f32 = 0.6;
@@ -37,19 +37,44 @@ pub struct InputState {
     pub mouse: Vec2,
     /// Where the current left-drag started, if any.
     pub drag_origin: Option<Vec2>,
+    /// Whether a left-drag is steering the camera via the minimap —
+    /// clicks there never start a selection box, they drive the view.
+    pub(crate) minimap_drag: bool,
+    /// Middle-drag pan anchor: the world follows the hand.
+    pub(crate) mmb_anchor: Option<Vec2>,
+    /// Last *hardware* cursor position the poll saw. Change detection
+    /// must compare against this, not `mouse`: injected pointer events
+    /// move `mouse`, and comparing the idle OS cursor against it once
+    /// re-emitted a phantom MouseMove every frame — which fought every
+    /// injected drag for the pointer.
+    hw_mouse: Vec2,
     /// Control groups 1..=5 (assigned with Ctrl+N, recalled with N).
-    groups: [Vec<UnitId>; 5],
+    groups: [Vec<UnitId>; crate::action::CONTROL_GROUPS],
     /// Previous click, for double-click detection.
     last_click: Option<(f64, Vec2)>,
     /// Previous group recall, for double-tap camera centering.
     last_recall: Option<(usize, f64)>,
+    /// Camera bookmarks (Ctrl+F5..F8 set, F5..F8 recall). Session
+    /// state: a new match's coordinates mean different ground.
+    pub(crate) bookmarks: [Option<Vec2>; 4],
     /// Waypoints collected while arming a patrol (`R`), if any.
     pub(crate) patrol_route: Option<Vec<TilePos>>,
     /// Building kind armed for placement, if any.
     pub(crate) placing: Option<oxide_sim::BuildingKind>,
     /// Whether the build palette is open (`B`; digits pick a structure).
     pub(crate) build_menu: bool,
-    held: HashSet<Key>,
+    /// This frame's chrome scale (dpi x user), injected by the frame
+    /// loop so hit math never queries the window.
+    pub(crate) ui: f32,
+    /// This frame's wall clock, injected likewise (double-click and
+    /// double-tap timing).
+    pub(crate) now: f64,
+    /// Camera feel from settings, injected per frame.
+    pub(crate) camera_prefs: crate::config::CameraPrefs,
+    /// The active binding profile (Classic until settings can edit it).
+    pub(crate) bindings: BindingMap,
+    /// Chord state: modifier truth and held actions.
+    pub(crate) resolver: ActionResolver,
 }
 
 /// Everything a harvester can put in the ground, in palette order — the
@@ -69,18 +94,27 @@ impl InputState {
         Self {
             mouse: vec2(0.0, 0.0),
             drag_origin: None,
+            minimap_drag: false,
+            mmb_anchor: None,
+            hw_mouse: vec2(0.0, 0.0),
             groups: Default::default(),
             last_click: None,
             last_recall: None,
             patrol_route: None,
             placing: None,
             build_menu: false,
-            held: HashSet::new(),
+            ui: 1.0,
+            now: 0.0,
+            camera_prefs: crate::config::CameraPrefs::default(),
+            bookmarks: [None; 4],
+            bindings: crate::config::Config::load().bindings,
+            resolver: ActionResolver::default(),
         }
     }
 
-    fn is_held(&self, key: Key) -> bool {
-        self.held.contains(&key)
+    /// Feeds a key edge through the binding map.
+    fn key_edge(&mut self, key: Key, down: bool) -> Option<ActionEvent> {
+        self.resolver.key_edge(&self.bindings, key, down)
     }
 
     /// Drops everything that assumes continuity — held keys and any open
@@ -89,8 +123,10 @@ impl InputState {
     /// held-state otherwise pans the camera forever (or fires a phantom
     /// box-select) after resuming.
     pub fn reset_transient(&mut self) {
-        self.held.clear();
+        self.resolver.clear();
         self.drag_origin = None;
+        self.minimap_drag = false;
+        self.mmb_anchor = None;
         self.patrol_route = None;
         self.placing = None;
         self.build_menu = false;
@@ -104,12 +140,13 @@ impl InputState {
     pub fn reset_session(&mut self) {
         self.reset_transient();
         self.groups = Default::default();
+        self.bookmarks = [None; 4];
         self.last_click = None;
         self.last_recall = None;
     }
 }
 
-const KEY_MAP: [(Key, mq::KeyCode); 15] = [
+const KEY_MAP: [(Key, mq::KeyCode); 42] = [
     (Key::Up, mq::KeyCode::Up),
     (Key::Down, mq::KeyCode::Down),
     (Key::Left, mq::KeyCode::Left),
@@ -125,14 +162,42 @@ const KEY_MAP: [(Key, mq::KeyCode); 15] = [
     (Key::Space, mq::KeyCode::Space),
     (Key::F1, mq::KeyCode::F1),
     (Key::Enter, mq::KeyCode::Enter),
+    (Key::PageUp, mq::KeyCode::PageUp),
+    (Key::PageDown, mq::KeyCode::PageDown),
+    (Key::Home, mq::KeyCode::Home),
+    (Key::End, mq::KeyCode::End),
+    (Key::F5, mq::KeyCode::F5),
+    (Key::F6, mq::KeyCode::F6),
+    (Key::F7, mq::KeyCode::F7),
+    (Key::F8, mq::KeyCode::F8),
+    (Key::A, mq::KeyCode::A),
+    (Key::C, mq::KeyCode::C),
+    (Key::D, mq::KeyCode::D),
+    (Key::E, mq::KeyCode::E),
+    (Key::F, mq::KeyCode::F),
+    (Key::G, mq::KeyCode::G),
+    (Key::I, mq::KeyCode::I),
+    (Key::J, mq::KeyCode::J),
+    (Key::K, mq::KeyCode::K),
+    (Key::L, mq::KeyCode::L),
+    (Key::M, mq::KeyCode::M),
+    (Key::O, mq::KeyCode::O),
+    (Key::Q, mq::KeyCode::Q),
+    (Key::T, mq::KeyCode::T),
+    (Key::U, mq::KeyCode::U),
+    (Key::V, mq::KeyCode::V),
+    (Key::W, mq::KeyCode::W),
+    (Key::Y, mq::KeyCode::Y),
+    (Key::Z, mq::KeyCode::Z),
 ];
 
 /// Converts this frame's hardware input into events. Purely a poll→event
 /// adapter; interpretation happens in [`apply_events`].
-pub fn poll_events(input: &InputState) -> Vec<RawEvent> {
+pub fn poll_events(input: &mut InputState) -> Vec<RawEvent> {
     let mut events = Vec::new();
     let (mx, my) = mq::mouse_position();
-    if vec2(mx, my) != input.mouse {
+    if vec2(mx, my) != input.hw_mouse {
+        input.hw_mouse = vec2(mx, my);
         events.push(RawEvent::MouseMove { x: mx, y: my });
     }
     let wheel = mq::mouse_wheel().1;
@@ -144,6 +209,7 @@ pub fn poll_events(input: &InputState) -> Vec<RawEvent> {
     for (button, mq_button) in [
         (MouseButton::Left, mq::MouseButton::Left),
         (MouseButton::Right, mq::MouseButton::Right),
+        (MouseButton::Middle, mq::MouseButton::Middle),
     ] {
         if mq::is_mouse_button_pressed(mq_button) {
             events.push(RawEvent::MouseDown {
@@ -160,14 +226,9 @@ pub fn poll_events(input: &InputState) -> Vec<RawEvent> {
             });
         }
     }
-    for (key, code) in KEY_MAP {
-        if mq::is_key_pressed(code) {
-            events.push(RawEvent::KeyDown { key });
-        }
-        if mq::is_key_released(code) {
-            events.push(RawEvent::KeyUp { key });
-        }
-    }
+    // Modifier edges land BEFORE ordinary key edges: a chord pressed
+    // whole within one frame (Ctrl and F5 together) must resolve as
+    // Ctrl+F5, not as F5 followed by a late Ctrl.
     // Modifiers map two physical keys onto one logical one. (Releasing one
     // of a simultaneously-held pair releases the logical key — an edge case
     // nobody plays with.)
@@ -183,6 +244,14 @@ pub fn poll_events(input: &InputState) -> Vec<RawEvent> {
             events.push(RawEvent::KeyDown { key });
         }
         if mq::is_key_released(a) || mq::is_key_released(b) {
+            events.push(RawEvent::KeyUp { key });
+        }
+    }
+    for (key, code) in KEY_MAP {
+        if mq::is_key_pressed(code) {
+            events.push(RawEvent::KeyDown { key });
+        }
+        if mq::is_key_released(code) {
             events.push(RawEvent::KeyUp { key });
         }
     }
@@ -207,10 +276,49 @@ pub fn poll_events(input: &InputState) -> Vec<RawEvent> {
     events
 }
 
+/// Own harvesters with nothing to do, in id order — the cycle key and
+/// the HUD badge both read this.
+pub fn idle_harvesters(game: &Game) -> Vec<UnitId> {
+    game.state
+        .units()
+        .iter()
+        .filter(|u| {
+            u.player == game.human
+                && u.kind == UnitKind::Harvester
+                && u.order == oxide_sim::Order::Idle
+        })
+        .map(|u| u.id)
+        .collect()
+}
+
+/// Selects the next idle harvester after the current selection (id
+/// order, wrapping) and centers the camera on it. Stateless: the
+/// selection itself is the cursor.
+fn cycle_idle_worker(game: &mut Game) {
+    let idle = idle_harvesters(game);
+    let Some(&first) = idle.first() else {
+        game.toast("no idle harvesters");
+        return;
+    };
+    let next = match game.selection.units.as_slice() {
+        [current] => idle
+            .iter()
+            .copied()
+            .find(|id| id > current)
+            .unwrap_or(first),
+        _ => first,
+    };
+    game.selection.units = vec![next];
+    game.selection.building = None;
+    let unit = game.state.unit(next).expect("listed above");
+    game.camera.center = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
+    game.camera.pan(Vec2::ZERO); // re-clamp
+}
+
 /// World-space pick radius around a unit: generous when zoomed out so
 /// units never need tweezers (at least 10 logical px on screen).
-fn pick_radius(game: &Game) -> f32 {
-    (10.0 * crate::render::ui_scale() / game.camera.zoom).max(0.6)
+fn pick_radius(game: &Game, ui: f32) -> f32 {
+    (10.0 * ui / game.camera.zoom).max(0.6)
 }
 
 /// HUD chrome that swallows clicks: the top bar always; the bottom panel
@@ -218,22 +326,46 @@ fn pick_radius(game: &Game) -> f32 {
 /// (the packed palette wraps to several rows on narrow windows; clicks
 /// on the upper rows must not fall through to the world).
 fn click_on_hud(game: &mut Game, screen: Vec2) -> bool {
-    let s = crate::render::ui_scale();
-    let viewport = game.camera.viewport();
-    if screen.y <= 32.0 * s {
-        return true;
-    }
-    let rows = game.panel_rows.get().max(1);
-    let panel_shown = game.selection.building.is_some() || !game.selection.units.is_empty();
-    panel_shown && screen.y >= viewport.y - 36.0 * s * rows as f32
+    game.layout.get().chrome_owns(screen)
 }
 
 /// Applies a frame's events — hardware and injected alike — to the game.
 pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]) {
     for event in events {
         match *event {
-            RawEvent::MouseMove { x, y } => input.mouse = vec2(x, y),
-            RawEvent::Wheel { delta } => game.camera.zoom_at(input.mouse, delta),
+            RawEvent::MouseMove { x, y } => {
+                input.mouse = vec2(x, y);
+                // A held minimap press keeps steering: clamp the cursor
+                // into the minimap so sliding off its edge doesn't stall
+                // the pan mid-gesture.
+                if input.minimap_drag {
+                    let rect = crate::render::minimap_rect(game);
+                    let clamped = vec2(
+                        x.clamp(rect.x, rect.x + rect.w - 1.0),
+                        y.clamp(rect.y, rect.y + rect.h - 1.0),
+                    );
+                    if let Some(world) = crate::render::minimap_world_at(game, clamped) {
+                        game.camera.center = world;
+                        game.camera.pan(Vec2::ZERO);
+                    }
+                }
+                // Middle-drag: the world follows the hand, so the pan
+                // moves against the cursor delta, scaled out of screen
+                // space by the zoom.
+                if let Some(anchor) = input.mmb_anchor {
+                    let delta = vec2(x, y) - anchor;
+                    game.camera.pan(-delta / game.camera.zoom);
+                    input.mmb_anchor = Some(vec2(x, y));
+                }
+            }
+            RawEvent::Wheel { delta } => {
+                let delta = if input.camera_prefs.zoom_inverted {
+                    -delta
+                } else {
+                    delta
+                };
+                game.camera.zoom_at(input.mouse, delta);
+            }
             RawEvent::MouseDown {
                 button: MouseButton::Left,
                 x,
@@ -250,6 +382,14 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     } else if !click_on_hud(game, vec2(x, y)) {
                         let world = game.camera.to_world(vec2(x, y));
                         let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+                        // The ghost already showed red; a misclick must
+                        // not throw away the armed mode on top of it.
+                        if !game.state.can_place(game.human, kind, anchor) {
+                            game.toast("can't build there: needs open, visible ground");
+                            game.sounds_pending
+                                .push((crate::game::SoundKind::Denied, None));
+                            continue;
+                        }
                         let units = game.selection.units.clone();
                         game.issue(Command::Build {
                             units,
@@ -257,8 +397,54 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                             anchor,
                         });
                         game.ping(world, PingKind::Rally);
-                        input.placing = None;
+                        // Shift keeps placing: walls go up one click at
+                        // a time, not one arming at a time.
+                        if !input.resolver.shift_held() {
+                            input.placing = None;
+                        }
                     }
+                    continue;
+                }
+                // Panel cards are buttons: each carries the exact action
+                // its click performs — the same action its hotkey routes.
+                let layout = game.layout.get();
+                let card_hit = layout.cards[..layout.card_count]
+                    .iter()
+                    .chain(layout.queue_slots[..layout.queue_count].iter())
+                    .find(|(r, _)| r.w > 0.0 && r.contains(vec2(x, y)))
+                    .map(|(_, a)| *a);
+                if let Some(action) = card_hit {
+                    match action {
+                        crate::panel::CardAction::Dispatch(a) => {
+                            dispatch_action(game, input, a);
+                        }
+                        crate::panel::CardAction::ArmBuild(kind) => {
+                            input.build_menu = false;
+                            input.placing = Some(kind);
+                            let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
+                            game.toast(format!(
+                                "placing {} ({} scrap): click to build, Esc to cancel",
+                                kind.name(),
+                                cost
+                            ));
+                        }
+                        crate::panel::CardAction::CancelQueue(building, index) => {
+                            game.issue(Command::CancelTrain { building, index });
+                        }
+                        crate::panel::CardAction::ClearRally(building) => {
+                            game.issue(Command::SetRally {
+                                building,
+                                rally: None,
+                            });
+                        }
+                        crate::panel::CardAction::None => {}
+                    }
+                    continue;
+                }
+                // The idle badge cycles workers on click.
+                let badge = game.layout.get().idle_badge;
+                if badge.w > 0.0 && badge.contains(vec2(x, y)) {
+                    cycle_idle_worker(game);
                     continue;
                 }
                 // The minimap owns clicks landing on it: jump the camera,
@@ -267,6 +453,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 if let Some(world) = crate::render::minimap_world_at(game, vec2(x, y)) {
                     game.camera.center = world;
                     game.camera.pan(Vec2::ZERO); // re-clamp
+                    input.minimap_drag = true;
                 } else if !click_on_hud(game, vec2(x, y)) {
                     input.drag_origin = Some(vec2(x, y));
                 }
@@ -277,20 +464,20 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 y,
             } => {
                 input.mouse = vec2(x, y);
+                input.minimap_drag = false;
                 if let Some(origin) = input.drag_origin.take() {
                     let release = vec2(x, y);
-                    let additive = input.is_held(Key::Shift);
-                    if origin.distance(release) <= click_slop() {
-                        let now = mq::get_time();
+                    let additive = input.resolver.shift_held();
+                    if origin.distance(release) <= click_slop(input.ui) {
+                        let now = input.now;
                         let double = !additive
                             && input.last_click.take().is_some_and(|(t, p)| {
-                                now - t < 0.35
-                                    && p.distance(release) <= 12.0 * crate::render::ui_scale()
+                                now - t < 0.35 && p.distance(release) <= 12.0 * input.ui
                             });
                         if double {
-                            select_all_of_kind_on_screen(game, release);
+                            select_all_of_kind_on_screen(game, release, input.ui);
                         } else {
-                            click_select(game, release, additive);
+                            click_select(game, release, additive, input.ui);
                         }
                         input.last_click = Some((now, release));
                     } else {
@@ -308,12 +495,12 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // (ground semantics — entities can't be picked at that
                 // scale); anywhere else, full context ordering. HUD chrome
                 // swallows the click.
-                let queue = input.is_held(Key::Shift);
+                let queue = input.resolver.shift_held();
                 if let Some(world) = crate::render::minimap_world_at(game, vec2(x, y)) {
                     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
                     if let Some(route) = &mut input.patrol_route {
                         if route.len() >= oxide_sim::stats::ORDER_QUEUE_CAP {
-                            game.toast("patrol is full — R to start it");
+                            game.toast("patrol is full: R starts it");
                         } else {
                             route.push(tile);
                             game.ping(vec2(world.x, world.y), PingKind::Rally);
@@ -333,7 +520,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     let world = game.camera.to_world(vec2(x, y));
                     if let Some(route) = &mut input.patrol_route {
                         if route.len() >= oxide_sim::stats::ORDER_QUEUE_CAP {
-                            game.toast("patrol is full — R to start it");
+                            game.toast("patrol is full: R starts it");
                         } else {
                             route
                                 .push(TilePos::new(world.x.floor() as i32, world.y.floor() as i32));
@@ -347,32 +534,27 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
             RawEvent::MouseUp {
                 button: MouseButton::Right,
                 ..
-            }
-            | RawEvent::MouseDown {
-                button: MouseButton::Middle,
-                ..
-            }
-            | RawEvent::MouseUp {
-                button: MouseButton::Middle,
-                ..
             } => {}
+            RawEvent::MouseDown {
+                button: MouseButton::Middle,
+                x,
+                y,
+            } => {
+                input.mmb_anchor = Some(vec2(x, y));
+            }
+            RawEvent::MouseUp {
+                button: MouseButton::Middle,
+                ..
+            } => {
+                input.mmb_anchor = None;
+            }
             RawEvent::KeyDown { key } => {
-                input.held.insert(key);
-                match key {
-                    Key::Num1 => digit_action(game, input, 0),
-                    Key::Num2 => digit_action(game, input, 1),
-                    Key::Num3 => digit_action(game, input, 2),
-                    Key::Num4 => digit_action(game, input, 3),
-                    Key::Num5 => digit_action(game, input, 4),
-                    Key::Num6 => digit_action(game, input, 5),
-                    Key::Num7 => digit_action(game, input, 6),
-                    Key::Num8 => digit_action(game, input, 7),
-                    Key::Num9 => digit_action(game, input, 8),
-                    _ => key_action(game, input, key),
+                if let Some(ActionEvent::Pressed(action)) = input.key_edge(key, true) {
+                    dispatch_action(game, input, action);
                 }
             }
             RawEvent::KeyUp { key } => {
-                input.held.remove(&key);
+                let _ = input.key_edge(key, false);
             }
             // Desktop shell; the mobile shell will map these.
             RawEvent::TouchDown { .. } | RawEvent::TouchMove { .. } | RawEvent::TouchUp { .. } => {}
@@ -383,31 +565,48 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
 /// Continuous per-frame input (held-key panning).
 pub fn update_held(game: &mut Game, input: &InputState, dt: f32) {
     let mut dir = vec2(0.0, 0.0);
-    if input.is_held(Key::Up) {
+    if input.resolver.is_held(Action::PanUp) {
         dir.y -= 1.0;
     }
-    if input.is_held(Key::Down) {
+    if input.resolver.is_held(Action::PanDown) {
         dir.y += 1.0;
     }
-    if input.is_held(Key::Left) {
+    if input.resolver.is_held(Action::PanLeft) {
         dir.x -= 1.0;
     }
-    if input.is_held(Key::Right) {
+    if input.resolver.is_held(Action::PanRight) {
         dir.x += 1.0;
     }
+    if input.camera_prefs.edge_pan && dir == vec2(0.0, 0.0) {
+        // The pointer at a window edge pans — opt-in, because it fights
+        // windowed-mode mousing; keyboard panning always wins when both
+        // speak.
+        const EDGE: f32 = 8.0;
+        let viewport = game.camera.viewport();
+        if input.mouse.x <= EDGE {
+            dir.x -= 1.0;
+        } else if input.mouse.x >= viewport.x - EDGE {
+            dir.x += 1.0;
+        }
+        if input.mouse.y <= EDGE {
+            dir.y -= 1.0;
+        } else if input.mouse.y >= viewport.y - EDGE {
+            dir.y += 1.0;
+        }
+    }
     if dir != vec2(0.0, 0.0) {
-        let world_per_sec = PAN_PX_PER_SEC * crate::render::ui_scale() / game.camera.zoom;
+        let world_per_sec = PAN_PX_PER_SEC * input.camera_prefs.pan_speed / game.camera.zoom;
         game.camera.pan(dir.normalize() * world_per_sec * dt);
     }
 }
 
-fn click_select(game: &mut Game, screen: Vec2, additive: bool) {
+fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f32) {
     let world = game.camera.to_world(screen);
     if !additive {
         game.selection.building = None;
     }
     // Nearest own unit within pick range wins…
-    let radius = pick_radius(game);
+    let radius = pick_radius(game, ui);
     let picked = game
         .state
         .units()
@@ -473,9 +672,9 @@ fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2, additive: bool) {
 }
 
 /// Double-click: everyone of the clicked unit's kind currently on screen.
-fn select_all_of_kind_on_screen(game: &mut Game, screen: Vec2) {
+fn select_all_of_kind_on_screen(game: &mut Game, screen: Vec2, ui: f32) {
     let world = game.camera.to_world(screen);
-    let radius = pick_radius(game);
+    let radius = pick_radius(game, ui);
     let kind = game
         .state
         .units()
@@ -540,10 +739,6 @@ fn digit_action(game: &mut Game, input: &mut InputState, slot: usize) {
 /// Recall (or with Ctrl, assign) a control group; a quick double-tap on
 /// the same slot centers the camera on the group.
 fn group_action(game: &mut Game, input: &mut InputState, slot: usize) {
-    if input.is_held(Key::Ctrl) {
-        input.groups[slot] = game.selection.units.clone();
-        return;
-    }
     // Ownership, not mere existence: after a session change a stale id
     // could name anyone's unit (belt to reset_session's suspenders).
     let alive: Vec<UnitId> = input.groups[slot]
@@ -557,7 +752,7 @@ fn group_action(game: &mut Game, input: &mut InputState, slot: usize) {
     }
     game.selection.units = alive.clone();
     game.selection.building = None;
-    let now = mq::get_time();
+    let now = input.now;
     if input
         .last_recall
         .is_some_and(|(s, t)| s == slot && now - t < 0.4)
@@ -681,9 +876,21 @@ fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     game.ping(world, PingKind::Move);
 }
 
-fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
-    match key {
-        Key::X => {
+fn dispatch_action(game: &mut Game, input: &mut InputState, action: Action) {
+    match action {
+        // Continuous pans live in update_held; Confirm belongs to menus.
+        Action::PanLeft | Action::PanRight | Action::PanUp | Action::PanDown => {}
+        Action::Confirm => {}
+        Action::Slot(n) => digit_action(game, input, (n - 1) as usize),
+        Action::AssignGroup(n) => {
+            // Groups 1-5, like the recall side; the classic layout never
+            // had more.
+            let slot = (n - 1) as usize;
+            if slot < input.groups.len() {
+                input.groups[slot] = game.selection.units.clone();
+            }
+        }
+        Action::StopOrScrap => {
             // Contextual: units selected halt in place; a selected own
             // unfinished site is scrapped for its refund.
             if !game.selection.units.is_empty() {
@@ -699,10 +906,9 @@ fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
                 game.selection.building = None;
             }
         }
-        Key::H => train(game, 0),
-        Key::S => train(game, 1),
-        Key::P => game.paused = !game.paused,
-        Key::B => {
+        Action::TrainSlot(n) => train(game, n as usize),
+        Action::TogglePause => game.paused = !game.paused,
+        Action::ToggleBuildPalette => {
             if input.build_menu {
                 input.build_menu = false;
                 return;
@@ -716,10 +922,37 @@ fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
                 input.build_menu = true;
                 input.placing = None;
             } else {
-                game.toast("select a harvester to build");
+                // No builder in hand — the key still means "I want to
+                // build": grab the nearest own harvester (idle ones
+                // first), select it, and open the palette. The camera
+                // stays put; the machine walks to wherever the player
+                // places.
+                let idle = idle_harvesters(game);
+                let cx = game.camera.center.x.floor() as i32;
+                let cy = game.camera.center.y.floor() as i32;
+                let pick = game
+                    .state
+                    .units()
+                    .iter()
+                    .filter(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+                    .filter(|u| idle.is_empty() || idle.contains(&u.id))
+                    .min_by_key(|u| {
+                        let t = u.tile();
+                        let (dx, dy) = (i64::from(t.x - cx), i64::from(t.y - cy));
+                        (dx * dx + dy * dy, u.id.0)
+                    })
+                    .map(|u| u.id);
+                if let Some(id) = pick {
+                    game.selection.units = vec![id];
+                    game.selection.building = None;
+                    input.build_menu = true;
+                    input.placing = None;
+                } else {
+                    game.toast("no harvester to build with");
+                }
             }
         }
-        Key::R => {
+        Action::Patrol => {
             // First press arms a route; the second sends the circuit.
             match input.patrol_route.take() {
                 None if !game.selection.units.is_empty() => {
@@ -736,8 +969,8 @@ fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
                 }
             }
         }
-        Key::F1 => game.overlay = !game.overlay,
-        Key::Escape => {
+        Action::ToggleOverlay => game.overlay = !game.overlay,
+        Action::Back => {
             // Arming something? Escape abandons that first.
             if input.build_menu {
                 input.build_menu = false;
@@ -754,34 +987,32 @@ fn key_action(game: &mut Game, input: &mut InputState, key: Key) {
             game.selection.units.clear();
             game.selection.building = None;
         }
-        Key::Space => {
+        Action::SetBookmark(slot) => {
+            input.bookmarks[slot as usize] = Some(game.camera.center);
+            game.toast(format!("bookmark {} set", slot + 1));
+        }
+        Action::RecallBookmark(slot) => {
+            if let Some(center) = input.bookmarks[slot as usize] {
+                game.camera.center = center;
+                game.camera.pan(Vec2::ZERO); // re-clamp
+            }
+        }
+        Action::CycleIdleWorker => cycle_idle_worker(game),
+        Action::JumpToLastAlert => {
+            if let Some(world) = game.last_alert {
+                game.camera.center = world;
+                game.camera.pan(Vec2::ZERO); // re-clamp
+            } else {
+                game.toast("no recent alerts");
+            }
+        }
+        Action::HomeCamera => {
             if let Some(center) = game.home_foundry().map(|b| b.center()) {
                 let target = vec2(center.x.to_num::<f32>(), center.y.to_num::<f32>());
                 game.camera.center = target;
                 game.camera.pan(vec2(0.0, 0.0)); // re-clamp
             }
         }
-        // Pan keys are continuous (update_held); Enter is menu-only;
-        // modifiers and group digits are handled in apply_events; A is
-        // reserved.
-        Key::Up
-        | Key::Down
-        | Key::Left
-        | Key::Right
-        | Key::A
-        | Key::N
-        | Key::Enter
-        | Key::Shift
-        | Key::Ctrl
-        | Key::Num1
-        | Key::Num2
-        | Key::Num3
-        | Key::Num4
-        | Key::Num5
-        | Key::Num6
-        | Key::Num7
-        | Key::Num8
-        | Key::Num9 => {}
     }
 }
 
@@ -835,6 +1066,228 @@ fn normalize_wheel(raw: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn headless_game() -> Game {
+        Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0))
+            .expect("embedded skirmish builds")
+    }
+
+    fn click(x: f32, y: f32) -> [RawEvent; 2] {
+        [
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+            },
+        ]
+    }
+
+    #[test]
+    fn bookmarks_remember_and_recall_camera_ground() {
+        let mut game = headless_game();
+        let mut input = InputState::new();
+        let saved = game.camera.center;
+        let chord = |game: &mut Game, input: &mut InputState, ctrl: bool, key: Key| {
+            let mut ev = Vec::new();
+            if ctrl {
+                ev.push(RawEvent::KeyDown { key: Key::Ctrl });
+            }
+            ev.push(RawEvent::KeyDown { key });
+            ev.push(RawEvent::KeyUp { key });
+            if ctrl {
+                ev.push(RawEvent::KeyUp { key: Key::Ctrl });
+            }
+            apply_events(game, input, &ev);
+        };
+        chord(&mut game, &mut input, true, Key::F5);
+        game.camera.center = saved + vec2(6.0, 4.0);
+        chord(&mut game, &mut input, false, Key::F5);
+        assert!(
+            (game.camera.center - saved).length() < 1e-4,
+            "recall returns to the remembered ground"
+        );
+        chord(&mut game, &mut input, false, Key::F6);
+        assert!(
+            (game.camera.center - saved).length() < 1e-4,
+            "an empty slot recalls nothing"
+        );
+    }
+
+    #[test]
+    fn the_cycle_key_walks_idle_harvesters_in_id_order() {
+        let mut game = headless_game();
+        let mut input = InputState::new();
+        let idle = idle_harvesters(&game);
+        assert!(idle.len() >= 2, "premise: skirmish opens with idle workers");
+        let press = |game: &mut Game, input: &mut InputState| {
+            apply_events(
+                game,
+                input,
+                &[
+                    RawEvent::KeyDown { key: Key::N },
+                    RawEvent::KeyUp { key: Key::N },
+                ],
+            );
+        };
+        press(&mut game, &mut input);
+        assert_eq!(game.selection.units, vec![idle[0]]);
+        press(&mut game, &mut input);
+        assert_eq!(game.selection.units, vec![idle[1]], "id order, forward");
+        for _ in 0..idle.len() - 1 {
+            press(&mut game, &mut input);
+        }
+        assert_eq!(game.selection.units, vec![idle[0]], "and wraps");
+    }
+
+    #[test]
+    fn a_misclick_keeps_placement_armed_and_a_shift_click_repeats() {
+        let mut game = headless_game();
+        let mut input = InputState::new();
+        // Arm a turret with a harvester selected (the palette's path).
+        let harvester = game
+            .state
+            .units()
+            .iter()
+            .find(|u| u.kind == UnitKind::Harvester && u.player == game.human)
+            .unwrap()
+            .id;
+        game.selection.units = vec![harvester];
+        input.placing = Some(oxide_sim::BuildingKind::Turret);
+
+        // Skirmish's own foundry footprint is illegal ground: the
+        // misclick toasts and stays armed, staging nothing.
+        let foundry = game.state.buildings()[0].anchor;
+        let bad = game
+            .camera
+            .to_screen(vec2(foundry.x as f32 + 0.5, foundry.y as f32 + 0.5));
+        apply_events(
+            &mut game,
+            &mut input,
+            &[RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: bad.x,
+                y: bad.y,
+            }],
+        );
+        assert!(input.placing.is_some(), "a misclick must not disarm");
+        assert!(game.pending.is_empty(), "and must spend nothing");
+
+        // Shift-click on open visible ground stages and stays armed.
+        let open = game
+            .camera
+            .to_screen(vec2(foundry.x as f32 + 3.5, foundry.y as f32 + 3.5));
+        apply_events(
+            &mut game,
+            &mut input,
+            &[
+                RawEvent::KeyDown { key: Key::Shift },
+                RawEvent::MouseDown {
+                    button: MouseButton::Left,
+                    x: open.x,
+                    y: open.y,
+                },
+            ],
+        );
+        assert_eq!(game.pending.len(), 1, "legal ground stages the site");
+        assert!(input.placing.is_some(), "shift keeps the wall going up");
+
+        // A plain click disarms after staging.
+        apply_events(
+            &mut game,
+            &mut input,
+            &[
+                RawEvent::KeyUp { key: Key::Shift },
+                RawEvent::MouseDown {
+                    button: MouseButton::Left,
+                    x: open.x + 96.0,
+                    y: open.y,
+                },
+            ],
+        );
+        assert!(input.placing.is_none(), "a plain click finishes the job");
+    }
+
+    #[test]
+    fn a_click_on_a_unit_selects_it_headlessly() {
+        // The whole event path — resolver, hit-testing, selection —
+        // exercised with no window: the C5 extraction's proof.
+        let mut game = headless_game();
+        let mut input = InputState::new();
+        let unit = game.state.units()[0].id;
+        let pos = game.state.units()[0].pos;
+        let screen = game
+            .camera
+            .to_screen(vec2(pos.x.to_num::<f32>(), pos.y.to_num::<f32>()));
+        apply_events(&mut game, &mut input, &click(screen.x, screen.y));
+        assert_eq!(game.selection.units, vec![unit]);
+    }
+
+    #[test]
+    fn a_right_click_on_ground_stages_an_attack_move() {
+        let mut game = headless_game();
+        let mut input = InputState::new();
+        let pos = game.state.units()[0].pos;
+        let screen = game
+            .camera
+            .to_screen(vec2(pos.x.to_num::<f32>(), pos.y.to_num::<f32>()));
+        apply_events(&mut game, &mut input, &click(screen.x, screen.y));
+        let mid = game.camera.to_screen(vec2(
+            pos.x.to_num::<f32>() + 4.0,
+            pos.y.to_num::<f32>() + 2.0,
+        ));
+        apply_events(
+            &mut game,
+            &mut input,
+            &[RawEvent::MouseDown {
+                button: MouseButton::Right,
+                x: mid.x,
+                y: mid.y,
+            }],
+        );
+        assert!(
+            game.pending
+                .iter()
+                .any(|c| matches!(c.command, Command::AttackMove { .. })),
+            "fire-at-will ground order staged: {:?}",
+            game.pending
+        );
+    }
+
+    #[test]
+    fn double_click_timing_obeys_the_injected_clock() {
+        let mut game = headless_game();
+        let mut input = InputState::new();
+        let u = &game.state.units()[0];
+        let (kind, pos) = (u.kind, u.pos);
+        let same_kind_total = game
+            .state
+            .units()
+            .iter()
+            .filter(|o| o.kind == kind && o.player == game.human)
+            .count();
+        assert!(same_kind_total > 1, "premise: kin on screen to sweep up");
+        let screen = game
+            .camera
+            .to_screen(vec2(pos.x.to_num::<f32>(), pos.y.to_num::<f32>()));
+        input.now = 10.0;
+        apply_events(&mut game, &mut input, &click(screen.x, screen.y));
+        // A slow second click is just a click...
+        input.now = 11.0;
+        apply_events(&mut game, &mut input, &click(screen.x, screen.y));
+        assert_eq!(game.selection.units.len(), 1, "1.0s apart is two clicks");
+        // ...a fast one is a kind-sweep.
+        input.now = 11.2;
+        apply_events(&mut game, &mut input, &click(screen.x, screen.y));
+        assert!(
+            game.selection.units.len() > 1,
+            "0.2s apart double-clicks into a kind sweep"
+        );
+    }
 
     #[test]
     fn wheel_notches_and_trackpad_swipes_land_in_the_same_range() {

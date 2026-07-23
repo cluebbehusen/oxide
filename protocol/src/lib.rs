@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 
 pub use input::{Key, MouseButton, RawEvent};
 pub use view::{
-    BuildingView, CameraView, PlayerView, StateFilter, StateView, StatusView, UnitView,
+    BuildingView, CameraView, PlayerView, StateFilter, StateView, StatusView, UiView, UnitView,
 };
 
 /// Default TCP port for `--debug-server`.
@@ -47,6 +47,8 @@ pub enum Request {
     },
     /// Camera position, zoom, and visible world rectangle.
     QueryCamera,
+    /// Shell mode and active menu state.
+    QueryUi,
     /// The canonical state fingerprint at the current tick.
     StateHash,
     /// Run sim ticks now (bots included), regardless of pause state, then
@@ -121,6 +123,8 @@ pub enum Reply {
     State(StateView),
     /// Answer to [`Request::QueryCamera`].
     Camera(CameraView),
+    /// Answer to [`Request::QueryUi`].
+    Ui(UiView),
     /// Answer to [`Request::StateHash`].
     Hash(HashView),
     /// Answer to [`Request::AdvanceTicks`].
@@ -304,6 +308,7 @@ mod tests {
             Request::QueryState {
                 filter: StateFilter::default(),
             },
+            Request::QueryUi,
             Request::AdvanceTicks { ticks: 99 },
             Request::SendCommand {
                 player: PlayerId(0),
@@ -363,6 +368,7 @@ mod tests {
                 filter: StateFilter::default(),
             },
             Request::QueryCamera,
+            Request::QueryUi,
             Request::StateHash,
             Request::AdvanceTicks { ticks: 12 },
             Request::Pause,
@@ -392,7 +398,7 @@ mod tests {
             },
         ];
         // A new method with no entry here escapes the wire round-trip.
-        assert_eq!(requests.len(), 15);
+        assert_eq!(requests.len(), 16);
         for req in requests {
             assert_eq!(
                 roundtrip(&req),
@@ -430,6 +436,17 @@ mod tests {
                 viewport: [800.0, 600.0],
                 world_rect: [0.0, 0.0, 25.0, 18.0],
             }),
+            Reply::Ui(UiView {
+                mode: "main_menu".into(),
+                title: Some("Oxide".into()),
+                selected: Some(2),
+                items: vec!["Skirmish".into(), "Quit".into()],
+                visible_range: Some([0, 2]),
+                hover: Some(1),
+                chrome: Some([
+                    32.0, 764.0, 1048.0, 616.0, 220.0, 150.0, 900.0, 0.0, 500.0, 60.0, 200.0,
+                ]),
+            }),
             Reply::Hash(HashView {
                 tick: 5,
                 hash: hash_hex(0x1234),
@@ -451,7 +468,7 @@ mod tests {
             }),
         ];
         // A new reply kind with no entry here escapes the wire round-trip.
-        assert_eq!(replies.len(), 9);
+        assert_eq!(replies.len(), 10);
         for reply in replies {
             assert_eq!(
                 reply_roundtrip(&reply),

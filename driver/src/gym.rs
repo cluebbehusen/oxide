@@ -320,44 +320,65 @@ pub fn neural_cup(
         Difficulty::Veteran,
         Difficulty::Prime,
     ] {
-        let (mut wins, mut draws, mut ticks) = (0u64, 0u64, Vec::new());
-        for seed in 3000..3000 + seeds {
-            for seat in [0u8, 1] {
-                let mut sc = crate::runner::load_scenario(scenario)?;
-                sc.seed = seed;
-                let mut state = sc.build().context("scenario build")?;
-                let faction = sc.players[seat as usize].faction;
-                let mut neural = NeuralBot::with_profile(
-                    PlayerId(seat),
-                    cadence,
-                    net.clone(),
-                    skill,
-                    aggression,
-                    faction,
-                    blunder,
-                    seed,
-                );
-                let mut opponent = Brain::for_tier(PlayerId(1 - seat), seed, tier);
-                for _ in 0..40_000u32 {
-                    let mut commands = neural.act(&state);
-                    commands.extend(opponent.act(&state));
-                    state.tick(&commands);
-                    if state.result().is_some() {
-                        break;
-                    }
-                }
-                ticks.push(state.current_tick());
-                // Score by seat membership, not team id — a team number
-                // only coincides with the seat index on default-team maps.
-                match state.result() {
-                    Some(GameResult::Victory { .. }) => {
-                        if state.winners().contains(&PlayerId(seat)) {
-                            wins += 1;
-                        }
-                    }
-                    _ => draws += 1,
+        // Every (seed, seat) game is an independent deterministic sim, so
+        // they run across threads; aggregation folds a pre-ordered result
+        // vector, keeping the printed numbers identical to the serial
+        // loop whatever the scheduling.
+        let pairs: Vec<(u64, u8)> = (3000..3000 + seeds)
+            .flat_map(|seed| [(seed, 0u8), (seed, 1u8)])
+            .collect();
+        let play = |&(seed, seat): &(u64, u8)| -> Result<(bool, bool, u64)> {
+            let mut sc = crate::runner::load_scenario(scenario)?;
+            sc.seed = seed;
+            let mut state = sc.build().context("scenario build")?;
+            let faction = sc.players[seat as usize].faction;
+            let mut neural = NeuralBot::with_profile(
+                PlayerId(seat),
+                cadence,
+                net.clone(),
+                skill,
+                aggression,
+                faction,
+                blunder,
+                seed,
+            );
+            let mut opponent = Brain::for_tier(PlayerId(1 - seat), seed, tier);
+            for _ in 0..40_000u32 {
+                let mut commands = neural.act(&state);
+                commands.extend(opponent.act(&state));
+                state.tick(&commands);
+                if state.result().is_some() {
+                    break;
                 }
             }
+            // Score by seat membership, not team id — a team number
+            // only coincides with the seat index on default-team maps.
+            let won = matches!(state.result(), Some(GameResult::Victory { .. }))
+                && state.winners().contains(&PlayerId(seat));
+            let draw = !matches!(state.result(), Some(GameResult::Victory { .. }));
+            Ok((won, draw, state.current_tick()))
+        };
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .min(pairs.len().max(1));
+        let chunk = pairs.len().div_ceil(threads);
+        let mut outcomes: Vec<Result<(bool, bool, u64)>> = Vec::with_capacity(pairs.len());
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = pairs
+                .chunks(chunk)
+                .map(|slice| scope.spawn(move || slice.iter().map(play).collect::<Vec<_>>()))
+                .collect();
+            for handle in handles {
+                outcomes.extend(handle.join().expect("cup game thread panicked"));
+            }
+        });
+        let (mut wins, mut draws, mut ticks) = (0u64, 0u64, Vec::new());
+        for outcome in outcomes {
+            let (won, draw, tick) = outcome?;
+            wins += u64::from(won);
+            draws += u64::from(draw);
+            ticks.push(tick);
         }
         ticks.sort_unstable();
         let games = seeds * 2;

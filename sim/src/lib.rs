@@ -24,7 +24,7 @@ mod tick;
 pub mod vision;
 
 pub use command::{Command, PlayerCommand};
-pub use event::{Event, TickReport};
+pub use event::{Event, StallReason, TickReport};
 pub use ids::{BuildingId, PlayerId, Target, UnitId};
 pub use scenario::Scenario;
 pub use state::{Building, Faction, GameResult, Order, Player, State, StateIntegrityError, Unit};

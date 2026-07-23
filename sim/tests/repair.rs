@@ -43,6 +43,7 @@ fn arena(units: Vec<UnitSpec>) -> Scenario {
             },
         ],
         units,
+        meta: None,
     }
 }
 
@@ -211,9 +212,16 @@ fn an_empty_bank_stalls_the_torch() {
         },
     )]);
     run_until(&mut state, 300, |_, events| {
-        events
-            .iter()
-            .any(|e| matches!(e, Event::OrderStalled { unit, .. } if *unit == welder))
+        events.iter().any(|e| {
+            matches!(
+                e,
+                Event::OrderStalled {
+                    unit,
+                    reason: oxide_sim::StallReason::InsufficientScrap,
+                    ..
+                } if *unit == welder
+            )
+        })
     });
     assert_eq!(state.player(PlayerId(0)).scrap, 0, "the last coin burned");
     assert!(

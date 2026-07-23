@@ -45,6 +45,7 @@ fn arena(units: Vec<UnitSpec>) -> Scenario {
             },
         ],
         units,
+        meta: None,
     }
 }
 
@@ -233,6 +234,7 @@ fn attack_move_engages_on_the_way_then_resumes() {
             unit(0, UnitKind::Sentinel, 2, 4),
             unit(1, UnitKind::Harvester, 8, 6),
         ],
+        meta: None,
     };
     let mut state = scenario.build().unwrap();
     let (marcher, bystander) = (state.units()[0].id, state.units()[1].id);
@@ -461,6 +463,7 @@ fn rock_is_cover_until_the_attacker_repositions() {
             unit(0, UnitKind::Sentinel, 4, 3),
             unit(1, UnitKind::Harvester, 6, 3),
         ],
+        meta: None,
     };
     let mut state = scenario.build().unwrap();
     let (attacker, victim) = (state.units()[0].id, state.units()[1].id);
@@ -797,6 +800,7 @@ fn ghost_memory_survives_unseen_demolition_until_revisited() {
             unit(2, UnitKind::Sentinel, 7, 10),
             unit(2, UnitKind::Sentinel, 7, 11),
         ],
+        meta: None,
     };
     let mut state = scenario.build().unwrap();
     let scout = state.units()[0].id;
@@ -1012,6 +1016,7 @@ fn eliminated_players_cannot_command_survivors() {
             unit(2, UnitKind::Sentinel, 7, 3),
             unit(2, UnitKind::Sentinel, 7, 4),
         ],
+        meta: None,
     };
     let mut state = scenario.build().unwrap();
     let survivor = state.units()[0].id;
@@ -1168,6 +1173,7 @@ fn congestion_survives_nonconsecutive_unit_ids() {
             unit(0, UnitKind::Harvester, 5, 2),
             unit(1, UnitKind::Sentinel, 20, 5),
         ],
+        meta: None,
     };
     let mut state = scenario.build().unwrap();
 
@@ -1533,6 +1539,7 @@ fn stalled_leg_drops_the_whole_program() {
         ],
         players: arena(vec![]).players,
         units: vec![unit(0, UnitKind::Harvester, 3, 1)],
+        meta: None,
     };
     let mut state = scenario.build().unwrap();
     let mover = state.units()[0].id;
@@ -1692,6 +1699,7 @@ fn retaliation_keeps_an_attack_movers_destination() {
             unit(0, UnitKind::Sentinel, 3, 2),
             unit(1, UnitKind::Lancer, 9, 7),
         ],
+        meta: None,
     };
     let mut state = scenario.build().unwrap();
     let (marcher, lancer) = (state.units()[0].id, state.units()[1].id);
@@ -1990,6 +1998,7 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
             unit(0, UnitKind::Harvester, 3, 2),
             unit(1, UnitKind::Scuttler, 16, 5),
         ],
+        meta: None,
     };
     let mut state = scenario.build().unwrap();
     let (builder, rat) = (state.units()[0].id, state.units()[1].id);
@@ -2063,6 +2072,7 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
             unit(0, UnitKind::Harvester, 3, 2),
             unit(1, UnitKind::Lancer, 16, 5),
         ],
+        meta: None,
     };
     let mut state = scenario.build().unwrap();
     let (builder, lancer) = (state.units()[0].id, state.units()[1].id);
@@ -2245,6 +2255,7 @@ fn sealed_apart_scenarios_refuse_to_build() {
         ],
         players: arena(vec![]).players,
         units: vec![],
+        meta: None,
     };
     assert!(matches!(
         scenario.build(),
@@ -2709,6 +2720,7 @@ fn unreachable_sites_are_rejected_before_charging() {
         ],
         players: arena(vec![]).players,
         units: vec![unit(0, UnitKind::Harvester, 4, 6)],
+        meta: None,
     };
     let mut state = scenario.build().unwrap();
     let builder = state.units()[0].id;
@@ -2859,6 +2871,7 @@ fn a_fresh_site_cannot_be_corner_cut_diagonally() {
             unit(0, UnitKind::Harvester, 3, 2),
             unit(0, UnitKind::Harvester, 6, 2),
         ],
+        meta: None,
     };
     let mut state = scenario.build().unwrap();
     let (mover, builder) = (state.units()[0].id, state.units()[1].id);
@@ -2937,6 +2950,7 @@ fn a_rejected_build_leaves_no_trace_on_the_hash() {
         ],
         players: arena(vec![]).players,
         units: vec![unit(0, UnitKind::Harvester, 4, 6)],
+        meta: None,
     };
     let mut with_reject = scenario.build().unwrap();
     let mut pristine = scenario.build().unwrap();
@@ -3321,6 +3335,7 @@ fn a_doomed_site_never_comes_online() {
             unit(1, UnitKind::Lancer, 15, 6),
             unit(1, UnitKind::Lancer, 14, 2),
         ],
+        meta: None,
     };
     let mut state = scenario.build().unwrap();
     let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
@@ -3407,4 +3422,76 @@ fn a_doomed_site_never_comes_online() {
         "the volley killed it"
     );
     assert!(state.building(site).is_none());
+}
+
+#[test]
+fn cancel_train_refunds_and_resets_the_head() {
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 4, 6)])
+        .build()
+        .unwrap();
+    let foundry = state
+        .buildings()
+        .iter()
+        .find(|b| b.player == PlayerId(0))
+        .unwrap()
+        .id;
+    let bank = state.players()[0].scrap;
+    state.tick(&[
+        cmd(
+            0,
+            Command::Train {
+                building: foundry,
+                kind: UnitKind::Harvester,
+            },
+        ),
+        cmd(
+            0,
+            Command::Train {
+                building: foundry,
+                kind: UnitKind::Sentinel,
+            },
+        ),
+    ]);
+    for _ in 0..10 {
+        state.tick(&[]);
+    }
+    let b = state.building(foundry).unwrap();
+    assert_eq!(b.queue.len(), 2);
+    assert!(b.progress > 0, "the head has been training");
+    // Cancel the head: full refund, progress resets, the sentinel steps up.
+    state.tick(&[cmd(
+        0,
+        Command::CancelTrain {
+            building: foundry,
+            index: 0,
+        },
+    )]);
+    let b = state.building(foundry).unwrap();
+    assert_eq!(b.queue.len(), 1);
+    assert_eq!(b.queue[0], UnitKind::Sentinel);
+    // The cancel tick's own production phase already advances the
+    // fresh head by one — without the reset this would still read 11+.
+    assert!(b.progress <= 1, "the next machine starts from parts");
+    let cost_h = UnitKind::Harvester.stats().cost;
+    let cost_s = UnitKind::Sentinel.stats().cost;
+    assert_eq!(
+        state.players()[0].scrap,
+        bank - cost_s,
+        "the harvester's {cost_h} came back; only the sentinel stays paid"
+    );
+    // Out-of-range and foreign cancels bounce.
+    let report = state.tick(&[cmd(
+        0,
+        Command::CancelTrain {
+            building: foundry,
+            index: 5,
+        },
+    )]);
+    assert!(
+        report
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::CommandRejected { .. })),
+        "a phantom queue slot is refused"
+    );
 }

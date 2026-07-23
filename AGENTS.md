@@ -118,7 +118,20 @@ Headless, no window needed:
 ```sh
 driver run skirmish --ticks 2000 --bots --map     # summary + ASCII map
 driver render skirmish --ticks 1200 --bots -o out.png
+driver replay-stats replays/session.json          # per-seat series + losses
+driver map-audit scenarios/basalt-spine.json      # routes, fairness, pressure
 ```
+
+Replay UX in the shell: cold launches land on Home; `Replays` browses
+autosaves and `replays/` (watch, delete, honest version badges);
+`oxide-shell --watch <replay>` opens the read-only playback viewer
+(pause, seek, speed — no recorder; backward seek restores an
+in-memory checkpoint and re-simulates; checkpoint cadence stretches
+with record length so no replay retains more than 64 state clones,
+and interactive loads cap at 2M claimed ticks). The pause menu's Watch
+Replay plays the live session so far. `sh tools/package_macos.sh`
+builds `dist/Oxide.app` (resources resolve executable-relative when
+bundled, cwd otherwise).
 
 `screenshots/` and `replays/` are gitignored scratch output; keep goldens
 and test fixtures inside crate `tests/` directories.
@@ -145,7 +158,8 @@ and test fixtures inside crate `tests/` directories.
   appear in `driver/src/render.rs` and `shell/src/render.rs` — keep them
   in sync.
 - **Scenarios** are JSON with ASCII maps: `.` ground, `,` rubble (cosmetic
-  ground; the byte is hashed but nothing else changes), `#` rock, `s` scrap
+  ground; the byte is hashed but nothing else changes), `#` rock, `^` peak
+  (blocks ground, air, and fire — see the design bullet), `s` scrap
   node, `S` rich node (double salvage), `1`-`8` Foundry anchors (top-left
   of 2x2). (`w` appears in *rendered* ASCII for wreck tiles but is never
   authorable.) `PlayerSpec.team` groups seats; omitted means a team of
@@ -178,12 +192,17 @@ in via `PlayerSpec.bot_config`; a seat without one gets the legacy
 rule-cascade bot, which is what keeps pre-0.7 replays reproducing
 (that bot is team-blind by design — team seats must set a config).
 
-The gym contract (v3) is 59 named integer features and 21 masked
+The gym contract (v4) is 63 named integer features and 21 masked
 macro actions; training slots are role-indexed where the factions
-differ, so one action space serves both rosters. `FEATURE_NAMES`
-rides in the gym hello and the Python wrapper asserts its own list
-against it — Rust/Python column skew dies at handshake, not in a
-silently mistrained run.
+differ, so one action space serves both rosters. Since v4 every
+positional feature rides as relative 0-1000 against the actual map
+dimensions (fixed scales broke on the large map classes), map dims
+ride along (march timing is an absolute-distance skill), and two
+fog-safe shell senses report incoming shells near the economy
+(impact tile currently visible — the arc renderer's rule) and own
+shells in flight. `FEATURE_NAMES` rides in the gym hello and the
+Python wrapper asserts its own list against it — Rust/Python column
+skew dies at handshake, not in a silently mistrained run.
 
 The weights are a generated artifact with a regeneration ritual, like
 the goldens. From `tools/train/` (uv + PyTorch):
@@ -210,8 +229,12 @@ what lowering will see; never build a reward out of what the agent
 happens to know about the enemy — under fog, "known" is an
 information artifact, and shaping on it teaches blindness; and
 teammate skill is bought with duel sharpness unless consolidated from
-an already-strong parent (the 0.8 artifact's lineage: BC bridge →
-league peak → anchored peak → team-consolidated peak, gated 300/300).
+an already-strong parent (the 0.9 artifact's lineage: v4 BC bridge →
+league peak ckpt-750 → anchored team consolidation ckpt-875, gated
+1200/1200 with zero draws; the 0.8 lineage read the same way). A
+resumed league's KL anchor anneals off the ABSOLUTE update clock —
+re-normalize the coefficient to the resume point (0.1/0.995^N) or a
+consolidation run starts effectively unanchored and collapses.
 Team training runs two flavors — self-team (`team`: the learner holds
 both chairs) and mixed-ally (`team2`: a scripted Brain drives the
 teammate) — and per-seat episode truncation pads a dead learner's
@@ -303,7 +326,14 @@ Hard < Expert forever).
 - **Sound follows sight.** Positional clips require the event's tile to be
   visible to the human; own losses and milestones are always audible. The
   queue is dropped after `advance_ticks` bulk jumps, and a per-kind rate
-  limiter keeps battles from clipping into noise.
+  limiter keeps battles from clipping into noise. Since 0.9 sounds carry
+  a world position and attenuate with camera distance (volume only —
+  macroquad has no pan). One deliberate bend: a hostile artillery launch
+  whose muzzle is fogged still plays, anchored at its IMPACT point — the
+  warning survives, loudest when shells fall on you, and nothing about
+  the sound tracks the hidden gun. That is the same information boundary
+  the gym's incoming-shell sense draws (impact tile visible, never the
+  launch), and the arc renderer clips hostile trails the same way.
 - **Rally points are role-aware**: a rallied scrap node sends fresh
   harvesters straight to `Harvest`; combat units attack-move to the rally;
   the goal snaps at spawn time, not set time. Whether the rally counts as
@@ -319,15 +349,27 @@ Hard < Expert forever).
 - **Air is a second movement domain, not a special case.** Flyers take
   the straight line (no A*), ignore terrain, construction claims, and
   ground collision, collide only with each other, never block
-  foundations, and accept any on-map tile as a goal — rock included.
-  Group orders split by domain so each half routes sensibly. Terrain
-  cover (the rock LOS rule) is ground-vs-ground only. A ground chaser
+  foundations, and accept any on-map tile as a goal — rock included,
+  peaks excluded (goals ring-snap off them). Group orders split by
+  domain so each half routes sensibly. Terrain cover (the rock LOS
+  rule) is ground-vs-ground only; peaks are the exception below. A ground chaser
   whose flying victim parks over impassable ground marches to a
   stand-in instead: ring-scanned candidates filtered to the weapon's
   Euclidean reach (ring corners sit √2 past their Chebyshev radius),
   first routeable one wins — reaching weapon range is the job;
   occupying the victim's tile never was. No candidate in reach stalls
   the order honestly.
+- **Peaks (`^`) are the mountain nothing crosses.** A third terrain:
+  blocks ground movement (like rock), blocks air (the one thing the
+  sky routes around — flyers A* over air passability when a peak
+  breaks their straight line), blocks direct fire in every domain
+  pairing, and breaks Bombard/Bastion arcs — siege-safe geography.
+  Vision deliberately ignores peaks (cover is a firing rule, not a
+  stealth system). Wrecks never land on them; `known_rock` in the bot
+  observation includes them as known impassable terrain. Authoring:
+  the map border is rock and rock is open sky, so a ridge meant to
+  wall flyers must claim its border cells too; a rock plug inside a
+  peak wall makes an air-only door (Basalt Spine's centerpiece).
 - **Combat is a weapons matrix.** Every kind carries a weapon list
   (cap 2) with per-weapon cooldowns and target-domain masks; the weapon
   covering the ordered target is the primary, sidearms pick their own
@@ -361,10 +403,51 @@ Hard < Expert forever).
   no owner, no memory, no license for a targeted attack. Team sight is
   shared by stamping every teammate's discs into each seat's view;
   `State::hostile` routes every allegiance decision.
+- **The command panel is one grammar** (shell/src/panel.rs): a pure
+  model (portrait, sprite cards carrying the exact Action their
+  hotkey dispatches, queue thumbnails carrying CancelQueue) built
+  from the selection, drawn by the renderer, hit-tested through the
+  LayoutModel's card rects. Buildings and units share it; tooltips
+  derive weapon lines from stats and name the live chord. The sim
+  gained `CancelTrain` (full refund, head progress resets) for the
+  queue ghosts.
+- **The tutorial advances on demonstration** (shell/src/tutorial.rs):
+  six cards watching `Game::demo` flags set from the human's own
+  command stream — never a timer, never a "next" button. Dismissible;
+  re-entry is another tutorial match from Home.
 - **The build palette is data-driven.** `B` opens it; digits are
   contextual (palette first, then a selected factory's produce slots
   filtered to the seat's faction, then control groups). The old
   hardcoded B/N hotkeys are gone.
+- **Input is semantic since 0.9.** `poll_events` is the only hardware
+  reader; RawEvents resolve through a `BindingMap`
+  (shell/src/action.rs) into Actions — "Oxide Classic" is the default
+  profile, the Controls screen rebinds with conflict refusal, and
+  chord matching grades exact → same-Ctrl → bare. The frame loop
+  injects ui scale, wall clock, and camera prefs into `InputState`,
+  so the whole event path runs headless (input.rs has real
+  integration tests against the sim).
+- **Chrome geometry has one source.** The renderer computes a
+  `LayoutModel` (top bar, panel band + clickable slots, minimap, idle
+  badge) as it draws and publishes it on `Game`; hit-testing and
+  QueryUi read the same model. Never hand-roll a second copy of any
+  chrome rect — that class of bug (the 0.8 palette click-leak)
+  is structurally extinct only while this holds. ui_scale() is the
+  USER factor only: macroquad's coordinate space is logical, and
+  multiplying dpi in is the double-scaling disease (fixed 0.9).
+- **Presentation config persists** (shell/src/config.rs): bindings,
+  volumes, ui scale, camera feel, window size, reduced motion —
+  platform config dir, versioned separately from replays, silent
+  defaults on any trouble (and replace-not-rename on save, for
+  Windows).
+- **Screens are draft-driven.** The New Match wizard's choices live in
+  a NewMatchDraft that survives Back; destructive pause choices
+  confirm with Cancel preselected; menus scroll independently of
+  selection and activate on release-inside (menu_ux tests spawn real
+  windows and are #[ignore]d — run them explicitly, never in CI).
+- **Stalls carry reasons** (`StallReason`): own-state facts only —
+  routes, banks, footing. A reason must never derive from what fog
+  hides; the enum doc enforces the principle on future variants.
 
 ## Known issues (tracked, deliberate)
 
@@ -382,9 +465,15 @@ Hard < Expert forever).
   identical-dial neural mirror matches; win-rate gates neutralize it by
   scoring seat-swapped pairs, and shipped matches deal varied
   personalities, so no seat holds a standing edge in practice.
-- **The 0.7 Standard-stall blemish is gone in 0.8** — the promoted
-  artifact swept its gate 300/300 with zero draws; air harass gave the
-  policy the anti-turtle tool the old roster lacked.
+- **The 0.7 Standard-stall blemish stayed gone in 0.9** — the
+  promoted artifact swept 1200/1200 with zero draws (ckpt-900 of the
+  same run resurrected the stall with 13 tick-cap draws and was
+  disqualified for it; the draw rule keeps earning its keep).
+- **Parallel Works leaned 10-2 east under the BRIDGE artifact at
+  Medium** (faction asymmetry on a geometrically exact map — the
+  air-transparent belts rewarded the Cupric roster). Re-probed with
+  the shipped 0.9 artifact: 6/6 decisive at 3-3. Bot-vs-bot leans are
+  artifact-specific; re-measure per artifact before blaming a map.
 - **All-neural Expert 2v2 can stall on open maps and leans west on
   Twin Forges** (measured: 12/12 thirty-k-tick draws on Open Quarry at
   Expert; 12-2 west in decisive Twin Forges games). Both are artifacts

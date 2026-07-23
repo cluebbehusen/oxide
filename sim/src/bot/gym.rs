@@ -24,7 +24,7 @@ use chassis::grid::TilePos;
 
 /// Bump when actions or features change shape — recorded checkpoints
 /// and shipped weights must refuse mismatched worlds.
-pub const GYM_VERSION: u32 = 3;
+pub const GYM_VERSION: u32 = 4;
 
 /// The macro menu, one action per think. Training slots are
 /// role-indexed where the factions differ: one action means "train my
@@ -81,7 +81,7 @@ pub enum Action {
 pub const ACTION_COUNT: usize = 21;
 
 /// Number of entries in the feature vector.
-pub const FEATURE_COUNT: usize = 59;
+pub const FEATURE_COUNT: usize = 63;
 
 /// One name per feature index, emitted in the gym hello and asserted
 /// by the trainer — Rust/Python index skew fails loudly at handshake
@@ -146,6 +146,10 @@ pub const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
     "ally_foundry_hp",
     "ally_distress",
     "faction",
+    "map_w",
+    "map_h",
+    "incoming_shells",
+    "my_shells_in_flight",
 ];
 
 impl Action {
@@ -400,6 +404,20 @@ impl GymBot {
         let ally_distress = i64::from(obs.enemy_units.iter().any(|u| {
             u.kind.stats().can_fight() && ally_foundries.iter().any(|f| u.tile.chebyshev(*f) <= 8)
         }));
+        // Positions ride as relative 0-1000 against the actual map, so
+        // no coordinate ever extrapolates past the training range on a
+        // bigger field. Orientation composed first: flip-then-scale is
+        // 1000-minus-scaled, seat symmetry intact.
+        let rel_x = |p: TilePos| i64::from(p.x) * 1000 / i64::from(obs.map_width - 1).max(1);
+        let rel_y = |p: TilePos| i64::from(p.y) * 1000 / i64::from(obs.map_height - 1).max(1);
+        // Hostile shells about to land on the economy: impact tiles the
+        // team currently sees (the observation enforces that), within 8
+        // of an own building.
+        let incoming_shells = obs
+            .incoming_shells
+            .iter()
+            .filter(|t| obs.my_buildings.iter().any(|b| t.chebyshev(b.anchor) <= 8))
+            .count() as i64;
 
         let features: [i64; FEATURE_COUNT] = [
             obs.tick as i64,
@@ -440,15 +458,15 @@ impl GymBot {
             my_strength,
             army_strength,
             enemy_strength,
-            home.map_or(-1, |h| i64::from(h.x)),
-            home.map_or(-1, |h| i64::from(h.y)),
-            enemy_site.map_or(-1, |s| i64::from(s.x)),
-            enemy_site.map_or(-1, |s| i64::from(s.y)),
+            home.map_or(-1, &rel_x),
+            home.map_or(-1, &rel_y),
+            enemy_site.map_or(-1, &rel_x),
+            enemy_site.map_or(-1, &rel_y),
             intel_age,
             (self.seen_strength / 100) as i64,
             seen_age,
-            seen_pos.map_or(-1, |p| i64::from(p.x)),
-            seen_pos.map_or(-1, |p| i64::from(p.y)),
+            seen_pos.map_or(-1, &rel_x),
+            seen_pos.map_or(-1, &rel_y),
             role_count(Role::Bombard, true),
             role_count(Role::AntiAir, true),
             role_count(Role::AirGround, true),
@@ -463,15 +481,15 @@ impl GymBot {
             aa_strength(true),
             aa_strength(false),
             obs.blips.len() as i64,
-            nearest_blip.map_or(-1, |p| i64::from(p.x)),
-            nearest_blip.map_or(-1, |p| i64::from(p.y)),
+            nearest_blip.map_or(-1, &rel_x),
+            nearest_blip.map_or(-1, &rel_y),
             obs.known_wrecks.len() as i64,
             obs.known_wrecks
                 .iter()
                 .map(|(_, v)| i64::from(*v))
                 .sum::<i64>(),
-            nearest_wreck.map_or(-1, |p| i64::from(p.x)),
-            nearest_wreck.map_or(-1, |p| i64::from(p.y)),
+            nearest_wreck.map_or(-1, rel_x),
+            nearest_wreck.map_or(-1, rel_y),
             damaged.len() as i64,
             repair_deficit,
             obs.ally_units.len() as i64,
@@ -479,6 +497,10 @@ impl GymBot {
             ally_foundry_hp,
             ally_distress,
             i64::from(obs.faction == crate::state::Faction::Cupric),
+            i64::from(obs.map_width),
+            i64::from(obs.map_height),
+            incoming_shells,
+            obs.my_shells as i64,
         ];
 
         let mut mask = [false; ACTION_COUNT];

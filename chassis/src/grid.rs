@@ -141,6 +141,45 @@ impl<T> Grid<T> {
     }
 
     /// Overwrites every cell with clones of `value`.
+    /// Fills `[x0, x1]` on row `y` with `value`, clamped to the grid;
+    /// fully out-of-range spans are a no-op. The bulk write behind
+    /// sight-disc stamping — one slice fill instead of per-cell lookups.
+    pub fn fill_row_span(&mut self, y: i32, x0: i32, x1: i32, value: T)
+    where
+        T: Clone,
+    {
+        if y < 0 || y >= self.height {
+            return;
+        }
+        let x0 = x0.max(0);
+        let x1 = x1.min(self.width - 1);
+        if x0 > x1 {
+            return;
+        }
+        let base = (y as usize) * (self.width as usize);
+        self.cells[base + x0 as usize..=base + x1 as usize].fill(value);
+    }
+
+    /// Row `y` as a slice, or `None` out of range — the bulk-read
+    /// counterpart of [`Grid::fill_row_span`].
+    pub fn row(&self, y: i32) -> Option<&[T]> {
+        if y < 0 || y >= self.height {
+            return None;
+        }
+        let base = (y as usize) * (self.width as usize);
+        Some(&self.cells[base..base + self.width as usize])
+    }
+
+    /// Row `y` as a mutable slice, or `None` out of range.
+    pub fn row_mut(&mut self, y: i32) -> Option<&mut [T]> {
+        if y < 0 || y >= self.height {
+            return None;
+        }
+        let base = (y as usize) * (self.width as usize);
+        Some(&mut self.cells[base..base + self.width as usize])
+    }
+
+    /// Sets every cell to `value`.
     pub fn fill(&mut self, value: T)
     where
         T: Clone,

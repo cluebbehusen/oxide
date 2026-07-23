@@ -44,6 +44,7 @@ fn open_arena(units: Vec<UnitSpec>) -> Scenario {
             },
         ],
         units,
+        meta: None,
     }
 }
 
@@ -266,6 +267,8 @@ fn wounded_members_rotate_to_the_rear_permanently() {
         known_wrecks: Vec::new(),
         blips: Vec::new(),
         faction: oxide_sim::Faction::Ferrous,
+        my_shells: 0,
+        incoming_shells: Vec::new(),
     };
     let sentinel = |id: u32, player: u8, x: i32, y: i32, hp: u32| UnitObs {
         id: UnitId(id),
