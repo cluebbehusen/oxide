@@ -84,7 +84,7 @@ pub fn unit_flavor(kind: UnitKind) -> &'static str {
         UnitKind::Sentinel => "Line infantry. Holds ground and pokes back at the sky.",
         UnitKind::Scuttler => "Fast raider. Eats undefended harvest lines.",
         UnitKind::Lancer => "Rail sniper. Outranges turrets; melts if reached.",
-        UnitKind::Bombard => "Artillery. Shells past its own eyes — spot for it.",
+        UnitKind::Bombard => "Artillery. Fires beyond its sight; needs a spotter.",
         UnitKind::Flakhound => "Tracked anti-air. The sky answers to it.",
         UnitKind::Buzzard => "Heavy ground-attack flyer.",
         UnitKind::Talon => "Air-superiority hunter.",
@@ -260,7 +260,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
                 action: CardAction::CancelQueue(building.id, i as u8),
                 enabled: true,
                 why: None,
-                desc: vec!["Click to cancel — full refund.".into()],
+                desc: vec!["Click to cancel; full refund.".into()],
             });
         }
         return Some(panel);
@@ -340,10 +340,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
                 action: CardAction::ArmBuild(kind),
                 enabled,
                 why,
-                desc: vec![
-                    building_flavor(kind).to_string(),
-                    "Full price on placement; cancel refunds by hp.".into(),
-                ],
+                desc: vec![building_flavor(kind).to_string()],
             });
         }
     }

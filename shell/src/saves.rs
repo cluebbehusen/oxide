@@ -91,7 +91,7 @@ fn scan(dir: &std::path::Path, out: &mut Vec<(std::time::SystemTime, ReplayEntry
             )
         } else {
             format!(
-                "recorded on sim v{} — this build speaks v{SIM_VERSION}, unwatchable",
+                "recorded on sim v{}; this build runs v{SIM_VERSION}, unwatchable",
                 replay.meta.sim_version
             )
         };

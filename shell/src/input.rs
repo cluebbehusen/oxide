@@ -42,6 +42,12 @@ pub struct InputState {
     pub(crate) minimap_drag: bool,
     /// Middle-drag pan anchor: the world follows the hand.
     pub(crate) mmb_anchor: Option<Vec2>,
+    /// Last *hardware* cursor position the poll saw. Change detection
+    /// must compare against this, not `mouse`: injected pointer events
+    /// move `mouse`, and comparing the idle OS cursor against it once
+    /// re-emitted a phantom MouseMove every frame — which fought every
+    /// injected drag for the pointer.
+    hw_mouse: Vec2,
     /// Control groups 1..=5 (assigned with Ctrl+N, recalled with N).
     groups: [Vec<UnitId>; crate::action::CONTROL_GROUPS],
     /// Previous click, for double-click detection.
@@ -90,6 +96,7 @@ impl InputState {
             drag_origin: None,
             minimap_drag: false,
             mmb_anchor: None,
+            hw_mouse: vec2(0.0, 0.0),
             groups: Default::default(),
             last_click: None,
             last_recall: None,
@@ -186,10 +193,11 @@ const KEY_MAP: [(Key, mq::KeyCode); 42] = [
 
 /// Converts this frame's hardware input into events. Purely a poll→event
 /// adapter; interpretation happens in [`apply_events`].
-pub fn poll_events(input: &InputState) -> Vec<RawEvent> {
+pub fn poll_events(input: &mut InputState) -> Vec<RawEvent> {
     let mut events = Vec::new();
     let (mx, my) = mq::mouse_position();
-    if vec2(mx, my) != input.mouse {
+    if vec2(mx, my) != input.hw_mouse {
+        input.hw_mouse = vec2(mx, my);
         events.push(RawEvent::MouseMove { x: mx, y: my });
     }
     let wheel = mq::mouse_wheel().1;
@@ -377,7 +385,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         // The ghost already showed red; a misclick must
                         // not throw away the armed mode on top of it.
                         if !game.state.can_place(game.human, kind, anchor) {
-                            game.toast("can't build there — needs open, visible ground");
+                            game.toast("can't build there: needs open, visible ground");
                             game.sounds_pending
                                 .push((crate::game::SoundKind::Denied, None));
                             continue;
@@ -492,7 +500,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
                     if let Some(route) = &mut input.patrol_route {
                         if route.len() >= oxide_sim::stats::ORDER_QUEUE_CAP {
-                            game.toast("patrol is full — R to start it");
+                            game.toast("patrol is full: R starts it");
                         } else {
                             route.push(tile);
                             game.ping(vec2(world.x, world.y), PingKind::Rally);
@@ -512,7 +520,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     let world = game.camera.to_world(vec2(x, y));
                     if let Some(route) = &mut input.patrol_route {
                         if route.len() >= oxide_sim::stats::ORDER_QUEUE_CAP {
-                            game.toast("patrol is full — R to start it");
+                            game.toast("patrol is full: R starts it");
                         } else {
                             route
                                 .push(TilePos::new(world.x.floor() as i32, world.y.floor() as i32));

@@ -396,7 +396,27 @@ fn draw_tiles(game: &Game, sprites: &Sprites) {
             };
             let (overlay, flip) = match (tile.terrain, scrap) {
                 (oxide_sim::map::Terrain::Rock, _) => (Some(sprites.rock(h % 4)), h % 7 < 3),
-                (oxide_sim::map::Terrain::Peak, _) => (Some(sprites.peak(h % 4)), h % 7 < 3),
+                (oxide_sim::map::Terrain::Peak, _) => {
+                    // Connectivity picks the art: interior wall tiles
+                    // read as solid rock, the skyline row carries the
+                    // crests, and connected edges share a fixed profile
+                    // so ridges join without seams. Never flipped —
+                    // a flip would break those joins.
+                    let peaky = |dx: i32, dy: i32| {
+                        game.state
+                            .map()
+                            .tile(TilePos::new(x + dx, y + dy))
+                            .is_some_and(|t| t.terrain == oxide_sim::map::Terrain::Peak)
+                    };
+                    let source = if peaky(0, -1) {
+                        sprites.peak_body(h % 2)
+                    } else if !peaky(-1, 0) && !peaky(1, 0) && !peaky(0, 1) {
+                        sprites.peak_lone(h % 2)
+                    } else {
+                        sprites.peak_sky(peaky(-1, 0), peaky(1, 0), h % 2)
+                    };
+                    (Some(source), false)
+                }
                 (_, 0) if wreck > 0 => (Some(sprites.wreck_pile()), h % 5 < 2),
                 (_, 0) => (None, false),
                 (_, s) => (Some(sprites.scrap(s, SCRAP_NODE_AMOUNT)), false),
@@ -1339,58 +1359,57 @@ fn draw_overlay(game: &Game, alpha: f32) {
 
 fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
     let s = ui_scale();
-    // Top bar.
-    draw_rectangle(0.0, 0.0, screen_width(), 32.0 * s, PANEL);
-    let me = game.state.player(game.human);
-    let my_units = game
-        .state
-        .units()
-        .iter()
-        .filter(|u| u.player == game.human)
-        .count();
-    draw_text(
-        format!("SCRAP {}", me.scrap),
-        12.0 * s,
-        22.0 * s,
-        22.0 * s,
-        SCRAP_COLOR,
-    );
-    draw_text(
-        format!("UNITS {my_units}"),
-        150.0 * s,
-        22.0 * s,
-        22.0 * s,
-        BONE,
-    );
-    draw_text(
-        format!("TICK {}", game.state.current_tick()),
-        270.0 * s,
-        22.0 * s,
-        22.0 * s,
-        BONE_FAINT,
-    );
-    // Idle harvesters are money on the ground; the badge nags in danger
-    // red and clicking it (or N) cycles through them.
-    let idle = crate::input::idle_harvesters(game).len();
-    let idle_badge = if idle > 0 {
-        let label = format!("IDLE {idle}");
-        let dims = measure_text(&label, None, (22.0 * s) as u16, 1.0);
-        let x = 360.0 * s;
-        draw_text(&label, x, 22.0 * s, 22.0 * s, DANGER);
-        Rect::new(x - 4.0 * s, 4.0 * s, dims.width + 8.0 * s, 26.0 * s)
-    } else {
-        Rect::new(0.0, 0.0, 0.0, 0.0)
-    };
-    if game.paused {
-        draw_text("PAUSED (P)", 420.0 * s, 22.0 * s, 22.0 * s, DANGER);
-    } else if (game.speed - 1.0).abs() > f64::EPSILON {
+    // A spectator commands nothing: no bank, no unit count, no idle
+    // nag — the viewer's transport bar is its own chrome. The layout
+    // still publishes below so the minimap stays clickable.
+    let mut idle_badge = Rect::new(0.0, 0.0, 0.0, 0.0);
+    if !game.spectate {
+        // Top bar.
+        draw_rectangle(0.0, 0.0, screen_width(), 32.0 * s, PANEL);
+        let me = game.state.player(game.human);
+        let my_units = game
+            .state
+            .units()
+            .iter()
+            .filter(|u| u.player == game.human)
+            .count();
         draw_text(
-            format!("SPEED x{:.2}", game.speed),
-            420.0 * s,
+            format!("SCRAP {}", me.scrap),
+            12.0 * s,
             22.0 * s,
             22.0 * s,
             SCRAP_COLOR,
         );
+        draw_text(
+            format!("UNITS {my_units}"),
+            150.0 * s,
+            22.0 * s,
+            22.0 * s,
+            BONE,
+        );
+        // Idle harvesters are money on the ground; the badge nags in
+        // danger red and clicking it (or N) cycles through them. Tick
+        // count is a debug fact; it rides the F1 overlay, not the
+        // player's bar.
+        let idle = crate::input::idle_harvesters(game).len();
+        if idle > 0 {
+            let label = format!("IDLE {idle}");
+            let dims = measure_text(&label, None, (22.0 * s) as u16, 1.0);
+            let x = 270.0 * s;
+            draw_text(&label, x, 22.0 * s, 22.0 * s, DANGER);
+            idle_badge = Rect::new(x - 4.0 * s, 4.0 * s, dims.width + 8.0 * s, 26.0 * s);
+        }
+        if game.paused {
+            draw_text("PAUSED (P)", 360.0 * s, 22.0 * s, 22.0 * s, DANGER);
+        } else if (game.speed - 1.0).abs() > f64::EPSILON {
+            draw_text(
+                format!("SPEED x{:.2}", game.speed),
+                360.0 * s,
+                22.0 * s,
+                22.0 * s,
+                SCRAP_COLOR,
+            );
+        }
     }
 
     *game.panel_model.borrow_mut() = crate::panel::build(game, &input.bindings);
@@ -1425,8 +1444,8 @@ fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
 
     // Controls hint — it lives in the same bottom band as the selection
     // panel, so it yields whenever a panel is up (the panel carries its
-    // own key prompts).
-    if !panel_shown {
+    // own key prompts). Spectators command nothing; they get no coach.
+    if !panel_shown && !game.spectate {
         use crate::action::{Action, BindingMap};
         let label = |a: Action| {
             input
@@ -1448,16 +1467,34 @@ fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
         } else {
             format!("{}/{}/{}/{} pan", pans[0], pans[1], pans[2], pans[3])
         };
-        let hint = format!(
-            "LMB select · RMB move/engage · 1-9 train · {} build · {} · Esc menu · {} debug",
-            label(Action::ToggleBuildPalette),
+        // The minimap owns the bottom-right corner; the hint keeps to
+        // the room left of it, dropping trailing segments rather than
+        // running underneath.
+        let segments = [
+            "LMB select".to_string(),
+            "RMB move/engage".to_string(),
+            "1-9 train".to_string(),
+            format!("{} build", label(Action::ToggleBuildPalette)),
             pan,
-            label(Action::ToggleOverlay),
-        );
-        let width = measure_text(&hint, None, (16.0 * s) as u16, 1.0).width;
+            "Esc menu".to_string(),
+            format!("{} debug", label(Action::ToggleOverlay)),
+        ];
+        let max_w = minimap_rect(game).x - 20.0 * s;
+        let mut hint = String::new();
+        for seg in segments {
+            let candidate = if hint.is_empty() {
+                seg
+            } else {
+                format!("{hint} · {seg}")
+            };
+            if measure_text(&candidate, None, (16.0 * s) as u16, 1.0).width > max_w {
+                break;
+            }
+            hint = candidate;
+        }
         draw_text(
             &hint,
-            screen_width() - width - 10.0 * s,
+            12.0 * s,
             screen_height() - 10.0 * s,
             16.0 * s,
             BONE_FAINT,
@@ -1505,7 +1542,7 @@ fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
             .iter()
             .any(|b| b.player == game.human && b.kind == oxide_sim::BuildingKind::Foundry)
     {
-        let text = "ELIMINATED — SPECTATING";
+        let text = "ELIMINATED - SPECTATING";
         let dims = measure_text(text, None, (24.0 * s) as u16, 1.0);
         let x = (screen_width() - dims.width) * 0.5;
         draw_rectangle(
@@ -1555,9 +1592,10 @@ fn mini_faction_color(faction: oxide_sim::Faction) -> Color {
     }
 }
 
-/// Where the minimap sits (bottom-right, above the hint line) for a map of
-/// `map_w`×`map_h` tiles in a `viewport`-pixel window. Pure — shared with
-/// input hit-testing and unit tests.
+/// Where the minimap sits (flush bottom-right, matching the command
+/// band's bottom edge) for a map of `map_w`×`map_h` tiles in a
+/// `viewport`-pixel window. Pure — shared with input hit-testing and
+/// unit tests.
 pub fn minimap_rect_for(map_w: i32, map_h: i32, viewport: Vec2) -> Rect {
     minimap_rect_scaled(map_w, map_h, viewport, ui_scale())
 }
@@ -1568,7 +1606,7 @@ pub fn minimap_rect_scaled(map_w: i32, map_h: i32, viewport: Vec2, s: f32) -> Re
     let mh = map_h as f32;
     let scale = (MINIMAP_MAX.x * s / mw).min(MINIMAP_MAX.y * s / mh);
     let (w, h) = (mw * scale, mh * scale);
-    Rect::new(viewport.x - w - 12.0 * s, viewport.y - h - 34.0 * s, w, h)
+    Rect::new(viewport.x - w - 12.0 * s, viewport.y - h - 12.0 * s, w, h)
 }
 
 /// Where the minimap sits this frame.
@@ -1732,7 +1770,7 @@ fn draw_result_overlay(game: &Game) {
                 );
             }
         }
-        let hint = "Esc — menu";
+        let hint = "Esc opens the menu";
         let hint_dims = measure_text(hint, None, (20.0 * s) as u16, 1.0);
         draw_text(
             hint,
@@ -1764,6 +1802,9 @@ fn draw_panel(
     use crate::panel::{CardAction, CardIcon};
     let s = ui_scale();
     let mini = minimap_rect(game);
+    // Cards stop short of the minimap, but the band itself spans the
+    // whole width and runs under it — one bottom strip, no sliver of
+    // world showing beneath the minimap while the band sits flush.
     let right = if mini.w > 0.0 {
         (mini.x - 8.0 * s).max(300.0 * s)
     } else {
@@ -1786,8 +1827,20 @@ fn draw_panel(
     let top = screen_height() - band_h;
     // Opaque, unlike the translucent HUD panels: machines drifting
     // beneath the band would ghost through the cards.
-    draw_rectangle(0.0, top, right, band_h, Color::from_rgba(20, 20, 24, 255));
-    draw_rectangle(0.0, top, right, 1.5 * s, Color::new(0.6, 0.6, 0.65, 0.4));
+    draw_rectangle(
+        0.0,
+        top,
+        screen_width(),
+        band_h,
+        Color::from_rgba(20, 20, 24, 255),
+    );
+    draw_rectangle(
+        0.0,
+        top,
+        screen_width(),
+        1.5 * s,
+        Color::new(0.6, 0.6, 0.65, 0.4),
+    );
 
     let faction = game.state.player(game.human).faction;
     let icon_source = |icon: &CardIcon| match icon {
@@ -2308,7 +2361,7 @@ mod tests {
         for s in [1.0, 2.0] {
             let rect = minimap_rect_scaled(40, 24, VIEWPORT, s);
             assert_eq!(rect.x + rect.w, VIEWPORT.x - 12.0 * s);
-            assert_eq!(rect.y + rect.h, VIEWPORT.y - 34.0 * s);
+            assert_eq!(rect.y + rect.h, VIEWPORT.y - 12.0 * s);
         }
     }
 

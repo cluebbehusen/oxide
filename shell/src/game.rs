@@ -360,7 +360,7 @@ impl Game {
         const MAX_LOAD_TICKS: u64 = 2_000_000;
         anyhow::ensure!(
             total <= MAX_LOAD_TICKS,
-            "replay spans {total} ticks — beyond the {MAX_LOAD_TICKS}-tick interactive load limit \
+            "replay spans {total} ticks, beyond the {MAX_LOAD_TICKS}-tick interactive load limit \
              (the headless driver replays without one)"
         );
         // Bots carry memory since 0.5 (raid flags, node blacklists), so

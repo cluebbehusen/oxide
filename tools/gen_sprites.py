@@ -211,69 +211,156 @@ def rock(variant: int) -> None:
     finish(img, px, f"rock_{variant}")
 
 
-def peak(variant: int) -> None:
-    """A mountain tile: layered ridges with scree texture, hard shadow
-    faces, lit edges, and a bright crest — height, not flat triangles.
-    Four variants so a range never obviously repeats."""
-    px = 64
-    img, d = canvas(px, color=(*PEAK_DARK, 255))
-    rng = random.Random(211 + variant * 71)
+def _mix(a, b, t):
+    return tuple(int(x + (y - x) * t) for x, y in zip(a, b))
 
-    def mix(a, b, t):
-        return tuple(int(x + (y - x) * t) for x, y in zip(a, b))
 
-    # Scree: faint flecks across the whole mass so the base reads as
-    # rock, not paint.
-    for _ in range(46):
-        x, y = rng.randrange(0, 64), rng.randrange(0, 64)
-        tone = mix(PEAK_DARK, PEAK, rng.random() * 0.5)
-        d.rectangle([s(x), s(y), s(x + 1), s(y + 1)], fill=(*tone, 255))
+# Skyline height where a ridge meets a connected tile side. Every
+# connected edge uses this exact height, which is what lets adjacent
+# ridge tiles join without a visible seam.
+PEAK_EDGE_TOP = 40
 
-    layouts = [
-        [(12, 30, 24), (40, 44, 10), (56, 30, 18)],
-        [(20, 38, 16), (48, 34, 20)],
-        [(8, 36, 20), (34, 30, 26), (58, 44, 12)],
-        [(16, 32, 26), (46, 40, 14)],
-    ]
-    for ridge_i, (cx, half, apex_y) in enumerate(layouts[variant % 4]):
-        apex_x = cx + rng.randrange(-3, 4)
-        apex_y = apex_y + rng.randrange(-4, 5)
-        left_x = apex_x - half - rng.randrange(0, 6)
-        right_x = apex_x + half + rng.randrange(0, 6)
-        tone = mix(PEAK_DARK, PEAK, 0.45 + 0.3 * (ridge_i % 2))
-        # Hard shadow silhouette one step behind the lit body sells
-        # depth against the neighbors.
+
+def _peak_mass(d, rng, sky, caps):
+    """Fill and facet a mountain mass under a left-to-right piecewise
+    skyline. `caps` are indices into `sky` marking crest apexes; only
+    the tallest earns the bright cap, and only when it stands high."""
+
+    def sky_y(x):
+        for (x0, y0), (x1, y1) in zip(sky, sky[1:]):
+            if x0 <= x <= x1:
+                t = 0.0 if x1 == x0 else (x - x0) / (x1 - x0)
+                return y0 + (y1 - y0) * t
+        return 64.0
+
+    base = _mix(PEAK_DARK, PEAK, 0.4)
+    poly = [(s(x), s(y)) for x, y in sky]
+    poly += [(s(sky[-1][0]), s(64)), (s(sky[0][0]), s(64))]
+    d.polygon(poly, fill=(*base, 255))
+    tallest = min(caps, key=lambda i: sky[i][1])
+    for i in caps:
+        ax, ay = sky[i]
+        # Lit west face sells the light direction; a thin lit ridge
+        # line runs down the east shoulder.
+        left = max(sky[0][0] + 1, ax - 16)
+        fall = left + (ax - left) * 0.45
         d.polygon(
-            [(s(left_x - 2), s(66)), (s(apex_x - 1), s(apex_y + 3)), (s(right_x + 3), s(66))],
-            fill=(*mix(PEAK_DARK, (20, 19, 27), 0.5), 255),
+            [(s(left), s(64)), (s(ax), s(ay)), (s(fall), s(64))],
+            fill=(*_mix(base, PEAK_LIGHT, 0.5), 255),
         )
-        d.polygon(
-            [(s(left_x), s(66)), (s(apex_x), s(apex_y)), (s(right_x), s(66))],
-            fill=(*tone, 255),
-        )
-        # Lit west face.
-        fall_x = left_x + (apex_x - left_x) * 0.45
-        d.polygon(
-            [(s(left_x), s(66)), (s(apex_x), s(apex_y)), (s(fall_x), s(66))],
-            fill=(*mix(tone, PEAK_LIGHT, 0.5), 255),
-        )
-        # A thin lit ridge line running down the east shoulder.
         d.line(
-            [(s(apex_x), s(apex_y)), (s(apex_x + (right_x - apex_x) * 0.6), s(apex_y + (66 - apex_y) * 0.55))],
-            fill=(*mix(tone, PEAK_LIGHT, 0.7), 255),
+            [(s(ax), s(ay)), (s(ax + 8), s(ay + (64 - ay) * 0.5))],
+            fill=(*_mix(base, PEAK_LIGHT, 0.7), 255),
             width=SS,
         )
-        # Crest cap on the tallest ridge of the tile.
-        if ridge_i == 0 or apex_y < 14:
+        if i == tallest and ay < 16:
             d.polygon(
-                [
-                    (s(apex_x - 3), s(apex_y + 7)),
-                    (s(apex_x), s(apex_y - 1)),
-                    (s(apex_x + 3), s(apex_y + 7)),
-                ],
-                fill=(*mix(PEAK_LIGHT, BONE, 0.55), 255),
+                [(s(ax - 2), s(ay + 5)), (s(ax), s(ay - 1)), (s(ax + 2), s(ay + 5))],
+                fill=(*_mix(PEAK_LIGHT, BONE, 0.45), 255),
             )
-    finish(img, px, f"peak_{variant}")
+    # Scree inside the mass so the rock reads as rock, not paint.
+    for _ in range(46):
+        x, y = rng.randrange(0, 64), rng.randrange(0, 64)
+        if y > sky_y(x) + 2:
+            tone = _mix(PEAK_DARK, PEAK, rng.random() * 0.5)
+            d.rectangle([s(x), s(y), s(x + 1), s(y + 1)], fill=(*tone, 255))
+
+
+def peak_sky(w_conn: int, e_conn: int, variant: int) -> None:
+    """The skyline row of a mountain range: crests against open sky over
+    a full-width rock base (the base always spans the tile so a wall
+    below joins cleanly). Connected sides meet the edge at
+    PEAK_EDGE_TOP; open sides fall to a low toe at the corner."""
+    px = 64
+    img, d = canvas(px)
+    rng = random.Random(509 + w_conn * 131 + e_conn * 47 + variant * 71)
+    sky = []
+    if w_conn:
+        sky += [(0, PEAK_EDGE_TOP), (5, PEAK_EDGE_TOP - rng.randrange(0, 4))]
+    else:
+        sky += [(0, 59 + rng.randrange(0, 3)), (7, 48 + rng.randrange(0, 6))]
+    first_cap = len(sky)
+    if variant == 0:
+        sky += [
+            (17 + rng.randrange(-3, 4), 13 + rng.randrange(0, 6)),
+            (31 + rng.randrange(-2, 3), 32 + rng.randrange(0, 5)),
+            (45 + rng.randrange(-3, 4), 9 + rng.randrange(0, 6)),
+        ]
+    else:
+        sky += [
+            (23 + rng.randrange(-4, 5), 20 + rng.randrange(0, 5)),
+            (35 + rng.randrange(-2, 3), 30 + rng.randrange(0, 4)),
+            (46 + rng.randrange(-3, 4), 7 + rng.randrange(0, 5)),
+        ]
+    caps = [first_cap, first_cap + 2]
+    if e_conn:
+        sky += [(59, PEAK_EDGE_TOP - rng.randrange(0, 4)), (64, PEAK_EDGE_TOP)]
+    else:
+        sky += [(57, 48 + rng.randrange(0, 6)), (64, 59 + rng.randrange(0, 3))]
+    _peak_mass(d, rng, sky, caps)
+    finish(img, px, f"peak_sky_{w_conn}{e_conn}_{variant}")
+
+
+def peak_lone(variant: int) -> None:
+    """A single standing peak, feet inset so the ground shows at the
+    corners instead of a hard square cut."""
+    px = 64
+    img, d = canvas(px)
+    rng = random.Random(823 + variant * 71)
+    foot_l = 5 + rng.randrange(0, 4)
+    foot_r = 57 + rng.randrange(0, 4)
+    if variant == 0:
+        sky = [
+            (foot_l, 62),
+            (24 + rng.randrange(-2, 3), 15 + rng.randrange(0, 5)),
+            (36, 34 + rng.randrange(0, 4)),
+            (46 + rng.randrange(-2, 3), 24 + rng.randrange(0, 4)),
+            (foot_r, 62),
+        ]
+        caps = [1, 3]
+    else:
+        sky = [
+            (foot_l, 62),
+            (30 + rng.randrange(-3, 4), 12 + rng.randrange(0, 5)),
+            (foot_r, 62),
+        ]
+        caps = [1]
+    _peak_mass(d, rng, sky, caps)
+    finish(img, px, f"peak_lone_{variant}")
+
+
+def peak_body(variant: int) -> None:
+    """Interior of a mountain wall: solid high rock filling the tile,
+    textured but calm — the skyline row above carries the drama. Edges
+    stay uniform so any two body tiles join seamlessly."""
+    px = 64
+    base = _mix(PEAK_DARK, PEAK, 0.35)
+    img, d = canvas(px, color=(*base, 255))
+    rng = random.Random(977 + variant * 71)
+    for _ in range(64):
+        x, y = rng.randrange(0, 64), rng.randrange(0, 64)
+        tone = _mix(PEAK_DARK, PEAK, rng.random() * 0.55)
+        d.rectangle([s(x), s(y), s(x + 1), s(y + 1)], fill=(*tone, 255))
+    # Short ridge spines and shadow pockets, kept off the edges so the
+    # texture never betrays the tile grid.
+    for _ in range(2 + variant):
+        x0 = rng.randrange(8, 56)
+        y0 = rng.randrange(4, 18)
+        y1 = rng.randrange(44, 58)
+        drift = rng.randrange(-12, 13)
+        d.line(
+            [(s(x0), s(y0)), (s(x0 + drift), s(y1))],
+            fill=(*_mix(base, PEAK_LIGHT, 0.3), 255),
+            width=SS,
+        )
+    for _ in range(3):
+        x, y = rng.randrange(4, 46), rng.randrange(4, 48)
+        wd, ht = rng.randrange(6, 14), rng.randrange(5, 10)
+        d.polygon(
+            [(s(x), s(y + ht)), (s(x + wd * 0.5), s(y)), (s(x + wd), s(y + ht))],
+            fill=(*_mix(base, PEAK_DARK, 0.55), 255),
+        )
+    finish(img, px, f"peak_body_{variant}")
 
 
 def scrap_pile(name: str, seed: int, pieces: int, spread: float, lift: float) -> None:
@@ -916,8 +1003,12 @@ def main() -> None:
     for i in range(4):
         rock(i)
     rock_skirt()
-    for i in range(4):
-        peak(i)
+    for v in range(2):
+        peak_body(v)
+        peak_lone(v)
+        for w in (0, 1):
+            for e in (0, 1):
+                peak_sky(w, e, v)
     decal("decal_crack", 41, "crack")
     decal("decal_plate", 42, "plate")
     decal("decal_stain", 43, "stain")

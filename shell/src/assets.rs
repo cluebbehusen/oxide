@@ -15,7 +15,10 @@ pub struct Sprites {
     texture: Texture2D,
     ground: [Rect; 6],
     rock: [Rect; 4],
-    peak: [Rect; 4],
+    /// Skyline row of a range, indexed `w_conn * 4 + e_conn * 2 + variant`.
+    peak_sky: [Rect; 8],
+    peak_lone: [Rect; 2],
+    peak_body: [Rect; 2],
     turret_barrel: [Rect; 2],
     rock_skirt: Rect,
     decals: [Rect; 4],
@@ -112,12 +115,18 @@ impl Sprites {
                 rect("rock_2")?,
                 rect("rock_3")?,
             ],
-            peak: [
-                rect("peak_0")?,
-                rect("peak_1")?,
-                rect("peak_2")?,
-                rect("peak_3")?,
+            peak_sky: [
+                rect("peak_sky_00_0")?,
+                rect("peak_sky_00_1")?,
+                rect("peak_sky_01_0")?,
+                rect("peak_sky_01_1")?,
+                rect("peak_sky_10_0")?,
+                rect("peak_sky_10_1")?,
+                rect("peak_sky_11_0")?,
+                rect("peak_sky_11_1")?,
             ],
+            peak_lone: [rect("peak_lone_0")?, rect("peak_lone_1")?],
+            peak_body: [rect("peak_body_0")?, rect("peak_body_1")?],
             turret_barrel: [
                 rect("turret_barrel_ferrous")?,
                 rect("turret_barrel_cupric")?,
@@ -182,9 +191,22 @@ impl Sprites {
         }]
     }
 
-    /// A peak variant's atlas region.
-    pub fn peak(&self, variant: usize) -> Rect {
-        self.peak[variant % self.peak.len()]
+    /// The skyline row of a mountain range: crests against open sky.
+    /// `w_conn`/`e_conn` say whether the ridge continues into the
+    /// neighboring tile on that side; connected sides meet the edge at
+    /// a fixed height so adjacent tiles join without a seam.
+    pub fn peak_sky(&self, w_conn: bool, e_conn: bool, variant: usize) -> Rect {
+        self.peak_sky[(w_conn as usize) * 4 + (e_conn as usize) * 2 + (variant % 2)]
+    }
+
+    /// A single standing peak with inset feet.
+    pub fn peak_lone(&self, variant: usize) -> Rect {
+        self.peak_lone[variant % self.peak_lone.len()]
+    }
+
+    /// Interior of a mountain wall: solid rock, seamless on every edge.
+    pub fn peak_body(&self, variant: usize) -> Rect {
+        self.peak_body[variant % self.peak_body.len()]
     }
 
     /// The soft shadow a rock casts on a neighboring ground tile

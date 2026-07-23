@@ -51,16 +51,15 @@ pub const STEPS: [Step; 6] = [
         title: "Raise a building",
         body: &[
             "Select a harvester, click a structure card (or B, then a digit),",
-            "then click open ground. Red tint means the sim will refuse —",
-            "try somewhere rocky once and watch it say no.",
+            "then click open ground. Red tint means you can't build there.",
         ],
     },
     Step {
         title: "Arm yourself",
         body: &[
             "Train a fighter: a Sentinel from the Foundry holds ground.",
-            "The Fabricator (a build card) unlocks the whole roster —",
-            "hover any card to see how a machine fights.",
+            "The Fabricator (a build card) unlocks the whole roster.",
+            "Hover any card to see how a machine fights.",
         ],
     },
     Step {

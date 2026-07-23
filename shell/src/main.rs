@@ -546,6 +546,8 @@ struct PlaybackSession {
     paused: bool,
     accum: f32,
     held: [bool; 4],
+    /// A held minimap press steers the camera, like live play.
+    minimap_drag: bool,
     /// Whether the viewer was opened from a live pause menu — leaving
     /// returns there; every other origin goes Home. A tick-count
     /// heuristic resurrected matches Main Menu had already discarded.
@@ -575,6 +577,7 @@ impl PlaybackSession {
             paused: false,
             accum: 0.0,
             held: [false; 4],
+            minimap_drag: false,
             from_pause: false,
         })
     }
@@ -716,7 +719,7 @@ async fn run() -> Result<()> {
         let mut events = if args.automation {
             Vec::new()
         } else {
-            input::poll_events(&input)
+            input::poll_events(&mut input)
         };
         events.append(&mut injected);
 
@@ -1021,7 +1024,7 @@ async fn run() -> Result<()> {
                     .as_ref()
                     .is_some_and(|sc| sc.players.len() > 2);
                 sub_menu.draw(if team_map {
-                    "how hard should they think? (sets every AI seat — your ally too)"
+                    "how hard should they think? (sets every AI seat, your ally too)"
                 } else {
                     "how hard should it think?"
                 });
@@ -1046,7 +1049,7 @@ async fn run() -> Result<()> {
                 }
                 render::draw(&game, &sprites, &input);
                 veil();
-                sub_menu.draw("every one is the same mind, dialed differently");
+                sub_menu.draw("how should they fight?");
             }
             Mode::FactionMenu => {
                 let escaped = events
@@ -1062,7 +1065,7 @@ async fn run() -> Result<()> {
                         mode = Mode::PersonalityMenu;
                         render::draw(&game, &sprites, &input);
                         veil();
-                        sub_menu.draw("every one is the same mind, dialed differently");
+                        sub_menu.draw("how should they fight?");
                         continue;
                     }
                     draft.faction_choice = choice;
@@ -1162,7 +1165,41 @@ async fn run() -> Result<()> {
                     let mut leave = false;
                     for e in &events {
                         match e {
-                            RawEvent::MouseMove { x, y } => input.mouse = vec2(*x, *y),
+                            RawEvent::MouseMove { x, y } => {
+                                input.mouse = vec2(*x, *y);
+                                // A held minimap press keeps steering,
+                                // clamped so sliding off the edge doesn't
+                                // stall the pan — same feel as live play.
+                                if pb.minimap_drag {
+                                    let rect = render::minimap_rect(&pb.game);
+                                    let clamped = vec2(
+                                        x.clamp(rect.x, rect.x + rect.w - 1.0),
+                                        y.clamp(rect.y, rect.y + rect.h - 1.0),
+                                    );
+                                    if let Some(world) = render::minimap_world_at(&pb.game, clamped)
+                                    {
+                                        pb.game.camera.center = world;
+                                        pb.game.camera.pan(vec2(0.0, 0.0));
+                                    }
+                                }
+                            }
+                            RawEvent::MouseDown {
+                                button: MouseButton::Left,
+                                x,
+                                y,
+                            } => {
+                                input.mouse = vec2(*x, *y);
+                                if let Some(world) = render::minimap_world_at(&pb.game, input.mouse)
+                                {
+                                    pb.game.camera.center = world;
+                                    pb.game.camera.pan(vec2(0.0, 0.0));
+                                    pb.minimap_drag = true;
+                                }
+                            }
+                            RawEvent::MouseUp {
+                                button: MouseButton::Left,
+                                ..
+                            } => pb.minimap_drag = false,
                             RawEvent::Wheel { delta } => {
                                 let delta = if config.camera.zoom_inverted {
                                     -*delta
@@ -1318,7 +1355,7 @@ async fn run() -> Result<()> {
                 render::draw(&game, &sprites, &input);
                 veil();
                 let subtitle = if replay_shelf.is_empty() {
-                    "nothing recorded yet — finish a match or quit one mid-way".to_string()
+                    "nothing recorded yet: finish a match or quit one mid-way".to_string()
                 } else if matches!(mode, Mode::Replays { arming: Some(row) } if row == sub_menu.selected)
                 {
                     "press X again to delete this record".to_string()
