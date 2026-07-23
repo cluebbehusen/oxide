@@ -548,7 +548,7 @@ impl Mixer {
 /// render vehicle whose state gets replaced after every advance — its
 /// recorder, sounds, and effects are simply never fed.
 struct PlaybackSession {
-    engine: oxide_driver::playback::Playback,
+    engine: oxide_kit::playback::Playback,
     game: Game,
     speed: f32,
     paused: bool,
@@ -570,7 +570,7 @@ impl PlaybackSession {
 
     fn from_replay(replay: GameReplay) -> Result<Self> {
         let scenario = replay.setup.clone();
-        let engine = oxide_driver::playback::Playback::load(replay)?;
+        let engine = oxide_kit::playback::Playback::load(replay)?;
         let mut game = Game::new(scenario)?;
         // Spectator truth: fog-free, but NOT the developer overlay —
         // playback must look like the game, not the debugger.
@@ -1181,8 +1181,7 @@ async fn run() -> Result<()> {
                     let mut replay = game.recorder.clone();
                     let total = game.state.current_tick();
                     replay.meta.ticks = Some(total);
-                    game.end_stats =
-                        oxide_driver::stats::compute(&replay, (total / 48).max(1)).ok();
+                    game.end_stats = oxide_kit::stats::compute(&replay, (total / 48).max(1)).ok();
                 }
                 render::draw(&game, &sprites, &input);
                 if let Some(t) = &tutorial {

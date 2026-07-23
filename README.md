@@ -142,6 +142,8 @@ sim/        oxide-sim — every game rule, pure and headless. One entry point:
             State::tick(commands). No floats, no clocks, no hash maps.
 protocol/   debug-protocol types (JSON lines) + agent-readable state views
 shell/      macroquad renderer, single input funnel, debug server. Disposable.
+kit/        Shared toolkit: headless runner, replay playback + stats,
+            the CPU software renderer behind goldens and previews
 driver/     CLI harness: headless runs, replay verification, byte-exact
             golden images (CPU-rendered), live-game client, smoke test
 scenarios/  match definitions with ASCII maps

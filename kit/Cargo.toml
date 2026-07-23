@@ -1,20 +1,16 @@
 [package]
-name = "oxide-driver"
+name = "oxide-kit"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
-description = "Headless harness and live-game client for Oxide"
+description = "Shared engine-side toolkit: playback, replay stats, software renderer"
 
 [dependencies]
 chassis = { workspace = true }
 oxide-sim = { workspace = true }
-oxide-protocol = { workspace = true }
-oxide-kit = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 anyhow = { workspace = true }
-clap = { version = "4", features = ["derive"] }
 tiny-skia = "0.11"
 
 [lints.rust]

@@ -337,7 +337,7 @@ impl PreviewCache {
                     None => Scenario::skirmish(),
                 };
                 let state = scenario.build().ok()?;
-                let pixmap = oxide_driver::render::render_state(&state);
+                let pixmap = oxide_kit::render::render_state(&state);
                 let texture = Texture2D::from_rgba8(
                     pixmap.width() as u16,
                     pixmap.height() as u16,

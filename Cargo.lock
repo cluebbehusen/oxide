@@ -551,10 +551,22 @@ dependencies = [
  "anyhow",
  "chassis",
  "clap",
+ "oxide-kit",
  "oxide-protocol",
  "oxide-sim",
  "serde",
  "serde_json",
+ "tiny-skia",
+]
+
+[[package]]
+name = "oxide-kit"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "chassis",
+ "oxide-sim",
+ "serde",
  "tiny-skia",
 ]
 
@@ -576,7 +588,7 @@ dependencies = [
  "chassis",
  "clap",
  "macroquad",
- "oxide-driver",
+ "oxide-kit",
  "oxide-protocol",
  "oxide-sim",
  "png",

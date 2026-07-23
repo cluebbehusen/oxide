@@ -25,8 +25,7 @@ pub const TICK_DT: f32 = 1.0 / TICKS_PER_SECOND as f32;
 /// ticks are cheap enough that a full frame of them costs well under 1 ms.
 const MAX_TICKS_PER_FRAME: u32 = 24;
 
-/// The concrete session replay type.
-pub type GameReplay = Replay<Scenario, PlayerCommand>;
+pub use oxide_kit::GameReplay;
 
 /// What the player currently has selected.
 #[derive(Default)]
@@ -249,7 +248,7 @@ pub struct Game {
     pub panel_model: std::cell::RefCell<Option<crate::panel::Panel>>,
     /// End-of-match statistics, computed once from the recorder when
     /// the result lands (the record IS the match — a re-execution).
-    pub end_stats: Option<oxide_driver::stats::MatchStats>,
+    pub end_stats: Option<oxide_kit::stats::MatchStats>,
     /// What the player has demonstrably done — the tutorial's evidence.
     pub demo: crate::tutorial::Demo,
     /// Fog-free viewing without the debug chrome — the playback
@@ -355,7 +354,7 @@ impl Game {
         // Loading replays synchronously on the frame loop: a structurally
         // valid file can still claim an absurd duration and freeze the UI
         // for minutes. ~28 game-hours is beyond any honest session.
-        const MAX_LOAD_TICKS: u64 = 2_000_000;
+        const MAX_LOAD_TICKS: u64 = oxide_kit::MAX_REPLAY_TICKS;
         anyhow::ensure!(
             total <= MAX_LOAD_TICKS,
             "replay spans {total} ticks, beyond the {MAX_LOAD_TICKS}-tick interactive load limit \

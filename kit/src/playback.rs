@@ -8,7 +8,7 @@
 //! a seeked position can never diverge from a straight run, and the
 //! test below holds that as a hash identity.
 
-use crate::runner::GameReplay;
+use crate::GameReplay;
 use anyhow::Result;
 use oxide_sim::{SIM_VERSION, State};
 

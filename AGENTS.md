@@ -23,7 +23,8 @@ screenshots you read back and judge with your own eyes.
 | `oxide-sim` | `sim/` | All Oxide game rules. `State::tick(&[PlayerCommand])` is the only way anything happens. The bots live here too, but *outside* the tick pipeline — command sources like the mouse: the shipped **neural ladder** (`bot::NeuralBot`, embedded quantized weights, Easy/Medium/Hard/Expert + a personality knob), the scripted `bot::Brain` tiers (fog-honest, training anchors and benchmarks), and the classic 0.6 `bot::Bot` (what replays without a `bot_config` reproduce). |
 | `oxide-protocol` | `protocol/` | Debug-protocol types: JSON-lines envelope, tagged requests/replies, `RawEvent` input events (touch included for the future mobile shell), and `StateView` (floats + ASCII map — legible, not exact; exactness is the hash's job). |
 | `oxide-shell` | `shell/` | macroquad renderer, the single input funnel, HUD, debug server. Nothing here may affect game outcomes except by staging tick-stamped commands. |
-| `oxide-driver` | `driver/` | CLI harness: headless scenario runs, replay verification, byte-exact golden images (tiny-skia, CPU-only), live-game client, automated smoke test. Also a library (`runner`/`render`/`client`/`smoke`). |
+| `oxide-kit` | `kit/` | Shared engine-side toolkit: the headless scenario/replay `runner`, the replay `playback` engine (viewer and CLI), `stats` extraction (post-match screens, `replay-stats`), and the CPU software `render`er (tiny-skia) behind goldens and map previews. Exists so the shell never depends on the dev harness. |
+| `oxide-driver` | `driver/` | CLI harness: headless scenario runs, replay verification, byte-exact golden images, live-game client, automated smoke test. A library too (`client`/`smoke`/`audit` plus re-exports of the kit modules). |
 
 Built for reuse in a later, bigger game: `chassis` wholesale, the protocol's
 envelope/raw-event design, the driver's harness patterns. Game-specific and
