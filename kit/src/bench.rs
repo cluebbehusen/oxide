@@ -57,8 +57,8 @@ pub fn mass_battle(per_side: u32, seed: u64) -> Scenario {
         units.push(UnitSpec {
             player: 1,
             kind: u.kind,
-            x: (w - 1) as i32 - u.x,
-            y: (h - 1) as i32 - u.y,
+            x: w - 1 - u.x,
+            y: h - 1 - u.y,
         });
     }
     Scenario {
