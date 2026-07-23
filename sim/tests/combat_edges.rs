@@ -181,6 +181,104 @@ fn a_ground_chaser_stalls_when_no_standing_room_reaches_a_flyer_deep_in_rock() {
 }
 
 #[test]
+fn a_fogged_flyer_footing_never_leaks_through_the_stall_reason() {
+    // The fog-safety rule for stall reasons: NoFiringPosition derives
+    // from the victim's footing, so it may only be spoken while the
+    // team sees that ground. Here the chase is ordered in sight, the
+    // flyer then parks deep inside a rock slab far beyond the chaser's
+    // vision — the stall must say NoRoute, because saying
+    // NoFiringPosition would tell the player the unseen flyer sits
+    // over impassable ground.
+    let scenario = Scenario {
+        name: "fogged-flyer".into(),
+        seed: 42,
+        map: vec![
+            "##########################".into(),
+            "#1.......................#".into(),
+            "#........................#".into(),
+            "#........................#".into(),
+            "#....##################..#".into(),
+            "#....##################..#".into(),
+            "#....##################..#".into(),
+            "#....##################..#".into(),
+            "#....##################..#".into(),
+            "#....##################..#".into(),
+            "#....##################..#".into(),
+            "#....##################..#".into(),
+            "#....##################..#".into(),
+            "#....##################..#".into(),
+            "#....##################..#".into(),
+            "#....##################..#".into(),
+            "#....##################..#".into(),
+            "#....##################..#".into(),
+            "#....##################..#".into(),
+            "#....##################..#".into(),
+            "#......................2.#".into(),
+            "#........................#".into(),
+            "##########################".into(),
+        ],
+        players: players(),
+        units: vec![
+            unit(0, UnitKind::Flakhound, 4, 2),
+            unit(1, UnitKind::Wisp, 10, 2),
+        ],
+        meta: None,
+    };
+    let mut state = scenario.build().unwrap();
+    let (flak, wisp) = (state.units()[0].id, state.units()[1].id);
+    assert!(
+        state.can_see(PlayerId(0), state.unit(wisp).unwrap().tile()),
+        "the chase is ordered against a visible flyer"
+    );
+
+    // Both orders land the same tick: the chase begins in sight, and
+    // the flyer heads for the heart of the slab, far past vision.
+    state.tick(&[
+        cmd(
+            0,
+            Command::Attack {
+                units: vec![flak],
+                target: Target::Unit(wisp),
+                queue: false,
+            },
+        ),
+        cmd(
+            1,
+            Command::Move {
+                units: vec![wisp],
+                goal: TilePos::new(14, 11),
+                queue: false,
+            },
+        ),
+    ]);
+
+    let mut stalled = None;
+    for _ in 0..600 {
+        let report = state.tick(&[]);
+        if let Some(reason) = report.events.iter().find_map(|e| match e {
+            Event::OrderStalled { unit, reason, .. } if *unit == flak => Some(*reason),
+            _ => None,
+        }) {
+            stalled = Some((
+                reason,
+                state.can_see(PlayerId(0), state.unit(wisp).unwrap().tile()),
+            ));
+            break;
+        }
+    }
+    let (reason, saw_victim) = stalled.expect("the impossible chase stalls");
+    assert!(
+        !saw_victim,
+        "the scenario must exercise the fogged case: the victim's tile is unseen at the stall"
+    );
+    assert_eq!(
+        reason,
+        oxide_sim::StallReason::NoRoute,
+        "an unseen victim's footing must not narrow the reason to NoFiringPosition"
+    );
+}
+
+#[test]
 fn a_sidearm_downs_a_flyer_without_pulling_the_main_gun_off_its_order() {
     // A Sentinel ordered onto a ground Scuttler keeps that target while its
     // air sidearm independently works a Darter hovering in reach. The

@@ -713,6 +713,11 @@ async fn run() -> Result<()> {
 
         if let Some(rx) = &debug_rx {
             while let Ok(incoming) = rx.try_recv() {
+                // An injected event is consumed by the NEXT frame; any
+                // query drained after it in the same burst would answer
+                // from the pre-input frame. Hold the rest of the queue
+                // until the event has actually been felt.
+                let holds_queries = matches!(incoming.request, Request::InjectEvent { .. });
                 handle_request(
                     incoming,
                     &mut game,
@@ -724,6 +729,9 @@ async fn run() -> Result<()> {
                     &mut tutorial,
                     &mut playback,
                 );
+                if holds_queries {
+                    break;
+                }
             }
         }
 
@@ -733,6 +741,11 @@ async fn run() -> Result<()> {
             input::poll_events(&mut input)
         };
         events.append(&mut injected);
+        // Start-of-frame modifier truth, saved before the fold below:
+        // the Controls capture replays this frame's edges in order from
+        // this baseline, so a chord fully pressed AND released inside
+        // one frame still reads its modifiers as of the main key-down.
+        let (ctrl_at_frame_start, shift_at_frame_start) = (capture_ctrl, capture_shift);
         for e in &events {
             match e {
                 RawEvent::KeyDown { key: Key::Ctrl } => capture_ctrl = true,
@@ -843,24 +856,30 @@ async fn run() -> Result<()> {
                 if let Some(row) = rebinding {
                     // Armed: the next key IS the answer — raw, before any
                     // binding resolution, or the old meaning would fire.
-                    // Held modifiers ride along, so Ctrl+K binds as the
-                    // chord it looks like. Modifier edges are skipped,
-                    // not taken: the adapter emits them first, so a chord
-                    // pressed whole in one frame would otherwise capture
-                    // Ctrl itself as the key and drop the real one.
-                    let ctrl_held = capture_ctrl;
-                    let shift_held = capture_shift;
-                    let pressed = events.iter().find_map(|e| match e {
-                        RawEvent::KeyDown { key } if !matches!(key, Key::Shift | Key::Ctrl) => {
-                            Some(*key)
+                    // The frame's edges replay in order from the frame-
+                    // start baseline, and the modifiers are read AT the
+                    // main key's press: batch-final flags would miss a
+                    // chord whose Ctrl came back up later the same frame.
+                    let mut walk_ctrl = ctrl_at_frame_start;
+                    let mut walk_shift = shift_at_frame_start;
+                    let mut pressed: Option<(Key, bool, bool)> = None;
+                    for e in &events {
+                        match e {
+                            RawEvent::KeyDown { key: Key::Ctrl } => walk_ctrl = true,
+                            RawEvent::KeyUp { key: Key::Ctrl } => walk_ctrl = false,
+                            RawEvent::KeyDown { key: Key::Shift } => walk_shift = true,
+                            RawEvent::KeyUp { key: Key::Shift } => walk_shift = false,
+                            RawEvent::KeyDown { key } if pressed.is_none() => {
+                                pressed = Some((*key, walk_ctrl, walk_shift));
+                            }
+                            _ => {}
                         }
-                        _ => None,
-                    });
+                    }
                     match pressed {
-                        Some(Key::Escape) => {
+                        Some((Key::Escape, _, _)) => {
                             mode = Mode::Controls { rebinding: None };
                         }
-                        Some(key) => {
+                        Some((key, ctrl_held, shift_held)) => {
                             let (target, _) = REMAPPABLE[row];
                             let chord = action::Chord {
                                 key,
@@ -1130,8 +1149,11 @@ async fn run() -> Result<()> {
                 input.camera_prefs = config.camera;
                 input::apply_events(&mut game, &mut input, &events);
                 input::update_held(&mut game, &input, dt);
-                // Escape walks outward: deselect first, then the menu.
-                if escape_pressed && !had_selection {
+                // Escape walks outward: deselect first, then the menu —
+                // except over a decided match, where the banner promises
+                // 'Press Esc to continue' and must mean it even with a
+                // selection still alive.
+                if escape_pressed && (!had_selection || game.state.result().is_some()) {
                     game.paused = true;
                     game.demo.paused_menu = true;
                     mode = Mode::PauseMenu;
@@ -1287,8 +1309,18 @@ async fn run() -> Result<()> {
                         let ticks = (pb.accum / game::TICK_DT) as u64;
                         if ticks > 0 {
                             pb.accum -= ticks as f32 * game::TICK_DT;
-                            let events = pb.engine.advance(ticks);
-                            pb.game.playback_present(&pb.engine.state, &events);
+                            // One tick per present: fog is per-tick truth,
+                            // and batching sight checks against the final
+                            // state judged sounds by the wrong tick's
+                            // sight. Ticks past the cap are dropped debt,
+                            // exactly like the live clock after a hitch.
+                            for _ in 0..ticks.min(24) {
+                                let events = pb.engine.advance(1);
+                                pb.game.playback_present(&pb.engine.state, &events);
+                                if pb.engine.at_end() {
+                                    break;
+                                }
+                            }
                         }
                     }
                     if pb.game.state.current_tick() != pb.engine.position() {
@@ -1703,10 +1735,13 @@ fn handle_request(
             Request::AdvanceTicks { ticks } => {
                 // Same cap as the live clock, and the reply reports what
                 // actually ran — a replay near its end advances less
-                // than asked.
+                // than asked. Seek, don't advance: advance collects the
+                // interval's events for presentation, and a million-tick
+                // battle's worth of them is memory nobody will hear.
                 let requested = (*ticks).min(1_000_000);
                 let before = pb.engine.position();
-                pb.engine.advance(requested);
+                pb.engine.seek(before.saturating_add(requested));
+                pb.game.drop_presentation();
                 pb.game.state = pb.engine.state.clone();
                 Some(Ok(Reply::Advanced(AdvancedView {
                     ticks: pb.engine.position() - before,

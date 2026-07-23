@@ -1087,7 +1087,13 @@ fn attack(
                         });
                         Ok(())
                     }
+                    // NoFiringPosition derives from the victim's footing;
+                    // speak it only while the team sees that ground, or
+                    // the stall toast leaks where a fogged flyer parked.
+                    // Unseen, the honest own-state fact is that no route
+                    // worked.
                     None if !direct
+                        && state.can_see(me, target_tile)
                         && chase_stand_ins(state, stats.domain, target_tile, weapon.range)
                             .is_empty() =>
                     {

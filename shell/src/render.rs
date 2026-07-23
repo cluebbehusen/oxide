@@ -403,10 +403,17 @@ fn draw_tiles(game: &Game, sprites: &Sprites) {
                     // so ridges join without seams. Never flipped —
                     // a flip would break those joins.
                     let peaky = |dx: i32, dy: i32| {
-                        game.state
-                            .map()
-                            .tile(TilePos::new(x + dx, y + dy))
-                            .is_some_and(|t| t.terrain == oxide_sim::map::Terrain::Peak)
+                        let pos = TilePos::new(x + dx, y + dy);
+                        // An unexplored neighbor is unknown, not absent:
+                        // reading its live terrain would let a known
+                        // peak's edge art disclose whether the ridge
+                        // continues under fog.
+                        (game.all_seeing() || game.my_vision().explored(pos))
+                            && game
+                                .state
+                                .map()
+                                .tile(pos)
+                                .is_some_and(|t| t.terrain == oxide_sim::map::Terrain::Peak)
                     };
                     let source = if peaky(0, -1) {
                         sprites.peak_body(h % 2)
