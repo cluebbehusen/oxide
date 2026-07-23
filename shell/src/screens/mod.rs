@@ -6,4 +6,5 @@
 //! transition — windowless by construction, so the whole flow drives
 //! in unit tests. The main loop keeps only drawing and session wiring.
 
+pub mod shelf;
 pub mod wizard;

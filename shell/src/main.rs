@@ -190,12 +190,8 @@ enum Mode {
     Playing,
     /// Read-only replay playback: the log is the match, seek included.
     Playback,
-    /// The replay shelf: autosaves and local records, watch or delete.
-    Replays {
-        /// Row armed for deletion — X once arms, X again on the same
-        /// row deletes.
-        arming: Option<usize>,
-    },
+    /// The replay shelf (state in the `shelf` session local).
+    Replays,
     /// Game visible but veiled; the pause menu owns input.
     PauseMenu,
     /// A destructive pause choice awaiting explicit confirmation.
@@ -577,7 +573,7 @@ async fn run() -> Result<()> {
     // for a second — a live resize is a burst of intermediate sizes
     // nobody wants fsynced.
     let mut pending_size: Option<((u32, u32), f64)> = None;
-    let mut replay_shelf: Vec<saves::ReplayEntry> = Vec::new();
+    let mut shelf: Option<screens::shelf::Shelf> = None;
     // Modifier truth for chord capture: tracked globally from raw
     // events, every frame, whatever the mode — a Ctrl pressed on one
     // screen must still read held after a mode switch, or Controls
@@ -621,7 +617,7 @@ async fn run() -> Result<()> {
     let mut input = input::InputState::new();
     let mut injected: Vec<RawEvent> = Vec::new();
     let mut pending_shots: Vec<PendingScreenshot> = Vec::new();
-    let mut ui_view = capture_ui(&mode, &home, &wizard, &sub_menu, &pause_menu, &game);
+    let mut ui_view = capture_ui(&mode, &home, &wizard, &shelf, &sub_menu, &pause_menu, &game);
 
     loop {
         let dt = get_frame_time();
@@ -726,12 +722,8 @@ async fn run() -> Result<()> {
                             mode = Mode::Playing;
                         }
                         3 => {
-                            replay_shelf = saves::discover();
-                            let mut rows: Vec<String> =
-                                replay_shelf.iter().map(|e| e.label.clone()).collect();
-                            rows.push("Back".to_string());
-                            sub_menu = Menu::new("REPLAYS", rows);
-                            mode = Mode::Replays { arming: None };
+                            shelf = Some(screens::shelf::Shelf::open());
+                            mode = Mode::Replays;
                         }
                         4 => {
                             sub_menu = settings_menu(&config);
@@ -1186,75 +1178,44 @@ async fn run() -> Result<()> {
                     mode = Mode::Home;
                 }
             }
-            Mode::Replays { arming } => {
-                let escaped = events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
-                let x_pressed = events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::X }));
-                let picked = sub_menu.handle(&events, &mut input.mouse);
-                if escaped {
+            Mode::Replays => {
+                let Some(sh) = shelf.as_mut() else {
                     mode = Mode::Home;
-                } else if let Some(row) = picked {
-                    game.sounds_pending.push((SoundKind::Click, None));
-                    if row >= replay_shelf.len() {
+                    continue;
+                };
+                match sh.update(&events, &mut input.mouse, &mut game.sounds_pending) {
+                    screens::shelf::Out::Home => {
+                        shelf = None;
                         mode = Mode::Home;
                         render::draw(&game, &sprites, &input);
                         veil();
-                        sub_menu.draw("");
+                        home.draw("machines eating a dead world");
                         continue;
                     }
-                    match replay_shelf.get(row) {
-                        Some(entry) if entry.compatible => {
-                            match PlaybackSession::open(&entry.path.to_string_lossy()) {
-                                Ok(session) => {
-                                    playback = Some(session);
-                                    mode = Mode::Playback;
-                                }
-                                Err(_) => {
-                                    game.sounds_pending.push((SoundKind::Denied, None));
-                                }
+                    screens::shelf::Out::Watch(path) => {
+                        match PlaybackSession::open(&path.to_string_lossy()) {
+                            Ok(session) => {
+                                playback = Some(session);
+                                shelf = None;
+                                mode = Mode::Playback;
+                                render::draw(&game, &sprites, &input);
+                                continue;
+                            }
+                            Err(_) => {
+                                game.sounds_pending.push((SoundKind::Denied, None));
                             }
                         }
-                        Some(_) => game.sounds_pending.push((SoundKind::Denied, None)),
-                        None => {}
                     }
-                } else if x_pressed && sub_menu.selected < replay_shelf.len() {
-                    let row = sub_menu.selected;
-                    if arming == Some(row) {
-                        if let Some(entry) = replay_shelf.get(row) {
-                            std::fs::remove_file(&entry.path).ok();
-                        }
-                        replay_shelf = saves::discover();
-                        // Rebuilt like the front door builds it: labels
-                        // plus the Back row, or a mouse-only player is
-                        // stranded — deleting the last record once left
-                        // an empty, exitless menu.
-                        let mut rows: Vec<String> =
-                            replay_shelf.iter().map(|e| e.label.clone()).collect();
-                        rows.push("Back".to_string());
-                        sub_menu = Menu::new("REPLAYS", rows);
+                    screens::shelf::Out::Deleted => {
+                        *sh = screens::shelf::Shelf::open();
                         (home, home_resumable) = home_menu();
-                        mode = Mode::Replays { arming: None };
-                    } else {
-                        mode = Mode::Replays { arming: Some(row) };
                     }
+                    screens::shelf::Out::Stay => {}
                 }
                 render::draw(&game, &sprites, &input);
                 veil();
-                let subtitle = if replay_shelf.is_empty() {
-                    "nothing recorded yet: finish a match or quit one mid-way".to_string()
-                } else if matches!(mode, Mode::Replays { arming: Some(row) } if row == sub_menu.selected)
-                {
-                    "press X again to delete this record".to_string()
-                } else {
-                    replay_shelf
-                        .get(sub_menu.selected)
-                        .map(|e| e.blurb.clone())
-                        .unwrap_or_default()
-                };
-                sub_menu.draw(&subtitle);
+                let sh = shelf.as_ref().expect("still open");
+                sh.menu.draw(&sh.subtitle());
             }
             Mode::PauseMenu => {
                 let escape_pressed = events
@@ -1344,7 +1305,7 @@ async fn run() -> Result<()> {
         if std::mem::discriminant(&mode) != mode_before {
             input.reset_transient();
         }
-        ui_view = capture_ui(&mode, &home, &wizard, &sub_menu, &pause_menu, &game);
+        ui_view = capture_ui(&mode, &home, &wizard, &shelf, &sub_menu, &pause_menu, &game);
 
         // The mixer serves whichever session is on screen: a playback
         // viewer queues its own sounds on its own game, and draining the
@@ -1440,6 +1401,7 @@ fn capture_ui(
     mode: &Mode,
     home: &Menu,
     wizard: &Option<Wizard>,
+    shelf: &Option<screens::shelf::Shelf>,
     sub_menu: &Menu,
     pause_menu: &Menu,
     game: &Game,
@@ -1454,7 +1416,7 @@ fn capture_ui(
         ),
         Mode::Playing => ("playing", None),
         Mode::Playback => ("playback", None),
-        Mode::Replays { .. } => ("replays", Some(sub_menu)),
+        Mode::Replays => ("replays", shelf.as_ref().map(|s| &s.menu)),
         Mode::PauseMenu => ("pause_menu", Some(pause_menu)),
         Mode::ConfirmPause { .. } => ("confirm_pause", Some(sub_menu)),
     };
