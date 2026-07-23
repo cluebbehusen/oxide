@@ -158,9 +158,20 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
             let visible = (0..h)
                 .flat_map(|dy| (0..w).map(move |dx| ghost.anchor.offset(dx, dy)))
                 .any(|t| game.my_vision().visible(t));
+            let key = (ghost.anchor.x, ghost.anchor.y);
             if visible {
+                game.last_seen.borrow_mut().insert(key, game.fx_time());
                 continue; // the live building (or its absence) is on show
             }
+            // Staleness ramp: a memory the player has not refreshed in
+            // a while stops pretending to be news. Unstamped memories
+            // (loaded saves) start their ramp now.
+            let age = {
+                let mut seen = game.last_seen.borrow_mut();
+                let stamp = *seen.entry(key).or_insert_with(|| game.fx_time());
+                game.fx_time() - stamp
+            };
+            let fade = 1.0 - super::staleness_fade(age);
             let faction = game.state.player(ghost.owner).faction;
             let screen = game
                 .camera
@@ -168,9 +179,19 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
             // A remembered site stays translucent scaffolding until its
             // completion has actually been observed.
             let tint = if ghost.built {
-                GHOST_TINT
+                Color::new(
+                    GHOST_TINT.r,
+                    GHOST_TINT.g,
+                    GHOST_TINT.b,
+                    GHOST_TINT.a * fade,
+                )
             } else {
-                Color::new(GHOST_TINT.r, GHOST_TINT.g, GHOST_TINT.b, GHOST_TINT.a * 0.5)
+                Color::new(
+                    GHOST_TINT.r,
+                    GHOST_TINT.g,
+                    GHOST_TINT.b,
+                    GHOST_TINT.a * 0.5 * fade,
+                )
             };
             draw_texture_ex(
                 sprites.texture(),

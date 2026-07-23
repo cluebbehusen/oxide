@@ -239,6 +239,10 @@ pub struct Game {
     /// tick makes it stale again. Guards double-writes when Main Menu
     /// saves and the same game then quits as the Home backdrop.
     pub autosave_done: bool,
+    /// When each remembered tile (ghost anchors, scrap, wrecks) was
+    /// last actually seen, on the fx clock — presentation state behind
+    /// the staleness ramp. A `RefCell` because drawing holds `&Game`.
+    pub last_seen: std::cell::RefCell<HashMap<(i32, i32), f32>>,
     /// The chrome geometry the renderer computed last frame — the one
     /// model hit-testing reads, so drawn and clickable can never
     /// disagree. A `Cell` because drawing holds `&Game`.
@@ -311,6 +315,7 @@ impl Game {
             fx: Vec::new(),
             sounds_pending: Vec::new(),
             autosave_done: false,
+            last_seen: std::cell::RefCell::new(HashMap::new()),
             toasts: Vec::new(),
             scorches: Vec::new(),
             alerts: Vec::new(),

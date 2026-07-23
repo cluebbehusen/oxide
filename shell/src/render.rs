@@ -8,6 +8,14 @@
 //! 60fps motion.
 
 use crate::assets::Sprites;
+/// How faded a memory draws after `age` seconds unseen: 0 fresh,
+/// climbing to a 0.55 fade over ninety seconds. Memories never vanish
+/// — the player recorded them honestly — they just stop pretending to
+/// be news.
+pub fn staleness_fade(age: f32) -> f32 {
+    (age / 90.0).clamp(0.0, 1.0) * 0.55
+}
+
 mod chrome;
 mod entities;
 mod minimap;
@@ -375,4 +383,18 @@ pub fn draw_tutorial(t: &crate::tutorial::Tutorial) {
     let d = tutorial_dismiss_rect();
     draw_rectangle_lines(d.x, d.y, d.w, d.h, 1.2 * s, BONE_FAINT);
     draw_text("x", d.x + 7.0 * s, d.y + 16.0 * s, 16.0 * s, BONE_FAINT);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_staleness_ramp_is_fresh_then_caps() {
+        assert_eq!(super::staleness_fade(0.0), 0.0);
+        assert!(super::staleness_fade(45.0) > 0.2);
+        let capped = super::staleness_fade(600.0);
+        assert!(
+            (capped - 0.55).abs() < 1e-6,
+            "old memories fade to a floor, never vanish"
+        );
+    }
 }

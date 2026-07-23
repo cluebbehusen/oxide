@@ -116,17 +116,36 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
             // Scrap draws at its live amount only in sight; unseen ground
             // shows what the player remembers (frozen, like ghosts).
             let pos = TilePos::new(x, y);
-            let scrap = if game.all_seeing() || game.my_vision().visible(pos) {
+            let seen_now = game.all_seeing() || game.my_vision().visible(pos);
+            let scrap = if seen_now {
                 tile.scrap
             } else {
                 game.my_vision().remembered_scrap(pos)
             };
             // Wrecks follow the same sight rule; a live node or rock
             // outranks the junk visually.
-            let wreck = if game.all_seeing() || game.my_vision().visible(pos) {
+            let wreck = if seen_now {
                 tile.wreck
             } else {
                 game.my_vision().remembered_wreck(pos)
+            };
+            // Stamp what is on show; fade what is only remembered. The
+            // map stays bounded: only tiles carrying salvage enter it.
+            let mem_fade = if scrap > 0 || wreck > 0 {
+                let key = (x, y);
+                if seen_now {
+                    game.last_seen.borrow_mut().insert(key, game.fx_time());
+                    1.0
+                } else {
+                    let age = {
+                        let mut seen = game.last_seen.borrow_mut();
+                        let stamp = *seen.entry(key).or_insert_with(|| game.fx_time());
+                        game.fx_time() - stamp
+                    };
+                    1.0 - super::staleness_fade(age)
+                }
+            } else {
+                1.0
             };
             let (overlay, flip) = match (tile.terrain, scrap) {
                 (oxide_sim::map::Terrain::Rock, _) => (Some(sprites.rock(h % 4)), h % 7 < 3),
@@ -163,11 +182,16 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
                 (_, s) => (Some(sprites.scrap(s, SCRAP_NODE_AMOUNT)), false),
             };
             if let Some(source) = overlay {
+                let overlay_tint = if mem_fade < 1.0 {
+                    Color::new(tint.r, tint.g, tint.b, tint.a * mem_fade)
+                } else {
+                    tint
+                };
                 draw_texture_ex(
                     sprites.texture(),
                     screen.x.floor(),
                     screen.y.floor(),
-                    tint,
+                    overlay_tint,
                     DrawTextureParams {
                         dest_size: Some(vec2(size, size)),
                         source: Some(source),
