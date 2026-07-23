@@ -755,7 +755,7 @@ async fn run() -> Result<()> {
                         continue;
                     }
                     render::draw(&pb.game, &sprites, &input);
-                    screens::playback::playback_hud(pb);
+                    screens::playback::playback_hud(pb, vec2(screen_width(), screen_height()));
                 } else {
                     mode = Mode::Home;
                 }

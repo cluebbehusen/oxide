@@ -28,6 +28,8 @@ pub struct PlaybackSession {
     /// A seek in flight: the target tick, chipped away a budget per
     /// frame so the render thread never freezes on a long jump.
     pub seeking: Option<u64>,
+    /// A held press is scrubbing the timeline.
+    pub scrubbing: bool,
 }
 
 impl PlaybackSession {
@@ -53,13 +55,62 @@ impl PlaybackSession {
             minimap_drag: false,
             from_pause: false,
             seeking: None,
+            scrubbing: false,
         })
     }
 }
 
-pub fn playback_hud(pb: &PlaybackSession) {
+/// Where the scrub bar lives: a strip above the transport line,
+/// stopping short of the minimap's corner. One geometry source for
+/// hit-testing and drawing, like all chrome.
+pub fn scrub_rect(game: &Game, viewport: Vec2) -> macroquad::prelude::Rect {
+    let s = render::ui_scale();
+    let mini = render::minimap_rect(game);
+    let right = (mini.x - 8.0 * s).min(viewport.x - 12.0 * s);
+    let y = viewport.y - 46.0 * s;
+    macroquad::prelude::Rect::new(12.0 * s, y, (right - 12.0 * s).max(60.0 * s), 10.0 * s)
+}
+
+pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2) {
     let s = render::ui_scale();
     let size = 18.0 * s;
+    // The timeline: played track, live position, and the ghost of a
+    // seek in flight.
+    let bar = scrub_rect(&pb.game, viewport);
+    draw_rectangle(
+        bar.x,
+        bar.y,
+        bar.w,
+        bar.h,
+        Color::from_rgba(15, 15, 18, 235),
+    );
+    let total = pb.engine.total().max(1) as f32;
+    let frac = pb.engine.position() as f32 / total;
+    draw_rectangle(
+        bar.x,
+        bar.y,
+        bar.w * frac,
+        bar.h,
+        Color::new(0.55, 0.55, 0.62, 0.9),
+    );
+    if let Some(target) = pb.seeking {
+        let tfrac = target as f32 / total;
+        draw_rectangle(
+            bar.x + bar.w * tfrac - 1.5 * s,
+            bar.y - 2.0 * s,
+            3.0 * s,
+            bar.h + 4.0 * s,
+            Color::new(0.92, 0.5, 0.45, 1.0),
+        );
+    }
+    draw_rectangle_lines(
+        bar.x,
+        bar.y,
+        bar.w,
+        bar.h,
+        1.2 * s,
+        Color::new(0.45, 0.45, 0.52, 0.8),
+    );
     if let Some(target) = pb.seeking {
         // Mid-seek the transport numbers would lie (the state is
         // sprinting through the record); show honest progress instead.
@@ -117,6 +168,12 @@ pub fn playback_hud(pb: &PlaybackSession) {
 }
 
 impl PlaybackSession {
+    /// The tick a scrub-bar x position means.
+    fn tick_at(&self, bar: macroquad::prelude::Rect, x: f32) -> u64 {
+        let frac = ((x - bar.x) / bar.w).clamp(0.0, 1.0);
+        (frac * self.engine.total() as f32).round() as u64
+    }
+
     /// Applies a frame of transport input and advances the reproduction.
     /// Returns true when the viewer should close. `viewport` is injected
     /// like everywhere else, so tests never need a window.
@@ -135,6 +192,10 @@ impl PlaybackSession {
             match e {
                 RawEvent::MouseMove { x, y } => {
                     *mouse = vec2(*x, *y);
+                    if self.scrubbing {
+                        let bar = scrub_rect(&self.game, viewport);
+                        seek_to = Some(self.tick_at(bar, mouse.x));
+                    }
                     // A held minimap press keeps steering, clamped so
                     // sliding off the edge doesn't stall the pan — same
                     // feel as live play.
@@ -156,7 +217,11 @@ impl PlaybackSession {
                     y,
                 } => {
                     *mouse = vec2(*x, *y);
-                    if let Some(world) = render::minimap_world_at(&self.game, *mouse) {
+                    let bar = scrub_rect(&self.game, viewport);
+                    if bar.contains(*mouse) {
+                        self.scrubbing = true;
+                        seek_to = Some(self.tick_at(bar, mouse.x));
+                    } else if let Some(world) = render::minimap_world_at(&self.game, *mouse) {
                         self.game.camera.center = world;
                         self.game.camera.pan(vec2(0.0, 0.0));
                         self.minimap_drag = true;
@@ -165,7 +230,10 @@ impl PlaybackSession {
                 RawEvent::MouseUp {
                     button: MouseButton::Left,
                     ..
-                } => self.minimap_drag = false,
+                } => {
+                    self.minimap_drag = false;
+                    self.scrubbing = false;
+                }
                 RawEvent::Wheel { delta } => {
                     let delta = if zoom_inverted { -*delta } else { *delta };
                     self.game.camera.zoom_at(*mouse, delta);
@@ -314,6 +382,57 @@ mod tests {
         key(&mut pb, Key::PageDown);
         assert_eq!(pb.engine.position(), 60, "seeks clamp to the total");
         assert!(key(&mut pb, Key::Escape), "Escape closes the viewer");
+    }
+
+    #[test]
+    fn a_scrub_press_seeks_to_the_bar_fraction_and_a_drag_retargets() {
+        let mut pb = session();
+        let viewport = vec2(1280.0, 800.0);
+        let bar = scrub_rect(&pb.game, viewport);
+        let mut mouse = vec2(0.0, 0.0);
+        pb.update(
+            &[RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: bar.x + bar.w * 0.75,
+                y: bar.y + bar.h * 0.5,
+            }],
+            0.0,
+            viewport,
+            false,
+            1.0,
+            &mut mouse,
+        );
+        assert!(pb.scrubbing, "the press grabs the timeline");
+        // A 60-tick record fits one frame's budget, so the seek has
+        // already landed; the position is the proof.
+        let landed = pb.engine.position();
+        assert!(
+            (40..=50).contains(&landed),
+            "three quarters of a 60-tick record is ~45, got {landed}"
+        );
+        // Dragging retargets before release.
+        pb.update(
+            &[RawEvent::MouseMove { x: bar.x, y: bar.y }],
+            0.0,
+            viewport,
+            false,
+            1.0,
+            &mut mouse,
+        );
+        assert_eq!(pb.engine.position(), 0, "the drag walked the target home");
+        pb.update(
+            &[RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: bar.x,
+                y: bar.y,
+            }],
+            0.0,
+            viewport,
+            false,
+            1.0,
+            &mut mouse,
+        );
+        assert!(!pb.scrubbing, "release lets go");
     }
 
     #[test]
