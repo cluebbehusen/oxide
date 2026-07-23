@@ -443,7 +443,9 @@ mod tests {
                 items: vec!["Skirmish".into(), "Quit".into()],
                 visible_range: Some([0, 2]),
                 hover: Some(1),
-                chrome: Some([32.0, 764.0, 1048.0, 616.0, 220.0, 150.0]),
+                chrome: Some([
+                    32.0, 764.0, 1048.0, 616.0, 220.0, 150.0, 900.0, 0.0, 500.0, 60.0, 200.0,
+                ]),
             }),
             Reply::Hash(HashView {
                 tick: 5,

@@ -42,6 +42,12 @@ pub fn save(game: &mut Game) -> bool {
     if game.state.current_tick() == 0 {
         return false;
     }
+    // A session saves once: Main Menu already wrote this match, and the
+    // same game lingers as the Home backdrop — quitting from there would
+    // write a colliding twin and eat a retention slot.
+    if game.autosave_done {
+        return false;
+    }
     let Some(dir) = autosave_dir() else {
         return false;
     };
@@ -70,6 +76,7 @@ pub fn save(game: &mut Game) -> bool {
     if game.recorder.save(&path).is_err() {
         return false;
     }
+    game.autosave_done = true;
     rotate(&dir);
     true
 }

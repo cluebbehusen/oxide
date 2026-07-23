@@ -662,7 +662,12 @@ async fn run() -> Result<()> {
     // itself.
     let (mut capture_ctrl, mut capture_shift) = (false, false);
     if let Some(path) = &args.watch {
-        playback = Some(PlaybackSession::open(path)?);
+        let mut session = PlaybackSession::open(path)?;
+        // The clock flags drive whichever session is visible: a viewer
+        // launch applies them to the transport, not the hidden match.
+        session.paused = args.paused;
+        session.speed = args.speed as f32;
+        playback = Some(session);
     }
     let purposeful =
         (args.debug_server && !args.automation) || args.scenario.is_some() || args.replay.is_some();
@@ -812,6 +817,12 @@ async fn run() -> Result<()> {
                         sub_menu.select(selected);
                     } else if row == 7 {
                         sub_menu = controls_menu(&config);
+                        // Modifier truth restarts with the screen: a Ctrl
+                        // held on the way in pressed down elsewhere, and a
+                        // stale flag from a prior visit binds phantom
+                        // chords.
+                        capture_ctrl = false;
+                        capture_shift = false;
                         mode = Mode::Controls { rebinding: None };
                     } else {
                         mode = Mode::Home;
@@ -1430,7 +1441,11 @@ async fn run() -> Result<()> {
                     match choice {
                         2 => {
                             let fresh = Game::new(game.scenario.clone())?;
-                            tutorial = None;
+                            // Restarting a tutorial restarts the lessons —
+                            // discarding them turned it into a plain match.
+                            if tutorial.is_some() {
+                                tutorial = Some(tutorial::Tutorial::new());
+                            }
                             game = keep_flags(fresh, &game);
                             game.paused = false;
                             mode = Mode::Playing;
@@ -1459,14 +1474,29 @@ async fn run() -> Result<()> {
         }
         ui_view = capture_ui(&mode, &home, &main_menu, &sub_menu, &pause_menu, &game);
 
-        let queued: Vec<(SoundKind, Option<Vec2>)> = game.sounds_pending.drain(..).collect();
+        // The mixer serves whichever session is on screen: a playback
+        // viewer queues its own sounds on its own game, and draining the
+        // hidden match instead left replays silent while its queue grew.
+        let (queued, cam_center, cam_half_w): (Vec<(SoundKind, Option<Vec2>)>, Vec2, f32) =
+            match (&mode, playback.as_mut()) {
+                (Mode::Playback, Some(pb)) => (
+                    pb.game.sounds_pending.drain(..).collect(),
+                    pb.game.camera.center,
+                    pb.game.camera.viewport().x / pb.game.camera.zoom * 0.5,
+                ),
+                _ => (
+                    game.sounds_pending.drain(..).collect(),
+                    game.camera.center,
+                    game.camera.viewport().x / game.camera.zoom * 0.5,
+                ),
+            };
         for (kind, world) in queued {
             // Distance dims the battlefield: full volume on screen,
             // fading to a quarter around 1.5 viewports out. Unpositioned
             // sounds (UI, own milestones) play flat.
             let attenuation = world.map_or(1.0, |p| {
-                let center = game.camera.center;
-                let half_w = game.camera.viewport().x / game.camera.zoom * 0.5;
+                let center = cam_center;
+                let half_w = cam_half_w;
                 let d = (p - center).length();
                 if d <= half_w {
                     1.0
@@ -1573,7 +1603,20 @@ fn capture_ui(
             } else {
                 screen_height()
             };
-            [l.top_bar_h, panel_top, m.x, m.y, m.w, m.h]
+            let o = l.orders;
+            [
+                l.top_bar_h,
+                panel_top,
+                m.x,
+                m.y,
+                m.w,
+                m.h,
+                l.panel_right,
+                o.x,
+                o.y,
+                o.w,
+                o.h,
+            ]
         }),
     }
 }
@@ -1653,17 +1696,69 @@ fn handle_request(
             )))),
             Request::StateHash => Some(Ok(Reply::Hash(HashView {
                 tick: pb.game.state.current_tick(),
-                hash: format!("{:016x}", pb.game.state.hash()),
+                hash: oxide_protocol::hash_hex(pb.game.state.hash()),
             }))),
             Request::AdvanceTicks { ticks } => {
-                pb.engine.advance(*ticks);
+                // Same cap as the live clock, and the reply reports what
+                // actually ran — a replay near its end advances less
+                // than asked.
+                let requested = (*ticks).min(1_000_000);
+                let before = pb.engine.position();
+                pb.engine.advance(requested);
                 pb.game.state = pb.engine.state.clone();
                 Some(Ok(Reply::Advanced(AdvancedView {
-                    ticks: *ticks,
+                    ticks: pb.engine.position() - before,
                     tick: pb.game.state.current_tick(),
-                    hash: format!("{:016x}", pb.game.state.hash()),
+                    hash: oxide_protocol::hash_hex(pb.game.state.hash()),
                 })))
             }
+            Request::Pause => {
+                pb.paused = true;
+                Some(Ok(Reply::Ok))
+            }
+            Request::Resume => {
+                pb.paused = false;
+                Some(Ok(Reply::Ok))
+            }
+            Request::SetSpeed { multiplier } => {
+                if multiplier.is_finite() && (0.05..=64.0).contains(multiplier) {
+                    pb.speed = *multiplier as f32;
+                    Some(Ok(Reply::Ok))
+                } else {
+                    Some(Err(format!("speed multiplier {multiplier} out of range")))
+                }
+            }
+            Request::QueryCamera => {
+                let (lo, hi) = pb.game.camera.world_rect();
+                Some(Ok(Reply::Camera(CameraView {
+                    center: [
+                        f64::from(pb.game.camera.center.x),
+                        f64::from(pb.game.camera.center.y),
+                    ],
+                    zoom: f64::from(pb.game.camera.zoom),
+                    viewport: [f64::from(screen_width()), f64::from(screen_height())],
+                    world_rect: [
+                        f64::from(lo.x),
+                        f64::from(lo.y),
+                        f64::from(hi.x),
+                        f64::from(hi.y),
+                    ],
+                })))
+            }
+            Request::ToggleOverlay => {
+                pb.game.overlay = !pb.game.overlay;
+                Some(Ok(Reply::Overlay(OverlayView {
+                    enabled: pb.game.overlay,
+                })))
+            }
+            // The viewer is read-only: refusing beats acknowledging a
+            // request that would silently mutate the hidden match.
+            Request::SendCommand { .. }
+            | Request::LoadScenario { .. }
+            | Request::LoadReplay { .. }
+            | Request::SaveReplay { .. } => Some(Err(
+                "the viewer is read-only; leave playback first".to_string(),
+            )),
             _ => None,
         };
         if let Some(outcome) = handled {

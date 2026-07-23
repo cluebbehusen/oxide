@@ -1973,9 +1973,16 @@ fn draw_panel(
     let mut dock = Rect::new(0.0, 0.0, 0.0, 0.0);
     if !panel.queue.is_empty() {
         let (qw, qgap) = (44.0 * s, 4.0 * s);
-        let n = panel.queue.len().min(8);
         let label_h = 22.0 * s;
-        let dock_h = label_h + n as f32 * (qw + qgap) + 6.0 * s;
+        // The dock lives between the top bar and the band; at a small
+        // window a full queue would climb off the screen, so chips that
+        // don't fit fold into a "+N" line instead of vanishing upward.
+        let avail = (top - 54.0 * s - label_h).max(qw + qgap);
+        let max_fit = ((avail / (qw + qgap)).floor() as usize).max(1);
+        let n = panel.queue.len().min(8).min(max_fit);
+        let hidden = panel.queue.len().min(8) - n;
+        let more_h = if hidden > 0 { 16.0 * s } else { 0.0 };
+        let dock_h = label_h + n as f32 * (qw + qgap) + more_h + 6.0 * s;
         let dock_w = qw + 16.0 * s;
         let dock_top = top - dock_h;
         dock = Rect::new(0.0, dock_top, dock_w, dock_h);
@@ -2007,7 +2014,7 @@ fn draw_panel(
             13.0 * s,
             BONE_FAINT,
         );
-        for (i, card) in panel.queue.iter().take(8).enumerate() {
+        for (i, card) in panel.queue.iter().take(n).enumerate() {
             let rect = Rect::new(8.0 * s, dock_top + label_h + i as f32 * (qw + qgap), qw, qw);
             let hovered = rect.contains(input.mouse);
             draw_rectangle(
@@ -2075,6 +2082,15 @@ fn draw_panel(
             }
             queue_slots[queue_count] = (rect, card.action);
             queue_count += 1;
+        }
+        if hidden > 0 {
+            draw_text(
+                format!("+{hidden}"),
+                12.0 * s,
+                dock_top + dock_h - 8.0 * s,
+                13.0 * s,
+                BONE_FAINT,
+            );
         }
     }
     (

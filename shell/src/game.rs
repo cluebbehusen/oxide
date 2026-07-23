@@ -236,6 +236,10 @@ pub struct Game {
     alert_gate: HashMap<(i32, i32), f32>,
     /// Presentation clock: seconds of fx time since session start.
     fx_clock: f32,
+    /// Whether the current session content is already autosaved; a new
+    /// tick makes it stale again. Guards double-writes when Main Menu
+    /// saves and the same game then quits as the Home backdrop.
+    pub autosave_done: bool,
     /// The chrome geometry the renderer computed last frame — the one
     /// model hit-testing reads, so drawn and clickable can never
     /// disagree. A `Cell` because drawing holds `&Game`.
@@ -312,6 +316,7 @@ impl Game {
             aim_buildings: HashMap::new(),
             fx: Vec::new(),
             sounds_pending: Vec::new(),
+            autosave_done: false,
             toasts: Vec::new(),
             scorches: Vec::new(),
             alerts: Vec::new(),
@@ -399,6 +404,8 @@ impl Game {
     /// is recorded, presentation caches update. The only place `state.current_tick()`
     /// is called.
     pub fn do_tick(&mut self) {
+        // New ticks make any earlier autosave stale.
+        self.autosave_done = false;
         // Interpolation cache; pointless during suppressed bulk advances
         // (advance_ticks rebuilds it once at the end).
         if !self.suppress_presentation {

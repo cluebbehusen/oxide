@@ -289,6 +289,9 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         } else {
             let kinds: Vec<&str> = {
                 let mut ks: Vec<UnitKind> = units.iter().map(|u| u.kind).collect();
+                // dedup only folds neighbors, and a mixed selection
+                // arrives in id order where equal kinds need not be.
+                ks.sort_by_key(|k| k.name());
                 ks.dedup();
                 ks.iter().map(|k| k.name()).take(4).collect()
             };
