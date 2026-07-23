@@ -255,16 +255,6 @@ struct PendingScreenshot {
 
 /// Home rows; Continue appears only when a compatible autosave exists,
 /// so the returned flag says whether row indices are shifted by one.
-fn home_menu() -> (Menu, bool) {
-    let resumable = autosave::latest_compatible().is_some();
-    let mut items = Vec::new();
-    if resumable {
-        items.push("Continue".to_string());
-    }
-    items.extend(["Play", "Tutorial", "Replays", "Settings", "Quit"].map(str::to_string));
-    (Menu::new("OXIDE", items), resumable)
-}
-
 /// Plays queued clips with a per-kind rate limit, so twenty simultaneous
 /// lasers read as battle, not noise.
 #[derive(Default)]
@@ -452,7 +442,7 @@ async fn run() -> Result<()> {
     // Launched for a purpose (a scenario, a resume, or an agent socket)?
     // Straight into the game. Everyone else — automation and humans
     // alike — starts cold at the Home front door.
-    let (mut home, mut home_resumable) = home_menu();
+    let mut home = screens::home::HomeScreen::open();
     let mut playback: Option<PlaybackSession> = None;
     let mut tutorial: Option<tutorial::Tutorial> = None;
     // Window-size persistence: written once the size has been stable
@@ -562,65 +552,61 @@ async fn run() -> Result<()> {
         let mode_before = std::mem::discriminant(&mode);
         match mode {
             Mode::Home => {
-                if let Some(choice) = home.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push((SoundKind::Click, None));
-                    let base = if home_resumable { choice } else { choice + 1 };
-                    match base {
-                        0 => {
-                            // Continue: resume the newest autosave — a
-                            // replay load, so it cannot desync from its
-                            // own history.
-                            if let Some(path) = autosave::latest_compatible()
-                                && let Ok(replay) = GameReplay::load(&path)
-                                && let Ok(fresh) = Game::from_replay(replay)
-                            {
-                                tutorial = None;
-                                game = keep_flags(fresh, &game);
-                                game.paused = false;
-                                mode = Mode::Playing;
-                                input.reset_session();
-                            } else {
-                                game.toast("that save no longer loads");
-                            }
-                        }
-                        1 => {
-                            wizard = Some(Wizard::open(&draft));
-                            mode = Mode::Wizard;
-                        }
-                        2 => {
-                            // The tutorial is a gentle real match with
-                            // the lesson cards riding on top.
-                            let mut scenario = Scenario::skirmish();
-                            for p in scenario.players.iter_mut().skip(1) {
-                                p.bot_config = Some(oxide_sim::scenario::BotConfig {
-                                    level: oxide_sim::bot::Level::Easy,
-                                    aggression: Some(0),
-                                });
-                            }
-                            let fresh = Game::new(scenario)?;
+                match home.update(&events, &mut input.mouse, &mut game.sounds_pending) {
+                    screens::home::Out::Stay => {}
+                    screens::home::Out::Continue => {
+                        // Resume the newest autosave — a replay load, so
+                        // it cannot desync from its own history.
+                        if let Some(path) = autosave::latest_compatible()
+                            && let Ok(replay) = GameReplay::load(&path)
+                            && let Ok(fresh) = Game::from_replay(replay)
+                        {
+                            tutorial = None;
                             game = keep_flags(fresh, &game);
                             game.paused = false;
-                            tutorial = Some(tutorial::Tutorial::new());
-                            input.reset_session();
                             mode = Mode::Playing;
+                            input.reset_session();
+                        } else {
+                            game.toast("that save no longer loads");
                         }
-                        3 => {
-                            shelf = Some(screens::shelf::Shelf::open());
-                            mode = Mode::Replays;
+                    }
+                    screens::home::Out::Play => {
+                        wizard = Some(Wizard::open(&draft));
+                        mode = Mode::Wizard;
+                    }
+                    screens::home::Out::Tutorial => {
+                        // The tutorial is a gentle real match with the
+                        // lesson cards riding on top.
+                        let mut scenario = Scenario::skirmish();
+                        for p in scenario.players.iter_mut().skip(1) {
+                            p.bot_config = Some(oxide_sim::scenario::BotConfig {
+                                level: oxide_sim::bot::Level::Easy,
+                                aggression: Some(0),
+                            });
                         }
-                        4 => {
-                            settings = Some(screens::settings::SettingsScreen::open(&config));
-                            mode = Mode::Settings;
-                        }
-                        _ => {
-                            autosave::save(&mut game);
-                            std::process::exit(0);
-                        }
+                        let fresh = Game::new(scenario)?;
+                        game = keep_flags(fresh, &game);
+                        game.paused = false;
+                        tutorial = Some(tutorial::Tutorial::new());
+                        input.reset_session();
+                        mode = Mode::Playing;
+                    }
+                    screens::home::Out::Replays => {
+                        shelf = Some(screens::shelf::Shelf::open());
+                        mode = Mode::Replays;
+                    }
+                    screens::home::Out::Settings => {
+                        settings = Some(screens::settings::SettingsScreen::open(&config));
+                        mode = Mode::Settings;
+                    }
+                    screens::home::Out::Quit => {
+                        autosave::save(&mut game);
+                        std::process::exit(0);
                     }
                 }
                 render::draw(&game, &sprites, &input);
                 veil();
-                home.draw("machines eating a dead world");
+                home.menu.draw(home.subtitle());
             }
             Mode::Settings => {
                 let Some(sc) = settings.as_mut() else {
@@ -667,7 +653,7 @@ async fn run() -> Result<()> {
                         mode = Mode::Home;
                         render::draw(&game, &sprites, &input);
                         veil();
-                        home.draw("machines eating a dead world");
+                        home.menu.draw(home.subtitle());
                         continue;
                     }
                     WizardOut::Launch => {
@@ -907,7 +893,7 @@ async fn run() -> Result<()> {
                             pause = Some(screens::pause::PauseScreen::open());
                             mode = Mode::Pause;
                         } else {
-                            (home, home_resumable) = home_menu();
+                            home = screens::home::HomeScreen::open();
                             mode = Mode::Home;
                         }
                         continue;
@@ -980,7 +966,7 @@ async fn run() -> Result<()> {
                         mode = Mode::Home;
                         render::draw(&game, &sprites, &input);
                         veil();
-                        home.draw("machines eating a dead world");
+                        home.menu.draw(home.subtitle());
                         continue;
                     }
                     screens::shelf::Out::Watch(path) => {
@@ -999,7 +985,7 @@ async fn run() -> Result<()> {
                     }
                     screens::shelf::Out::Deleted => {
                         *sh = screens::shelf::Shelf::open();
-                        (home, home_resumable) = home_menu();
+                        home = screens::home::HomeScreen::open();
                     }
                     screens::shelf::Out::Stay => {}
                 }
@@ -1055,7 +1041,7 @@ async fn run() -> Result<()> {
                     }
                     screens::pause::Out::MainMenu => {
                         autosave::save(&mut game);
-                        (home, home_resumable) = home_menu();
+                        home = screens::home::HomeScreen::open();
                         pause = None;
                         mode = Mode::Home;
                     }
@@ -1164,7 +1150,7 @@ fn keep_flags(mut fresh: Game, old: &Game) -> Game {
 
 fn capture_ui(
     mode: &Mode,
-    home: &Menu,
+    home: &screens::home::HomeScreen,
     wizard: &Option<Wizard>,
     shelf: &Option<screens::shelf::Shelf>,
     pause: &Option<screens::pause::PauseScreen>,
@@ -1172,7 +1158,7 @@ fn capture_ui(
     game: &Game,
 ) -> UiView {
     let (mode_name, menu) = match mode {
-        Mode::Home => ("home", Some(home)),
+        Mode::Home => ("home", Some(&home.menu)),
         Mode::Settings => (
             settings.as_ref().map_or("settings", |s| s.mode_name()),
             settings.as_ref().map(|s| &s.menu),
