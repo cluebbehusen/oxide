@@ -20,8 +20,15 @@ import sys
 import tempfile
 
 TECH_KINDS = {
-    "scuttler", "lancer", "bombard", "flakhound",
-    "stinger", "buzzard", "darter", "talon", "wisp",
+    "scuttler",
+    "lancer",
+    "bombard",
+    "flakhound",
+    "stinger",
+    "buzzard",
+    "darter",
+    "talon",
+    "wisp",
 }
 
 
@@ -35,7 +42,8 @@ def judge(overall: dict, min_entropy: float, min_tech_share: float) -> list[str]
     tech = sum(v for k, v in shares.items() if k in TECH_KINDS)
     if tech < min_tech_share:
         failures.append(
-            f"tech kinds carry {tech * 100:.1f}% of army value < {min_tech_share * 100:.0f}% — the tree was never climbed"
+            f"tech kinds carry {tech * 100:.1f}% of army value "
+            f"< {min_tech_share * 100:.0f}% — the tree was never climbed"
         )
     return failures
 
@@ -54,20 +62,27 @@ def main() -> int:
     out = pathlib.Path(tempfile.mkstemp(suffix=".json")[1])
     subprocess.run(
         [
-            args.driver, "balance-probe",
-            "--dir", args.scenarios,
-            "--level", args.level,
-            "--seeds", str(args.seeds),
-            "--weights", args.weights,
-            "--out", str(out),
+            args.driver,
+            "balance-probe",
+            "--dir",
+            args.scenarios,
+            "--level",
+            args.level,
+            "--seeds",
+            str(args.seeds),
+            "--weights",
+            args.weights,
+            "--out",
+            str(out),
         ],
         check=True,
         capture_output=True,
     )
     overall = json.loads(out.read_text())["overall"]
     failures = judge(overall, args.min_entropy, args.min_tech_share)
-    print(f"entropy {overall['entropy_bits']:.2f} bits · shares "
-          + ", ".join(f"{k} {v*100:.1f}%" for k, v in sorted(overall["mean_share"].items(), key=lambda kv: -kv[1])))
+    shares = sorted(overall["mean_share"].items(), key=lambda kv: -kv[1])
+    listed = ", ".join(f"{k} {v * 100:.1f}%" for k, v in shares)
+    print(f"entropy {overall['entropy_bits']:.2f} bits · shares {listed}")
     if failures:
         for f in failures:
             print(f"FUN GATE FAIL: {f}")
