@@ -233,28 +233,25 @@ impl Default for NewMatchDraft {
 
 /// The wizard's menus, each preselected from the draft.
 fn difficulty_menu(draft: &NewMatchDraft) -> Menu {
-    let mut menu = Menu::new(
-        "DIFFICULTY",
-        DIFFICULTY_ITEMS.iter().map(|s| s.to_string()).collect(),
-    );
+    let mut items: Vec<String> = DIFFICULTY_ITEMS.iter().map(|s| s.to_string()).collect();
+    items.push("Back".to_string());
+    let mut menu = Menu::new("DIFFICULTY", items);
     menu.select(draft.level_choice.min(DIFFICULTY_ITEMS.len() - 1));
     menu
 }
 
 fn personality_menu(draft: &NewMatchDraft) -> Menu {
-    let mut menu = Menu::new(
-        "OPPONENT",
-        PERSONALITY_ITEMS.iter().map(|s| s.to_string()).collect(),
-    );
+    let mut items: Vec<String> = PERSONALITY_ITEMS.iter().map(|s| s.to_string()).collect();
+    items.push("Back".to_string());
+    let mut menu = Menu::new("OPPONENT", items);
     menu.select(draft.personality_choice.min(PERSONALITY_ITEMS.len() - 1));
     menu
 }
 
 fn faction_menu(draft: &NewMatchDraft) -> Menu {
-    let mut menu = Menu::new(
-        "FACTION",
-        FACTION_ITEMS.iter().map(|s| s.to_string()).collect(),
-    );
+    let mut items: Vec<String> = FACTION_ITEMS.iter().map(|s| s.to_string()).collect();
+    items.push("Back".to_string());
+    let mut menu = Menu::new("FACTION", items);
     menu.select(draft.faction_choice.min(FACTION_ITEMS.len() - 1));
     menu
 }
@@ -431,6 +428,7 @@ fn controls_menu(config: &config::Config) -> Menu {
             format!("{label}: {chord}")
         })
         .collect();
+    items.push("Reset to defaults".to_string());
     items.push("Back".to_string());
     Menu::new("CONTROLS", items)
 }
@@ -651,6 +649,10 @@ async fn run() -> Result<()> {
     // nobody wants fsynced.
     let mut pending_size: Option<((u32, u32), f64)> = None;
     let mut replay_shelf: Vec<saves::ReplayEntry> = Vec::new();
+    // Modifier truth for chord capture: the Controls screen sees raw
+    // events, not the gameplay resolver, so it tracks Ctrl/Shift edges
+    // itself.
+    let (mut capture_ctrl, mut capture_shift) = (false, false);
     if let Some(path) = &args.watch {
         playback = Some(PlaybackSession::open(path)?);
     }
@@ -815,12 +817,25 @@ async fn run() -> Result<()> {
                 sub_menu.draw("Enter cycles a value - changes stick immediately");
             }
             Mode::Controls { rebinding } => {
+                for e in &events {
+                    match e {
+                        RawEvent::KeyDown { key: Key::Ctrl } => capture_ctrl = true,
+                        RawEvent::KeyUp { key: Key::Ctrl } => capture_ctrl = false,
+                        RawEvent::KeyDown { key: Key::Shift } => capture_shift = true,
+                        RawEvent::KeyUp { key: Key::Shift } => capture_shift = false,
+                        _ => {}
+                    }
+                }
                 let escaped = events
                     .iter()
                     .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
                 if let Some(row) = rebinding {
                     // Armed: the next key IS the answer — raw, before any
                     // binding resolution, or the old meaning would fire.
+                    // Held modifiers ride along, so Ctrl+K binds as the
+                    // chord it looks like.
+                    let ctrl_held = capture_ctrl;
+                    let shift_held = capture_shift;
                     let pressed = events.iter().find_map(|e| match e {
                         RawEvent::KeyDown { key } => Some(*key),
                         _ => None,
@@ -831,7 +846,11 @@ async fn run() -> Result<()> {
                         }
                         Some(key) if !matches!(key, Key::Shift | Key::Ctrl) => {
                             let (target, _) = REMAPPABLE[row];
-                            let chord = action::Chord::bare(key);
+                            let chord = action::Chord {
+                                key,
+                                ctrl: ctrl_held,
+                                shift: shift_held,
+                            };
                             if config.bindings.rebind(target, chord) {
                                 config.save().ok();
                                 input.bindings = config.bindings.clone();
@@ -850,12 +869,33 @@ async fn run() -> Result<()> {
                     sub_menu = settings_menu(&config);
                     sub_menu.select(7);
                     mode = Mode::Settings;
+                } else if events
+                    .iter()
+                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::X }))
+                    && sub_menu.selected < REMAPPABLE.len()
+                {
+                    // X on a row unbinds it — outside capture mode, so
+                    // the key is free to mean this.
+                    let (target, _) = REMAPPABLE[sub_menu.selected];
+                    config.bindings.unbind(target);
+                    config.save().ok();
+                    input.bindings = config.bindings.clone();
+                    let row = sub_menu.selected;
+                    sub_menu = controls_menu(&config);
+                    sub_menu.select(row);
                 } else if let Some(row) = sub_menu.handle(&events, &mut input.mouse) {
                     game.sounds_pending.push((SoundKind::Click, None));
                     if row < REMAPPABLE.len() {
                         mode = Mode::Controls {
                             rebinding: Some(row),
                         };
+                    } else if row == REMAPPABLE.len() {
+                        // Reset to defaults.
+                        config.bindings = action::BindingMap::classic();
+                        config.save().ok();
+                        input.bindings = config.bindings.clone();
+                        sub_menu = controls_menu(&config);
+                        sub_menu.select(row);
                     } else {
                         sub_menu = settings_menu(&config);
                         sub_menu.select(7);
@@ -865,9 +905,9 @@ async fn run() -> Result<()> {
                 render::draw(&game, &sprites, &input);
                 veil();
                 let hint = if matches!(mode, Mode::Controls { rebinding: Some(_) }) {
-                    "press the new key - Escape cancels"
+                    "press the new chord (modifiers held count) - Escape cancels"
                 } else {
-                    "Enter arms a row, then press its new key"
+                    "Enter arms a row, then press its new chord - X unbinds"
                 };
                 sub_menu.draw(hint);
             }
@@ -959,13 +999,27 @@ async fn run() -> Result<()> {
                     mode = Mode::MainMenu;
                 } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
                     game.sounds_pending.push((SoundKind::Click, None));
-                    draft.level_choice = choice;
-                    sub_menu = personality_menu(&draft);
-                    mode = Mode::PersonalityMenu;
+                    if choice >= DIFFICULTY_ITEMS.len() {
+                        mode = Mode::MainMenu;
+                    } else {
+                        draft.level_choice = choice;
+                        sub_menu = personality_menu(&draft);
+                        mode = Mode::PersonalityMenu;
+                    }
                 }
                 render::draw(&game, &sprites, &input);
                 veil();
-                sub_menu.draw("how hard should it think?");
+                // On a team map these dials set EVERY AI seat — the
+                // human's ally included; say so instead of surprising.
+                let team_map = draft
+                    .scenario
+                    .as_ref()
+                    .is_some_and(|sc| sc.players.len() > 2);
+                sub_menu.draw(if team_map {
+                    "how hard should they think? (sets every AI seat — your ally too)"
+                } else {
+                    "how hard should it think?"
+                });
             }
             Mode::PersonalityMenu => {
                 let escaped = events
@@ -976,9 +1030,14 @@ async fn run() -> Result<()> {
                     mode = Mode::DifficultyMenu;
                 } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
                     game.sounds_pending.push((SoundKind::Click, None));
-                    draft.personality_choice = choice;
-                    sub_menu = faction_menu(&draft);
-                    mode = Mode::FactionMenu;
+                    if choice >= PERSONALITY_ITEMS.len() {
+                        sub_menu = difficulty_menu(&draft);
+                        mode = Mode::DifficultyMenu;
+                    } else {
+                        draft.personality_choice = choice;
+                        sub_menu = faction_menu(&draft);
+                        mode = Mode::FactionMenu;
+                    }
                 }
                 render::draw(&game, &sprites, &input);
                 veil();
@@ -993,6 +1052,14 @@ async fn run() -> Result<()> {
                     mode = Mode::PersonalityMenu;
                 } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
                     game.sounds_pending.push((SoundKind::Click, None));
+                    if choice >= FACTION_ITEMS.len() {
+                        sub_menu = personality_menu(&draft);
+                        mode = Mode::PersonalityMenu;
+                        render::draw(&game, &sprites, &input);
+                        veil();
+                        sub_menu.draw("every one is the same mind, dialed differently");
+                        continue;
+                    }
                     draft.faction_choice = choice;
                     let fresh = launch(&draft)?;
                     tutorial = None;
@@ -1473,7 +1540,7 @@ fn veil() {
         0.0,
         screen_width(),
         screen_height(),
-        Color::new(0.05, 0.05, 0.07, 0.92),
+        Color::new(0.04, 0.04, 0.06, 0.96),
     );
 }
 

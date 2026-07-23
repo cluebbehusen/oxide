@@ -15,7 +15,7 @@ pub struct Sprites {
     texture: Texture2D,
     ground: [Rect; 6],
     rock: [Rect; 4],
-    peak: [Rect; 2],
+    peak: [Rect; 4],
     turret_barrel: [Rect; 2],
     rock_skirt: Rect,
     decals: [Rect; 4],
@@ -112,7 +112,12 @@ impl Sprites {
                 rect("rock_2")?,
                 rect("rock_3")?,
             ],
-            peak: [rect("peak_0")?, rect("peak_1")?],
+            peak: [
+                rect("peak_0")?,
+                rect("peak_1")?,
+                rect("peak_2")?,
+                rect("peak_3")?,
+            ],
             turret_barrel: [
                 rect("turret_barrel_ferrous")?,
                 rect("turret_barrel_cupric")?,

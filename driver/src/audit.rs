@@ -126,8 +126,11 @@ fn reachable_from(state: &State, starts: &[TilePos]) -> usize {
     count
 }
 
-/// Shortest ground route between two doorstep *sets*: multi-source BFS
-/// under the sim's movement rules (8-connected, no corner cutting).
+/// Shortest ground route between two doorstep *sets*, in tile-
+/// equivalents: Dijkstra under the sim's own movement costs
+/// (8-connected, no corner cutting, diagonals at 14/10 exactly like
+/// `chassis::path::astar`). A hop-counting BFS both picked routes the
+/// sim would not and understated diagonal-heavy marches by up to 1.4x.
 /// Row-major-first doorsteps understate or seal routes when a rock
 /// leans on one side of a Foundry; sets measure what units can walk.
 fn ground_route(state: &State, from: &[TilePos], to: &[TilePos]) -> Option<usize> {
@@ -136,20 +139,25 @@ fn ground_route(state: &State, from: &[TilePos], to: &[TilePos]) -> Option<usize
     }
     let (w, h) = (state.map().width(), state.map().height());
     let index = |t: TilePos| (t.y * w + t.x) as usize;
-    let mut dist: Vec<Option<usize>> = vec![None; (w * h) as usize];
-    let mut queue: std::collections::VecDeque<TilePos> = Default::default();
+    let mut dist: Vec<u32> = vec![u32::MAX; (w * h) as usize];
+    let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<(u32, i32, i32)>> =
+        Default::default();
     for &s in from {
-        dist[index(s)] = Some(0);
-        queue.push_back(s);
+        dist[index(s)] = 0;
+        heap.push(std::cmp::Reverse((0, s.x, s.y)));
     }
     let mut target = vec![false; (w * h) as usize];
     for t in to {
         target[index(*t)] = true;
     }
-    while let Some(t) = queue.pop_front() {
-        let d = dist[index(t)].expect("queued tiles have distances");
+    while let Some(std::cmp::Reverse((d, x, y))) = heap.pop() {
+        let t = TilePos::new(x, y);
+        if d > dist[index(t)] {
+            continue; // stale entry
+        }
         if target[index(t)] {
-            return Some(d);
+            // Costs run in tenths; report whole tile-equivalents.
+            return Some(((d + 5) / 10) as usize);
         }
         for dy in -1..=1 {
             for dx in -1..=1 {
@@ -158,7 +166,7 @@ fn ground_route(state: &State, from: &[TilePos], to: &[TilePos]) -> Option<usize
                 }
                 let n = t.offset(dx, dy);
                 let in_bounds = n.x >= 0 && n.y >= 0 && n.x < w && n.y < h;
-                if !in_bounds || dist[index(n)].is_some() || !state.passable(n) {
+                if !in_bounds || !state.passable(n) {
                     continue;
                 }
                 if dx != 0
@@ -167,8 +175,12 @@ fn ground_route(state: &State, from: &[TilePos], to: &[TilePos]) -> Option<usize
                 {
                     continue;
                 }
-                dist[index(n)] = Some(d + 1);
-                queue.push_back(n);
+                let step = if dx != 0 && dy != 0 { 14 } else { 10 };
+                let nd = d + step;
+                if nd < dist[index(n)] {
+                    dist[index(n)] = nd;
+                    heap.push(std::cmp::Reverse((nd, n.x, n.y)));
+                }
             }
         }
     }

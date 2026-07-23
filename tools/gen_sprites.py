@@ -212,45 +212,67 @@ def rock(variant: int) -> None:
 
 
 def peak(variant: int) -> None:
-    """A mountain tile: full-bleed dark mass, broad overlapping ridges
-    back-to-front with a modest lit west facet and one pale crest — the
-    terrain nothing crosses and nothing shoots past."""
+    """A mountain tile: layered ridges with scree texture, hard shadow
+    faces, lit edges, and a bright crest — height, not flat triangles.
+    Four variants so a range never obviously repeats."""
     px = 64
     img, d = canvas(px, color=(*PEAK_DARK, 255))
-    rng = random.Random(97 + variant * 17)
+    rng = random.Random(211 + variant * 71)
 
     def mix(a, b, t):
         return tuple(int(x + (y - x) * t) for x, y in zip(a, b))
 
-    ridges = [
-        [(14, 34, 18), (52, 40, 8)],
-        [(50, 36, 16), (12, 42, 6)],
-    ][variant % 2]
-    tones = [mix(PEAK_DARK, PEAK, 0.55), PEAK]
-    for (cx, half, apex_y), tone in zip(ridges, tones):
+    # Scree: faint flecks across the whole mass so the base reads as
+    # rock, not paint.
+    for _ in range(46):
+        x, y = rng.randrange(0, 64), rng.randrange(0, 64)
+        tone = mix(PEAK_DARK, PEAK, rng.random() * 0.5)
+        d.rectangle([s(x), s(y), s(x + 1), s(y + 1)], fill=(*tone, 255))
+
+    layouts = [
+        [(12, 30, 24), (40, 44, 10), (56, 30, 18)],
+        [(20, 38, 16), (48, 34, 20)],
+        [(8, 36, 20), (34, 30, 26), (58, 44, 12)],
+        [(16, 32, 26), (46, 40, 14)],
+    ]
+    for ridge_i, (cx, half, apex_y) in enumerate(layouts[variant % 4]):
         apex_x = cx + rng.randrange(-3, 4)
-        left_x = apex_x - half - rng.randrange(0, 8)
-        right_x = apex_x + half + rng.randrange(0, 8)
+        apex_y = apex_y + rng.randrange(-4, 5)
+        left_x = apex_x - half - rng.randrange(0, 6)
+        right_x = apex_x + half + rng.randrange(0, 6)
+        tone = mix(PEAK_DARK, PEAK, 0.45 + 0.3 * (ridge_i % 2))
+        # Hard shadow silhouette one step behind the lit body sells
+        # depth against the neighbors.
+        d.polygon(
+            [(s(left_x - 2), s(66)), (s(apex_x - 1), s(apex_y + 3)), (s(right_x + 3), s(66))],
+            fill=(*mix(PEAK_DARK, (20, 19, 27), 0.5), 255),
+        )
         d.polygon(
             [(s(left_x), s(66)), (s(apex_x), s(apex_y)), (s(right_x), s(66))],
             fill=(*tone, 255),
         )
-        # A modest lit facet on the west face, not the whole slope.
-        fall_x = left_x + (apex_x - left_x) * 0.4
+        # Lit west face.
+        fall_x = left_x + (apex_x - left_x) * 0.45
         d.polygon(
             [(s(left_x), s(66)), (s(apex_x), s(apex_y)), (s(fall_x), s(66))],
-            fill=(*mix(tone, PEAK_LIGHT, 0.45), 255),
+            fill=(*mix(tone, PEAK_LIGHT, 0.5), 255),
         )
-    # One pale crest on the taller ridge only.
-    tall_x, _, tall_y = min(ridges, key=lambda r: r[2])
-    d.polygon(
-        [
-            (s(tall_x - 3), s(tall_y + 8)),
-            (s(tall_x), s(tall_y - 1)),
-            (s(tall_x + 3), s(tall_y + 8)),
-        ],
-        fill=(*mix(PEAK_LIGHT, BONE, 0.5), 255),
-    )
+        # A thin lit ridge line running down the east shoulder.
+        d.line(
+            [(s(apex_x), s(apex_y)), (s(apex_x + (right_x - apex_x) * 0.6), s(apex_y + (66 - apex_y) * 0.55))],
+            fill=(*mix(tone, PEAK_LIGHT, 0.7), 255),
+            width=SS,
+        )
+        # Crest cap on the tallest ridge of the tile.
+        if ridge_i == 0 or apex_y < 14:
+            d.polygon(
+                [
+                    (s(apex_x - 3), s(apex_y + 7)),
+                    (s(apex_x), s(apex_y - 1)),
+                    (s(apex_x + 3), s(apex_y + 7)),
+                ],
+                fill=(*mix(PEAK_LIGHT, BONE, 0.55), 255),
+            )
     finish(img, px, f"peak_{variant}")
 
 
@@ -894,7 +916,7 @@ def main() -> None:
     for i in range(4):
         rock(i)
     rock_skirt()
-    for i in range(2):
+    for i in range(4):
         peak(i)
     decal("decal_crack", 41, "crack")
     decal("decal_plate", 42, "plate")

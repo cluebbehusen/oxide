@@ -396,7 +396,7 @@ fn draw_tiles(game: &Game, sprites: &Sprites) {
             };
             let (overlay, flip) = match (tile.terrain, scrap) {
                 (oxide_sim::map::Terrain::Rock, _) => (Some(sprites.rock(h % 4)), h % 7 < 3),
-                (oxide_sim::map::Terrain::Peak, _) => (Some(sprites.peak(h % 2)), h % 7 < 3),
+                (oxide_sim::map::Terrain::Peak, _) => (Some(sprites.peak(h % 4)), h % 7 < 3),
                 (_, 0) if wreck > 0 => (Some(sprites.wreck_pile()), h % 5 < 2),
                 (_, 0) => (None, false),
                 (_, s) => (Some(sprites.scrap(s, SCRAP_NODE_AMOUNT)), false),

@@ -204,7 +204,7 @@
   64
  ],
  "muzzle_flash": [
-  138,
+  274,
   874,
   32,
   32
@@ -221,44 +221,56 @@
   64,
   64
  ],
- "reclaimer_cupric": [
+ "peak_2": [
   274,
   602,
   64,
   64
  ],
- "reclaimer_ferrous": [
+ "peak_3": [
   342,
   602,
   64,
   64
  ],
- "rock_0": [
+ "reclaimer_cupric": [
   410,
   602,
   64,
   64
  ],
- "rock_1": [
+ "reclaimer_ferrous": [
   2,
   670,
   64,
   64
  ],
- "rock_2": [
+ "rock_0": [
   70,
   670,
   64,
   64
  ],
- "rock_3": [
+ "rock_1": [
   138,
   670,
   64,
   64
  ],
- "rock_skirt": [
+ "rock_2": [
   206,
+  670,
+  64,
+  64
+ ],
+ "rock_3": [
+  274,
+  670,
+  64,
+  64
+ ],
+ "rock_skirt": [
+  342,
   670,
   64,
   64
@@ -270,115 +282,115 @@
   128
  ],
  "scrap_full": [
-  274,
+  410,
   670,
   64,
   64
  ],
  "scrap_low": [
-  342,
-  670,
+  2,
+  738,
   64,
   64
  ],
  "scrap_mid": [
-  410,
-  670,
+  70,
+  738,
   64,
   64
  ],
  "scrap_rich": [
-  2,
+  138,
   738,
   64,
   64
  ],
  "scuttler_cupric": [
-  70,
+  206,
   738,
   64,
   64
  ],
  "scuttler_ferrous": [
-  138,
+  274,
   738,
   64,
   64
  ],
  "sentinel_cupric": [
-  206,
+  342,
   738,
   64,
   64
  ],
  "sentinel_ferrous": [
-  274,
+  410,
   738,
   64,
   64
  ],
  "stinger_cupric": [
-  342,
-  738,
-  64,
-  64
- ],
- "stinger_ferrous": [
-  410,
-  738,
-  64,
-  64
- ],
- "talon_cupric": [
   2,
   806,
   64,
   64
  ],
- "talon_ferrous": [
+ "stinger_ferrous": [
   70,
   806,
   64,
   64
  ],
- "turret_barrel_cupric": [
+ "talon_cupric": [
   138,
   806,
   64,
   64
  ],
- "turret_barrel_ferrous": [
+ "talon_ferrous": [
   206,
   806,
   64,
   64
  ],
- "turret_cupric": [
+ "turret_barrel_cupric": [
   274,
   806,
   64,
   64
  ],
- "turret_ferrous": [
+ "turret_barrel_ferrous": [
   342,
   806,
   64,
   64
  ],
- "wisp_cupric": [
+ "turret_cupric": [
   410,
   806,
   64,
   64
  ],
- "wisp_ferrous": [
+ "turret_ferrous": [
   2,
   874,
   64,
   64
  ],
- "wreck_pile": [
+ "wisp_cupric": [
   70,
+  874,
+  64,
+  64
+ ],
+ "wisp_ferrous": [
+  138,
+  874,
+  64,
+  64
+ ],
+ "wreck_pile": [
+  206,
   874,
   64,
   64

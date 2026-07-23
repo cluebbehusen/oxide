@@ -61,10 +61,13 @@ fn routes_connect_and_pace_labels_hold() {
             route
                 .air_tiles
                 .unwrap_or_else(|| panic!("{name}: sky sealed"));
+            // Bands in weighted tile-equivalents (the sim's own 14/10
+            // diagonal costs) — recalibrated when the audit stopped
+            // counting hops. Disjoint on purpose.
             let band = match pace.as_str() {
-                "quick" => 8..=25,
-                "standard" => 26..=45,
-                "large" => 46..=90,
+                "quick" => 8..=28,
+                "standard" => 29..=52,
+                "large" => 53..=90,
                 other => panic!("{name}: unknown pace '{other}'"),
             };
             assert!(

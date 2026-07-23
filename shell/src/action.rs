@@ -261,6 +261,11 @@ impl BindingMap {
     /// Rebinds an action's chord. Refused (false) when the chord would
     /// collide with a different action's exact chord — the remap screen
     /// reports the conflict instead of silently shadowing a binding.
+    /// Removes an action's binding entirely (the row reads "unbound").
+    pub fn unbind(&mut self, action: Action) {
+        self.bindings.retain(|b| b.action != action);
+    }
+
     pub fn rebind(&mut self, action: Action, chord: Chord) -> bool {
         if self
             .bindings
@@ -361,6 +366,11 @@ impl ActionResolver {
     /// Whether Shift is held (queue-order semantics live on clicks).
     pub fn shift_held(&self) -> bool {
         self.shift
+    }
+
+    /// Whether Ctrl is held (chord capture reads it directly).
+    pub fn ctrl_held(&self) -> bool {
+        self.ctrl
     }
 
     /// Drops all held state — mode transitions eat release events, and

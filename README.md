@@ -72,7 +72,7 @@ entirely — only **peaks** (`^` on the map, mountains on screen) wall
 the sky, block every shot across them, and break artillery arcs; only
 anti-air weapons can touch a flyer. Bombard and Bastion shells are
 real projectiles now: they fly, they can be dodged, and they land
-where the target *was*.
+where the target _was_.
 
 Buildings: the **Foundry** trains the basics and anchors your defeat
 condition; the **Fabricator** unlocks everything advanced including
@@ -86,33 +86,33 @@ and throwing an army away literally funds the enemy. Construction
 sites are attackable from the first tick, and cancelling one refunds
 only what's still standing — damage burns salvage.
 
-| Input | Action |
-|---|---|
-| Left click / drag | Select your units (click a Foundry to select it) |
-| Shift + click / drag | Add to (or remove from) the selection |
-| Double-click a unit | Select all visible units of that kind |
-| Ctrl + `1`-`5` | Assign the selection to a control group |
-| `1`-`5` | Recall the group — tap again to center the camera on it |
-| Left click on minimap | Jump the camera there |
-| Right click | Contextual order: enemy → attack, scrap → harvest, ground → **move engaging everything on the way** (fire at will is the only stance; combat units always defend themselves) |
-| Shift + right click | Queue the order behind the current one |
-| `R` | Arm a patrol: right-click waypoints, `R` again to start the loop — patrollers engage everything met and never settle |
-| `B` | With a harvester selected: open the build palette — digits pick the structure, the ghost shows validity on ground you can currently see, click commits, Esc cancels |
-| Right click a damaged own building | With harvesters selected: weld it (costs a scrap trickle) |
-| `X` | Units selected: stop in place. Construction site selected: scrap it for a partial refund |
-| Right click on minimap | Send the selection there, fighting through |
-| Right click (Foundry selected) | Set the rally point — rally a scrap node and fresh harvesters mine it; fresh Sentinels attack-move to it |
-| Mouse wheel | Zoom (toward the cursor) |
-| Arrow keys | Pan |
-| `H` / `S` | Train the selected factory's first / second unit |
-| `1`-`9` (factory selected) | Train by slot — the panel lists your faction's roster with prices |
-| `Space` | Jump to your Foundry |
-| `P` | Quick pause |
-| `Esc` | Deselect, then the pause menu (destructive choices ask first) |
-| `N` | Select and center the next idle harvester (the top bar counts them) |
-| `A` | Jump to the last under-attack alert |
-| Ctrl + `F5`-`F8` / `F5`-`F8` | Set / recall camera bookmarks |
-| `F1` | Debug overlay (grid, ids, paths — and no fog) |
+| Input                              | Action                                                                                                                                                                       |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Left click / drag                  | Select your units (click a Foundry to select it)                                                                                                                             |
+| Shift + click / drag               | Add to (or remove from) the selection                                                                                                                                        |
+| Double-click a unit                | Select all visible units of that kind                                                                                                                                        |
+| Ctrl + `1`-`5`                     | Assign the selection to a control group                                                                                                                                      |
+| `1`-`5`                            | Recall the group — tap again to center the camera on it                                                                                                                      |
+| Left click on minimap              | Jump the camera there                                                                                                                                                        |
+| Right click                        | Contextual order: enemy → attack, scrap → harvest, ground → **move engaging everything on the way** (fire at will is the only stance; combat units always defend themselves) |
+| Shift + right click                | Queue the order behind the current one                                                                                                                                       |
+| `R`                                | Arm a patrol: right-click waypoints, `R` again to start the loop — patrollers engage everything met and never settle                                                         |
+| `B`                                | With a harvester selected: open the build palette — digits pick the structure, the ghost shows validity on ground you can currently see, click commits, Esc cancels          |
+| Right click a damaged own building | With harvesters selected: weld it (costs a scrap trickle)                                                                                                                    |
+| `X`                                | Units selected: stop in place. Construction site selected: scrap it for a partial refund                                                                                     |
+| Right click on minimap             | Send the selection there, fighting through                                                                                                                                   |
+| Right click (Foundry selected)     | Set the rally point — rally a scrap node and fresh harvesters mine it; fresh Sentinels attack-move to it                                                                     |
+| Mouse wheel                        | Zoom (toward the cursor)                                                                                                                                                     |
+| Arrow keys                         | Pan                                                                                                                                                                          |
+| `H` / `S`                          | Train the selected factory's first / second unit                                                                                                                             |
+| `1`-`9` (factory selected)         | Train by slot — the panel lists your faction's roster with prices                                                                                                            |
+| `Space`                            | Jump to your Foundry                                                                                                                                                         |
+| `P`                                | Quick pause                                                                                                                                                                  |
+| `Esc`                              | Deselect, then the pause menu (destructive choices ask first)                                                                                                                |
+| `N`                                | Select and center the next idle harvester (the top bar counts them)                                                                                                          |
+| `A`                                | Jump to the last under-attack alert                                                                                                                                          |
+| Ctrl + `F5`-`F8` / `F5`-`F8`       | Set / recall camera bookmarks                                                                                                                                                |
+| `F1`                               | Debug overlay (grid, ids, paths — and no fog)                                                                                                                                |
 
 Ranged fire needs a clear line: rock (and buildings) block ground
 shots, so a Sentinel behind cover must step out to fire — and so must
@@ -152,7 +152,7 @@ assets/     the generated sprites and sounds, committed
 The load-bearing rule: **same scenario + same command log ⇒ bit-identical
 state, on every platform**. Commands are tick-stamped and everything that
 issues them — mouse, bot, debug socket — goes through one funnel, so a
-replay (`setup + commands`) *is* the session. The determinism rules and the
+replay (`setup + commands`) _is_ the session. The determinism rules and the
 tooling contract live in [AGENTS.md](AGENTS.md).
 
 ## Driving it without hands
@@ -197,7 +197,7 @@ cross-platform determinism proof.
 ## Saving games
 
 There is no separate save format, on purpose. In a deterministic sim a
-replay *is* a save: `save-replay` writes the session's command log, and
+replay _is_ a save: `save-replay` writes the session's command log, and
 loading it (`--replay file.json`, or `live load-replay`) rebuilds the
 scenario and re-runs every tick — thousands per second, so "loading" a
 long game takes well under a second — then keeps playing and recording
