@@ -595,7 +595,8 @@ fn apply_cancel_train(
         // thing that transfers between machines.
         b.progress = 0;
     }
-    state.player_mut(player).scrap += kind.stats().cost;
+    let bank = &mut state.player_mut(player).scrap;
+    *bank = bank.saturating_add(kind.stats().cost);
     Ok(())
 }
 

@@ -416,24 +416,11 @@ impl Game {
         }
 
         let mut commands = std::mem::take(&mut self.pending);
-        // The tutorial's evidence: what the human has actually asked
-        // for, read off the same stream the recorder gets.
-        for pc in commands.iter().filter(|pc| pc.player == self.human) {
-            match &pc.command {
-                Command::Train { kind, .. } => {
-                    self.demo.trained = true;
-                    if kind.stats().can_fight() {
-                        self.demo.trained_fighter = true;
-                    }
-                }
-                Command::Harvest { .. } => self.demo.harvested = true,
-                Command::Build { .. } => self.demo.built = true,
-                Command::AttackMove { .. } | Command::Attack { .. } => {
-                    self.demo.attack_moved = true;
-                }
-                _ => {}
-            }
-        }
+        let human_commands: Vec<Command> = commands
+            .iter()
+            .filter(|pc| pc.player == self.human)
+            .map(|pc| pc.command.clone())
+            .collect();
         for bot in &mut self.bots {
             commands.extend(bot.act(&self.state));
         }
@@ -442,6 +429,33 @@ impl Game {
                 .record(self.state.current_tick(), command.clone());
         }
         let report = self.state.tick(&commands);
+
+        // The tutorial's evidence: what the human actually asked for
+        // AND the sim accepted. A tick carrying any rejection for the
+        // human grades nothing — the deliberately-illegal placement
+        // the building lesson invites must not graduate it.
+        let human_rejected = report
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::CommandRejected { player, .. } if *player == self.human));
+        if !human_rejected {
+            for command in &human_commands {
+                match command {
+                    Command::Train { kind, .. } => {
+                        self.demo.trained = true;
+                        if kind.stats().can_fight() {
+                            self.demo.trained_fighter = true;
+                        }
+                    }
+                    Command::Harvest { .. } => self.demo.harvested = true,
+                    Command::Build { .. } => self.demo.built = true,
+                    // The march lesson teaches attack-move specifically;
+                    // a targeted attack is a different verb.
+                    Command::AttackMove { .. } => self.demo.attack_moved = true,
+                    _ => {}
+                }
+            }
+        }
 
         if !self.suppress_presentation {
             for unit in self.state.units() {

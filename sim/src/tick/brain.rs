@@ -984,7 +984,19 @@ fn attack(
     };
     let in_range = pos.dist_sq(aim_point) <= weapon.range * weapon.range;
     let full = traces_terrain(weapon, stats.domain, victim_domain);
-    if in_range && seen && !chassis::path::line_blocked(pos, aim_point, |t| shot_open(t, full)) {
+    // The line trace skips endpoint tiles by design — but a building's
+    // closest-footprint aim point is an exact edge coordinate that can
+    // floor into the NEIGHBORING tile. Flush against a peak, that
+    // neighbor is the mountain itself, and an unchecked endpoint let
+    // direct fire through it. The endpoint tile must be open for this
+    // shot too (a unit's aim point is its own standable tile, and a
+    // footprint tile passes through shot_open's own-target exemption).
+    let endpoint_open = shot_open(chassis::grid::TilePos::containing(aim_point), full);
+    if in_range
+        && seen
+        && endpoint_open
+        && !chassis::path::line_blocked(pos, aim_point, |t| shot_open(t, full))
+    {
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = None;
         if cooldowns[pi] == 0 {

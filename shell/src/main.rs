@@ -620,6 +620,10 @@ async fn run() -> Result<()> {
     let (mut home, mut home_resumable) = home_menu();
     let mut playback: Option<PlaybackSession> = None;
     let mut tutorial: Option<tutorial::Tutorial> = None;
+    // Window-size persistence: written once the size has been stable
+    // for a second — a live resize is a burst of intermediate sizes
+    // nobody wants fsynced.
+    let mut pending_size: Option<((u32, u32), f64)> = None;
     let mut replay_shelf: Vec<saves::ReplayEntry> = Vec::new();
     if let Some(path) = &args.watch {
         playback = Some(PlaybackSession::open(path)?);
@@ -985,12 +989,22 @@ async fn run() -> Result<()> {
                     }
                     // Card clicks (the dismiss press included) never
                     // reach the world — an armed placement once spent
-                    // scrap under the X.
+                    // scrap under the X. Swallowing a RELEASE whose
+                    // press began in the world must also end that drag,
+                    // or drag_origin sticks and a later release fires a
+                    // stale box-select.
+                    let swallowed_up = events.iter().any(|e| {
+                        matches!(e, RawEvent::MouseUp { x, y, .. }
+                            if card.contains(vec2(*x, *y)))
+                    });
                     events.retain(|e| {
                         !matches!(e,
                             RawEvent::MouseDown { x, y, .. } | RawEvent::MouseUp { x, y, .. }
                                 if card.contains(vec2(*x, *y)))
                     });
+                    if swallowed_up {
+                        input.drag_origin = None;
+                    }
                 }
                 let had_selection =
                     !game.selection.units.is_empty() || game.selection.building.is_some();
@@ -1317,6 +1331,25 @@ async fn run() -> Result<()> {
                 shot.reply.send(response).ok();
             }
         }
+        // Persist the window size once it has settled: the config
+        // documents window persistence, and only settings writes ever
+        // saved it before.
+        let live = (screen_width() as u32, screen_height() as u32);
+        if live.0 >= 640 && live.1 >= 400 && live != config.window {
+            match pending_size {
+                Some((size, since)) if size == live => {
+                    if get_time() - since > 1.0 {
+                        config.window = live;
+                        config.save().ok();
+                        pending_size = None;
+                    }
+                }
+                _ => pending_size = Some((live, get_time())),
+            }
+        } else {
+            pending_size = None;
+        }
+
         next_frame().await;
     }
 }

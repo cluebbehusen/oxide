@@ -238,7 +238,11 @@ fn air_route(state: &State, a: &oxide_sim::Building, b: &oxide_sim::Building) ->
             continue; // stale entry
         }
         if target[index(t)] {
-            return Some(d);
+            // The open branch measures geometric center to center; the
+            // search runs footprint tile to footprint tile. Add both
+            // center-to-nearest-tile offsets (sqrt(2)/2 each on a 2x2)
+            // so an obstruction can never *shrink* the reported route.
+            return Some(d + std::f64::consts::SQRT_2);
         }
         for dy in -1..=1 {
             for dx in -1..=1 {
@@ -434,6 +438,48 @@ impl MapAudit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_obstruction_never_shrinks_the_reported_air_route() {
+        // The same map with and without the peak blob: adding an
+        // obstruction must never make air_tiles smaller. Mixed
+        // endpoint conventions once reported 8 open and 7 blocked.
+        let build_map = |peaks: bool| {
+            let mut rows = vec!["####################".to_string()];
+            for y in 1..13 {
+                let mut row = String::from("#");
+                for x in 1..19 {
+                    row.push(match (x, y) {
+                        (2, 2) => '1',
+                        (16, 10) => '2',
+                        (9..=10, 6..=7) if peaks => '^',
+                        _ => '.',
+                    });
+                }
+                row.push('#');
+                rows.push(row);
+            }
+            rows.push("####################".to_string());
+            Scenario {
+                name: "detour".into(),
+                seed: 5,
+                map: rows,
+                players: Scenario::skirmish().players.clone(),
+                units: Vec::new(),
+                meta: None,
+            }
+        };
+        let open = audit(&build_map(false)).unwrap().routes[0]
+            .air_tiles
+            .unwrap();
+        let blocked = audit(&build_map(true)).unwrap().routes[0]
+            .air_tiles
+            .unwrap();
+        assert!(
+            blocked >= open - 1e-9,
+            "a peak in the way reads shorter: open {open:.2}, blocked {blocked:.2}"
+        );
+    }
 
     #[test]
     fn a_peak_detour_never_reads_shorter_than_the_straight_line() {

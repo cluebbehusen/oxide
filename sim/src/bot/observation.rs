@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 /// Observation schema version — bump when the shape changes so recorded
 /// training data and shipped policies can refuse mismatched worlds.
-pub const OBSERVATION_VERSION: u32 = 3;
+pub const OBSERVATION_VERSION: u32 = 4;
 
 /// One unit as a bot sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

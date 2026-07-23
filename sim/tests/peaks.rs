@@ -372,3 +372,70 @@ fn a_patrol_leg_on_the_ridge_snaps_to_open_sky() {
         );
     }
 }
+
+#[test]
+fn a_building_flush_against_the_ridge_is_safe_from_the_far_side() {
+    // The aim point for a building is its closest footprint point — an
+    // exact edge coordinate that floors into the NEIGHBORING tile. With
+    // the footprint flush against the ridge's west face and the gun to
+    // the east, that neighbor IS the peak — and the line trace skips
+    // endpoint tiles by design, so only an explicit endpoint check
+    // refuses the shot (tile 13 between gun and edge is open ground).
+    let mut map = vec!["############^###########".to_string()];
+    for y in 1..11 {
+        let mut row = String::from("#");
+        for x in 1..23 {
+            row.push(match (x, y) {
+                (1, 1) => '1',
+                (10, 5) => '2', // footprint (10,5)-(11,6), flush at x=12
+                (12, 2) => '.', // ground pass keeps the seats connected
+                (12, _) => '^',
+                _ => '.',
+            });
+        }
+        row.push('#');
+        map.push(row);
+    }
+    map.push("############^###########".to_string());
+    let mut state = Scenario {
+        name: "flush".into(),
+        seed: 9,
+        map,
+        players: players(),
+        units: vec![unit(0, UnitKind::Lancer, 14, 5)],
+        meta: None,
+    }
+    .build()
+    .unwrap();
+    let lancer = state.units()[0].id;
+    let west = state
+        .buildings()
+        .iter()
+        .find(|b| b.player == PlayerId(1))
+        .unwrap()
+        .id;
+    let hp = state.building(west).unwrap().hp;
+    state.tick(&[cmd(
+        0,
+        Command::Attack {
+            units: vec![lancer],
+            target: Target::Building(west),
+            queue: false,
+        },
+    )]);
+    // The lancer may legally chase through the northern pass; only
+    // shots fired while it still stands east of the ridge would be
+    // through-the-mountain shots. Watch exactly that window.
+    for _ in 0..400 {
+        let east_side = state.unit(lancer).is_some_and(|u| u.tile().x > 12);
+        if !east_side {
+            break;
+        }
+        let events = state.tick(&[]).events;
+        assert!(
+            !events.iter().any(|e| matches!(e, Event::AttackHit { .. })),
+            "no shot crosses the ridge from the east side"
+        );
+        assert_eq!(state.building(west).unwrap().hp, hp);
+    }
+}
