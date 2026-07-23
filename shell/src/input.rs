@@ -329,6 +329,25 @@ fn click_on_hud(game: &mut Game, screen: Vec2) -> bool {
     game.layout.get().chrome_owns(screen)
 }
 
+/// The cursor shape the current intent deserves: crosshair while
+/// placing a building or plotting a patrol, a pointer over clickable
+/// chrome, the arrow otherwise. Pure — the loop applies it.
+pub fn desired_cursor(game: &Game, input: &InputState) -> macroquad::miniquad::CursorIcon {
+    use macroquad::miniquad::CursorIcon;
+    if input.placing.is_some() || input.patrol_route.is_some() {
+        return CursorIcon::Crosshair;
+    }
+    let layout = game.layout.get();
+    let p = input.mouse;
+    if layout.minimap.contains(p)
+        || layout.chrome_owns(p)
+        || (layout.idle_badge.w > 0.0 && layout.idle_badge.contains(p))
+    {
+        return CursorIcon::Pointer;
+    }
+    CursorIcon::Default
+}
+
 /// Applies a frame's events — hardware and injected alike — to the game.
 pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]) {
     for event in events {

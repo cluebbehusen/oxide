@@ -685,6 +685,9 @@ async fn run() -> Result<()> {
                 input.camera_prefs = config.camera;
                 input::apply_events(&mut game, &mut input, &events);
                 input::update_held(&mut game, &input, dt);
+                // The cursor telegraphs the verb: crosshair while
+                // placing or plotting, pointer over chrome.
+                macroquad::miniquad::window::set_mouse_cursor(input::desired_cursor(&game, &input));
                 // Escape walks outward: deselect first, then the menu —
                 // except over a decided match, where the banner promises
                 // 'Press Esc to continue' and must mean it even with a
