@@ -1410,11 +1410,65 @@ fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
                 SCRAP_COLOR,
             );
         }
+        // Controls coaching fills the bar's empty right half, dropping
+        // trailing segments when a narrow window runs out of room. Live
+        // chords, not folklore: a rebound key changes the prompt.
+        use crate::action::{Action, BindingMap};
+        let label = |a: Action| {
+            input
+                .bindings
+                .chord_for(a)
+                .map(BindingMap::chord_label)
+                .unwrap_or_else(|| "unbound".to_string())
+        };
+        let pans = [
+            Action::PanLeft,
+            Action::PanRight,
+            Action::PanUp,
+            Action::PanDown,
+        ]
+        .map(label);
+        let pan = if pans == ["Left", "Right", "Up", "Down"].map(String::from) {
+            "arrows pan".to_string()
+        } else {
+            format!("{}/{}/{}/{} pan", pans[0], pans[1], pans[2], pans[3])
+        };
+        let segments = [
+            "LMB select".to_string(),
+            "RMB move/engage".to_string(),
+            "1-9 train".to_string(),
+            format!("{} build", label(Action::ToggleBuildPalette)),
+            pan,
+            "Esc menu".to_string(),
+            format!("{} debug", label(Action::ToggleOverlay)),
+        ];
+        let max_w = screen_width() - 540.0 * s;
+        let mut hint = String::new();
+        for seg in segments {
+            let candidate = if hint.is_empty() {
+                seg
+            } else {
+                format!("{hint} · {seg}")
+            };
+            if measure_text(&candidate, None, (16.0 * s) as u16, 1.0).width > max_w {
+                break;
+            }
+            hint = candidate;
+        }
+        if !hint.is_empty() {
+            let width = measure_text(&hint, None, (16.0 * s) as u16, 1.0).width;
+            draw_text(
+                &hint,
+                screen_width() - width - 10.0 * s,
+                21.0 * s,
+                16.0 * s,
+                BONE_FAINT,
+            );
+        }
     }
 
     *game.panel_model.borrow_mut() = crate::panel::build(game, &input.bindings);
     let panel = game.panel_model.borrow();
-    let panel_shown = panel.is_some();
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut cards = [(zero, crate::panel::CardAction::None); 16];
     let mut card_count = 0;
@@ -1442,93 +1496,12 @@ fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
         queue_count,
     ));
 
-    // Controls hint — it lives in the same bottom band as the selection
-    // panel, so it yields whenever a panel is up (the panel carries its
-    // own key prompts). Spectators command nothing; they get no coach.
-    if !panel_shown && !game.spectate {
-        use crate::action::{Action, BindingMap};
-        let label = |a: Action| {
-            input
-                .bindings
-                .chord_for(a)
-                .map(BindingMap::chord_label)
-                .unwrap_or_else(|| "unbound".to_string())
-        };
-        // Live chords, not folklore: a rebound key changes the prompt.
-        let pans = [
-            Action::PanLeft,
-            Action::PanRight,
-            Action::PanUp,
-            Action::PanDown,
-        ]
-        .map(label);
-        let pan = if pans == ["Left", "Right", "Up", "Down"].map(String::from) {
-            "arrows pan".to_string()
-        } else {
-            format!("{}/{}/{}/{} pan", pans[0], pans[1], pans[2], pans[3])
-        };
-        // The minimap owns the bottom-right corner; the hint keeps to
-        // the room left of it, dropping trailing segments rather than
-        // running underneath.
-        let segments = [
-            "LMB select".to_string(),
-            "RMB move/engage".to_string(),
-            "1-9 train".to_string(),
-            format!("{} build", label(Action::ToggleBuildPalette)),
-            pan,
-            "Esc menu".to_string(),
-            format!("{} debug", label(Action::ToggleOverlay)),
-        ];
-        let max_w = minimap_rect(game).x - 20.0 * s;
-        let mut hint = String::new();
-        for seg in segments {
-            let candidate = if hint.is_empty() {
-                seg
-            } else {
-                format!("{hint} · {seg}")
-            };
-            if measure_text(&candidate, None, (16.0 * s) as u16, 1.0).width > max_w {
-                break;
-            }
-            hint = candidate;
-        }
-        draw_text(
-            &hint,
-            12.0 * s,
-            screen_height() - 10.0 * s,
-            16.0 * s,
-            BONE_FAINT,
-        );
-    }
-
     // Toasts: rejected orders and stalled units, newest at the bottom.
     for (i, toast) in game.toasts.iter().rev().take(3).enumerate() {
         let fade = (1.0 - (toast.age - 1.5).max(0.0)).clamp(0.0, 1.0);
         let y = screen_height() - (60.0 + 24.0 * i as f32) * s;
         let color = Color::new(0.92, 0.5, 0.45, fade);
         draw_text(&toast.text, 12.0 * s, y, 20.0 * s, color);
-    }
-
-    // Starter hints, until the player has done each thing once.
-    let mut hint_y = 52.0 * s;
-    if !game.hinted_train {
-        draw_text(
-            "H trains a Harvester at your Foundry - keep scrap flowing",
-            12.0 * s,
-            hint_y,
-            18.0 * s,
-            BONE_FAINT,
-        );
-        hint_y += 22.0 * s;
-    }
-    if !game.hinted_fight {
-        draw_text(
-            "Right-click sends your machines - they fight whatever they meet",
-            12.0 * s,
-            hint_y,
-            18.0 * s,
-            BONE_FAINT,
-        );
     }
 
     // Spectator strip: a foundry-less seat on a living team stays in
@@ -1770,7 +1743,7 @@ fn draw_result_overlay(game: &Game) {
                 );
             }
         }
-        let hint = "Esc opens the menu";
+        let hint = "Press Esc to continue";
         let hint_dims = measure_text(hint, None, (20.0 * s) as u16, 1.0);
         draw_text(
             hint,

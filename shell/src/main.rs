@@ -567,9 +567,6 @@ impl PlaybackSession {
         // Spectator truth: fog-free, but NOT the developer overlay —
         // playback must look like the game, not the debugger.
         game.spectate = true;
-        // Starter hints coach players, not spectators.
-        game.hinted_train = true;
-        game.hinted_fight = true;
         Ok(Self {
             engine,
             game,
@@ -761,10 +758,7 @@ async fn run() -> Result<()> {
                                     aggression: Some(0),
                                 });
                             }
-                            let mut fresh = Game::new(scenario)?;
-                            // The lesson cards replace the starter hints.
-                            fresh.hinted_train = true;
-                            fresh.hinted_fight = true;
+                            let fresh = Game::new(scenario)?;
                             game = keep_flags(fresh, &game);
                             game.paused = false;
                             tutorial = Some(tutorial::Tutorial::new());

@@ -319,7 +319,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         why: None,
         desc: vec![
             "Arm a looping route; press again to start it.".into(),
-            "Legs are attack-moves.".into(),
+            "Machines engage whatever they meet along the way.".into(),
         ],
     });
     if has_builder {

@@ -922,7 +922,34 @@ fn dispatch_action(game: &mut Game, input: &mut InputState, action: Action) {
                 input.build_menu = true;
                 input.placing = None;
             } else {
-                game.toast("select a harvester to build");
+                // No builder in hand — the key still means "I want to
+                // build": grab the nearest own harvester (idle ones
+                // first), select it, and open the palette. The camera
+                // stays put; the machine walks to wherever the player
+                // places.
+                let idle = idle_harvesters(game);
+                let cx = game.camera.center.x.floor() as i32;
+                let cy = game.camera.center.y.floor() as i32;
+                let pick = game
+                    .state
+                    .units()
+                    .iter()
+                    .filter(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+                    .filter(|u| idle.is_empty() || idle.contains(&u.id))
+                    .min_by_key(|u| {
+                        let t = u.tile();
+                        let (dx, dy) = (i64::from(t.x - cx), i64::from(t.y - cy));
+                        (dx * dx + dy * dy, u.id.0)
+                    })
+                    .map(|u| u.id);
+                if let Some(id) = pick {
+                    game.selection.units = vec![id];
+                    game.selection.building = None;
+                    input.build_menu = true;
+                    input.placing = None;
+                } else {
+                    game.toast("no harvester to build with");
+                }
             }
         }
         Action::Patrol => {

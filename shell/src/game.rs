@@ -236,11 +236,6 @@ pub struct Game {
     alert_gate: HashMap<(i32, i32), f32>,
     /// Presentation clock: seconds of fx time since session start.
     fx_clock: f32,
-    /// Session flags for the starter hint strip: cleared once the player
-    /// has trained something / sent fighters somewhere.
-    pub hinted_train: bool,
-    /// See [`Game::hinted_train`].
-    pub hinted_fight: bool,
     /// The chrome geometry the renderer computed last frame — the one
     /// model hit-testing reads, so drawn and clickable can never
     /// disagree. A `Cell` because drawing holds `&Game`.
@@ -323,8 +318,6 @@ impl Game {
             last_alert: None,
             alert_gate: HashMap::new(),
             fx_clock: 0.0,
-            hinted_train: false,
-            hinted_fight: false,
             layout: std::cell::Cell::new(crate::layout::LayoutModel::default()),
             panel_model: std::cell::RefCell::new(None),
             end_stats: None,
@@ -601,11 +594,6 @@ impl Game {
 
     /// Stages a command from the local player for the next tick.
     pub fn issue(&mut self, command: Command) {
-        match &command {
-            Command::Train { .. } => self.hinted_train = true,
-            Command::AttackMove { .. } | Command::Attack { .. } => self.hinted_fight = true,
-            _ => {}
-        }
         self.pending.push(PlayerCommand {
             player: self.human,
             command,
