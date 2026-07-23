@@ -74,6 +74,26 @@ enum Cmd {
     },
     /// Measure a map: room per seat, route lengths by domain, resources,
     /// artillery pressure, spawn spacing.
+    /// Bot-vs-bot composition probe across the shipped maps: what the
+    /// armies were made of, cost-weighted, with a spam-detecting
+    /// entropy — the balance review's measuring stick.
+    BalanceProbe {
+        /// Scenario directory.
+        #[arg(long, default_value = "scenarios")]
+        dir: String,
+        /// Ladder level to probe ("easy".."expert").
+        #[arg(long, default_value = "medium")]
+        level: String,
+        /// Seeds per map.
+        #[arg(long, default_value_t = 3)]
+        seeds: u64,
+        /// Tick cap per match.
+        #[arg(long, default_value_t = 20_000)]
+        ticks: u64,
+        /// Raw JSON output path.
+        #[arg(long)]
+        out: Option<String>,
+    },
     MapAudit {
         /// Scenario path, or "skirmish".
         scenario: String,
@@ -497,6 +517,22 @@ fn main() -> Result<()> {
             let outcome = runner::run_scenario(&scenario, ticks, bots, false)?;
             render::save_png(&outcome.state, &out)?;
             eprintln!("wrote {}", out.display());
+        }
+        Cmd::BalanceProbe {
+            dir,
+            level,
+            seeds,
+            ticks,
+            out,
+        } => {
+            let level = match level.as_str() {
+                "easy" => oxide_sim::bot::Level::Easy,
+                "medium" => oxide_sim::bot::Level::Medium,
+                "hard" => oxide_sim::bot::Level::Hard,
+                "expert" => oxide_sim::bot::Level::Expert,
+                other => anyhow::bail!("unknown level '{other}'"),
+            };
+            oxide_driver::balance::balance_probe(&dir, level, seeds, ticks, out.as_deref())?;
         }
         Cmd::MapAudit { scenario, json } => {
             let scenario = runner::load_scenario(&scenario)?;

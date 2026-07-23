@@ -9,6 +9,7 @@
 //! machine) behind golden-image tests and map previews. The split
 //! exists so the shell never depends on the dev harness.
 
+pub mod composition;
 pub mod playback;
 pub mod render;
 pub mod runner;
