@@ -1939,14 +1939,20 @@ fn draw_panel(
                 }
             }
         }
-        // The name lives on the card, not only in the tooltip.
-        let name: String = card.title.chars().take(9).collect();
-        let ndims = measure_text(&name, None, (10.0 * s) as u16, 1.0);
+        // The name lives on the card, not only in the tooltip — and it
+        // stays whole: a long name shrinks to fit instead of losing its
+        // tail ("fabricato", "flak turr").
+        let mut nsize = 10.0 * s;
+        let mut ndims = measure_text(&card.title, None, nsize as u16, 1.0);
+        while ndims.width > rect.w - 4.0 * s && nsize > 7.0 * s {
+            nsize -= 1.0;
+            ndims = measure_text(&card.title, None, nsize as u16, 1.0);
+        }
         draw_text(
-            &name,
+            &card.title,
             rect.x + (rect.w - ndims.width) * 0.5,
             rect.y + rect.h - 15.0 * s,
-            10.0 * s,
+            nsize,
             if card.enabled { BONE } else { BONE_FAINT },
         );
         if let Some(cost) = card.cost {
