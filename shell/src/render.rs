@@ -60,9 +60,25 @@ pub fn ui_scale() -> f32 {
     // A narrow window can't seat 150% chrome: panel packing would run
     // under the minimap and its click rects would shadow camera clicks.
     // Cap by width so 640px tops out at 1x, 960px at 1.5x, and roomy
-    // windows keep whatever the user asked for.
-    let cap = (screen_width() / 640.0).max(1.0);
+    // windows keep whatever the user asked for. The width is injected
+    // per frame, never queried — headless tests get the default window.
+    let cap = (view_width() / 640.0).max(1.0);
     user.min(cap)
+}
+
+static VIEW_WIDTH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The frame loop hands the window width in once per frame; chrome
+/// scale math never queries the window itself.
+pub fn set_view_width(w: f32) {
+    VIEW_WIDTH.store(w.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn view_width() -> f32 {
+    match VIEW_WIDTH.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => 1280.0,
+        bits => f32::from_bits(bits),
+    }
 }
 
 /// Draws one frame.

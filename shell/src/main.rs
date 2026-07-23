@@ -27,6 +27,7 @@ mod menu;
 mod panel;
 mod render;
 mod saves;
+mod screens;
 mod tutorial;
 
 use anyhow::{Context, Result};
@@ -35,7 +36,7 @@ use debug_server::IncomingRequest;
 use game::{Game, GameReplay, SoundKind};
 use macroquad::audio::{PlaySoundParams, play_sound};
 use macroquad::prelude::*;
-use menu::{Menu, PreviewCache, ScenarioEntry};
+use menu::{Menu, PreviewCache};
 use oxide_protocol::{
     AdvancedView, CameraView, HashView, Key, MouseButton, OverlayView, RawEvent, Reply, Request,
     ResponseEnvelope, SavedView, ScreenshotView, StateView, StatusView, UiView,
@@ -182,14 +183,9 @@ enum Mode {
         /// The action row armed for rebinding, if any.
         rebinding: Option<usize>,
     },
-    /// Scenario picker (the first New Match screen).
-    MainMenu,
-    /// Difficulty picker for the chosen scenario.
-    DifficultyMenu,
-    /// Personality picker (after difficulty).
-    PersonalityMenu,
-    /// Faction picker (after personality) — which roster the human plays.
-    FactionMenu,
+    /// The New Match wizard (map, difficulty, personality, faction);
+    /// its state lives in the `wizard` session local.
+    Wizard,
     /// The game proper.
     Playing,
     /// Read-only replay playback: the log is the match, seek included.
@@ -210,65 +206,12 @@ enum Mode {
     },
 }
 
-/// Everything New Match has chosen so far. The draft outlives every
-/// screen transition: backing from Faction to Difficulty to the map
-/// list and forward again re-offers each earlier answer instead of
-/// forgetting it.
-struct NewMatchDraft {
-    /// The loaded map, once picked.
-    scenario: Option<Box<Scenario>>,
-    /// Map-list row, for re-preselection.
-    scenario_choice: usize,
-    /// Difficulty row (indexes `Level::LADDER`).
-    level_choice: usize,
-    /// Personality row (feeds `personality_knob`).
-    personality_choice: usize,
-    /// Faction row (Ferrous / Cupric / surprise).
-    faction_choice: usize,
-}
+use screens::wizard::{NewMatchDraft, Out as WizardOut, Step as WizardStep, Wizard};
 
-impl Default for NewMatchDraft {
-    fn default() -> Self {
-        Self {
-            scenario: None,
-            scenario_choice: 0,
-            level_choice: 1, // Medium is the fair default
-            personality_choice: 0,
-            faction_choice: 0,
-        }
-    }
-}
-
-/// The wizard's menus, each preselected from the draft.
-fn difficulty_menu(draft: &NewMatchDraft) -> Menu {
-    let mut items: Vec<String> = DIFFICULTY_ITEMS.iter().map(|s| s.to_string()).collect();
-    items.push("Back".to_string());
-    let mut menu = Menu::new("DIFFICULTY", items);
-    menu.select(draft.level_choice.min(DIFFICULTY_ITEMS.len() - 1));
-    menu
-}
-
-fn personality_menu(draft: &NewMatchDraft) -> Menu {
-    let mut items: Vec<String> = PERSONALITY_ITEMS.iter().map(|s| s.to_string()).collect();
-    items.push("Back".to_string());
-    let mut menu = Menu::new("OPPONENT", items);
-    menu.select(draft.personality_choice.min(PERSONALITY_ITEMS.len() - 1));
-    menu
-}
-
-fn faction_menu(draft: &NewMatchDraft) -> Menu {
-    let mut items: Vec<String> = FACTION_ITEMS.iter().map(|s| s.to_string()).collect();
-    items.push("Back".to_string());
-    let mut menu = Menu::new("FACTION", items);
-    menu.select(draft.faction_choice.min(FACTION_ITEMS.len() - 1));
-    menu
-}
-
-/// Builds the game the draft describes.
 fn launch(draft: &NewMatchDraft) -> Result<Game> {
     let mut scenario = (**draft.scenario.as_ref().context("draft has a map")?).clone();
     let level = oxide_sim::bot::Level::LADDER[draft.level_choice.min(3)];
-    let aggression = personality_knob(draft.personality_choice);
+    let aggression = screens::wizard::personality_knob(draft.personality_choice);
     let config = oxide_sim::scenario::BotConfig { level, aggression };
     for player in scenario.players.iter_mut().filter(|p| p.bot) {
         player.bot_config = Some(config);
@@ -300,19 +243,6 @@ fn launch(draft: &NewMatchDraft) -> Result<Game> {
         retint_seat(bot, complement);
     }
     Game::new(scenario)
-}
-
-const DIFFICULTY_ITEMS: [&str; 4] = ["Easy", "Medium", "Hard", "Expert"];
-const PERSONALITY_ITEMS: [&str; 4] = ["Surprise me", "Turtle", "Balanced", "Aggressive"];
-const FACTION_ITEMS: [&str; 3] = ["Ferrous", "Cupric", "Surprise me"];
-
-fn personality_knob(choice: usize) -> Option<u32> {
-    match choice {
-        1 => Some(100), // Turtle
-        2 => Some(500), // Balanced
-        3 => Some(900), // Aggressive
-        _ => None,      // Surprise me: dealt from the scenario seed
-    }
 }
 
 /// Moves a seat onto a roster, keeping any faction-derived name honest:
@@ -451,15 +381,6 @@ fn confirm_menu(choice: usize) -> Menu {
         format!("{}?", verb.to_uppercase()),
         vec!["Cancel".to_string(), verb.to_string()],
     )
-}
-
-fn build_main_menu(draft: &NewMatchDraft) -> (Menu, Vec<ScenarioEntry>) {
-    let entries = menu::discover_scenarios();
-    let mut items: Vec<String> = entries.iter().map(|e| e.label.clone()).collect();
-    items.push("Back".to_string());
-    let mut menu = Menu::new("OXIDE", items);
-    menu.select(draft.scenario_choice.min(entries.len()));
-    (menu, entries)
 }
 
 /// Plays queued clips with a per-kind rate limit, so twenty simultaneous
@@ -681,7 +602,7 @@ async fn run() -> Result<()> {
     };
     let mut draft = NewMatchDraft::default();
     let mut previews = PreviewCache::default();
-    let mut main_menu: Option<(Menu, Vec<ScenarioEntry>)> = None;
+    let mut wizard: Option<Wizard> = None;
     let mut sub_menu = Menu::new("", Vec::new());
     let mut pause_menu = Menu::new(
         "PAUSED",
@@ -700,15 +621,18 @@ async fn run() -> Result<()> {
     let mut input = input::InputState::new();
     let mut injected: Vec<RawEvent> = Vec::new();
     let mut pending_shots: Vec<PendingScreenshot> = Vec::new();
-    let mut ui_view = capture_ui(&mode, &home, &main_menu, &sub_menu, &pause_menu, &game);
+    let mut ui_view = capture_ui(&mode, &home, &wizard, &sub_menu, &pause_menu, &game);
 
     loop {
         let dt = get_frame_time();
         // The camera never queries the window itself; feed it the viewport
         // once per frame (handles live resizes, keeps camera math pure),
-        // then advance any zoom glide.
+        // then advance any zoom glide. Menus take the same injection —
+        // their update logic runs headless in tests on the default size.
         game.camera
             .set_viewport(vec2(screen_width(), screen_height()));
+        menu::set_viewport(screen_width(), screen_height());
+        render::set_view_width(screen_width());
         game.camera.update(dt);
 
         if let Some(rx) = &debug_rx {
@@ -781,8 +705,8 @@ async fn run() -> Result<()> {
                             }
                         }
                         1 => {
-                            main_menu = None;
-                            mode = Mode::MainMenu;
+                            wizard = Some(Wizard::open(&draft));
+                            mode = Mode::Wizard;
                         }
                         2 => {
                             // The tutorial is a gentle real match with
@@ -946,69 +870,75 @@ async fn run() -> Result<()> {
                 };
                 sub_menu.draw(hint);
             }
-            Mode::MainMenu => {
-                let (menu, entries) = main_menu.get_or_insert_with(|| build_main_menu(&draft));
-                let escaped = events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
-                if escaped {
+            Mode::Wizard => {
+                let Some(w) = wizard.as_mut() else {
                     mode = Mode::Home;
-                } else if let Some(choice) = menu.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push((SoundKind::Click, None));
-                    if choice >= entries.len() {
-                        // The appended Back row returns to the front door.
+                    continue;
+                };
+                match w.update(
+                    &events,
+                    &mut input.mouse,
+                    &mut draft,
+                    &mut game.sounds_pending,
+                )? {
+                    WizardOut::Home => {
+                        wizard = None;
                         mode = Mode::Home;
                         render::draw(&game, &sprites, &input);
                         veil();
                         home.draw("machines eating a dead world");
                         continue;
                     }
-                    let scenario = match &entries[choice].path {
-                        Some(path) => Scenario::load(path)
-                            .with_context(|| format!("loading {}", path.display()))?,
-                        None => Scenario::skirmish(),
-                    };
-                    draft.scenario = Some(Box::new(scenario));
-                    draft.scenario_choice = choice;
-                    sub_menu = difficulty_menu(&draft);
-                    mode = Mode::DifficultyMenu;
-                    main_menu = None;
+                    WizardOut::Launch => {
+                        let fresh = launch(&draft)?;
+                        tutorial = None;
+                        game = keep_flags(fresh, &game);
+                        game.paused = false;
+                        input.reset_session();
+                        wizard = None;
+                        mode = Mode::Playing;
+                        render::draw(&game, &sprites, &input);
+                        continue;
+                    }
+                    WizardOut::Stay => {}
                 }
                 render::draw(&game, &sprites, &input);
                 veil();
-                if let Some((menu, entries)) = &main_menu {
+                let w = wizard.as_ref().expect("still open on Stay");
+                if w.step == WizardStep::Map {
                     // The subtitle browses with the player: the
                     // highlighted map's hook and badges, the pointer's
                     // row winning over the keyboard cursor.
-                    let focus = menu.hover().unwrap_or(menu.selected);
-                    let subtitle = entries
+                    let focus = w.menu.hover().unwrap_or(w.menu.selected);
+                    let subtitle = w
+                        .entries
                         .get(focus)
                         .and_then(|e| e.blurb.as_deref())
                         .unwrap_or("machines eating a dead world");
-                    menu.draw(subtitle);
+                    w.menu.draw(subtitle);
                     // Fog-free preview of the highlighted map, softly
                     // panelled on the right.
-                    if let Some(entry) = entries.get(focus)
+                    if let Some(entry) = w.entries.get(focus)
                         && let Some(tex) = previews.get(focus, entry)
                     {
                         let s = render::ui_scale();
                         // Strictly right of the menu's own row rects —
                         // shared geometry, no independent arithmetic to
                         // drift out of sync. Too narrow? No panel.
-                        let left_bound = menu.rows_right_edge() + 24.0 * s;
+                        let left_bound = w.menu.rows_right_edge() + 24.0 * s;
                         let avail = screen_width() - left_bound - 24.0 * s;
                         let max_w = avail.min(screen_width() * 0.26);
                         let max_h = screen_height() * 0.34;
                         if max_w >= 96.0 * s {
                             let scale = (max_w / tex.width()).min(max_h / tex.height());
-                            let (w, h) = (tex.width() * scale, tex.height() * scale);
-                            let x = screen_width() - w - 24.0 * s;
-                            let y = screen_height() * 0.5 - h * 0.5;
+                            let (pw, ph) = (tex.width() * scale, tex.height() * scale);
+                            let x = screen_width() - pw - 24.0 * s;
+                            let y = screen_height() * 0.5 - ph * 0.5;
                             draw_rectangle(
                                 x - 8.0 * s,
                                 y - 8.0 * s,
-                                w + 16.0 * s,
-                                h + 16.0 * s,
+                                pw + 16.0 * s,
+                                ph + 16.0 * s,
                                 Color::from_rgba(20, 20, 24, 230),
                             );
                             draw_texture_ex(
@@ -1017,95 +947,15 @@ async fn run() -> Result<()> {
                                 y,
                                 render::theme_tint(&entry.theme),
                                 DrawTextureParams {
-                                    dest_size: Some(vec2(w, h)),
+                                    dest_size: Some(vec2(pw, ph)),
                                     ..Default::default()
                                 },
                             );
                         }
                     }
-                }
-            }
-            Mode::DifficultyMenu => {
-                let escaped = events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
-                if escaped {
-                    // Escape walks backward; the draft keeps every answer.
-                    mode = Mode::MainMenu;
-                } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push((SoundKind::Click, None));
-                    if choice >= DIFFICULTY_ITEMS.len() {
-                        mode = Mode::MainMenu;
-                    } else {
-                        draft.level_choice = choice;
-                        sub_menu = personality_menu(&draft);
-                        mode = Mode::PersonalityMenu;
-                    }
-                }
-                render::draw(&game, &sprites, &input);
-                veil();
-                // On a team map these dials set EVERY AI seat — the
-                // human's ally included; say so instead of surprising.
-                let team_map = draft
-                    .scenario
-                    .as_ref()
-                    .is_some_and(|sc| sc.players.len() > 2);
-                sub_menu.draw(if team_map {
-                    "how hard should they think? (sets every AI seat, your ally too)"
                 } else {
-                    "how hard should it think?"
-                });
-            }
-            Mode::PersonalityMenu => {
-                let escaped = events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
-                if escaped {
-                    sub_menu = difficulty_menu(&draft);
-                    mode = Mode::DifficultyMenu;
-                } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push((SoundKind::Click, None));
-                    if choice >= PERSONALITY_ITEMS.len() {
-                        sub_menu = difficulty_menu(&draft);
-                        mode = Mode::DifficultyMenu;
-                    } else {
-                        draft.personality_choice = choice;
-                        sub_menu = faction_menu(&draft);
-                        mode = Mode::FactionMenu;
-                    }
+                    w.menu.draw(w.subtitle(&draft));
                 }
-                render::draw(&game, &sprites, &input);
-                veil();
-                sub_menu.draw("how should they fight?");
-            }
-            Mode::FactionMenu => {
-                let escaped = events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
-                if escaped {
-                    sub_menu = personality_menu(&draft);
-                    mode = Mode::PersonalityMenu;
-                } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push((SoundKind::Click, None));
-                    if choice >= FACTION_ITEMS.len() {
-                        sub_menu = personality_menu(&draft);
-                        mode = Mode::PersonalityMenu;
-                        render::draw(&game, &sprites, &input);
-                        veil();
-                        sub_menu.draw("how should they fight?");
-                        continue;
-                    }
-                    draft.faction_choice = choice;
-                    let fresh = launch(&draft)?;
-                    tutorial = None;
-                    game = keep_flags(fresh, &game);
-                    game.paused = false;
-                    mode = Mode::Playing;
-                    input.reset_session();
-                }
-                render::draw(&game, &sprites, &input);
-                veil();
-                sub_menu.draw("which roster do your machines run?");
             }
             Mode::Playing => {
                 // The tutorial card is chrome: a click on it (the
@@ -1480,7 +1330,6 @@ async fn run() -> Result<()> {
                         3 => {
                             autosave::save(&mut game);
                             (home, home_resumable) = home_menu();
-                            main_menu = None;
                             mode = Mode::Home;
                         }
                         _ => {
@@ -1495,10 +1344,7 @@ async fn run() -> Result<()> {
         if std::mem::discriminant(&mode) != mode_before {
             input.reset_transient();
         }
-        if matches!(mode, Mode::MainMenu) && main_menu.is_none() {
-            main_menu = Some(build_main_menu(&draft));
-        }
-        ui_view = capture_ui(&mode, &home, &main_menu, &sub_menu, &pause_menu, &game);
+        ui_view = capture_ui(&mode, &home, &wizard, &sub_menu, &pause_menu, &game);
 
         // The mixer serves whichever session is on screen: a playback
         // viewer queues its own sounds on its own game, and draining the
@@ -1593,7 +1439,7 @@ fn keep_flags(mut fresh: Game, old: &Game) -> Game {
 fn capture_ui(
     mode: &Mode,
     home: &Menu,
-    main_menu: &Option<(Menu, Vec<ScenarioEntry>)>,
+    wizard: &Option<Wizard>,
     sub_menu: &Menu,
     pause_menu: &Menu,
     game: &Game,
@@ -1602,10 +1448,10 @@ fn capture_ui(
         Mode::Home => ("home", Some(home)),
         Mode::Settings => ("settings", Some(sub_menu)),
         Mode::Controls { .. } => ("controls", Some(sub_menu)),
-        Mode::MainMenu => ("main_menu", main_menu.as_ref().map(|(menu, _)| menu)),
-        Mode::DifficultyMenu => ("difficulty_menu", Some(sub_menu)),
-        Mode::PersonalityMenu => ("personality_menu", Some(sub_menu)),
-        Mode::FactionMenu => ("faction_menu", Some(sub_menu)),
+        Mode::Wizard => (
+            wizard.as_ref().map_or("main_menu", |w| w.mode_name()),
+            wizard.as_ref().map(|w| &w.menu),
+        ),
         Mode::Playing => ("playing", None),
         Mode::Playback => ("playback", None),
         Mode::Replays { .. } => ("replays", Some(sub_menu)),
