@@ -10,6 +10,7 @@
 //! exists so the shell never depends on the dev harness.
 
 pub mod composition;
+pub mod matchup;
 pub mod playback;
 pub mod render;
 pub mod runner;

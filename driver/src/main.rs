@@ -94,6 +94,19 @@ enum Cmd {
         #[arg(long)]
         out: Option<String>,
     },
+    /// Par-cost arena duel between two hand-picked armies (no
+    /// economy): the balance review's controlled experiment.
+    Matchup {
+        /// Side A, as "kind:count,kind:count".
+        #[arg(long)]
+        a: String,
+        /// Side B, same shape.
+        #[arg(long)]
+        b: String,
+        /// Seeds to run (deterministic each).
+        #[arg(long, default_value_t = 5)]
+        seeds: u64,
+    },
     MapAudit {
         /// Scenario path, or "skirmish".
         scenario: String,
@@ -533,6 +546,30 @@ fn main() -> Result<()> {
                 other => anyhow::bail!("unknown level '{other}'"),
             };
             oxide_driver::balance::balance_probe(&dir, level, seeds, ticks, out.as_deref())?;
+        }
+        Cmd::Matchup { a, b, seeds } => {
+            let army_a = oxide_kit::matchup::parse_army(&a)?;
+            let army_b = oxide_kit::matchup::parse_army(&b)?;
+            println!(
+                "A = {a} ({} scrap)   B = {b} ({} scrap)",
+                oxide_kit::matchup::army_cost(&army_a),
+                oxide_kit::matchup::army_cost(&army_b),
+            );
+            let (mut a_total, mut b_total) = (0u64, 0u64);
+            for seed in 0..seeds {
+                let out = oxide_kit::matchup::duel(&army_a, &army_b, 42 + seed, 8_000)?;
+                a_total += u64::from(out.a_value);
+                b_total += u64::from(out.b_value);
+                println!(
+                    "  seed {seed}: A survives {:>4}  B survives {:>4}  ({} ticks)",
+                    out.a_value, out.b_value, out.ticks
+                );
+            }
+            println!(
+                "mean surviving value  A {}  B {}",
+                a_total / seeds,
+                b_total / seeds
+            );
         }
         Cmd::MapAudit { scenario, json } => {
             let scenario = runner::load_scenario(&scenario)?;
