@@ -24,6 +24,7 @@ from oxide_gym import FEATURE_NAMES, Worker, with_condition
 # Action indices (see sim/src/bot/gym.rs — the v3 menu).
 IDLE, TRAIN_H, TRAIN_S = 0, 1, 2
 TRAIN_AA, TRAIN_WING = 6, 7
+BUILD_FAB = 9
 BUILD_TURRET, BUILD_FLAK, BUILD_RECLAIMER, REPAIR, AIR_RAID = 10, 11, 14, 15, 16
 FORM, PUSH, SCOUT = 17, 18, 20
 
@@ -40,6 +41,11 @@ def rusher(raw: list[int], mask: np.ndarray, tick: int) -> int:
     enemy_air = raw[F["enemy_airground"]] + raw[F["enemy_airair"]]
     if harvesters < 4 and mask[TRAIN_H]:
         return TRAIN_H
+    # The tech step the lineage never had: without this, fab_built
+    # stays zero forever and the wing branch below is dead code — and
+    # every policy cloned from these teachers spams basics for life.
+    if raw[F["fab_built"]] == 0 and raw[F["scrap"]] >= 130 and mask[BUILD_FAB]:
+        return BUILD_FAB
     if enemy_air > raw[F["my_antiair"]] and mask[TRAIN_AA]:
         return TRAIN_AA
     if mask[AIR_RAID] and raw[F["my_airground"]] >= 3:
@@ -50,7 +56,10 @@ def rusher(raw: list[int], mask: np.ndarray, tick: int) -> int:
         return FORM
     if raw[F["my_airground"]] < 3 and raw[F["fab_built"]] > 0 and mask[TRAIN_WING]:
         return TRAIN_WING
-    if mask[TRAIN_S]:
+    # Pre-tech the line caps at three: sentinel training at 75 a pop
+    # otherwise eats the bank faster than it can reach the Fabricator
+    # price — which is exactly how the lineage stayed techless.
+    if (raw[F["fab_built"]] > 0 or staging_size < 3) and mask[TRAIN_S]:
         return TRAIN_S
     if mask[SCOUT] and tick % 1024 == 0:
         return SCOUT
@@ -74,11 +83,15 @@ def turtle(raw: list[int], mask: np.ndarray, tick: int) -> int:
         return REPAIR
     if raw[F["wreck_value"]] + raw[F["scrap"]] < 200 and mask[BUILD_RECLAIMER]:
         return BUILD_RECLAIMER
+    if raw[F["fab_built"]] == 0 and raw[F["scrap"]] >= 150 and mask[BUILD_FAB]:
+        return BUILD_FAB
+    if raw[F["fab_built"]] > 0 and raw[F["enemy_airground"]] == 0 and mask[TRAIN_WING]:
+        return TRAIN_WING
     if mask[PUSH] and staging_size >= 10:
         return PUSH
     if mask[FORM]:
         return FORM
-    if mask[TRAIN_S]:
+    if (raw[F["fab_built"]] > 0 or staging_size < 4) and mask[TRAIN_S]:
         return TRAIN_S
     if mask[SCOUT] and tick % 2048 == 0:
         return SCOUT
@@ -136,6 +149,10 @@ def main() -> None:
 
     obs = torch.as_tensor(np.stack(obs_all))
     mask = torch.as_tensor(np.stack(mask_all))
+    # Recording telemetry: a dataset that never contains an action can
+    # never teach it — the techless-lineage bug hid here.
+    counts = np.bincount(np.asarray(act_all), minlength=21)
+    print("action counts:", {i: int(c) for i, c in enumerate(counts) if c})
     act = torch.as_tensor(np.asarray(act_all))
     policy = make_policy(args.arch)
     opt = torch.optim.Adam(policy.parameters(), lr=1e-3)
