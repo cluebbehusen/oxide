@@ -37,7 +37,7 @@ fn every_map_carries_complete_metadata() {
             .unwrap_or_else(|| panic!("{name}: shipped maps carry metadata"));
         assert!(!meta.hook.is_empty(), "{name}: hook missing");
         assert!(
-            matches!(meta.pace.as_str(), "quick" | "standard" | "large"),
+            matches!(meta.pace.as_str(), "quick" | "standard" | "large" | "vast"),
             "{name}: pace '{}' is not a recognized label",
             meta.pace
         );
@@ -68,6 +68,9 @@ fn routes_connect_and_pace_labels_hold() {
                 "quick" => 8..=28,
                 "standard" => 29..=52,
                 "large" => 53..=90,
+                // 0.10: matches should run tens of minutes — the vast
+                // class exists to hold maps big enough to make it so.
+                "vast" => 91..=150,
                 other => panic!("{name}: unknown pace '{other}'"),
             };
             assert!(
