@@ -657,9 +657,10 @@ async fn run() -> Result<()> {
     // nobody wants fsynced.
     let mut pending_size: Option<((u32, u32), f64)> = None;
     let mut replay_shelf: Vec<saves::ReplayEntry> = Vec::new();
-    // Modifier truth for chord capture: the Controls screen sees raw
-    // events, not the gameplay resolver, so it tracks Ctrl/Shift edges
-    // itself.
+    // Modifier truth for chord capture: tracked globally from raw
+    // events, every frame, whatever the mode — a Ctrl pressed on one
+    // screen must still read held after a mode switch, or Controls
+    // captures phantom bare chords.
     let (mut capture_ctrl, mut capture_shift) = (false, false);
     if let Some(path) = &args.watch {
         let mut session = PlaybackSession::open(path)?;
@@ -732,6 +733,15 @@ async fn run() -> Result<()> {
             input::poll_events(&mut input)
         };
         events.append(&mut injected);
+        for e in &events {
+            match e {
+                RawEvent::KeyDown { key: Key::Ctrl } => capture_ctrl = true,
+                RawEvent::KeyUp { key: Key::Ctrl } => capture_ctrl = false,
+                RawEvent::KeyDown { key: Key::Shift } => capture_shift = true,
+                RawEvent::KeyUp { key: Key::Shift } => capture_shift = false,
+                _ => {}
+            }
+        }
 
         let mode_before = std::mem::discriminant(&mode);
         match mode {
@@ -817,12 +827,6 @@ async fn run() -> Result<()> {
                         sub_menu.select(selected);
                     } else if row == 7 {
                         sub_menu = controls_menu(&config);
-                        // Modifier truth restarts with the screen: a Ctrl
-                        // held on the way in pressed down elsewhere, and a
-                        // stale flag from a prior visit binds phantom
-                        // chords.
-                        capture_ctrl = false;
-                        capture_shift = false;
                         mode = Mode::Controls { rebinding: None };
                     } else {
                         mode = Mode::Home;
@@ -833,15 +837,6 @@ async fn run() -> Result<()> {
                 sub_menu.draw("Enter cycles a value - changes stick immediately");
             }
             Mode::Controls { rebinding } => {
-                for e in &events {
-                    match e {
-                        RawEvent::KeyDown { key: Key::Ctrl } => capture_ctrl = true,
-                        RawEvent::KeyUp { key: Key::Ctrl } => capture_ctrl = false,
-                        RawEvent::KeyDown { key: Key::Shift } => capture_shift = true,
-                        RawEvent::KeyUp { key: Key::Shift } => capture_shift = false,
-                        _ => {}
-                    }
-                }
                 let escaped = events
                     .iter()
                     .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
@@ -1689,7 +1684,14 @@ fn handle_request(
             pb.game.state = pb.engine.state.clone();
         }
         let handled: Option<Result<Reply, String>> = match &request {
-            Request::Status => Some(Ok(Reply::Status(status_view(&pb.game)))),
+            Request::Status => {
+                // The clock the caller cares about is the transport's,
+                // not the hidden Game's disconnected fields.
+                let mut view = status_view(&pb.game);
+                view.paused = pb.paused;
+                view.speed = f64::from(pb.speed);
+                Some(Ok(Reply::Status(view)))
+            }
             Request::QueryState { filter } => Some(Ok(Reply::State(StateView::capture(
                 &pb.game.state,
                 *filter,
