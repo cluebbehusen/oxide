@@ -8,6 +8,33 @@
 //! 60fps motion.
 
 use crate::assets::Sprites;
+static COLORBLIND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Colorblind accents: swap allegiance-critical indicator colors for a
+/// deutan/protan-safe orange-vs-blue pair. Sprites keep their art —
+/// this governs the signals that must never be ambiguous (minimap
+/// dots, alert pulses, allegiance tints).
+pub fn set_colorblind(on: bool) {
+    COLORBLIND.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn colorblind() -> bool {
+    COLORBLIND.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The faction's indicator accent — the one allegiance color every
+/// signal derives from, colorblind-aware.
+pub fn faction_accent(faction: oxide_sim::Faction) -> Color {
+    match (faction, colorblind()) {
+        (oxide_sim::Faction::Ferrous, false) => color_u8!(196, 87, 59, 255),
+        (oxide_sim::Faction::Cupric, false) => color_u8!(63, 148, 130, 255),
+        // The safe pair: warm orange vs cool blue reads under deutan,
+        // protan, and tritan alike.
+        (oxide_sim::Faction::Ferrous, true) => color_u8!(230, 120, 30, 255),
+        (oxide_sim::Faction::Cupric, true) => color_u8!(70, 120, 235, 255),
+    }
+}
+
 /// How faded a memory draws after `age` seconds unseen: 0 fresh,
 /// climbing to a 0.55 fade over ninety seconds. Memories never vanish
 /// — the player recorded them honestly — they just stop pretending to

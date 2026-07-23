@@ -33,10 +33,7 @@ fn dim(color: Color) -> Color {
 }
 
 pub(crate) fn mini_faction_color(faction: oxide_sim::Faction) -> Color {
-    match faction {
-        oxide_sim::Faction::Ferrous => color_u8!(196, 87, 59, 255),
-        oxide_sim::Faction::Cupric => color_u8!(63, 148, 130, 255),
-    }
+    super::faction_accent(faction)
 }
 
 /// Where the minimap sits (flush bottom-right, matching the command

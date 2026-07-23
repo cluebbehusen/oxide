@@ -342,6 +342,7 @@ async fn run() -> Result<()> {
     let mut config = config::Config::load();
     render::set_user_scale(config.ui_scale);
     render::set_reduced_motion(config.reduced_motion);
+    render::set_colorblind(config.colorblind);
     let sprites = assets::Sprites::load().await?;
     let sounds = assets::Sounds::load().await?;
     let mut mixer = Mixer::default();

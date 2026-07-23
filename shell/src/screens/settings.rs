@@ -78,6 +78,7 @@ fn settings_menu(config: &Config) -> Menu {
             format!("Edge pan: {}", onoff(config.camera.edge_pan)),
             format!("Invert zoom: {}", onoff(config.camera.zoom_inverted)),
             format!("Reduced motion: {}", onoff(config.reduced_motion)),
+            format!("Colorblind accents: {}", onoff(config.colorblind)),
             "Apply left-handed bindings".to_string(),
             "Controls...".to_string(),
             "Back".to_string(),
@@ -112,6 +113,10 @@ fn cycle_setting(config: &mut Config, row: usize) -> bool {
         6 => {
             config.reduced_motion = !config.reduced_motion;
             render::set_reduced_motion(config.reduced_motion);
+        }
+        7 => {
+            config.colorblind = !config.colorblind;
+            render::set_colorblind(config.colorblind);
         }
         _ => return false, // preset, Controls..., and Back route in update
     }
@@ -214,7 +219,7 @@ impl SettingsScreen {
                         let selected = self.menu.selected;
                         self.menu = settings_menu(config);
                         self.menu.select(selected);
-                    } else if row == 7 {
+                    } else if row == 8 {
                         // The left-handed preset replaces the whole
                         // profile (custom rebinds included — Controls'
                         // Reset row walks back to Classic).
@@ -225,7 +230,7 @@ impl SettingsScreen {
                         let selected = self.menu.selected;
                         self.menu = settings_menu(config);
                         self.menu.select(selected);
-                    } else if row == 8 {
+                    } else if row == 9 {
                         self.goto_controls(config, 0);
                     } else {
                         update.out = Out::Home;
@@ -429,7 +434,7 @@ mod tests {
         let mut config = Config::default();
         let mut live = config.bindings.clone();
         let mut s = SettingsScreen::open(&config);
-        for _ in 0..7 {
+        for _ in 0..8 {
             drive(&mut s, &mut config, &mut live, &press(Key::Down), false);
         }
         let up = drive(&mut s, &mut config, &mut live, &press(Key::Enter), false);
