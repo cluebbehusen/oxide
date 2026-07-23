@@ -34,12 +34,8 @@ png = "0.17"
 # state (interpolation caches, input sets) is presentation and may hash.
 disallowed_types = "allow"
 
-[target.'cfg(target_os = "macos")'.dependencies]
-# One AppKit call: the full-resolution dock image for bare dev runs
-# (miniquad's icon path caps at 64px, which the dock upscales fuzzy).
-objc = "0.2"
-
 [lints.rust]
-# Deny, not forbid: the dock module carries the one scoped allow for
-# its AppKit call. Everything else stays safe Rust.
-unsafe_code = "deny"
+# The dev-run dock icon is a touch soft for this (miniquad's icon path
+# caps at 64px, and sharpening it means an AppKit call): the bundled
+# .app is crisp via its icns, and that trade keeps the shell unsafe-free.
+unsafe_code = "forbid"

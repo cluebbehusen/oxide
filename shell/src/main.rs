@@ -20,12 +20,6 @@ mod autosave;
 mod camera;
 mod config;
 mod debug_server;
-#[cfg(target_os = "macos")]
-#[allow(unsafe_code)]
-// objc 0.2's macros expand `cfg(cargo-clippy)` guards from before
-// check-cfg existed; the lint would flag them on every build.
-#[allow(unexpected_cfgs)]
-mod dock;
 mod game;
 mod input;
 mod layout;
@@ -631,8 +625,6 @@ fn playback_hud(pb: &PlaybackSession) {
 }
 
 async fn run() -> Result<()> {
-    #[cfg(target_os = "macos")]
-    dock::set_dock_icon();
     let args = Args::parse();
     let mut config = config::Config::load();
     render::set_user_scale(config.ui_scale);
