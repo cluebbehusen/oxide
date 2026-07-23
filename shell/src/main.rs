@@ -175,14 +175,9 @@ async fn main() {
 enum Mode {
     /// The front door: play, settings, quit.
     Home,
-    /// Settings: Enter cycles a row's value; changes apply live and
-    /// persist on the spot.
+    /// Settings and the Controls remap screen (state in the `settings`
+    /// session local).
     Settings,
-    /// Key remapping: Enter arms a row, the next key becomes its chord.
-    Controls {
-        /// The action row armed for rebinding, if any.
-        rebinding: Option<usize>,
-    },
     /// The New Match wizard (map, difficulty, personality, faction);
     /// its state lives in the `wizard` session local.
     Wizard,
@@ -268,98 +263,6 @@ fn home_menu() -> (Menu, bool) {
     }
     items.extend(["Play", "Tutorial", "Replays", "Settings", "Quit"].map(str::to_string));
     (Menu::new("OXIDE", items), resumable)
-}
-
-/// The settings rows: label, the value steps it cycles through, and a
-/// getter/setter pair over the config. Enter advances to the next step;
-/// every change applies live and saves.
-fn settings_menu(config: &config::Config) -> Menu {
-    let pct = |v: f32| format!("{}%", (v * 100.0).round());
-    let onoff = |v: bool| if v { "on" } else { "off" };
-    Menu::new(
-        "SETTINGS",
-        vec![
-            format!("Master volume: {}", pct(config.volumes.master)),
-            format!("Effects volume: {}", pct(config.volumes.effects)),
-            format!("UI volume: {}", pct(config.volumes.ui)),
-            format!("UI scale: {}", pct(config.ui_scale)),
-            format!("Edge pan: {}", onoff(config.camera.edge_pan)),
-            format!("Invert zoom: {}", onoff(config.camera.zoom_inverted)),
-            format!("Reduced motion: {}", onoff(config.reduced_motion)),
-            "Controls...".to_string(),
-            "Back".to_string(),
-        ],
-    )
-}
-
-/// Advances one settings row to its next value step. Returns false on
-/// the Back row.
-fn cycle_setting(config: &mut config::Config, row: usize) -> bool {
-    let step = |v: f32| {
-        // 0 -> 25 -> 50 -> 75 -> 100 -> 0, tolerant of odd stored values.
-        let next = ((v * 4.0).round() as u32 + 1) % 5;
-        next as f32 / 4.0
-    };
-    match row {
-        0 => config.volumes.master = step(config.volumes.master),
-        1 => config.volumes.effects = step(config.volumes.effects),
-        2 => config.volumes.ui = step(config.volumes.ui),
-        3 => {
-            // 75 -> 100 -> 125 -> 150 -> 75.
-            config.ui_scale = match (config.ui_scale * 100.0).round() as u32 {
-                75 => 1.0,
-                100 => 1.25,
-                125 => 1.5,
-                _ => 0.75,
-            };
-            render::set_user_scale(config.ui_scale);
-        }
-        4 => config.camera.edge_pan = !config.camera.edge_pan,
-        5 => config.camera.zoom_inverted = !config.camera.zoom_inverted,
-        6 => {
-            config.reduced_motion = !config.reduced_motion;
-            render::set_reduced_motion(config.reduced_motion);
-        }
-        _ => return false, // Controls... and Back route in the arm
-    }
-    true
-}
-
-/// The remappable actions, in display order. Digits and structural keys
-/// (Back, Confirm, group slots) stay fixed — their meaning is
-/// positional, not preferential.
-const REMAPPABLE: [(action::Action, &str); 14] = [
-    (action::Action::StopOrScrap, "Stop / scrap site"),
-    (action::Action::TrainSlot(0), "Train slot 1"),
-    (action::Action::TrainSlot(1), "Train slot 2"),
-    (action::Action::TogglePause, "Pause"),
-    (action::Action::ToggleBuildPalette, "Build palette"),
-    (action::Action::Patrol, "Patrol"),
-    (action::Action::HomeCamera, "Center home"),
-    (action::Action::ToggleOverlay, "Debug overlay"),
-    (action::Action::PanLeft, "Pan left"),
-    (action::Action::PanRight, "Pan right"),
-    (action::Action::PanUp, "Pan up"),
-    (action::Action::PanDown, "Pan down"),
-    (action::Action::CycleIdleWorker, "Next idle harvester"),
-    (action::Action::JumpToLastAlert, "Jump to last alert"),
-];
-
-fn controls_menu(config: &config::Config) -> Menu {
-    let mut items: Vec<String> = REMAPPABLE
-        .iter()
-        .map(|(action, label)| {
-            let chord = config
-                .bindings
-                .chord_for(*action)
-                .map(action::BindingMap::chord_label)
-                .unwrap_or_else(|| "unbound".to_string());
-            format!("{label}: {chord}")
-        })
-        .collect();
-    items.push("Reset to defaults".to_string());
-    items.push("Back".to_string());
-    Menu::new("CONTROLS", items)
 }
 
 /// Plays queued clips with a per-kind rate limit, so twenty simultaneous
@@ -582,8 +485,8 @@ async fn run() -> Result<()> {
     let mut draft = NewMatchDraft::default();
     let mut previews = PreviewCache::default();
     let mut wizard: Option<Wizard> = None;
-    let mut sub_menu = Menu::new("", Vec::new());
     let mut pause: Option<screens::pause::PauseScreen> = None;
+    let mut settings: Option<screens::settings::SettingsScreen> = None;
 
     // The title-bar close and Cmd-Q must reach the autosave path: left
     // to macroquad they exit the process before any save runs.
@@ -597,7 +500,7 @@ async fn run() -> Result<()> {
     let mut input = input::InputState::new();
     let mut injected: Vec<RawEvent> = Vec::new();
     let mut pending_shots: Vec<PendingScreenshot> = Vec::new();
-    let mut ui_view = capture_ui(&mode, &home, &wizard, &shelf, &sub_menu, &pause, &game);
+    let mut ui_view = capture_ui(&mode, &home, &wizard, &shelf, &pause, &settings, &game);
 
     loop {
         let dt = get_frame_time();
@@ -706,7 +609,7 @@ async fn run() -> Result<()> {
                             mode = Mode::Replays;
                         }
                         4 => {
-                            sub_menu = settings_menu(&config);
+                            settings = Some(screens::settings::SettingsScreen::open(&config));
                             mode = Mode::Settings;
                         }
                         _ => {
@@ -720,127 +623,33 @@ async fn run() -> Result<()> {
                 home.draw("machines eating a dead world");
             }
             Mode::Settings => {
-                let escaped = events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
-                if escaped {
+                let Some(sc) = settings.as_mut() else {
                     mode = Mode::Home;
-                } else if let Some(row) = sub_menu.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push((SoundKind::Click, None));
-                    if cycle_setting(&mut config, row) {
-                        // Apply live, persist immediately, keep the
-                        // cursor on the row being tuned.
-                        config.save().ok();
-                        let selected = sub_menu.selected;
-                        sub_menu = settings_menu(&config);
-                        sub_menu.select(selected);
-                    } else if row == 7 {
-                        sub_menu = controls_menu(&config);
-                        mode = Mode::Controls { rebinding: None };
-                    } else {
-                        mode = Mode::Home;
-                    }
-                }
-                render::draw(&game, &sprites, &input);
-                veil();
-                sub_menu.draw("Enter cycles a value - changes stick immediately");
-            }
-            Mode::Controls { rebinding } => {
-                let escaped = events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
-                if let Some(row) = rebinding {
-                    // Armed: the next key IS the answer — raw, before any
-                    // binding resolution, or the old meaning would fire.
-                    // The frame's edges replay in order from the frame-
-                    // start baseline, and the modifiers are read AT the
-                    // main key's press: batch-final flags would miss a
-                    // chord whose Ctrl came back up later the same frame.
-                    let mut walk_ctrl = ctrl_at_frame_start;
-                    let mut walk_shift = shift_at_frame_start;
-                    let mut pressed: Option<(Key, bool, bool)> = None;
-                    for e in &events {
-                        match e {
-                            RawEvent::KeyDown { key: Key::Ctrl } => walk_ctrl = true,
-                            RawEvent::KeyUp { key: Key::Ctrl } => walk_ctrl = false,
-                            RawEvent::KeyDown { key: Key::Shift } => walk_shift = true,
-                            RawEvent::KeyUp { key: Key::Shift } => walk_shift = false,
-                            RawEvent::KeyDown { key } if pressed.is_none() => {
-                                pressed = Some((*key, walk_ctrl, walk_shift));
-                            }
-                            _ => {}
-                        }
-                    }
-                    match pressed {
-                        Some((Key::Escape, _, _)) => {
-                            mode = Mode::Controls { rebinding: None };
-                        }
-                        Some((key, ctrl_held, shift_held)) => {
-                            let (target, _) = REMAPPABLE[row];
-                            let chord = action::Chord {
-                                key,
-                                ctrl: ctrl_held,
-                                shift: shift_held,
-                            };
-                            if config.bindings.rebind(target, chord) {
-                                config.save().ok();
-                                input.bindings = config.bindings.clone();
-                                sub_menu = controls_menu(&config);
-                                sub_menu.select(row);
-                                mode = Mode::Controls { rebinding: None };
-                            } else {
-                                game.toast("that key already means something");
-                                game.sounds_pending.push((SoundKind::Denied, None));
-                                mode = Mode::Controls { rebinding: None };
-                            }
-                        }
-                        _ => {}
-                    }
-                } else if escaped {
-                    sub_menu = settings_menu(&config);
-                    sub_menu.select(7);
-                    mode = Mode::Settings;
-                } else if events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::X }))
-                    && sub_menu.selected < REMAPPABLE.len()
-                {
-                    // X on a row unbinds it — outside capture mode, so
-                    // the key is free to mean this.
-                    let (target, _) = REMAPPABLE[sub_menu.selected];
-                    config.bindings.unbind(target);
-                    config.save().ok();
-                    input.bindings = config.bindings.clone();
-                    let row = sub_menu.selected;
-                    sub_menu = controls_menu(&config);
-                    sub_menu.select(row);
-                } else if let Some(row) = sub_menu.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push((SoundKind::Click, None));
-                    if row < REMAPPABLE.len() {
-                        mode = Mode::Controls {
-                            rebinding: Some(row),
-                        };
-                    } else if row == REMAPPABLE.len() {
-                        // Reset to defaults.
-                        config.bindings = action::BindingMap::classic();
-                        config.save().ok();
-                        input.bindings = config.bindings.clone();
-                        sub_menu = controls_menu(&config);
-                        sub_menu.select(row);
-                    } else {
-                        sub_menu = settings_menu(&config);
-                        sub_menu.select(7);
-                        mode = Mode::Settings;
-                    }
-                }
-                render::draw(&game, &sprites, &input);
-                veil();
-                let hint = if matches!(mode, Mode::Controls { rebinding: Some(_) }) {
-                    "press the new chord (modifiers held count) - Escape cancels"
-                } else {
-                    "Enter arms a row, then press its new chord - X unbinds"
+                    continue;
                 };
-                sub_menu.draw(hint);
+                let up = sc.update(
+                    &events,
+                    &mut input.mouse,
+                    &mut game.sounds_pending,
+                    &mut config,
+                    &mut input.bindings,
+                    ctrl_at_frame_start,
+                    shift_at_frame_start,
+                );
+                if up.dirty {
+                    config.save().ok();
+                }
+                if let Some(text) = up.toast {
+                    game.toast(text);
+                }
+                render::draw(&game, &sprites, &input);
+                veil();
+                let sc = settings.as_ref().expect("still open");
+                sc.menu.draw(sc.hint());
+                if up.out == screens::settings::Out::Home {
+                    settings = None;
+                    mode = Mode::Home;
+                }
             }
             Mode::Wizard => {
                 let Some(w) = wizard.as_mut() else {
@@ -1261,7 +1070,7 @@ async fn run() -> Result<()> {
         if std::mem::discriminant(&mode) != mode_before {
             input.reset_transient();
         }
-        ui_view = capture_ui(&mode, &home, &wizard, &shelf, &sub_menu, &pause, &game);
+        ui_view = capture_ui(&mode, &home, &wizard, &shelf, &pause, &settings, &game);
 
         // The mixer serves whichever session is on screen: a playback
         // viewer queues its own sounds on its own game, and draining the
@@ -1358,14 +1167,16 @@ fn capture_ui(
     home: &Menu,
     wizard: &Option<Wizard>,
     shelf: &Option<screens::shelf::Shelf>,
-    sub_menu: &Menu,
     pause: &Option<screens::pause::PauseScreen>,
+    settings: &Option<screens::settings::SettingsScreen>,
     game: &Game,
 ) -> UiView {
     let (mode_name, menu) = match mode {
         Mode::Home => ("home", Some(home)),
-        Mode::Settings => ("settings", Some(sub_menu)),
-        Mode::Controls { .. } => ("controls", Some(sub_menu)),
+        Mode::Settings => (
+            settings.as_ref().map_or("settings", |s| s.mode_name()),
+            settings.as_ref().map(|s| &s.menu),
+        ),
         Mode::Wizard => (
             wizard.as_ref().map_or("main_menu", |w| w.mode_name()),
             wizard.as_ref().map(|w| &w.menu),

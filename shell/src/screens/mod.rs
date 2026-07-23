@@ -7,5 +7,6 @@
 //! in unit tests. The main loop keeps only drawing and session wiring.
 
 pub mod pause;
+pub mod settings;
 pub mod shelf;
 pub mod wizard;
