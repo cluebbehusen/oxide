@@ -192,14 +192,9 @@ enum Mode {
     Playback,
     /// The replay shelf (state in the `shelf` session local).
     Replays,
-    /// Game visible but veiled; the pause menu owns input.
-    PauseMenu,
-    /// A destructive pause choice awaiting explicit confirmation.
-    ConfirmPause {
-        /// The pause-menu row being confirmed (restart / main menu /
-        /// quit).
-        choice: usize,
-    },
+    /// Game visible but veiled; the pause screen owns input (state in
+    /// the `pause` session local, confirmation included).
+    Pause,
 }
 
 use screens::wizard::{NewMatchDraft, Out as WizardOut, Step as WizardStep, Wizard};
@@ -365,18 +360,6 @@ fn controls_menu(config: &config::Config) -> Menu {
     items.push("Reset to defaults".to_string());
     items.push("Back".to_string());
     Menu::new("CONTROLS", items)
-}
-
-const PAUSE_ITEMS: [&str; 5] = ["Resume", "Watch Replay", "Restart", "Main Menu", "Quit"];
-
-/// Cancel sits first and preselected: confirming destruction takes a
-/// deliberate second motion, never a double-tap.
-fn confirm_menu(choice: usize) -> Menu {
-    let verb = PAUSE_ITEMS.get(choice).copied().unwrap_or("Quit");
-    Menu::new(
-        format!("{}?", verb.to_uppercase()),
-        vec!["Cancel".to_string(), verb.to_string()],
-    )
 }
 
 /// Plays queued clips with a per-kind rate limit, so twenty simultaneous
@@ -600,10 +583,7 @@ async fn run() -> Result<()> {
     let mut previews = PreviewCache::default();
     let mut wizard: Option<Wizard> = None;
     let mut sub_menu = Menu::new("", Vec::new());
-    let mut pause_menu = Menu::new(
-        "PAUSED",
-        PAUSE_ITEMS.iter().map(|s| s.to_string()).collect(),
-    );
+    let mut pause: Option<screens::pause::PauseScreen> = None;
 
     // The title-bar close and Cmd-Q must reach the autosave path: left
     // to macroquad they exit the process before any save runs.
@@ -617,7 +597,7 @@ async fn run() -> Result<()> {
     let mut input = input::InputState::new();
     let mut injected: Vec<RawEvent> = Vec::new();
     let mut pending_shots: Vec<PendingScreenshot> = Vec::new();
-    let mut ui_view = capture_ui(&mode, &home, &wizard, &shelf, &sub_menu, &pause_menu, &game);
+    let mut ui_view = capture_ui(&mode, &home, &wizard, &shelf, &sub_menu, &pause, &game);
 
     loop {
         let dt = get_frame_time();
@@ -998,7 +978,8 @@ async fn run() -> Result<()> {
                 if escape_pressed && (!had_selection || game.state.result().is_some()) {
                     game.paused = true;
                     game.demo.paused_menu = true;
-                    mode = Mode::PauseMenu;
+                    pause = Some(screens::pause::PauseScreen::open());
+                    mode = Mode::Pause;
                 }
                 if let Some(t) = tutorial.as_mut() {
                     if !t.advance(&game.demo) {
@@ -1114,7 +1095,8 @@ async fn run() -> Result<()> {
                         // match is still waiting. Cold --watch or the
                         // shelf goes back Home.
                         if back_to_pause {
-                            mode = Mode::PauseMenu;
+                            pause = Some(screens::pause::PauseScreen::open());
+                            mode = Mode::Pause;
                         } else {
                             (home, home_resumable) = home_menu();
                             mode = Mode::Home;
@@ -1217,86 +1199,60 @@ async fn run() -> Result<()> {
                 let sh = shelf.as_ref().expect("still open");
                 sh.menu.draw(&sh.subtitle());
             }
-            Mode::PauseMenu => {
-                let escape_pressed = events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
-                let choice = pause_menu.handle(&events, &mut input.mouse);
-                if choice.is_some() {
-                    game.sounds_pending.push((SoundKind::Click, None));
-                }
+            Mode::Pause => {
+                let Some(ps) = pause.as_mut() else {
+                    mode = Mode::Playing;
+                    continue;
+                };
+                let out = ps.update(&events, &mut input.mouse, &mut game.sounds_pending);
                 render::draw(&game, &sprites, &input);
                 veil();
-                pause_menu.draw(&game.scenario.name);
-                match choice {
-                    Some(0) => {
+                ps.menu.draw(ps.subtitle(&game.scenario.name));
+                match out {
+                    screens::pause::Out::Stay => {}
+                    screens::pause::Out::Resume => {
                         game.paused = false;
+                        pause = None;
                         mode = Mode::Playing;
                     }
-                    Some(1) => {
-                        // Watch the session so far: the recorder IS the
-                        // record — clone it, stamp its length, play it
-                        // back. Non-destructive; the live match waits.
+                    screens::pause::Out::WatchReplay => {
+                        // The recorder IS the record — clone it, stamp
+                        // its length, play it back. Non-destructive; the
+                        // live match waits.
                         let mut replay = game.recorder.clone();
                         replay.meta.ticks = Some(game.state.current_tick());
                         match PlaybackSession::from_replay(replay) {
                             Ok(mut session) => {
                                 session.from_pause = true;
                                 playback = Some(session);
+                                pause = None;
                                 mode = Mode::Playback;
                             }
                             Err(err) => game.toast(format!("cannot open playback: {err}")),
                         }
                     }
-                    Some(destructive) => {
-                        // Restart, Main Menu, and Quit all throw away a
-                        // live match — each asks first, with Cancel
-                        // preselected so a double-tap cannot destroy.
-                        sub_menu = confirm_menu(destructive);
-                        mode = Mode::ConfirmPause {
-                            choice: destructive,
-                        };
-                    }
-                    None if escape_pressed => {
+                    screens::pause::Out::Restart => {
+                        let fresh = Game::new(game.scenario.clone())?;
+                        // Restarting a tutorial restarts the lessons —
+                        // discarding them turned it into a plain match.
+                        if tutorial.is_some() {
+                            tutorial = Some(tutorial::Tutorial::new());
+                        }
+                        game = keep_flags(fresh, &game);
                         game.paused = false;
+                        input.reset_session();
+                        pause = None;
                         mode = Mode::Playing;
                     }
-                    None => {}
-                }
-            }
-            Mode::ConfirmPause { choice } => {
-                let escaped = events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
-                let picked = sub_menu.handle(&events, &mut input.mouse);
-                render::draw(&game, &sprites, &input);
-                veil();
-                sub_menu.draw("this throws the current match away");
-                if escaped || picked == Some(0) {
-                    mode = Mode::PauseMenu;
-                } else if picked == Some(1) {
-                    match choice {
-                        2 => {
-                            let fresh = Game::new(game.scenario.clone())?;
-                            // Restarting a tutorial restarts the lessons —
-                            // discarding them turned it into a plain match.
-                            if tutorial.is_some() {
-                                tutorial = Some(tutorial::Tutorial::new());
-                            }
-                            game = keep_flags(fresh, &game);
-                            game.paused = false;
-                            mode = Mode::Playing;
-                            input.reset_session();
-                        }
-                        3 => {
-                            autosave::save(&mut game);
-                            (home, home_resumable) = home_menu();
-                            mode = Mode::Home;
-                        }
-                        _ => {
-                            autosave::save(&mut game);
-                            std::process::exit(0);
-                        }
+                    screens::pause::Out::MainMenu => {
+                        autosave::save(&mut game);
+                        (home, home_resumable) = home_menu();
+                        pause = None;
+                        mode = Mode::Home;
+                    }
+                    screens::pause::Out::Quit => {
+                        autosave::save(&mut game);
+                        std::process::exit(0);
                     }
                 }
             }
@@ -1305,7 +1261,7 @@ async fn run() -> Result<()> {
         if std::mem::discriminant(&mode) != mode_before {
             input.reset_transient();
         }
-        ui_view = capture_ui(&mode, &home, &wizard, &shelf, &sub_menu, &pause_menu, &game);
+        ui_view = capture_ui(&mode, &home, &wizard, &shelf, &sub_menu, &pause, &game);
 
         // The mixer serves whichever session is on screen: a playback
         // viewer queues its own sounds on its own game, and draining the
@@ -1403,7 +1359,7 @@ fn capture_ui(
     wizard: &Option<Wizard>,
     shelf: &Option<screens::shelf::Shelf>,
     sub_menu: &Menu,
-    pause_menu: &Menu,
+    pause: &Option<screens::pause::PauseScreen>,
     game: &Game,
 ) -> UiView {
     let (mode_name, menu) = match mode {
@@ -1417,8 +1373,14 @@ fn capture_ui(
         Mode::Playing => ("playing", None),
         Mode::Playback => ("playback", None),
         Mode::Replays => ("replays", shelf.as_ref().map(|s| &s.menu)),
-        Mode::PauseMenu => ("pause_menu", Some(pause_menu)),
-        Mode::ConfirmPause { .. } => ("confirm_pause", Some(sub_menu)),
+        Mode::Pause => (
+            if pause.as_ref().is_some_and(|p| p.confirming()) {
+                "confirm_pause"
+            } else {
+                "pause_menu"
+            },
+            pause.as_ref().map(|p| &p.menu),
+        ),
     };
     UiView {
         mode: mode_name.to_string(),
@@ -1656,7 +1618,7 @@ fn handle_request(
             game.paused = false;
             // Resuming implies gameplay: leave the pause menu too, or the
             // sim runs behind a menu that still claims it is paused.
-            if matches!(mode, Mode::PauseMenu | Mode::ConfirmPause { .. }) {
+            if matches!(mode, Mode::Pause) {
                 *mode = Mode::Playing;
                 input.reset_transient();
             }
