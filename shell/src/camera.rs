@@ -9,8 +9,11 @@
 
 use macroquad::prelude::{Vec2, vec2};
 
-/// Zoom bounds in *logical* pixels per tile (scaled by dpi at
-/// construction, so a tile looks the same physical size on every display).
+/// Zoom bounds in *logical* pixels per tile. Logical is the whole
+/// story: macroquad's coordinate space already absorbs the retina
+/// multiple in its backing store, so multiplying dpi in here rendered
+/// the world at double scale on every high-dpi display — the same
+/// double-scaling disease the ui-scale audit cured in chrome.
 const ZOOM_MIN: f32 = 8.0;
 const ZOOM_MAX: f32 = 96.0;
 const ZOOM_DEFAULT: f32 = 32.0;
@@ -31,17 +34,16 @@ pub struct Camera {
 }
 
 impl Camera {
-    /// A camera looking at `focus` on a `width`×`height`-tile map, rendered
-    /// into a `viewport`-physical-pixel window at `dpi_scale` (1.0 on
-    /// standard displays, 2.0 on Retina).
-    pub fn new(focus: Vec2, width: i32, height: i32, viewport: Vec2, dpi_scale: f32) -> Self {
+    /// A camera looking at `focus` on a `width`×`height`-tile map,
+    /// rendered into a `viewport`-logical-pixel window.
+    pub fn new(focus: Vec2, width: i32, height: i32, viewport: Vec2) -> Self {
         let mut camera = Self {
             center: focus,
-            zoom: ZOOM_DEFAULT * dpi_scale,
-            target_zoom: ZOOM_DEFAULT * dpi_scale,
+            zoom: ZOOM_DEFAULT,
+            target_zoom: ZOOM_DEFAULT,
             zoom_anchor: None,
-            zoom_min: ZOOM_MIN * dpi_scale,
-            zoom_max: ZOOM_MAX * dpi_scale,
+            zoom_min: ZOOM_MIN,
+            zoom_max: ZOOM_MAX,
             viewport,
             map_size: vec2(width as f32, height as f32),
         };
@@ -129,7 +131,7 @@ mod tests {
     use super::*;
 
     fn camera() -> Camera {
-        Camera::new(vec2(20.0, 12.0), 40, 24, vec2(1280.0, 800.0), 1.0)
+        Camera::new(vec2(20.0, 12.0), 40, 24, vec2(1280.0, 800.0))
     }
 
     #[test]
@@ -199,7 +201,7 @@ mod tests {
         // A 4x4 map is dwarfed by the 1280x800 viewport at default zoom, so
         // there is no room to pan: the clamp holds the center on the map's
         // midpoint however hard it is shoved.
-        let mut cam = Camera::new(vec2(2.0, 2.0), 4, 4, vec2(1280.0, 800.0), 1.0);
+        let mut cam = Camera::new(vec2(2.0, 2.0), 4, 4, vec2(1280.0, 800.0));
         let mid = vec2(2.0, 2.0);
         assert!((cam.center - mid).length() < 1e-4);
         for shove in [

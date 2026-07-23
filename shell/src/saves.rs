@@ -66,7 +66,15 @@ fn scan(dir: &std::path::Path, out: &mut Vec<(std::time::SystemTime, ReplayEntry
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("replay");
-        let label = format!("{} · t{} · {} · {}", replay.setup.name, ticks, date, stem);
+        let stem_short = if stem.len() > 26 {
+            format!("{}…", &stem[..25])
+        } else {
+            stem.to_string()
+        };
+        let label = format!(
+            "{} · t{} · {} · {}",
+            replay.setup.name, ticks, date, stem_short
+        );
         let blurb = if compatible {
             format!(
                 "{} seats · sim v{} · Enter watches · X twice deletes",

@@ -34,11 +34,12 @@ fn autosave_dir() -> Option<PathBuf> {
     }
 }
 
-/// Writes the session as an autosave and rotates old ones out. A live,
-/// undecided match only — menus over a finished or unstarted game save
-/// nothing. Returns whether a file landed.
+/// Writes the session to disk and rotates old ones out. Live matches
+/// save as `autosave-` (what Continue resumes); finished ones save as
+/// `match-` — the shelf lists both, so a completed game is always
+/// watchable afterward. Unstarted games save nothing.
 pub fn save(game: &mut Game) -> bool {
-    if game.state.current_tick() == 0 || game.state.result().is_some() {
+    if game.state.current_tick() == 0 {
         return false;
     }
     let Some(dir) = autosave_dir() else {
@@ -52,12 +53,17 @@ pub fn save(game: &mut Game) -> bool {
     // tick); walk a counter until a free name turns up so rotation
     // always keeps the newest sessions instead of overwriting one.
     let tick = game.state.current_tick();
-    let mut path = dir.join(format!("autosave-{tick:010}.json"));
+    let prefix = if game.state.result().is_some() {
+        "match"
+    } else {
+        "autosave"
+    };
+    let mut path = dir.join(format!("{prefix}-{tick:010}.json"));
     let mut n = 0u32;
     while path.exists() && n < 1000 {
         n += 1;
         path = dir.join(format!(
-            "autosave-{tick:010}-{}-{n}.json",
+            "{prefix}-{tick:010}-{}-{n}.json",
             game.scenario.seed
         ));
     }
@@ -108,8 +114,13 @@ pub fn latest_compatible() -> Option<PathBuf> {
         )
     });
     files.into_iter().rev().find(|path| {
-        GameReplay::load(path)
-            .map(|r| r.meta.sim_version == oxide_sim::SIM_VERSION)
-            .unwrap_or(false)
+        // Continue resumes live sessions only; `match-` records are for
+        // the shelf.
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("autosave-"))
+            && GameReplay::load(path)
+                .map(|r| r.meta.sim_version == oxide_sim::SIM_VERSION)
+                .unwrap_or(false)
     })
 }

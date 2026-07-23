@@ -96,6 +96,9 @@ pub enum Event {
     },
     /// A shell left its gun: real flight, resolving at `arrival`.
     ShellLaunched {
+        /// The gun itself — a unit's mount or a building's emplacement;
+        /// presentation turns it toward the work.
+        shooter: crate::ids::Target,
         /// The firing seat.
         player: PlayerId,
         /// Muzzle position.

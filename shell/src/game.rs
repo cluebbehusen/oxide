@@ -245,11 +245,18 @@ pub struct Game {
     /// model hit-testing reads, so drawn and clickable can never
     /// disagree. A `Cell` because drawing holds `&Game`.
     pub layout: std::cell::Cell<crate::layout::LayoutModel>,
+    /// The frame's command panel, built once in draw_hud and read by
+    /// the tooltip pass — building it twice per frame was pure waste.
+    pub panel_model: std::cell::RefCell<Option<crate::panel::Panel>>,
     /// End-of-match statistics, computed once from the recorder when
     /// the result lands (the record IS the match — a re-execution).
     pub end_stats: Option<oxide_driver::stats::MatchStats>,
     /// What the player has demonstrably done — the tutorial's evidence.
     pub demo: crate::tutorial::Demo,
+    /// Fog-free viewing without the debug chrome — the playback
+    /// viewer's stance. `overlay` remains the developer's F1 (grid,
+    /// ids, camera internals) and implies this.
+    pub spectate: bool,
     accum: f32,
     /// True during bulk fast-forwards: presentation (fx, sounds, facing)
     /// is skipped entirely instead of accumulated-then-discarded — a
@@ -270,13 +277,12 @@ impl Game {
                 macroquad::prelude::screen_width(),
                 macroquad::prelude::screen_height(),
             ),
-            macroquad::miniquad::window::dpi_scale(),
         )
     }
 
     /// `new` with the window injected — the only constructor tests use,
     /// because it never touches macroquad.
-    pub fn with_viewport(scenario: Scenario, viewport: Vec2, dpi: f32) -> Result<Self> {
+    pub fn with_viewport(scenario: Scenario, viewport: Vec2) -> Result<Self> {
         let state = scenario.build()?;
         let bots = seat_bots(&scenario);
         let recorder = Replay::new(SIM_VERSION, scenario.clone());
@@ -292,13 +298,7 @@ impl Game {
                     state.map().height() as f32 * 0.5,
                 )
             });
-        let camera = Camera::new(
-            focus,
-            state.map().width(),
-            state.map().height(),
-            viewport,
-            dpi,
-        );
+        let camera = Camera::new(focus, state.map().width(), state.map().height(), viewport);
         Ok(Self {
             scenario,
             state,
@@ -326,8 +326,10 @@ impl Game {
             hinted_train: false,
             hinted_fight: false,
             layout: std::cell::Cell::new(crate::layout::LayoutModel::default()),
+            panel_model: std::cell::RefCell::new(None),
             end_stats: None,
             demo: crate::tutorial::Demo::default(),
+            spectate: false,
             accum: 0.0,
             suppress_presentation: false,
         })
@@ -489,6 +491,53 @@ impl Game {
         }
     }
 
+    /// Whether rendering should ignore fog: the debug overlay or a
+    /// spectator stance (playback). Chrome decides separately.
+    pub fn all_seeing(&self) -> bool {
+        self.overlay || self.spectate
+    }
+
+    /// Absorbs one batch of replayed ticks for presentation: the world
+    /// the engine produced plus the events it emitted on the way —
+    /// bolts, deaths, aim, and sound work in playback exactly as live.
+    pub fn playback_present(&mut self, state: &oxide_sim::State, events: &[Event]) {
+        self.prev_pos = self
+            .state
+            .units()
+            .iter()
+            .map(|u| (u.id.0, world_vec(u.pos)))
+            .collect();
+        self.state = state.clone();
+        for unit in self.state.units() {
+            let now = world_vec(unit.pos);
+            if let Some(prev) = self.prev_pos.get(&unit.id.0) {
+                let delta = now - *prev;
+                if delta.length_squared() > 1e-6 {
+                    self.facing.insert(
+                        unit.id.0,
+                        delta.y.atan2(delta.x) + std::f32::consts::FRAC_PI_2,
+                    );
+                }
+            }
+        }
+        self.spawn_fx(events);
+        let state = &self.state;
+        self.facing
+            .retain(|id, _| state.unit(UnitId(*id)).is_some());
+        self.aim_units
+            .retain(|id, _| state.unit(UnitId(*id)).is_some());
+        self.aim_buildings
+            .retain(|id, _| state.building(oxide_sim::BuildingId(*id)).is_some());
+    }
+
+    /// Drops queued transient presentation — what a bulk jump (a seek)
+    /// must not replay as a burst of noise.
+    pub fn drop_presentation(&mut self) {
+        self.fx.clear();
+        self.sounds_pending.clear();
+        self.toasts.clear();
+    }
+
     /// The effect clock — what aim holds and recoil age against.
     pub fn fx_time(&self) -> f32 {
         self.fx_clock
@@ -590,7 +639,7 @@ impl Game {
         self.state
             .buildings()
             .iter()
-            .find(|b| b.player == self.human)
+            .find(|b| b.player == self.human && b.kind == oxide_sim::BuildingKind::Foundry)
     }
 
     /// Current state fingerprint, protocol-formatted.
@@ -898,26 +947,24 @@ impl Game {
                     self.sounds_pending.push((SoundKind::Denied, None));
                 }
                 Event::ShellLaunched {
-                    player, from, to, ..
+                    shooter,
+                    player,
+                    from,
+                    to,
+                    ..
                 } => {
-                    // The event names no shooter; the gun standing at
-                    // the muzzle is a presentation-only guess.
-                    let muzzle = world_vec(*from);
-                    let shooter = self
-                        .state
-                        .units()
-                        .iter()
-                        .filter(|u| u.player == *player)
-                        .map(|u| (world_vec(u.pos).distance_squared(muzzle), u.id))
-                        .filter(|(d, _)| *d < 1.5)
-                        .min_by(|a, b| a.0.total_cmp(&b.0));
-                    if let Some((_, id)) = shooter {
-                        let d = world_vec(*to) - muzzle;
-                        if d.length_squared() > 1e-6 {
-                            self.aim_units.insert(
-                                id.0,
-                                (d.y.atan2(d.x) + std::f32::consts::FRAC_PI_2, self.fx_clock),
-                            );
+                    // The gun turns to its work — a Bastion's mount as
+                    // much as a Bombard's chassis.
+                    let d = world_vec(*to) - world_vec(*from);
+                    if d.length_squared() > 1e-6 {
+                        let angle = d.y.atan2(d.x) + std::f32::consts::FRAC_PI_2;
+                        match shooter {
+                            oxide_sim::Target::Unit(uid) => {
+                                self.aim_units.insert(uid.0, (angle, self.fx_clock));
+                            }
+                            oxide_sim::Target::Building(bid) => {
+                                self.aim_buildings.insert(bid.0, (angle, self.fx_clock));
+                            }
                         }
                     }
                     // No effect spawned: in-flight shells render from
@@ -1066,7 +1113,6 @@ mod tests {
         let mut game = Game::with_viewport(
             Scenario::skirmish(),
             macroquad::prelude::vec2(1280.0, 800.0),
-            1.0,
         )
         .expect("skirmish builds");
         assert!(!game.demo.trained);

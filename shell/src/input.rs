@@ -423,6 +423,12 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         crate::panel::CardAction::CancelQueue(building, index) => {
                             game.issue(Command::CancelTrain { building, index });
                         }
+                        crate::panel::CardAction::ClearRally(building) => {
+                            game.issue(Command::SetRally {
+                                building,
+                                rally: None,
+                            });
+                        }
                         crate::panel::CardAction::None => {}
                     }
                     continue;
@@ -1027,7 +1033,7 @@ mod tests {
     use super::*;
 
     fn headless_game() -> Game {
-        Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0), 1.0)
+        Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0))
             .expect("embedded skirmish builds")
     }
 

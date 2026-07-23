@@ -42,6 +42,9 @@ pub struct Menu {
     scroll: usize,
     /// Row under the pointer, highlight only.
     hover: Option<usize>,
+    /// Fractional wheel accumulation: trackpads deliver hundredths per
+    /// frame, and treating each as a full row made scrolling frantic.
+    wheel_accum: f32,
     /// Row armed by a press; activation happens on release inside the
     /// same row, so dragging away cancels.
     pressed: Option<usize>,
@@ -56,6 +59,7 @@ impl Menu {
             selected: 0,
             scroll: 0,
             hover: None,
+            wheel_accum: 0.0,
             pressed: None,
         }
     }
@@ -163,7 +167,14 @@ impl Menu {
                 RawEvent::Wheel { delta } => {
                     // Wheel up shows earlier rows; the pointer stays put
                     // and the hover follows whatever slid beneath it.
-                    self.scroll_by(if delta > 0.0 { -1 } else { 1 });
+                    // Whole notches only — fractions accumulate.
+                    self.wheel_accum += delta;
+                    let steps = self.wheel_accum.trunc();
+                    if steps == 0.0 {
+                        continue;
+                    }
+                    self.wheel_accum -= steps;
+                    self.scroll_by(if steps > 0.0 { -1 } else { 1 });
                     self.hover = self.row_at(*mouse);
                 }
                 RawEvent::MouseDown {
@@ -190,29 +201,35 @@ impl Menu {
                     }
                 }
                 RawEvent::KeyDown { key: Key::Up } => {
+                    self.hover = None;
                     self.selected = self.selected.checked_sub(1).unwrap_or(self.items.len() - 1);
                     self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::Down } => {
+                    self.hover = None;
                     self.selected = (self.selected + 1) % self.items.len();
                     self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::PageUp } => {
+                    self.hover = None;
                     let (_, _, _, visible) = self.layout();
                     self.selected = self.selected.saturating_sub(visible);
                     self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::PageDown } => {
+                    self.hover = None;
                     let (_, _, _, visible) = self.layout();
                     self.selected =
                         (self.selected + visible).min(self.items.len().saturating_sub(1));
                     self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::Home } => {
+                    self.hover = None;
                     self.selected = 0;
                     self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::End } => {
+                    self.hover = None;
                     self.selected = self.items.len().saturating_sub(1);
                     self.ensure_visible();
                 }

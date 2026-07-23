@@ -33,6 +33,8 @@ pub enum CardAction {
     ArmBuild(BuildingKind),
     /// Remove a queued unit from a producer (full refund).
     CancelQueue(BuildingId, u8),
+    /// Clear a producer's rally point.
+    ClearRally(BuildingId),
     /// Display only.
     None,
 }
@@ -237,6 +239,18 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
                 desc,
             });
         }
+        if building.rally.is_some() {
+            panel.cards.push(Card {
+                icon: CardIcon::Glyph("R"),
+                title: "Clear rally".into(),
+                cost: None,
+                hotkey: String::new(),
+                action: CardAction::ClearRally(building.id),
+                enabled: true,
+                why: None,
+                desc: vec!["Fresh units gather at the doorstep again.".into()],
+            });
+        }
         for (i, &kind) in building.queue.iter().enumerate() {
             panel.queue.push(Card {
                 icon: CardIcon::Unit(kind),
@@ -348,8 +362,7 @@ mod tests {
     use oxide_sim::{Command, PlayerCommand, Scenario};
 
     fn game() -> Game {
-        Game::with_viewport(Scenario::skirmish(), vec2(1280.0, 800.0), 1.0)
-            .expect("skirmish builds")
+        Game::with_viewport(Scenario::skirmish(), vec2(1280.0, 800.0)).expect("skirmish builds")
     }
 
     fn human_foundry(game: &Game) -> oxide_sim::BuildingId {
@@ -394,8 +407,7 @@ mod tests {
         let mut scenario = Scenario::skirmish();
         // The bank must outlast the queue cap or poverty masks it.
         scenario.players[0].scrap = 500;
-        let mut game =
-            Game::with_viewport(scenario, vec2(1280.0, 800.0), 1.0).expect("skirmish builds");
+        let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("skirmish builds");
         let foundry = human_foundry(&game);
         game.selection.building = Some(foundry);
         // Queue harvesters until 50 scrap remains: the sentinel card

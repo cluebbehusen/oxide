@@ -91,14 +91,18 @@ impl Playback {
         self.position() >= self.total
     }
 
-    /// Advances up to `ticks`, stopping at the end of the record.
-    pub fn advance(&mut self, ticks: u64) {
+    /// Advances up to `ticks`, stopping at the end of the record, and
+    /// returns every event the replayed world emitted on the way — the
+    /// viewer's presentation feed.
+    pub fn advance(&mut self, ticks: u64) -> Vec<oxide_sim::Event> {
+        let mut events = Vec::new();
         for _ in 0..ticks {
             if self.at_end() {
-                return;
+                break;
             }
-            self.step();
+            events.extend(self.step());
         }
+        events
     }
 
     /// Jumps to `target` (clamped to the record). Backward: restore the
@@ -106,16 +110,26 @@ impl Playback {
     /// suffix — bit-identical to having played straight there.
     pub fn seek(&mut self, target: u64) {
         let target = target.min(self.total);
-        if target < self.position() {
-            let (tick, state) = self
-                .checkpoints
-                .iter()
-                .rev()
-                .find(|(t, _)| *t <= target)
-                .cloned()
-                .unwrap_or_else(|| (0, self.replay.setup.build().expect("validated at load")));
+        // The best launch point is the richest checkpoint at or before
+        // the target — used for backward seeks AND long forward jumps,
+        // and never discarded: a deterministic stream keeps every
+        // recorded checkpoint valid, so End → Home → End replays a
+        // suffix, not the whole record.
+        let best = self
+            .checkpoints
+            .iter()
+            .rev()
+            .find(|(t, _)| *t <= target)
+            .cloned();
+        let restore = match &best {
+            _ if target < self.position() => true,
+            Some((t, _)) => *t > self.position(),
+            None => false,
+        };
+        if restore {
+            let (_, state) =
+                best.unwrap_or_else(|| (0, self.replay.setup.build().expect("validated at load")));
             self.state = state;
-            self.checkpoints.retain(|(t, _)| *t <= tick);
             self.next_cmd = self
                 .replay
                 .commands
@@ -126,10 +140,12 @@ impl Playback {
         }
     }
 
-    fn step(&mut self) {
+    fn step(&mut self) -> Vec<oxide_sim::Event> {
         let tick = self.state.current_tick();
+        // Re-walked spans skip stamping (a later checkpoint already
+        // exists); fresh ground appends, keeping the vec sorted.
         if tick.is_multiple_of(self.cadence)
-            && self.checkpoints.last().map(|(t, _)| *t) != Some(tick)
+            && self.checkpoints.last().is_none_or(|(t, _)| tick > *t)
         {
             self.checkpoints.push((tick, self.state.clone()));
         }
@@ -142,7 +158,7 @@ impl Playback {
             self.next_cmd += 1;
         }
         // Raw tick, never a recorder: playback must not re-record.
-        self.state.tick(&commands);
+        self.state.tick(&commands).events
     }
 }
 
@@ -205,6 +221,26 @@ mod tests {
         assert!(
             Playback::load(replay).is_err(),
             "a billion-tick claim must not hang the first End press"
+        );
+    }
+
+    #[test]
+    fn end_home_end_replays_a_suffix_not_the_record() {
+        let replay = recorded_match();
+        let mut pb = Playback::load(replay).unwrap();
+        pb.advance(900);
+        let full = pb.state.hash();
+        pb.seek(0);
+        assert_eq!(pb.position(), 0);
+        pb.seek(900);
+        assert_eq!(
+            pb.state.hash(),
+            full,
+            "the round trip lands on the same bytes"
+        );
+        assert!(
+            !pb.checkpoints.is_empty(),
+            "forward checkpoints survive backward seeks"
         );
     }
 

@@ -564,8 +564,9 @@ impl PlaybackSession {
         let scenario = replay.setup.clone();
         let engine = oxide_driver::playback::Playback::load(replay)?;
         let mut game = Game::new(scenario)?;
-        // Spectator truth: playback renders the whole record fog-free.
-        game.overlay = true;
+        // Spectator truth: fog-free, but NOT the developer overlay —
+        // playback must look like the game, not the debugger.
+        game.spectate = true;
         // Starter hints coach players, not spectators.
         game.hinted_train = true;
         game.hinted_fight = true;
@@ -583,14 +584,27 @@ impl PlaybackSession {
 
 fn playback_hud(pb: &PlaybackSession) {
     let s = render::ui_scale();
-    let line = format!(
+    let size = 18.0 * s;
+    let full = format!(
         "PLAYBACK  {} / {}  ·  {}x{}  ·  Space pause · PgUp/PgDn seek · Home/End · 1/2/3 speed · Esc leave",
         pb.engine.position(),
         pb.engine.total(),
         pb.speed,
         if pb.paused { "  ·  PAUSED" } else { "" },
     );
-    let size = 18.0 * s;
+    // A 640px window cannot seat the controls hint; the transport
+    // numbers alone must never run off both edges.
+    let line = if measure_text(&full, None, size as u16, 1.0).width > screen_width() - 16.0 * s {
+        format!(
+            "PLAYBACK  {} / {}  ·  {}x{}",
+            pb.engine.position(),
+            pb.engine.total(),
+            pb.speed,
+            if pb.paused { "  ·  PAUSED" } else { "" },
+        )
+    } else {
+        full
+    };
     let width = measure_text(&line, None, size as u16, 1.0).width;
     let x = (screen_width() - width) * 0.5;
     let y = screen_height() - 14.0 * s;
@@ -754,10 +768,10 @@ async fn run() -> Result<()> {
                         }
                         3 => {
                             replay_shelf = saves::discover();
-                            sub_menu = Menu::new(
-                                "REPLAYS",
-                                replay_shelf.iter().map(|e| e.label.clone()).collect(),
-                            );
+                            let mut rows: Vec<String> =
+                                replay_shelf.iter().map(|e| e.label.clone()).collect();
+                            rows.push("Back".to_string());
+                            sub_menu = Menu::new("REPLAYS", rows);
                             mode = Mode::Replays { arming: None };
                         }
                         4 => {
@@ -1147,17 +1161,23 @@ async fn run() -> Result<()> {
                     if let Some(target) = seek_to {
                         pb.engine.seek(target);
                         pb.accum = 0.0;
+                        // A seek is a bulk jump: presentation resyncs
+                        // silently instead of replaying a burst.
+                        pb.game.drop_presentation();
+                        pb.game.state = pb.engine.state.clone();
                     } else if !pb.paused && !pb.engine.at_end() {
                         pb.accum += dt * pb.speed;
                         let ticks = (pb.accum / game::TICK_DT) as u64;
                         if ticks > 0 {
                             pb.accum -= ticks as f32 * game::TICK_DT;
-                            pb.engine.advance(ticks);
+                            let events = pb.engine.advance(ticks);
+                            pb.game.playback_present(&pb.engine.state, &events);
                         }
                     }
                     if pb.game.state.current_tick() != pb.engine.position() {
                         pb.game.state = pb.engine.state.clone();
                     }
+                    pb.game.update_fx(dt);
                     pb.game
                         .camera
                         .set_viewport(vec2(screen_width(), screen_height()));
@@ -1180,6 +1200,13 @@ async fn run() -> Result<()> {
                     mode = Mode::Home;
                 } else if let Some(row) = picked {
                     game.sounds_pending.push((SoundKind::Click, None));
+                    if row >= replay_shelf.len() {
+                        mode = Mode::Home;
+                        render::draw(&game, &sprites, &input);
+                        veil();
+                        sub_menu.draw("");
+                        continue;
+                    }
                     match replay_shelf.get(row) {
                         Some(entry) if entry.compatible => {
                             match PlaybackSession::open(&entry.path.to_string_lossy()) {
@@ -1357,7 +1384,10 @@ async fn run() -> Result<()> {
         // documents window persistence, and only settings writes ever
         // saved it before.
         let live = (screen_width() as u32, screen_height() as u32);
-        if live.0 >= 640 && live.1 >= 400 && live != config.window {
+        // Explicit --window runs (the UX matrix) and automation must
+        // not overwrite the human's remembered size.
+        let persist_size = args.window.is_none() && !args.automation;
+        if persist_size && live.0 >= 640 && live.1 >= 400 && live != config.window {
             match pending_size {
                 Some((size, since)) if size == live => {
                     if get_time() - since > 1.0 {

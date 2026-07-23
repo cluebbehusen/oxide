@@ -360,6 +360,7 @@ fn turret_fire(
         if atk.projectile {
             let flight = launch_shell(state, launches, Target::Building(id), me, center, upos, atk);
             events.push(Event::ShellLaunched {
+                shooter: Target::Building(id),
                 player: me,
                 from: center,
                 to: upos,
@@ -1013,6 +1014,7 @@ fn attack(
                     weapon,
                 );
                 events.push(Event::ShellLaunched {
+                    shooter: Target::Unit(id),
                     player: me,
                     from: pos,
                     to: aim_point,

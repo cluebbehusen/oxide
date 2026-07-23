@@ -26,6 +26,10 @@ import threading
 
 import numpy as np
 
+# Bump when _carve's output distribution changes (sizes, terrain
+# alphabet, densities): cache identity is schema + mode + seed.
+MAPGEN_SCHEMA = 2
+
 DRIVER = "../../target/release/oxide-driver"
 
 
@@ -302,7 +306,11 @@ def generate(
     out = pathlib.Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     tag = "2v2" if teams else (str(players) if players != 2 else "")
-    path = out / f"gen{tag}-{seed}.json"
+    # The schema fingerprint invalidates every cached map when the
+    # generator's output changes shape — without it, a retrain quietly
+    # reused tens of thousands of pre-peak small-class maps whose seeds
+    # matched, training on a curriculum the code no longer describes.
+    path = out / f"gen{tag}-s{MAPGEN_SCHEMA}-{seed}.json"
     if path.exists():
         return str(path)
     for attempt in range(16):

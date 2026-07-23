@@ -204,8 +204,8 @@
   64
  ],
  "muzzle_flash": [
-  478,
-  806,
+  138,
+  874,
   32,
   32
  ],
@@ -341,33 +341,45 @@
   64,
   64
  ],
- "turret_cupric": [
+ "turret_barrel_cupric": [
   138,
   806,
   64,
   64
  ],
- "turret_ferrous": [
+ "turret_barrel_ferrous": [
   206,
   806,
   64,
   64
  ],
- "wisp_cupric": [
+ "turret_cupric": [
   274,
   806,
   64,
   64
  ],
- "wisp_ferrous": [
+ "turret_ferrous": [
   342,
   806,
   64,
   64
  ],
- "wreck_pile": [
+ "wisp_cupric": [
   410,
   806,
+  64,
+  64
+ ],
+ "wisp_ferrous": [
+  2,
+  874,
+  64,
+  64
+ ],
+ "wreck_pile": [
+  70,
+  874,
   64,
   64
  ]

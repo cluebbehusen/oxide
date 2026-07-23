@@ -257,9 +257,11 @@ impl Map {
     /// Deposits salvage on plain ground. Rock and live nodes swallow it —
     /// a machine downed where nothing can stand leaves nothing to strip.
     pub(crate) fn add_wreck(&mut self, pos: TilePos, amount: u32) {
+        // Wreck coexists with a live node — the cleanup rules promise a
+        // node tile keeps its deposits, and a flyer downed over one
+        // must not evaporate.
         if let Some(tile) = self.grid.get_mut(pos)
             && tile.terrain == Terrain::Ground
-            && tile.scrap == 0
         {
             tile.wreck = tile.wreck.saturating_add(amount);
         }

@@ -74,10 +74,11 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     draw_buildings(game, sprites);
     draw_units(game, sprites, alpha);
     draw_fx(game, sprites);
-    // The debug overlay is deliberately omniscient; fog only draws without it.
+    // The debug overlay is deliberately omniscient; the spectator
+    // stance (playback) skips the fog too but never the debug chrome.
     if game.overlay {
         draw_overlay(game, alpha);
-    } else {
+    } else if !game.spectate {
         draw_fog(game);
     }
     // Own-order acknowledgments, rally flags, and radar blips sit above
@@ -92,6 +93,7 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     draw_salvage_tooltip(game, input);
     draw_hud(game, sprites, input);
     draw_minimap(game);
+    draw_result_overlay(game);
     draw_panel_tooltip(game, input);
 }
 
@@ -147,7 +149,7 @@ fn draw_breadcrumbs(game: &Game, input: &InputState) {
         }
         return;
     }
-    for id in &game.selection.units {
+    for id in game.selection.units.iter().take(DECOR_CAP) {
         let Some(unit) = game.state.unit(*id) else {
             continue;
         };
@@ -181,14 +183,15 @@ fn draw_breadcrumbs(game: &Game, input: &InputState) {
                         oxide_sim::Target::Unit(uid) => game.state.unit(*uid)?.tile(),
                         oxide_sim::Target::Building(bid) => game.state.building(*bid)?.anchor,
                     };
-                    if game.overlay || game.my_vision().visible(tile) {
+                    if game.all_seeing() || game.my_vision().visible(tile) {
                         return Some((tile, verb_color(order)));
                     }
                     return None;
                 }
                 oxide_sim::Order::Idle => return None,
             };
-            (game.overlay || game.my_vision().explored(goal)).then_some((goal, verb_color(order)))
+            (game.all_seeing() || game.my_vision().explored(goal))
+                .then_some((goal, verb_color(order)))
         };
         let mut points: Vec<(Vec2, Color)> = Vec::new();
         if let Some((g, c)) = goal_of(&unit.order) {
@@ -379,14 +382,14 @@ fn draw_tiles(game: &Game, sprites: &Sprites) {
             // Scrap draws at its live amount only in sight; unseen ground
             // shows what the player remembers (frozen, like ghosts).
             let pos = TilePos::new(x, y);
-            let scrap = if game.overlay || game.my_vision().visible(pos) {
+            let scrap = if game.all_seeing() || game.my_vision().visible(pos) {
                 tile.scrap
             } else {
                 game.my_vision().remembered_scrap(pos)
             };
             // Wrecks follow the same sight rule; a live node or rock
             // outranks the junk visually.
-            let wreck = if game.overlay || game.my_vision().visible(pos) {
+            let wreck = if game.all_seeing() || game.my_vision().visible(pos) {
                 tile.wreck
             } else {
                 game.my_vision().remembered_wreck(pos)
@@ -443,7 +446,7 @@ fn draw_buildings(game: &Game, sprites: &Sprites) {
     let zoom = game.camera.zoom;
     // Live enemy buildings only where we have sight; remembered ghosts
     // cover explored-but-unseen ground (skipped in the omniscient overlay).
-    if !game.overlay {
+    if !game.all_seeing() {
         for ghost in game.my_vision().ghosts() {
             let (w, h) = ghost.kind.stats().size;
             let visible = (0..h)
@@ -474,11 +477,25 @@ fn draw_buildings(game: &Game, sprites: &Sprites) {
                     ..Default::default()
                 },
             );
+            if ghost.kind == oxide_sim::BuildingKind::Turret {
+                // The base ships bare; the remembered gun points up.
+                draw_texture_ex(
+                    sprites.texture(),
+                    screen.x,
+                    screen.y,
+                    tint,
+                    DrawTextureParams {
+                        dest_size: Some(vec2(w as f32 * zoom, h as f32 * zoom)),
+                        source: Some(sprites.turret_barrel(faction)),
+                        ..Default::default()
+                    },
+                );
+            }
         }
     }
     for building in game.state.buildings() {
         if building.player != game.human
-            && !game.overlay
+            && !game.all_seeing()
             && !building.tiles().any(|t| game.my_vision().visible(t))
         {
             continue;
@@ -531,36 +548,69 @@ fn draw_buildings(game: &Game, sprites: &Sprites) {
         if building.built {
             let center = vec2(screen.x + dest.x * 0.5, screen.y + dest.y * 0.5);
             match building.kind {
-                // Guns wear their aim: a barrel tracking the last victim
-                // (default up), with recoil in the first tenth-second.
-                oxide_sim::BuildingKind::Turret
-                | oxide_sim::BuildingKind::FlakTurret
-                | oxide_sim::BuildingKind::Bastion => {
+                // Guns wear their aim in their own idiom: the Turret's
+                // gun is a separate sprite that tracks (with recoil);
+                // the flak battery flashes its skyward quad; the
+                // Bastion's mortar throat glows on launch. Painting one
+                // generic barrel over all three doubled the turret's
+                // art and contradicted the other two entirely.
+                oxide_sim::BuildingKind::Turret => {
                     let (angle, age) = game
                         .aim_buildings
                         .get(&building.id.0)
                         .map(|(a, at)| (*a, game.fx_time() - at))
                         .unwrap_or((0.0, f32::MAX));
                     let dir = vec2(angle.sin(), -angle.cos());
-                    let heavy = building.kind == oxide_sim::BuildingKind::Bastion;
-                    let len = dest.x * if heavy { 0.5 } else { 0.42 };
-                    let width = dest.x * if heavy { 0.13 } else { 0.09 };
                     let kick = if !reduced_motion() && age < 0.12 {
-                        -dir * dest.x * 0.06 * (1.0 - age / 0.12)
+                        -dir * dest.x * 0.05 * (1.0 - age / 0.12)
                     } else {
                         vec2(0.0, 0.0)
                     };
-                    let base = center + kick;
-                    let tip = base + dir * len;
-                    draw_line(
-                        base.x,
-                        base.y,
-                        tip.x,
-                        tip.y,
-                        width,
-                        Color::new(0.15, 0.15, 0.18, 1.0),
+                    let size = dest.x * 1.0;
+                    let at = center + kick - vec2(size, size) * 0.5;
+                    draw_texture_ex(
+                        sprites.texture(),
+                        at.x,
+                        at.y,
+                        WHITE,
+                        DrawTextureParams {
+                            dest_size: Some(vec2(size, size)),
+                            source: Some(sprites.turret_barrel(faction)),
+                            rotation: angle,
+                            ..Default::default()
+                        },
                     );
-                    draw_line(base.x, base.y, tip.x, tip.y, width * 0.45, BONE_FAINT);
+                }
+                oxide_sim::BuildingKind::FlakTurret => {
+                    if let Some((_, at)) = game.aim_buildings.get(&building.id.0) {
+                        let age = game.fx_time() - at;
+                        if age < 0.18 && !reduced_motion() {
+                            let a = 1.0 - age / 0.18;
+                            for (ox, oy) in [(0.39, 0.39), (0.61, 0.39), (0.39, 0.61), (0.61, 0.61)]
+                            {
+                                draw_circle(
+                                    screen.x + dest.x * ox,
+                                    screen.y + dest.y * oy,
+                                    dest.x * 0.05,
+                                    Color::new(0.95, 0.9, 0.7, 0.8 * a),
+                                );
+                            }
+                        }
+                    }
+                }
+                oxide_sim::BuildingKind::Bastion => {
+                    if let Some((_, at)) = game.aim_buildings.get(&building.id.0) {
+                        let age = game.fx_time() - at;
+                        if age < 0.3 && !reduced_motion() {
+                            let a = 1.0 - age / 0.3;
+                            draw_circle(
+                                center.x,
+                                center.y,
+                                dest.x * (0.10 + 0.05 * a),
+                                Color::new(0.98, 0.8, 0.5, 0.7 * a),
+                            );
+                        }
+                    }
                 }
                 // The radar sweeps its ring — damped to a steady mast.
                 oxide_sim::BuildingKind::Array => {
@@ -670,7 +720,8 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         if unit.kind.stats().domain != domain {
             continue;
         }
-        if unit.player != game.human && !game.overlay && !game.my_vision().visible(unit.tile()) {
+        if unit.player != game.human && !game.all_seeing() && !game.my_vision().visible(unit.tile())
+        {
             continue;
         }
         let faction = game.state.player(unit.player).faction;
@@ -816,7 +867,7 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
         // never the launch, and the renderer must match it.
         let mine = !game.state.hostile(game.human, shell.player);
         let flat_seen = |k: f32| sees(from.lerp(to, k));
-        if !game.overlay && !mine && !(0..=10).any(|i| flat_seen(i as f32 / 10.0)) {
+        if !game.all_seeing() && !mine && !(0..=10).any(|i| flat_seen(i as f32 / 10.0)) {
             continue;
         }
         // Reconstruct flight length the way the launch computed it, so
@@ -836,7 +887,7 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
         let steps = 10;
         for i in 1..=((t * steps as f32) as usize).max(1) {
             let p = at(i as f32 / steps as f32);
-            let visible = game.overlay
+            let visible = game.all_seeing()
                 || mine
                 || (flat_seen((i - 1) as f32 / steps as f32) && flat_seen(i as f32 / steps as f32));
             if visible {
@@ -852,7 +903,7 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
             }
             prev = p;
         }
-        if !(game.overlay || mine || flat_seen(t)) {
+        if !(game.all_seeing() || mine || flat_seen(t)) {
             continue;
         }
         let dot = at(t);
@@ -875,7 +926,7 @@ fn draw_fx(game: &Game, sprites: &Sprites) {
             // already impossible to order onto.
             EffectKind::Ping { .. } => true,
         };
-        if !game.overlay && !in_sight {
+        if !game.all_seeing() && !in_sight {
             continue;
         }
         match fx.kind {
@@ -1031,6 +1082,10 @@ fn draw_blips(game: &Game) {
 /// detection in patina teal; where a gun outranges its own eyes
 /// (Bombard, Bastion), the gap between red and bone is the spotter's
 /// job, made visible.
+/// How many selected units draw their rings and programs — a boxed
+/// army of forty must not paint forty overlapping circles.
+const DECOR_CAP: usize = 12;
+
 fn draw_range_rings(game: &Game, input: &InputState) {
     let s = ui_scale();
     let ring = |world: Vec2, radius: f32, color: Color| {
@@ -1083,7 +1138,7 @@ fn draw_range_rings(game: &Game, input: &InputState) {
         }
     };
 
-    for id in &game.selection.units {
+    for id in game.selection.units.iter().take(DECOR_CAP) {
         if let Some(unit) = game.state.unit(*id) {
             let world = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
             unit_rings(world, unit.kind.stats());
@@ -1118,10 +1173,10 @@ fn draw_salvage_tooltip(game: &Game, input: &InputState) {
     let world = game.camera.to_world(input.mouse);
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     let vision = game.my_vision();
-    if !vision.explored(tile) && !game.overlay {
+    if !vision.explored(tile) && !game.all_seeing() {
         return;
     }
-    let (scrap, wreck) = if vision.visible(tile) || game.overlay {
+    let (scrap, wreck) = if vision.visible(tile) || game.all_seeing() {
         (
             game.state.map().scrap_at(tile),
             game.state.map().wreck_at(tile),
@@ -1176,6 +1231,21 @@ fn draw_pings(game: &Game) {
 /// The selected own building's rally flag, above the fog for the same
 /// reason as pings.
 fn draw_rally_marker(game: &Game) {
+    // A selected producer draws the line to its rally, not just the
+    // flag — where fresh machines will walk should read at a glance.
+    if let Some(id) = game.selection.building
+        && let Some(building) = game.state.building(id)
+        && let Some(rally) = building.rally
+    {
+        let a = game.camera.to_screen(vec2(
+            building.anchor.x as f32 + building.kind.stats().size.0 as f32 * 0.5,
+            building.anchor.y as f32 + building.kind.stats().size.1 as f32 * 0.5,
+        ));
+        let b = game
+            .camera
+            .to_screen(vec2(rally.x as f32 + 0.5, rally.y as f32 + 0.5));
+        draw_line(a.x, a.y, b.x, b.y, 1.5, Color::new(0.91, 0.89, 0.85, 0.35));
+    }
     if let Some(id) = game.selection.building
         && let Some(building) = game.state.building(id)
         && building.player == game.human
@@ -1323,7 +1393,8 @@ fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
         );
     }
 
-    let panel = crate::panel::build(game, &input.bindings);
+    *game.panel_model.borrow_mut() = crate::panel::build(game, &input.bindings);
+    let panel = game.panel_model.borrow();
     let panel_shown = panel.is_some();
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut cards = [(zero, crate::panel::CardAction::None); 16];
@@ -1331,7 +1402,7 @@ fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
     let mut queue_slots = [(zero, crate::panel::CardAction::None); 8];
     let mut queue_count = 0;
     let mut panel_top = f32::INFINITY;
-    if let Some(panel) = &panel {
+    if let Some(panel) = panel.as_ref() {
         let (c, cc, q, qc, top) = draw_panel(game, sprites, input, panel);
         cards = c;
         card_count = cc;
@@ -1446,135 +1517,6 @@ fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
         );
         draw_text(text, x, 60.0 * s, 24.0 * s, DANGER);
     }
-
-    // Endgame banner.
-    if let Some(result) = game.state.result() {
-        // The human's verdict first — the game knows whose screen this
-        // is; "FERROUS WINS" made every ending read like someone else's.
-        let winners = game.state.winners();
-        let (text, color) = match result {
-            GameResult::Victory { .. } if winners.contains(&game.human) => {
-                ("VICTORY".to_string(), SCRAP_COLOR)
-            }
-            GameResult::Victory { .. } => ("DEFEAT".to_string(), DANGER),
-            GameResult::Draw => ("MUTUAL DESTRUCTION".to_string(), BONE_FAINT),
-        };
-        let sub = match result {
-            GameResult::Victory { .. } => {
-                let names: Vec<String> = winners
-                    .into_iter()
-                    .map(|p| game.state.player(p).name.to_uppercase())
-                    .collect();
-                format!("{} take the field", names.join(" & "))
-            }
-            GameResult::Draw => "no foundry survived".to_string(),
-        };
-        let size = 56.0 * s;
-        let dims = measure_text(&text, None, size as u16, 1.0);
-        let x = (screen_width() - dims.width) * 0.5;
-        let y = screen_height() * 0.4;
-        draw_rectangle(
-            x - 24.0 * s,
-            y - 48.0 * s,
-            dims.width + 48.0 * s,
-            124.0 * s,
-            PANEL,
-        );
-        draw_text(&text, x, y, size, color);
-        let sub_dims = measure_text(&sub, None, (20.0 * s) as u16, 1.0);
-        draw_text(
-            &sub,
-            (screen_width() - sub_dims.width) * 0.5,
-            y + 26.0 * s,
-            20.0 * s,
-            BONE_FAINT,
-        );
-        // The match in numbers: one line per seat from the recomputed
-        // record — losses and the peak army it ever fielded — then the
-        // army curves themselves, seat-colored, so the shape of the
-        // game (the swing, the collapse, the long grind) reads at a
-        // glance.
-        if let Some(stats) = &game.end_stats {
-            let curves_y = y + (92.0 + 22.0 * stats.players.len() as f32) * s;
-            let (gw, gh) = (360.0 * s, 96.0 * s);
-            let gx = (screen_width() - gw) * 0.5;
-            draw_rectangle(
-                gx - 8.0 * s,
-                curves_y - 8.0 * s,
-                gw + 16.0 * s,
-                gh + 16.0 * s,
-                PANEL,
-            );
-            let top = stats
-                .players
-                .iter()
-                .flat_map(|p| p.army_value.iter().copied())
-                .max()
-                .unwrap_or(1)
-                .max(1) as f32;
-            for (i, seat) in stats.players.iter().enumerate() {
-                let faction = game
-                    .state
-                    .players()
-                    .get(i)
-                    .map(|p| p.faction)
-                    .unwrap_or(oxide_sim::Faction::Ferrous);
-                let color = mini_faction_color(faction);
-                let n = seat.army_value.len().max(2);
-                let mut prev: Option<macroquad::prelude::Vec2> = None;
-                for (k, &v) in seat.army_value.iter().enumerate() {
-                    let px = gx + gw * k as f32 / (n - 1) as f32;
-                    let py = curves_y + gh - gh * (v as f32 / top);
-                    let point = vec2(px, py);
-                    if let Some(a) = prev {
-                        draw_line(a.x, a.y, point.x, point.y, 1.5 * s, color);
-                    }
-                    prev = Some(point);
-                }
-            }
-            let cap = "army value over the match";
-            let cap_dims = measure_text(cap, None, (13.0 * s) as u16, 1.0);
-            draw_text(
-                cap,
-                (screen_width() - cap_dims.width) * 0.5,
-                curves_y + gh + 14.0 * s,
-                13.0 * s,
-                BONE_FAINT,
-            );
-            for (i, seat) in stats.players.iter().enumerate() {
-                let name = game
-                    .state
-                    .players()
-                    .get(i)
-                    .map(|p| p.name.clone())
-                    .unwrap_or_else(|| format!("seat {i}"));
-                let peak = seat.army_value.iter().copied().max().unwrap_or(0);
-                let line = format!(
-                    "{name}: lost {} units, {} buildings · peak army {peak} · scrap {}",
-                    seat.units_lost,
-                    seat.buildings_lost,
-                    seat.scrap.last().copied().unwrap_or(0),
-                );
-                let dims = measure_text(&line, None, (16.0 * s) as u16, 1.0);
-                draw_text(
-                    &line,
-                    (screen_width() - dims.width) * 0.5,
-                    y + (86.0 + 22.0 * i as f32) * s,
-                    16.0 * s,
-                    BONE_FAINT,
-                );
-            }
-        }
-        let hint = "Esc — menu";
-        let hint_dims = measure_text(hint, None, (20.0 * s) as u16, 1.0);
-        draw_text(
-            hint,
-            (screen_width() - hint_dims.width) * 0.5,
-            y + 52.0 * s,
-            20.0 * s,
-            BONE_FAINT,
-        );
-    }
 }
 
 // --- Minimap ------------------------------------------------------------
@@ -1659,8 +1601,149 @@ pub fn minimap_world_in(rect: Rect, map_w: i32, screen: Vec2) -> Option<Vec2> {
     ))
 }
 
-/// The whole war at a glance, under the same fog rules as the world view
-/// (and, like everything else, omniscient while the F1 overlay is up).
+/// The endgame verdict, drawn over every other layer — at 640x400 the
+/// old in-HUD version collided with the minimap and pushed its graph
+/// off screen. Geometry clamps to the viewport.
+fn draw_result_overlay(game: &Game) {
+    let s = ui_scale();
+    if let Some(result) = game.state.result() {
+        // The human's verdict first — the game knows whose screen this
+        // is; "FERROUS WINS" made every ending read like someone else's.
+        let winners = game.state.winners();
+        let (text, color) = match result {
+            GameResult::Victory { .. } if winners.contains(&game.human) => {
+                ("VICTORY".to_string(), SCRAP_COLOR)
+            }
+            GameResult::Victory { .. } => ("DEFEAT".to_string(), DANGER),
+            GameResult::Draw => ("MUTUAL DESTRUCTION".to_string(), BONE_FAINT),
+        };
+        let sub = match result {
+            GameResult::Victory { .. } => {
+                let names: Vec<String> = winners
+                    .into_iter()
+                    .map(|p| game.state.player(p).name.to_uppercase())
+                    .collect();
+                format!("{} take the field", names.join(" & "))
+            }
+            GameResult::Draw => "no foundry survived".to_string(),
+        };
+        let size = 56.0 * s;
+        let dims = measure_text(&text, None, size as u16, 1.0);
+        let x = (screen_width() - dims.width) * 0.5;
+        // The whole column (banner + stats + curves + caption) must fit
+        // the viewport: center it, then clamp against both edges.
+        let seats = game.state.players().len() as f32;
+        let column_h = 124.0 * s + seats * 22.0 * s + 96.0 * s + 60.0 * s;
+        let y = (screen_height() * 0.4)
+            .min(screen_height() - column_h + 48.0 * s)
+            .max(56.0 * s);
+        draw_rectangle(
+            x - 24.0 * s,
+            y - 48.0 * s,
+            dims.width + 48.0 * s,
+            124.0 * s,
+            PANEL,
+        );
+        draw_text(&text, x, y, size, color);
+        let sub_dims = measure_text(&sub, None, (20.0 * s) as u16, 1.0);
+        draw_text(
+            &sub,
+            (screen_width() - sub_dims.width) * 0.5,
+            y + 26.0 * s,
+            20.0 * s,
+            BONE_FAINT,
+        );
+        // The match in numbers: one line per seat from the recomputed
+        // record — losses and the peak army it ever fielded — then the
+        // army curves themselves, seat-colored, so the shape of the
+        // game (the swing, the collapse, the long grind) reads at a
+        // glance.
+        if let Some(stats) = &game.end_stats {
+            let curves_y = y + (92.0 + 22.0 * stats.players.len() as f32) * s;
+            let (gw, gh) = (
+                (360.0 * s).min(screen_width() - 48.0 * s),
+                (96.0 * s).min(screen_height() * 0.2),
+            );
+            let gx = (screen_width() - gw) * 0.5;
+            draw_rectangle(
+                gx - 8.0 * s,
+                curves_y - 8.0 * s,
+                gw + 16.0 * s,
+                gh + 16.0 * s,
+                PANEL,
+            );
+            let top = stats
+                .players
+                .iter()
+                .flat_map(|p| p.army_value.iter().copied())
+                .max()
+                .unwrap_or(1)
+                .max(1) as f32;
+            for (i, seat) in stats.players.iter().enumerate() {
+                let faction = game
+                    .state
+                    .players()
+                    .get(i)
+                    .map(|p| p.faction)
+                    .unwrap_or(oxide_sim::Faction::Ferrous);
+                let color = mini_faction_color(faction);
+                let n = seat.army_value.len().max(2);
+                let mut prev: Option<macroquad::prelude::Vec2> = None;
+                for (k, &v) in seat.army_value.iter().enumerate() {
+                    let px = gx + gw * k as f32 / (n - 1) as f32;
+                    let py = curves_y + gh - gh * (v as f32 / top);
+                    let point = vec2(px, py);
+                    if let Some(a) = prev {
+                        draw_line(a.x, a.y, point.x, point.y, 1.5 * s, color);
+                    }
+                    prev = Some(point);
+                }
+            }
+            let cap = "army value over the match";
+            let cap_dims = measure_text(cap, None, (13.0 * s) as u16, 1.0);
+            draw_text(
+                cap,
+                (screen_width() - cap_dims.width) * 0.5,
+                curves_y + gh + 14.0 * s,
+                13.0 * s,
+                BONE_FAINT,
+            );
+            for (i, seat) in stats.players.iter().enumerate() {
+                let name = game
+                    .state
+                    .players()
+                    .get(i)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| format!("seat {i}"));
+                let peak = seat.army_value.iter().copied().max().unwrap_or(0);
+                let line = format!(
+                    "{name}: lost {} units, {} buildings · peak army {peak} · scrap {}",
+                    seat.units_lost,
+                    seat.buildings_lost,
+                    seat.scrap.last().copied().unwrap_or(0),
+                );
+                let dims = measure_text(&line, None, (16.0 * s) as u16, 1.0);
+                draw_text(
+                    &line,
+                    (screen_width() - dims.width) * 0.5,
+                    y + (86.0 + 22.0 * i as f32) * s,
+                    16.0 * s,
+                    BONE_FAINT,
+                );
+            }
+        }
+        let hint = "Esc — menu";
+        let hint_dims = measure_text(hint, None, (20.0 * s) as u16, 1.0);
+        draw_text(
+            hint,
+            (screen_width() - hint_dims.width) * 0.5,
+            y + 52.0 * s,
+            20.0 * s,
+            BONE_FAINT,
+        );
+    }
+}
+
 /// The panel's clickable geometry: cards, card count, queue slots,
 /// queue count, band top.
 type PanelGeometry = (
@@ -1764,19 +1847,31 @@ fn draw_panel(
             Color::new(1.0, 1.0, 1.0, 0.35)
         };
         match &card.icon {
+            // The stop square draws as a real filled square — the
+            // glyph rendered like a missing character in this font.
+            CardIcon::Glyph("■") => {
+                let sq = 14.0 * s;
+                draw_rectangle(
+                    rect.x + (rect.w - sq) * 0.5,
+                    rect.y + 10.0 * s,
+                    sq,
+                    sq,
+                    if card.enabled { BONE } else { BONE_FAINT },
+                );
+            }
             CardIcon::Glyph(g) => {
-                let dims = measure_text(g, None, (26.0 * s) as u16, 1.0);
+                let dims = measure_text(g, None, (24.0 * s) as u16, 1.0);
                 draw_text(
                     g,
                     rect.x + (rect.w - dims.width) * 0.5,
-                    rect.y + 30.0 * s,
-                    26.0 * s,
+                    rect.y + 26.0 * s,
+                    24.0 * s,
                     if card.enabled { BONE } else { BONE_FAINT },
                 );
             }
             icon => {
                 if let Some(source) = icon_source(icon) {
-                    let isz = 34.0 * s;
+                    let isz = 30.0 * s;
                     draw_texture_ex(
                         sprites.texture(),
                         rect.x + (rect.w - isz) * 0.5,
@@ -1791,14 +1886,24 @@ fn draw_panel(
                 }
             }
         }
+        // The name lives on the card, not only in the tooltip.
+        let name: String = card.title.chars().take(9).collect();
+        let ndims = measure_text(&name, None, (10.0 * s) as u16, 1.0);
+        draw_text(
+            &name,
+            rect.x + (rect.w - ndims.width) * 0.5,
+            rect.y + rect.h - 15.0 * s,
+            10.0 * s,
+            if card.enabled { BONE } else { BONE_FAINT },
+        );
         if let Some(cost) = card.cost {
             let label = format!("{cost}");
-            let dims = measure_text(&label, None, (13.0 * s) as u16, 1.0);
+            let dims = measure_text(&label, None, (12.0 * s) as u16, 1.0);
             draw_text(
                 &label,
                 rect.x + (rect.w - dims.width) * 0.5,
-                rect.y + rect.h - 5.0 * s,
-                13.0 * s,
+                rect.y + rect.h - 4.0 * s,
+                12.0 * s,
                 if card.enabled {
                     SCRAP_COLOR
                 } else {
@@ -1982,7 +2087,8 @@ pub fn draw_tutorial(t: &crate::tutorial::Tutorial) {
 /// hotkey, cost, description, weapon lines, and why a disabled card
 /// refuses. Rebuilt from the same panel model the frame drew.
 fn draw_panel_tooltip(game: &Game, input: &InputState) {
-    let Some(panel) = crate::panel::build(game, &input.bindings) else {
+    let panel = game.panel_model.borrow();
+    let Some(panel) = panel.as_ref() else {
         return;
     };
     let layout = game.layout.get();
@@ -2052,10 +2158,12 @@ fn draw_panel_tooltip(game: &Game, input: &InputState) {
     }
 }
 
+/// The whole war at a glance, under the same fog rules as the world view
+/// (and, like everything else, omniscient while the F1 overlay is up).
 fn draw_minimap(game: &Game) {
     let rect = minimap_rect(game);
     let scale = rect.w / game.state.map().width() as f32;
-    let omniscient = game.overlay;
+    let omniscient = game.all_seeing();
     let vision = game.my_vision();
     draw_rectangle(
         rect.x - 3.0,

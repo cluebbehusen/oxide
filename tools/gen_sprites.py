@@ -398,13 +398,22 @@ def turret(faction: str) -> None:
     # Rotor ring.
     d.ellipse([s(16), s(16), s(48), s(48)], fill=(*pal["dark"], 255))
     d.ellipse([s(20), s(20), s(44), s(44)], fill=(*pal["base"], 255))
-    # Gun housing pointing up (the shell doesn't rotate buildings; the
-    # barrel reads as "armed" at any angle).
-    d.rectangle([s(28), s(4), s(36), s(30)], fill=(*IRON_DARK, 255))
-    d.rectangle([s(30), s(4), s(34), s(28)], fill=(*IRON_LIGHT, 255))
+    # The gun lives on a separate sprite so the mount can actually
+    # track its victim; the base ships bare.
+    finish(img, px, f"turret_{faction}")
+
+
+def turret_barrel(faction: str) -> None:
+    """The turret's gun, authored pointing up with its pivot at the
+    canvas center — the renderer rotates it onto the last victim."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    d.rectangle([s(28), s(4), s(36), s(32)], fill=(*IRON_DARK, 255))
+    d.rectangle([s(30), s(4), s(34), s(30)], fill=(*IRON_LIGHT, 255))
     d.ellipse([s(26), s(26), s(38), s(38)], fill=(*pal["light"], 255))
     d.ellipse([s(29), s(29), s(35), s(35)], fill=(*IRON_DARK, 255))
-    finish(img, px, f"turret_{faction}")
+    finish(img, px, f"turret_barrel_{faction}")
 
 
 def fabricator(faction: str) -> None:
@@ -914,6 +923,7 @@ def main() -> None:
         talon(faction)
         wisp(faction)
         turret(faction)
+        turret_barrel(faction)
         fabricator(faction)
         flak_turret(faction)
         bastion(faction)

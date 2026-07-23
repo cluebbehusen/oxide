@@ -73,7 +73,7 @@ pub const STEPS: [Step; 6] = [
     Step {
         title: "The rest is yours",
         body: &[
-            "Esc opens the menu (settings, saves, surrender-with-dignity).",
+            "Esc pauses: watch the replay so far, restart, or bow out.",
             "Destroy every enemy Foundry to win. Good hunting.",
         ],
     },

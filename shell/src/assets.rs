@@ -16,6 +16,7 @@ pub struct Sprites {
     ground: [Rect; 6],
     rock: [Rect; 4],
     peak: [Rect; 2],
+    turret_barrel: [Rect; 2],
     rock_skirt: Rect,
     decals: [Rect; 4],
     scrap_full: Rect,
@@ -112,6 +113,10 @@ impl Sprites {
                 rect("rock_3")?,
             ],
             peak: [rect("peak_0")?, rect("peak_1")?],
+            turret_barrel: [
+                rect("turret_barrel_ferrous")?,
+                rect("turret_barrel_cupric")?,
+            ],
             rock_skirt: rect("rock_skirt")?,
             decals: [
                 rect("decal_crack")?,
@@ -162,6 +167,14 @@ impl Sprites {
     /// A rock variant's atlas region.
     pub fn rock(&self, variant: usize) -> Rect {
         self.rock[variant % self.rock.len()]
+    }
+
+    /// The turret's rotating gun, per faction.
+    pub fn turret_barrel(&self, faction: oxide_sim::Faction) -> Rect {
+        self.turret_barrel[match faction {
+            oxide_sim::Faction::Ferrous => 0,
+            oxide_sim::Faction::Cupric => 1,
+        }]
     }
 
     /// A peak variant's atlas region.
