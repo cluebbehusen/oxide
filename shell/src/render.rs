@@ -1680,22 +1680,30 @@ fn draw_panel(
 ) -> PanelGeometry {
     use crate::panel::{CardAction, CardIcon};
     let s = ui_scale();
-    let top = screen_height() - 128.0 * s;
     let mini = minimap_rect(game);
     let right = if mini.w > 0.0 {
         (mini.x - 8.0 * s).max(300.0 * s)
     } else {
         screen_width()
     };
+    // Cards wrap instead of vanishing: a 640px window must keep every
+    // command reachable, so the band grows taller as rows accumulate.
+    let (cw, ch, gap) = (52.0 * s, 62.0 * s, 6.0 * s);
+    let cards_x = 150.0 * s;
+    let available = (right - cards_x).max(cw);
+    let per_row = (((available + gap) / (cw + gap)).floor() as usize).max(1);
+    let shown = panel.cards.len().min(16);
+    let rows = shown.div_ceil(per_row).max(1);
+    let queue_h = if panel.queue.is_empty() {
+        0.0
+    } else {
+        44.0 * s
+    };
+    let band_h = (20.0 * s + rows as f32 * (ch + 4.0 * s) + queue_h).max(128.0 * s);
+    let top = screen_height() - band_h;
     // Opaque, unlike the translucent HUD panels: machines drifting
     // beneath the band would ghost through the cards.
-    draw_rectangle(
-        0.0,
-        top,
-        right,
-        128.0 * s,
-        Color::from_rgba(20, 20, 24, 255),
-    );
+    draw_rectangle(0.0, top, right, band_h, Color::from_rgba(20, 20, 24, 255));
     draw_rectangle(0.0, top, right, 1.5 * s, Color::new(0.6, 0.6, 0.65, 0.4));
 
     let faction = game.state.player(game.human).faction;
@@ -1723,17 +1731,18 @@ fn draw_panel(
     draw_text(&panel.title, 12.0 * s, top + 88.0 * s, 17.0 * s, BONE);
     draw_text(&panel.sub, 12.0 * s, top + 106.0 * s, 14.0 * s, BONE_FAINT);
 
-    // Command cards: one row of up to eight buttons.
+    // Command cards, wrapping into as many rows as the width demands.
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut cards = [(zero, CardAction::None); 16];
     let mut card_count = 0;
-    let (cw, ch, gap) = (52.0 * s, 62.0 * s, 6.0 * s);
-    let cards_x = 150.0 * s;
-    for (i, card) in panel.cards.iter().take(8).enumerate() {
-        let rect = Rect::new(cards_x + i as f32 * (cw + gap), top + 10.0 * s, cw, ch);
-        if rect.x + rect.w > right {
-            break;
-        }
+    for (i, card) in panel.cards.iter().take(16).enumerate() {
+        let (row, col) = (i / per_row, i % per_row);
+        let rect = Rect::new(
+            cards_x + col as f32 * (cw + gap),
+            top + 10.0 * s + row as f32 * (ch + 4.0 * s),
+            cw,
+            ch,
+        );
         let hovered = rect.contains(input.mouse);
         let bg = if hovered && card.enabled {
             Color::new(0.28, 0.28, 0.33, 1.0)
@@ -1821,17 +1830,18 @@ fn draw_panel(
     let mut queue_slots = [(zero, CardAction::None); 8];
     let mut queue_count = 0;
     if !panel.queue.is_empty() {
+        let queue_y = top + 14.0 * s + rows as f32 * (ch + 4.0 * s);
         draw_text(
             panel.queue_label,
             150.0 * s,
-            top + 92.0 * s,
+            queue_y + 10.0 * s,
             13.0 * s,
             BONE_FAINT,
         );
         let (qw, qgap) = (34.0 * s, 4.0 * s);
         let qx0 = 205.0 * s;
         for (i, card) in panel.queue.iter().take(8).enumerate() {
-            let rect = Rect::new(qx0 + i as f32 * (qw + qgap), top + 82.0 * s, qw, qw);
+            let rect = Rect::new(qx0 + i as f32 * (qw + qgap), queue_y, qw, qw);
             if rect.x + rect.w > right {
                 break;
             }

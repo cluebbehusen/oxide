@@ -284,10 +284,22 @@ pub(crate) fn domain_goal(
         crate::stats::Domain::Ground => {
             find_nearby_passable(state, goal, crate::stats::GOAL_SNAP_RADIUS)
         }
-        crate::stats::Domain::Air => Some(TilePos::new(
-            goal.x.clamp(0, state.map.width() - 1),
-            goal.y.clamp(0, state.map.height() - 1),
-        )),
+        crate::stats::Domain::Air => {
+            // Clamp to the map, then off any peak: this is the funnel
+            // patrol waypoints and rally orders lower through, and a
+            // stored peak goal deadlocks the flyer — it reaches the
+            // route's snapped endpoint, compares against the original
+            // order goal, and repaths to the same tile forever.
+            let clamped = TilePos::new(
+                goal.x.clamp(0, state.map.width() - 1),
+                goal.y.clamp(0, state.map.height() - 1),
+            );
+            if state.passable_for(crate::stats::Domain::Air, clamped) {
+                Some(clamped)
+            } else {
+                snap_air_goal(state, clamped)
+            }
+        }
     }
 }
 

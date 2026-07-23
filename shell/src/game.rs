@@ -940,7 +940,12 @@ impl Game {
                             .push((SoundKind::ArtilleryLaunch, Some(world_vec(*to))));
                     }
                 }
-                Event::ShellLanded { player, at, splash } => {
+                Event::ShellLanded {
+                    player,
+                    targets,
+                    at,
+                    splash,
+                } => {
                     // The event names no victim on purpose (a shell in
                     // flight chooses nothing), so ask the post-tick world
                     // whether the blast reached anything of ours —
@@ -957,17 +962,20 @@ impl Game {
                             .state
                             .units()
                             .iter()
-                            .filter(|u| u.player == self.human)
+                            .filter(|u| {
+                                u.player == self.human && targets.covers(u.kind.stats().domain)
+                            })
                             .any(|u| world_vec(u.pos).distance(world) <= reach)
-                            || self
-                                .state
-                                .buildings()
-                                .iter()
-                                .filter(|b| b.player == self.human)
-                                .any(|b| {
-                                    let c = world_vec(b.center());
-                                    c.distance(world) <= reach + 1.5
-                                }));
+                            || (targets.covers(oxide_sim::stats::Domain::Ground)
+                                && self
+                                    .state
+                                    .buildings()
+                                    .iter()
+                                    .filter(|b| b.player == self.human)
+                                    .any(|b| {
+                                        let c = world_vec(b.center());
+                                        c.distance(world) <= reach + 1.5
+                                    })));
                     if own_hurt {
                         self.raise_alert(world);
                     }

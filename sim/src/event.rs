@@ -112,6 +112,9 @@ pub enum Event {
         /// sufferer; the impact itself was already visible by the arc
         /// renderer's rule.
         player: PlayerId,
+        /// Which movement domains the splash can hurt — a ground-only
+        /// shell near a flyer is noise, not an attack.
+        targets: crate::stats::DomainMask,
         /// Impact point.
         at: Vec2Fx,
         /// Splash radius, when the shell splashes.

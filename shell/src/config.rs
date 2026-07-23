@@ -127,6 +127,13 @@ impl Config {
         Self::load_from(config_path())
     }
 
+    /// Clamps a persisted window size into the envelope the CLI
+    /// enforces — a hand-edited config must not hand the native
+    /// backend an i32-overflowing dimension.
+    fn sane_window(window: (u32, u32)) -> (u32, u32) {
+        (window.0.clamp(640, 16_384), window.1.clamp(400, 16_384))
+    }
+
     fn load_from(path: Option<PathBuf>) -> Self {
         let Some(path) = path else {
             return Self::default();
@@ -138,10 +145,23 @@ impl Config {
             Ok(mut config) if config.version == CONFIG_VERSION => {
                 // A hand-edited config with no bindings parses fine and
                 // would strip every shortcut — restore the profile
-                // rather than ship a keyboardless game.
-                if config.bindings.bindings().is_empty() {
+                // rather than ship a keyboardless game. The same file
+                // can carry a syntactically valid action whose payload
+                // indexes past its array (SetBookmark(4) on a
+                // four-slot rack): out-of-range payloads reset the
+                // whole profile like any other malformed input.
+                let payload_sane = config.bindings.bindings().iter().all(|b| match b.action {
+                    crate::action::Action::SetBookmark(i)
+                    | crate::action::Action::RecallBookmark(i) => i < 4,
+                    crate::action::Action::TrainSlot(i)
+                    | crate::action::Action::Slot(i)
+                    | crate::action::Action::AssignGroup(i) => i < 9,
+                    _ => true,
+                });
+                if config.bindings.bindings().is_empty() || !payload_sane {
                     config.bindings = BindingMap::classic();
                 }
+                config.window = Self::sane_window(config.window);
                 config
             }
             _ => Self::default(),

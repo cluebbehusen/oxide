@@ -439,3 +439,40 @@ fn a_building_flush_against_the_ridge_is_safe_from_the_far_side() {
         assert_eq!(state.building(west).unwrap().hp, hp);
     }
 }
+
+#[test]
+fn an_air_patrol_through_the_ridge_keeps_flying_its_legs() {
+    // A peak waypoint stored raw once deadlocked the flyer: it reached
+    // the route's snapped endpoint, compared against the original peak
+    // goal, and repathed to the same tile forever. Lowering must store
+    // the snapped goal, so the patrol rotates through both legs.
+    let mut state = ridge(true, vec![unit(0, UnitKind::Wisp, 6, 5)])
+        .build()
+        .unwrap();
+    let flyer = state.units()[0].id;
+    state.tick(&[cmd(
+        0,
+        Command::Patrol {
+            units: vec![flyer],
+            waypoints: vec![TilePos::new(12, 5), TilePos::new(6, 5)],
+        },
+    )]);
+    let mut near_wall = false;
+    let mut home_again = false;
+    for _ in 0..900 {
+        state.tick(&[]);
+        let tile = state.unit(flyer).unwrap().tile();
+        if (tile.x - 12).abs() <= 1 && (tile.y - 5).abs() <= 1 {
+            near_wall = true;
+        }
+        if near_wall && tile == TilePos::new(6, 5) {
+            home_again = true;
+            break;
+        }
+    }
+    assert!(near_wall, "the first leg reached the wall's snapped tile");
+    assert!(
+        home_again,
+        "the patrol rotated to its second leg instead of deadlocking"
+    );
+}

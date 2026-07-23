@@ -109,6 +109,11 @@ fn parse_window(s: &str) -> Result<(u32, u32), String> {
     if w < 640 || h < 400 {
         return Err("window must be at least 640x400".to_string());
     }
+    if w > 16_384 || h > 16_384 {
+        // The native config takes i32; 4294967295x400 once reached the
+        // backend as -1.
+        return Err("window must be at most 16384x16384".to_string());
+    }
     Ok((w, h))
 }
 
@@ -121,6 +126,13 @@ fn parse_speed(s: &str) -> Result<f64, String> {
     } else {
         Err("speed must be a finite value within 0.05..=64".to_string())
     }
+}
+
+/// Everything a quit must not lose: the live session (as an autosave)
+/// and any settled-but-unwritten window size.
+fn save_on_quit(game: &mut Game, config: &config::Config) {
+    autosave::save(game);
+    config.save().ok();
 }
 
 fn window_conf() -> Conf {
@@ -646,6 +658,10 @@ async fn run() -> Result<()> {
         PAUSE_ITEMS.iter().map(|s| s.to_string()).collect(),
     );
 
+    // The title-bar close and Cmd-Q must reach the autosave path: left
+    // to macroquad they exit the process before any save runs.
+    prevent_quit();
+
     let debug_rx: Option<Receiver<IncomingRequest>> = if args.debug_server {
         Some(debug_server::spawn(args.port)?)
     } else {
@@ -676,6 +692,7 @@ async fn run() -> Result<()> {
                     &mut pending_shots,
                     &ui_view,
                     &mut tutorial,
+                    &mut playback,
                 );
             }
         }
@@ -1061,7 +1078,12 @@ async fn run() -> Result<()> {
                         match e {
                             RawEvent::MouseMove { x, y } => input.mouse = vec2(*x, *y),
                             RawEvent::Wheel { delta } => {
-                                pb.game.camera.zoom_at(input.mouse, *delta);
+                                let delta = if config.camera.zoom_inverted {
+                                    -*delta
+                                } else {
+                                    *delta
+                                };
+                                pb.game.camera.zoom_at(input.mouse, delta);
                             }
                             RawEvent::KeyDown { key } => match key {
                                 Key::Escape => leave = true,
@@ -1350,6 +1372,11 @@ async fn run() -> Result<()> {
             pending_size = None;
         }
 
+        if is_quit_requested() {
+            save_on_quit(&mut game, &config);
+            std::process::exit(0);
+        }
+
         next_frame().await;
     }
 }
@@ -1463,8 +1490,46 @@ fn handle_request(
     pending_shots: &mut Vec<PendingScreenshot>,
     ui_view: &UiView,
     tutorial: &mut Option<tutorial::Tutorial>,
+    playback: &mut Option<PlaybackSession>,
 ) {
     let IncomingRequest { id, request, reply } = incoming;
+    // A viewer session owns the screen: state-shaped questions and the
+    // driven clock answer for the REPLAYED world, not the hidden match
+    // behind it.
+    if let Some(pb) = playback {
+        if pb.game.state.current_tick() != pb.engine.position() {
+            pb.game.state = pb.engine.state.clone();
+        }
+        let handled: Option<Result<Reply, String>> = match &request {
+            Request::Status => Some(Ok(Reply::Status(status_view(&pb.game)))),
+            Request::QueryState { filter } => Some(Ok(Reply::State(StateView::capture(
+                &pb.game.state,
+                *filter,
+            )))),
+            Request::StateHash => Some(Ok(Reply::Hash(HashView {
+                tick: pb.game.state.current_tick(),
+                hash: format!("{:016x}", pb.game.state.hash()),
+            }))),
+            Request::AdvanceTicks { ticks } => {
+                pb.engine.advance(*ticks);
+                pb.game.state = pb.engine.state.clone();
+                Some(Ok(Reply::Advanced(AdvancedView {
+                    ticks: *ticks,
+                    tick: pb.game.state.current_tick(),
+                    hash: format!("{:016x}", pb.game.state.hash()),
+                })))
+            }
+            _ => None,
+        };
+        if let Some(outcome) = handled {
+            let envelope = match outcome {
+                Ok(inner) => ResponseEnvelope::ok(id, inner),
+                Err(error) => ResponseEnvelope::err(id, error),
+            };
+            let _ = reply.send(envelope);
+            return;
+        }
+    }
     let outcome: Result<Reply, String> = match request {
         Request::Status => Ok(Reply::Status(status_view(game))),
         Request::QueryState { filter } => Ok(Reply::State(StateView::capture(&game.state, filter))),
