@@ -113,7 +113,6 @@ def death_batch(job_with_death: Job) -> tuple[np.ndarray, ...]:
         itertools.repeat(0),
         4,
         "cpu",
-        np.random.default_rng(1),
     )
     return batch
 
@@ -254,7 +253,7 @@ class TestRolloutPipelining:
             return job
 
         jobs = [scripted("a"), scripted("b")]
-        rollout(policy, jobs, itertools.repeat(0), 3, "cpu", np.random.default_rng(1))
+        rollout(policy, jobs, itertools.repeat(0), 3, "cpu")
 
         steps = [log[i : i + 4] for i in range(0, len(log), 4)]
         assert len(steps) == 3

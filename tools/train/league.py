@@ -350,13 +350,22 @@ def assign_roles(
         counts[int(np.argmax(exact - counts))] += 1
     jobs = []
     i = 0
+    # One independent stream per job, spawned deterministically from
+    # the master: with a SHARED generator, pipelined stepping reordered
+    # draws whenever an episode reset interleaved differently than the
+    # old serial loop, so seeded rollouts silently diverged. Split
+    # streams make the draw order a per-job fact, immune to completion
+    # order.
+    streams = rng.spawn(len(workers))
     for kind, count in zip(kinds, counts, strict=False):
         # team2 alternates its single learner between the two west
         # chairs (k % 2 -> seat 0 or 2 inside the Job), everything else
         # keeps its established seat arithmetic.
         seats = 4 if kind in ("ffa", "team") else 2
         for k in range(count):
-            jobs.append(Job(workers[i], kind, k % seats, pool_dir, rng, device, maps))
+            jobs.append(
+                Job(workers[i], kind, k % seats, pool_dir, streams[i], device, maps)
+            )
             i += 1
     return jobs
 
@@ -367,7 +376,6 @@ def rollout(
     seeds: Iterator[int],
     steps: int,
     device: str,
-    noise_rng: np.random.Generator,
 ) -> tuple[tuple[np.ndarray, ...], np.ndarray, list[float]]:
     lanes = {(id(j), s): Lane(j.worker, s) for j in jobs for s in j.learner_seats}
     finished_rewards = []
@@ -431,7 +439,7 @@ def rollout(
                     logits_np[k],
                     mask[k],
                     j.conditions[s][0],
-                    noise_rng,
+                    j.rng,
                 )
             acts.update(j.opponent_action(device))
             all_acts.append(acts)
@@ -658,9 +666,7 @@ def main() -> None:
         for update in range(start_update + 1, start_update + args.updates + 1):
             t0 = time.time()
             TEL.clear()
-            batch, last_val, finals = rollout(
-                policy, jobs, seeds, args.steps, device, rng
-            )
+            batch, last_val, finals = rollout(policy, jobs, seeds, args.steps, device)
             rollout_sec = time.time() - t0
             obs_b, mask_b, act_b, logp_b, val_b, rew_b, done_b, valid_b = batch
             adv, ret = gae(rew_b, done_b, val_b, last_val)

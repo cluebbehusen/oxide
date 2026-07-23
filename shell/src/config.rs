@@ -150,12 +150,19 @@ impl Config {
                 // indexes past its array (SetBookmark(4) on a
                 // four-slot rack): out-of-range payloads reset the
                 // whole profile like any other malformed input.
+                // Payload conventions differ: TrainSlot is zero-based
+                // (roster slots 0..9), Slot and AssignGroup are the
+                // one-based digits 1..=9, bookmarks a four-slot rack.
+                // Getting this wrong once rejected the CLASSIC map's
+                // own Slot(9) and silently reset every customization
+                // on restart.
                 let payload_sane = config.bindings.bindings().iter().all(|b| match b.action {
                     crate::action::Action::SetBookmark(i)
                     | crate::action::Action::RecallBookmark(i) => i < 4,
-                    crate::action::Action::TrainSlot(i)
-                    | crate::action::Action::Slot(i)
-                    | crate::action::Action::AssignGroup(i) => i < 9,
+                    crate::action::Action::TrainSlot(i) => i < 9,
+                    crate::action::Action::Slot(i) | crate::action::Action::AssignGroup(i) => {
+                        (1..=9).contains(&i)
+                    }
                     _ => true,
                 });
                 if config.bindings.bindings().is_empty() || !payload_sane {
@@ -204,6 +211,31 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_customized_map_survives_the_round_trip() {
+        // The whole point of persistence: a rebind must still be there
+        // after restart. A payload-validation off-by-one once rejected
+        // the classic map's own one-based Slot(9) and reset everything.
+        let dir = std::env::temp_dir().join(format!("oxide-config-custom-{}", std::process::id()));
+        let path = dir.join("config.json");
+        let mut config = Config::default();
+        assert!(
+            config.bindings.rebind(
+                crate::action::Action::Patrol,
+                crate::action::Chord::bare(oxide_protocol::Key::J)
+            ),
+            "J is free in the classic map"
+        );
+        config.save_to(&path).expect("save");
+        let loaded = Config::load_from(Some(path.clone()));
+        assert_eq!(
+            loaded.bindings.chord_for(crate::action::Action::Patrol),
+            Some(crate::action::Chord::bare(oxide_protocol::Key::J)),
+            "the customization survived validation"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn saving_twice_replaces_instead_of_failing() {
