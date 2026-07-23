@@ -248,6 +248,19 @@ stay in-tree as league anchors, benchmarks, and the ladder-integrity
 yardstick (`sim/tests/neural_ladder.rs` enforces Easy < Medium <
 Hard < Expert forever).
 
+### Balance instruments (0.10)
+
+`driver balance-probe` runs bot-vs-bot across the shipped maps
+(optionally `--weights` for a candidate artifact — the fun gate's
+mechanical form) and reports cost-weighted composition with a
+spam-detecting entropy. `driver matchup --a kind:n --b kind:n` fights
+par-cost armies on a clean arena — the experiment that separates "the
+learner never found the counter" from "no counter exists".
+`driver bench` times a 500-unit mass battle locally; CI asserts only
+hash-identity at scale. The 0.10 pacing findings and levers live in
+EXPERIMENTS.md; matches target tens of minutes (the `vast` map class
+and the foundry-durability bless exist for this).
+
 ## Design decisions worth knowing
 
 - **`State` fields are private; `State::tick` is the only mutator.** Read
@@ -406,6 +419,21 @@ Hard < Expert forever).
   no owner, no memory, no license for a targeted attack. Team sight is
   shared by stamping every teammate's discs into each seat's view;
   `State::hostile` routes every allegiance decision.
+- **Screens are objects since 0.10** (shell/src/screens/): each menu
+  screen (home, wizard, shelf, pause+confirm, settings+controls,
+  playback transport) owns its menus and state; `update` takes raw
+  events and returns a transition, windowless by construction — the
+  whole flow drives headless in unit tests. The main loop keeps only
+  drawing and session wiring. The viewport is INJECTED once per frame
+  (`render::set_viewport`); menus, chrome scale, and `Game::new` read
+  the seam and never query the window (headless tests get 1280x800).
+- **Memories admit their age**: remembered ghosts and salvage fade
+  along a 90-second ramp after sight loss (presentation-only state on
+  `Game::last_seen`; the sim's Vision carries no timestamps). They
+  never vanish — they stop pretending to be news.
+- **Replays are an end-of-match affair**: Watch Replay appears once
+  the match is decided; `autosave-` records are Continue-only.
+  Mid-match playback was a fog-free scout of the enemy.
 - **The command panel is one grammar** (shell/src/panel.rs): a pure
   model (portrait, sprite cards carrying the exact Action their
   hotkey dispatches, queue thumbnails carrying CancelQueue) built

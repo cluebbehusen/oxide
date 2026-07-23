@@ -163,6 +163,9 @@ Start the shell with a socket, then talk to it:
 
 ```sh
 cargo run -p oxide-shell -- --debug-server --paused   # driven mode
+cargo run -p oxide-driver -- balance-probe          # composition + entropy
+cargo run -p oxide-driver -- matchup --a sentinel:8 --b bombard:2,sentinel:4
+cargo run -p oxide-driver -- bench                  # 500-unit ticks/s
 cargo run -p oxide-driver -- live status
 cargo run -p oxide-driver -- live harvest 0 --units 0,1,2 --node 7,2
 cargo run -p oxide-driver -- live attack-move 0 --units 3 --to 34,18
