@@ -41,6 +41,7 @@ mod fx;
 
 pub use fx::{BoltStyle, Effect, EffectKind, PingKind, SoundKind};
 
+/// A transient HUD message (rejected orders, stalled units).
 pub struct Toast {
     /// What to say.
     pub text: String,

@@ -146,8 +146,6 @@ pub enum EffectKind {
     },
 }
 
-/// A transient HUD message (rejected orders, stalled units).
-
 impl Game {
     pub fn update_fx(&mut self, dt: f32) {
         self.fx_clock += dt;
