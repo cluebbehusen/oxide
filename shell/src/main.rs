@@ -472,6 +472,18 @@ async fn run() -> Result<()> {
         let mode_before = std::mem::discriminant(&mode);
         match mode {
             Mode::Home => {
+                // The title scene: a cold front door drifts its camera
+                // slowly across the backdrop world instead of freezing
+                // a frame — presentation only, and only while nothing
+                // is at stake (a resumable match keeps its exact view).
+                if game.state.current_tick() == 0 && !render::reduced_motion() {
+                    game.camera.pan(vec2(dt * 0.55, dt * 0.22));
+                    let (_, hi) = game.camera.world_rect();
+                    if hi.x >= game.state.map().width() as f32 + 1.9 {
+                        game.camera.center = vec2(0.0, 0.0);
+                        game.camera.pan(vec2(0.0, 0.0)); // re-clamp home
+                    }
+                }
                 match home.update(&events, &mut input.mouse, &mut game.sounds_pending) {
                     screens::home::Out::Stay => {}
                     screens::home::Out::Continue => {
