@@ -408,7 +408,11 @@ const LANCER: UnitStats = UnitStats {
     train_ticks: 200, // 10 s
     domain: Domain::Ground,
     weapons: &[WeaponStats {
-        damage: 30,
+        // 0.10 balance: at 30 the rail matched sentinel dps at higher
+        // cost and lost par to the entire roster — the tech tree's
+        // first rung wasn't worth climbing. 60 two-shots a sentinel and
+        // one-shots the light roster; siege and air still counter.
+        damage: 60,
         range: Fx::lit("5.5"), // beyond aggro: it only uses this on orders
         cooldown_ticks: 60,    // one heavy shot per 3 s
         targets: DomainMask::GROUND,

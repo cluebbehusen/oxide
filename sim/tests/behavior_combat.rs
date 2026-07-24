@@ -228,20 +228,26 @@ fn lancer_outranges_aggro_and_retaliation_answers() {
         ),
         "the sentinel should turn on its attacker"
     );
-    // And the fight resolves the right way: the sentinel closes and wins.
-    run_until(&mut state, 400, |s, _| s.unit(lancer).is_none());
+    // And the duel resolves the 0.10 way: the rail wins the engagement
+    // it opened at its chosen range — that edge is why the Fabricator
+    // is worth its price — but the answer connected on the way down.
+    run_until(&mut state, 400, |s, _| s.unit(victim).is_none());
+    let survivor = state.unit(lancer).unwrap();
     assert!(
-        state.unit(victim).is_some(),
-        "sentinel survives the approach"
+        survivor.hp < UnitKind::Lancer.stats().max_hp,
+        "the sentinel's retaliation landed before it fell"
     );
 }
 
 #[test]
-fn retaliation_keeps_an_attack_movers_destination() {
+fn a_flank_pick_answers_but_the_march_still_arrives() {
     // An open lane: the lancer sits 5.4 tiles off the march route —
-    // outside the marcher's aggro, inside its own range — and opens fire
-    // as the marcher passes. The marcher must answer, win, and still
-    // finish the march.
+    // outside the marchers' aggro, inside its own range — and picks one
+    // off as the column passes. The victim must answer with its march
+    // goal held in the order (the retaliation contract), and the rest
+    // of the column must still arrive: a sniper takes stragglers, it
+    // does not stop armies. (Fight-then-win-then-resume is covered by
+    // attack_move_engages_on_the_way_then_resumes.)
     let scenario = Scenario {
         name: "retaliation-lane".into(),
         seed: 42,
@@ -262,21 +268,42 @@ fn retaliation_keeps_an_attack_movers_destination() {
         players: arena(vec![]).players,
         units: vec![
             unit(0, UnitKind::Sentinel, 3, 2),
+            unit(0, UnitKind::Sentinel, 4, 1),
             unit(1, UnitKind::Lancer, 9, 7),
         ],
         meta: None,
     };
     let mut state = scenario.build().unwrap();
-    let (marcher, lancer) = (state.units()[0].id, state.units()[1].id);
+    let (marcher, rearguard, lancer) = (
+        state.units()[0].id,
+        state.units()[1].id,
+        state.units()[2].id,
+    );
     let goal = TilePos::new(16, 2);
-    state.tick(&[cmd(
-        0,
-        Command::AttackMove {
-            units: vec![marcher],
-            goal,
-            queue: false,
-        },
-    )]);
+    // The rearguard marches the y=1 lane: its closest approach to the
+    // lancer is 6.0 tiles — outside inclusive aggro (5) from both sides
+    // and outside rail range (5.5), so its journey stays a control.
+    // Single-unit orders so each keeps the exact goal (a group order
+    // would fan out ring goals and blur the arrival assertion).
+    let rear_goal = TilePos::new(16, 1);
+    state.tick(&[
+        cmd(
+            0,
+            Command::AttackMove {
+                units: vec![marcher],
+                goal,
+                queue: false,
+            },
+        ),
+        cmd(
+            0,
+            Command::AttackMove {
+                units: vec![rearguard],
+                goal: rear_goal,
+                queue: false,
+            },
+        ),
+    ]);
     // Let the march reach the firing window (dist 5.39: in lancer range,
     // outside sentinel aggro), then order the shot.
     run_until(&mut state, 200, |s, _| {
@@ -296,11 +323,17 @@ fn retaliation_keeps_an_attack_movers_destination() {
             Order::Attack { resume: Some(g), .. } if g == goal
         )
     });
-    // Kill confirmed, march resumed, goal reached.
-    run_until(&mut state, 600, |s, _| s.unit(lancer).is_none());
+    // The 0.10 rail wins the duel it opened — the pick lands — but the
+    // answer chipped it on the way down, and the column still arrives.
+    run_until(&mut state, 600, |s, _| s.unit(marcher).is_none());
+    let sniper = state.unit(lancer).unwrap();
+    assert!(
+        sniper.hp < UnitKind::Lancer.stats().max_hp,
+        "the victim's retaliation connected"
+    );
     run_until(&mut state, 600, |s, _| {
-        let u = s.unit(marcher).unwrap();
-        u.tile() == goal && u.order == Order::Idle
+        let u = s.unit(rearguard).unwrap();
+        u.tile() == rear_goal && u.order == Order::Idle
     });
 }
 
