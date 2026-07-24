@@ -584,6 +584,14 @@ def main() -> None:
     )
     ap.add_argument("--anchor-coef", type=float, default=0.05)
     ap.add_argument(
+        "--anchor-decay",
+        type=float,
+        default=0.995,
+        help="per-update anchor decay; 1.0 holds the anchor constant "
+        "(style retention for the whole run — the round-3 lesson: a "
+        "decayed anchor lets PPO grind imitation-taught tech back out)",
+    )
+    ap.add_argument(
         "--maps", default="fixed", help="fixed | random (fresh map per episode)"
     )
     ap.add_argument(
@@ -694,7 +702,7 @@ def main() -> None:
                 device,
                 value_only=update <= args.value_warmup,
                 anchor=anchor,
-                anchor_coef=args.anchor_coef * (0.995**update),
+                anchor_coef=args.anchor_coef * (args.anchor_decay**update),
             )
             decisions = int(obs_b.shape[0]) * int(obs_b.shape[1])
             entry = {
