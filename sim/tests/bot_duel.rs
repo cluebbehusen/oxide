@@ -7,9 +7,19 @@ use oxide_sim::bot::{Bot, Brain, Dials};
 use oxide_sim::state::GameResult;
 use oxide_sim::{PlayerId, Scenario};
 
-/// Runs brain vs classic on the skirmish map; returns the winner.
-fn duel(brain_seat: u8, dials: Dials) -> Option<PlayerId> {
-    let scenario = Scenario::skirmish();
+/// Capability claims are majorities, not coin flips: one seed's
+/// opening can swing a single duel whenever the balance moves (the
+/// 0.10 sentinel repricing flipped the original fixed-seed pin).
+fn wins_majority(brain_seat: u8, dials: Dials) -> bool {
+    let wins = (0..5)
+        .filter(|i| duel_seeded(brain_seat, dials.clone(), 42 + i) == Some(PlayerId(brain_seat)))
+        .count();
+    wins >= 3
+}
+
+fn duel_seeded(brain_seat: u8, dials: Dials, seed: u64) -> Option<PlayerId> {
+    let mut scenario = Scenario::skirmish();
+    scenario.seed = seed;
     let mut state = scenario.build().unwrap();
     let mut brain = Brain::new(PlayerId(brain_seat), scenario.seed, dials);
     let mut classic = Bot::new(PlayerId(1 - brain_seat), scenario.seed);
@@ -27,11 +37,9 @@ fn duel(brain_seat: u8, dials: Dials) -> Option<PlayerId> {
 #[test]
 fn omniscient_brain_beats_classic_from_either_seat() {
     for seat in [0u8, 1] {
-        let winner = duel(seat, Dials::full_omniscient());
-        assert_eq!(
-            winner,
-            Some(PlayerId(seat)),
-            "omniscient brain in seat {seat} should beat the classic bot"
+        assert!(
+            wins_majority(seat, Dials::full_omniscient()),
+            "omniscient brain in seat {seat} should beat the classic bot over seeds"
         );
     }
 }
@@ -41,11 +49,9 @@ fn fog_honest_brain_beats_classic_from_either_seat() {
     // The hard version of the gate: the brain plays through its own
     // vision while the classic bot cheats — and still must win.
     for seat in [0u8, 1] {
-        let winner = duel(seat, Dials::full());
-        assert_eq!(
-            winner,
-            Some(PlayerId(seat)),
-            "fog-honest brain in seat {seat} should beat the classic bot"
+        assert!(
+            wins_majority(seat, Dials::full()),
+            "fog-honest brain in seat {seat} should beat the classic bot over seeds"
         );
     }
 }

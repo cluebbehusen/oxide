@@ -349,7 +349,7 @@ const SENTINEL: UnitStats = UnitStats {
     max_hp: 100,
     speed: Fx::lit("0.11"), // 2.2 tiles/s — armies are slightly outrun by harvesters
     radius: Fx::lit("0.35"),
-    cost: 75,
+    cost: 90, // 0.10 balance: spam pays — four campaign rounds proved 75 optimal-by-flooding
     train_ticks: 160, // 8 s
     domain: Domain::Ground,
     weapons: &[
