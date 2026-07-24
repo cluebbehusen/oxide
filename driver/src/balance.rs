@@ -10,14 +10,25 @@ use oxide_sim::bot::Level;
 use oxide_sim::scenario::BotConfig;
 use std::collections::BTreeMap;
 
+/// The candidate-probe dials that decompose the skill knob into its
+/// parts — conditioning, blunder rate, think cadence — so experiments
+/// can move one at a time. Shipped play always moves them together
+/// through `Level`.
+pub struct ProbeDials {
+    /// Raw conditioning override (None: the level's own skill).
+    pub skill: Option<u32>,
+    /// Explicit blunder rate per mille (0: derive from skill).
+    pub blunder: u32,
+    /// Think cadence in ticks.
+    pub cadence: u64,
+}
+
 /// Runs the probe over every scenario in `dir` and prints the verdict;
 /// `out` also lands the raw JSON for the record.
 pub fn balance_probe(
     dir: &str,
     level: Level,
-    skill: Option<u32>,
-    blunder: u32,
-    cadence: u64,
+    dials: &ProbeDials,
     seeds: u64,
     max_ticks: u64,
     weights: Option<&str>,
@@ -68,12 +79,12 @@ pub fn balance_probe(
                         .map(|(seat, player)| {
                             NeuralBot::with_profile(
                                 oxide_sim::PlayerId(seat as u8),
-                                cadence,
+                                dials.cadence,
                                 net.clone(),
-                                skill.unwrap_or_else(|| level.skill()),
+                                dials.skill.unwrap_or_else(|| level.skill()),
                                 500,
                                 player.faction,
-                                blunder,
+                                dials.blunder,
                                 sc.seed,
                             )
                         })

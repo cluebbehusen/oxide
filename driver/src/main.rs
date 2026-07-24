@@ -302,9 +302,11 @@ fn main() -> Result<()> {
             oxide_driver::balance::balance_probe(
                 &dir,
                 level,
-                skill,
-                blunder,
-                cadence,
+                &oxide_driver::balance::ProbeDials {
+                    skill,
+                    blunder,
+                    cadence,
+                },
                 seeds,
                 ticks,
                 weights.as_deref(),
