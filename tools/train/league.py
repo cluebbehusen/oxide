@@ -114,6 +114,36 @@ def style_reward(raw: list[int], aggression: int) -> float:
 
 FAB_BUILT = FEATURE_NAMES.index("fab_built")
 
+# The agent's own army-count features with rough unit costs (varied
+# roles use the midpoint of their two faction kinds) — the same
+# cost-weighted lens the fun gate judges with.
+ARMY_FEATURES = [
+    (FEATURE_NAMES.index("my_harvesters"), 50.0),
+    (FEATURE_NAMES.index("my_sentinels"), 90.0),
+    (FEATURE_NAMES.index("my_scuttlers"), 40.0),
+    (FEATURE_NAMES.index("my_lancers"), 110.0),
+    (FEATURE_NAMES.index("my_bombards"), 200.0),
+    (FEATURE_NAMES.index("my_antiair"), 67.0),
+    (FEATURE_NAMES.index("my_airground"), 125.0),
+    (FEATURE_NAMES.index("my_airair"), 90.0),
+]
+
+
+def comp_entropy(raw: list[int]) -> float:
+    """Shannon entropy (bits) of the seat's OWN cost-weighted army mix —
+    fog-safe by construction, exactly the fun gate's spam metric applied
+    to the one army the agent always sees: its own."""
+    weights = [raw[i] * cost for i, cost in ARMY_FEATURES]
+    total = sum(weights)
+    if total <= 0.0:
+        return 0.0
+    h = 0.0
+    for w in weights:
+        if w > 0.0:
+            p = w / total
+            h -= p * float(np.log2(p))
+    return h
+
 
 def tech_bonus_at(base: float, rel_update: int, span: int) -> float:
     """The own-tech terminal bonus's annealing schedule: full at the
@@ -413,6 +443,7 @@ def rollout(
     steps: int,
     device: str,
     tech_bonus: float = 0.0,
+    mix_bonus: float = 0.0,
 ) -> tuple[tuple[np.ndarray, ...], np.ndarray, list[float]]:
     lanes = {(id(j), s): Lane(j.worker, s) for j in jobs for s in j.learner_seats}
     finished_rewards = []
@@ -492,10 +523,17 @@ def rollout(
                     # The shaping rides only the training reward;
                     # finished_rewards stays the pure game outcome so
                     # avg_final telemetry compares across runs.
-                    bonus = tech_bonus if s in j.teched else 0.0
+                    mut_bonus = tech_bonus if s in j.teched else 0.0
                     if s in j.teched:
                         TEL["ep_teched"] += 1
-                    lane.rew.append(frame.reward(s) + bonus)
+                    if mix_bonus > 0.0:
+                        # The seat's frozen last view carries its final
+                        # army; two bits (a real three-way mix) earns
+                        # the full bonus.
+                        h = comp_entropy(j.seat_view(s).raw)
+                        TEL["mix_ent"] += h
+                        mut_bonus += mix_bonus * min(h, 2.0) / 2.0
+                    lane.rew.append(frame.reward(s) + mut_bonus)
                     lane.done.append(True)
                     finished_rewards.append(frame.reward(s))
                 j.reset(next(seeds))
@@ -652,6 +690,14 @@ def main() -> None:
         "zero (0 = the full --updates span)",
     )
     ap.add_argument(
+        "--mix-bonus",
+        type=float,
+        default=0.0,
+        help="terminal bonus scaled by the seat's OWN cost-weighted "
+        "army-mix entropy (fog-safe; 2 bits earns the full bonus); "
+        "annealed on the same schedule as --tech-bonus. 0 disables.",
+    )
+    ap.add_argument(
         "--maps",
         default="fixed",
         help="fixed | random (fresh map per episode) | grand (fresh map "
@@ -753,8 +799,13 @@ def main() -> None:
                 update - start_update - 1,
                 args.tech_anneal or args.updates,
             )
+            mb = tech_bonus_at(
+                args.mix_bonus,
+                update - start_update - 1,
+                args.tech_anneal or args.updates,
+            )
             batch, last_val, finals = rollout(
-                policy, jobs, seeds, args.steps, device, tech_bonus=tb
+                policy, jobs, seeds, args.steps, device, tech_bonus=tb, mix_bonus=mb
             )
             rollout_sec = time.time() - t0
             obs_b, mask_b, act_b, logp_b, val_b, rew_b, done_b, valid_b = batch

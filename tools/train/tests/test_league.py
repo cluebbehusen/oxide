@@ -20,13 +20,14 @@ from league import (
     FAB_BUILT,
     TEL,
     Job,
+    comp_entropy,
     faction_knob,
     rollout,
     sample_condition,
     tech_bonus_at,
 )
 from models import make_policy
-from oxide_gym import ACTIONS, FEATURES, NET_FEATURES, Frame, SeatView
+from oxide_gym import ACTIONS, FEATURE_NAMES, FEATURES, NET_FEATURES, Frame, SeatView
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -358,3 +359,51 @@ class TestOwnTechShaping:
             "avg_final must compare across runs with and without shaping"
         )
         assert TEL["ep_teched"] == 1, "exactly one teched episode-seat"
+
+
+class TestCompEntropy:
+    def test_a_single_kind_army_scores_zero_bits(self) -> None:
+        raw = [0] * FEATURES
+        raw[FEATURE_NAMES.index("my_sentinels")] = 12
+        assert comp_entropy(raw) == 0.0
+
+    def test_two_equal_value_kinds_score_one_bit(self) -> None:
+        # 11 sentinels (990) vs 9 lancers (990): a perfect two-way split
+        # by cost weight.
+        raw = [0] * FEATURES
+        raw[FEATURE_NAMES.index("my_sentinels")] = 11
+        raw[FEATURE_NAMES.index("my_lancers")] = 9
+        assert abs(comp_entropy(raw) - 1.0) < 1e-9
+
+    def test_an_empty_army_scores_zero_not_nan(self) -> None:
+        assert comp_entropy([0] * FEATURES) == 0.0
+
+
+class TestMixBonus:
+    def test_the_terminal_pays_by_own_mix_entropy(self) -> None:
+        # Seat 0 ends with a perfect two-way mix (1 bit -> half the
+        # bonus); seat 1 ends with a sentinel monoculture (nothing).
+        mixed = _view(0.5)
+        mixed.raw[FEATURE_NAMES.index("my_sentinels")] = 11
+        mixed.raw[FEATURE_NAMES.index("my_lancers")] = 9
+        mono = _view(0.5)
+        mono.raw[FEATURE_NAMES.index("my_sentinels")] = 20
+        frames = [
+            Frame(False, 16, seats={0: mixed, 1: mono}),
+            Frame(True, 32, winners=[0]),
+        ]
+        fresh = Frame(False, 48, seats={0: _view(0.1), 1: _view(0.1)})
+        worker = cast("Worker", _ResettingWorker(frames, fresh))
+        job = Job(worker, "self", 0, pathlib.Path("."), np.random.default_rng(0), "cpu")
+        job.frame = Frame(False, 0, seats={0: _view(0.1), 1: _view(0.1)})
+        job.conditions = {0: (1000, 500, 0), 1: (1000, 500, 1000)}
+        torch.manual_seed(0)
+        policy = make_policy("mlp")
+        policy.eval()
+        batch, _last_val, finals = rollout(
+            policy, [job], itertools.repeat(0), 2, "cpu", mix_bonus=0.1
+        )
+        rew = batch[5]
+        assert rew[1][0] == pytest.approx(1.0 + 0.05), "1 bit earns half of 0.1"
+        assert rew[1][1] == pytest.approx(-1.0), "a monoculture earns nothing"
+        assert sorted(finals) == [-1.0, 1.0], "telemetry finals stay pure"
