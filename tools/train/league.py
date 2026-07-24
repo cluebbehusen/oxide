@@ -71,10 +71,16 @@ def timed(key: str) -> Iterator[None]:
         TEL[key] += time.perf_counter() - t
 
 
-def generate(seed: int, out_dir: str, players: int = 2, teams: bool = False) -> str:
+def generate(
+    seed: int,
+    out_dir: str,
+    players: int = 2,
+    teams: bool = False,
+    pace: str | None = None,
+) -> str:
     """mapgen.generate with its wall time metered."""
     with timed("mapgen_sec"):
-        return _generate(seed, out_dir, players=players, teams=teams)
+        return _generate(seed, out_dir, players=players, teams=teams, pace=pace)
 
 
 # Potential-based shaping: a small dense signal that guides the value
