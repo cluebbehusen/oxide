@@ -190,11 +190,15 @@ fn idle_sentinel_auto_acquires_intruder() {
 
 #[test]
 fn lancer_outranges_aggro_and_retaliation_answers() {
-    // The lancer opens fire from 5.4 tiles — outside the sentinel's aggro
-    // (5), inside lancer range (5.5). Before 0.5 the sentinel would stand
-    // and die; the first hit now turns it on its attacker.
+    // The lancer opens fire from 5.4 tiles — outside the bombard's aggro
+    // (5), inside rail range (5.5). The bombard is the one chassis that
+    // survives a rail hit AND can answer ground (the 0.10 rail one-shots
+    // the 60-hp sentinel, so the line unit can no longer star here).
+    // The first hit turns the victim on its attacker; the rail wins the
+    // duel it opened, but the answer — one arcing shell already in
+    // flight — lands after its shooter is dead. Shells outlive shooters.
     let mut state = arena(vec![
-        unit(0, UnitKind::Sentinel, 3, 6),
+        unit(0, UnitKind::Bombard, 3, 6),
         unit(1, UnitKind::Lancer, 8, 4),
     ])
     .build()
@@ -205,8 +209,8 @@ fn lancer_outranges_aggro_and_retaliation_answers() {
         let b = state.unit(lancer).unwrap().pos;
         a.dist_sq(b)
     };
-    let aggro = oxide_sim::stats::UnitKind::Sentinel.stats().aggro_range;
-    assert!(d2 > aggro * aggro, "test premise: outside sentinel aggro");
+    let aggro = oxide_sim::stats::UnitKind::Bombard.stats().aggro_range;
+    assert!(d2 > aggro * aggro, "test premise: outside bombard aggro");
 
     state.tick(&[cmd(
         1,
@@ -217,36 +221,39 @@ fn lancer_outranges_aggro_and_retaliation_answers() {
         },
     )]);
     // The lancer needs no approach: the first hit lands within a tick or
-    // two, and the sentinel's answer must be immediate.
+    // two, and the bombard's answer must be immediate.
     run_until(&mut state, 10, |s, _| {
-        s.unit(victim).unwrap().hp < UnitKind::Sentinel.stats().max_hp
+        s.unit(victim).unwrap().hp < UnitKind::Bombard.stats().max_hp
     });
     assert!(
         matches!(
             state.unit(victim).unwrap().order,
             Order::Attack { target: Target::Unit(t), .. } if t == lancer
         ),
-        "the sentinel should turn on its attacker"
+        "the bombard should turn on its attacker"
     );
-    // And the duel resolves the 0.10 way: the rail wins the engagement
-    // it opened at its chosen range — that edge is why the Fabricator
-    // is worth its price — but the answer connected on the way down.
+    // The rail's second shot kills the bombard...
     run_until(&mut state, 400, |s, _| s.unit(victim).is_none());
-    let survivor = state.unit(lancer).unwrap();
+    // ...and the posthumous shell still lands: the answer connected.
+    run_until(&mut state, 400, |s, _| {
+        s.unit(lancer).unwrap().hp < UnitKind::Lancer.stats().max_hp
+    });
     assert!(
-        survivor.hp < UnitKind::Lancer.stats().max_hp,
-        "the sentinel's retaliation landed before it fell"
+        state.unit(lancer).is_some(),
+        "one shell wounds the rail, it does not kill it"
     );
 }
 
 #[test]
-fn a_flank_pick_answers_but_the_march_still_arrives() {
+fn a_flank_pick_is_lethal_and_the_march_still_arrives() {
     // An open lane: the lancer sits 5.4 tiles off the march route —
     // outside the marchers' aggro, inside its own range — and picks one
-    // off as the column passes. The victim must answer with its march
-    // goal held in the order (the retaliation contract), and the rest
-    // of the column must still arrive: a sniper takes stragglers, it
-    // does not stop armies. (Fight-then-win-then-resume is covered by
+    // off as the column passes. Under the 0.10 numbers the rail
+    // one-shots the 60-hp sentinel: the pick is an assassination, no
+    // answer is possible from a corpse, and the sniper walks away
+    // clean. What the ambush must NOT do is stop the army — the
+    // rearguard still arrives. (The retaliation contract itself is
+    // covered by the bombard tests; fight-then-win-then-resume by
     // attack_move_engages_on_the_way_then_resumes.)
     let scenario = Scenario {
         name: "retaliation-lane".into(),
@@ -317,19 +324,13 @@ fn a_flank_pick_answers_but_the_march_still_arrives() {
             queue: false,
         },
     )]);
-    run_until(&mut state, 20, |s, _| {
-        matches!(
-            s.unit(marcher).unwrap().order,
-            Order::Attack { resume: Some(g), .. } if g == goal
-        )
-    });
-    // The 0.10 rail wins the duel it opened — the pick lands — but the
-    // answer chipped it on the way down, and the column still arrives.
-    run_until(&mut state, 600, |s, _| s.unit(marcher).is_none());
+    // One rail hit is the whole story for a 60-hp marcher.
+    run_until(&mut state, 20, |s, _| s.unit(marcher).is_none());
     let sniper = state.unit(lancer).unwrap();
-    assert!(
-        sniper.hp < UnitKind::Lancer.stats().max_hp,
-        "the victim's retaliation connected"
+    assert_eq!(
+        sniper.hp,
+        UnitKind::Lancer.stats().max_hp,
+        "a corpse answers nothing — the sniper walks away clean"
     );
     run_until(&mut state, 600, |s, _| {
         let u = s.unit(rearguard).unwrap();
@@ -633,56 +634,13 @@ fn mirrored_duels_end_in_mutual_annihilation() {
     );
 }
 
-#[test]
-fn retaliation_picks_the_earliest_surviving_attacker() {
-    // Two lancers volley the sentinel from beyond its aggro while the
-    // sentinel's own lancers kill the first of them in the same buffered
-    // resolution. The answer must go to the survivor — locking onto the
-    // corpse would leave the second shooter firing unopposed.
-    let mut state = arena(vec![
-        unit(1, UnitKind::Lancer, 8, 4),   // id 0: dies this tick
-        unit(1, UnitKind::Lancer, 8, 7),   // id 1: survives
-        unit(0, UnitKind::Lancer, 10, 1),  // id 2: executioner
-        unit(0, UnitKind::Lancer, 12, 4),  // id 3: executioner
-        unit(0, UnitKind::Sentinel, 3, 6), // id 4: the victim
-    ])
-    .build()
-    .unwrap();
-    let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
-    let (a, b, c1, c2, v) = (ids[0], ids[1], ids[2], ids[3], ids[4]);
-    let report = state.tick(&[
-        cmd(
-            1,
-            Command::Attack {
-                units: vec![a, b],
-                target: Target::Unit(v),
-                queue: false,
-            },
-        ),
-        cmd(
-            0,
-            Command::Attack {
-                units: vec![c1, c2],
-                target: Target::Unit(a),
-                queue: false,
-            },
-        ),
-    ]);
-    let _ = report;
-    // The whole exchange lands on the command tick (everyone in range).
-    assert!(
-        state.unit(a).is_none(),
-        "the first attacker died in the volley"
-    );
-    assert!(
-        matches!(
-            state.unit(v).unwrap().order,
-            Order::Attack { target: Target::Unit(t), .. } if t == b
-        ),
-        "the victim must answer the surviving attacker, got {:?}",
-        state.unit(v).unwrap().order
-    );
-}
+// A retired sibling of the test below — "two simultaneous beyond-aggro
+// attackers, one executed, the victim answers the earliest survivor" —
+// died with the 0.10 rail bless: two rail hits (120) now kill every
+// chassis that can answer ground, so the two-survivable-shooter volley
+// cannot be staged in the real game. The earliest-survivor property
+// itself is structural (the busy-guard makes the first processed answer
+// stick) and stays exercised by the corpse-skip and interrupt tests.
 
 #[test]
 fn retaliation_interrupts_an_attack_on_a_corpse() {
@@ -690,13 +648,14 @@ fn retaliation_interrupts_an_attack_on_a_corpse() {
     // step; the scuttler dies in the same volley that an out-of-aggro
     // lancer lands on the victim. The victim's attack order points at a
     // corpse — it must interrupt and answer the survivor, not stand mute
-    // through the lancer's next cooldown.
+    // through the lancer's next cooldown. The victim is a bombard: the
+    // one chassis that survives the rail hit and answers ground.
     let mut state = arena(vec![
         unit(1, UnitKind::Scuttler, 5, 6), // id 0: bait, dies this tick
         unit(1, UnitKind::Lancer, 9, 4),   // id 1: the real threat
         unit(0, UnitKind::Lancer, 9, 7),   // id 2: executioner
         unit(0, UnitKind::Lancer, 10, 6),  // id 3: executioner
-        unit(0, UnitKind::Sentinel, 4, 6), // id 4: the victim
+        unit(0, UnitKind::Bombard, 4, 6),  // id 4: the victim
     ])
     .build()
     .unwrap();

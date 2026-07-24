@@ -602,12 +602,15 @@ fn training_is_gated_to_the_seats_faction() {
 
 #[test]
 fn the_sidearm_fights_its_own_war_alongside_the_main_gun() {
-    // A sentinel slugging it out on the ground keeps its skyward poke
-    // busy against a hovering darter — two weapons, two wars, two
-    // independent cooldowns.
+    // A sentinel working a ground target keeps its skyward poke busy
+    // against a hovering darter — two weapons, two wars, two independent
+    // cooldowns. The ground target is a harvester: at 60 hp a sentinel
+    // duel plus darter fire ends before both cooldowns can prove a
+    // second cycle, and this test is about the weapons matrix, not
+    // survivability.
     let mut state = arena(vec![
         unit(0, UnitKind::Sentinel, 4, 2),
-        unit(1, UnitKind::Sentinel, 6, 2),
+        unit(1, UnitKind::Harvester, 6, 2),
         unit(1, UnitKind::Darter, 5, 2),
     ])
     .build()

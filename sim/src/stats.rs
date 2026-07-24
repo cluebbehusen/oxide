@@ -346,7 +346,12 @@ const HARVESTER: UnitStats = UnitStats {
 };
 
 const SENTINEL: UnitStats = UnitStats {
-    max_hp: 100,
+    // 0.10 balance, third pass: 100 hp made the line unit the best
+    // value mass in the roster and the optimizer proved it (nine
+    // campaign rounds of sentinel floods). At 60 the rail one-shots
+    // it, scuttler swarms out-trade it, and turrets drop it in five
+    // hits: the sentinel is a screen and a scout, not a war-winner.
+    max_hp: 60,
     speed: Fx::lit("0.11"), // 2.2 tiles/s — armies are slightly outrun by harvesters
     radius: Fx::lit("0.35"),
     cost: 90, // 0.10 balance: spam pays — four campaign rounds proved 75 optimal-by-flooding

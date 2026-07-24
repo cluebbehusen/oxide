@@ -405,19 +405,17 @@ fn a_sidearm_holds_fire_when_nothing_it_covers_is_in_range() {
 
 #[test]
 fn a_dead_attacker_draws_no_answer() {
-    // A Lancer opens on a Sentinel from 5.1 tiles — inside rail range
-    // (5.5), outside the Sentinel's aggro (5), so it stands idle and can
-    // only answer through retaliation. The attacker is cut down the same
-    // tick by two allied Lancers, so its shot buffers but its body is
-    // gone before retaliation resolves. The corpse must draw no answer:
-    // the victim eats the hit and stays idle. (Before the 0.10 rail
-    // bless this fixture staged three simultaneous attackers to prove
-    // the answer skipped to the earliest survivor; at 60 damage a rail
-    // pair kills every chassis that could answer, so the surviving-
-    // shooter selection is covered by the fell-in-resolution test
-    // below.) Both Foundries sit far from the victim, or the idle
-    // Sentinel would auto-acquire an enemy base inside its aggro and
-    // never reach the retaliation branch.
+    // A Lancer opens on a Bombard from 5.1 tiles — inside rail range
+    // (5.5), outside the Bombard's aggro (5), so it stands idle and can
+    // only answer through retaliation. (The Bombard stars because it is
+    // the one chassis that survives a rail hit and answers ground —
+    // the 0.10 rail one-shots the 60-hp Sentinel.) The attacker is cut
+    // down the same tick by two allied Lancers, so its shot buffers but
+    // its body is gone before retaliation resolves. The corpse must
+    // draw no answer: the victim eats the hit and stays idle. Both
+    // Foundries sit far from the victim, or the idle Bombard would
+    // auto-acquire an enemy base inside its aggro and never reach the
+    // retaliation branch.
     let scenario = Scenario {
         name: "buffered-answer".into(),
         seed: 42,
@@ -441,10 +439,10 @@ fn a_dead_attacker_draws_no_answer() {
         ],
         players: players(),
         units: vec![
-            unit(0, UnitKind::Sentinel, 10, 10), // victim
-            unit(1, UnitKind::Lancer, 5, 9),     // attacker: dies this tick
-            unit(0, UnitKind::Lancer, 4, 9),     // executioner
-            unit(0, UnitKind::Lancer, 4, 10),    // executioner
+            unit(0, UnitKind::Bombard, 10, 10), // victim (survives one rail)
+            unit(1, UnitKind::Lancer, 5, 9),    // attacker: dies this tick
+            unit(0, UnitKind::Lancer, 4, 9),    // executioner
+            unit(0, UnitKind::Lancer, 4, 10),   // executioner
         ],
         meta: None,
     };
@@ -479,8 +477,8 @@ fn a_dead_attacker_draws_no_answer() {
     );
     let survivor = state.unit(victim).unwrap();
     assert!(
-        survivor.hp < UnitKind::Sentinel.stats().max_hp,
-        "the buffered shot still landed"
+        survivor.hp < UnitKind::Bombard.stats().max_hp && survivor.hp > 0,
+        "the buffered shot landed and was survivable"
     );
     assert_eq!(
         survivor.order,
@@ -491,39 +489,46 @@ fn a_dead_attacker_draws_no_answer() {
 
 #[test]
 fn a_surviving_shooter_is_answered_when_the_victims_own_target_falls() {
-    // The fell-in-resolution arm: a Sentinel is finishing off a Scuttler
-    // when a rail hits it from beyond aggro on the exact tick its own
-    // target dies. Its order still reads Attack-the-Scuttler when
-    // retaliation resolves, but that engagement is over — without the
-    // re-target arm the busy-guard would let the out-of-aggro shooter
-    // fire unanswered for another full cooldown. The answer must land on
-    // the surviving rail.
+    // The fell-in-resolution arm: a Bombard's shell is mid-flight toward
+    // a standing Scuttler when a rail hits the Bombard from beyond aggro
+    // on the exact tick the shell lands. Its order still reads
+    // Attack-the-Scuttler when retaliation resolves, but that engagement
+    // is over — without the re-target arm the busy-guard would let the
+    // out-of-aggro shooter fire unanswered for another full cooldown.
+    // The answer must land on the surviving rail. (The Bombard stars
+    // because the 0.10 rail one-shots the Sentinel; shell arrival is
+    // read from sim state, so the same-tick staging is exact.)
     let scenario = Scenario {
         name: "fell-in-resolution".into(),
         seed: 42,
         map: vec![
-            "################".into(),
-            "#1.............#".into(),
-            "#..............#".into(),
-            "#..............#".into(),
-            "#..............#".into(),
-            "#..............#".into(),
-            "#..............#".into(),
-            "#..............#".into(),
-            "#..............#".into(),
-            "#..............#".into(),
-            "#..............#".into(),
-            "#..............#".into(),
-            "#..............#".into(),
-            "#2.............#".into(),
-            "#..............#".into(),
-            "################".into(),
+            "########################".into(),
+            "#1.....................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#2.....................#".into(),
+            "#......................#".into(),
+            "########################".into(),
         ],
         players: players(),
         units: vec![
-            unit(0, UnitKind::Sentinel, 10, 10), // victim: stands and shoots
-            unit(1, UnitKind::Scuttler, 12, 10), // in victim range at spawn
+            unit(0, UnitKind::Bombard, 10, 10),  // victim: fires one shell
+            unit(1, UnitKind::Scuttler, 18, 10), // dist 8: stands (aggro 5)
             unit(1, UnitKind::Lancer, 5, 8),     // rail at 5.39: beyond aggro
+            // The fire gate needs friendly sight on the target tile —
+            // the bombard shoots past its own eyes. The spotter sits at
+            // 5.66 from the prey: inside harvester vision (6), outside
+            // the scuttler's aggro (5), so the prey keeps standing.
+            unit(0, UnitKind::Harvester, 14, 14),
         ],
         meta: None,
     };
@@ -539,16 +544,13 @@ fn a_surviving_shooter_is_answered_when_the_victims_own_target_falls() {
             queue: false,
         },
     )]);
-    // The victim never moves (the prey spawned inside its range), so its
-    // hits land on a fixed 20-tick cadence from the command tick. Walk
-    // to the tick after the third hit, then place the rail's order so
-    // its first shot lands on the same tick as the killing fourth.
-    run_until(&mut state, 200, |s, _| {
-        s.unit(prey).unwrap().hp <= UnitKind::Scuttler.stats().max_hp - 30
-    });
-    for _ in 0..19 {
+    run_until(&mut state, 20, |s, _| !s.shells().is_empty());
+    let arrival = state.shells()[0].arrival;
+    while state.current_tick() < arrival {
         state.tick(&[]);
     }
+    // The rail's first shot lands on its command tick — the same tick
+    // the shell resolves and the prey dies.
     state.tick(&[cmd(
         1,
         Command::Attack {
@@ -557,9 +559,9 @@ fn a_surviving_shooter_is_answered_when_the_victims_own_target_falls() {
             queue: false,
         },
     )]);
-    assert!(state.unit(prey).is_none(), "the prey fell this tick");
+    assert!(state.unit(prey).is_none(), "the shell killed the prey");
     let answered = state.unit(victim).unwrap();
-    assert!(answered.hp > 0, "one rail hit is survivable");
+    assert!(answered.hp > 0, "one rail hit is survivable for a bombard");
     assert_eq!(
         answered.order,
         Order::Attack {
