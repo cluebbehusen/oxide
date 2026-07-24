@@ -348,9 +348,13 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         }
     }
     // The first unit's program: what it is doing and what comes next.
-    panel.queue.push(order_card(&first.order, true));
-    for order in first.queue.iter().take(7) {
-        panel.queue.push(order_card(order, false));
+    // An idle unit with nothing queued contributes no chips, so the
+    // orders dock vanishes instead of showing a lone "Idle" cell.
+    if !matches!(first.order, Order::Idle) || !first.queue.is_empty() {
+        panel.queue.push(order_card(&first.order, true));
+        for order in first.queue.iter().take(7) {
+            panel.queue.push(order_card(order, false));
+        }
     }
     Some(panel)
 }
@@ -474,7 +478,19 @@ mod tests {
             builds[0].hotkey.starts_with("B,"),
             "palette cards teach their chord"
         );
-        // The order strip shows the program; an idle unit shows Idle.
+        // An idle unit with nothing queued shows no order chips at all —
+        // the dock only exists when there is a program to show.
+        assert!(panel.queue.is_empty(), "idle shows no dock");
+        // Give it a program: the strip appears, and stays display-only.
+        game.state.tick(&[oxide_sim::PlayerCommand {
+            player: game.human,
+            command: oxide_sim::Command::AttackMove {
+                units: vec![harvester],
+                goal: chassis::grid::TilePos::new(8, 8),
+                queue: false,
+            },
+        }]);
+        let panel = build(&game, &BindingMap::classic()).expect("panel");
         assert_eq!(panel.queue.len(), 1);
         assert_eq!(
             panel.queue[0].action,

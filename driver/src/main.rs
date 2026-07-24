@@ -193,8 +193,11 @@ enum Cmd {
         /// Reference/run directory.
         #[arg(long, default_value = "shots")]
         dir: PathBuf,
-        /// Mean per-channel difference tolerated, in percent.
-        #[arg(long, default_value_t = 1.0)]
+        /// Mean per-channel difference tolerated, in percent. The default
+        /// is calibrated: font AA jitter measures <= 0.003% run to run,
+        /// while a small UI element appearing or vanishing measures
+        /// ~0.02% — the gate must sit between them.
+        #[arg(long, default_value_t = 0.01)]
         threshold: f64,
     },
 }
