@@ -15,6 +15,9 @@ use std::collections::BTreeMap;
 pub fn balance_probe(
     dir: &str,
     level: Level,
+    skill: Option<u32>,
+    blunder: u32,
+    cadence: u64,
     seeds: u64,
     max_ticks: u64,
     weights: Option<&str>,
@@ -65,12 +68,12 @@ pub fn balance_probe(
                         .map(|(seat, player)| {
                             NeuralBot::with_profile(
                                 oxide_sim::PlayerId(seat as u8),
-                                16,
+                                cadence,
                                 net.clone(),
-                                level.skill(),
+                                skill.unwrap_or_else(|| level.skill()),
                                 500,
                                 player.faction,
-                                0,
+                                blunder,
                                 sc.seed,
                             )
                         })

@@ -83,6 +83,18 @@ enum Cmd {
         /// Ladder level to probe ("easy".."expert").
         #[arg(long, default_value = "medium")]
         level: String,
+        /// Raw skill-knob override 0-1000 (candidate --weights probes
+        /// only; locates points between the shipped levels).
+        #[arg(long)]
+        skill: Option<u32>,
+        /// Explicit blunder rate per mille (candidate probes only;
+        /// 0 derives from skill — separates the two dials the skill
+        /// knob normally moves together).
+        #[arg(long, default_value_t = 0)]
+        blunder: u32,
+        /// Think cadence in ticks (candidate probes only).
+        #[arg(long, default_value_t = 16)]
+        cadence: u64,
         /// Seeds per map.
         #[arg(long, default_value_t = 3)]
         seeds: u64,
@@ -272,6 +284,9 @@ fn main() -> Result<()> {
         Cmd::BalanceProbe {
             dir,
             level,
+            skill,
+            blunder,
+            cadence,
             seeds,
             ticks,
             weights,
@@ -287,6 +302,9 @@ fn main() -> Result<()> {
             oxide_driver::balance::balance_probe(
                 &dir,
                 level,
+                skill,
+                blunder,
+                cadence,
                 seeds,
                 ticks,
                 weights.as_deref(),

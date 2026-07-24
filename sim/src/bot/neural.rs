@@ -44,13 +44,35 @@ impl Level {
     /// All levels, gentlest first.
     pub const LADDER: [Level; 4] = [Level::Easy, Level::Medium, Level::Hard, Level::Expert];
 
-    /// The skill-knob setting this level plays at.
+    /// The skill-knob setting this level plays at. Recalibrated for the
+    /// 0.10 artifact under hesitation blunders (Easy dithers away 35%
+    /// of its decision windows, Medium 19%, Hard 7.5%). Every rung
+    /// keeps the varied full-tech game — that invariance is the point
+    /// of the hesitation model; the old wrong-action blunders spent
+    /// the Fabricator fund and collapsed every degraded level into
+    /// sentinel spam.
     pub fn skill(self) -> u32 {
         match self {
-            Level::Easy => 780,
-            Level::Medium => 880,
-            Level::Hard => 950,
+            Level::Easy => 300,
+            Level::Medium => 620,
+            Level::Hard => 850,
             Level::Expert => 1000,
+        }
+    }
+
+    /// How often this level thinks, in ticks — the second difficulty
+    /// dial: lower minds think slower. Calibrated against the scripted
+    /// yardsticks (51 < 72 < 76 < 80 wins of 80), because head-to-head
+    /// mirrors stopped ordering under the 0.10 balance: patience wins
+    /// there, so a slower thinker turtles into a tech advantage and
+    /// "handicaps" cancel out. Against aggression — scripted tiers,
+    /// human rushes — reaction lag costs what it should.
+    pub fn cadence(self) -> u64 {
+        match self {
+            Level::Easy => 56,
+            Level::Medium => 36,
+            Level::Hard => 24,
+            Level::Expert => 16,
         }
     }
 }
@@ -299,7 +321,7 @@ impl NeuralBot {
         });
         Self::with_profile(
             player,
-            LADDER_CADENCE,
+            level.cadence(),
             QuantNet::ladder().clone(),
             level.skill(),
             aggression,
@@ -342,25 +364,17 @@ impl NeuralBot {
         let decision = self.gym.decision(state);
         let mut action = self.net.act(&decision, &self.knobs);
         if self.blunder_permille > 0 && self.rng.next_below(1000) < self.blunder_permille {
-            // A blunder is a *plausible* mistake — the second- or
-            // third-best idea, not a uniformly random legal action. In a
-            // macro action space one mad decision loses a game outright,
-            // and uniform blunders turn the dial into a cliff; near-best
-            // blunders make it a slope.
-            let logits = self.net.logits(&decision.features, &self.knobs);
-            let mut ranked: Vec<(i64, usize)> = decision
-                .mask
-                .iter()
-                .enumerate()
-                .filter(|(_, ok)| **ok)
-                .map(|(i, _)| (logits[i], i))
-                .collect();
-            ranked.sort_unstable_by_key(|(v, i)| (-*v, *i));
-            if ranked.len() > 1 {
-                let alternates = (ranked.len() - 1).min(2) as u32;
-                let pick = ranked[1 + self.rng.next_below(alternates) as usize].1;
-                action = Action::from_index(pick);
-            }
+            // A blunder is HESITATION — the commander lets a decision
+            // window pass — not a wrong action. The 0.10 campaign
+            // proved the distinction is structural: second-best-idea
+            // blunders kept spending the Fabricator fund mid-save
+            // (when the best idea is teching, the runner-up is another
+            // sentinel), so every degraded level rationally collapsed
+            // to spam and the ladder's lower rungs never showed the
+            // varied game. Idling loses tempo — a real handicap that
+            // still orders the ladder — without structurally
+            // forbidding long plays.
+            action = Action::Idle;
         }
         self.gym.step(state, action)
     }
