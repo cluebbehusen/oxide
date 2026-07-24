@@ -23,6 +23,7 @@ from oxide_gym import FEATURE_NAMES, Worker, with_condition
 
 # Action indices (see sim/src/bot/gym.rs — the v3 menu).
 IDLE, TRAIN_H, TRAIN_S = 0, 1, 2
+TRAIN_LANCER = 4
 TRAIN_AA, TRAIN_WING = 6, 7
 BUILD_FAB = 9
 BUILD_TURRET, BUILD_FLAK, BUILD_RECLAIMER, REPAIR, AIR_RAID = 10, 11, 14, 15, 16
@@ -54,6 +55,10 @@ def rusher(raw: list[int], mask: np.ndarray, tick: int) -> int:
         return PUSH
     if mask[FORM]:
         return FORM
+    # The 0.10 rail is the ground tech payoff (a rail core behind the
+    # sentinel screen wins par brawls); demonstrate a standing four.
+    if raw[F["fab_built"]] > 0 and raw[F["my_lancers"]] < 4 and mask[TRAIN_LANCER]:
+        return TRAIN_LANCER
     if raw[F["my_airground"]] < 3 and raw[F["fab_built"]] > 0 and mask[TRAIN_WING]:
         return TRAIN_WING
     # Pre-tech the line caps at three: sentinel training at 75 a pop
@@ -85,6 +90,8 @@ def turtle(raw: list[int], mask: np.ndarray, tick: int) -> int:
         return BUILD_RECLAIMER
     if raw[F["fab_built"]] == 0 and raw[F["scrap"]] >= 150 and mask[BUILD_FAB]:
         return BUILD_FAB
+    if raw[F["fab_built"]] > 0 and raw[F["my_lancers"]] < 3 and mask[TRAIN_LANCER]:
+        return TRAIN_LANCER
     if raw[F["fab_built"]] > 0 and raw[F["enemy_airground"]] == 0 and mask[TRAIN_WING]:
         return TRAIN_WING
     if mask[PUSH] and staging_size >= 10:
