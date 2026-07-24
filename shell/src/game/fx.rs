@@ -144,6 +144,14 @@ pub enum EffectKind {
         /// Splash radius, tiles.
         radius: f32,
     },
+    /// Hull shards scattering from a ground kill. The renderer derives
+    /// each shard's arc from the seed, so playback matches live.
+    Debris {
+        /// Death point, world coords.
+        at: Vec2,
+        /// Deterministic scatter seed (the casualty's id).
+        seed: u32,
+    },
 }
 
 impl Game {
@@ -164,6 +172,7 @@ impl Game {
                     EffectKind::Falling { .. } => 0.7,
                     EffectKind::Ping { .. } => 0.5,
                     EffectKind::Burst { .. } => 0.35,
+                    EffectKind::Debris { .. } => 0.7,
                 }
         });
         for toast in &mut self.toasts {
@@ -335,7 +344,10 @@ impl Game {
                     self.toast(format!("site salvaged (+{refund} scrap)"));
                 }
                 Event::UnitDied {
-                    pos, player, kind, ..
+                    unit,
+                    pos,
+                    player,
+                    kind,
                 } => {
                     if kind.stats().domain == oxide_sim::stats::Domain::Air
                         && !crate::render::reduced_motion()
@@ -345,6 +357,16 @@ impl Game {
                                 at: world_vec(*pos),
                                 unit: *kind,
                                 faction: self.state.player(*player).faction,
+                            },
+                            age: 0.0,
+                        });
+                    } else if !crate::render::reduced_motion() {
+                        // Ground kills scatter hull shards; flyers
+                        // already tell their death with the fall.
+                        self.fx.push(Effect {
+                            kind: EffectKind::Debris {
+                                at: world_vec(*pos),
+                                seed: unit.0,
                             },
                             age: 0.0,
                         });
@@ -573,5 +595,51 @@ mod tests {
         assert_eq!(unit_bolt_style(UnitKind::Buzzard, 0), BoltStyle::AirStrike);
         assert_eq!(unit_bolt_style(UnitKind::Wisp, 0), BoltStyle::AirStrike);
         assert_eq!(unit_bolt_style(UnitKind::Scuttler, 0), BoltStyle::Tracer);
+    }
+
+    #[test]
+    fn ground_kills_scatter_debris_and_air_kills_fall() {
+        crate::render::set_reduced_motion(false);
+        let mut game = crate::game::Game::with_viewport(
+            oxide_sim::Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("embedded skirmish builds");
+        let at = chassis::fx::Vec2Fx {
+            x: chassis::fx::Fx::from_num(5),
+            y: chassis::fx::Fx::from_num(5),
+        };
+        game.spawn_fx(&[oxide_sim::Event::UnitDied {
+            unit: oxide_sim::UnitId(7),
+            kind: UnitKind::Sentinel,
+            player: oxide_sim::PlayerId(1),
+            pos: at,
+        }]);
+        assert!(
+            game.fx
+                .iter()
+                .any(|e| matches!(e.kind, EffectKind::Debris { seed: 7, .. })),
+            "a ground kill scatters shards seeded by the casualty"
+        );
+        game.fx.clear();
+        game.spawn_fx(&[oxide_sim::Event::UnitDied {
+            unit: oxide_sim::UnitId(8),
+            kind: UnitKind::Buzzard,
+            player: oxide_sim::PlayerId(1),
+            pos: at,
+        }]);
+        assert!(
+            game.fx
+                .iter()
+                .any(|e| matches!(e.kind, EffectKind::Falling { .. })),
+            "a flyer tells its death with the fall"
+        );
+        assert!(
+            !game
+                .fx
+                .iter()
+                .any(|e| matches!(e.kind, EffectKind::Debris { .. })),
+            "no double story for one death"
+        );
     }
 }

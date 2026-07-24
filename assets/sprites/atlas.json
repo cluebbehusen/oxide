@@ -71,6 +71,24 @@
   64,
   64
  ],
+ "debris_0": [
+  274,
+  1010,
+  32,
+  32
+ ],
+ "debris_1": [
+  310,
+  1010,
+  32,
+  32
+ ],
+ "debris_2": [
+  346,
+  1010,
+  32,
+  32
+ ],
  "decal_crack": [
   342,
   398,
@@ -185,141 +203,177 @@
   64,
   64
  ],
- "harvester_ferrous": [
+ "harvester_cupric_scoop1": [
   410,
   534,
   64,
   64
  ],
- "lancer_cupric": [
+ "harvester_cupric_scoop2": [
   2,
+  602,
+  64,
+  64
+ ],
+ "harvester_ferrous": [
+  70,
+  602,
+  64,
+  64
+ ],
+ "harvester_ferrous_scoop1": [
+  138,
+  602,
+  64,
+  64
+ ],
+ "harvester_ferrous_scoop2": [
+  206,
+  602,
+  64,
+  64
+ ],
+ "lancer_cupric": [
+  274,
   602,
   64,
   64
  ],
  "lancer_ferrous": [
-  70,
+  342,
   602,
   64,
   64
  ],
  "muzzle_flash": [
-  342,
-  942,
+  382,
+  1010,
   32,
   32
  ],
  "peak_body_0": [
-  138,
+  410,
   602,
   64,
   64
  ],
  "peak_body_1": [
-  206,
-  602,
+  2,
+  670,
   64,
   64
  ],
  "peak_lone_0": [
-  274,
-  602,
+  70,
+  670,
   64,
   64
  ],
  "peak_lone_1": [
-  342,
-  602,
+  138,
+  670,
   64,
   64
  ],
  "peak_sky_00_0": [
-  410,
-  602,
+  206,
+  670,
   64,
   64
  ],
  "peak_sky_00_1": [
-  2,
+  274,
   670,
   64,
   64
  ],
  "peak_sky_01_0": [
-  70,
+  342,
   670,
   64,
   64
  ],
  "peak_sky_01_1": [
-  138,
+  410,
   670,
   64,
   64
  ],
  "peak_sky_10_0": [
-  206,
-  670,
-  64,
-  64
- ],
- "peak_sky_10_1": [
-  274,
-  670,
-  64,
-  64
- ],
- "peak_sky_11_0": [
-  342,
-  670,
-  64,
-  64
- ],
- "peak_sky_11_1": [
-  410,
-  670,
-  64,
-  64
- ],
- "reclaimer_cupric": [
   2,
   738,
   64,
   64
  ],
- "reclaimer_ferrous": [
+ "peak_sky_10_1": [
   70,
   738,
   64,
   64
  ],
- "rock_0": [
+ "peak_sky_11_0": [
   138,
   738,
   64,
   64
  ],
- "rock_1": [
+ "peak_sky_11_1": [
   206,
   738,
   64,
   64
  ],
- "rock_2": [
+ "reclaimer_cupric": [
   274,
   738,
   64,
   64
  ],
- "rock_3": [
+ "reclaimer_ferrous": [
   342,
   738,
   64,
   64
  ],
- "rock_skirt": [
+ "rock_0": [
   410,
   738,
+  64,
+  64
+ ],
+ "rock_1": [
+  2,
+  806,
+  64,
+  64
+ ],
+ "rock_2": [
+  70,
+  806,
+  64,
+  64
+ ],
+ "rock_3": [
+  138,
+  806,
+  64,
+  64
+ ],
+ "rock_skirt": [
+  206,
+  806,
+  64,
+  64
+ ],
+ "scaffold_dense": [
+  274,
+  806,
+  64,
+  64
+ ],
+ "scaffold_sparse": [
+  342,
+  806,
   64,
   64
  ],
@@ -330,116 +384,116 @@
   128
  ],
  "scrap_full": [
-  2,
+  410,
   806,
   64,
   64
  ],
  "scrap_low": [
-  70,
-  806,
+  2,
+  874,
   64,
   64
  ],
  "scrap_mid": [
-  138,
-  806,
+  70,
+  874,
   64,
   64
  ],
  "scrap_rich": [
-  206,
-  806,
+  138,
+  874,
   64,
   64
  ],
  "scuttler_cupric": [
-  274,
-  806,
+  206,
+  874,
   64,
   64
  ],
  "scuttler_ferrous": [
-  342,
-  806,
+  274,
+  874,
   64,
   64
  ],
  "sentinel_cupric": [
-  410,
-  806,
+  342,
+  874,
   64,
   64
  ],
  "sentinel_ferrous": [
-  2,
+  410,
   874,
   64,
   64
  ],
  "stinger_cupric": [
-  70,
-  874,
-  64,
-  64
- ],
- "stinger_ferrous": [
-  138,
-  874,
-  64,
-  64
- ],
- "talon_cupric": [
-  206,
-  874,
-  64,
-  64
- ],
- "talon_ferrous": [
-  274,
-  874,
-  64,
-  64
- ],
- "turret_barrel_cupric": [
-  342,
-  874,
-  64,
-  64
- ],
- "turret_barrel_ferrous": [
-  410,
-  874,
-  64,
-  64
- ],
- "turret_cupric": [
   2,
   942,
   64,
   64
  ],
- "turret_ferrous": [
+ "stinger_ferrous": [
   70,
   942,
   64,
   64
  ],
- "wisp_cupric": [
+ "talon_cupric": [
   138,
   942,
   64,
   64
  ],
- "wisp_ferrous": [
+ "talon_ferrous": [
   206,
   942,
   64,
   64
  ],
- "wreck_pile": [
+ "turret_barrel_cupric": [
   274,
   942,
+  64,
+  64
+ ],
+ "turret_barrel_ferrous": [
+  342,
+  942,
+  64,
+  64
+ ],
+ "turret_cupric": [
+  410,
+  942,
+  64,
+  64
+ ],
+ "turret_ferrous": [
+  2,
+  1010,
+  64,
+  64
+ ],
+ "wisp_cupric": [
+  70,
+  1010,
+  64,
+  64
+ ],
+ "wisp_ferrous": [
+  138,
+  1010,
+  64,
+  64
+ ],
+ "wreck_pile": [
+  206,
+  1010,
   64,
   64
  ]

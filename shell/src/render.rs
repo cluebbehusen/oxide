@@ -278,6 +278,19 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                 body -= dir * zoom * 0.07 * (1.0 - age / 0.12);
             }
         }
+        // A working harvester runs its scoop cycle — dig frames while it
+        // stands at its source, the travel pose everywhere else. Under
+        // reduced motion the cycle freezes on the travel pose.
+        let source = if unit.kind == UnitKind::Harvester
+            && !reduced_motion()
+            && matches!(unit.order, oxide_sim::Order::Harvest { node }
+                if unit.tile().chebyshev(node) <= 1)
+        {
+            let frame = [0usize, 1, 2, 1][((game.fx_time() * 4.0) as usize) % 4];
+            sprites.harvester_working(faction, frame)
+        } else {
+            sprites.unit(unit.kind, faction)
+        };
         draw_texture_ex(
             sprites.texture(),
             body.x - dest * 0.5,
@@ -285,7 +298,7 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             WHITE,
             DrawTextureParams {
                 dest_size: Some(vec2(dest, dest)),
-                source: Some(sprites.unit(unit.kind, faction)),
+                source: Some(source),
                 rotation,
                 ..Default::default()
             },

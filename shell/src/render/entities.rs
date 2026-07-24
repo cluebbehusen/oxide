@@ -258,6 +258,29 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 ..Default::default()
             },
         );
+        // A rising site wears its scaffold: dense lattice early, sparse
+        // once the hull carries the silhouette, gone at completion.
+        // Progress-keyed, so reduced motion needs no special case.
+        if !building.built {
+            let ticks = building
+                .kind
+                .stats()
+                .construction
+                .map(|c| c.build_ticks)
+                .unwrap_or(1);
+            let frac = (building.progress as f32 / ticks as f32).clamp(0.0, 1.0);
+            draw_texture_ex(
+                sprites.texture(),
+                screen.x,
+                screen.y,
+                Color::new(1.0, 1.0, 1.0, 0.85 - 0.45 * frac),
+                DrawTextureParams {
+                    dest_size: Some(dest),
+                    source: Some(sprites.scaffold(frac < 0.5)),
+                    ..Default::default()
+                },
+            );
+        }
         if building.built && building.kind == oxide_sim::BuildingKind::Foundry {
             // The melt pool breathes: a soft faction-tinted pulse.
             let pulse = ((get_time() * 2.6 + f64::from(building.id.0)).sin() * 0.5 + 0.5) as f32;
@@ -522,6 +545,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
             EffectKind::Puff { at } => sees(at),
             EffectKind::Falling { at, .. } => sees(at),
             EffectKind::Burst { at, .. } => sees(at),
+            EffectKind::Debris { at, .. } => sees(at),
             // Own-order acknowledgments always show; fogged targets are
             // already impossible to order onto.
             EffectKind::Ping { .. } => true,
@@ -638,6 +662,41 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                         ..Default::default()
                     },
                 );
+            }
+            EffectKind::Debris { at, seed } => {
+                // Three shards on seed-derived arcs: radial fling that
+                // decays, a gravity-flavored settle, spin, and a fade.
+                // Everything derives from (seed, i), so a replay draws
+                // the same scatter the live session did.
+                let t = (fx.age / 0.7).clamp(0.0, 1.0);
+                let zoom = game.camera.zoom;
+                for i in 0..3u32 {
+                    let h = seed
+                        .wrapping_mul(2_654_435_761)
+                        .wrapping_add(i.wrapping_mul(40_503))
+                        .rotate_left(13);
+                    let angle = (h % 628) as f32 / 100.0;
+                    let fling = 0.55 + ((h >> 10) % 60) as f32 / 100.0;
+                    let reach = fling * (1.0 - (1.0 - t) * (1.0 - t));
+                    let world = vec2(
+                        at.x + angle.cos() * reach,
+                        at.y + angle.sin() * reach + t * t * 0.35,
+                    );
+                    let p = game.camera.to_screen(world);
+                    let size = zoom * 0.34 * (1.0 - t * 0.4);
+                    draw_texture_ex(
+                        sprites.texture(),
+                        p.x - size * 0.5,
+                        p.y - size * 0.5,
+                        Color::new(1.0, 1.0, 1.0, 1.0 - t),
+                        DrawTextureParams {
+                            dest_size: Some(vec2(size, size)),
+                            source: Some(sprites.debris(i as usize)),
+                            rotation: angle + t * 4.0,
+                            ..Default::default()
+                        },
+                    );
+                }
             }
             EffectKind::Ping { .. } => {} // drawn above the fog, in draw_pings
         }
