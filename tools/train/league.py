@@ -106,6 +106,23 @@ def style_reward(raw: list[int], aggression: int) -> float:
     return STYLE_K * lean * out_fighting
 
 
+FAB_BUILT = FEATURE_NAMES.index("fab_built")
+
+
+def tech_bonus_at(base: float, rel_update: int, span: int) -> float:
+    """The own-tech terminal bonus's annealing schedule: full at the
+    run's first update, linearly down to zero at `span` updates in.
+
+    The bonus itself is fog-safe by construction — it reads the seat's
+    OWN fabricator count, never enemy state (a reward built from what
+    the agent happens to know about the enemy teaches blindness). The
+    anneal hands the argument back to winning: the bonus exists to get
+    the tech tree explored early, not to be farmed at convergence."""
+    if base == 0.0 or span <= 0:
+        return 0.0
+    return base * max(0.0, 1.0 - rel_update / span)
+
+
 def faction_knob(seat: int) -> int:
     """The seat's faction, by the map convention every shipped and
     generated scenario follows: even seats run Ferrous (0), odd seats
@@ -211,6 +228,10 @@ class Job:
         # invalid and masked out of the PPO update.
         self.dead: set[int] = set()
         self.last_views: dict[int, SeatView] = {}
+        # Learner seats that stood a Fabricator at any point this
+        # episode. Lives on the Job, not the Lane, because episodes span
+        # rollout windows and Lanes are recreated per window.
+        self.teched: set[int] = set()
         if kind == "self":
             self.learner_seats = [0, 1]
             self.opp_seat = None
@@ -257,6 +278,7 @@ class Job:
     def _reset(self, seed: int) -> None:
         self.dead = set()
         self.last_views = {}
+        self.teched = set()
         self.conditions = {s: sample_condition(self.rng, s) for s in self.learner_seats}
         scenario = None
         if self.maps == "random":
@@ -376,6 +398,7 @@ def rollout(
     seeds: Iterator[int],
     steps: int,
     device: str,
+    tech_bonus: float = 0.0,
 ) -> tuple[tuple[np.ndarray, ...], np.ndarray, list[float]]:
     lanes = {(id(j), s): Lane(j.worker, s) for j in jobs for s in j.learner_seats}
     finished_rewards = []
@@ -452,7 +475,13 @@ def rollout(
             if frame.done:
                 for s in j.learner_seats:
                     lane = lanes[(id(j), s)]
-                    lane.rew.append(frame.reward(s))
+                    # The shaping rides only the training reward;
+                    # finished_rewards stays the pure game outcome so
+                    # avg_final telemetry compares across runs.
+                    bonus = tech_bonus if s in j.teched else 0.0
+                    if s in j.teched:
+                        TEL["ep_teched"] += 1
+                    lane.rew.append(frame.reward(s) + bonus)
                     lane.done.append(True)
                     finished_rewards.append(frame.reward(s))
                 j.reset(next(seeds))
@@ -469,6 +498,8 @@ def rollout(
                         lane.done.append(False)
                         continue
                     raw = frame.seats[s].raw
+                    if raw[FAB_BUILT] > 0:
+                        j.teched.add(s)
                     pot = potential(raw)
                     lane.rew.append(
                         -1e-4
@@ -592,6 +623,21 @@ def main() -> None:
         "decayed anchor lets PPO grind imitation-taught tech back out)",
     )
     ap.add_argument(
+        "--tech-bonus",
+        type=float,
+        default=0.0,
+        help="terminal bonus paid when the episode ever stood a "
+        "Fabricator (own-state only, fog-safe); annealed linearly to "
+        "zero across --tech-anneal updates. 0 disables.",
+    )
+    ap.add_argument(
+        "--tech-anneal",
+        type=int,
+        default=0,
+        help="updates from this run's start until --tech-bonus reaches "
+        "zero (0 = the full --updates span)",
+    )
+    ap.add_argument(
         "--maps", default="fixed", help="fixed | random (fresh map per episode)"
     )
     ap.add_argument(
@@ -674,7 +720,17 @@ def main() -> None:
         for update in range(start_update + 1, start_update + args.updates + 1):
             t0 = time.time()
             TEL.clear()
-            batch, last_val, finals = rollout(policy, jobs, seeds, args.steps, device)
+            # The anneal runs on THIS run's clock, not the absolute one:
+            # a resumed consolidation wants its exploration push at its
+            # own start, wherever the parent's clock stands.
+            tb = tech_bonus_at(
+                args.tech_bonus,
+                update - start_update - 1,
+                args.tech_anneal or args.updates,
+            )
+            batch, last_val, finals = rollout(
+                policy, jobs, seeds, args.steps, device, tech_bonus=tb
+            )
             rollout_sec = time.time() - t0
             obs_b, mask_b, act_b, logp_b, val_b, rew_b, done_b, valid_b = batch
             adv, ret = gae(rew_b, done_b, val_b, last_val)
@@ -719,10 +775,12 @@ def main() -> None:
                 "update_sec": round(time.time() - t_update, 2),
                 "decisions_s": round(decisions / max(rollout_sec, 1e-9)),
                 **{
-                    k: (int(v) if k == "resets" else round(v, 2))
+                    k: (int(v) if k in ("resets", "ep_teched") else round(v, 2))
                     for k, v in sorted(TEL.items())
                 },
             }
+            if args.tech_bonus:
+                entry["tech_bonus"] = round(tb, 4)
             if update % args.pool_every == 0:
                 save_policy(
                     policy,
