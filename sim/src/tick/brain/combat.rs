@@ -263,10 +263,14 @@ pub(super) fn turret_fire(
     }
 }
 
-/// Stand up an own unfinished site: walk adjacent, then feed it progress.
-/// One built tick raises hp along a linear ramp to full at completion
-/// (damage taken meanwhile is simply kept — nobody rebuilds for free).
-
+/// Firing positions for a chaser around an unstandable victim tile:
+/// ring-scanned outward (row-major within a ring — the deterministic
+/// snap every goal uses), keeping only tiles the chaser can stand on
+/// AND shoot from — a stand-in beyond the weapon's Euclidean reach is
+/// no stand-in at all (ring corners sit √2 further out than their
+/// Chebyshev radius suggests). Candidates come back in scan order; the
+/// caller takes the first it can actually route to. Empty when the
+/// victim sits deeper in blocked ground than any weapon reaches.
 fn chase_stand_ins(
     state: &State,
     domain: Domain,
@@ -332,8 +336,10 @@ pub(super) fn acquire_target(state: &State, id: UnitId) -> Option<Target> {
         .map(|(_, bid)| Target::Building(bid))
 }
 
-/// Idle combat units pick fights on their own.
-
+/// Chase-and-hit. Range is measured to the target's closest point and
+/// shots are buffered. A vanished target — or one no carried weapon can
+/// cover — hands control back to the remembered attack-move (or idle,
+/// where auto-acquire finds the next fight).
 pub(super) fn attack(
     state: &mut State,
     id: UnitId,

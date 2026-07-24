@@ -8,6 +8,7 @@ use crate::ids::UnitId;
 use crate::state::{Order, PathFollow, State};
 use chassis::grid::TilePos;
 
+/// Idle combat units pick fights on their own.
 pub(super) fn idle(state: &mut State, id: UnitId) {
     if let Some(target) = acquire_target(state, id) {
         let unit = state.unit_mut(id).expect("caller checked");
@@ -99,12 +100,6 @@ fn touching_settled_arrival(state: &State, id: UnitId, goal: TilePos) -> bool {
             && unit.pos.dist(other.pos) <= my_radius + other.kind.stats().radius + contact_slack
     })
 }
-
-/// The harvest loop: walk to the salvage, extract to capacity, haul to
-/// the nearest Foundry, repeat; when the source dies, hop to a neighbor
-/// source or go idle. Nodes are worked from an adjacent tile (they block
-/// ground); wrecks are worked standing *on* the tile — they are junk on
-/// open ground.
 
 /// Ensures the unit is walking to some passable tile touching the rectangle.
 /// Returns false when no ring tile is reachable.

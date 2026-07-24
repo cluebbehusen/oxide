@@ -80,12 +80,6 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
     resolve_hits(state, hits, builds, events);
 }
 
-/// The other half of simultaneity: buffered shots land now, in the order
-/// they were decided (unit-id order, then turret-id order). Damage first —
-/// all of it — then retaliation, so a machine that died this tick answers
-/// nothing and a survivor answers its earliest attacker *that survived
-/// resolution*: turning to face a corpse would waste the answer and let a
-/// living shooter keep firing unopposed.
 mod combat;
 mod economy;
 mod locomotion;
@@ -95,6 +89,12 @@ use combat::{land_shells, retaliate, target_standing, turret_fire};
 use economy::{build, harvest, repair};
 use locomotion::{attack_move, idle, walk};
 
+/// The other half of simultaneity: buffered shots land now, in the order
+/// they were decided (unit-id order, then turret-id order). Damage first —
+/// all of it — then retaliation, so a machine that died this tick answers
+/// nothing and a survivor answers its earliest attacker *that survived
+/// resolution*: turning to face a corpse would waste the answer and let a
+/// living shooter keep firing unopposed.
 fn resolve_hits(
     state: &mut State,
     hits: Vec<PendingHit>,

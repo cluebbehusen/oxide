@@ -11,6 +11,9 @@ use crate::state::{Order, PathFollow, State};
 use crate::stats::RETARGET_RADIUS;
 use chassis::grid::TilePos;
 
+/// Stand up an own unfinished site: walk adjacent, then feed it progress.
+/// One built tick raises hp along a linear ramp to full at completion
+/// (damage taken meanwhile is simply kept — nobody rebuilds for free).
 pub(super) fn build(
     state: &mut State,
     id: UnitId,
@@ -154,15 +157,11 @@ pub(super) fn repair(
     }
 }
 
-/// Firing positions for a chaser around an unstandable victim tile:
-/// ring-scanned outward (row-major within a ring — the deterministic
-/// snap every goal uses), keeping only tiles the chaser can stand on
-/// AND shoot from — a stand-in beyond the weapon's Euclidean reach is
-/// no stand-in at all (ring corners sit √2 further out than their
-/// Chebyshev radius suggests). Candidates come back in scan order; the
-/// caller takes the first it can actually route to. Empty when the
-/// victim sits deeper in blocked ground than any weapon reaches.
-
+/// The harvest loop: walk to the salvage, extract to capacity, haul to
+/// the nearest Foundry, repeat; when the source dies, hop to a neighbor
+/// source or go idle. Nodes are worked from an adjacent tile (they block
+/// ground); wrecks are worked standing *on* the tile — they are junk on
+/// open ground.
 pub(super) fn harvest(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>) {
     let unit = state.unit(id).expect("caller checked");
     let Some(hstats) = unit.kind.stats().harvest else {
@@ -335,11 +334,6 @@ fn deliver(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
         });
     }
 }
-
-/// Chase-and-hit. Range is measured to the target's closest point and
-/// shots are buffered. A vanished target — or one no carried weapon can
-/// cover — hands control back to the remembered attack-move (or idle,
-/// where auto-acquire finds the next fight).
 
 /// The nearest tile still holding salvage — node scrap or wreck — within
 /// [`RETARGET_RADIUS`] of a dead source, keyed by (distance from the
