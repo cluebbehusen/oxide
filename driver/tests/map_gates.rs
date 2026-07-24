@@ -137,6 +137,16 @@ fn spawns_are_fair_to_every_seat() {
                     gap(0, 1)
                 );
             }
+            // The 0.10 3v3/4v4 maps are built from identical lanes, so
+            // every seat measures scrap identically — hold them to it.
+            6 | 8 => {
+                for i in 1..seats.len() {
+                    assert!(
+                        gap(0, i) <= 1e-9,
+                        "{name}: seat {i} disagrees on scrap with seat 0"
+                    );
+                }
+            }
             n => panic!("{name}: unexpected seat count {n}"),
         }
     }
