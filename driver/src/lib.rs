@@ -13,9 +13,11 @@
 //! The binary (`oxide-driver`) wraps all three in a CLI; see README.
 
 pub mod audit;
+pub mod auto;
 pub mod balance;
 pub mod client;
 pub mod gym;
+pub mod shots;
 pub mod smoke;
 
 // Shared with the shell via oxide-kit; re-exported so the driver's

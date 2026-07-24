@@ -12,6 +12,7 @@
 pub mod bench;
 pub mod composition;
 pub mod matchup;
+pub mod perceptual;
 pub mod playback;
 pub mod render;
 pub mod runner;

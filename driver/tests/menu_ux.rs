@@ -9,71 +9,30 @@
 //! cargo test -p oxide-driver --test menu_ux -- --ignored --test-threads 1
 //! ```
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
+use oxide_driver::auto::{
+    ShellGuard, SpawnOptions, activate_labeled, assert_mode, press_key, spawn_shell, ui,
+};
 use oxide_driver::client::Client;
-use oxide_protocol::{Key, MouseButton, RawEvent, Reply, Request, UiView};
+use oxide_protocol::{Key, MouseButton, RawEvent, Request};
 
-/// A shell child killed on drop, so a failing assert never strands a
-/// window holding the port.
-struct ShellGuard(std::process::Child);
-
-impl Drop for ShellGuard {
-    fn drop(&mut self) {
-        self.0.kill().ok();
-        self.0.wait().ok();
-    }
-}
-
-/// Spawns an automation-mode shell on `port` and connects, retrying
-/// while cargo builds and the window boots.
-/// Spawns, connects, and walks Home -> Play so tests operate on the
-/// scenario list (the widget with enough rows to scroll).
+/// Spawns an automation-mode shell (via the shared harness vocabulary)
+/// and walks Home -> Play so tests operate on the scenario list (the
+/// widget with enough rows to scroll).
 fn spawn_at_map_list(port: u16) -> Result<(ShellGuard, Client)> {
-    let (guard, mut client) = spawn_shell(port)?;
+    let (guard, mut client) = spawn(port)?;
     // By label, never by blind Enter: with autosaves on this machine,
     // Home's first row is Continue and Enter would resume a match.
     activate_labeled(&mut client, "play")?;
     Ok((guard, client))
 }
 
-fn spawn_shell(port: u16) -> Result<(ShellGuard, Client)> {
-    // Tests run with the crate dir as cwd, but the shell loads assets and
-    // scenarios relative to the workspace root — spawn it from there.
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let child = std::process::Command::new("cargo")
-        .args([
-            "run",
-            "-p",
-            "oxide-shell",
-            "--",
-            "--debug-server",
-            "--automation",
-            // Pinned: the persisted config carries whatever size the
-            // user last dragged, and the row sweep is geometry-based.
-            "--window",
-            "1280x800",
-            "--port",
-            &port.to_string(),
-        ])
-        .current_dir(root)
-        .spawn()
-        .context("spawning oxide-shell via cargo")?;
-    let guard = ShellGuard(child);
-    let addr = format!("127.0.0.1:{port}");
-    for _ in 0..120 {
-        if let Ok(client) = Client::connect(&addr) {
-            return Ok((guard, client));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    bail!("shell never came up on {addr}");
-}
-
-fn ui(client: &mut Client) -> Result<UiView> {
-    match client.call(Request::QueryUi)? {
-        Reply::Ui(view) => Ok(view),
-        other => bail!("expected a ui reply, got {other:?}"),
-    }
+fn spawn(port: u16) -> Result<(ShellGuard, Client)> {
+    spawn_shell(&SpawnOptions {
+        port,
+        paused: false,
+        home: None,
+    })
 }
 
 fn hover(client: &mut Client, x: f32, y: f32) -> Result<()> {
@@ -106,16 +65,6 @@ fn find_rows(client: &mut Client) -> Result<Vec<(f32, usize)>> {
         bail!("could not locate menu rows by sweeping ({hits:?})");
     }
     Ok(hits)
-}
-
-fn press_key(client: &mut Client, key: Key) -> Result<()> {
-    client.call(Request::InjectEvent {
-        event: RawEvent::KeyDown { key },
-    })?;
-    client.call(Request::InjectEvent {
-        event: RawEvent::KeyUp { key },
-    })?;
-    Ok(())
 }
 
 #[test]
@@ -211,44 +160,6 @@ fn menu_rows_activate_on_release_not_on_press() -> Result<()> {
     Ok(())
 }
 
-/// Selects the row whose label contains `needle` (case-insensitive)
-/// with keyboard navigation, then activates it with Enter.
-fn activate_labeled(client: &mut Client, needle: &str) -> Result<()> {
-    let view = ui(client)?;
-    let lower = needle.to_lowercase();
-    // Exact label first ('play' must never land on 'Replays'), then
-    // substring for rows that carry decorations.
-    let target = view
-        .items
-        .iter()
-        .position(|item| item.to_lowercase() == lower)
-        .or_else(|| {
-            view.items
-                .iter()
-                .position(|item| item.to_lowercase().contains(&lower))
-        })
-        .with_context(|| format!("no row containing '{needle}' in {:?}", view.items))?;
-    let selected = view.selected.unwrap_or(0);
-    let (key, steps) = if target >= selected {
-        (Key::Down, target - selected)
-    } else {
-        (Key::Up, selected - target)
-    };
-    for _ in 0..steps {
-        press_key(client, key)?;
-    }
-    press_key(client, Key::Enter)?;
-    Ok(())
-}
-
-fn assert_mode(client: &mut Client, expected: &str, at: &str) -> Result<()> {
-    let mode = ui(client)?.mode;
-    if mode != expected {
-        bail!("after {at}: expected mode '{expected}', shell reports '{mode}'");
-    }
-    Ok(())
-}
-
 #[test]
 #[ignore = "spawns a real window; run explicitly in the phase battery"]
 fn every_screen_transition_answers_the_walk() -> Result<()> {
@@ -256,7 +167,7 @@ fn every_screen_transition_answers_the_walk() -> Result<()> {
     // mode report at each hop. Navigation is by row LABEL, never by
     // index: Home's rows shift with resumable state, and the walk must
     // not depend on this machine's autosaves.
-    let (_guard, mut client) = spawn_shell(4143)?;
+    let (_guard, mut client) = spawn(4143)?;
     assert_mode(&mut client, "home", "boot")?;
 
     activate_labeled(&mut client, "settings")?;
@@ -315,36 +226,11 @@ fn a_modifier_held_on_another_screen_still_captures_its_chord() -> Result<()> {
     // this machine's real one.
     let tmp = std::env::temp_dir().join(format!("oxide-menu-ux-{}", std::process::id()));
     std::fs::create_dir_all(&tmp)?;
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let child = std::process::Command::new("cargo")
-        .args([
-            "run",
-            "-p",
-            "oxide-shell",
-            "--",
-            "--debug-server",
-            "--automation",
-            "--window",
-            "1280x800",
-            "--port",
-            "4144",
-        ])
-        .env("HOME", &tmp)
-        .current_dir(root)
-        .spawn()
-        .context("spawning oxide-shell via cargo")?;
-    let _guard = ShellGuard(child);
-    let mut client = {
-        let mut found = None;
-        for _ in 0..120 {
-            if let Ok(c) = Client::connect("127.0.0.1:4144") {
-                found = Some(c);
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(500));
-        }
-        found.context("shell never came up on 4144")?
-    };
+    let (_guard, mut client) = spawn_shell(&SpawnOptions {
+        port: 4144,
+        paused: false,
+        home: Some(tmp.clone()),
+    })?;
 
     activate_labeled(&mut client, "settings")?;
     // Ctrl goes down HERE, on the Settings screen...

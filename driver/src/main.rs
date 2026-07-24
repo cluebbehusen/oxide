@@ -180,6 +180,23 @@ enum Cmd {
         #[arg(long)]
         spawn: bool,
     },
+    /// Perceptual-diff screenshot suite: ten canonical screens from a
+    /// spawned automation shell, compared against per-machine
+    /// references (gitignored — a local gate, never CI).
+    Shots {
+        /// Debug-server port for the spawned shell.
+        #[arg(long, default_value_t = 4151)]
+        port: u16,
+        /// Adopt the current captures as the new references.
+        #[arg(long)]
+        bless: bool,
+        /// Reference/run directory.
+        #[arg(long, default_value = "shots")]
+        dir: PathBuf,
+        /// Mean per-channel difference tolerated, in percent.
+        #[arg(long, default_value_t = 1.0)]
+        threshold: f64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -656,6 +673,12 @@ fn main() -> Result<()> {
             &weights, seeds, cadence, &scenario, blunder, skill, aggression,
         )?,
         Cmd::Smoke { addr, spawn } => smoke::run(&addr, spawn)?,
+        Cmd::Shots {
+            port,
+            bless,
+            dir,
+            threshold,
+        } => oxide_driver::shots::run(port, bless, &dir, threshold)?,
     }
     Ok(())
 }
