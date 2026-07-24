@@ -283,6 +283,14 @@ class Job:
         scenario = None
         if self.maps == "random":
             scenario = generate(seed % 100_000, cache_dir("oxide-maps-train"))
+        elif self.maps == "grand":
+            # The pacing curriculum: 1v1 lanes on the big classes only,
+            # where the shipped tens-of-minutes game lives. The ffa and
+            # team arms below keep their own draws — four bases at vast
+            # scale price the sim out of a laptop rollout.
+            scenario = generate(
+                seed % 100_000, cache_dir("oxide-maps-train-grand"), pace="grand"
+            )
         if self.kind == "ffa":
             scenario = generate(
                 seed % 100_000, cache_dir("oxide-maps-train4"), players=4
@@ -638,7 +646,11 @@ def main() -> None:
         "zero (0 = the full --updates span)",
     )
     ap.add_argument(
-        "--maps", default="fixed", help="fixed | random (fresh map per episode)"
+        "--maps",
+        default="fixed",
+        help="fixed | random (fresh map per episode) | grand (fresh map "
+        "per episode, 1v1 lanes drawn from the large/vast classes only "
+        "— the pacing curriculum)",
     )
     ap.add_argument(
         "--mix",
@@ -686,7 +698,7 @@ def main() -> None:
 
     seeds = seed_stream()
 
-    if args.maps == "random":
+    if args.maps in ("random", "grand"):
         # Cold-cache map generation costs a driver subprocess per map
         # (~34% of an update when the cache is empty). A daemon warmer
         # stays a few seeds ahead of the cursor so the hot path only
@@ -699,7 +711,14 @@ def main() -> None:
                 target = consumed[0] + 1 + 2 * args.workers
                 while warmed < target:
                     warmed = max(warmed, consumed[0] + 1)
-                    _generate(warmed % 100_000, cache_dir("oxide-maps-train"))
+                    if args.maps == "grand":
+                        _generate(
+                            warmed % 100_000,
+                            cache_dir("oxide-maps-train-grand"),
+                            pace="grand",
+                        )
+                    else:
+                        _generate(warmed % 100_000, cache_dir("oxide-maps-train"))
                     _generate(
                         warmed % 100_000, cache_dir("oxide-maps-train4"), players=4
                     )

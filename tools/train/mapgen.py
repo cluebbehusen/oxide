@@ -38,7 +38,9 @@ def cache_dir(name: str) -> str:
     return str(pathlib.Path(tempfile.gettempdir()) / name)
 
 
-def _carve(seed: int, players: int = 2, teams: bool = False) -> dict:
+def _carve(
+    seed: int, players: int = 2, teams: bool = False, pace: str | None = None
+) -> dict:
     rng = np.random.default_rng(seed)
     # Size classes: the v4 schema rides relative coordinates, so the
     # curriculum must actually vary the field. Quick, standard, and a
@@ -48,7 +50,18 @@ def _carve(seed: int, players: int = 2, teams: bool = False) -> dict:
     # aims matches at tens of minutes, and the curriculum has to teach
     # marches that long or the ladder never fights them well.
     roll = rng.random()
-    if roll < 0.20:
+    if pace == "grand":
+        # The pacing curriculum: only the two big classes (large 40%,
+        # vast 60%). Round 7 proved teching evaporates when the reward
+        # anneals on a mostly-small draw — games end before a
+        # Fabricator amortizes — so this pool trains where the shipped
+        # tens-of-minutes game actually lives. Own cache dir; the
+        # output shape is unchanged, so the schema tag stays.
+        if roll < 0.40:
+            w, h = int(rng.integers(50, 64)), int(rng.integers(30, 40))
+        else:
+            w, h = int(rng.integers(84, 108)), int(rng.integers(48, 64))
+    elif roll < 0.20:
         w, h = int(rng.integers(26, 36)), int(rng.integers(16, 24))
     elif roll < 0.60:
         w, h = int(rng.integers(36, 50)), int(rng.integers(22, 32))
@@ -300,7 +313,12 @@ def _carve4(
 
 
 def generate(
-    seed: int, out_dir: str, players: int = 2, teams: bool = False, driver: str = DRIVER
+    seed: int,
+    out_dir: str,
+    players: int = 2,
+    teams: bool = False,
+    driver: str = DRIVER,
+    pace: str | None = None,
 ) -> str:
     """Writes a validated scenario for `seed` and returns its path.
     Same seed, same file. Random rock blobs carry no connectivity
@@ -319,7 +337,7 @@ def generate(
     if path.exists():
         return str(path)
     for attempt in range(16):
-        candidate = _carve(seed + attempt * 10_000_019, players, teams)
+        candidate = _carve(seed + attempt * 10_000_019, players, teams, pace)
         # Unique per caller: the map warmer and a foreground reset may
         # generate the same seed concurrently, and a shared candidate
         # name lets one unlink the other's file mid-rename. Both publish
