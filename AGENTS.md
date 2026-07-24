@@ -171,8 +171,12 @@ and test fixtures inside crate `tests/` directories.
   it picked — and every-seat-one-team is a build error. Shipped maps are
   180°-symmetric — author edits in mirrored pairs, and on 4-player maps
   every seat's unit list must be the exact image-transform of seat 0's,
-  entry by entry (the 0.7 seat-fairness rule generalized). Faction
-  convention: even seats Ferrous, odd seats Cupric.
+  entry by entry (the 0.7 seat-fairness rule generalized). The 0.10
+  3v3/4v4 maps (Trident Plateau, Compass Grand) generalize further:
+  stacks of identical 180°-self-symmetric lanes, east unit lists the
+  exact entry-by-entry images of their paired west seats, and the
+  map-gates fairness test holds all six/eight seats to strict scrap
+  equality. Faction convention: even seats Ferrous, odd seats Cupric.
   `Scenario::skirmish()` embeds `scenarios/skirmish.json` at compile
   time.
 - **Balance numbers** all live in `sim/src/stats.rs`; expect hash churn
@@ -237,7 +241,16 @@ league peak ckpt-750 → anchored team consolidation ckpt-875, gated
 1200/1200 with zero draws; the 0.8 lineage read the same way). A
 resumed league's KL anchor anneals off the ABSOLUTE update clock —
 re-normalize the coefficient to the resume point (0.1/0.995^N) or a
-consolidation run starts effectively unanchored and collapses.
+consolidation run starts effectively unanchored and collapses
+(`--anchor-decay 1.0` holds it constant instead — the style-retention
+setting). The 0.10 campaign added two more: `--tech-bonus/--tech-anneal`
+pay a fog-safe own-tech terminal bonus (annealed on the RUN's clock,
+not the absolute one) that seeds the tech tree, and `--maps grand`
+draws the 1v1 lanes from the large/vast classes only — the decisive
+lever, because on mostly-small maps games end before a Fabricator
+amortizes and PPO grinds imitation-taught tech back out the moment
+the bonus fades; on the grand distribution the true objective
+sustains it unaided.
 Team training runs two flavors — self-team (`team`: the learner holds
 both chairs) and mixed-ally (`team2`: a scripted Brain drives the
 teammate) — and per-seat episode truncation pads a dead learner's
@@ -259,7 +272,19 @@ learner never found the counter" from "no counter exists".
 `driver bench` times a 500-unit mass battle locally; CI asserts only
 hash-identity at scale. The 0.10 pacing findings and levers live in
 EXPERIMENTS.md; matches target tens of minutes (the `vast` map class
-and the foundry-durability bless exist for this).
+and the foundry-durability bless exist for this; the lancer's
+damage bless is what made the tech tree worth climbing — the matchup
+instrument condemned the old rail at true par cost).
+
+`driver shots` is the perceptual-diff screenshot suite: ten canonical
+screens from a spawned automation shell (throwaway HOME, reduced
+motion pinned so the Home backdrop can't drift), compared against
+per-machine references in the gitignored `shots/` directory on a mean
+per-channel metric. The default threshold is calibrated between font
+AA jitter (<=0.003%) and a small UI element appearing (~0.02%).
+`--bless` adopts the current captures after an intended visual change.
+Local gate only — pixel comparisons don't survive GPU churn, so CI
+never runs it.
 
 ## Design decisions worth knowing
 

@@ -45,10 +45,13 @@ cargo run -p oxide-shell
 ```
 
 A menu lists the shipped maps — the classic duels, the quick 2v2s
-Twin Forges and Open Quarry, and the new big fields: Basalt Spine
+Twin Forges and Open Quarry, the big fields: Basalt Spine
 (a peak ridge splits the map; two ground passes, one air-only door),
-Ferric Reach (three lanes, long logistics), and Parallel Works (a
-large 2v2 built on quadrant symmetry) — then asks three questions: how hard
+Ferric Reach (three lanes, long logistics), Parallel Works (a
+large 2v2 built on quadrant symmetry), Continental Divide (a vast
+mountain wall where the doors decide it), and the team-war fields
+Trident Plateau (3v3) and Compass Grand (4v4), lane wars where the
+ridge doors carry the fight sideways — then asks three questions: how hard
 should the opponent think (**Easy, Medium, Hard, Expert**), who is it
 (**turtle, balanced, aggressive**, or let the map decide), and which
 faction you run (**Ferrous, Cupric**, or let the seed decide). Every
