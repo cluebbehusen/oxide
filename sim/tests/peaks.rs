@@ -73,6 +73,7 @@ fn ridge(gap: bool, units: Vec<UnitSpec>) -> Scenario {
         map,
         players: players(),
         units,
+        buildings: Vec::new(),
         meta: None,
     }
 }
@@ -403,6 +404,7 @@ fn a_building_flush_against_the_ridge_is_safe_from_the_far_side() {
         map,
         players: players(),
         units: vec![unit(0, UnitKind::Lancer, 14, 5)],
+        buildings: Vec::new(),
         meta: None,
     }
     .build()

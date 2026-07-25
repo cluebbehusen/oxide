@@ -478,6 +478,7 @@ mod tests {
                 map: rows,
                 players: Scenario::skirmish().players.clone(),
                 units: Vec::new(),
+                buildings: Vec::new(),
                 meta: None,
             }
         };
@@ -521,6 +522,7 @@ mod tests {
             map: rows,
             players: Scenario::skirmish().players.clone(),
             units: Vec::new(),
+            buildings: Vec::new(),
             meta: None,
         };
         let report = audit(&scenario).unwrap();

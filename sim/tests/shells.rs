@@ -62,6 +62,7 @@ fn range(units: Vec<UnitSpec>) -> Scenario {
         ],
         players: players(),
         units,
+        buildings: Vec::new(),
         meta: None,
     }
 }

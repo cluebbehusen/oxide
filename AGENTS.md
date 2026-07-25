@@ -268,7 +268,11 @@ Hard < Expert forever).
 mechanical form) and reports cost-weighted composition with a
 spam-detecting entropy. `driver matchup --a kind:n --b kind:n` fights
 par-cost armies on a clean arena — the experiment that separates "the
-learner never found the counter" from "no counter exists".
+learner never found the counter" from "no counter exists"
+(`--b-structures turret:n` is defense mode: pre-built structures
+stand in front of side B, priced into its verdict — scenarios grew a
+serde-default `buildings` list of pre-built structures for exactly
+this kind of harness work).
 `driver bench` times a 500-unit mass battle locally; CI asserts only
 hash-identity at scale. The 0.10 pacing findings and levers live in
 EXPERIMENTS.md; matches target tens of minutes (the `vast` map class

@@ -219,6 +219,7 @@ fn sealed_apart_scenarios_refuse_to_build() {
         ],
         players: arena(vec![]).players,
         units: vec![],
+        buildings: Vec::new(),
         meta: None,
     };
     assert!(matches!(
@@ -510,6 +511,7 @@ fn unreachable_sites_are_rejected_before_charging() {
         ],
         players: arena(vec![]).players,
         units: vec![unit(0, UnitKind::Harvester, 4, 6)],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
@@ -664,6 +666,7 @@ fn a_fresh_site_cannot_be_corner_cut_diagonally() {
             unit(0, UnitKind::Harvester, 3, 2),
             unit(0, UnitKind::Harvester, 6, 2),
         ],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
@@ -744,6 +747,7 @@ fn a_rejected_build_leaves_no_trace_on_the_hash() {
         ],
         players: arena(vec![]).players,
         units: vec![unit(0, UnitKind::Harvester, 4, 6)],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut with_reject = scenario.build().unwrap();
@@ -925,6 +929,7 @@ fn a_doomed_site_never_comes_online() {
             unit(1, UnitKind::Lancer, 15, 6),
             unit(1, UnitKind::Lancer, 14, 2),
         ],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();

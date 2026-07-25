@@ -192,6 +192,7 @@ fn a_decided_match_latches_its_result_and_keeps_ticking() {
             },
         ],
         units,
+        buildings: Vec::new(),
         meta: None,
     };
 

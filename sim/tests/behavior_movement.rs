@@ -289,6 +289,7 @@ fn congestion_survives_nonconsecutive_unit_ids() {
             unit(0, UnitKind::Harvester, 5, 2),
             unit(1, UnitKind::Sentinel, 20, 5),
         ],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
@@ -522,6 +523,7 @@ fn stalled_leg_drops_the_whole_program() {
         ],
         players: arena(vec![]).players,
         units: vec![unit(0, UnitKind::Harvester, 3, 1)],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();

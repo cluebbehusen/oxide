@@ -129,6 +129,10 @@ enum Cmd {
         /// Side B, same shape.
         #[arg(long)]
         b: String,
+        /// Pre-built structures for side B, as "kind:count" (defense
+        /// mode: the swarm-vs-fortification experiment).
+        #[arg(long)]
+        b_structures: Option<String>,
         /// Seeds to run (deterministic each).
         #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u64).range(1..))]
         seeds: u64,
@@ -331,17 +335,37 @@ fn main() -> Result<()> {
                 state.hash(),
             );
         }
-        Cmd::Matchup { a, b, seeds } => {
+        Cmd::Matchup {
+            a,
+            b,
+            b_structures,
+            seeds,
+        } => {
             let army_a = oxide_kit::matchup::parse_army(&a)?;
-            let army_b = oxide_kit::matchup::parse_army(&b)?;
-            println!(
+            let army_b = if b.trim().is_empty() {
+                Vec::new()
+            } else {
+                oxide_kit::matchup::parse_army(&b)?
+            };
+            let garrison = match &b_structures {
+                Some(spec) => oxide_kit::matchup::parse_garrison(spec)?,
+                None => Vec::new(),
+            };
+            print!(
                 "A = {a} ({} scrap)   B = {b} ({} scrap)",
                 oxide_kit::matchup::army_cost(&army_a),
                 oxide_kit::matchup::army_cost(&army_b),
             );
+            if let Some(spec) = &b_structures {
+                print!(
+                    "  + garrison {spec} ({} scrap)",
+                    oxide_kit::matchup::garrison_cost(&garrison)
+                );
+            }
+            println!();
             let (mut a_total, mut b_total) = (0u64, 0u64);
             for seed in 0..seeds {
-                let out = oxide_kit::matchup::duel(&army_a, &army_b, 42 + seed, 8_000)?;
+                let out = oxide_kit::matchup::siege(&army_a, &army_b, &garrison, 42 + seed, 8_000)?;
                 a_total += u64::from(out.a_value);
                 b_total += u64::from(out.b_value);
                 println!(

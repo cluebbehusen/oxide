@@ -85,6 +85,7 @@ pub fn mass_battle(per_side: u32, seed: u64) -> Scenario {
             },
         ],
         units,
+        buildings: Vec::new(),
         meta: None,
     }
 }

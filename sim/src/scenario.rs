@@ -27,6 +27,13 @@ pub struct Scenario {
     /// Starting units.
     #[serde(default)]
     pub units: Vec<UnitSpec>,
+    /// Structures standing — built, full hp — at match start, beyond
+    /// the Foundries the map anchors place. Empty on every shipped map;
+    /// the workhorse of arena experiments (a defense-mode duel needs
+    /// turrets that never spent build time). Skipped when empty so
+    /// existing scenario and replay bytes stand.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buildings: Vec<BuildingSpec>,
     /// Authored presentation metadata for browsers and previews. The
     /// sim ignores it entirely; it is hashed with the scenario text like
     /// any other byte, and absent on older files.
@@ -116,6 +123,20 @@ pub struct UnitSpec {
     pub y: i32,
 }
 
+/// A pre-built structure standing at match start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildingSpec {
+    /// Owning player index.
+    pub player: u8,
+    /// Building type.
+    pub kind: BuildingKind,
+    /// Anchor tile x (top-left of the footprint).
+    pub x: i32,
+    /// Anchor tile y.
+    pub y: i32,
+}
+
 /// Errors from loading or building a scenario.
 #[derive(Debug, thiserror::Error)]
 pub enum ScenarioError {
@@ -143,6 +164,9 @@ pub enum ScenarioError {
     /// A starting unit is misplaced or mis-owned.
     #[error("starting unit #{0} is invalid (owner in range? tile passable?)")]
     BadUnit(usize),
+    /// A pre-built structure is misplaced or mis-owned.
+    #[error("starting building #{0} is invalid (owner in range? footprint on open ground?)")]
+    BadBuilding(usize),
     /// Two Foundries can't reach each other: the match could never end.
     #[error("players {0} and {1} are sealed apart — no ground route between their foundries")]
     Disconnected(PlayerId, PlayerId),
@@ -262,6 +286,22 @@ impl Scenario {
             state.place_building(player, BuildingKind::Foundry, anchor);
         }
 
+        // Authored structures claim ground before units so a unit spec
+        // standing inside a footprint fails honestly as BadUnit. Overlaps
+        // among the structures themselves fail here: the first placement
+        // registers its footprint, so the second's ground reads occupied.
+        for (index, spec) in self.buildings.iter().enumerate() {
+            let anchor = TilePos::new(spec.x, spec.y);
+            let (w, h) = spec.kind.stats().size;
+            let footprint_ok = (0..h)
+                .flat_map(|dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
+                .all(|t| state.passable(t));
+            if (spec.player as usize) >= self.players.len() || !footprint_ok {
+                return Err(ScenarioError::BadBuilding(index));
+            }
+            state.place_building(PlayerId(spec.player), spec.kind, anchor);
+        }
+
         for (index, spec) in self.units.iter().enumerate() {
             let tile = TilePos::new(spec.x, spec.y);
             // Validated in the unit's own movement domain: a flyer may
@@ -276,9 +316,9 @@ impl Scenario {
 
         // Authoring tripwire: every pair of Foundries must share a ground
         // route, or the victory condition is unreachable by construction.
-        // Flood from the first anchor over terrain (scrap mines out, so
-        // nodes count as eventually-open; buildings placed above are only
-        // the foundries themselves, whose ring must connect anyway).
+        // Flood from the first anchor over terrain (scrap mines out and
+        // buildings — foundries and authored structures alike — can be
+        // demolished, so terrain is the honest floor of reachability).
         if let Some((first, rest)) = anchors.split_first() {
             let map = &self.map;
             let _ = map;
@@ -350,6 +390,49 @@ mod tests {
         assert!(matches!(
             scenario.build(),
             Err(ScenarioError::MissingAnchor(PlayerId(2)))
+        ));
+    }
+
+    #[test]
+    fn authored_structures_stand_built_and_validate_their_ground() {
+        let mut scenario = Scenario::skirmish();
+        scenario.buildings.push(BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Turret,
+            x: 9,
+            y: 5,
+        });
+        let state = scenario.build().unwrap();
+        let turret = state
+            .buildings()
+            .iter()
+            .find(|b| b.kind == BuildingKind::Turret)
+            .expect("the authored turret stands");
+        assert!(turret.built, "at full strength from tick zero");
+        assert_eq!(turret.hp, BuildingKind::Turret.stats().max_hp);
+
+        // The same anchor twice: the second footprint reads occupied.
+        scenario.buildings.push(BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Turret,
+            x: 9,
+            y: 5,
+        });
+        assert!(matches!(
+            scenario.build(),
+            Err(ScenarioError::BadBuilding(1))
+        ));
+        // Border rock refuses a footprint outright.
+        scenario.buildings.clear();
+        scenario.buildings.push(BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Turret,
+            x: 0,
+            y: 0,
+        });
+        assert!(matches!(
+            scenario.build(),
+            Err(ScenarioError::BadBuilding(0))
         ));
     }
 
