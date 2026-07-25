@@ -306,3 +306,193 @@ fn each_physical_key_drives_at_most_one_logical_key() {
         }
     }
 }
+
+#[test]
+fn a_right_click_anywhere_on_an_own_site_resumes_it() {
+    // The resume verb addresses the SITE, not the cursor tile: clicking
+    // the bottom-right tile of a 2x2 site must stage a Build at the
+    // site's own anchor (the sim's resume arm matches anchor+kind).
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let harvester = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.kind == UnitKind::Harvester && u.player == game.human)
+        .unwrap()
+        .id;
+    // Stand a Fabricator site on open visible ground near the base.
+    let foundry = game.state.buildings()[0].anchor;
+    let anchor = chassis::grid::TilePos::new(foundry.x + 3, foundry.y + 4);
+    game.state.tick(&[oxide_sim::PlayerCommand {
+        player: game.human,
+        command: oxide_sim::Command::Build {
+            units: vec![harvester],
+            kind: oxide_sim::stats::BuildingKind::Fabricator,
+            anchor,
+            queue: false,
+        },
+    }]);
+    assert!(
+        game.state
+            .buildings()
+            .iter()
+            .any(|b| b.anchor == anchor && !b.built),
+        "premise: the site stands"
+    );
+    // Select the harvester, then right-click the site's far corner.
+    game.selection.units = vec![harvester];
+    let corner = game
+        .camera
+        .to_screen(vec2(anchor.x as f32 + 1.5, anchor.y as f32 + 1.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::MouseDown {
+            button: MouseButton::Right,
+            x: corner.x,
+            y: corner.y,
+        }],
+    );
+    assert!(
+        game.pending.iter().any(|c| matches!(
+            &c.command,
+            oxide_sim::Command::Build { anchor: a, kind, .. }
+                if *a == anchor && *kind == oxide_sim::stats::BuildingKind::Fabricator
+        )),
+        "the click resumed the site at its anchor: {:?}",
+        game.pending
+    );
+}
+
+#[test]
+fn a_shift_click_on_the_wounded_wall_queues_the_weld_not_the_rat() {
+    // Two claims at once: the queue flag rides the funnel into
+    // Command::Repair, and an own-FOOTPRINT hit outranks the enemy
+    // inside PICK_RADIUS of the same click.
+    // A raw string can't hold this JSON (map rows open with `"#`,
+    // which closes r#"..."# early), so the quotes are escaped.
+    let scenario = oxide_sim::Scenario::from_json(
+        "{
+        \"name\": \"gnawed wall\",
+        \"seed\": 7,
+        \"players\": [
+            {\"name\": \"F\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false},
+            {\"name\": \"C\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": false}
+        ],
+        \"map\": [
+            \"####################\",
+            \"#..................#\",
+            \"#..1...............#\",
+            \"#..................#\",
+            \"#..................#\",
+            \"#..................#\",
+            \"#..............2...#\",
+            \"#..................#\",
+            \"####################\"
+        ],
+        \"units\": [
+            {\"player\": 0, \"kind\": \"harvester\", \"x\": 7, \"y\": 2},
+            {\"player\": 1, \"kind\": \"scuttler\", \"x\": 5, \"y\": 3}
+        ]
+    }",
+    )
+    .expect("inline scenario parses");
+    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("builds");
+    let mut input = InputState::new();
+    let foundry = game
+        .state
+        .buildings()
+        .iter()
+        .find(|b| b.player == game.human)
+        .unwrap()
+        .id;
+    let harvester = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human)
+        .unwrap()
+        .id;
+    let rat = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player != game.human)
+        .unwrap()
+        .id;
+    game.state.tick(&[oxide_sim::PlayerCommand {
+        player: oxide_sim::PlayerId(1),
+        command: Command::Attack {
+            units: vec![rat],
+            target: oxide_sim::Target::Building(foundry),
+            queue: false,
+        },
+    }]);
+    for _ in 0..120 {
+        game.state.tick(&[]);
+    }
+    let wall = game.state.building(foundry).unwrap();
+    assert!(
+        wall.hp < wall.kind.stats().max_hp,
+        "premise: the rat left scars"
+    );
+    // Click a footprint tile close enough to the rat that the enemy
+    // pick would win if radius still outranked footprint.
+    let rat_pos = {
+        let u = game.state.unit(rat).unwrap();
+        vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>())
+    };
+    let center = vec2(
+        wall.anchor.x as f32 + 1.0, // 2x2 footprint center
+        wall.anchor.y as f32 + 1.0,
+    );
+    // The nearest wall point to the rat, nudged just inside.
+    let clamped = vec2(
+        rat_pos
+            .x
+            .clamp(wall.anchor.x as f32, wall.anchor.x as f32 + 2.0),
+        rat_pos
+            .y
+            .clamp(wall.anchor.y as f32, wall.anchor.y as f32 + 2.0),
+    );
+    let world = clamped + (center - clamped).normalize() * 0.05;
+    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    assert!(
+        wall.tiles().any(|t| t == tile),
+        "premise: the click lands on the wall ({tile:?})"
+    );
+    assert!(
+        world.distance(rat_pos) <= PICK_RADIUS,
+        "premise: the rat is inside the pick radius"
+    );
+    game.selection.units = vec![harvester];
+    let screen = game.camera.to_screen(world);
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::Shift },
+            RawEvent::MouseDown {
+                button: MouseButton::Right,
+                x: screen.x,
+                y: screen.y,
+            },
+        ],
+    );
+    assert!(
+        game.pending.iter().any(|c| matches!(
+            &c.command,
+            Command::Repair { building, queue: true, .. } if *building == foundry
+        )),
+        "shift-right-click queued the weld: {:?}",
+        game.pending
+    );
+    assert!(
+        !game
+            .pending
+            .iter()
+            .any(|c| matches!(&c.command, Command::Attack { .. })),
+        "and the rat beside the wall did not steal the click"
+    );
+}

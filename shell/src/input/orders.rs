@@ -95,6 +95,46 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         return;
     }
     let units = game.selection.units.clone();
+    let has_harvester = units.iter().any(|id| {
+        game.state
+            .unit(*id)
+            .is_some_and(|u| u.kind == UnitKind::Harvester)
+    });
+
+    // Own-FOOTPRINT hits outrank enemy-RADIUS hits: a raider gnawing a
+    // wall sits inside the pick radius of a click on that wall, and the
+    // click's plain meaning is the building under the cursor, not the
+    // rat beside it. No visibility condition on own targets — ownership
+    // cannot probe fog, and own buildings always draw.
+    if has_harvester
+        && let Some(building) = game.state.building_at(tile)
+        && building.player == game.human
+    {
+        if !building.built {
+            // Resume the site: the sim commits every accepted
+            // harvester (builders stack). Send the building's own
+            // anchor and kind — the cursor may be on any footprint
+            // tile of a 2x2.
+            game.issue(Command::Build {
+                units,
+                kind: building.kind,
+                anchor: building.anchor,
+                queue,
+            });
+            game.ping(world, PingKind::Harvest);
+            return;
+        }
+        if building.hp < building.kind.stats().max_hp {
+            game.issue(Command::Repair {
+                units,
+                building: building.id,
+                queue,
+            });
+            game.ping(world, PingKind::Harvest);
+            return;
+        }
+        // A healthy built own building: fall through (ground order).
+    }
 
     // Fog rules what right-click may target: unseen enemies aren't there
     // as far as the player is concerned (the sim enforces this too).
@@ -134,26 +174,6 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
             queue,
         });
         game.ping(world, PingKind::Attack);
-        return;
-    }
-    let has_harvester = units.iter().any(|id| {
-        game.state
-            .unit(*id)
-            .is_some_and(|u| u.kind == UnitKind::Harvester)
-    });
-    // A wounded own building under the cursor puts harvesters to welding.
-    if has_harvester
-        && let Some(building) = game.state.building_at(tile)
-        && building.player == game.human
-        && building.built
-        && building.hp < building.kind.stats().max_hp
-    {
-        game.issue(Command::Repair {
-            units,
-            building: building.id,
-            queue,
-        });
-        game.ping(world, PingKind::Harvest);
         return;
     }
     // The harvest check reads the player's *memory*, not the live map —
