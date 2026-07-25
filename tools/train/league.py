@@ -159,6 +159,16 @@ def tech_bonus_at(base: float, rel_update: int, span: int) -> float:
     return base * max(0.0, 1.0 - rel_update / span)
 
 
+def unit_interval(text: str) -> float:
+    """argparse type for decay factors: finite, in [0, 1]. A negative
+    decay flips the KL sign on odd updates and actively rewards
+    diverging from the anchor; nan poisons the loss silently."""
+    value = float(text)
+    if not np.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise argparse.ArgumentTypeError(f"decay must be finite in [0, 1], got {text}")
+    return value
+
+
 def faction_knob(seat: int) -> int:
     """The seat's faction, by the map convention every shipped and
     generated scenario follows: even seats run Ferrous (0), odd seats
@@ -668,7 +678,7 @@ def main() -> None:
     ap.add_argument("--anchor-coef", type=float, default=0.05)
     ap.add_argument(
         "--anchor-decay",
-        type=float,
+        type=unit_interval,
         default=0.995,
         help="per-update anchor decay; 1.0 holds the anchor constant "
         "(style retention for the whole run — the round-3 lesson: a "

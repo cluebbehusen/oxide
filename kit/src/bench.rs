@@ -94,6 +94,12 @@ pub fn mass_battle(per_side: u32, seed: u64) -> Scenario {
 /// times parked idle armies: deployment sits outside aggro range, so
 /// no movement, fire, splash, or collision ever runs.
 pub fn engage(state: &mut oxide_sim::State) {
+    // The crossing goals are exact 180-degree images on the 96x56
+    // arena — anything less hands the two armies different path and
+    // collision geometry and the "symmetric workload" claim is void.
+    let goal_a = TilePos::new(80, 28);
+    let goal_b = TilePos::new(96 - 1 - goal_a.x, 56 - 1 - goal_a.y);
+    debug_assert_eq!((goal_b.x, goal_b.y), (15, 27));
     let (a, b): (Vec<_>, Vec<_>) = {
         let units = state.units();
         (
@@ -114,7 +120,7 @@ pub fn engage(state: &mut oxide_sim::State) {
             player: PlayerId(0),
             command: Command::AttackMove {
                 units: a,
-                goal: TilePos::new(80, 28),
+                goal: goal_a,
                 queue: false,
             },
         },
@@ -122,7 +128,7 @@ pub fn engage(state: &mut oxide_sim::State) {
             player: PlayerId(1),
             command: Command::AttackMove {
                 units: b,
-                goal: TilePos::new(15, 28),
+                goal: goal_b,
                 queue: false,
             },
         },

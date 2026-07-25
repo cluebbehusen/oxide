@@ -242,12 +242,15 @@ impl QuantNet {
 /// executive, network decisions. Deterministic end to end.
 ///
 /// Difficulty is a play-time dial, not a different network: with
-/// probability `blunder` (per mille) a decision is a uniformly random
-/// *legal* action instead of the network's best. The mistakes stay
-/// human-shaped — the bot still builds, defends, and attacks, it just
-/// misjudges — and the dial is continuous, which is what a dynamic
-/// difficulty needs. Fair by construction: it changes thinking, never
-/// income or vision.
+/// probability `blunder` (per mille) the commander HESITATES — the
+/// decision window passes unused instead of executing the network's
+/// pick. The mistakes stay human-shaped — the bot still builds,
+/// defends, and attacks, it just dithers — and the dial is
+/// continuous, which is what a dynamic difficulty needs. (Blunders
+/// once substituted a near-best wrong action instead; that kept
+/// spending the Fabricator fund mid-save, so every degraded level
+/// rationally collapsed into spam.) Fair by construction: it changes
+/// thinking, never income or vision.
 #[derive(Debug, Clone)]
 pub struct NeuralBot {
     gym: GymBot,

@@ -98,10 +98,10 @@ enum Cmd {
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         cadence: Option<u64>,
         /// Seeds per map.
-        #[arg(long, default_value_t = 3)]
+        #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u64).range(1..))]
         seeds: u64,
         /// Tick cap per match.
-        #[arg(long, default_value_t = 20_000)]
+        #[arg(long, default_value_t = 20_000, value_parser = clap::value_parser!(u64).range(1..))]
         ticks: u64,
         /// Candidate weights JSON (defaults to the embedded artifact).
         #[arg(long)]

@@ -1,7 +1,7 @@
 """Tests for ``mapgen``: the size-class draws, and the grand pace bias
 the round-8 pacing curriculum trains on."""
 
-from mapgen import _carve
+from mapgen import _carve, cache_name
 
 
 def dims(candidate: dict) -> tuple[int, int]:
@@ -33,3 +33,18 @@ class TestGrandPace:
     def test_default_carve_is_untouched_by_the_pace_parameter(self) -> None:
         for seed in (3, 11):
             assert _carve(seed) == _carve(seed, pace=None)
+
+
+class TestCacheName:
+    def test_every_drawing_input_reaches_the_key(self) -> None:
+        # A grand request once returned the plain map cached under the
+        # same seed in a shared directory — the pace bias must be part
+        # of cache identity like players and teams already are.
+        names = {
+            cache_name(7, 2, False, None),
+            cache_name(7, 2, False, "grand"),
+            cache_name(7, 4, False, None),
+            cache_name(7, 4, True, None),
+            cache_name(8, 2, False, None),
+        }
+        assert len(names) == 5, f"cache identities collided: {sorted(names)}"

@@ -312,6 +312,19 @@ def _carve4(
     }
 
 
+def cache_name(seed: int, players: int, teams: bool, pace: str | None) -> str:
+    """The cache filename for one generation request. EVERY input that
+    changes the drawn map must appear here: the schema fingerprint
+    invalidates the whole cache when the generator's output changes
+    shape (a retrain once quietly reused tens of thousands of pre-peak
+    small-class maps whose seeds matched), and the pace bias joined the
+    key when a shared directory could hand a grand request the plain
+    map cached under the same seed."""
+    tag = "2v2" if teams else (str(players) if players != 2 else "")
+    pace_tag = f"-{pace}" if pace else ""
+    return f"gen{tag}{pace_tag}-s{MAPGEN_SCHEMA}-{seed}.json"
+
+
 def generate(
     seed: int,
     out_dir: str,
@@ -328,12 +341,7 @@ def generate(
     validated files ever land in the cache."""
     out = pathlib.Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    tag = "2v2" if teams else (str(players) if players != 2 else "")
-    # The schema fingerprint invalidates every cached map when the
-    # generator's output changes shape — without it, a retrain quietly
-    # reused tens of thousands of pre-peak small-class maps whose seeds
-    # matched, training on a curriculum the code no longer describes.
-    path = out / f"gen{tag}-s{MAPGEN_SCHEMA}-{seed}.json"
+    path = out / cache_name(seed, players, teams, pace)
     if path.exists():
         return str(path)
     for attempt in range(16):
