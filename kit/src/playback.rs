@@ -8,7 +8,7 @@
 //! a seeked position can never diverge from a straight run, and the
 //! test below holds that as a hash identity.
 
-use crate::runner::GameReplay;
+use crate::GameReplay;
 use anyhow::Result;
 use oxide_sim::{SIM_VERSION, State};
 
@@ -140,6 +140,43 @@ impl Playback {
         }
     }
 
+    /// One budgeted slice of a seek toward `target`: restores the best
+    /// checkpoint exactly like [`Playback::seek`], then simulates at
+    /// most `budget` ticks. Returns true when the target is reached —
+    /// callers loop across frames, so a long first seek costs a
+    /// progress bar instead of a frozen render thread.
+    pub fn seek_step(&mut self, target: u64, budget: u64) -> bool {
+        let target = target.min(self.total);
+        // Restoring is cheap and idempotent; re-deciding it every slice
+        // keeps this a plain resumable loop with no extra state.
+        let best = self
+            .checkpoints
+            .iter()
+            .rev()
+            .find(|(t, _)| *t <= target)
+            .cloned();
+        let restore = match &best {
+            _ if target < self.position() => true,
+            Some((t, _)) => *t > self.position(),
+            None => false,
+        };
+        if restore {
+            let (_, state) =
+                best.unwrap_or_else(|| (0, self.replay.setup.build().expect("validated at load")));
+            self.state = state;
+            self.next_cmd = self
+                .replay
+                .commands
+                .partition_point(|c| c.tick < self.state.current_tick());
+        }
+        let mut ran = 0;
+        while self.position() < target && ran < budget {
+            self.step();
+            ran += 1;
+        }
+        self.position() >= target
+    }
+
     fn step(&mut self) -> Vec<oxide_sim::Event> {
         let tick = self.state.current_tick();
         // Re-walked spans skip stamping (a later checkpoint already
@@ -164,6 +201,27 @@ impl Playback {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_budgeted_seek_lands_bit_identical_to_a_straight_one() {
+        // The slices must be invisible: however many frames a seek is
+        // spread across, the state it lands on is the state one big
+        // seek produces.
+        let replay = recorded_match();
+        let mut straight = Playback::load(replay.clone()).unwrap();
+        straight.seek(333);
+        let expected = straight.state.hash();
+
+        let mut sliced = Playback::load(replay).unwrap();
+        let mut slices = 0;
+        while !sliced.seek_step(333, 50) {
+            slices += 1;
+            assert!(slices < 100, "the budget must make progress");
+        }
+        assert_eq!(sliced.position(), 333);
+        assert_eq!(sliced.state.hash(), expected, "slices changed the state");
+        assert!(slices >= 5, "a 50-tick budget takes several frames");
+    }
+
     use super::*;
     use crate::runner;
     use oxide_sim::Scenario;

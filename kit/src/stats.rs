@@ -3,7 +3,7 @@
 //! series (scrap, army value, unit counts) plus loss totals — the
 //! Result screen's data, and a driver subcommand for anyone else.
 
-use crate::runner::GameReplay;
+use crate::GameReplay;
 use anyhow::{Context, Result};
 use oxide_sim::{Event, PlayerId, State};
 use serde::Serialize;
@@ -52,9 +52,9 @@ pub fn compute(replay: &GameReplay, every: u64) -> Result<MatchStats> {
         .or_else(|| replay.commands.last().map(|c| c.tick + 1))
         .unwrap_or(0);
     anyhow::ensure!(
-        total <= crate::runner::MAX_REPLAY_TICKS,
+        total <= crate::MAX_REPLAY_TICKS,
         "replay spans {total} ticks — beyond the {}-tick bound",
-        crate::runner::MAX_REPLAY_TICKS
+        crate::MAX_REPLAY_TICKS
     );
     let mut state = replay.setup.build().context("building scenario")?;
     let mut cursor = replay.cursor();

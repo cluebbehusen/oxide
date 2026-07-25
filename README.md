@@ -45,10 +45,13 @@ cargo run -p oxide-shell
 ```
 
 A menu lists the shipped maps — the classic duels, the quick 2v2s
-Twin Forges and Open Quarry, and the new big fields: Basalt Spine
+Twin Forges and Open Quarry, the big fields: Basalt Spine
 (a peak ridge splits the map; two ground passes, one air-only door),
-Ferric Reach (three lanes, long logistics), and Parallel Works (a
-large 2v2 built on quadrant symmetry) — then asks three questions: how hard
+Ferric Reach (three lanes, long logistics), Parallel Works (a
+large 2v2 built on quadrant symmetry), Continental Divide (a vast
+mountain wall where the doors decide it), and the team-war fields
+Trident Plateau (3v3) and Compass Grand (4v4), lane wars where the
+ridge doors carry the fight sideways — then asks three questions: how hard
 should the opponent think (**Easy, Medium, Hard, Expert**), who is it
 (**turtle, balanced, aggressive**, or let the map decide), and which
 faction you run (**Ferrous, Cupric**, or let the seed decide). Every
@@ -142,6 +145,8 @@ sim/        oxide-sim — every game rule, pure and headless. One entry point:
             State::tick(commands). No floats, no clocks, no hash maps.
 protocol/   debug-protocol types (JSON lines) + agent-readable state views
 shell/      macroquad renderer, single input funnel, debug server. Disposable.
+kit/        Shared toolkit: headless runner, replay playback + stats,
+            the CPU software renderer behind goldens and previews
 driver/     CLI harness: headless runs, replay verification, byte-exact
             golden images (CPU-rendered), live-game client, smoke test
 scenarios/  match definitions with ASCII maps
@@ -161,6 +166,9 @@ Start the shell with a socket, then talk to it:
 
 ```sh
 cargo run -p oxide-shell -- --debug-server --paused   # driven mode
+cargo run -p oxide-driver -- balance-probe          # composition + entropy
+cargo run -p oxide-driver -- matchup --a sentinel:8 --b bombard:2,sentinel:4
+cargo run -p oxide-driver -- bench                  # 500-unit ticks/s
 cargo run -p oxide-driver -- live status
 cargo run -p oxide-driver -- live harvest 0 --units 0,1,2 --node 7,2
 cargo run -p oxide-driver -- live attack-move 0 --units 3 --to 34,18
@@ -208,8 +216,10 @@ trade-off: replays only reproduce on the sim version that wrote them.
 The shell wraps all of this: quitting a live match autosaves it and
 Home offers Continue; the Replays screen lists every autosave and
 local record with honest version badges (watch, or delete with a
-deliberate double-X); the pause menu's Watch Replay replays the
-session so far; and `--watch file.json` opens any record in the
+deliberate double-X); once a match is decided the pause
+menu's Watch Replay plays it back (replays are an end-of-match
+affair — mid-match playback would scout the enemy through the fog);
+and `--watch file.json` opens any record in the
 read-only viewer — pause, seek both directions, speed steps, free
 camera. Seeking backward restores an in-memory checkpoint and
 re-simulates, so the viewer can never diverge from the record.

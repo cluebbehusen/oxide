@@ -28,7 +28,7 @@ import numpy as np
 
 # Bump when _carve's output distribution changes (sizes, terrain
 # alphabet, densities): cache identity is schema + mode + seed.
-MAPGEN_SCHEMA = 2
+MAPGEN_SCHEMA = 3
 
 DRIVER = "../../target/release/oxide-driver"
 
@@ -38,19 +38,37 @@ def cache_dir(name: str) -> str:
     return str(pathlib.Path(tempfile.gettempdir()) / name)
 
 
-def _carve(seed: int, players: int = 2, teams: bool = False) -> dict:
+def _carve(
+    seed: int, players: int = 2, teams: bool = False, pace: str | None = None
+) -> dict:
     rng = np.random.default_rng(seed)
     # Size classes: the v4 schema rides relative coordinates, so the
     # curriculum must actually vary the field. Quick, standard, and a
     # large stretch that exercises the 0-1000 range like the shipped
     # Ferric Reach class does.
+    # Schema 3 (0.10): the vast class joins the draw — the pacing work
+    # aims matches at tens of minutes, and the curriculum has to teach
+    # marches that long or the ladder never fights them well.
     roll = rng.random()
-    if roll < 0.25:
+    if pace == "grand":
+        # The pacing curriculum: only the two big classes (large 40%,
+        # vast 60%). Round 7 proved teching evaporates when the reward
+        # anneals on a mostly-small draw — games end before a
+        # Fabricator amortizes — so this pool trains where the shipped
+        # tens-of-minutes game actually lives. Own cache dir; the
+        # output shape is unchanged, so the schema tag stays.
+        if roll < 0.40:
+            w, h = int(rng.integers(50, 64)), int(rng.integers(30, 40))
+        else:
+            w, h = int(rng.integers(84, 108)), int(rng.integers(48, 64))
+    elif roll < 0.20:
         w, h = int(rng.integers(26, 36)), int(rng.integers(16, 24))
-    elif roll < 0.80:
+    elif roll < 0.60:
         w, h = int(rng.integers(36, 50)), int(rng.integers(22, 32))
-    else:
+    elif roll < 0.85:
         w, h = int(rng.integers(50, 64)), int(rng.integers(30, 40))
+    else:
+        w, h = int(rng.integers(84, 108)), int(rng.integers(48, 64))
     if players == 4:
         # Four bases need more floor: widen the draw a class.
         w, h = int(w * 1.3), int(h * 1.3)
@@ -294,8 +312,26 @@ def _carve4(
     }
 
 
+def cache_name(seed: int, players: int, teams: bool, pace: str | None) -> str:
+    """The cache filename for one generation request. EVERY input that
+    changes the drawn map must appear here: the schema fingerprint
+    invalidates the whole cache when the generator's output changes
+    shape (a retrain once quietly reused tens of thousands of pre-peak
+    small-class maps whose seeds matched), and the pace bias joined the
+    key when a shared directory could hand a grand request the plain
+    map cached under the same seed."""
+    tag = "2v2" if teams else (str(players) if players != 2 else "")
+    pace_tag = f"-{pace}" if pace else ""
+    return f"gen{tag}{pace_tag}-s{MAPGEN_SCHEMA}-{seed}.json"
+
+
 def generate(
-    seed: int, out_dir: str, players: int = 2, teams: bool = False, driver: str = DRIVER
+    seed: int,
+    out_dir: str,
+    players: int = 2,
+    teams: bool = False,
+    driver: str = DRIVER,
+    pace: str | None = None,
 ) -> str:
     """Writes a validated scenario for `seed` and returns its path.
     Same seed, same file. Random rock blobs carry no connectivity
@@ -305,16 +341,11 @@ def generate(
     validated files ever land in the cache."""
     out = pathlib.Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    tag = "2v2" if teams else (str(players) if players != 2 else "")
-    # The schema fingerprint invalidates every cached map when the
-    # generator's output changes shape — without it, a retrain quietly
-    # reused tens of thousands of pre-peak small-class maps whose seeds
-    # matched, training on a curriculum the code no longer describes.
-    path = out / f"gen{tag}-s{MAPGEN_SCHEMA}-{seed}.json"
+    path = out / cache_name(seed, players, teams, pace)
     if path.exists():
         return str(path)
     for attempt in range(16):
-        candidate = _carve(seed + attempt * 10_000_019, players, teams)
+        candidate = _carve(seed + attempt * 10_000_019, players, teams, pace)
         # Unique per caller: the map warmer and a foreground reset may
         # generate the same seed concurrently, and a shared candidate
         # name lets one unlink the other's file mid-rename. Both publish

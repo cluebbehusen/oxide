@@ -23,7 +23,8 @@ screenshots you read back and judge with your own eyes.
 | `oxide-sim` | `sim/` | All Oxide game rules. `State::tick(&[PlayerCommand])` is the only way anything happens. The bots live here too, but *outside* the tick pipeline — command sources like the mouse: the shipped **neural ladder** (`bot::NeuralBot`, embedded quantized weights, Easy/Medium/Hard/Expert + a personality knob), the scripted `bot::Brain` tiers (fog-honest, training anchors and benchmarks), and the classic 0.6 `bot::Bot` (what replays without a `bot_config` reproduce). |
 | `oxide-protocol` | `protocol/` | Debug-protocol types: JSON-lines envelope, tagged requests/replies, `RawEvent` input events (touch included for the future mobile shell), and `StateView` (floats + ASCII map — legible, not exact; exactness is the hash's job). |
 | `oxide-shell` | `shell/` | macroquad renderer, the single input funnel, HUD, debug server. Nothing here may affect game outcomes except by staging tick-stamped commands. |
-| `oxide-driver` | `driver/` | CLI harness: headless scenario runs, replay verification, byte-exact golden images (tiny-skia, CPU-only), live-game client, automated smoke test. Also a library (`runner`/`render`/`client`/`smoke`). |
+| `oxide-kit` | `kit/` | Shared engine-side toolkit: the headless scenario/replay `runner`, the replay `playback` engine (viewer and CLI), `stats` extraction (post-match screens, `replay-stats`), and the CPU software `render`er (tiny-skia) behind goldens and map previews. Exists so the shell never depends on the dev harness. |
+| `oxide-driver` | `driver/` | CLI harness: headless scenario runs, replay verification, byte-exact golden images, live-game client, automated smoke test. A library too (`client`/`smoke`/`audit` plus re-exports of the kit modules). |
 
 Built for reuse in a later, bigger game: `chassis` wholesale, the protocol's
 envelope/raw-event design, the driver's harness patterns. Game-specific and
@@ -128,8 +129,10 @@ autosaves and `replays/` (watch, delete, honest version badges);
 (pause, seek, speed — no recorder; backward seek restores an
 in-memory checkpoint and re-simulates; checkpoint cadence stretches
 with record length so no replay retains more than 64 state clones,
-and interactive loads cap at 2M claimed ticks). The pause menu's Watch
-Replay plays the live session so far. `sh tools/package_macos.sh`
+and interactive loads cap at 2M claimed ticks). Watch Replay appears on the
+pause menu only once the match is decided — mid-match playback was
+a fog-free scout of the enemy — and `autosave-` records (live
+sessions) are Continue-only on the shelf. `sh tools/package_macos.sh`
 builds `dist/Oxide.app` (resources resolve executable-relative when
 bundled, cwd otherwise).
 
@@ -168,8 +171,12 @@ and test fixtures inside crate `tests/` directories.
   it picked — and every-seat-one-team is a build error. Shipped maps are
   180°-symmetric — author edits in mirrored pairs, and on 4-player maps
   every seat's unit list must be the exact image-transform of seat 0's,
-  entry by entry (the 0.7 seat-fairness rule generalized). Faction
-  convention: even seats Ferrous, odd seats Cupric.
+  entry by entry (the 0.7 seat-fairness rule generalized). The 0.10
+  3v3/4v4 maps (Trident Plateau, Compass Grand) generalize further:
+  stacks of identical 180°-self-symmetric lanes, east unit lists the
+  exact entry-by-entry images of their paired west seats, and the
+  map-gates fairness test holds all six/eight seats to strict scrap
+  equality. Faction convention: even seats Ferrous, odd seats Cupric.
   `Scenario::skirmish()` embeds `scenarios/skirmish.json` at compile
   time.
 - **Balance numbers** all live in `sim/src/stats.rs`; expect hash churn
@@ -234,7 +241,16 @@ league peak ckpt-750 → anchored team consolidation ckpt-875, gated
 1200/1200 with zero draws; the 0.8 lineage read the same way). A
 resumed league's KL anchor anneals off the ABSOLUTE update clock —
 re-normalize the coefficient to the resume point (0.1/0.995^N) or a
-consolidation run starts effectively unanchored and collapses.
+consolidation run starts effectively unanchored and collapses
+(`--anchor-decay 1.0` holds it constant instead — the style-retention
+setting). The 0.10 campaign added two more: `--tech-bonus/--tech-anneal`
+pay a fog-safe own-tech terminal bonus (annealed on the RUN's clock,
+not the absolute one) that seeds the tech tree, and `--maps grand`
+draws the 1v1 lanes from the large/vast classes only — the decisive
+lever, because on mostly-small maps games end before a Fabricator
+amortizes and PPO grinds imitation-taught tech back out the moment
+the bonus fades; on the grand distribution the true objective
+sustains it unaided.
 Team training runs two flavors — self-team (`team`: the learner holds
 both chairs) and mixed-ally (`team2`: a scripted Brain drives the
 teammate) — and per-seat episode truncation pads a dead learner's
@@ -244,6 +260,31 @@ still spans them so the team payoff reaches the live prefix). The scripted `Brai
 stay in-tree as league anchors, benchmarks, and the ladder-integrity
 yardstick (`sim/tests/neural_ladder.rs` enforces Easy < Medium <
 Hard < Expert forever).
+
+### Balance instruments (0.10)
+
+`driver balance-probe` runs bot-vs-bot across the shipped maps
+(optionally `--weights` for a candidate artifact — the fun gate's
+mechanical form) and reports cost-weighted composition with a
+spam-detecting entropy. `driver matchup --a kind:n --b kind:n` fights
+par-cost armies on a clean arena — the experiment that separates "the
+learner never found the counter" from "no counter exists".
+`driver bench` times a 500-unit mass battle locally; CI asserts only
+hash-identity at scale. The 0.10 pacing findings and levers live in
+EXPERIMENTS.md; matches target tens of minutes (the `vast` map class
+and the foundry-durability bless exist for this; the lancer's
+damage bless is what made the tech tree worth climbing — the matchup
+instrument condemned the old rail at true par cost).
+
+`driver shots` is the perceptual-diff screenshot suite: ten canonical
+screens from a spawned automation shell (throwaway HOME, reduced
+motion pinned so the Home backdrop can't drift), compared against
+per-machine references in the gitignored `shots/` directory on a mean
+per-channel metric. The default threshold is calibrated between font
+AA jitter (<=0.003%) and a small UI element appearing (~0.02%).
+`--bless` adopts the current captures after an intended visual change.
+Local gate only — pixel comparisons don't survive GPU churn, so CI
+never runs it.
 
 ## Design decisions worth knowing
 
@@ -403,6 +444,21 @@ Hard < Expert forever).
   no owner, no memory, no license for a targeted attack. Team sight is
   shared by stamping every teammate's discs into each seat's view;
   `State::hostile` routes every allegiance decision.
+- **Screens are objects since 0.10** (shell/src/screens/): each menu
+  screen (home, wizard, shelf, pause+confirm, settings+controls,
+  playback transport) owns its menus and state; `update` takes raw
+  events and returns a transition, windowless by construction — the
+  whole flow drives headless in unit tests. The main loop keeps only
+  drawing and session wiring. The viewport is INJECTED once per frame
+  (`render::set_viewport`); menus, chrome scale, and `Game::new` read
+  the seam and never query the window (headless tests get 1280x800).
+- **Memories admit their age**: remembered ghosts and salvage fade
+  along a 90-second ramp after sight loss (presentation-only state on
+  `Game::last_seen`; the sim's Vision carries no timestamps). They
+  never vanish — they stop pretending to be news.
+- **Replays are an end-of-match affair**: Watch Replay appears once
+  the match is decided; `autosave-` records are Continue-only.
+  Mid-match playback was a fog-free scout of the enemy.
 - **The command panel is one grammar** (shell/src/panel.rs): a pure
   model (portrait, sprite cards carrying the exact Action their
   hotkey dispatches, queue thumbnails carrying CancelQueue) built

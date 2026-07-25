@@ -6,7 +6,7 @@ use oxide_sim::bot::{SeatBot, seat_bots};
 use oxide_sim::{PlayerCommand, SIM_VERSION, Scenario, State};
 
 /// The concrete replay type for Oxide sessions.
-pub type GameReplay = Replay<Scenario, PlayerCommand>;
+pub use crate::GameReplay;
 
 /// A finished headless run.
 pub struct RunOutcome {
@@ -62,7 +62,7 @@ pub fn run_scenario(
 
 /// Longest replay the driver runs without an explicit override — a forged
 /// duration must not spin the process forever. ~28 game-hours.
-pub const MAX_REPLAY_TICKS: u64 = 2_000_000;
+pub use crate::MAX_REPLAY_TICKS;
 
 /// Re-executes a recorded run and returns the final state. With no override,
 /// the length comes from the replay's own metadata (falling back to the last

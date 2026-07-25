@@ -29,6 +29,22 @@ fn shipped() -> Vec<(String, Scenario)> {
 }
 
 #[test]
+fn every_map_seats_a_human_and_live_opponents() {
+    // Seat 0 is the human chair; every other seat must actually play.
+    // Continental Divide once shipped with both seats bot:false — an
+    // advertised 1v1 whose opponent never harvested, trained, or moved.
+    for (name, scenario) in shipped() {
+        assert!(
+            !scenario.players[0].bot,
+            "{name}: seat 0 is the human chair"
+        );
+        for (i, seat) in scenario.players.iter().enumerate().skip(1) {
+            assert!(seat.bot, "{name}: seat {i} is a dead chair (bot: false)");
+        }
+    }
+}
+
+#[test]
 fn every_map_carries_complete_metadata() {
     for (name, scenario) in shipped() {
         let meta = scenario
@@ -37,11 +53,17 @@ fn every_map_carries_complete_metadata() {
             .unwrap_or_else(|| panic!("{name}: shipped maps carry metadata"));
         assert!(!meta.hook.is_empty(), "{name}: hook missing");
         assert!(
-            matches!(meta.pace.as_str(), "quick" | "standard" | "large"),
+            matches!(meta.pace.as_str(), "quick" | "standard" | "large" | "vast"),
             "{name}: pace '{}' is not a recognized label",
             meta.pace
         );
         assert!(!meta.mode.is_empty(), "{name}: mode missing");
+        assert!(
+            matches!(meta.richness.as_str(), "lean" | "standard" | "rich"),
+            "{name}: richness '{}' is not a recognized label (an empty \
+             one once rendered a dangling badge separator in the map list)",
+            meta.richness
+        );
         assert!(!meta.theme.is_empty(), "{name}: theme missing");
     }
 }
@@ -68,6 +90,9 @@ fn routes_connect_and_pace_labels_hold() {
                 "quick" => 8..=28,
                 "standard" => 29..=52,
                 "large" => 53..=90,
+                // 0.10: matches should run tens of minutes — the vast
+                // class exists to hold maps big enough to make it so.
+                "vast" => 91..=150,
                 other => panic!("{name}: unknown pace '{other}'"),
             };
             assert!(
@@ -133,6 +158,16 @@ fn spawns_are_fair_to_every_seat() {
                     "{name}: scrap leans {:.2} across the team split",
                     gap(0, 1)
                 );
+            }
+            // The 0.10 3v3/4v4 maps are built from identical lanes, so
+            // every seat measures scrap identically — hold them to it.
+            6 | 8 => {
+                for i in 1..seats.len() {
+                    assert!(
+                        gap(0, i) <= 1e-9,
+                        "{name}: seat {i} disagrees on scrap with seat 0"
+                    );
+                }
             }
             n => panic!("{name}: unexpected seat count {n}"),
         }

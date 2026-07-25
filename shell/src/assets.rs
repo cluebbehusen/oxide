@@ -39,6 +39,9 @@ pub struct Sprites {
     array: [Rect; 2],
     reclaimer: [Rect; 2],
     harvester: [Rect; 2],
+    harvester_scoop: [[Rect; 2]; 2],
+    scaffold: [Rect; 2],
+    debris: [Rect; 3],
     scuttler: [Rect; 2],
     lancer: [Rect; 2],
     sentinel: [Rect; 2],
@@ -155,6 +158,18 @@ impl Sprites {
             array: [rect("array_ferrous")?, rect("array_cupric")?],
             reclaimer: [rect("reclaimer_ferrous")?, rect("reclaimer_cupric")?],
             harvester: [rect("harvester_ferrous")?, rect("harvester_cupric")?],
+            harvester_scoop: [
+                [
+                    rect("harvester_ferrous_scoop1")?,
+                    rect("harvester_cupric_scoop1")?,
+                ],
+                [
+                    rect("harvester_ferrous_scoop2")?,
+                    rect("harvester_cupric_scoop2")?,
+                ],
+            ],
+            scaffold: [rect("scaffold_dense")?, rect("scaffold_sparse")?],
+            debris: [rect("debris_0")?, rect("debris_1")?, rect("debris_2")?],
             scuttler: [rect("scuttler_ferrous")?, rect("scuttler_cupric")?],
             lancer: [rect("lancer_ferrous")?, rect("lancer_cupric")?],
             sentinel: [rect("sentinel_ferrous")?, rect("sentinel_cupric")?],
@@ -271,6 +286,27 @@ impl Sprites {
             oxide_sim::BuildingKind::Array => self.array[f],
             oxide_sim::BuildingKind::Reclaimer => self.reclaimer[f],
         }
+    }
+
+    /// A working harvester's scoop-cycle frame: 0 is the travel pose,
+    /// 1-2 the dig. Values past 2 are the caller's cycle math leaking.
+    pub fn harvester_working(&self, faction: Faction, frame: usize) -> Rect {
+        let f = faction_index(faction);
+        match frame {
+            0 => self.harvester[f],
+            1 => self.harvester_scoop[0][f],
+            _ => self.harvester_scoop[1][f],
+        }
+    }
+
+    /// The construction lattice: dense early, sparse near completion.
+    pub fn scaffold(&self, dense: bool) -> Rect {
+        self.scaffold[if dense { 0 } else { 1 }]
+    }
+
+    /// A death-scatter hull shard.
+    pub fn debris(&self, variant: usize) -> Rect {
+        self.debris[variant % 3]
     }
 
     /// The unit sprite region for a kind and faction.

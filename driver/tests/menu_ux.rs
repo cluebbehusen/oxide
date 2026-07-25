@@ -9,65 +9,30 @@
 //! cargo test -p oxide-driver --test menu_ux -- --ignored --test-threads 1
 //! ```
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
+use oxide_driver::auto::{
+    ShellGuard, SpawnOptions, activate_labeled, assert_mode, press_key, spawn_shell, ui,
+};
 use oxide_driver::client::Client;
-use oxide_protocol::{Key, MouseButton, RawEvent, Reply, Request, UiView};
+use oxide_protocol::{Key, MouseButton, RawEvent, Request};
 
-/// A shell child killed on drop, so a failing assert never strands a
-/// window holding the port.
-struct ShellGuard(std::process::Child);
-
-impl Drop for ShellGuard {
-    fn drop(&mut self) {
-        self.0.kill().ok();
-        self.0.wait().ok();
-    }
-}
-
-/// Spawns an automation-mode shell on `port` and connects, retrying
-/// while cargo builds and the window boots.
-/// Spawns, connects, and walks Home -> Play so tests operate on the
-/// scenario list (the widget with enough rows to scroll).
+/// Spawns an automation-mode shell (via the shared harness vocabulary)
+/// and walks Home -> Play so tests operate on the scenario list (the
+/// widget with enough rows to scroll).
 fn spawn_at_map_list(port: u16) -> Result<(ShellGuard, Client)> {
-    let (guard, mut client) = spawn_shell(port)?;
-    press_key(&mut client, Key::Enter)?;
+    let (guard, mut client) = spawn(port)?;
+    // By label, never by blind Enter: with autosaves on this machine,
+    // Home's first row is Continue and Enter would resume a match.
+    activate_labeled(&mut client, "play")?;
     Ok((guard, client))
 }
 
-fn spawn_shell(port: u16) -> Result<(ShellGuard, Client)> {
-    // Tests run with the crate dir as cwd, but the shell loads assets and
-    // scenarios relative to the workspace root — spawn it from there.
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let child = std::process::Command::new("cargo")
-        .args([
-            "run",
-            "-p",
-            "oxide-shell",
-            "--",
-            "--debug-server",
-            "--automation",
-            "--port",
-            &port.to_string(),
-        ])
-        .current_dir(root)
-        .spawn()
-        .context("spawning oxide-shell via cargo")?;
-    let guard = ShellGuard(child);
-    let addr = format!("127.0.0.1:{port}");
-    for _ in 0..120 {
-        if let Ok(client) = Client::connect(&addr) {
-            return Ok((guard, client));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    bail!("shell never came up on {addr}");
-}
-
-fn ui(client: &mut Client) -> Result<UiView> {
-    match client.call(Request::QueryUi)? {
-        Reply::Ui(view) => Ok(view),
-        other => bail!("expected a ui reply, got {other:?}"),
-    }
+fn spawn(port: u16) -> Result<(ShellGuard, Client)> {
+    spawn_shell(&SpawnOptions {
+        port,
+        paused: false,
+        home: None,
+    })
 }
 
 fn hover(client: &mut Client, x: f32, y: f32) -> Result<()> {
@@ -100,16 +65,6 @@ fn find_rows(client: &mut Client) -> Result<Vec<(f32, usize)>> {
         bail!("could not locate menu rows by sweeping ({hits:?})");
     }
     Ok(hits)
-}
-
-fn press_key(client: &mut Client, key: Key) -> Result<()> {
-    client.call(Request::InjectEvent {
-        event: RawEvent::KeyDown { key },
-    })?;
-    client.call(Request::InjectEvent {
-        event: RawEvent::KeyUp { key },
-    })?;
-    Ok(())
 }
 
 #[test]
@@ -202,5 +157,106 @@ fn menu_rows_activate_on_release_not_on_press() -> Result<()> {
         "release inside the row activates"
     );
     press_key(&mut client, Key::Escape)?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "spawns a real window; run explicitly in the phase battery"]
+fn every_screen_transition_answers_the_walk() -> Result<()> {
+    // One pass over the whole screen graph, asserting the shell's own
+    // mode report at each hop. Navigation is by row LABEL, never by
+    // index: Home's rows shift with resumable state, and the walk must
+    // not depend on this machine's autosaves.
+    let (_guard, mut client) = spawn(4143)?;
+    assert_mode(&mut client, "home", "boot")?;
+
+    activate_labeled(&mut client, "settings")?;
+    assert_mode(&mut client, "settings", "Home > Settings")?;
+    activate_labeled(&mut client, "controls")?;
+    assert_mode(&mut client, "controls", "Settings > Controls")?;
+    press_key(&mut client, Key::Escape)?;
+    assert_mode(&mut client, "settings", "Controls > Esc")?;
+    press_key(&mut client, Key::Escape)?;
+    assert_mode(&mut client, "home", "Settings > Esc")?;
+
+    activate_labeled(&mut client, "replays")?;
+    assert_mode(&mut client, "replays", "Home > Replays")?;
+    press_key(&mut client, Key::Escape)?;
+    assert_mode(&mut client, "home", "Replays > Esc")?;
+
+    activate_labeled(&mut client, "play")?;
+    assert_mode(&mut client, "main_menu", "Home > Play")?;
+    activate_labeled(&mut client, "skirmish")?;
+    assert_mode(&mut client, "difficulty_menu", "map picked")?;
+    activate_labeled(&mut client, "medium")?;
+    assert_mode(&mut client, "personality_menu", "difficulty picked")?;
+    // Back walks the wizard without losing the draft.
+    press_key(&mut client, Key::Escape)?;
+    assert_mode(&mut client, "difficulty_menu", "personality > Esc")?;
+    activate_labeled(&mut client, "medium")?;
+    activate_labeled(&mut client, "surprise")?;
+    assert_mode(&mut client, "faction_menu", "personality picked")?;
+    activate_labeled(&mut client, "ferrous")?;
+    assert_mode(&mut client, "playing", "faction picked starts the match")?;
+
+    press_key(&mut client, Key::Escape)?;
+    assert_mode(&mut client, "pause_menu", "Playing > Esc")?;
+    activate_labeled(&mut client, "resume")?;
+    assert_mode(&mut client, "playing", "pause > Resume")?;
+    press_key(&mut client, Key::Escape)?;
+    activate_labeled(&mut client, "restart")?;
+    assert_mode(&mut client, "confirm_pause", "destructive choices confirm")?;
+    // Cancel must sit preselected: bare Enter declines the destruction.
+    press_key(&mut client, Key::Enter)?;
+    assert_mode(&mut client, "pause_menu", "confirm > default is Cancel")?;
+    activate_labeled(&mut client, "main menu")?;
+    activate_labeled(&mut client, "main menu")?;
+    assert_mode(&mut client, "home", "pause > Main Menu confirmed")?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "spawns a real window; run explicitly in the phase battery"]
+fn a_modifier_held_on_another_screen_still_captures_its_chord() -> Result<()> {
+    // The 0.9 regression: Controls tracked modifier edges only inside
+    // its own arm, so a Ctrl pressed in Settings read as unheld and a
+    // rebind captured a bare key. Modifier truth is global now, and
+    // this walks the exact failing path. The spawned shell gets a
+    // throwaway HOME so the rebind persists into a temp config, never
+    // this machine's real one.
+    let tmp = std::env::temp_dir().join(format!("oxide-menu-ux-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp)?;
+    let (_guard, mut client) = spawn_shell(&SpawnOptions {
+        port: 4144,
+        paused: false,
+        home: Some(tmp.clone()),
+    })?;
+
+    activate_labeled(&mut client, "settings")?;
+    // Ctrl goes down HERE, on the Settings screen...
+    client.call(Request::InjectEvent {
+        event: RawEvent::KeyDown { key: Key::Ctrl },
+    })?;
+    activate_labeled(&mut client, "controls")?;
+    assert_mode(&mut client, "controls", "Settings > Controls")?;
+    // ...arm the first row and press the key while Ctrl is still held.
+    press_key(&mut client, Key::Enter)?;
+    press_key(&mut client, Key::K)?;
+    client.call(Request::InjectEvent {
+        event: RawEvent::KeyUp { key: Key::Ctrl },
+    })?;
+    let view = ui(&mut client)?;
+    let bound = view
+        .items
+        .iter()
+        .find(|item| item.contains("Ctrl+K"))
+        .cloned();
+    if bound.is_none() {
+        bail!(
+            "no row shows Ctrl+K after a held-modifier rebind; rows: {:?}",
+            view.items
+        );
+    }
+    std::fs::remove_dir_all(&tmp).ok();
     Ok(())
 }

@@ -346,10 +346,15 @@ const HARVESTER: UnitStats = UnitStats {
 };
 
 const SENTINEL: UnitStats = UnitStats {
-    max_hp: 100,
+    // 0.10 balance, third pass: 100 hp made the line unit the best
+    // value mass in the roster and the optimizer proved it (nine
+    // campaign rounds of sentinel floods). At 60 the rail one-shots
+    // it, scuttler swarms out-trade it, and turrets drop it in five
+    // hits: the sentinel is a screen and a scout, not a war-winner.
+    max_hp: 60,
     speed: Fx::lit("0.11"), // 2.2 tiles/s — armies are slightly outrun by harvesters
     radius: Fx::lit("0.35"),
-    cost: 75,
+    cost: 90, // 0.10 balance: spam pays — four campaign rounds proved 75 optimal-by-flooding
     train_ticks: 160, // 8 s
     domain: Domain::Ground,
     weapons: &[
@@ -408,7 +413,11 @@ const LANCER: UnitStats = UnitStats {
     train_ticks: 200, // 10 s
     domain: Domain::Ground,
     weapons: &[WeaponStats {
-        damage: 30,
+        // 0.10 balance: at 30 the rail matched sentinel dps at higher
+        // cost and lost par to the entire roster — the tech tree's
+        // first rung wasn't worth climbing. 60 two-shots a sentinel and
+        // one-shots the light roster; siege and air still counter.
+        damage: 60,
         range: Fx::lit("5.5"), // beyond aggro: it only uses this on orders
         cooldown_ticks: 60,    // one heavy shot per 3 s
         targets: DomainMask::GROUND,
@@ -569,7 +578,9 @@ const WISP: UnitStats = UnitStats {
 };
 
 const FOUNDRY: BuildingStats = BuildingStats {
-    max_hp: 800,
+    // 0.10 pacing: doubled so a rush can pressure but rarely close a
+    // match in single-digit minutes (measured: +60-75% match length).
+    max_hp: 1600,
     size: (2, 2),
     vision: 8,
     produces: &[UnitKind::Harvester, UnitKind::Sentinel],
@@ -616,8 +627,8 @@ const FABRICATOR: BuildingStats = BuildingStats {
     ],
     weapons: &[],
     construction: Some(ConstructionStats {
-        cost: 150,
-        build_ticks: 400, // 20 s
+        cost: 120,
+        build_ticks: 280, // 14 s — the tech window must fit inside the rush window
     }),
 };
 

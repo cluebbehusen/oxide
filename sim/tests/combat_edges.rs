@@ -404,16 +404,18 @@ fn a_sidearm_holds_fire_when_nothing_it_covers_is_in_range() {
 }
 
 #[test]
-fn a_dead_attacker_draws_no_answer_and_the_earliest_survivor_gets_it() {
-    // Three Lancers open on a Sentinel from 5.1-5.4 tiles — inside lancer
-    // range (5.5), outside the Sentinel's aggro (5), so it stands idle and
-    // can only answer through retaliation. The earliest attacker (lowest
-    // id) is cut down the same tick by two allied Lancers, so its shot
-    // buffers but its body is gone before retaliation resolves. The answer
-    // must skip the corpse and land on the earliest attacker that actually
-    // survived the volley — not the later one, not nobody. Both Foundries
-    // sit far from the victim, or the idle Sentinel would auto-acquire an
-    // enemy base inside its aggro and never reach the retaliation branch.
+fn a_dead_attacker_draws_no_answer() {
+    // A Lancer opens on a Bombard from 5.1 tiles — inside rail range
+    // (5.5), outside the Bombard's aggro (5), so it stands idle and can
+    // only answer through retaliation. (The Bombard stars because it is
+    // the one chassis that survives a rail hit and answers ground —
+    // the 0.10 rail one-shots the 60-hp Sentinel.) The attacker is cut
+    // down the same tick by two allied Lancers, so its shot buffers but
+    // its body is gone before retaliation resolves. The corpse must
+    // draw no answer: the victim eats the hit and stays idle. Both
+    // Foundries sit far from the victim, or the idle Bombard would
+    // auto-acquire an enemy base inside its aggro and never reach the
+    // retaliation branch.
     let scenario = Scenario {
         name: "buffered-answer".into(),
         seed: 42,
@@ -437,24 +439,22 @@ fn a_dead_attacker_draws_no_answer_and_the_earliest_survivor_gets_it() {
         ],
         players: players(),
         units: vec![
-            unit(0, UnitKind::Sentinel, 10, 10), // victim
-            unit(1, UnitKind::Lancer, 5, 9),     // A: earliest, dies this tick
-            unit(1, UnitKind::Lancer, 5, 11),    // B: earliest survivor
-            unit(1, UnitKind::Lancer, 5, 8),     // C: a later survivor
-            unit(0, UnitKind::Lancer, 4, 9),     // executioner
-            unit(0, UnitKind::Lancer, 4, 10),    // executioner
+            unit(0, UnitKind::Bombard, 10, 10), // victim (survives one rail)
+            unit(1, UnitKind::Lancer, 5, 9),    // attacker: dies this tick
+            unit(0, UnitKind::Lancer, 4, 9),    // executioner
+            unit(0, UnitKind::Lancer, 4, 10),   // executioner
         ],
         meta: None,
     };
     let mut state = scenario.build().unwrap();
     let ids: Vec<_> = state.units().iter().map(|u| u.id).collect();
-    let (victim, a, b, c, k1, k2) = (ids[0], ids[1], ids[2], ids[3], ids[4], ids[5]);
+    let (victim, a, k1, k2) = (ids[0], ids[1], ids[2], ids[3]);
 
     let report = state.tick(&[
         cmd(
             1,
             Command::Attack {
-                units: vec![a, b, c],
+                units: vec![a],
                 target: Target::Unit(victim),
                 queue: false,
             },
@@ -473,16 +473,102 @@ fn a_dead_attacker_draws_no_answer_and_the_earliest_survivor_gets_it() {
             .events
             .iter()
             .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == a)),
-        "the earliest attacker fell on the tick it fired"
+        "the attacker fell on the tick it fired"
     );
-    assert!(state.unit(b).is_some() && state.unit(c).is_some());
+    let survivor = state.unit(victim).unwrap();
+    assert!(
+        survivor.hp < UnitKind::Bombard.stats().max_hp && survivor.hp > 0,
+        "the buffered shot landed and was survivable"
+    );
     assert_eq!(
-        state.unit(victim).unwrap().order,
+        survivor.order,
+        Order::Idle,
+        "a corpse draws no answer — and nothing else was there to answer"
+    );
+}
+
+#[test]
+fn a_surviving_shooter_is_answered_when_the_victims_own_target_falls() {
+    // The fell-in-resolution arm: a Bombard's shell is mid-flight toward
+    // a standing Scuttler when a rail hits the Bombard from beyond aggro
+    // on the exact tick the shell lands. Its order still reads
+    // Attack-the-Scuttler when retaliation resolves, but that engagement
+    // is over — without the re-target arm the busy-guard would let the
+    // out-of-aggro shooter fire unanswered for another full cooldown.
+    // The answer must land on the surviving rail. (The Bombard stars
+    // because the 0.10 rail one-shots the Sentinel; shell arrival is
+    // read from sim state, so the same-tick staging is exact.)
+    let scenario = Scenario {
+        name: "fell-in-resolution".into(),
+        seed: 42,
+        map: vec![
+            "########################".into(),
+            "#1.....................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#2.....................#".into(),
+            "#......................#".into(),
+            "########################".into(),
+        ],
+        players: players(),
+        units: vec![
+            unit(0, UnitKind::Bombard, 10, 10),  // victim: fires one shell
+            unit(1, UnitKind::Scuttler, 18, 10), // dist 8: stands (aggro 5)
+            unit(1, UnitKind::Lancer, 5, 8),     // rail at 5.39: beyond aggro
+            // The fire gate needs friendly sight on the target tile —
+            // the bombard shoots past its own eyes. The spotter sits at
+            // 5.66 from the prey: inside harvester vision (6), outside
+            // the scuttler's aggro (5), so the prey keeps standing.
+            unit(0, UnitKind::Harvester, 14, 14),
+        ],
+        meta: None,
+    };
+    let mut state = scenario.build().unwrap();
+    let ids: Vec<_> = state.units().iter().map(|u| u.id).collect();
+    let (victim, prey, rail) = (ids[0], ids[1], ids[2]);
+
+    state.tick(&[cmd(
+        0,
+        Command::Attack {
+            units: vec![victim],
+            target: Target::Unit(prey),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 20, |s, _| !s.shells().is_empty());
+    let arrival = state.shells()[0].arrival;
+    while state.current_tick() < arrival {
+        state.tick(&[]);
+    }
+    // The rail's first shot lands on its command tick — the same tick
+    // the shell resolves and the prey dies.
+    state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: vec![rail],
+            target: Target::Unit(victim),
+            queue: false,
+        },
+    )]);
+    assert!(state.unit(prey).is_none(), "the shell killed the prey");
+    let answered = state.unit(victim).unwrap();
+    assert!(answered.hp > 0, "one rail hit is survivable for a bombard");
+    assert_eq!(
+        answered.order,
         Order::Attack {
-            target: Target::Unit(b),
+            target: Target::Unit(rail),
             resume: None
         },
-        "the answer skips the corpse and lands on the earliest survivor"
+        "the surviving out-of-aggro shooter gets the answer"
     );
 }
 

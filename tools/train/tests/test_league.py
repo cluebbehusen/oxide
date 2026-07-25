@@ -16,9 +16,18 @@ import numpy as np
 import pytest
 import torch
 
-from league import Job, faction_knob, rollout, sample_condition
+from league import (
+    FAB_BUILT,
+    TEL,
+    Job,
+    comp_entropy,
+    faction_knob,
+    rollout,
+    sample_condition,
+    tech_bonus_at,
+)
 from models import make_policy
-from oxide_gym import ACTIONS, FEATURES, NET_FEATURES, Frame, SeatView
+from oxide_gym import ACTIONS, FEATURE_NAMES, FEATURES, NET_FEATURES, Frame, SeatView
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -261,3 +270,140 @@ class TestRolloutPipelining:
             assert chunk == ["send:a", "send:b", "recv:a", "recv:b"], (
                 f"pipelining broke: {chunk}"
             )
+
+
+class TestTechBonusSchedule:
+    def test_full_at_the_runs_first_update(self) -> None:
+        assert tech_bonus_at(0.08, 0, 1000) == pytest.approx(0.08)
+
+    def test_halfway_through_pays_half(self) -> None:
+        assert tech_bonus_at(0.08, 500, 1000) == pytest.approx(0.04)
+
+    def test_zero_at_and_past_the_span(self) -> None:
+        # The anneal must actually reach zero — a floor would let the
+        # shaped incentive be farmed forever instead of handing the
+        # argument back to winning.
+        assert tech_bonus_at(0.08, 1000, 1000) == 0.0
+        assert tech_bonus_at(0.08, 1500, 1000) == 0.0
+
+    def test_disabled_base_or_span_pays_nothing(self) -> None:
+        assert tech_bonus_at(0.0, 0, 1000) == 0.0
+        assert tech_bonus_at(0.08, 0, 0) == 0.0
+
+
+def _tech_view(fab: int) -> SeatView:
+    view = _view(0.5)
+    view.raw[FAB_BUILT] = fab
+    return view
+
+
+class _ResettingWorker(_ScriptedWorker):
+    """A scripted worker whose reset serves a fresh two-seat frame — for
+    rollouts that cross an episode boundary."""
+
+    def __init__(self, frames: list[Frame], reset_frame: Frame) -> None:
+        super().__init__(frames)
+        self._reset_frame = reset_frame
+
+    def reset(self, *_args: object, **_kwargs: object) -> Frame:
+        return self._reset_frame
+
+
+class TestOwnTechShaping:
+    """The round-6 shaping: a terminal bonus for having stood a
+    Fabricator this episode. Own-state only (fog-safe by construction),
+    paid on top of the game outcome, invisible to telemetry finals."""
+
+    def _rollout_two_episodes(self) -> tuple[np.ndarray, list[float]]:
+        # Episode 1: seat 0 stands a fab mid-episode and LOSES; seat 1
+        # never techs and wins. Episode 2: nobody techs, seat 0 wins.
+        frames = [
+            Frame(False, 16, seats={0: _tech_view(1), 1: _tech_view(0)}),
+            Frame(True, 32, winners=[1]),
+            Frame(False, 64, seats={0: _tech_view(0), 1: _tech_view(0)}),
+            Frame(True, 80, winners=[0]),
+        ]
+        fresh = Frame(False, 48, seats={0: _tech_view(0), 1: _tech_view(0)})
+        worker = cast("Worker", _ResettingWorker(frames, fresh))
+        job = Job(worker, "self", 0, pathlib.Path("."), np.random.default_rng(0), "cpu")
+        job.frame = Frame(False, 0, seats={0: _tech_view(0), 1: _tech_view(0)})
+        job.conditions = {0: (1000, 500, 0), 1: (1000, 500, 1000)}
+        torch.manual_seed(0)
+        policy = make_policy("mlp")
+        policy.eval()
+        TEL.clear()
+        batch, _last_val, finals = rollout(
+            policy, [job], itertools.repeat(0), 4, "cpu", tech_bonus=0.05
+        )
+        rew = batch[5]
+        return rew, finals
+
+    def test_the_bonus_pays_the_teched_seat_even_in_defeat(self) -> None:
+        rew, _finals = self._rollout_two_episodes()
+        # rew is [step, lane]; lanes follow learner_seats order, so
+        # column 0 = seat 0. Episode 1's terminal lands at step 1.
+        assert rew[1][0] == pytest.approx(-1.0 + 0.05), "teched loser"
+        assert rew[1][1] == pytest.approx(1.0), "untech'd winner gets no bonus"
+
+    def test_the_flag_resets_at_the_episode_boundary(self) -> None:
+        rew, _finals = self._rollout_two_episodes()
+        # Episode 2's winner is the seat that teched in episode 1; its
+        # terminal must be the bare outcome — stale flags would let one
+        # early fab pay rent forever.
+        assert rew[3][0] == pytest.approx(1.0)
+        assert rew[3][1] == pytest.approx(-1.0)
+
+    def test_telemetry_finals_stay_the_pure_outcome(self) -> None:
+        _rew, finals = self._rollout_two_episodes()
+        assert sorted(finals) == [-1.0, -1.0, 1.0, 1.0], (
+            "avg_final must compare across runs with and without shaping"
+        )
+        assert TEL["ep_teched"] == 1, "exactly one teched episode-seat"
+
+
+class TestCompEntropy:
+    def test_a_single_kind_army_scores_zero_bits(self) -> None:
+        raw = [0] * FEATURES
+        raw[FEATURE_NAMES.index("my_sentinels")] = 12
+        assert comp_entropy(raw) == 0.0
+
+    def test_two_equal_value_kinds_score_one_bit(self) -> None:
+        # 11 sentinels (990) vs 9 lancers (990): a perfect two-way split
+        # by cost weight.
+        raw = [0] * FEATURES
+        raw[FEATURE_NAMES.index("my_sentinels")] = 11
+        raw[FEATURE_NAMES.index("my_lancers")] = 9
+        assert abs(comp_entropy(raw) - 1.0) < 1e-9
+
+    def test_an_empty_army_scores_zero_not_nan(self) -> None:
+        assert comp_entropy([0] * FEATURES) == 0.0
+
+
+class TestMixBonus:
+    def test_the_terminal_pays_by_own_mix_entropy(self) -> None:
+        # Seat 0 ends with a perfect two-way mix (1 bit -> half the
+        # bonus); seat 1 ends with a sentinel monoculture (nothing).
+        mixed = _view(0.5)
+        mixed.raw[FEATURE_NAMES.index("my_sentinels")] = 11
+        mixed.raw[FEATURE_NAMES.index("my_lancers")] = 9
+        mono = _view(0.5)
+        mono.raw[FEATURE_NAMES.index("my_sentinels")] = 20
+        frames = [
+            Frame(False, 16, seats={0: mixed, 1: mono}),
+            Frame(True, 32, winners=[0]),
+        ]
+        fresh = Frame(False, 48, seats={0: _view(0.1), 1: _view(0.1)})
+        worker = cast("Worker", _ResettingWorker(frames, fresh))
+        job = Job(worker, "self", 0, pathlib.Path("."), np.random.default_rng(0), "cpu")
+        job.frame = Frame(False, 0, seats={0: _view(0.1), 1: _view(0.1)})
+        job.conditions = {0: (1000, 500, 0), 1: (1000, 500, 1000)}
+        torch.manual_seed(0)
+        policy = make_policy("mlp")
+        policy.eval()
+        batch, _last_val, finals = rollout(
+            policy, [job], itertools.repeat(0), 2, "cpu", mix_bonus=0.1
+        )
+        rew = batch[5]
+        assert rew[1][0] == pytest.approx(1.0 + 0.05), "1 bit earns half of 0.1"
+        assert rew[1][1] == pytest.approx(-1.0), "a monoculture earns nothing"
+        assert sorted(finals) == [-1.0, 1.0], "telemetry finals stay pure"

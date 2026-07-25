@@ -50,6 +50,14 @@ pub struct Menu {
     pressed: Option<usize>,
 }
 
+fn view_w() -> f32 {
+    crate::render::viewport().x
+}
+
+fn view_h() -> f32 {
+    crate::render::viewport().y
+}
+
 impl Menu {
     /// Builds a menu with the first row highlighted.
     pub fn new(title: impl Into<String>, items: Vec<String>) -> Self {
@@ -103,8 +111,8 @@ impl Menu {
     /// selection instead of running off the screen.
     fn layout(&self) -> (f32, f32, usize, usize) {
         let s = ui();
-        let top_bound = (screen_height() * 0.36).max(screen_height() * 0.28 + 64.0 * s);
-        let bottom_bound = screen_height() - 64.0 * s;
+        let top_bound = (view_h() * 0.36).max(view_h() * 0.28 + 64.0 * s);
+        let bottom_bound = view_h() - 64.0 * s;
         let avail = (bottom_bound - top_bound).max(ITEM_HEIGHT * s);
         let n = self.items.len().max(1);
         let row = (avail / n as f32).clamp(30.0 * s, ITEM_HEIGHT * s);
@@ -123,7 +131,7 @@ impl Menu {
             return None;
         }
         Some(Rect::new(
-            (screen_width() - ITEM_WIDTH * s) * 0.5,
+            (view_w() - ITEM_WIDTH * s) * 0.5,
             top + (index - first) as f32 * row,
             ITEM_WIDTH * s,
             row - 6.0 * s,
@@ -247,8 +255,8 @@ impl Menu {
         let dims = measure_text(&self.title, None, title_size as u16, 1.0);
         draw_text(
             &self.title,
-            (screen_width() - dims.width) * 0.5,
-            screen_height() * 0.28,
+            (view_w() - dims.width) * 0.5,
+            view_h() * 0.28,
             title_size,
             TITLE_COLOR,
         );
@@ -256,15 +264,15 @@ impl Menu {
         // spilling off both window edges reads as a defect, not a hook.
         let mut sub_size = 20.0 * s;
         let mut sub_dims = measure_text(subtitle, None, sub_size as u16, 1.0);
-        let max_width = screen_width() * 0.55;
+        let max_width = view_w() * 0.55;
         if sub_dims.width > max_width {
             sub_size = (sub_size * max_width / sub_dims.width).max(12.0 * s);
             sub_dims = measure_text(subtitle, None, sub_size as u16, 1.0);
         }
         draw_text(
             subtitle,
-            (screen_width() - sub_dims.width) * 0.5,
-            screen_height() * 0.28 + 34.0 * s,
+            (view_w() - sub_dims.width) * 0.5,
+            view_h() * 0.28 + 34.0 * s,
             sub_size,
             DIM,
         );
@@ -307,8 +315,8 @@ impl Menu {
         let hint_dims = measure_text(hint, None, (18.0 * s) as u16, 1.0);
         draw_text(
             hint,
-            (screen_width() - hint_dims.width) * 0.5,
-            screen_height() - 24.0 * s,
+            (view_w() - hint_dims.width) * 0.5,
+            view_h() - 24.0 * s,
             18.0 * s,
             DIM,
         );
@@ -337,7 +345,7 @@ impl PreviewCache {
                     None => Scenario::skirmish(),
                 };
                 let state = scenario.build().ok()?;
-                let pixmap = oxide_driver::render::render_state(&state);
+                let pixmap = oxide_kit::render::render_state(&state);
                 let texture = Texture2D::from_rgba8(
                     pixmap.width() as u16,
                     pixmap.height() as u16,
@@ -378,10 +386,16 @@ pub fn discover_scenarios() -> Vec<ScenarioEntry> {
         paths.sort();
         for path in paths {
             if let Ok(scenario) = Scenario::load(&path) {
-                let blurb = scenario
-                    .meta
-                    .as_ref()
-                    .map(|m| format!("{}  [{} - {} - {}]", m.hook, m.pace, m.mode, m.richness));
+                let blurb = scenario.meta.as_ref().map(|m| {
+                    // Only badges that exist: a missing field must
+                    // not render as a dangling separator.
+                    let badges: Vec<&str> = [&m.pace, &m.mode, &m.richness]
+                        .into_iter()
+                        .filter(|s| !s.is_empty())
+                        .map(String::as_str)
+                        .collect();
+                    format!("{}  [{}]", m.hook, badges.join(" - "))
+                });
                 let theme = scenario
                     .meta
                     .as_ref()

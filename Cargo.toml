@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["chassis", "sim", "protocol", "shell", "driver"]
+members = ["chassis", "sim", "protocol", "kit", "shell", "driver"]
 
 [workspace.package]
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024"
 rust-version = "1.93"
 publish = false
@@ -19,6 +19,7 @@ thiserror = "2"
 chassis = { path = "chassis" }
 oxide-sim = { path = "sim" }
 oxide-protocol = { path = "protocol" }
+oxide-kit = { path = "kit" }
 
 # `cargo run` is how the game is played day to day, and an unoptimized
 # `fixed`-point sim ticks ~25x slower than release — big battles would eat

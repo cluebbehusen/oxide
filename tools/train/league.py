@@ -71,10 +71,16 @@ def timed(key: str) -> Iterator[None]:
         TEL[key] += time.perf_counter() - t
 
 
-def generate(seed: int, out_dir: str, players: int = 2, teams: bool = False) -> str:
+def generate(
+    seed: int,
+    out_dir: str,
+    players: int = 2,
+    teams: bool = False,
+    pace: str | None = None,
+) -> str:
     """mapgen.generate with its wall time metered."""
     with timed("mapgen_sec"):
-        return _generate(seed, out_dir, players=players, teams=teams)
+        return _generate(seed, out_dir, players=players, teams=teams, pace=pace)
 
 
 # Potential-based shaping: a small dense signal that guides the value
@@ -106,6 +112,63 @@ def style_reward(raw: list[int], aggression: int) -> float:
     return STYLE_K * lean * out_fighting
 
 
+FAB_BUILT = FEATURE_NAMES.index("fab_built")
+
+# The agent's own army-count features with rough unit costs (varied
+# roles use the midpoint of their two faction kinds) — the same
+# cost-weighted lens the fun gate judges with.
+ARMY_FEATURES = [
+    (FEATURE_NAMES.index("my_harvesters"), 50.0),
+    (FEATURE_NAMES.index("my_sentinels"), 90.0),
+    (FEATURE_NAMES.index("my_scuttlers"), 40.0),
+    (FEATURE_NAMES.index("my_lancers"), 110.0),
+    (FEATURE_NAMES.index("my_bombards"), 200.0),
+    (FEATURE_NAMES.index("my_antiair"), 67.0),
+    (FEATURE_NAMES.index("my_airground"), 125.0),
+    (FEATURE_NAMES.index("my_airair"), 90.0),
+]
+
+
+def comp_entropy(raw: list[int]) -> float:
+    """Shannon entropy (bits) of the seat's OWN cost-weighted army mix —
+    fog-safe by construction, exactly the fun gate's spam metric applied
+    to the one army the agent always sees: its own."""
+    weights = [raw[i] * cost for i, cost in ARMY_FEATURES]
+    total = sum(weights)
+    if total <= 0.0:
+        return 0.0
+    h = 0.0
+    for w in weights:
+        if w > 0.0:
+            p = w / total
+            h -= p * float(np.log2(p))
+    return h
+
+
+def tech_bonus_at(base: float, rel_update: int, span: int) -> float:
+    """The own-tech terminal bonus's annealing schedule: full at the
+    run's first update, linearly down to zero at `span` updates in.
+
+    The bonus itself is fog-safe by construction — it reads the seat's
+    OWN fabricator count, never enemy state (a reward built from what
+    the agent happens to know about the enemy teaches blindness). The
+    anneal hands the argument back to winning: the bonus exists to get
+    the tech tree explored early, not to be farmed at convergence."""
+    if base == 0.0 or span <= 0:
+        return 0.0
+    return base * max(0.0, 1.0 - rel_update / span)
+
+
+def unit_interval(text: str) -> float:
+    """argparse type for decay factors: finite, in [0, 1]. A negative
+    decay flips the KL sign on odd updates and actively rewards
+    diverging from the anchor; nan poisons the loss silently."""
+    value = float(text)
+    if not np.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise argparse.ArgumentTypeError(f"decay must be finite in [0, 1], got {text}")
+    return value
+
+
 def faction_knob(seat: int) -> int:
     """The seat's faction, by the map convention every shipped and
     generated scenario follows: even seats run Ferrous (0), odd seats
@@ -124,22 +187,22 @@ def sample_condition(rng: np.random.Generator, seat: int) -> tuple[int, int, int
 
 def maybe_blunder(
     action: int,
-    logits: np.ndarray,
-    mask: np.ndarray,
+    _logits: np.ndarray,
+    _mask: np.ndarray,
     skill: int,
     rng: np.random.Generator,
 ) -> int:
     """Env-noise blunders, sticky-actions style: the executed action is
-    degraded, the policy trains on what it intended. Near-best picks —
-    a blunder is a plausible mistake, not madness."""
+    degraded, the policy trains on what it intended. A blunder is
+    HESITATION (the decision window passes unused) — matching the
+    shipped sim's model, so sub-1000 conditioning trains under exactly
+    the degradation it deploys with. The old near-best-pick blunders
+    kept spending the Fabricator fund mid-save, which both taught the
+    policy that low skill means spam and mismatched the runtime."""
     eps = (1000 - skill) / 2000.0  # skill 400 -> 30% blunders
     if eps <= 0 or rng.random() >= eps:
         return action
-    order = np.argsort(-logits)
-    legal = [int(i) for i in order if mask[i]]
-    if len(legal) < 2:
-        return action
-    return int(rng.choice(legal[1 : min(3, len(legal))]))
+    return 0  # Action IDLE
 
 
 # Rush teacher — the v3 action menu; feature indices resolved by name.
@@ -211,6 +274,10 @@ class Job:
         # invalid and masked out of the PPO update.
         self.dead: set[int] = set()
         self.last_views: dict[int, SeatView] = {}
+        # Learner seats that stood a Fabricator at any point this
+        # episode. Lives on the Job, not the Lane, because episodes span
+        # rollout windows and Lanes are recreated per window.
+        self.teched: set[int] = set()
         if kind == "self":
             self.learner_seats = [0, 1]
             self.opp_seat = None
@@ -257,10 +324,19 @@ class Job:
     def _reset(self, seed: int) -> None:
         self.dead = set()
         self.last_views = {}
+        self.teched = set()
         self.conditions = {s: sample_condition(self.rng, s) for s in self.learner_seats}
         scenario = None
         if self.maps == "random":
             scenario = generate(seed % 100_000, cache_dir("oxide-maps-train"))
+        elif self.maps == "grand":
+            # The pacing curriculum: 1v1 lanes on the big classes only,
+            # where the shipped tens-of-minutes game lives. The ffa and
+            # team arms below keep their own draws — four bases at vast
+            # scale price the sim out of a laptop rollout.
+            scenario = generate(
+                seed % 100_000, cache_dir("oxide-maps-train-grand"), pace="grand"
+            )
         if self.kind == "ffa":
             scenario = generate(
                 seed % 100_000, cache_dir("oxide-maps-train4"), players=4
@@ -376,6 +452,8 @@ def rollout(
     seeds: Iterator[int],
     steps: int,
     device: str,
+    tech_bonus: float = 0.0,
+    mix_bonus: float = 0.0,
 ) -> tuple[tuple[np.ndarray, ...], np.ndarray, list[float]]:
     lanes = {(id(j), s): Lane(j.worker, s) for j in jobs for s in j.learner_seats}
     finished_rewards = []
@@ -452,7 +530,20 @@ def rollout(
             if frame.done:
                 for s in j.learner_seats:
                     lane = lanes[(id(j), s)]
-                    lane.rew.append(frame.reward(s))
+                    # The shaping rides only the training reward;
+                    # finished_rewards stays the pure game outcome so
+                    # avg_final telemetry compares across runs.
+                    mut_bonus = tech_bonus if s in j.teched else 0.0
+                    if s in j.teched:
+                        TEL["ep_teched"] += 1
+                    if mix_bonus > 0.0:
+                        # The seat's frozen last view carries its final
+                        # army; two bits (a real three-way mix) earns
+                        # the full bonus.
+                        h = comp_entropy(j.seat_view(s).raw)
+                        TEL["mix_ent"] += h
+                        mut_bonus += mix_bonus * min(h, 2.0) / 2.0
+                    lane.rew.append(frame.reward(s) + mut_bonus)
                     lane.done.append(True)
                     finished_rewards.append(frame.reward(s))
                 j.reset(next(seeds))
@@ -469,6 +560,8 @@ def rollout(
                         lane.done.append(False)
                         continue
                     raw = frame.seats[s].raw
+                    if raw[FAB_BUILT] > 0:
+                        j.teched.add(s)
                     pot = potential(raw)
                     lane.rew.append(
                         -1e-4
@@ -584,7 +677,42 @@ def main() -> None:
     )
     ap.add_argument("--anchor-coef", type=float, default=0.05)
     ap.add_argument(
-        "--maps", default="fixed", help="fixed | random (fresh map per episode)"
+        "--anchor-decay",
+        type=unit_interval,
+        default=0.995,
+        help="per-update anchor decay; 1.0 holds the anchor constant "
+        "(style retention for the whole run — the round-3 lesson: a "
+        "decayed anchor lets PPO grind imitation-taught tech back out)",
+    )
+    ap.add_argument(
+        "--tech-bonus",
+        type=float,
+        default=0.0,
+        help="terminal bonus paid when the episode ever stood a "
+        "Fabricator (own-state only, fog-safe); annealed linearly to "
+        "zero across --tech-anneal updates. 0 disables.",
+    )
+    ap.add_argument(
+        "--tech-anneal",
+        type=int,
+        default=0,
+        help="updates from this run's start until --tech-bonus reaches "
+        "zero (0 = the full --updates span)",
+    )
+    ap.add_argument(
+        "--mix-bonus",
+        type=float,
+        default=0.0,
+        help="terminal bonus scaled by the seat's OWN cost-weighted "
+        "army-mix entropy (fog-safe; 2 bits earns the full bonus); "
+        "annealed on the same schedule as --tech-bonus. 0 disables.",
+    )
+    ap.add_argument(
+        "--maps",
+        default="fixed",
+        help="fixed | random (fresh map per episode) | grand (fresh map "
+        "per episode, 1v1 lanes drawn from the large/vast classes only "
+        "— the pacing curriculum)",
     )
     ap.add_argument(
         "--mix",
@@ -632,7 +760,7 @@ def main() -> None:
 
     seeds = seed_stream()
 
-    if args.maps == "random":
+    if args.maps in ("random", "grand"):
         # Cold-cache map generation costs a driver subprocess per map
         # (~34% of an update when the cache is empty). A daemon warmer
         # stays a few seeds ahead of the cursor so the hot path only
@@ -645,7 +773,14 @@ def main() -> None:
                 target = consumed[0] + 1 + 2 * args.workers
                 while warmed < target:
                     warmed = max(warmed, consumed[0] + 1)
-                    _generate(warmed % 100_000, cache_dir("oxide-maps-train"))
+                    if args.maps == "grand":
+                        _generate(
+                            warmed % 100_000,
+                            cache_dir("oxide-maps-train-grand"),
+                            pace="grand",
+                        )
+                    else:
+                        _generate(warmed % 100_000, cache_dir("oxide-maps-train"))
                     _generate(
                         warmed % 100_000, cache_dir("oxide-maps-train4"), players=4
                     )
@@ -666,7 +801,22 @@ def main() -> None:
         for update in range(start_update + 1, start_update + args.updates + 1):
             t0 = time.time()
             TEL.clear()
-            batch, last_val, finals = rollout(policy, jobs, seeds, args.steps, device)
+            # The anneal runs on THIS run's clock, not the absolute one:
+            # a resumed consolidation wants its exploration push at its
+            # own start, wherever the parent's clock stands.
+            tb = tech_bonus_at(
+                args.tech_bonus,
+                update - start_update - 1,
+                args.tech_anneal or args.updates,
+            )
+            mb = tech_bonus_at(
+                args.mix_bonus,
+                update - start_update - 1,
+                args.tech_anneal or args.updates,
+            )
+            batch, last_val, finals = rollout(
+                policy, jobs, seeds, args.steps, device, tech_bonus=tb, mix_bonus=mb
+            )
             rollout_sec = time.time() - t0
             obs_b, mask_b, act_b, logp_b, val_b, rew_b, done_b, valid_b = batch
             adv, ret = gae(rew_b, done_b, val_b, last_val)
@@ -694,7 +844,7 @@ def main() -> None:
                 device,
                 value_only=update <= args.value_warmup,
                 anchor=anchor,
-                anchor_coef=args.anchor_coef * (0.995**update),
+                anchor_coef=args.anchor_coef * (args.anchor_decay**update),
             )
             decisions = int(obs_b.shape[0]) * int(obs_b.shape[1])
             entry = {
@@ -711,10 +861,12 @@ def main() -> None:
                 "update_sec": round(time.time() - t_update, 2),
                 "decisions_s": round(decisions / max(rollout_sec, 1e-9)),
                 **{
-                    k: (int(v) if k == "resets" else round(v, 2))
+                    k: (int(v) if k in ("resets", "ep_teched") else round(v, 2))
                     for k, v in sorted(TEL.items())
                 },
             }
+            if args.tech_bonus:
+                entry["tech_bonus"] = round(tb, 4)
             if update % args.pool_every == 0:
                 save_policy(
                     policy,

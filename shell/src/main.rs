@@ -27,6 +27,7 @@ mod menu;
 mod panel;
 mod render;
 mod saves;
+mod screens;
 mod tutorial;
 
 use anyhow::{Context, Result};
@@ -35,7 +36,7 @@ use debug_server::IncomingRequest;
 use game::{Game, GameReplay, SoundKind};
 use macroquad::audio::{PlaySoundParams, play_sound};
 use macroquad::prelude::*;
-use menu::{Menu, PreviewCache, ScenarioEntry};
+use menu::{Menu, PreviewCache};
 use oxide_protocol::{
     AdvancedView, CameraView, HashView, Key, MouseButton, OverlayView, RawEvent, Reply, Request,
     ResponseEnvelope, SavedView, ScreenshotView, StateView, StatusView, UiView,
@@ -174,101 +175,29 @@ async fn main() {
 enum Mode {
     /// The front door: play, settings, quit.
     Home,
-    /// Settings: Enter cycles a row's value; changes apply live and
-    /// persist on the spot.
+    /// Settings and the Controls remap screen (state in the `settings`
+    /// session local).
     Settings,
-    /// Key remapping: Enter arms a row, the next key becomes its chord.
-    Controls {
-        /// The action row armed for rebinding, if any.
-        rebinding: Option<usize>,
-    },
-    /// Scenario picker (the first New Match screen).
-    MainMenu,
-    /// Difficulty picker for the chosen scenario.
-    DifficultyMenu,
-    /// Personality picker (after difficulty).
-    PersonalityMenu,
-    /// Faction picker (after personality) — which roster the human plays.
-    FactionMenu,
+    /// The New Match wizard (map, difficulty, personality, faction);
+    /// its state lives in the `wizard` session local.
+    Wizard,
     /// The game proper.
     Playing,
     /// Read-only replay playback: the log is the match, seek included.
     Playback,
-    /// The replay shelf: autosaves and local records, watch or delete.
-    Replays {
-        /// Row armed for deletion — X once arms, X again on the same
-        /// row deletes.
-        arming: Option<usize>,
-    },
-    /// Game visible but veiled; the pause menu owns input.
-    PauseMenu,
-    /// A destructive pause choice awaiting explicit confirmation.
-    ConfirmPause {
-        /// The pause-menu row being confirmed (restart / main menu /
-        /// quit).
-        choice: usize,
-    },
+    /// The replay shelf (state in the `shelf` session local).
+    Replays,
+    /// Game visible but veiled; the pause screen owns input (state in
+    /// the `pause` session local, confirmation included).
+    Pause,
 }
 
-/// Everything New Match has chosen so far. The draft outlives every
-/// screen transition: backing from Faction to Difficulty to the map
-/// list and forward again re-offers each earlier answer instead of
-/// forgetting it.
-struct NewMatchDraft {
-    /// The loaded map, once picked.
-    scenario: Option<Box<Scenario>>,
-    /// Map-list row, for re-preselection.
-    scenario_choice: usize,
-    /// Difficulty row (indexes `Level::LADDER`).
-    level_choice: usize,
-    /// Personality row (feeds `personality_knob`).
-    personality_choice: usize,
-    /// Faction row (Ferrous / Cupric / surprise).
-    faction_choice: usize,
-}
+use screens::wizard::{NewMatchDraft, Out as WizardOut, Step as WizardStep, Wizard};
 
-impl Default for NewMatchDraft {
-    fn default() -> Self {
-        Self {
-            scenario: None,
-            scenario_choice: 0,
-            level_choice: 1, // Medium is the fair default
-            personality_choice: 0,
-            faction_choice: 0,
-        }
-    }
-}
-
-/// The wizard's menus, each preselected from the draft.
-fn difficulty_menu(draft: &NewMatchDraft) -> Menu {
-    let mut items: Vec<String> = DIFFICULTY_ITEMS.iter().map(|s| s.to_string()).collect();
-    items.push("Back".to_string());
-    let mut menu = Menu::new("DIFFICULTY", items);
-    menu.select(draft.level_choice.min(DIFFICULTY_ITEMS.len() - 1));
-    menu
-}
-
-fn personality_menu(draft: &NewMatchDraft) -> Menu {
-    let mut items: Vec<String> = PERSONALITY_ITEMS.iter().map(|s| s.to_string()).collect();
-    items.push("Back".to_string());
-    let mut menu = Menu::new("OPPONENT", items);
-    menu.select(draft.personality_choice.min(PERSONALITY_ITEMS.len() - 1));
-    menu
-}
-
-fn faction_menu(draft: &NewMatchDraft) -> Menu {
-    let mut items: Vec<String> = FACTION_ITEMS.iter().map(|s| s.to_string()).collect();
-    items.push("Back".to_string());
-    let mut menu = Menu::new("FACTION", items);
-    menu.select(draft.faction_choice.min(FACTION_ITEMS.len() - 1));
-    menu
-}
-
-/// Builds the game the draft describes.
 fn launch(draft: &NewMatchDraft) -> Result<Game> {
     let mut scenario = (**draft.scenario.as_ref().context("draft has a map")?).clone();
     let level = oxide_sim::bot::Level::LADDER[draft.level_choice.min(3)];
-    let aggression = personality_knob(draft.personality_choice);
+    let aggression = screens::wizard::personality_knob(draft.personality_choice);
     let config = oxide_sim::scenario::BotConfig { level, aggression };
     for player in scenario.players.iter_mut().filter(|p| p.bot) {
         player.bot_config = Some(config);
@@ -302,19 +231,6 @@ fn launch(draft: &NewMatchDraft) -> Result<Game> {
     Game::new(scenario)
 }
 
-const DIFFICULTY_ITEMS: [&str; 4] = ["Easy", "Medium", "Hard", "Expert"];
-const PERSONALITY_ITEMS: [&str; 4] = ["Surprise me", "Turtle", "Balanced", "Aggressive"];
-const FACTION_ITEMS: [&str; 3] = ["Ferrous", "Cupric", "Surprise me"];
-
-fn personality_knob(choice: usize) -> Option<u32> {
-    match choice {
-        1 => Some(100), // Turtle
-        2 => Some(500), // Balanced
-        3 => Some(900), // Aggressive
-        _ => None,      // Surprise me: dealt from the scenario seed
-    }
-}
-
 /// Moves a seat onto a roster, keeping any faction-derived name honest:
 /// the shipped maps name seats after their faction ("Cupric", "West
 /// Ferrous"), and a stale name makes the victory banner announce the
@@ -339,129 +255,6 @@ struct PendingScreenshot {
 
 /// Home rows; Continue appears only when a compatible autosave exists,
 /// so the returned flag says whether row indices are shifted by one.
-fn home_menu() -> (Menu, bool) {
-    let resumable = autosave::latest_compatible().is_some();
-    let mut items = Vec::new();
-    if resumable {
-        items.push("Continue".to_string());
-    }
-    items.extend(["Play", "Tutorial", "Replays", "Settings", "Quit"].map(str::to_string));
-    (Menu::new("OXIDE", items), resumable)
-}
-
-/// The settings rows: label, the value steps it cycles through, and a
-/// getter/setter pair over the config. Enter advances to the next step;
-/// every change applies live and saves.
-fn settings_menu(config: &config::Config) -> Menu {
-    let pct = |v: f32| format!("{}%", (v * 100.0).round());
-    let onoff = |v: bool| if v { "on" } else { "off" };
-    Menu::new(
-        "SETTINGS",
-        vec![
-            format!("Master volume: {}", pct(config.volumes.master)),
-            format!("Effects volume: {}", pct(config.volumes.effects)),
-            format!("UI volume: {}", pct(config.volumes.ui)),
-            format!("UI scale: {}", pct(config.ui_scale)),
-            format!("Edge pan: {}", onoff(config.camera.edge_pan)),
-            format!("Invert zoom: {}", onoff(config.camera.zoom_inverted)),
-            format!("Reduced motion: {}", onoff(config.reduced_motion)),
-            "Controls...".to_string(),
-            "Back".to_string(),
-        ],
-    )
-}
-
-/// Advances one settings row to its next value step. Returns false on
-/// the Back row.
-fn cycle_setting(config: &mut config::Config, row: usize) -> bool {
-    let step = |v: f32| {
-        // 0 -> 25 -> 50 -> 75 -> 100 -> 0, tolerant of odd stored values.
-        let next = ((v * 4.0).round() as u32 + 1) % 5;
-        next as f32 / 4.0
-    };
-    match row {
-        0 => config.volumes.master = step(config.volumes.master),
-        1 => config.volumes.effects = step(config.volumes.effects),
-        2 => config.volumes.ui = step(config.volumes.ui),
-        3 => {
-            // 75 -> 100 -> 125 -> 150 -> 75.
-            config.ui_scale = match (config.ui_scale * 100.0).round() as u32 {
-                75 => 1.0,
-                100 => 1.25,
-                125 => 1.5,
-                _ => 0.75,
-            };
-            render::set_user_scale(config.ui_scale);
-        }
-        4 => config.camera.edge_pan = !config.camera.edge_pan,
-        5 => config.camera.zoom_inverted = !config.camera.zoom_inverted,
-        6 => {
-            config.reduced_motion = !config.reduced_motion;
-            render::set_reduced_motion(config.reduced_motion);
-        }
-        _ => return false, // Controls... and Back route in the arm
-    }
-    true
-}
-
-/// The remappable actions, in display order. Digits and structural keys
-/// (Back, Confirm, group slots) stay fixed — their meaning is
-/// positional, not preferential.
-const REMAPPABLE: [(action::Action, &str); 14] = [
-    (action::Action::StopOrScrap, "Stop / scrap site"),
-    (action::Action::TrainSlot(0), "Train slot 1"),
-    (action::Action::TrainSlot(1), "Train slot 2"),
-    (action::Action::TogglePause, "Pause"),
-    (action::Action::ToggleBuildPalette, "Build palette"),
-    (action::Action::Patrol, "Patrol"),
-    (action::Action::HomeCamera, "Center home"),
-    (action::Action::ToggleOverlay, "Debug overlay"),
-    (action::Action::PanLeft, "Pan left"),
-    (action::Action::PanRight, "Pan right"),
-    (action::Action::PanUp, "Pan up"),
-    (action::Action::PanDown, "Pan down"),
-    (action::Action::CycleIdleWorker, "Next idle harvester"),
-    (action::Action::JumpToLastAlert, "Jump to last alert"),
-];
-
-fn controls_menu(config: &config::Config) -> Menu {
-    let mut items: Vec<String> = REMAPPABLE
-        .iter()
-        .map(|(action, label)| {
-            let chord = config
-                .bindings
-                .chord_for(*action)
-                .map(action::BindingMap::chord_label)
-                .unwrap_or_else(|| "unbound".to_string());
-            format!("{label}: {chord}")
-        })
-        .collect();
-    items.push("Reset to defaults".to_string());
-    items.push("Back".to_string());
-    Menu::new("CONTROLS", items)
-}
-
-const PAUSE_ITEMS: [&str; 5] = ["Resume", "Watch Replay", "Restart", "Main Menu", "Quit"];
-
-/// Cancel sits first and preselected: confirming destruction takes a
-/// deliberate second motion, never a double-tap.
-fn confirm_menu(choice: usize) -> Menu {
-    let verb = PAUSE_ITEMS.get(choice).copied().unwrap_or("Quit");
-    Menu::new(
-        format!("{}?", verb.to_uppercase()),
-        vec!["Cancel".to_string(), verb.to_string()],
-    )
-}
-
-fn build_main_menu(draft: &NewMatchDraft) -> (Menu, Vec<ScenarioEntry>) {
-    let entries = menu::discover_scenarios();
-    let mut items: Vec<String> = entries.iter().map(|e| e.label.clone()).collect();
-    items.push("Back".to_string());
-    let mut menu = Menu::new("OXIDE", items);
-    menu.select(draft.scenario_choice.min(entries.len()));
-    (menu, entries)
-}
-
 /// Plays queued clips with a per-kind rate limit, so twenty simultaneous
 /// lasers read as battle, not noise.
 #[derive(Default)]
@@ -544,91 +337,12 @@ impl Mixer {
     }
 }
 
-/// A playback viewing session: the engine owns truth, the `Game` is a
-/// render vehicle whose state gets replaced after every advance — its
-/// recorder, sounds, and effects are simply never fed.
-struct PlaybackSession {
-    engine: oxide_driver::playback::Playback,
-    game: Game,
-    speed: f32,
-    paused: bool,
-    accum: f32,
-    held: [bool; 4],
-    /// A held minimap press steers the camera, like live play.
-    minimap_drag: bool,
-    /// Whether the viewer was opened from a live pause menu — leaving
-    /// returns there; every other origin goes Home. A tick-count
-    /// heuristic resurrected matches Main Menu had already discarded.
-    from_pause: bool,
-}
-
-impl PlaybackSession {
-    fn open(path: &str) -> Result<Self> {
-        let replay = GameReplay::load(path).with_context(|| format!("loading replay {path}"))?;
-        Self::from_replay(replay)
-    }
-
-    fn from_replay(replay: GameReplay) -> Result<Self> {
-        let scenario = replay.setup.clone();
-        let engine = oxide_driver::playback::Playback::load(replay)?;
-        let mut game = Game::new(scenario)?;
-        // Spectator truth: fog-free, but NOT the developer overlay —
-        // playback must look like the game, not the debugger.
-        game.spectate = true;
-        Ok(Self {
-            engine,
-            game,
-            speed: 1.0,
-            paused: false,
-            accum: 0.0,
-            held: [false; 4],
-            minimap_drag: false,
-            from_pause: false,
-        })
-    }
-}
-
-fn playback_hud(pb: &PlaybackSession) {
-    let s = render::ui_scale();
-    let size = 18.0 * s;
-    let full = format!(
-        "PLAYBACK  {} / {}  ·  {}x{}  ·  Space pause · PgUp/PgDn seek · Home/End · 1/2/3 speed · Esc leave",
-        pb.engine.position(),
-        pb.engine.total(),
-        pb.speed,
-        if pb.paused { "  ·  PAUSED" } else { "" },
-    );
-    // A 640px window cannot seat the controls hint; the transport
-    // numbers alone must never run off both edges.
-    let line = if measure_text(&full, None, size as u16, 1.0).width > screen_width() - 16.0 * s {
-        format!(
-            "PLAYBACK  {} / {}  ·  {}x{}",
-            pb.engine.position(),
-            pb.engine.total(),
-            pb.speed,
-            if pb.paused { "  ·  PAUSED" } else { "" },
-        )
-    } else {
-        full
-    };
-    let width = measure_text(&line, None, size as u16, 1.0).width;
-    let x = (screen_width() - width) * 0.5;
-    let y = screen_height() - 14.0 * s;
-    draw_rectangle(
-        x - 10.0 * s,
-        y - size,
-        width + 20.0 * s,
-        size + 10.0 * s,
-        Color::from_rgba(15, 15, 19, 220),
-    );
-    draw_text(&line, x, y, size, Color::from_rgba(232, 228, 216, 255));
-}
-
 async fn run() -> Result<()> {
     let args = Args::parse();
     let mut config = config::Config::load();
     render::set_user_scale(config.ui_scale);
     render::set_reduced_motion(config.reduced_motion);
+    render::set_colorblind(config.colorblind);
     let sprites = assets::Sprites::load().await?;
     let sounds = assets::Sounds::load().await?;
     let mut mixer = Mixer::default();
@@ -649,21 +363,21 @@ async fn run() -> Result<()> {
     // Launched for a purpose (a scenario, a resume, or an agent socket)?
     // Straight into the game. Everyone else — automation and humans
     // alike — starts cold at the Home front door.
-    let (mut home, mut home_resumable) = home_menu();
-    let mut playback: Option<PlaybackSession> = None;
+    let mut home = screens::home::HomeScreen::open();
+    let mut playback: Option<screens::playback::PlaybackSession> = None;
     let mut tutorial: Option<tutorial::Tutorial> = None;
     // Window-size persistence: written once the size has been stable
     // for a second — a live resize is a burst of intermediate sizes
     // nobody wants fsynced.
     let mut pending_size: Option<((u32, u32), f64)> = None;
-    let mut replay_shelf: Vec<saves::ReplayEntry> = Vec::new();
+    let mut shelf: Option<screens::shelf::Shelf> = None;
     // Modifier truth for chord capture: tracked globally from raw
     // events, every frame, whatever the mode — a Ctrl pressed on one
     // screen must still read held after a mode switch, or Controls
     // captures phantom bare chords.
     let (mut capture_ctrl, mut capture_shift) = (false, false);
     if let Some(path) = &args.watch {
-        let mut session = PlaybackSession::open(path)?;
+        let mut session = screens::playback::PlaybackSession::open(path)?;
         // The clock flags drive whichever session is visible: a viewer
         // launch applies them to the transport, not the hidden match.
         session.paused = args.paused;
@@ -681,12 +395,9 @@ async fn run() -> Result<()> {
     };
     let mut draft = NewMatchDraft::default();
     let mut previews = PreviewCache::default();
-    let mut main_menu: Option<(Menu, Vec<ScenarioEntry>)> = None;
-    let mut sub_menu = Menu::new("", Vec::new());
-    let mut pause_menu = Menu::new(
-        "PAUSED",
-        PAUSE_ITEMS.iter().map(|s| s.to_string()).collect(),
-    );
+    let mut wizard: Option<Wizard> = None;
+    let mut pause: Option<screens::pause::PauseScreen> = None;
+    let mut settings: Option<screens::settings::SettingsScreen> = None;
 
     // The title-bar close and Cmd-Q must reach the autosave path: left
     // to macroquad they exit the process before any save runs.
@@ -700,15 +411,17 @@ async fn run() -> Result<()> {
     let mut input = input::InputState::new();
     let mut injected: Vec<RawEvent> = Vec::new();
     let mut pending_shots: Vec<PendingScreenshot> = Vec::new();
-    let mut ui_view = capture_ui(&mode, &home, &main_menu, &sub_menu, &pause_menu, &game);
+    let mut ui_view = capture_ui(&mode, &home, &wizard, &shelf, &pause, &settings, &game);
 
     loop {
         let dt = get_frame_time();
         // The camera never queries the window itself; feed it the viewport
         // once per frame (handles live resizes, keeps camera math pure),
-        // then advance any zoom glide.
+        // then advance any zoom glide. Menus take the same injection —
+        // their update logic runs headless in tests on the default size.
         game.camera
             .set_viewport(vec2(screen_width(), screen_height()));
+        render::set_viewport(screen_width(), screen_height());
         game.camera.update(dt);
 
         if let Some(rx) = &debug_rx {
@@ -759,256 +472,172 @@ async fn run() -> Result<()> {
         let mode_before = std::mem::discriminant(&mode);
         match mode {
             Mode::Home => {
-                if let Some(choice) = home.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push((SoundKind::Click, None));
-                    let base = if home_resumable { choice } else { choice + 1 };
-                    match base {
-                        0 => {
-                            // Continue: resume the newest autosave — a
-                            // replay load, so it cannot desync from its
-                            // own history.
-                            if let Some(path) = autosave::latest_compatible()
-                                && let Ok(replay) = GameReplay::load(&path)
-                                && let Ok(fresh) = Game::from_replay(replay)
-                            {
-                                tutorial = None;
-                                game = keep_flags(fresh, &game);
-                                game.paused = false;
-                                mode = Mode::Playing;
-                                input.reset_session();
-                            } else {
-                                game.toast("that save no longer loads");
-                            }
-                        }
-                        1 => {
-                            main_menu = None;
-                            mode = Mode::MainMenu;
-                        }
-                        2 => {
-                            // The tutorial is a gentle real match with
-                            // the lesson cards riding on top.
-                            let mut scenario = Scenario::skirmish();
-                            for p in scenario.players.iter_mut().skip(1) {
-                                p.bot_config = Some(oxide_sim::scenario::BotConfig {
-                                    level: oxide_sim::bot::Level::Easy,
-                                    aggression: Some(0),
-                                });
-                            }
-                            let fresh = Game::new(scenario)?;
+                // The title scene: a cold front door drifts its camera
+                // slowly across the backdrop world instead of freezing
+                // a frame — presentation only, and only while nothing
+                // is at stake (a resumable match keeps its exact view).
+                if game.state.current_tick() == 0 && !render::reduced_motion() {
+                    game.camera.pan(vec2(dt * 0.55, dt * 0.22));
+                    let (_, hi) = game.camera.world_rect();
+                    if hi.x >= game.state.map().width() as f32 + 1.9 {
+                        game.camera.center = vec2(0.0, 0.0);
+                        game.camera.pan(vec2(0.0, 0.0)); // re-clamp home
+                    }
+                }
+                match home.update(&events, &mut input.mouse, &mut game.sounds_pending) {
+                    screens::home::Out::Stay => {}
+                    screens::home::Out::Continue => {
+                        // Resume the newest autosave — a replay load, so
+                        // it cannot desync from its own history.
+                        if let Some(path) = autosave::latest_compatible()
+                            && let Ok(replay) = GameReplay::load(&path)
+                            && let Ok(fresh) = Game::from_replay(replay)
+                        {
+                            tutorial = None;
                             game = keep_flags(fresh, &game);
                             game.paused = false;
-                            tutorial = Some(tutorial::Tutorial::new());
-                            input.reset_session();
                             mode = Mode::Playing;
-                        }
-                        3 => {
-                            replay_shelf = saves::discover();
-                            let mut rows: Vec<String> =
-                                replay_shelf.iter().map(|e| e.label.clone()).collect();
-                            rows.push("Back".to_string());
-                            sub_menu = Menu::new("REPLAYS", rows);
-                            mode = Mode::Replays { arming: None };
-                        }
-                        4 => {
-                            sub_menu = settings_menu(&config);
-                            mode = Mode::Settings;
-                        }
-                        _ => {
-                            autosave::save(&mut game);
-                            std::process::exit(0);
+                            input.reset_session();
+                        } else {
+                            game.toast("that save no longer loads");
                         }
                     }
-                }
-                render::draw(&game, &sprites, &input);
-                veil();
-                home.draw("machines eating a dead world");
-            }
-            Mode::Settings => {
-                let escaped = events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
-                if escaped {
-                    mode = Mode::Home;
-                } else if let Some(row) = sub_menu.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push((SoundKind::Click, None));
-                    if cycle_setting(&mut config, row) {
-                        // Apply live, persist immediately, keep the
-                        // cursor on the row being tuned.
-                        config.save().ok();
-                        let selected = sub_menu.selected;
-                        sub_menu = settings_menu(&config);
-                        sub_menu.select(selected);
-                    } else if row == 7 {
-                        sub_menu = controls_menu(&config);
-                        mode = Mode::Controls { rebinding: None };
-                    } else {
-                        mode = Mode::Home;
+                    screens::home::Out::Play => {
+                        wizard = Some(Wizard::open(&draft));
+                        mode = Mode::Wizard;
                     }
-                }
-                render::draw(&game, &sprites, &input);
-                veil();
-                sub_menu.draw("Enter cycles a value - changes stick immediately");
-            }
-            Mode::Controls { rebinding } => {
-                let escaped = events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
-                if let Some(row) = rebinding {
-                    // Armed: the next key IS the answer — raw, before any
-                    // binding resolution, or the old meaning would fire.
-                    // The frame's edges replay in order from the frame-
-                    // start baseline, and the modifiers are read AT the
-                    // main key's press: batch-final flags would miss a
-                    // chord whose Ctrl came back up later the same frame.
-                    let mut walk_ctrl = ctrl_at_frame_start;
-                    let mut walk_shift = shift_at_frame_start;
-                    let mut pressed: Option<(Key, bool, bool)> = None;
-                    for e in &events {
-                        match e {
-                            RawEvent::KeyDown { key: Key::Ctrl } => walk_ctrl = true,
-                            RawEvent::KeyUp { key: Key::Ctrl } => walk_ctrl = false,
-                            RawEvent::KeyDown { key: Key::Shift } => walk_shift = true,
-                            RawEvent::KeyUp { key: Key::Shift } => walk_shift = false,
-                            RawEvent::KeyDown { key } if pressed.is_none() => {
-                                pressed = Some((*key, walk_ctrl, walk_shift));
-                            }
-                            _ => {}
+                    screens::home::Out::Tutorial => {
+                        // The tutorial is a gentle real match with the
+                        // lesson cards riding on top.
+                        let mut scenario = Scenario::skirmish();
+                        for p in scenario.players.iter_mut().skip(1) {
+                            p.bot_config = Some(oxide_sim::scenario::BotConfig {
+                                level: oxide_sim::bot::Level::Easy,
+                                aggression: Some(0),
+                            });
                         }
+                        let fresh = Game::new(scenario)?;
+                        game = keep_flags(fresh, &game);
+                        game.paused = false;
+                        tutorial = Some(tutorial::Tutorial::new());
+                        input.reset_session();
+                        mode = Mode::Playing;
                     }
-                    match pressed {
-                        Some((Key::Escape, _, _)) => {
-                            mode = Mode::Controls { rebinding: None };
-                        }
-                        Some((key, ctrl_held, shift_held)) => {
-                            let (target, _) = REMAPPABLE[row];
-                            let chord = action::Chord {
-                                key,
-                                ctrl: ctrl_held,
-                                shift: shift_held,
-                            };
-                            if config.bindings.rebind(target, chord) {
-                                config.save().ok();
-                                input.bindings = config.bindings.clone();
-                                sub_menu = controls_menu(&config);
-                                sub_menu.select(row);
-                                mode = Mode::Controls { rebinding: None };
-                            } else {
-                                game.toast("that key already means something");
-                                game.sounds_pending.push((SoundKind::Denied, None));
-                                mode = Mode::Controls { rebinding: None };
-                            }
-                        }
-                        _ => {}
+                    screens::home::Out::Replays => {
+                        shelf = Some(screens::shelf::Shelf::open());
+                        mode = Mode::Replays;
                     }
-                } else if escaped {
-                    sub_menu = settings_menu(&config);
-                    sub_menu.select(7);
-                    mode = Mode::Settings;
-                } else if events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::X }))
-                    && sub_menu.selected < REMAPPABLE.len()
-                {
-                    // X on a row unbinds it — outside capture mode, so
-                    // the key is free to mean this.
-                    let (target, _) = REMAPPABLE[sub_menu.selected];
-                    config.bindings.unbind(target);
-                    config.save().ok();
-                    input.bindings = config.bindings.clone();
-                    let row = sub_menu.selected;
-                    sub_menu = controls_menu(&config);
-                    sub_menu.select(row);
-                } else if let Some(row) = sub_menu.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push((SoundKind::Click, None));
-                    if row < REMAPPABLE.len() {
-                        mode = Mode::Controls {
-                            rebinding: Some(row),
-                        };
-                    } else if row == REMAPPABLE.len() {
-                        // Reset to defaults.
-                        config.bindings = action::BindingMap::classic();
-                        config.save().ok();
-                        input.bindings = config.bindings.clone();
-                        sub_menu = controls_menu(&config);
-                        sub_menu.select(row);
-                    } else {
-                        sub_menu = settings_menu(&config);
-                        sub_menu.select(7);
+                    screens::home::Out::Settings => {
+                        settings = Some(screens::settings::SettingsScreen::open(&config));
                         mode = Mode::Settings;
                     }
+                    screens::home::Out::Quit => {
+                        autosave::save(&mut game);
+                        std::process::exit(0);
+                    }
                 }
                 render::draw(&game, &sprites, &input);
                 veil();
-                let hint = if matches!(mode, Mode::Controls { rebinding: Some(_) }) {
-                    "press the new chord (modifiers held count) - Escape cancels"
-                } else {
-                    "Enter arms a row, then press its new chord - X unbinds"
-                };
-                sub_menu.draw(hint);
+                home.menu.draw(home.subtitle());
             }
-            Mode::MainMenu => {
-                let (menu, entries) = main_menu.get_or_insert_with(|| build_main_menu(&draft));
-                let escaped = events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
-                if escaped {
+            Mode::Settings => {
+                let Some(sc) = settings.as_mut() else {
                     mode = Mode::Home;
-                } else if let Some(choice) = menu.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push((SoundKind::Click, None));
-                    if choice >= entries.len() {
-                        // The appended Back row returns to the front door.
+                    continue;
+                };
+                let up = sc.update(
+                    &events,
+                    &mut input.mouse,
+                    &mut game.sounds_pending,
+                    &mut config,
+                    &mut input.bindings,
+                    ctrl_at_frame_start,
+                    shift_at_frame_start,
+                );
+                if up.dirty {
+                    config.save().ok();
+                }
+                if let Some(text) = up.toast {
+                    game.toast(text);
+                }
+                render::draw(&game, &sprites, &input);
+                veil();
+                let sc = settings.as_ref().expect("still open");
+                sc.menu.draw(sc.hint());
+                if up.out == screens::settings::Out::Home {
+                    settings = None;
+                    mode = Mode::Home;
+                }
+            }
+            Mode::Wizard => {
+                let Some(w) = wizard.as_mut() else {
+                    mode = Mode::Home;
+                    continue;
+                };
+                match w.update(
+                    &events,
+                    &mut input.mouse,
+                    &mut draft,
+                    &mut game.sounds_pending,
+                )? {
+                    WizardOut::Home => {
+                        wizard = None;
                         mode = Mode::Home;
                         render::draw(&game, &sprites, &input);
                         veil();
-                        home.draw("machines eating a dead world");
+                        home.menu.draw(home.subtitle());
                         continue;
                     }
-                    let scenario = match &entries[choice].path {
-                        Some(path) => Scenario::load(path)
-                            .with_context(|| format!("loading {}", path.display()))?,
-                        None => Scenario::skirmish(),
-                    };
-                    draft.scenario = Some(Box::new(scenario));
-                    draft.scenario_choice = choice;
-                    sub_menu = difficulty_menu(&draft);
-                    mode = Mode::DifficultyMenu;
-                    main_menu = None;
+                    WizardOut::Launch => {
+                        let fresh = launch(&draft)?;
+                        tutorial = None;
+                        game = keep_flags(fresh, &game);
+                        game.paused = false;
+                        input.reset_session();
+                        wizard = None;
+                        mode = Mode::Playing;
+                        render::draw(&game, &sprites, &input);
+                        continue;
+                    }
+                    WizardOut::Stay => {}
                 }
                 render::draw(&game, &sprites, &input);
                 veil();
-                if let Some((menu, entries)) = &main_menu {
+                let w = wizard.as_ref().expect("still open on Stay");
+                if w.step == WizardStep::Map {
                     // The subtitle browses with the player: the
                     // highlighted map's hook and badges, the pointer's
                     // row winning over the keyboard cursor.
-                    let focus = menu.hover().unwrap_or(menu.selected);
-                    let subtitle = entries
+                    let focus = w.menu.hover().unwrap_or(w.menu.selected);
+                    let subtitle = w
+                        .entries
                         .get(focus)
                         .and_then(|e| e.blurb.as_deref())
                         .unwrap_or("machines eating a dead world");
-                    menu.draw(subtitle);
+                    w.menu.draw(subtitle);
                     // Fog-free preview of the highlighted map, softly
                     // panelled on the right.
-                    if let Some(entry) = entries.get(focus)
+                    if let Some(entry) = w.entries.get(focus)
                         && let Some(tex) = previews.get(focus, entry)
                     {
                         let s = render::ui_scale();
                         // Strictly right of the menu's own row rects —
                         // shared geometry, no independent arithmetic to
                         // drift out of sync. Too narrow? No panel.
-                        let left_bound = menu.rows_right_edge() + 24.0 * s;
+                        let left_bound = w.menu.rows_right_edge() + 24.0 * s;
                         let avail = screen_width() - left_bound - 24.0 * s;
                         let max_w = avail.min(screen_width() * 0.26);
                         let max_h = screen_height() * 0.34;
                         if max_w >= 96.0 * s {
                             let scale = (max_w / tex.width()).min(max_h / tex.height());
-                            let (w, h) = (tex.width() * scale, tex.height() * scale);
-                            let x = screen_width() - w - 24.0 * s;
-                            let y = screen_height() * 0.5 - h * 0.5;
+                            let (pw, ph) = (tex.width() * scale, tex.height() * scale);
+                            let x = screen_width() - pw - 24.0 * s;
+                            let y = screen_height() * 0.5 - ph * 0.5;
                             draw_rectangle(
                                 x - 8.0 * s,
                                 y - 8.0 * s,
-                                w + 16.0 * s,
-                                h + 16.0 * s,
+                                pw + 16.0 * s,
+                                ph + 16.0 * s,
                                 Color::from_rgba(20, 20, 24, 230),
                             );
                             draw_texture_ex(
@@ -1017,95 +646,15 @@ async fn run() -> Result<()> {
                                 y,
                                 render::theme_tint(&entry.theme),
                                 DrawTextureParams {
-                                    dest_size: Some(vec2(w, h)),
+                                    dest_size: Some(vec2(pw, ph)),
                                     ..Default::default()
                                 },
                             );
                         }
                     }
-                }
-            }
-            Mode::DifficultyMenu => {
-                let escaped = events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
-                if escaped {
-                    // Escape walks backward; the draft keeps every answer.
-                    mode = Mode::MainMenu;
-                } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push((SoundKind::Click, None));
-                    if choice >= DIFFICULTY_ITEMS.len() {
-                        mode = Mode::MainMenu;
-                    } else {
-                        draft.level_choice = choice;
-                        sub_menu = personality_menu(&draft);
-                        mode = Mode::PersonalityMenu;
-                    }
-                }
-                render::draw(&game, &sprites, &input);
-                veil();
-                // On a team map these dials set EVERY AI seat — the
-                // human's ally included; say so instead of surprising.
-                let team_map = draft
-                    .scenario
-                    .as_ref()
-                    .is_some_and(|sc| sc.players.len() > 2);
-                sub_menu.draw(if team_map {
-                    "how hard should they think? (sets every AI seat, your ally too)"
                 } else {
-                    "how hard should it think?"
-                });
-            }
-            Mode::PersonalityMenu => {
-                let escaped = events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
-                if escaped {
-                    sub_menu = difficulty_menu(&draft);
-                    mode = Mode::DifficultyMenu;
-                } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push((SoundKind::Click, None));
-                    if choice >= PERSONALITY_ITEMS.len() {
-                        sub_menu = difficulty_menu(&draft);
-                        mode = Mode::DifficultyMenu;
-                    } else {
-                        draft.personality_choice = choice;
-                        sub_menu = faction_menu(&draft);
-                        mode = Mode::FactionMenu;
-                    }
+                    w.menu.draw(w.subtitle(&draft));
                 }
-                render::draw(&game, &sprites, &input);
-                veil();
-                sub_menu.draw("how should they fight?");
-            }
-            Mode::FactionMenu => {
-                let escaped = events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
-                if escaped {
-                    sub_menu = personality_menu(&draft);
-                    mode = Mode::PersonalityMenu;
-                } else if let Some(choice) = sub_menu.handle(&events, &mut input.mouse) {
-                    game.sounds_pending.push((SoundKind::Click, None));
-                    if choice >= FACTION_ITEMS.len() {
-                        sub_menu = personality_menu(&draft);
-                        mode = Mode::PersonalityMenu;
-                        render::draw(&game, &sprites, &input);
-                        veil();
-                        sub_menu.draw("how should they fight?");
-                        continue;
-                    }
-                    draft.faction_choice = choice;
-                    let fresh = launch(&draft)?;
-                    tutorial = None;
-                    game = keep_flags(fresh, &game);
-                    game.paused = false;
-                    mode = Mode::Playing;
-                    input.reset_session();
-                }
-                render::draw(&game, &sprites, &input);
-                veil();
-                sub_menu.draw("which roster do your machines run?");
             }
             Mode::Playing => {
                 // The tutorial card is chrome: a click on it (the
@@ -1149,6 +698,9 @@ async fn run() -> Result<()> {
                 input.camera_prefs = config.camera;
                 input::apply_events(&mut game, &mut input, &events);
                 input::update_held(&mut game, &input, dt);
+                // The cursor telegraphs the verb: crosshair while
+                // placing or plotting, pointer over chrome.
+                macroquad::miniquad::window::set_mouse_cursor(input::desired_cursor(&game, &input));
                 // Escape walks outward: deselect first, then the menu —
                 // except over a decided match, where the banner promises
                 // 'Press Esc to continue' and must mean it even with a
@@ -1156,7 +708,10 @@ async fn run() -> Result<()> {
                 if escape_pressed && (!had_selection || game.state.result().is_some()) {
                     game.paused = true;
                     game.demo.paused_menu = true;
-                    mode = Mode::PauseMenu;
+                    pause = Some(screens::pause::PauseScreen::open(
+                        game.state.result().is_some(),
+                    ));
+                    mode = Mode::Pause;
                 }
                 if let Some(t) = tutorial.as_mut() {
                     if !t.advance(&game.demo) {
@@ -1181,8 +736,7 @@ async fn run() -> Result<()> {
                     let mut replay = game.recorder.clone();
                     let total = game.state.current_tick();
                     replay.meta.ticks = Some(total);
-                    game.end_stats =
-                        oxide_driver::stats::compute(&replay, (total / 48).max(1)).ok();
+                    game.end_stats = oxide_kit::stats::compute(&replay, (total / 48).max(1)).ok();
                 }
                 render::draw(&game, &sprites, &input);
                 if let Some(t) = &tutorial {
@@ -1191,81 +745,14 @@ async fn run() -> Result<()> {
             }
             Mode::Playback => {
                 if let Some(pb) = playback.as_mut() {
-                    let mut seek_to: Option<u64> = None;
-                    let mut leave = false;
-                    for e in &events {
-                        match e {
-                            RawEvent::MouseMove { x, y } => {
-                                input.mouse = vec2(*x, *y);
-                                // A held minimap press keeps steering,
-                                // clamped so sliding off the edge doesn't
-                                // stall the pan — same feel as live play.
-                                if pb.minimap_drag {
-                                    let rect = render::minimap_rect(&pb.game);
-                                    let clamped = vec2(
-                                        x.clamp(rect.x, rect.x + rect.w - 1.0),
-                                        y.clamp(rect.y, rect.y + rect.h - 1.0),
-                                    );
-                                    if let Some(world) = render::minimap_world_at(&pb.game, clamped)
-                                    {
-                                        pb.game.camera.center = world;
-                                        pb.game.camera.pan(vec2(0.0, 0.0));
-                                    }
-                                }
-                            }
-                            RawEvent::MouseDown {
-                                button: MouseButton::Left,
-                                x,
-                                y,
-                            } => {
-                                input.mouse = vec2(*x, *y);
-                                if let Some(world) = render::minimap_world_at(&pb.game, input.mouse)
-                                {
-                                    pb.game.camera.center = world;
-                                    pb.game.camera.pan(vec2(0.0, 0.0));
-                                    pb.minimap_drag = true;
-                                }
-                            }
-                            RawEvent::MouseUp {
-                                button: MouseButton::Left,
-                                ..
-                            } => pb.minimap_drag = false,
-                            RawEvent::Wheel { delta } => {
-                                let delta = if config.camera.zoom_inverted {
-                                    -*delta
-                                } else {
-                                    *delta
-                                };
-                                pb.game.camera.zoom_at(input.mouse, delta);
-                            }
-                            RawEvent::KeyDown { key } => match key {
-                                Key::Escape => leave = true,
-                                Key::Space => pb.paused = !pb.paused,
-                                Key::PageUp => {
-                                    seek_to = Some(pb.engine.position().saturating_sub(500));
-                                }
-                                Key::PageDown => seek_to = Some(pb.engine.position() + 500),
-                                Key::Home => seek_to = Some(0),
-                                Key::End => seek_to = Some(pb.engine.total()),
-                                Key::Num1 => pb.speed = 0.5,
-                                Key::Num2 => pb.speed = 1.0,
-                                Key::Num3 => pb.speed = 4.0,
-                                Key::Up => pb.held[0] = true,
-                                Key::Down => pb.held[1] = true,
-                                Key::Left => pb.held[2] = true,
-                                Key::Right => pb.held[3] = true,
-                                _ => {}
-                            },
-                            RawEvent::KeyUp { key } => match key {
-                                Key::Up => pb.held[0] = false,
-                                Key::Down => pb.held[1] = false,
-                                Key::Left => pb.held[2] = false,
-                                Key::Right => pb.held[3] = false,
-                                _ => {}
-                            },
-                            _ => {}
-                        }
-                    }
+                    let leave = pb.update(
+                        &events,
+                        dt,
+                        vec2(screen_width(), screen_height()),
+                        config.camera.zoom_inverted,
+                        config.camera.pan_speed,
+                        &mut input.mouse,
+                    );
                     if leave {
                         let back_to_pause = pb.from_pause;
                         playback = None;
@@ -1273,221 +760,115 @@ async fn run() -> Result<()> {
                         // match is still waiting. Cold --watch or the
                         // shelf goes back Home.
                         if back_to_pause {
-                            mode = Mode::PauseMenu;
+                            pause = Some(screens::pause::PauseScreen::open(
+                                game.state.result().is_some(),
+                            ));
+                            mode = Mode::Pause;
                         } else {
-                            (home, home_resumable) = home_menu();
+                            home = screens::home::HomeScreen::open();
                             mode = Mode::Home;
                         }
                         continue;
                     }
-                    let mut dir = vec2(0.0, 0.0);
-                    if pb.held[0] {
-                        dir.y -= 1.0;
-                    }
-                    if pb.held[1] {
-                        dir.y += 1.0;
-                    }
-                    if pb.held[2] {
-                        dir.x -= 1.0;
-                    }
-                    if pb.held[3] {
-                        dir.x += 1.0;
-                    }
-                    if dir != vec2(0.0, 0.0) {
-                        let world_per_sec = 240.0 * config.camera.pan_speed / pb.game.camera.zoom;
-                        pb.game.camera.pan(dir.normalize() * world_per_sec * dt);
-                    }
-                    if let Some(target) = seek_to {
-                        pb.engine.seek(target);
-                        pb.accum = 0.0;
-                        // A seek is a bulk jump: presentation resyncs
-                        // silently instead of replaying a burst.
-                        pb.game.drop_presentation();
-                        pb.game.state = pb.engine.state.clone();
-                    } else if !pb.paused && !pb.engine.at_end() {
-                        pb.accum += dt * pb.speed;
-                        let ticks = (pb.accum / game::TICK_DT) as u64;
-                        if ticks > 0 {
-                            pb.accum -= ticks as f32 * game::TICK_DT;
-                            // One tick per present: fog is per-tick truth,
-                            // and batching sight checks against the final
-                            // state judged sounds by the wrong tick's
-                            // sight. Ticks past the cap are dropped debt,
-                            // exactly like the live clock after a hitch.
-                            for _ in 0..ticks.min(24) {
-                                let events = pb.engine.advance(1);
-                                pb.game.playback_present(&pb.engine.state, &events);
-                                if pb.engine.at_end() {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    if pb.game.state.current_tick() != pb.engine.position() {
-                        pb.game.state = pb.engine.state.clone();
-                    }
-                    pb.game.update_fx(dt);
-                    pb.game
-                        .camera
-                        .set_viewport(vec2(screen_width(), screen_height()));
-                    pb.game.camera.update(dt);
                     render::draw(&pb.game, &sprites, &input);
-                    playback_hud(pb);
+                    screens::playback::playback_hud(pb, vec2(screen_width(), screen_height()));
                 } else {
                     mode = Mode::Home;
                 }
             }
-            Mode::Replays { arming } => {
-                let escaped = events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
-                let x_pressed = events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::X }));
-                let picked = sub_menu.handle(&events, &mut input.mouse);
-                if escaped {
+            Mode::Replays => {
+                let Some(sh) = shelf.as_mut() else {
                     mode = Mode::Home;
-                } else if let Some(row) = picked {
-                    game.sounds_pending.push((SoundKind::Click, None));
-                    if row >= replay_shelf.len() {
+                    continue;
+                };
+                match sh.update(&events, &mut input.mouse, &mut game.sounds_pending) {
+                    screens::shelf::Out::Home => {
+                        shelf = None;
                         mode = Mode::Home;
                         render::draw(&game, &sprites, &input);
                         veil();
-                        sub_menu.draw("");
+                        home.menu.draw(home.subtitle());
                         continue;
                     }
-                    match replay_shelf.get(row) {
-                        Some(entry) if entry.compatible => {
-                            match PlaybackSession::open(&entry.path.to_string_lossy()) {
-                                Ok(session) => {
-                                    playback = Some(session);
-                                    mode = Mode::Playback;
-                                }
-                                Err(_) => {
-                                    game.sounds_pending.push((SoundKind::Denied, None));
-                                }
+                    screens::shelf::Out::Watch(path) => {
+                        match screens::playback::PlaybackSession::open(&path.to_string_lossy()) {
+                            Ok(session) => {
+                                playback = Some(session);
+                                shelf = None;
+                                mode = Mode::Playback;
+                                render::draw(&game, &sprites, &input);
+                                continue;
+                            }
+                            Err(_) => {
+                                game.sounds_pending.push((SoundKind::Denied, None));
                             }
                         }
-                        Some(_) => game.sounds_pending.push((SoundKind::Denied, None)),
-                        None => {}
                     }
-                } else if x_pressed && sub_menu.selected < replay_shelf.len() {
-                    let row = sub_menu.selected;
-                    if arming == Some(row) {
-                        if let Some(entry) = replay_shelf.get(row) {
-                            std::fs::remove_file(&entry.path).ok();
-                        }
-                        replay_shelf = saves::discover();
-                        // Rebuilt like the front door builds it: labels
-                        // plus the Back row, or a mouse-only player is
-                        // stranded — deleting the last record once left
-                        // an empty, exitless menu.
-                        let mut rows: Vec<String> =
-                            replay_shelf.iter().map(|e| e.label.clone()).collect();
-                        rows.push("Back".to_string());
-                        sub_menu = Menu::new("REPLAYS", rows);
-                        (home, home_resumable) = home_menu();
-                        mode = Mode::Replays { arming: None };
-                    } else {
-                        mode = Mode::Replays { arming: Some(row) };
+                    screens::shelf::Out::Deleted => {
+                        *sh = screens::shelf::Shelf::open();
+                        home = screens::home::HomeScreen::open();
                     }
+                    screens::shelf::Out::Stay => {}
                 }
                 render::draw(&game, &sprites, &input);
                 veil();
-                let subtitle = if replay_shelf.is_empty() {
-                    "nothing recorded yet: finish a match or quit one mid-way".to_string()
-                } else if matches!(mode, Mode::Replays { arming: Some(row) } if row == sub_menu.selected)
-                {
-                    "press X again to delete this record".to_string()
-                } else {
-                    replay_shelf
-                        .get(sub_menu.selected)
-                        .map(|e| e.blurb.clone())
-                        .unwrap_or_default()
-                };
-                sub_menu.draw(&subtitle);
+                let sh = shelf.as_ref().expect("still open");
+                sh.menu.draw(&sh.subtitle());
             }
-            Mode::PauseMenu => {
-                let escape_pressed = events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
-                let choice = pause_menu.handle(&events, &mut input.mouse);
-                if choice.is_some() {
-                    game.sounds_pending.push((SoundKind::Click, None));
-                }
+            Mode::Pause => {
+                let Some(ps) = pause.as_mut() else {
+                    mode = Mode::Playing;
+                    continue;
+                };
+                let out = ps.update(&events, &mut input.mouse, &mut game.sounds_pending);
                 render::draw(&game, &sprites, &input);
                 veil();
-                pause_menu.draw(&game.scenario.name);
-                match choice {
-                    Some(0) => {
+                ps.menu.draw(ps.subtitle(&game.scenario.name));
+                match out {
+                    screens::pause::Out::Stay => {}
+                    screens::pause::Out::Resume => {
                         game.paused = false;
+                        pause = None;
                         mode = Mode::Playing;
                     }
-                    Some(1) => {
-                        // Watch the session so far: the recorder IS the
-                        // record — clone it, stamp its length, play it
-                        // back. Non-destructive; the live match waits.
+                    screens::pause::Out::WatchReplay => {
+                        // The recorder IS the record — clone it, stamp
+                        // its length, play it back. Non-destructive; the
+                        // live match waits.
                         let mut replay = game.recorder.clone();
                         replay.meta.ticks = Some(game.state.current_tick());
-                        match PlaybackSession::from_replay(replay) {
+                        match screens::playback::PlaybackSession::from_replay(replay) {
                             Ok(mut session) => {
                                 session.from_pause = true;
                                 playback = Some(session);
+                                pause = None;
                                 mode = Mode::Playback;
                             }
                             Err(err) => game.toast(format!("cannot open playback: {err}")),
                         }
                     }
-                    Some(destructive) => {
-                        // Restart, Main Menu, and Quit all throw away a
-                        // live match — each asks first, with Cancel
-                        // preselected so a double-tap cannot destroy.
-                        sub_menu = confirm_menu(destructive);
-                        mode = Mode::ConfirmPause {
-                            choice: destructive,
-                        };
-                    }
-                    None if escape_pressed => {
+                    screens::pause::Out::Restart => {
+                        let fresh = Game::new(game.scenario.clone())?;
+                        // Restarting a tutorial restarts the lessons —
+                        // discarding them turned it into a plain match.
+                        if tutorial.is_some() {
+                            tutorial = Some(tutorial::Tutorial::new());
+                        }
+                        game = keep_flags(fresh, &game);
                         game.paused = false;
+                        input.reset_session();
+                        pause = None;
                         mode = Mode::Playing;
                     }
-                    None => {}
-                }
-            }
-            Mode::ConfirmPause { choice } => {
-                let escaped = events
-                    .iter()
-                    .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
-                let picked = sub_menu.handle(&events, &mut input.mouse);
-                render::draw(&game, &sprites, &input);
-                veil();
-                sub_menu.draw("this throws the current match away");
-                if escaped || picked == Some(0) {
-                    mode = Mode::PauseMenu;
-                } else if picked == Some(1) {
-                    match choice {
-                        2 => {
-                            let fresh = Game::new(game.scenario.clone())?;
-                            // Restarting a tutorial restarts the lessons —
-                            // discarding them turned it into a plain match.
-                            if tutorial.is_some() {
-                                tutorial = Some(tutorial::Tutorial::new());
-                            }
-                            game = keep_flags(fresh, &game);
-                            game.paused = false;
-                            mode = Mode::Playing;
-                            input.reset_session();
-                        }
-                        3 => {
-                            autosave::save(&mut game);
-                            (home, home_resumable) = home_menu();
-                            main_menu = None;
-                            mode = Mode::Home;
-                        }
-                        _ => {
-                            autosave::save(&mut game);
-                            std::process::exit(0);
-                        }
+                    screens::pause::Out::MainMenu => {
+                        autosave::save(&mut game);
+                        home = screens::home::HomeScreen::open();
+                        pause = None;
+                        mode = Mode::Home;
+                    }
+                    screens::pause::Out::Quit => {
+                        autosave::save(&mut game);
+                        std::process::exit(0);
                     }
                 }
             }
@@ -1496,10 +877,7 @@ async fn run() -> Result<()> {
         if std::mem::discriminant(&mode) != mode_before {
             input.reset_transient();
         }
-        if matches!(mode, Mode::MainMenu) && main_menu.is_none() {
-            main_menu = Some(build_main_menu(&draft));
-        }
-        ui_view = capture_ui(&mode, &home, &main_menu, &sub_menu, &pause_menu, &game);
+        ui_view = capture_ui(&mode, &home, &wizard, &shelf, &pause, &settings, &game);
 
         // The mixer serves whichever session is on screen: a playback
         // viewer queues its own sounds on its own game, and draining the
@@ -1593,25 +971,34 @@ fn keep_flags(mut fresh: Game, old: &Game) -> Game {
 
 fn capture_ui(
     mode: &Mode,
-    home: &Menu,
-    main_menu: &Option<(Menu, Vec<ScenarioEntry>)>,
-    sub_menu: &Menu,
-    pause_menu: &Menu,
+    home: &screens::home::HomeScreen,
+    wizard: &Option<Wizard>,
+    shelf: &Option<screens::shelf::Shelf>,
+    pause: &Option<screens::pause::PauseScreen>,
+    settings: &Option<screens::settings::SettingsScreen>,
     game: &Game,
 ) -> UiView {
     let (mode_name, menu) = match mode {
-        Mode::Home => ("home", Some(home)),
-        Mode::Settings => ("settings", Some(sub_menu)),
-        Mode::Controls { .. } => ("controls", Some(sub_menu)),
-        Mode::MainMenu => ("main_menu", main_menu.as_ref().map(|(menu, _)| menu)),
-        Mode::DifficultyMenu => ("difficulty_menu", Some(sub_menu)),
-        Mode::PersonalityMenu => ("personality_menu", Some(sub_menu)),
-        Mode::FactionMenu => ("faction_menu", Some(sub_menu)),
+        Mode::Home => ("home", Some(&home.menu)),
+        Mode::Settings => (
+            settings.as_ref().map_or("settings", |s| s.mode_name()),
+            settings.as_ref().map(|s| &s.menu),
+        ),
+        Mode::Wizard => (
+            wizard.as_ref().map_or("main_menu", |w| w.mode_name()),
+            wizard.as_ref().map(|w| &w.menu),
+        ),
         Mode::Playing => ("playing", None),
         Mode::Playback => ("playback", None),
-        Mode::Replays { .. } => ("replays", Some(sub_menu)),
-        Mode::PauseMenu => ("pause_menu", Some(pause_menu)),
-        Mode::ConfirmPause { .. } => ("confirm_pause", Some(sub_menu)),
+        Mode::Replays => ("replays", shelf.as_ref().map(|s| &s.menu)),
+        Mode::Pause => (
+            if pause.as_ref().is_some_and(|p| p.confirming()) {
+                "confirm_pause"
+            } else {
+                "pause_menu"
+            },
+            pause.as_ref().map(|p| &p.menu),
+        ),
     };
     UiView {
         mode: mode_name.to_string(),
@@ -1705,7 +1092,7 @@ fn handle_request(
     pending_shots: &mut Vec<PendingScreenshot>,
     ui_view: &UiView,
     tutorial: &mut Option<tutorial::Tutorial>,
-    playback: &mut Option<PlaybackSession>,
+    playback: &mut Option<screens::playback::PlaybackSession>,
 ) {
     let IncomingRequest { id, request, reply } = incoming;
     // A viewer session owns the screen: state-shaped questions and the
@@ -1739,6 +1126,11 @@ fn handle_request(
                 // interval's events for presentation, and a million-tick
                 // battle's worth of them is memory nobody will hear.
                 let requested = (*ticks).min(1_000_000);
+                // An external transport op replaces any UI seek in
+                // flight: left pending, the stale target resumes next
+                // frame and rewinds the replay this reply just reported
+                // as advanced.
+                pb.seeking = None;
                 let before = pb.engine.position();
                 pb.engine.seek(before.saturating_add(requested));
                 pb.game.drop_presentation();
@@ -1849,7 +1241,7 @@ fn handle_request(
             game.paused = false;
             // Resuming implies gameplay: leave the pause menu too, or the
             // sim runs behind a menu that still claims it is paused.
-            if matches!(mode, Mode::PauseMenu | Mode::ConfirmPause { .. }) {
+            if matches!(mode, Mode::Pause) {
                 *mode = Mode::Playing;
                 input.reset_transient();
             }

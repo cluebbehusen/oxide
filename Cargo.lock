@@ -147,7 +147,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "chassis"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "fixed",
  "postcard",
@@ -546,11 +546,12 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "oxide-driver"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "chassis",
  "clap",
+ "oxide-kit",
  "oxide-protocol",
  "oxide-sim",
  "serde",
@@ -559,8 +560,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxide-kit"
+version = "0.10.0"
+dependencies = [
+ "anyhow",
+ "chassis",
+ "oxide-sim",
+ "serde",
+ "tiny-skia",
+]
+
+[[package]]
 name = "oxide-protocol"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "chassis",
  "oxide-sim",
@@ -570,13 +582,13 @@ dependencies = [
 
 [[package]]
 name = "oxide-shell"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "chassis",
  "clap",
  "macroquad",
- "oxide-driver",
+ "oxide-kit",
  "oxide-protocol",
  "oxide-sim",
  "png",
@@ -586,7 +598,7 @@ dependencies = [
 
 [[package]]
 name = "oxide-sim"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "chassis",
  "serde",

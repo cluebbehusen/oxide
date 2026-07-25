@@ -82,6 +82,10 @@ pub struct Config {
     /// shell arcs — always stays.
     #[serde(default)]
     pub reduced_motion: bool,
+    /// Accessibility: colorblind-safe allegiance accents (indicator
+    /// colors only; sprite art is untouched).
+    #[serde(default)]
+    pub colorblind: bool,
 }
 
 impl Default for Config {
@@ -94,6 +98,7 @@ impl Default for Config {
             camera: CameraPrefs::default(),
             window: (1280, 800),
             reduced_motion: false,
+            colorblind: false,
         }
     }
 }

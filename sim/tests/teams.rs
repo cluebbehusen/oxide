@@ -100,7 +100,11 @@ fn allied_fighters_ignore_and_cannot_target_each_other() {
         state.tick(&[]);
     }
     assert_eq!(state.unit(mine).unwrap().order, Order::Idle);
-    assert_eq!(state.unit(ally).unwrap().hp, 100);
+    assert_eq!(
+        state.unit(ally).unwrap().hp,
+        UnitKind::Sentinel.stats().max_hp,
+        "an untouched ally sits at full health"
+    );
 
     // An attack command on a teammate bounces.
     let report = state.tick(&[cmd(

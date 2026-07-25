@@ -443,7 +443,10 @@ def foundry(faction: str) -> None:
     finish(img, px, f"foundry_{faction}")
 
 
-def harvester(faction: str) -> None:
+def harvester(faction: str, dig: int = 0) -> None:
+    """The hauler; `dig` (0-2) sinks the scoop for the working cycle —
+    frame 0 is the travel pose and the atlas name every existing lookup
+    uses, frames 1-2 land as `_scoop1`/`_scoop2`."""
     px = 64
     pal = FACTIONS[faction]
     img, d = canvas(px)
@@ -457,18 +460,76 @@ def harvester(faction: str) -> None:
     d.rounded_rectangle([s(20), s(18), s(44), s(52)], radius=s(6), fill=(*IRON, 255))
     d.rounded_rectangle([s(23), s(21), s(41), s(49)], radius=s(5), fill=(*pal["base"], 255))
     d.rounded_rectangle([s(26), s(30), s(38), s(46)], radius=s(3), fill=(*pal["dark"], 255))
-    # Scoop out front (up = forward).
+    # Scoop out front (up = forward); digging drops and narrows it, as
+    # if biting into the ground plane.
+    dy = (0, 4, 7)[dig]
+    pinch = (0, 1, 2)[dig]
     d.polygon(
-        [(s(18), s(16)), (s(46), s(16)), (s(40), s(6)), (s(24), s(6))],
+        [
+            (s(18 + pinch), s(16 + dy)),
+            (s(46 - pinch), s(16 + dy)),
+            (s(40 - pinch), s(6 + dy)),
+            (s(24 + pinch), s(6 + dy)),
+        ],
         fill=(*IRON_LIGHT, 255),
     )
     d.polygon(
-        [(s(21), s(15)), (s(43), s(15)), (s(38), s(8)), (s(26), s(8))],
+        [
+            (s(21 + pinch), s(15 + dy)),
+            (s(43 - pinch), s(15 + dy)),
+            (s(38 - pinch), s(8 + dy)),
+            (s(26 + pinch), s(8 + dy)),
+        ],
         fill=(*IRON_DARK, 255),
     )
+    # Spoil spray beside a digging scoop.
+    if dig:
+        for i, (dx, sy) in enumerate([(-3, 10), (3, 8), (-2, 5), (4, 12)]):
+            if dig == 1 and i % 2:
+                continue
+            cx = 32 + dx * 3
+            d.ellipse(
+                [s(cx - 1), s(sy - 1), s(cx + 1), s(sy + 1)],
+                fill=(*SCRAP_DARK, 255),
+            )
     # Cargo eye — the shell can read "carrying" at a glance someday.
     d.ellipse([s(28), s(34), s(36), s(42)], fill=(*SCRAP_DARK, 255))
-    finish(img, px, f"harvester_{faction}")
+    suffix = ("", "_scoop1", "_scoop2")[dig]
+    finish(img, px, f"harvester_{faction}{suffix}")
+
+
+def scaffold(dense: bool) -> None:
+    """Construction lattice drawn over a translucent rising site: dense
+    early, sparse as the building nears completion."""
+    px = 64
+    img, d = canvas(px)
+    beam = (*IRON_LIGHT, 255)
+    dark = (*IRON_DARK, 255)
+    for x in (4, 56):
+        d.rectangle([s(x), s(4), s(x + 4), s(60)], fill=dark)
+    for y in (4, 56):
+        d.rectangle([s(4), s(y), s(60), s(y + 4)], fill=dark)
+    step = 13 if dense else 26
+    for y in range(8, 54, step):
+        d.line([(s(6), s(y)), (s(58), s(y + 11))], fill=beam, width=s(2))
+        d.line([(s(58), s(y)), (s(6), s(y + 11))], fill=beam, width=s(2))
+    finish(img, px, "scaffold_dense" if dense else "scaffold_sparse")
+
+
+def debris(variant: int) -> None:
+    """A torn hull shard for death scatter."""
+    px = 32
+    img, d = canvas(px)
+    shapes = [
+        [(6, 10), (18, 4), (26, 14), (14, 24)],
+        [(4, 18), (14, 6), (28, 10), (22, 26), (8, 28)],
+        [(8, 8), (24, 6), (28, 20), (12, 26)],
+    ]
+    pts = [(s(x), s(y)) for x, y in shapes[variant]]
+    d.polygon(pts, fill=(*IRON, 255))
+    d.line([*pts[:2]], fill=(*IRON_LIGHT, 255), width=s(2))
+    d.line([*pts[-2:]], fill=(*IRON_DARK, 255), width=s(2))
+    finish(img, px, f"debris_{variant}")
 
 
 def sentinel(faction: str) -> None:
@@ -1022,9 +1083,15 @@ def main() -> None:
     wreck_pile()
     air_shadow()
     burst()
+    scaffold(dense=True)
+    scaffold(dense=False)
+    for variant in range(3):
+        debris(variant)
     for faction in FACTIONS:
         foundry(faction)
         harvester(faction)
+        harvester(faction, dig=1)
+        harvester(faction, dig=2)
         sentinel(faction)
         scuttler(faction)
         lancer(faction)
