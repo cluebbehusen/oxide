@@ -82,12 +82,14 @@ struct Suite<'a> {
     dir: PathBuf,
     bless: bool,
     threshold: f64,
+    taken: usize,
     new: Vec<String>,
     failed: Vec<String>,
 }
 
 impl Suite<'_> {
     fn shot(&mut self, name: &str, expected_mode: &str) -> Result<()> {
+        self.taken += 1;
         auto::assert_mode(self.client, expected_mode, name)?;
         let run = self.dir.join("run").join(format!("{name}.png"));
         let reference = self.dir.join("ref").join(format!("{name}.png"));
@@ -154,6 +156,7 @@ fn walk(client: &mut Client, bless: bool, dir: &Path, threshold: f64) -> Result<
         dir: dir_abs,
         bless,
         threshold,
+        taken: 0,
         new: Vec::new(),
         failed: Vec::new(),
     };
@@ -173,6 +176,15 @@ fn walk(client: &mut Client, bless: bool, dir: &Path, threshold: f64) -> Result<
     // The wizard.
     auto::activate_labeled(suite.client, "play")?;
     suite.shot("wizard-map", "main_menu")?;
+    // The team-map setup screen (per-seat rows + the who-is-where
+    // preview): End sits on Back, one Up is the last team map.
+    auto::press_key(suite.client, Key::End)?;
+    auto::press_key(suite.client, Key::Up)?;
+    auto::press_key(suite.client, Key::Enter)?;
+    suite.shot("match-setup", "match_setup")?;
+    auto::press_key(suite.client, Key::Escape)?;
+    // Back on the map list, return to the top 1v1 for the quick flow.
+    auto::press_key(suite.client, Key::Home)?;
     auto::press_key(suite.client, Key::Enter)?;
     suite.shot("wizard-difficulty", "difficulty_menu")?;
 
@@ -220,7 +232,11 @@ fn walk(client: &mut Client, bless: bool, dir: &Path, threshold: f64) -> Result<
 
     println!(
         "shots: {} compared, {} new, {} failed",
-        10 - suite.new.len() - suite.failed.len(),
+        // Counted, not hardcoded: the walk grows, and a stale literal
+        // underflowed the summary the day it did.
+        suite
+            .taken
+            .saturating_sub(suite.new.len() + suite.failed.len()),
         suite.new.len(),
         suite.failed.len()
     );

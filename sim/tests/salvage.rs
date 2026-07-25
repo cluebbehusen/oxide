@@ -965,3 +965,150 @@ fn salvage_walks_the_construction_ramp_backward_on_schedule() {
         "the teardown runs the construction clock, stretched over the birth fifth"
     );
 }
+
+#[test]
+fn eviction_strips_queued_legs_but_spares_the_rest_of_the_program() {
+    // Mutual eviction reaches into ORDER QUEUES too: a shift-queued
+    // salvage behind a march dies when repair claims the target, and
+    // the march must survive — eviction removes the conflicting job,
+    // never the whole program.
+    let mut scenario = arena(vec![
+        unit(0, UnitKind::Harvester, 7, 2),
+        unit(0, UnitKind::Harvester, 8, 2),
+    ]);
+    scenario
+        .buildings
+        .push(standing(0, BuildingKind::Turret, 9, 2));
+    let mut state = scenario.build().unwrap();
+    let (walker, welder) = (state.units()[0].id, state.units()[1].id);
+    let turret = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == BuildingKind::Turret)
+        .unwrap()
+        .id;
+    // A long march with a salvage queued behind it.
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![walker],
+            goal: TilePos::new(2, 6),
+            queue: false,
+        },
+    )]);
+    state.tick(&[cmd(
+        0,
+        Command::Salvage {
+            units: vec![walker],
+            building: turret,
+            queue: true,
+        },
+    )]);
+    assert_eq!(
+        state.unit(walker).unwrap().queue.len(),
+        1,
+        "test premise: the salvage waits behind the march"
+    );
+    // Wound the turret via a real salvage tick from the other hand,
+    // then claim it for repair: the queued leg must vanish.
+    state.tick(&[cmd(
+        0,
+        Command::Salvage {
+            units: vec![welder],
+            building: turret,
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| {
+        s.building(turret).unwrap().hp < BuildingKind::Turret.stats().max_hp
+    });
+    state.tick(&[cmd(
+        0,
+        Command::Repair {
+            units: vec![welder],
+            building: turret,
+            queue: false,
+        },
+    )]);
+    let unit = state.unit(walker).unwrap();
+    assert!(
+        matches!(unit.order, oxide_sim::Order::Move { .. }),
+        "the march survives eviction"
+    );
+    assert!(
+        unit.queue.is_empty(),
+        "the queued salvage leg is gone: {:?}",
+        unit.queue
+    );
+}
+
+#[test]
+fn foundry_repair_bills_against_its_authored_price() {
+    // The Foundry has no purchase cost; its welding bills against
+    // FOUNDRY_REPAIR_PRICE on the authored FOUNDRY_REPAIR_TICKS ramp.
+    // One prepaid coin covers exactly the hp whose milli-price ceils
+    // to one scrap — the same derivation buildable kinds use.
+    let mut scenario = arena(vec![
+        unit(0, UnitKind::Harvester, 4, 2),
+        unit(1, UnitKind::Scuttler, 4, 4),
+    ]);
+    scenario.players[0].scrap = 1;
+    let mut state = scenario.build().unwrap();
+    let (welder, raider) = (state.units()[0].id, state.units()[1].id);
+    let foundry = state.buildings()[0].id;
+    state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: vec![raider],
+            target: Target::Building(foundry),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 600, |s, _| {
+        s.building(foundry)
+            .unwrap()
+            .hp
+            .checked_add(60)
+            .is_some_and(|h| h < oxide_sim::stats::BuildingKind::Foundry.stats().max_hp)
+    });
+    // Call the raider off so the weld runs uncontested.
+    state.tick(&[cmd(
+        1,
+        Command::Move {
+            units: vec![raider],
+            goal: TilePos::new(13, 2),
+            queue: false,
+        },
+    )]);
+    let hp_before = state.building(foundry).unwrap().hp;
+    state.tick(&[cmd(
+        0,
+        Command::Repair {
+            units: vec![welder],
+            building: foundry,
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 800, |_, events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::OrderStalled { unit, .. } if *unit == welder))
+    });
+    assert_eq!(state.player(PlayerId(0)).scrap, 0, "the coin was spent");
+    let healed = state.building(foundry).unwrap().hp - hp_before;
+    let max_hp = BuildingKind::Foundry.stats().max_hp;
+    let ramp = u64::from(max_hp - max_hp / 5);
+    let ticks = u64::from(oxide_sim::stats::FOUNDRY_REPAIR_TICKS);
+    let basis = u64::from(oxide_sim::stats::FOUNDRY_REPAIR_PRICE);
+    let millis = |t: u64| {
+        (ramp * t / ticks) * basis * oxide_sim::stats::REPAIR_COST_PERMILLE / u64::from(max_hp)
+    };
+    let stall = (0u64..)
+        .find(|&p| millis(p + 1).div_ceil(1000) > 1)
+        .unwrap();
+    let expected = u32::try_from(ramp * stall / ticks).unwrap();
+    assert_eq!(
+        healed, expected,
+        "one coin's worth of foundry welding, on the authored basis"
+    );
+}

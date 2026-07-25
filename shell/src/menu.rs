@@ -128,10 +128,13 @@ impl Menu {
         self.scroll = (self.scroll as i64 + delta).clamp(0, max as i64) as usize;
         // The selection rides inside the window: Enter must never
         // activate a row the wheel has scrolled out of sight (a hidden
-        // Quit would be a nasty surprise).
-        self.selected = self
+        // Quit would be a nasty surprise) — and never lands on a
+        // header while riding (Enter on a "section label" activated
+        // whatever the caller mapped to nothing).
+        let clamped = self
             .selected
             .clamp(self.scroll, self.scroll + visible.saturating_sub(1));
+        self.selected = self.snap(clamped, if clamped < self.selected { -1 } else { 1 });
     }
 
     fn row_at(&self, point: Vec2) -> Option<usize> {
@@ -494,5 +497,74 @@ mod empty_tests {
             let events = [RawEvent::KeyDown { key }];
             assert_eq!(menu.handle(&events, &mut mouse), None);
         }
+    }
+}
+
+#[cfg(test)]
+mod header_tests {
+    use super::*;
+    use macroquad::prelude::vec2;
+    use oxide_protocol::{Key, RawEvent};
+
+    fn sectioned() -> Menu {
+        // rows: [H] a b [H] c d
+        Menu::with_headers(
+            "T",
+            ["- one -", "a", "b", "- two -", "c", "d"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            vec![0, 3],
+        )
+    }
+
+    fn press(menu: &mut Menu, key: Key) -> Option<usize> {
+        let mut mouse = vec2(0.0, 0.0);
+        menu.handle(&[RawEvent::KeyDown { key }], &mut mouse)
+    }
+
+    #[test]
+    fn the_cursor_never_rests_on_a_header() {
+        let mut menu = sectioned();
+        assert_eq!(menu.selected, 1, "construction snaps off the header");
+        press(&mut menu, Key::Down);
+        assert_eq!(menu.selected, 2);
+        press(&mut menu, Key::Down);
+        assert_eq!(menu.selected, 4, "down hops the section label");
+        press(&mut menu, Key::Up);
+        assert_eq!(menu.selected, 2, "up hops it too");
+        press(&mut menu, Key::Home);
+        assert_eq!(menu.selected, 1, "Home lands on the first real row");
+        press(&mut menu, Key::End);
+        assert_eq!(menu.selected, 5, "End on the last real row");
+    }
+
+    #[test]
+    fn a_header_never_activates() {
+        let mut menu = sectioned();
+        menu.select(0);
+        assert_eq!(menu.selected, 1, "select snaps forward off the header");
+        // Enter activates the snapped row, never the header.
+        assert_eq!(press(&mut menu, Key::Enter), Some(1));
+    }
+
+    #[test]
+    fn wheel_scroll_cannot_pin_the_cursor_onto_a_header() {
+        // A short window forces the riding clamp; the ride must snap
+        // off headers or Enter activates a section label (the wizard
+        // maps unmapped rows to Back — a scroll would quit the list).
+        let mut menu = sectioned();
+        crate::render::set_viewport(1280.0, 400.0);
+        menu.select(5);
+        let mut mouse = vec2(0.0, 0.0);
+        for _ in 0..6 {
+            menu.handle(&[RawEvent::Wheel { delta: 1.0 }], &mut mouse);
+            assert!(
+                !menu.is_header(menu.selected),
+                "the riding cursor rests on header row {}",
+                menu.selected
+            );
+        }
+        crate::render::set_viewport(1280.0, 800.0);
     }
 }

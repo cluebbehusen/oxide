@@ -1482,6 +1482,68 @@ fn status_view(game: &Game) -> StatusView {
 mod tests {
     use super::*;
 
+    fn team_draft() -> NewMatchDraft {
+        let mut draft = NewMatchDraft::default();
+        let scenario = Scenario::load("../scenarios/trident-plateau.json").expect("shipped map");
+        draft.set_scenario(scenario, None);
+        draft
+    }
+
+    #[test]
+    fn launch_reads_only_the_per_seat_vector() {
+        let mut draft = team_draft();
+        draft.seat_choice = 2;
+        draft.seats[0].level_choice = 3; // Expert
+        draft.seats[0].personality_choice = 1; // Turtle
+        let game = launch(&draft).expect("launches");
+        let players = &game.scenario.players;
+        assert!(!players[2].bot, "the chosen chair is the human's");
+        assert_eq!(game.human, oxide_sim::PlayerId(2));
+        for (i, p) in players.iter().enumerate() {
+            if i == 2 {
+                assert!(p.bot_config.is_none());
+                continue;
+            }
+            assert!(p.bot, "every other seat is a bot");
+            let config = p.bot_config.expect("every bot seat has a config");
+            if i == 0 {
+                assert_eq!(config.level, oxide_sim::bot::Level::Expert);
+                assert_eq!(config.aggression, Some(100), "the seat's OWN dials");
+            } else {
+                assert_eq!(config.level, oxide_sim::bot::Level::Medium);
+            }
+        }
+        // Team maps never retint: the seat's authored faction stands.
+        assert_eq!(players[2].faction, oxide_sim::Faction::Ferrous);
+    }
+
+    #[test]
+    fn a_1v1_launch_retints_both_seats_around_the_faction_choice() {
+        let mut draft = NewMatchDraft::default();
+        draft.set_scenario(Scenario::skirmish(), None);
+        draft.faction_choice = 1; // Cupric
+        let game = launch(&draft).expect("launches");
+        let players = &game.scenario.players;
+        assert_eq!(players[0].faction, oxide_sim::Faction::Cupric);
+        assert_eq!(players[1].faction, oxide_sim::Faction::Ferrous);
+        assert_ne!(players[0].name, players[1].name, "names follow factions");
+    }
+
+    #[test]
+    fn a_stale_draft_fails_the_launch_instead_of_the_process() {
+        // The caller shows launch errors on a menu notice; the fn's
+        // contract is Err, never panic, on a draft out of step.
+        let mut draft = team_draft();
+        draft.seats.truncate(2);
+        assert!(launch(&draft).is_err());
+    }
+
+    #[test]
+    fn seat_anchors_reads_the_authored_digits() {
+        let map: Vec<String> = vec!["####".into(), "#1.#".into(), "#.2#".into()];
+        assert_eq!(seat_anchors(&map), vec![(0, (1, 1)), (1, (2, 2))]);
+    }
+
     #[test]
     fn automation_requires_debug_server() {
         assert!(Args::try_parse_from(["oxide-shell", "--automation"]).is_err());
