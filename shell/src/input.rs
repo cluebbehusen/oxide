@@ -61,6 +61,9 @@ pub struct InputState {
     pub(crate) patrol_route: Option<Vec<TilePos>>,
     /// Building kind armed for placement, if any.
     pub(crate) placing: Option<oxide_sim::BuildingKind>,
+    /// Armed salvage: the next left-click on an own built building
+    /// sends the selected harvesters to strip it.
+    pub(crate) salvaging: bool,
     /// Whether the build palette is open (`B`; digits pick a structure).
     pub(crate) build_menu: bool,
     /// This frame's chrome scale (dpi x user), injected by the frame
@@ -102,6 +105,7 @@ impl InputState {
             last_recall: None,
             patrol_route: None,
             placing: None,
+            salvaging: false,
             build_menu: false,
             ui: 1.0,
             now: 0.0,
@@ -129,6 +133,7 @@ impl InputState {
         self.mmb_anchor = None;
         self.patrol_route = None;
         self.placing = None;
+        self.salvaging = false;
         self.build_menu = false;
     }
 
@@ -294,7 +299,7 @@ use select::{
 /// chrome, the arrow otherwise. Pure — the loop applies it.
 pub fn desired_cursor(game: &Game, input: &InputState) -> macroquad::miniquad::CursorIcon {
     use macroquad::miniquad::CursorIcon;
-    if input.placing.is_some() || input.patrol_route.is_some() {
+    if input.placing.is_some() || input.patrol_route.is_some() || input.salvaging {
         return CursorIcon::Crosshair;
     }
     let layout = game.layout.get();
@@ -384,6 +389,40 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         // a time, not one arming at a time.
                         if !input.resolver.shift_held() {
                             input.placing = None;
+                        }
+                    }
+                    continue;
+                }
+                if input.salvaging {
+                    // The same manners placement keeps: minimap jumps
+                    // the camera, a misclick keeps the mode armed, and
+                    // Shift chains teardowns behind the crew's program.
+                    if let Some(world) = crate::render::minimap_world_at(game, vec2(x, y)) {
+                        game.camera.center = world;
+                        game.camera.pan(Vec2::ZERO); // re-clamp
+                    } else if !click_on_hud(game, vec2(x, y)) {
+                        let world = game.camera.to_world(vec2(x, y));
+                        let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+                        let target = game.state.building_at(tile).filter(|b| {
+                            b.player == game.human
+                                && b.built
+                                && b.kind != oxide_sim::BuildingKind::Foundry
+                        });
+                        let Some(building) = target.map(|b| b.id) else {
+                            game.toast("salvage wants an own built building (not a Foundry)");
+                            game.sounds_pending
+                                .push((crate::game::SoundKind::Denied, None));
+                            continue;
+                        };
+                        let units = game.selection.units.clone();
+                        game.issue(Command::Salvage {
+                            units,
+                            building,
+                            queue: input.resolver.shift_held(),
+                        });
+                        game.ping(world, PingKind::Harvest);
+                        if !input.resolver.shift_held() {
+                            input.salvaging = false;
                         }
                     }
                     continue;

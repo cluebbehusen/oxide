@@ -331,6 +331,21 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         ],
     });
     if has_builder {
+        panel.cards.push(Card {
+            icon: CardIcon::Glyph("⛏"),
+            title: "Salvage".into(),
+            cost: None,
+            hotkey: chord(bindings, Action::Salvage),
+            action: CardAction::Dispatch(Action::Salvage),
+            enabled: true,
+            why: None,
+            desc: vec![
+                "Arm, then click an own built building to strip it".into(),
+                "for a partial refund. Foundries refuse.".into(),
+            ],
+        });
+    }
+    if has_builder {
         let scrap = game.state.player(game.human).scrap;
         let palette_key = chord(bindings, Action::ToggleBuildPalette);
         for (i, &kind) in crate::input::BUILD_PALETTE.iter().enumerate() {

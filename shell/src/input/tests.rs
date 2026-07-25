@@ -496,3 +496,79 @@ fn a_shift_click_on_the_wounded_wall_queues_the_weld_not_the_rat() {
         "and the rat beside the wall did not steal the click"
     );
 }
+
+#[test]
+fn the_armed_salvage_verb_strips_by_click_and_refuses_the_foundry() {
+    let mut scenario = oxide_sim::Scenario::skirmish();
+    scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+        player: 0,
+        kind: oxide_sim::BuildingKind::Turret,
+        x: 9,
+        y: 5,
+    });
+    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("builds");
+    let mut input = InputState::new();
+    let harvester = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.kind == UnitKind::Harvester && u.player == game.human)
+        .unwrap()
+        .id;
+    let turret = game
+        .state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == oxide_sim::BuildingKind::Turret)
+        .unwrap()
+        .id;
+    game.selection.units = vec![harvester];
+    // Arm with the hotkey, exactly as a player would.
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::V },
+            RawEvent::KeyUp { key: Key::V },
+        ],
+    );
+    assert!(input.salvaging, "V arms the wrecking crew");
+
+    // A click on the Foundry refuses and stays armed.
+    let foundry = game.state.buildings()[0].anchor;
+    let on_foundry = game
+        .camera
+        .to_screen(vec2(foundry.x as f32 + 0.5, foundry.y as f32 + 0.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::MouseDown {
+            button: MouseButton::Left,
+            x: on_foundry.x,
+            y: on_foundry.y,
+        }],
+    );
+    assert!(game.pending.is_empty(), "the victory token refuses");
+    assert!(input.salvaging, "a misclick keeps the mode armed");
+
+    // A click on the turret stages the teardown and stands down.
+    let on_turret = game.camera.to_screen(vec2(9.5, 5.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::MouseDown {
+            button: MouseButton::Left,
+            x: on_turret.x,
+            y: on_turret.y,
+        }],
+    );
+    assert!(
+        game.pending.iter().any(|c| matches!(
+            &c.command,
+            Command::Salvage { building, queue: false, .. } if *building == turret
+        )),
+        "the click sends the crew: {:?}",
+        game.pending
+    );
+    assert!(!input.salvaging, "a plain click finishes the job");
+}

@@ -57,6 +57,9 @@ pub enum Action {
     CycleIdleWorker,
     /// Center the camera where trouble last landed.
     JumpToLastAlert,
+    /// Arm salvage: the next click on an own built building sends the
+    /// selected harvesters to strip it for a partial refund.
+    Salvage,
     /// Remember the camera position in slot 0-3.
     SetBookmark(u8),
     /// Return the camera to a remembered slot.
@@ -195,6 +198,10 @@ impl BindingMap {
             Binding {
                 chord: Chord::bare(Key::A),
                 action: Action::JumpToLastAlert,
+            },
+            Binding {
+                chord: Chord::bare(Key::V),
+                action: Action::Salvage,
             },
         ];
         for (i, key) in [Key::F5, Key::F6, Key::F7, Key::F8].into_iter().enumerate() {

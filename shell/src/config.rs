@@ -183,6 +183,21 @@ impl Config {
                         .bindings
                         .unbind(crate::action::Action::AssignGroup(n));
                 }
+                // A verb added after this config was saved has no row
+                // at all: adopt its classic chord so new features
+                // arrive keyboard-reachable. Refusal (the player
+                // claimed that chord for something else) leaves the
+                // verb unbound — panels still reach it by click.
+                for default in BindingMap::classic().bindings().to_vec() {
+                    let known = config
+                        .bindings
+                        .bindings()
+                        .iter()
+                        .any(|b| b.action == default.action);
+                    if !known {
+                        let _ = config.bindings.rebind(default.action, default.chord);
+                    }
+                }
                 config.window = Self::sane_window(config.window);
                 config
             }
@@ -248,6 +263,45 @@ mod tests {
             loaded.bindings.chord_for(crate::action::Action::Patrol),
             Some(crate::action::Chord::bare(oxide_protocol::Key::J)),
             "the customization survived validation"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_config_saved_before_a_new_verb_adopts_its_classic_chord() {
+        // Salvage arrived in 0.11; a config saved before it has no row
+        // for the action at all. Loading must graft the classic chord
+        // in (when free) instead of shipping the verb keyboardless --
+        // and must NOT graft it over a chord the player claimed.
+        let dir = std::env::temp_dir().join(format!("oxide-config-newverb-{}", std::process::id()));
+        let path = dir.join("config.json");
+        let mut config = Config::default();
+        config.bindings.unbind(crate::action::Action::Salvage);
+        config.save_to(&path).expect("save");
+        let loaded = Config::load_from(Some(path.clone()));
+        assert_eq!(
+            loaded.bindings.chord_for(crate::action::Action::Salvage),
+            Some(crate::action::Chord::bare(oxide_protocol::Key::V)),
+            "the missing verb adopted its classic chord"
+        );
+
+        // Same again, but the player owns V: the verb stays unbound.
+        let mut config = Config::default();
+        config.bindings.unbind(crate::action::Action::Salvage);
+        assert!(config.bindings.rebind(
+            crate::action::Action::Patrol,
+            crate::action::Chord::bare(oxide_protocol::Key::V)
+        ));
+        config.save_to(&path).expect("save");
+        let loaded = Config::load_from(Some(path.clone()));
+        assert_eq!(
+            loaded.bindings.chord_for(crate::action::Action::Salvage),
+            None,
+            "a claimed chord is never stolen back"
+        );
+        assert_eq!(
+            loaded.bindings.chord_for(crate::action::Action::Patrol),
+            Some(crate::action::Chord::bare(oxide_protocol::Key::V)),
         );
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -114,6 +114,11 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 game.toast("placement cancelled");
                 return;
             }
+            if input.salvaging {
+                input.salvaging = false;
+                game.toast("salvage cancelled");
+                return;
+            }
             if input.patrol_route.take().is_some() {
                 game.toast("patrol cancelled");
                 return;
@@ -129,6 +134,25 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             if let Some(center) = input.bookmarks[slot as usize] {
                 game.camera.center = center;
                 game.camera.pan(Vec2::ZERO); // re-clamp
+            }
+        }
+        Action::Salvage => {
+            // A toggle, like the palette: pressing again stands down.
+            if input.salvaging {
+                input.salvaging = false;
+                game.toast("salvage cancelled");
+                return;
+            }
+            let has_harvester = game.selection.units.iter().any(|id| {
+                game.state
+                    .unit(*id)
+                    .is_some_and(|u| u.kind == UnitKind::Harvester)
+            });
+            if has_harvester {
+                input.salvaging = true;
+                game.toast("salvage: click an own building to strip it, Esc to cancel");
+            } else {
+                game.toast("no harvester to salvage with");
             }
         }
         Action::CycleIdleWorker => cycle_idle_worker(game),
