@@ -119,6 +119,11 @@ enum Cmd {
         /// Ticks to run.
         #[arg(long, default_value_t = 2_000)]
         ticks: u32,
+        /// Bench a shipped scenario with its bots thinking instead of
+        /// the synthetic mass battle (e.g. "scenarios/compass-grand.json"
+        /// — eight neural minds, the heaviest honest shape).
+        #[arg(long)]
+        scenario: Option<String>,
     },
     /// Par-cost arena duel between two hand-picked armies (no
     /// economy): the balance review's controlled experiment.
@@ -319,7 +324,36 @@ fn main() -> Result<()> {
                 out.as_deref(),
             )?;
         }
-        Cmd::Bench { units, ticks } => {
+        Cmd::Bench {
+            units,
+            ticks,
+            scenario,
+        } => {
+            if let Some(path) = scenario {
+                // Full-session bench: every seat's shipped bot thinks —
+                // the heaviest honest shape (eight neural minds on the
+                // 4v4 map), deciding whether a perf window is needed.
+                let sc = runner::load_scenario(&path)?;
+                let mut state = sc.build()?;
+                let mut bots = oxide_sim::bot::seat_bots(&sc);
+                let start = std::time::Instant::now();
+                for _ in 0..ticks {
+                    let mut commands = Vec::new();
+                    for bot in &mut bots {
+                        commands.extend(bot.act(&state));
+                    }
+                    state.tick(&commands);
+                }
+                let secs = start.elapsed().as_secs_f64();
+                println!(
+                    "bench: {} ({} bot seats) x {ticks} ticks in {secs:.2}s = {:.0} ticks/s (hash {:#x})",
+                    sc.name,
+                    bots.len(),
+                    f64::from(ticks) / secs,
+                    state.hash()
+                );
+                return Ok(());
+            }
             let scenario = oxide_kit::bench::mass_battle(units, 9);
             let mut state = scenario.build()?;
             oxide_kit::bench::engage(&mut state);
