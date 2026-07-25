@@ -171,12 +171,15 @@ and test fixtures inside crate `tests/` directories.
   it picked — and every-seat-one-team is a build error. Shipped maps are
   180°-symmetric — author edits in mirrored pairs, and on 4-player maps
   every seat's unit list must be the exact image-transform of seat 0's,
-  entry by entry (the 0.7 seat-fairness rule generalized). The 0.10
-  3v3/4v4 maps (Trident Plateau, Compass Grand) generalize further:
+  entry by entry (the 0.7 seat-fairness rule generalized). The
+  3v3/4v4 maps (Trident Plateau and Causeway Verdict; Compass Grand
+  and Gatework Array) generalize further:
   stacks of identical 180°-self-symmetric lanes, east unit lists the
   exact entry-by-entry images of their paired west seats, and the
   map-gates fairness test holds all six/eight seats to strict scrap
-  equality. Faction convention: even seats Ferrous, odd seats Cupric.
+  equality (team seats also need unique names — launch refuses
+  collisions and a headless sweep gates every shipped map). Faction
+  convention: even seats Ferrous, odd seats Cupric.
   `Scenario::skirmish()` embeds `scenarios/skirmish.json` at compile
   time.
 - **Balance numbers** all live in `sim/src/stats.rs`; expect hash churn
@@ -543,6 +546,17 @@ never runs it.
   confirm with Cancel preselected; menus scroll independently of
   selection and activate on release-inside (menu_ux tests spawn real
   windows and are #[ignore]d — run them explicitly, never in CI).
+  The front door is a thumbnail-grid map browser sectioned by format
+  (shell/src/screens/browser.rs, themed preview cards, remembers the
+  pick by path); team maps then land on one inline setup screen —
+  team-grouped seat cards with difficulty/personality chips edited in
+  place beside a who-is-where preview (no sub-screen; the cell cursor
+  moves with Left/Right and Enter takes a seat or cycles a dial).
+  Ally readability on the ground is an underline badge: a pale bar
+  under allied machines, a dark bar with a danger hairline under
+  hostile machines of your own faction — never a ring around the
+  silhouette. The menu font is Latin-1 only: an em dash renders as
+  tofu, so UI strings stick to ASCII plus '·'.
 - **Stalls carry reasons** (`StallReason`): own-state facts only —
   routes, banks, footing. A reason must never derive from what fog
   hides; the enum doc enforces the principle on future variants.

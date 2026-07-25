@@ -47,10 +47,11 @@ cargo run -p oxide-shell
 A menu lists the shipped maps — the classic duels, the quick 2v2s
 Twin Forges and Open Quarry, the big fields: Basalt Spine
 (a peak ridge splits the map; two ground passes, one air-only door),
-Ferric Reach (three lanes, long logistics), Parallel Works (a
-large 2v2 built on quadrant symmetry), Continental Divide (a vast
-mountain wall where the doors decide it), and the team-war fields
-Trident Plateau (3v3) and Compass Grand (4v4), lane wars where the
+Ferric Reach (three lanes, long logistics), Parallel Works and
+Paired Claims (large 2v2s), Continental Divide (a vast
+mountain wall where the doors decide it), and the team-war fields —
+Trident Plateau and Causeway Verdict (3v3), Compass Grand and
+Gatework Array (4v4), lane wars where the
 ridge doors carry the fight sideways — then asks three questions: how hard
 should the opponent think (**Easy, Medium, Hard, Expert**), who is it
 (**turtle, balanced, aggressive**, or let the map decide), and which
@@ -235,10 +236,13 @@ palette from turrets to radar to Reclaimers, wreck salvage and repair
 welding, 2v2 teams with shared sight, order queues and patrols, solid
 units that crowd without gridlocking, attack-move with line-of-sight
 fire, damage retaliation, rally points, control groups, shift-select,
-order feedback, a fog-aware minimap, sound, nineteen maps in a
-thumbnail-grid browser sectioned by format, per-seat match setup on
-team maps (team-grouped seat cards beside a who-is-where map), building salvage as harvester labor, ally
-inspection with visible orders, touch gestures (pan, tap, long-press,
+order feedback, a fog-aware minimap, sound, twenty-five maps in a
+thumbnail-grid browser sectioned by format (sixteen duels, five 2v2s,
+two 3v3s, two 4v4s), per-seat match setup on
+team maps (team-grouped seat cards with inline difficulty and
+personality dials beside a who-is-where map), building salvage as harvester labor, ally
+inspection with visible orders and an underline badge that marks
+allied machines on the ground, touch gestures (pan, tap, long-press,
 pinch, two-finger box), menus, a trained neural opponent with four
 difficulty levels and selectable personalities, save/resume via
 replays, and the agent tooling described above.
