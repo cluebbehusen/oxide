@@ -199,11 +199,6 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
             let screen = game
                 .camera
                 .to_screen(vec2(ghost.anchor.x as f32, ghost.anchor.y as f32));
-            // A remembered hostile twin keeps its dark border (scaled
-            // with the memory's fade): a translucent own-faction sprite
-            // is also how the player's own construction sites draw, and
-            // a memory must never masquerade as one of those.
-            let twin_border = allegiance_cue(game, ghost.owner) == AllegianceCue::HostileTwin;
             // A remembered site stays translucent scaffolding until its
             // completion has actually been observed.
             let tint = if ghost.built {
@@ -221,39 +216,35 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                     GHOST_TINT.a * 0.5 * fade,
                 )
             };
-            draw_texture_ex(
-                sprites.texture(),
-                screen.x,
-                screen.y,
-                tint,
-                DrawTextureParams {
-                    dest_size: Some(vec2(w as f32 * zoom, h as f32 * zoom)),
-                    source: Some(sprites.building(ghost.kind, faction)),
-                    ..Default::default()
-                },
-            );
+            // The memory keeps its allegiance accent at the memory's
+            // own alpha: a translucent own-faction sprite is also how
+            // the player's own construction sites draw, and a memory
+            // must never masquerade as one of those.
+            let accent_tint = allegiance_tint(allegiance_cue(game, ghost.owner))
+                .map(|c| Color::new(c.r, c.g, c.b, tint.a));
+            let dest = vec2(w as f32 * zoom, h as f32 * zoom);
+            let mut layers = vec![(sprites.building(ghost.kind, faction), tint)];
+            if let Some(accent) = accent_tint {
+                layers.push((sprites.building_accent(ghost.kind), accent));
+            }
             if ghost.kind == oxide_sim::BuildingKind::Turret {
                 // The base ships bare; the remembered gun points up.
+                layers.push((sprites.turret_barrel(faction), tint));
+                if let Some(accent) = accent_tint {
+                    layers.push((sprites.turret_barrel_accent(), accent));
+                }
+            }
+            for (source, color) in layers {
                 draw_texture_ex(
                     sprites.texture(),
                     screen.x,
                     screen.y,
-                    tint,
+                    color,
                     DrawTextureParams {
-                        dest_size: Some(vec2(w as f32 * zoom, h as f32 * zoom)),
-                        source: Some(sprites.turret_barrel(faction)),
+                        dest_size: Some(dest),
+                        source: Some(source),
                         ..Default::default()
                     },
-                );
-            }
-            if twin_border {
-                draw_rectangle_lines(
-                    screen.x,
-                    screen.y,
-                    w as f32 * zoom,
-                    h as f32 * zoom,
-                    3.0,
-                    Color::new(0.05, 0.05, 0.07, 0.7 * fade),
                 );
             }
         }
@@ -296,17 +287,21 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 ..Default::default()
             },
         );
-        // A hostile building wearing the player's own colors (team maps
-        // pit same-faction seats against each other) gets a dark border
-        // — the buildings' face of the unit ring's luminance cue.
-        if allegiance_cue(game, building.player) == AllegianceCue::HostileTwin {
-            draw_rectangle_lines(
+        // The allegiance accent, at the hull's own alpha so a rising
+        // hostile site solidifies accent and all.
+        let accent_tint = allegiance_tint(allegiance_cue(game, building.player))
+            .map(|c| Color::new(c.r, c.g, c.b, tint.a));
+        if let Some(accent) = accent_tint {
+            draw_texture_ex(
+                sprites.texture(),
                 screen.x,
                 screen.y,
-                dest.x,
-                dest.y,
-                3.0,
-                Color::new(0.05, 0.05, 0.07, 0.7),
+                accent,
+                DrawTextureParams {
+                    dest_size: Some(dest),
+                    source: Some(sprites.building_accent(building.kind)),
+                    ..Default::default()
+                },
             );
         }
         // A rising site wears its scaffold: dense lattice early, sparse
@@ -388,6 +383,20 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                             ..Default::default()
                         },
                     );
+                    if let Some(accent) = accent_tint {
+                        draw_texture_ex(
+                            sprites.texture(),
+                            at.x,
+                            at.y,
+                            accent,
+                            DrawTextureParams {
+                                dest_size: Some(vec2(size, size)),
+                                source: Some(sprites.turret_barrel_accent()),
+                                rotation: angle,
+                                ..Default::default()
+                            },
+                        );
+                    }
                 }
                 oxide_sim::BuildingKind::FlakTurret => {
                     if let Some((_, at)) = game.aim_buildings.get(&building.id.0) {

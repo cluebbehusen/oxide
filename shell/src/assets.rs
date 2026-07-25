@@ -19,7 +19,7 @@ pub struct Sprites {
     peak_sky: [Rect; 8],
     peak_lone: [Rect; 2],
     peak_body: [Rect; 2],
-    turret_barrel: [Rect; 2],
+    turret_barrel: [Rect; 3],
     rock_skirt: Rect,
     decals: [Rect; 4],
     scrap_full: Rect,
@@ -31,27 +31,27 @@ pub struct Sprites {
     wreck_pile: Rect,
     air_shadow: Rect,
     burst: Rect,
-    foundry: [Rect; 2],
-    turret: [Rect; 2],
-    fabricator: [Rect; 2],
-    flak_turret: [Rect; 2],
-    bastion: [Rect; 2],
-    array: [Rect; 2],
-    reclaimer: [Rect; 2],
-    harvester: [Rect; 2],
-    harvester_scoop: [[Rect; 2]; 2],
+    foundry: [Rect; 3],
+    turret: [Rect; 3],
+    fabricator: [Rect; 3],
+    flak_turret: [Rect; 3],
+    bastion: [Rect; 3],
+    array: [Rect; 3],
+    reclaimer: [Rect; 3],
+    harvester: [Rect; 3],
+    harvester_scoop: [[Rect; 3]; 2],
     scaffold: [Rect; 2],
     debris: [Rect; 3],
-    scuttler: [Rect; 2],
-    lancer: [Rect; 2],
-    sentinel: [Rect; 2],
-    bombard: [Rect; 2],
-    flakhound: [Rect; 2],
-    stinger: [Rect; 2],
-    buzzard: [Rect; 2],
-    darter: [Rect; 2],
-    talon: [Rect; 2],
-    wisp: [Rect; 2],
+    scuttler: [Rect; 3],
+    lancer: [Rect; 3],
+    sentinel: [Rect; 3],
+    bombard: [Rect; 3],
+    flakhound: [Rect; 3],
+    stinger: [Rect; 3],
+    buzzard: [Rect; 3],
+    darter: [Rect; 3],
+    talon: [Rect; 3],
+    wisp: [Rect; 3],
 }
 
 fn faction_index(faction: Faction) -> usize {
@@ -60,6 +60,10 @@ fn faction_index(faction: Faction) -> usize {
         Faction::Cupric => 1,
     }
 }
+
+/// Third slot of every faction-varied sprite row: the allegiance-accent
+/// mask (the pixels where the two faction variants differ, grayscale).
+const ACCENT: usize = 2;
 
 /// Where game data lives. A macOS .app bundle keeps it in
 /// Contents/Resources beside Contents/MacOS/<exe>; development runs
@@ -133,6 +137,7 @@ impl Sprites {
             turret_barrel: [
                 rect("turret_barrel_ferrous")?,
                 rect("turret_barrel_cupric")?,
+                rect("turret_barrel_accent")?,
             ],
             rock_skirt: rect("rock_skirt")?,
             decals: [
@@ -150,36 +155,110 @@ impl Sprites {
             wreck_pile: rect("wreck_pile")?,
             air_shadow: rect("air_shadow")?,
             burst: rect("burst")?,
-            foundry: [rect("foundry_ferrous")?, rect("foundry_cupric")?],
-            turret: [rect("turret_ferrous")?, rect("turret_cupric")?],
-            fabricator: [rect("fabricator_ferrous")?, rect("fabricator_cupric")?],
-            flak_turret: [rect("flak_turret_ferrous")?, rect("flak_turret_cupric")?],
-            bastion: [rect("bastion_ferrous")?, rect("bastion_cupric")?],
-            array: [rect("array_ferrous")?, rect("array_cupric")?],
-            reclaimer: [rect("reclaimer_ferrous")?, rect("reclaimer_cupric")?],
-            harvester: [rect("harvester_ferrous")?, rect("harvester_cupric")?],
+            foundry: [
+                rect("foundry_ferrous")?,
+                rect("foundry_cupric")?,
+                rect("foundry_accent")?,
+            ],
+            turret: [
+                rect("turret_ferrous")?,
+                rect("turret_cupric")?,
+                rect("turret_accent")?,
+            ],
+            fabricator: [
+                rect("fabricator_ferrous")?,
+                rect("fabricator_cupric")?,
+                rect("fabricator_accent")?,
+            ],
+            flak_turret: [
+                rect("flak_turret_ferrous")?,
+                rect("flak_turret_cupric")?,
+                rect("flak_turret_accent")?,
+            ],
+            bastion: [
+                rect("bastion_ferrous")?,
+                rect("bastion_cupric")?,
+                rect("bastion_accent")?,
+            ],
+            array: [
+                rect("array_ferrous")?,
+                rect("array_cupric")?,
+                rect("array_accent")?,
+            ],
+            reclaimer: [
+                rect("reclaimer_ferrous")?,
+                rect("reclaimer_cupric")?,
+                rect("reclaimer_accent")?,
+            ],
+            harvester: [
+                rect("harvester_ferrous")?,
+                rect("harvester_cupric")?,
+                rect("harvester_accent")?,
+            ],
             harvester_scoop: [
                 [
                     rect("harvester_ferrous_scoop1")?,
                     rect("harvester_cupric_scoop1")?,
+                    rect("harvester_accent_scoop1")?,
                 ],
                 [
                     rect("harvester_ferrous_scoop2")?,
                     rect("harvester_cupric_scoop2")?,
+                    rect("harvester_accent_scoop2")?,
                 ],
             ],
             scaffold: [rect("scaffold_dense")?, rect("scaffold_sparse")?],
             debris: [rect("debris_0")?, rect("debris_1")?, rect("debris_2")?],
-            scuttler: [rect("scuttler_ferrous")?, rect("scuttler_cupric")?],
-            lancer: [rect("lancer_ferrous")?, rect("lancer_cupric")?],
-            sentinel: [rect("sentinel_ferrous")?, rect("sentinel_cupric")?],
-            bombard: [rect("bombard_ferrous")?, rect("bombard_cupric")?],
-            flakhound: [rect("flakhound_ferrous")?, rect("flakhound_cupric")?],
-            stinger: [rect("stinger_ferrous")?, rect("stinger_cupric")?],
-            buzzard: [rect("buzzard_ferrous")?, rect("buzzard_cupric")?],
-            darter: [rect("darter_ferrous")?, rect("darter_cupric")?],
-            talon: [rect("talon_ferrous")?, rect("talon_cupric")?],
-            wisp: [rect("wisp_ferrous")?, rect("wisp_cupric")?],
+            scuttler: [
+                rect("scuttler_ferrous")?,
+                rect("scuttler_cupric")?,
+                rect("scuttler_accent")?,
+            ],
+            lancer: [
+                rect("lancer_ferrous")?,
+                rect("lancer_cupric")?,
+                rect("lancer_accent")?,
+            ],
+            sentinel: [
+                rect("sentinel_ferrous")?,
+                rect("sentinel_cupric")?,
+                rect("sentinel_accent")?,
+            ],
+            bombard: [
+                rect("bombard_ferrous")?,
+                rect("bombard_cupric")?,
+                rect("bombard_accent")?,
+            ],
+            flakhound: [
+                rect("flakhound_ferrous")?,
+                rect("flakhound_cupric")?,
+                rect("flakhound_accent")?,
+            ],
+            stinger: [
+                rect("stinger_ferrous")?,
+                rect("stinger_cupric")?,
+                rect("stinger_accent")?,
+            ],
+            buzzard: [
+                rect("buzzard_ferrous")?,
+                rect("buzzard_cupric")?,
+                rect("buzzard_accent")?,
+            ],
+            darter: [
+                rect("darter_ferrous")?,
+                rect("darter_cupric")?,
+                rect("darter_accent")?,
+            ],
+            talon: [
+                rect("talon_ferrous")?,
+                rect("talon_cupric")?,
+                rect("talon_accent")?,
+            ],
+            wisp: [
+                rect("wisp_ferrous")?,
+                rect("wisp_cupric")?,
+                rect("wisp_accent")?,
+            ],
         })
     }
 
@@ -275,17 +354,26 @@ impl Sprites {
     }
 
     /// The building sprite region for a kind and faction.
-    pub fn building(&self, kind: oxide_sim::BuildingKind, faction: Faction) -> Rect {
-        let f = faction_index(faction);
+    fn building_row(&self, kind: oxide_sim::BuildingKind) -> &[Rect; 3] {
         match kind {
-            oxide_sim::BuildingKind::Foundry => self.foundry[f],
-            oxide_sim::BuildingKind::Turret => self.turret[f],
-            oxide_sim::BuildingKind::Fabricator => self.fabricator[f],
-            oxide_sim::BuildingKind::FlakTurret => self.flak_turret[f],
-            oxide_sim::BuildingKind::Bastion => self.bastion[f],
-            oxide_sim::BuildingKind::Array => self.array[f],
-            oxide_sim::BuildingKind::Reclaimer => self.reclaimer[f],
+            oxide_sim::BuildingKind::Foundry => &self.foundry,
+            oxide_sim::BuildingKind::Turret => &self.turret,
+            oxide_sim::BuildingKind::Fabricator => &self.fabricator,
+            oxide_sim::BuildingKind::FlakTurret => &self.flak_turret,
+            oxide_sim::BuildingKind::Bastion => &self.bastion,
+            oxide_sim::BuildingKind::Array => &self.array,
+            oxide_sim::BuildingKind::Reclaimer => &self.reclaimer,
         }
+    }
+
+    pub fn building(&self, kind: oxide_sim::BuildingKind, faction: Faction) -> Rect {
+        self.building_row(kind)[faction_index(faction)]
+    }
+
+    /// The allegiance-accent mask over a building's faction-colored
+    /// regions — grayscale in the atlas, tinted at draw time.
+    pub fn building_accent(&self, kind: oxide_sim::BuildingKind) -> Rect {
+        self.building_row(kind)[ACCENT]
     }
 
     /// A working harvester's scoop-cycle frame: 0 is the travel pose,
@@ -299,6 +387,16 @@ impl Sprites {
         }
     }
 
+    /// The scoop cycle's accent mask, frame-matched to
+    /// [`Self::harvester_working`].
+    pub fn harvester_working_accent(&self, frame: usize) -> Rect {
+        match frame {
+            0 => self.harvester[ACCENT],
+            1 => self.harvester_scoop[0][ACCENT],
+            _ => self.harvester_scoop[1][ACCENT],
+        }
+    }
+
     /// The construction lattice: dense early, sparse near completion.
     pub fn scaffold(&self, dense: bool) -> Rect {
         self.scaffold[if dense { 0 } else { 1 }]
@@ -309,22 +407,36 @@ impl Sprites {
         self.debris[variant % 3]
     }
 
+    fn unit_row(&self, kind: UnitKind) -> &[Rect; 3] {
+        match kind {
+            UnitKind::Harvester => &self.harvester,
+            UnitKind::Sentinel => &self.sentinel,
+            UnitKind::Scuttler => &self.scuttler,
+            UnitKind::Lancer => &self.lancer,
+            UnitKind::Bombard => &self.bombard,
+            UnitKind::Flakhound => &self.flakhound,
+            UnitKind::Stinger => &self.stinger,
+            UnitKind::Buzzard => &self.buzzard,
+            UnitKind::Darter => &self.darter,
+            UnitKind::Talon => &self.talon,
+            UnitKind::Wisp => &self.wisp,
+        }
+    }
+
     /// The unit sprite region for a kind and faction.
     pub fn unit(&self, kind: UnitKind, faction: Faction) -> Rect {
-        let f = faction_index(faction);
-        match kind {
-            UnitKind::Harvester => self.harvester[f],
-            UnitKind::Sentinel => self.sentinel[f],
-            UnitKind::Scuttler => self.scuttler[f],
-            UnitKind::Lancer => self.lancer[f],
-            UnitKind::Bombard => self.bombard[f],
-            UnitKind::Flakhound => self.flakhound[f],
-            UnitKind::Stinger => self.stinger[f],
-            UnitKind::Buzzard => self.buzzard[f],
-            UnitKind::Darter => self.darter[f],
-            UnitKind::Talon => self.talon[f],
-            UnitKind::Wisp => self.wisp[f],
-        }
+        self.unit_row(kind)[faction_index(faction)]
+    }
+
+    /// The allegiance-accent mask over a unit's faction-colored
+    /// regions — grayscale in the atlas, tinted at draw time.
+    pub fn unit_accent(&self, kind: UnitKind) -> Rect {
+        self.unit_row(kind)[ACCENT]
+    }
+
+    /// The turret barrel's accent mask.
+    pub fn turret_barrel_accent(&self) -> Rect {
+        self.turret_barrel[ACCENT]
     }
 }
 

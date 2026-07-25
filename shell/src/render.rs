@@ -68,6 +68,26 @@ pub(crate) fn allegiance_cue(
     AllegianceCue::Hostile
 }
 
+/// The hue an entity's accent regions wear for this viewer — the RTS
+/// team-color convention, semantic flavor: your machines keep pure
+/// faction art (`None`), allies tint blue, every hostile tints
+/// crimson. Blue and crimson are the two hues Oxide's palette leaves
+/// unclaimed (rust, teal, scrap gold, bone are all spoken for).
+/// Colorblind mode swaps the ally to bone — its blue would shadow the
+/// colorblind Cupric accent — leaving a luminance-split pair (bright
+/// friend, dark foe) that reads under every kind of color vision;
+/// crimson already sits dark on the protan/deutan axis.
+pub(crate) fn allegiance_tint(cue: AllegianceCue) -> Option<Color> {
+    match (cue, colorblind()) {
+        (AllegianceCue::Mine, _) => None,
+        (AllegianceCue::Ally, false) => Some(color_u8!(100, 160, 245, 255)),
+        (AllegianceCue::Ally, true) => Some(color_u8!(238, 234, 222, 255)),
+        (AllegianceCue::Hostile | AllegianceCue::HostileTwin, _) => {
+            Some(color_u8!(228, 44, 58, 255))
+        }
+    }
+}
+
 /// How faded a memory draws after `age` seconds unseen: 0 fresh,
 /// climbing to a 0.55 fade over ninety seconds. Memories never vanish
 /// — the player recorded them honestly — they just stop pretending to
@@ -272,49 +292,6 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             // The body rides visibly above its shadow.
             screen.y -= zoom * 0.18;
         }
-        // The allegiance cue draws UNCONDITIONALLY — selection must
-        // never repaint a foe as a friend by swallowing it. It is a
-        // ground bar under the sprite base (the RTS team-underline
-        // convention), not a halo: rings belong to selection.
-        {
-            let radius = unit.kind.stats().radius.to_num::<f32>() * zoom;
-            let bar_w = radius * 1.8;
-            let bar_h = (zoom * 0.09).clamp(2.0, 4.0);
-            let bar_y = screen.y + radius * 0.85;
-            match allegiance_cue(game, unit.player) {
-                // Teammates stand on a soft whitened pad — same
-                // language as the minimap's ally lift.
-                AllegianceCue::Ally => {
-                    draw_rectangle(
-                        screen.x - bar_w * 0.5,
-                        bar_y,
-                        bar_w,
-                        bar_h,
-                        Color::new(0.95, 0.95, 0.9, 0.7),
-                    );
-                }
-                // The mirror case underlines DARK with a danger edge:
-                // luminance says foe where tint cannot, whatever the
-                // viewer's color vision.
-                AllegianceCue::HostileTwin => {
-                    draw_rectangle(
-                        screen.x - bar_w * 0.5,
-                        bar_y,
-                        bar_w,
-                        bar_h,
-                        Color::new(0.05, 0.05, 0.07, 0.85),
-                    );
-                    draw_rectangle(
-                        screen.x - bar_w * 0.5,
-                        bar_y,
-                        bar_w,
-                        1.0,
-                        Color::new(0.85, 0.32, 0.29, 0.9),
-                    );
-                }
-                AllegianceCue::Mine | AllegianceCue::Hostile => {}
-            }
-        }
         if game.selection.units.contains(&unit.id) {
             if unit.player == game.human {
                 draw_circle_lines(
@@ -358,15 +335,21 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         // A working harvester runs its scoop cycle — dig frames while it
         // stands at its source, the travel pose everywhere else. Under
         // reduced motion the cycle freezes on the travel pose.
-        let source = if unit.kind == UnitKind::Harvester
+        let (source, accent) = if unit.kind == UnitKind::Harvester
             && !reduced_motion()
             && matches!(unit.order, oxide_sim::Order::Harvest { node }
                 if unit.tile().chebyshev(node) <= 1)
         {
             let frame = [0usize, 1, 2, 1][((game.fx_time() * 4.0) as usize) % 4];
-            sprites.harvester_working(faction, frame)
+            (
+                sprites.harvester_working(faction, frame),
+                sprites.harvester_working_accent(frame),
+            )
         } else {
-            sprites.unit(unit.kind, faction)
+            (
+                sprites.unit(unit.kind, faction),
+                sprites.unit_accent(unit.kind),
+            )
         };
         draw_texture_ex(
             sprites.texture(),
@@ -380,6 +363,23 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                 ..Default::default()
             },
         );
+        // The allegiance accent rides the body draw exactly — same
+        // pose, same frame — and draws UNCONDITIONALLY for non-own
+        // machines: selection must never repaint a foe as a friend.
+        if let Some(tint) = allegiance_tint(allegiance_cue(game, unit.player)) {
+            draw_texture_ex(
+                sprites.texture(),
+                body.x - dest * 0.5,
+                body.y - dest * 0.5,
+                tint,
+                DrawTextureParams {
+                    dest_size: Some(vec2(dest, dest)),
+                    source: Some(accent),
+                    rotation,
+                    ..Default::default()
+                },
+            );
+        }
         // The cargo eye: a fixed ring that FILLS with carrying/capacity
         // — load reads as area, not as a pulse (and needs no motion at
         // all). The scoop cycle above stays the "actually working"
@@ -589,5 +589,31 @@ mod tests {
             "the Ferrous foe must not read as the player's own"
         );
         assert_eq!(cue(5), Hostile, "the Cupric foe reads by tint alone");
+    }
+
+    #[test]
+    fn the_allegiance_tint_is_semantic_and_luminance_safe() {
+        use super::AllegianceCue::*;
+        super::set_colorblind(false);
+        assert_eq!(super::allegiance_tint(Mine), None, "own machines stay pure");
+        let ally = super::allegiance_tint(Ally).unwrap();
+        let foe = super::allegiance_tint(Hostile).unwrap();
+        assert_eq!(
+            super::allegiance_tint(HostileTwin),
+            Some(foe),
+            "every hostile wears one hue — twins get no separate look"
+        );
+        assert!(ally.b > ally.r, "ally reads blue");
+        assert!(foe.r > foe.b, "hostile reads crimson");
+
+        super::set_colorblind(true);
+        let cb_ally = super::allegiance_tint(Ally).unwrap();
+        let cb_foe = super::allegiance_tint(Hostile).unwrap();
+        let lum = |c: macroquad::prelude::Color| 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
+        assert!(
+            lum(cb_ally) - lum(cb_foe) > 0.3,
+            "colorblind mode splits friend from foe by luminance, not hue"
+        );
+        super::set_colorblind(false);
     }
 }
