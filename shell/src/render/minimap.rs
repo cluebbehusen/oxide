@@ -143,6 +143,15 @@ pub(crate) fn draw_minimap(game: &Game) {
                 (_, _) => SCRAP_COLOR,
             };
             if visible {
+                // Stamp what is on show. The world renderer only
+                // stamps camera-visible tiles, so without this a node
+                // re-scouted off-camera resumed fading from its old
+                // timestamp the moment sight dropped.
+                if tile.scrap > 0 || tile.wreck > 0 {
+                    game.last_seen
+                        .borrow_mut()
+                        .insert((pos.x, pos.y), game.fx_time());
+                }
                 base
             } else if scrap > 0 {
                 // Remembered salvage ages like the world view's: the
