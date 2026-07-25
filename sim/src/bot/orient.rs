@@ -177,7 +177,8 @@ impl Orientation {
                 // regression, so adding a variant must break this match.
                 keep @ (Intent::TrainAt { .. }
                 | Intent::RecallArmy { .. }
-                | Intent::Repair { .. }) => keep,
+                | Intent::Repair { .. }
+                | Intent::Salvage { .. }) => keep,
             })
             .collect()
     }

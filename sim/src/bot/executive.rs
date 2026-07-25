@@ -115,6 +115,12 @@ pub enum Intent {
         /// The patient.
         building: crate::ids::BuildingId,
     },
+    /// Strip an own built building for scrap (the executive picks the
+    /// crew; the sim refuses Foundries).
+    Salvage {
+        /// The building coming down.
+        building: crate::ids::BuildingId,
+    },
     /// Throw every idle ground-attack flyer at a target — a strike, not
     /// an army: no lifecycle, no withdraw call, just wings and a place.
     RaidAir {
@@ -340,6 +346,26 @@ impl Executive {
                             player: me,
                             command: Command::Repair {
                                 units: vec![welder],
+                                building: *building,
+                                queue: false,
+                            },
+                        });
+                    }
+                }
+                Intent::Salvage { building } => {
+                    let anchor = obs
+                        .my_buildings
+                        .iter()
+                        .find(|b| b.id == *building)
+                        .map(|b| b.anchor);
+                    if let Some(anchor) = anchor
+                        && let Some(stripper) = self.free_harvester(obs, anchor, &claimed)
+                    {
+                        claimed.push(stripper);
+                        out.push(PlayerCommand {
+                            player: me,
+                            command: Command::Salvage {
+                                units: vec![stripper],
                                 building: *building,
                                 queue: false,
                             },

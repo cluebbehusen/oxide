@@ -19,7 +19,7 @@ import torch
 from torch import nn
 
 from models import make_policy, save_policy
-from oxide_gym import FEATURE_NAMES, Worker, with_condition
+from oxide_gym import ACTIONS, FEATURE_NAMES, GYM_VERSION, Worker, with_condition
 
 # Action indices (see sim/src/bot/gym.rs — the v3 menu).
 IDLE, TRAIN_H, TRAIN_S = 0, 1, 2
@@ -158,7 +158,7 @@ def main() -> None:
     mask = torch.as_tensor(np.stack(mask_all))
     # Recording telemetry: a dataset that never contains an action can
     # never teach it — the techless-lineage bug hid here.
-    counts = np.bincount(np.asarray(act_all), minlength=21)
+    counts = np.bincount(np.asarray(act_all), minlength=ACTIONS)
     print("action counts:", {i: int(c) for i, c in enumerate(counts) if c})
     act = torch.as_tensor(np.asarray(act_all))
     policy = make_policy(args.arch)
@@ -177,7 +177,7 @@ def main() -> None:
             total += float(loss.detach()) * len(mb)
         print(f"epoch {epoch}: loss {total / n:.4f}")
     pathlib.Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    save_policy(policy, args.arch, args.out)
+    save_policy(policy, args.arch, args.out, {"gym_version": GYM_VERSION})
     print(f"saved {args.out} ({n} samples)")
 
 

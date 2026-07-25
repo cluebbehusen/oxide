@@ -49,6 +49,10 @@ pub struct UnitObs {
     /// The construction site this unit is building, if any (own units
     /// only; always `None` for enemy observations).
     pub site: Option<BuildingId>,
+    /// The building this unit is stripping, if any (own units only —
+    /// the repair channel reads it to keep the two verbs off one
+    /// target; enemy work orders stay opaque).
+    pub salvaging: Option<BuildingId>,
 }
 
 /// One building as a bot sees it. Enemy entries may be memories: `seen`
@@ -344,6 +348,10 @@ fn own_unit(u: &crate::state::Unit) -> UnitObs {
             Order::Build { site } => Some(site),
             _ => None,
         },
+        salvaging: match u.order {
+            Order::Salvage { building } => Some(building),
+            _ => None,
+        },
     }
 }
 
@@ -354,9 +362,10 @@ fn enemy_unit(u: &crate::state::Unit) -> UnitObs {
         kind: u.kind,
         tile: u.tile(),
         hp: u.hp,
-        idle: false, // enemy intent is not observable
-        carrying: 0, // nor their cargo manifests
-        site: None,  // nor their work orders
+        idle: false,     // enemy intent is not observable
+        carrying: 0,     // nor their cargo manifests
+        site: None,      // nor their work orders
+        salvaging: None, // ditto
     }
 }
 

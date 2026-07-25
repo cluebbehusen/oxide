@@ -24,7 +24,7 @@ use chassis::grid::TilePos;
 
 /// Bump when actions or features change shape — recorded checkpoints
 /// and shipped weights must refuse mismatched worlds.
-pub const GYM_VERSION: u32 = 4;
+pub const GYM_VERSION: u32 = 5;
 
 /// The macro menu, one action per think. Training slots are
 /// role-indexed where the factions differ: one action means "train my
@@ -75,13 +75,15 @@ pub enum Action {
     Recall = 19,
     /// Send a scout now.
     Scout = 20,
+    /// Strip the cheapest-and-least-useful own defense for scrap.
+    Salvage = 21,
 }
 
 /// Number of actions in [`Action`].
-pub const ACTION_COUNT: usize = 21;
+pub const ACTION_COUNT: usize = 22;
 
 /// Number of entries in the feature vector.
-pub const FEATURE_COUNT: usize = 63;
+pub const FEATURE_COUNT: usize = 64;
 
 /// One name per feature index, emitted in the gym hello and asserted
 /// by the trainer — Rust/Python index skew fails loudly at handshake
@@ -150,6 +152,20 @@ pub const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
     "map_h",
     "incoming_shells",
     "my_shells_in_flight",
+    "my_building_value",
+];
+
+/// Salvage's fixed liquidation order: cheapest and least useful
+/// first. The Fabricator (the tech gate) and the Foundry (the victory
+/// token) are never eligible — humans may sell a Fabricator, but the
+/// bot's lowering never picks one: v1's value-ordered list made
+/// selling the Fabricator the first legal salvage in every game.
+pub const SALVAGE_PRIORITY: [BuildingKind; 5] = [
+    BuildingKind::Turret,
+    BuildingKind::FlakTurret,
+    BuildingKind::Array,
+    BuildingKind::Bastion,
+    BuildingKind::Reclaimer,
 ];
 
 impl Action {
@@ -177,6 +193,7 @@ impl Action {
             18 => Action::Push,
             19 => Action::Recall,
             20 => Action::Scout,
+            21 => Action::Salvage,
             _ => Action::Idle,
         }
     }
@@ -501,6 +518,19 @@ impl GymBot {
             i64::from(obs.map_height),
             incoming_shells,
             obs.my_shells as i64,
+            // v5: own standing value in buildings — what Salvage can
+            // liquidate, and the potential term that keeps selling a
+            // Bastion to buy scuttlers from reading as free reward.
+            obs.my_buildings
+                .iter()
+                .filter(|b| b.built)
+                .map(|b| {
+                    b.kind
+                        .stats()
+                        .construction
+                        .map_or(0i64, |c| i64::from(c.cost))
+                })
+                .sum::<i64>(),
         ];
 
         let mut mask = [false; ACTION_COUNT];
@@ -562,12 +592,22 @@ impl GymBot {
             mask[Action::BuildBastion as usize] = near_home(BuildingKind::Bastion);
             mask[Action::BuildArray as usize] = near_home(BuildingKind::Array);
             mask[Action::BuildReclaimer as usize] = near_home(BuildingKind::Reclaimer);
+            // Repair and salvage never share a target: a patient an
+            // own crew is stripping is not a patient (the sim evicts
+            // the loser anyway; masking keeps the oscillator out of
+            // the trained distribution).
+            let under_salvage: Vec<crate::ids::BuildingId> =
+                obs.my_units.iter().filter_map(|u| u.salvaging).collect();
             mask[Action::Repair as usize] = builder_free
                 && obs.scrap > 0
+                && obs.my_buildings.iter().any(|b| {
+                    b.built && b.hp < b.kind.stats().max_hp && !under_salvage.contains(&b.id)
+                });
+            mask[Action::Salvage as usize] = builder_free
                 && obs
                     .my_buildings
                     .iter()
-                    .any(|b| b.built && b.hp < b.kind.stats().max_hp);
+                    .any(|b| b.built && SALVAGE_PRIORITY.contains(&b.kind));
             mask[Action::AirRaid as usize] = enemy_site.is_some()
                 && obs.my_units.iter().any(|u| {
                     let stats = u.kind.stats();
@@ -723,11 +763,16 @@ impl GymBot {
             }
             Action::Repair => {
                 // Same pick as the scripted repair channel: deepest
-                // wound first, ties toward the map origin then id.
+                // wound first, ties toward the map origin then id —
+                // skipping anything an own crew is stripping.
+                let under_salvage: Vec<crate::ids::BuildingId> =
+                    obs.my_units.iter().filter_map(|u| u.salvaging).collect();
                 let patient = obs
                     .my_buildings
                     .iter()
-                    .filter(|b| b.built && b.hp < b.kind.stats().max_hp)
+                    .filter(|b| {
+                        b.built && b.hp < b.kind.stats().max_hp && !under_salvage.contains(&b.id)
+                    })
                     .map(|b| {
                         let deficit = b.kind.stats().max_hp - b.hp;
                         (std::cmp::Reverse(deficit), b.anchor.y, b.anchor.x, b.id)
@@ -736,6 +781,26 @@ impl GymBot {
                     .map(|(.., id)| id);
                 if let Some(building) = patient {
                     intents.push(Intent::Repair { building });
+                }
+            }
+            Action::Salvage => {
+                // Cheapest-and-least-useful first, ties toward the
+                // map origin then id — one deterministic pick, like
+                // every other lowering.
+                let target = obs
+                    .my_buildings
+                    .iter()
+                    .filter(|b| b.built)
+                    .filter_map(|b| {
+                        SALVAGE_PRIORITY
+                            .iter()
+                            .position(|k| *k == b.kind)
+                            .map(|rank| (rank, b.anchor.y, b.anchor.x, b.id))
+                    })
+                    .min()
+                    .map(|(.., id)| id);
+                if let Some(building) = target {
+                    intents.push(Intent::Salvage { building });
                 }
             }
             Action::AirRaid => {
