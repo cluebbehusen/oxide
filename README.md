@@ -241,8 +241,9 @@ thumbnail-grid browser sectioned by format (sixteen duels, five 2v2s,
 two 3v3s, two 4v4s), per-seat match setup on
 team maps (team-grouped seat cards with inline difficulty and
 personality dials beside a who-is-where map), building salvage as harvester labor, ally
-inspection with visible orders and an underline badge that marks
-allied machines on the ground, touch gestures (pan, tap, long-press,
+inspection with visible orders and team-color accents on the machines
+themselves (allies wear blue, every enemy wears crimson, your own
+keep pure faction paint), touch gestures (pan, tap, long-press,
 pinch, two-finger box), menus, a trained neural opponent with four
 difficulty levels and selectable personalities, save/resume via
 replays, and the agent tooling described above.

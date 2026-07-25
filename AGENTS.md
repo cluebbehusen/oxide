@@ -552,10 +552,15 @@ never runs it.
   team-grouped seat cards with difficulty/personality chips edited in
   place beside a who-is-where preview (no sub-screen; the cell cursor
   moves with Left/Right and Enter takes a seat or cycles a dial).
-  Ally readability on the ground is an underline badge: a pale bar
-  under allied machines, a dark bar with a danger hairline under
-  hostile machines of your own faction — never a ring around the
-  silhouette. The menu font is Latin-1 only: an em dash renders as
+  Allegiance reads as team color ON the art (the RTS convention,
+  semantic flavor): every faction-varied sprite carries a derived
+  accent mask in the atlas — gen_sprites.py diffs the two faction
+  variants; where they differ IS the faction-colored region — and the
+  shell overlays it tinted per `allegiance_tint`: own machines pure,
+  allies blue, every hostile crimson (colorblind mode swaps ally to
+  bone for a luminance split). Minimap dots speak the same hues.
+  Never a badge, bar, or ring around the silhouette — bars read as
+  health. The menu font is Latin-1 only: an em dash renders as
   tofu, so UI strings stick to ASCII plus '·'.
 - **Stalls carry reasons** (`StallReason`): own-state facts only —
   routes, banks, footing. A reason must never derive from what fog
