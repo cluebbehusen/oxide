@@ -54,6 +54,19 @@ pub fn run(addr: &str, spawn: bool) -> Result<()> {
         child.kill().ok();
         child.wait().ok();
     }
+    // A passing smoke tidies its scratch artifacts: the replay and
+    // screenshot exist to be checked, not kept, and the leftovers were
+    // accumulating in replays/ — where the shell's shelf lists them and
+    // every run shifted the screenshot suite's shelf reference. A
+    // failing smoke keeps both for inspection.
+    if outcome.is_ok()
+        && let Ok(cwd) = std::env::current_dir()
+    {
+        // Same roots the checks used when writing them.
+        let pid = std::process::id();
+        std::fs::remove_file(cwd.join(format!("replays/smoke-{pid}.json"))).ok();
+        std::fs::remove_file(cwd.join(format!("screenshots/smoke-{pid}.png"))).ok();
+    }
     outcome
 }
 
