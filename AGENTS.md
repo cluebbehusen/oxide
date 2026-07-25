@@ -199,8 +199,12 @@ in via `PlayerSpec.bot_config`; a seat without one gets the legacy
 rule-cascade bot, which is what keeps pre-0.7 replays reproducing
 (that bot is team-blind by design — team seats must set a config).
 
-The gym contract (v4) is 63 named integer features and 21 masked
-macro actions; training slots are role-indexed where the factions
+The gym contract (v5) is 64 named integer features and 22 masked
+macro actions (Salvage appended in 0.11 — the reclaim-parity rule:
+human verbs and bot verbs stay in lockstep — with a fixed
+cheapest-first lowering that never touches the Fabricator or
+Foundry, and my_building_value joining the features so the potential
+can price liquidation instead of scoring it as free reward); training slots are role-indexed where the factions
 differ, so one action space serves both rosters. Since v4 every
 positional feature rides as relative 0-1000 against the actual map
 dimensions (fixed scales broke on the large map classes), map dims
@@ -250,7 +254,20 @@ draws the 1v1 lanes from the large/vast classes only — the decisive
 lever, because on mostly-small maps games end before a Fabricator
 amortizes and PPO grinds imitation-taught tech back out the moment
 the bonus fades; on the grand distribution the true objective
-sustains it unaided.
+sustains it unaided. The 0.11 campaign added the general forms:
+`widen.py` bridges an old artifact to a new contract twice over (the
+shipped json gets zero feature columns and an UNREACHABLE new-action
+floor so every fixture stays green; the float resume gets a
+reachable zero bias, because a verb PPO can never sample is a verb
+it never learns), `--salvage-bonus` seeds a new verb on the
+tech-bonus schedule, and the decisive lesson: a long fresh league
+from a converged parent only dilutes it — the working shape is a
+SHORT consolidation resumed from and anchored to the intact parent
+(coef 0.1 held flat), picked by tournament inside the anneal's
+shadow before the rusher canary collapses. A seeded verb the true
+objective still prices as lossy ships as trained runner-up logits,
+not a usage quota — forcing usage past the game's own economics is
+the "weird ML" line the campaign doctrine refuses to cross.
 Team training runs two flavors — self-team (`team`: the learner holds
 both chairs) and mixed-ally (`team2`: a scripted Brain drives the
 teammate) — and per-seat episode truncation pads a dead learner's
@@ -273,8 +290,11 @@ learner never found the counter" from "no counter exists"
 stand in front of side B, priced into its verdict — scenarios grew a
 serde-default `buildings` list of pre-built structures for exactly
 this kind of harness work).
-`driver bench` times a 500-unit mass battle locally; CI asserts only
-hash-identity at scale. The 0.10 pacing findings and levers live in
+`driver bench` times a 500-unit mass battle locally
+(`--scenario scenarios/compass-grand.json` instead runs a shipped map
+with every bot seat thinking — the heaviest honest shape; 0.11
+measured 3,073 ticks/s deep-game, so no perf window is open); CI
+asserts only hash-identity at scale. The 0.10 pacing findings and levers live in
 EXPERIMENTS.md; matches target tens of minutes (the `vast` map class
 and the foundry-durability bless exist for this; the lancer's
 damage bless is what made the tech tree worth climbing — the matchup

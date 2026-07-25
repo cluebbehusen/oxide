@@ -235,15 +235,19 @@ palette from turrets to radar to Reclaimers, wreck salvage and repair
 welding, 2v2 teams with shared sight, order queues and patrols, solid
 units that crowd without gridlocking, attack-move with line-of-sight
 fire, damage retaliation, rally points, control groups, shift-select,
-order feedback, a fog-aware minimap, sound, ten maps, menus, a trained
-neural opponent with four difficulty levels and selectable personalities,
-save/resume via replays, and the agent tooling described above.
+order feedback, a fog-aware minimap, sound, sixteen maps in a
+format-sectioned browser, per-seat match setup on team maps (pick your
+chair, tune each opponent), building salvage as harvester labor, ally
+inspection with visible orders, touch gestures (pan, tap, long-press,
+pinch, two-finger box), menus, a trained neural opponent with four
+difficulty levels and selectable personalities, save/resume via
+replays, and the agent tooling described above.
 
 Not yet: expansions (Foundries aren't buildable), formations,
 free-for-all (the sim seats up to eight players and the menu lists any
 scenario it can parse, but no shipped map plays FFA), and the mobile
-ports — macroquad makes iOS/Android plausible, and `RawEvent` already
-carries touch variants, but nothing is wired. The sim freezes at game
+ports — macroquad makes iOS/Android plausible, and the desktop shell
+already resolves touch gestures, but no mobile build exists. The sim freezes at game
 end; the pause menu's Restart is the rematch.
 
 Built with [macroquad](https://macroquad.rs/); simulation math on the
