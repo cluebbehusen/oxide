@@ -362,6 +362,8 @@ impl PreviewCache {
 pub struct ScenarioEntry {
     /// Display name (from the file's own `name` field).
     pub label: String,
+    /// Seats on the map — the browser's section key (1v1 first).
+    pub seats: usize,
     /// One-line browser blurb from the authored metadata, when present:
     /// hook plus pace/mode/richness badges.
     pub blurb: Option<String>,
@@ -402,6 +404,7 @@ pub fn discover_scenarios() -> Vec<ScenarioEntry> {
                     .map(|m| m.theme.clone())
                     .unwrap_or_default();
                 entries.push(ScenarioEntry {
+                    seats: scenario.players.len(),
                     label: scenario.name,
                     blurb,
                     path: Some(path),
@@ -412,12 +415,17 @@ pub fn discover_scenarios() -> Vec<ScenarioEntry> {
     }
     if entries.is_empty() {
         entries.push(ScenarioEntry {
+            seats: 2,
             label: Scenario::skirmish().name,
             blurb: None,
             path: None,
             theme: String::new(),
         });
     }
+    // Sections: 1v1 first (a first Play+Enter must never launch a team
+    // match), bigger formats after, alphabetical within each. Callers
+    // key the remembered pick by PATH, so re-sorting can't move it.
+    entries.sort_by_key(|e| (e.seats, e.label.to_lowercase()));
     entries
 }
 

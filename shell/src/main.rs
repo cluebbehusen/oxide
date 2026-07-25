@@ -196,38 +196,63 @@ use screens::wizard::{NewMatchDraft, Out as WizardOut, Step as WizardStep, Wizar
 
 fn launch(draft: &NewMatchDraft) -> Result<Game> {
     let mut scenario = (**draft.scenario.as_ref().context("draft has a map")?).clone();
-    let level = oxide_sim::bot::Level::LADDER[draft.level_choice.min(3)];
-    let aggression = screens::wizard::personality_knob(draft.personality_choice);
-    let config = oxide_sim::scenario::BotConfig { level, aggression };
-    for player in scenario.players.iter_mut().filter(|p| p.bot) {
-        player.bot_config = Some(config);
+    // ONE consumer, one source: the per-seat vector. Whatever flow
+    // filled the draft — the 1v1 quick screens or the team setup —
+    // every AI seat gets its own config here, and the vacated human
+    // seat can never fall to the team-blind classic bot.
+    anyhow::ensure!(
+        draft.seats.len() == scenario.players.len(),
+        "draft seats out of step with the map"
+    );
+    let seat_choice = draft.seat_choice.min(scenario.players.len() - 1);
+    for (i, player) in scenario.players.iter_mut().enumerate() {
+        player.bot = i != seat_choice;
+        player.bot_config = if player.bot {
+            let plan = draft.seats[i];
+            Some(oxide_sim::scenario::BotConfig {
+                level: oxide_sim::bot::Level::LADDER[plan.level_choice.min(3)],
+                aggression: screens::wizard::personality_knob(plan.personality_choice),
+            })
+        } else {
+            None
+        };
     }
-    // The human seat plays the chosen roster; "surprise" lets the
-    // scenario seed pick.
-    let faction = match draft.faction_choice {
-        0 => oxide_sim::Faction::Ferrous,
-        1 => oxide_sim::Faction::Cupric,
-        _ => match scenario.seed % 2 {
+    // The 1v1 quick flow keeps its faction question; team maps have
+    // none — picking a seat IS picking its authored faction (retinting
+    // one seat of a faction-mixed team collides names and manufactures
+    // hostile twins).
+    if scenario.players.len() == 2 {
+        let faction = match draft.faction_choice {
             0 => oxide_sim::Faction::Ferrous,
-            _ => oxide_sim::Faction::Cupric,
-        },
-    };
-    let complement = match faction {
-        oxide_sim::Faction::Ferrous => oxide_sim::Faction::Cupric,
-        oxide_sim::Faction::Cupric => oxide_sim::Faction::Ferrous,
-    };
-    if let Some(human) = scenario.players.iter_mut().find(|p| !p.bot) {
-        retint_seat(human, faction);
+            1 => oxide_sim::Faction::Cupric,
+            _ => match scenario.seed % 2 {
+                0 => oxide_sim::Faction::Ferrous,
+                _ => oxide_sim::Faction::Cupric,
+            },
+        };
+        let complement = match faction {
+            oxide_sim::Faction::Ferrous => oxide_sim::Faction::Cupric,
+            oxide_sim::Faction::Cupric => oxide_sim::Faction::Ferrous,
+        };
+        if let Some(human) = scenario.players.iter_mut().find(|p| !p.bot) {
+            retint_seat(human, faction);
+        }
+        // In a duel, faction is also the only allegiance cue on screen —
+        // the opponent takes the other roster, or two same-color armies
+        // would fight an unreadable war.
+        if let Some(bot) = scenario.players.iter_mut().find(|p| p.bot) {
+            retint_seat(bot, complement);
+        }
     }
-    // In a duel, faction is also the only allegiance cue on screen —
-    // the opponent takes the other roster, or two same-color armies
-    // would fight an unreadable war. Team maps author their own mixed
-    // factions and carry an explicit ally marker instead.
-    if scenario.players.len() == 2
-        && let Some(bot) = scenario.players.iter_mut().find(|p| p.bot)
-    {
-        retint_seat(bot, complement);
-    }
+    // Seat names must stay unique: the victory banner, the panel, and
+    // the stats screen all address seats by name.
+    let mut names: Vec<&str> = scenario.players.iter().map(|p| p.name.as_str()).collect();
+    names.sort_unstable();
+    names.dedup();
+    anyhow::ensure!(
+        names.len() == scenario.players.len(),
+        "seat names collide after setup"
+    );
     Game::new(scenario)
 }
 

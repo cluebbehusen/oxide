@@ -1,5 +1,10 @@
-//! The New Match wizard: map, difficulty, personality, faction — one
-//! screen object owning its step, its menus, and the draft they edit.
+//! The New Match wizard: map, then either the 1v1 quick flow
+//! (difficulty, personality, faction) or — on team maps — the match
+//! setup screen with per-seat dials and seat picking. One screen object
+//! owning its step, its menus, and the draft they edit.
+//!
+//! Two front-ends, one back: whatever the flow, every answer lands in
+//! the draft's PER-SEAT vector, and `launch()` reads only that.
 
 use crate::game::SoundKind;
 use crate::menu::{Menu, ScenarioEntry, discover_scenarios};
@@ -7,33 +12,68 @@ use anyhow::{Context, Result};
 use macroquad::prelude::Vec2;
 use oxide_protocol::{Key, RawEvent};
 use oxide_sim::Scenario;
+use std::path::PathBuf;
 
-/// Everything New Match has chosen so far. The draft outlives every
-/// screen transition: backing from Faction to Difficulty to the map
-/// list and forward again re-offers each earlier answer instead of
-/// forgetting it.
-pub struct NewMatchDraft {
-    /// The loaded map, once picked.
-    pub scenario: Option<Box<Scenario>>,
-    /// Map-list row, for re-preselection.
-    pub scenario_choice: usize,
+/// One AI seat's dials in the draft.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SeatPlan {
     /// Difficulty row (indexes `Level::LADDER`).
     pub level_choice: usize,
     /// Personality row (feeds [`personality_knob`]).
     pub personality_choice: usize,
-    /// Faction row (Ferrous / Cupric / surprise).
+}
+
+impl Default for SeatPlan {
+    fn default() -> Self {
+        Self {
+            level_choice: 1, // Medium is the fair default
+            personality_choice: 0,
+        }
+    }
+}
+
+/// Everything New Match has chosen so far. The draft outlives every
+/// screen transition: backing from any step to the map list and
+/// forward again re-offers each earlier answer instead of forgetting
+/// it.
+#[derive(Default)]
+pub struct NewMatchDraft {
+    /// The loaded map, once picked.
+    pub scenario: Option<Box<Scenario>>,
+    /// The picked map's path (`None` = the embedded skirmish) — keyed
+    /// by PATH so the browser's section sort can never move the
+    /// remembered highlight onto a different map.
+    pub scenario_path: Option<PathBuf>,
+    /// Which chair the human takes (index into the scenario's players).
+    pub seat_choice: usize,
+    /// One plan per seat, aligned with the scenario's player list and
+    /// re-derived (and clamped) whenever the scenario is assigned —
+    /// Back from an 8-seat map to a 2-seat map must not leave a stale
+    /// seat 7. The human's own row is inert at launch.
+    pub seats: Vec<SeatPlan>,
+    /// Faction row for the 1v1 quick flow (Ferrous / Cupric /
+    /// surprise). Team maps have no faction question: picking a seat
+    /// IS picking its authored faction.
     pub faction_choice: usize,
 }
 
-impl Default for NewMatchDraft {
-    fn default() -> Self {
-        Self {
-            scenario: None,
-            scenario_choice: 0,
-            level_choice: 1, // Medium is the fair default
-            personality_choice: 0,
-            faction_choice: 0,
-        }
+impl NewMatchDraft {
+    /// Installs a picked map: the per-seat vector re-derives at the new
+    /// map's width (existing dials survive where seats overlap) and the
+    /// seat choice clamps onto the board.
+    pub fn set_scenario(&mut self, scenario: Scenario, path: Option<PathBuf>) {
+        let count = scenario.players.len();
+        self.seats.resize(count, SeatPlan::default());
+        self.seats.truncate(count);
+        self.seat_choice = self.seat_choice.min(count.saturating_sub(1));
+        self.scenario = Some(Box::new(scenario));
+        self.scenario_path = path;
+    }
+
+    /// Whether the picked map runs the per-seat setup screen (anything
+    /// beyond a duel) instead of the 1v1 quick flow.
+    pub fn team_map(&self) -> bool {
+        self.scenario.as_ref().is_some_and(|s| s.players.len() > 2)
     }
 }
 
@@ -57,12 +97,17 @@ pub fn personality_knob(choice: usize) -> Option<u32> {
 pub enum Step {
     /// Scenario picker (the map list).
     Map,
-    /// Difficulty picker.
+    /// Difficulty picker (1v1 quick flow).
     Difficulty,
-    /// Personality picker.
+    /// Personality picker (1v1 quick flow).
     Personality,
-    /// Faction picker — the last question; answering launches.
+    /// Faction picker — the quick flow's last question; answering
+    /// launches.
     Faction,
+    /// Team-map match setup: one row per seat, Start, Back.
+    Setup,
+    /// One seat's dials (take the chair, difficulty, personality).
+    SeatDetail(usize),
 }
 
 /// What a wizard frame decided.
@@ -92,8 +137,27 @@ fn map_menu(draft: &NewMatchDraft) -> (Menu, Vec<ScenarioEntry>) {
     let mut items: Vec<String> = entries.iter().map(|e| e.label.clone()).collect();
     items.push("Back".to_string());
     let mut menu = Menu::new("OXIDE", items);
-    menu.select(draft.scenario_choice.min(entries.len()));
+    // The remembered pick is a PATH: find it wherever the section sort
+    // put it this time (a vanished file just lands on the top row).
+    let remembered = entries
+        .iter()
+        .position(|e| e.path == draft.scenario_path)
+        .filter(|_| draft.scenario.is_some())
+        .unwrap_or(0);
+    menu.select(remembered);
     (menu, entries)
+}
+
+/// The plan the quick flow's preselects mirror: the first AI seat's
+/// (the human's own row is inert and never written).
+fn ai_plan(draft: &NewMatchDraft) -> SeatPlan {
+    draft
+        .seats
+        .iter()
+        .enumerate()
+        .find(|(i, _)| *i != draft.seat_choice)
+        .map(|(_, p)| *p)
+        .unwrap_or_default()
 }
 
 fn rows_menu(title: &str, items: &[&str], selected: usize) -> Menu {
@@ -102,6 +166,49 @@ fn rows_menu(title: &str, items: &[&str], selected: usize) -> Menu {
     let mut menu = Menu::new(title, rows);
     menu.select(selected.min(items.len() - 1));
     menu
+}
+
+fn seat_label(draft: &NewMatchDraft, i: usize) -> String {
+    let scenario = draft.scenario.as_ref().expect("setup wants a map");
+    let spec = &scenario.players[i];
+    if i == draft.seat_choice {
+        format!("{} — you", spec.name)
+    } else {
+        let plan = draft.seats[i];
+        format!(
+            "{} — {} · {}",
+            spec.name,
+            DIFFICULTY_ITEMS[plan.level_choice],
+            PERSONALITY_ITEMS[plan.personality_choice]
+        )
+    }
+}
+
+fn setup_menu(draft: &NewMatchDraft) -> Menu {
+    let scenario = draft.scenario.as_ref().expect("setup wants a map");
+    let mut rows: Vec<String> = (0..scenario.players.len())
+        .map(|i| seat_label(draft, i))
+        .collect();
+    rows.push("Start match".to_string());
+    rows.push("Back".to_string());
+    let mut menu = Menu::new("MATCH SETUP", rows);
+    menu.select(scenario.players.len()); // Start preselected
+    menu
+}
+
+fn seat_detail_menu(draft: &NewMatchDraft, i: usize) -> Menu {
+    let plan = draft.seats[i];
+    let rows = vec![
+        "Take this seat".to_string(),
+        format!("Difficulty: {}", DIFFICULTY_ITEMS[plan.level_choice]),
+        format!(
+            "Personality: {}",
+            PERSONALITY_ITEMS[plan.personality_choice]
+        ),
+        "Back".to_string(),
+    ];
+    let scenario = draft.scenario.as_ref().expect("setup wants a map");
+    Menu::new(scenario.players[i].name.to_uppercase(), rows)
 }
 
 impl Wizard {
@@ -123,12 +230,28 @@ impl Wizard {
                 self.entries = entries;
                 menu
             }
-            Step::Difficulty => rows_menu("DIFFICULTY", &DIFFICULTY_ITEMS, draft.level_choice),
-            Step::Personality => {
-                rows_menu("OPPONENT", &PERSONALITY_ITEMS, draft.personality_choice)
+            Step::Difficulty => {
+                rows_menu("DIFFICULTY", &DIFFICULTY_ITEMS, ai_plan(draft).level_choice)
             }
+            Step::Personality => rows_menu(
+                "OPPONENT",
+                &PERSONALITY_ITEMS,
+                ai_plan(draft).personality_choice,
+            ),
             Step::Faction => rows_menu("FACTION", &FACTION_ITEMS, draft.faction_choice),
+            Step::Setup => setup_menu(draft),
+            Step::SeatDetail(i) => seat_detail_menu(draft, i),
         };
+    }
+
+    /// Writes a 1v1 quick-flow answer through to every AI seat: the two
+    /// front-ends share one back — `launch()` reads only the vector.
+    fn write_all_seats(draft: &mut NewMatchDraft, write: impl Fn(&mut SeatPlan)) {
+        for (i, plan) in draft.seats.iter_mut().enumerate() {
+            if i != draft.seat_choice {
+                write(plan);
+            }
+        }
     }
 
     /// Applies a frame's events. Windowless: menus navigate, the draft
@@ -163,16 +286,19 @@ impl Wizard {
                             .with_context(|| format!("loading {}", path.display()))?,
                         None => Scenario::skirmish(),
                     };
-                    draft.scenario = Some(Box::new(scenario));
-                    draft.scenario_choice = c;
-                    self.goto(Step::Difficulty, draft);
+                    draft.set_scenario(scenario, self.entries[c].path.clone());
+                    if draft.team_map() {
+                        self.goto(Step::Setup, draft);
+                    } else {
+                        self.goto(Step::Difficulty, draft);
+                    }
                 }
             }
             Step::Difficulty => {
                 if escaped || choice.is_some_and(|c| c >= DIFFICULTY_ITEMS.len()) {
                     self.goto(Step::Map, draft);
                 } else if let Some(c) = choice {
-                    draft.level_choice = c;
+                    Self::write_all_seats(draft, |p| p.level_choice = c);
                     self.goto(Step::Personality, draft);
                 }
             }
@@ -180,7 +306,7 @@ impl Wizard {
                 if escaped || choice.is_some_and(|c| c >= PERSONALITY_ITEMS.len()) {
                     self.goto(Step::Difficulty, draft);
                 } else if let Some(c) = choice {
-                    draft.personality_choice = c;
+                    Self::write_all_seats(draft, |p| p.personality_choice = c);
                     self.goto(Step::Faction, draft);
                 }
             }
@@ -190,6 +316,45 @@ impl Wizard {
                 } else if let Some(c) = choice {
                     draft.faction_choice = c;
                     return Ok(Out::Launch);
+                }
+            }
+            Step::Setup => {
+                let seat_rows = draft.seats.len();
+                if escaped || choice == Some(seat_rows + 1) {
+                    self.goto(Step::Map, draft);
+                } else if choice == Some(seat_rows) {
+                    return Ok(Out::Launch);
+                } else if let Some(c) = choice {
+                    self.goto(Step::SeatDetail(c), draft);
+                }
+            }
+            Step::SeatDetail(i) => {
+                if escaped || choice == Some(3) {
+                    self.goto(Step::Setup, draft);
+                } else if let Some(c) = choice {
+                    match c {
+                        0 => {
+                            // Seat choice never permutes seats — parity
+                            // carries factions and teams — it moves the
+                            // human's chair.
+                            draft.seat_choice = i;
+                            self.goto(Step::Setup, draft);
+                        }
+                        1 => {
+                            let plan = &mut draft.seats[i];
+                            plan.level_choice = (plan.level_choice + 1) % DIFFICULTY_ITEMS.len();
+                            self.goto(Step::SeatDetail(i), draft);
+                            self.menu.select(1);
+                        }
+                        2 => {
+                            let plan = &mut draft.seats[i];
+                            plan.personality_choice =
+                                (plan.personality_choice + 1) % PERSONALITY_ITEMS.len();
+                            self.goto(Step::SeatDetail(i), draft);
+                            self.menu.select(2);
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
@@ -205,29 +370,21 @@ impl Wizard {
             Step::Difficulty => "difficulty_menu",
             Step::Personality => "personality_menu",
             Step::Faction => "faction_menu",
+            Step::Setup => "match_setup",
+            Step::SeatDetail(_) => "seat_menu",
         }
     }
 
     /// The subtitle under the step's menu. The map step ignores this
     /// (its subtitle browses the highlighted entry's blurb).
-    pub fn subtitle(&self, draft: &NewMatchDraft) -> &'static str {
+    pub fn subtitle(&self, _draft: &NewMatchDraft) -> &'static str {
         match self.step {
             Step::Map => "machines eating a dead world",
-            Step::Difficulty => {
-                // On a team map these dials set EVERY AI seat — the
-                // human's ally included; say so instead of surprising.
-                let team_map = draft
-                    .scenario
-                    .as_ref()
-                    .is_some_and(|sc| sc.players.len() > 2);
-                if team_map {
-                    "how hard should they think? (sets every AI seat, your ally too)"
-                } else {
-                    "how hard should it think?"
-                }
-            }
-            Step::Personality => "how should they fight?",
+            Step::Difficulty => "how hard should it think?",
+            Step::Personality => "how should it fight?",
             Step::Faction => "which roster do your machines run?",
+            Step::Setup => "pick your seat; tune each opponent",
+            Step::SeatDetail(_) => "this seat's dials",
         }
     }
 }
@@ -248,24 +405,37 @@ mod tests {
             .expect("update")
     }
 
+    /// The first 1v1 entry's menu row (sections put duels first, so
+    /// row 0 is always a duel — the property its own test pins).
+    fn pick_first_map(w: &mut Wizard, draft: &mut NewMatchDraft) {
+        w.menu.select(0);
+        assert_eq!(drive(w, draft, Key::Enter), Out::Stay);
+    }
+
     #[test]
     fn the_wizard_walks_forward_and_back_without_forgetting() {
         let mut draft = NewMatchDraft::default();
         let mut w = Wizard::open(&draft);
         assert_eq!(w.step, Step::Map);
 
-        // Pick the first map (the embedded skirmish rides the list even
-        // when no scenarios directory is in reach).
-        assert_eq!(drive(&mut w, &mut draft, Key::Enter), Out::Stay);
-        assert_eq!(w.step, Step::Difficulty);
+        pick_first_map(&mut w, &mut draft);
+        assert_eq!(w.step, Step::Difficulty, "row 0 is a duel: quick flow");
         assert!(draft.scenario.is_some(), "the draft holds the map");
         assert_eq!(w.menu.selected, 1, "Medium preselected from the draft");
 
-        // Choose Hard, then back out — the answer must survive.
+        // Choose Hard, then back out — the answer must survive (it
+        // lives in the per-seat vector now).
         drive(&mut w, &mut draft, Key::Down);
         assert_eq!(drive(&mut w, &mut draft, Key::Enter), Out::Stay);
         assert_eq!(w.step, Step::Personality);
-        assert_eq!(draft.level_choice, 2);
+        assert!(
+            draft
+                .seats
+                .iter()
+                .enumerate()
+                .all(|(i, p)| i == draft.seat_choice || p.level_choice == 2),
+            "the quick flow writes every AI seat's plan"
+        );
         assert_eq!(drive(&mut w, &mut draft, Key::Escape), Out::Stay);
         assert_eq!(w.step, Step::Difficulty);
         assert_eq!(w.menu.selected, 2, "Back re-offers Hard, not the default");
@@ -295,15 +465,82 @@ mod tests {
     fn a_back_row_mid_wizard_steps_one_screen_not_all_the_way_out() {
         let mut draft = NewMatchDraft::default();
         let mut w = Wizard::open(&draft);
-        drive(&mut w, &mut draft, Key::Enter);
+        pick_first_map(&mut w, &mut draft);
         assert_eq!(w.step, Step::Difficulty);
         let last = w.menu.items.len() - 1;
         w.menu.select(last);
         assert_eq!(drive(&mut w, &mut draft, Key::Enter), Out::Stay);
         assert_eq!(w.step, Step::Map, "Back walks one step");
+        let expected = w
+            .entries
+            .iter()
+            .position(|e| e.path == draft.scenario_path)
+            .unwrap();
         assert_eq!(
-            w.menu.selected, draft.scenario_choice,
-            "the map list re-offers the earlier pick"
+            w.menu.selected, expected,
+            "the map list re-offers the earlier pick, found by PATH"
         );
+    }
+
+    #[test]
+    fn the_browser_leads_with_duels() {
+        let w = Wizard::open(&NewMatchDraft::default());
+        assert!(
+            w.entries.first().is_some_and(|e| e.seats == 2),
+            "row 0 must be a 1v1: a first Play+Enter never launches a team match"
+        );
+        let seat_counts: Vec<usize> = w.entries.iter().map(|e| e.seats).collect();
+        let mut sorted = seat_counts.clone();
+        sorted.sort_unstable();
+        assert_eq!(seat_counts, sorted, "sections ascend by format");
+    }
+
+    #[test]
+    fn a_team_map_runs_the_setup_screen_and_reseats_without_permuting() {
+        let mut draft = NewMatchDraft::default();
+        let mut w = Wizard::open(&draft);
+        let Some(team_row) = w.entries.iter().position(|e| e.seats > 2) else {
+            return; // no team maps discovered (bare checkout): nothing to test
+        };
+        let seats = w.entries[team_row].seats;
+        w.menu.select(team_row);
+        assert_eq!(drive(&mut w, &mut draft, Key::Enter), Out::Stay);
+        assert_eq!(w.step, Step::Setup, "team maps skip the quick flow");
+        assert_eq!(draft.seats.len(), seats, "the per-seat vector re-derived");
+        assert_eq!(
+            w.menu.selected, seats,
+            "Start preselected under the seat rows"
+        );
+
+        // Open seat 1's dials and take the chair.
+        w.menu.select(1);
+        assert_eq!(drive(&mut w, &mut draft, Key::Enter), Out::Stay);
+        assert_eq!(w.step, Step::SeatDetail(1));
+        w.menu.select(0);
+        drive(&mut w, &mut draft, Key::Enter);
+        assert_eq!(draft.seat_choice, 1, "the chair moved");
+        assert_eq!(w.step, Step::Setup);
+
+        // Cycle seat 0's difficulty twice: Medium -> Hard -> Expert.
+        w.menu.select(0);
+        drive(&mut w, &mut draft, Key::Enter);
+        assert_eq!(w.step, Step::SeatDetail(0));
+        w.menu.select(1);
+        drive(&mut w, &mut draft, Key::Enter);
+        drive(&mut w, &mut draft, Key::Enter);
+        assert_eq!(draft.seats[0].level_choice, 3, "the dial cycles in place");
+
+        // Start launches; Back from Setup re-derives cleanly on a
+        // smaller map afterward (the stale-seat-7 rule).
+        w.menu.select(3);
+        drive(&mut w, &mut draft, Key::Enter); // Back to Setup
+        assert_eq!(w.step, Step::Setup);
+        let start = draft.seats.len();
+        w.menu.select(start);
+        assert_eq!(drive(&mut w, &mut draft, Key::Enter), Out::Launch);
+
+        draft.set_scenario(Scenario::skirmish(), None);
+        assert_eq!(draft.seats.len(), 2, "re-derived at the new width");
+        assert!(draft.seat_choice < 2, "the chair clamped onto the board");
     }
 }
