@@ -177,9 +177,13 @@ and test fixtures inside crate `tests/` directories.
   stacks of identical 180°-self-symmetric lanes, east unit lists the
   exact entry-by-entry images of their paired west seats, and the
   map-gates fairness test holds all six/eight seats to strict scrap
-  equality (team seats also need unique names — launch refuses
-  collisions and a headless sweep gates every shipped map). Faction
-  convention: even seats Ferrous, odd seats Cupric.
+  equality (team seats also need unique names — a headless sweep
+  gates every shipped map, and launch gives colliding labels
+  ordinals). Faction convention: even seats Ferrous, odd seats
+  Cupric — the AUTHORED default. Since 0.11 any seat can retint at
+  launch (`Scenario::retint_seat`: faction, faction-derived name,
+  and starting units remapped through their roles) — the setup
+  screen's faction chips and the 1v1 quick flow both land there.
   `Scenario::skirmish()` embeds `scenarios/skirmish.json` at compile
   time.
 - **Balance numbers** all live in `sim/src/stats.rs`; expect hash churn

@@ -239,8 +239,9 @@ fire, damage retaliation, rally points, control groups, shift-select,
 order feedback, a fog-aware minimap, sound, twenty-five maps in a
 thumbnail-grid browser sectioned by format (sixteen duels, five 2v2s,
 two 3v3s, two 4v4s), per-seat match setup on
-team maps (team-grouped seat cards with inline difficulty and
-personality dials beside a who-is-where map), building salvage as harvester labor, ally
+team maps (team-grouped seat cards with inline difficulty,
+personality, and faction dials beside a who-is-where map — every
+seat's faction is free, yours included), building salvage as harvester labor, ally
 inspection with visible orders and team-color accents on the machines
 themselves (allies wear blue, every enemy wears crimson, your own
 keep pure faction paint), touch gestures (pan, tap, long-press,
