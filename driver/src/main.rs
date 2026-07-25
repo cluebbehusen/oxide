@@ -92,9 +92,11 @@ enum Cmd {
         /// knob normally moves together).
         #[arg(long, default_value_t = 0)]
         blunder: u32,
-        /// Think cadence in ticks (candidate probes only).
-        #[arg(long, default_value_t = 16)]
-        cadence: u64,
+        /// Think cadence in ticks (candidate probes only; defaults to
+        /// the probed level's own cadence so a candidate measures the
+        /// profile it would actually ship at).
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        cadence: Option<u64>,
         /// Seeds per map.
         #[arg(long, default_value_t = 3)]
         seeds: u64,
@@ -128,7 +130,7 @@ enum Cmd {
         #[arg(long)]
         b: String,
         /// Seeds to run (deterministic each).
-        #[arg(long, default_value_t = 5)]
+        #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u64).range(1..))]
         seeds: u64,
     },
     MapAudit {
@@ -316,6 +318,7 @@ fn main() -> Result<()> {
         Cmd::Bench { units, ticks } => {
             let scenario = oxide_kit::bench::mass_battle(units, 9);
             let mut state = scenario.build()?;
+            oxide_kit::bench::engage(&mut state);
             let start = std::time::Instant::now();
             for _ in 0..ticks {
                 state.tick(&[]);

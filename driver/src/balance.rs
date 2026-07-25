@@ -19,8 +19,8 @@ pub struct ProbeDials {
     pub skill: Option<u32>,
     /// Explicit blunder rate per mille (0: derive from skill).
     pub blunder: u32,
-    /// Think cadence in ticks.
-    pub cadence: u64,
+    /// Think cadence override (None: the level's own cadence).
+    pub cadence: Option<u64>,
 }
 
 /// Runs the probe over every scenario in `dir` and prints the verdict;
@@ -77,12 +77,21 @@ pub fn balance_probe(
                         .iter()
                         .enumerate()
                         .map(|(seat, player)| {
+                            // Exactly the shipped ladder profile unless a
+                            // dial is explicitly overridden: the level's
+                            // own cadence and a seed-dealt personality
+                            // (NeuralBot::ladder's dealing, replicated).
+                            // Probing a candidate at a flat cadence-16 /
+                            // aggression-500 profile once gated a faster,
+                            // blander bot than the one embedding ships.
+                            let aggression = chassis::rng::Pcg32::new(sc.seed, 4000 + seat as u64)
+                                .next_below(1001);
                             NeuralBot::with_profile(
                                 oxide_sim::PlayerId(seat as u8),
-                                dials.cadence,
+                                dials.cadence.unwrap_or_else(|| level.cadence()),
                                 net.clone(),
                                 dials.skill.unwrap_or_else(|| level.skill()),
-                                500,
+                                aggression,
                                 player.faction,
                                 dials.blunder,
                                 sc.seed,

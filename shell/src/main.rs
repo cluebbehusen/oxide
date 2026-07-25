@@ -1126,6 +1126,11 @@ fn handle_request(
                 // interval's events for presentation, and a million-tick
                 // battle's worth of them is memory nobody will hear.
                 let requested = (*ticks).min(1_000_000);
+                // An external transport op replaces any UI seek in
+                // flight: left pending, the stale target resumes next
+                // frame and rewinds the replay this reply just reported
+                // as advanced.
+                pb.seeking = None;
                 let before = pb.engine.position();
                 pb.engine.seek(before.saturating_add(requested));
                 pb.game.drop_presentation();

@@ -72,7 +72,9 @@ pub fn duel(a: &Army, b: &Army, seed: u64, max_ticks: u64) -> Result<DuelOutcome
                     '#'
                 } else if (x, y) == (2, 2) {
                     '1'
-                } else if (x, y) == (width - 4, height - 3) {
+                } else if (x, y) == (width - 4, height - 4) {
+                    // The exact 180-degree image of the 2x2 anchor at
+                    // (2,2): top-left maps to (W-2-x, H-2-y).
                     '2'
                 } else {
                     '.'
@@ -82,22 +84,31 @@ pub fn duel(a: &Army, b: &Army, seed: u64, max_ticks: u64) -> Result<DuelOutcome
         map.push(row);
     }
     let mut units = Vec::new();
-    let mut place = |army: &Army, player: u8, x0: i32| {
+    // Side B's k-th unit is the exact 180-degree image of side A's
+    // k-th, entry by entry — the repo's seat-fairness rule. Anything
+    // less contaminates a controlled duel with seat geometry.
+    let mut place = |army: &Army, player: u8, mirrored: bool| {
         let mut i = 0i32;
         for (kind, n) in army {
             for _ in 0..*n {
+                let (x, y) = (8 + (i / 16), 4 + (i % 16));
+                let (x, y) = if mirrored {
+                    (width - 1 - x, height - 1 - y)
+                } else {
+                    (x, y)
+                };
                 units.push(UnitSpec {
                     player,
                     kind: *kind,
-                    x: x0 + (i / 16),
-                    y: 4 + (i % 16),
+                    x,
+                    y,
                 });
                 i += 1;
             }
         }
     };
-    place(a, 0, 8);
-    place(b, 1, 30);
+    place(a, 0, false);
+    place(b, 1, true);
     let scenario = Scenario {
         name: "arena-duel".into(),
         seed,
@@ -138,35 +149,59 @@ pub fn duel(a: &Army, b: &Army, seed: u64, max_ticks: u64) -> Result<DuelOutcome
             player: PlayerId(1),
             command: Command::AttackMove {
                 units: b_ids,
-                goal: TilePos::new(6, 12),
+                // The exact image of side A's goal.
+                goal: TilePos::new(40 - 1 - 33, 24 - 1 - 12),
                 queue: false,
             },
         },
     ]);
+    // Every accepted unit carries its purchase value — a harvester
+    // screen is a legitimate experiment, and valuing it at zero once
+    // declared a live side wiped after two ticks.
     let value = |state: &oxide_sim::State, player: u8| -> u32 {
         state
             .units()
             .iter()
-            .filter(|u| u.player == PlayerId(player) && u.kind != UnitKind::Harvester)
+            .filter(|u| u.player == PlayerId(player))
             .map(|u| u.kind.stats().cost)
             .sum()
     };
+    let hp_sum = |state: &oxide_sim::State, player: u8| -> u64 {
+        state
+            .units()
+            .iter()
+            .filter(|u| u.player == PlayerId(player))
+            .map(|u| u64::from(u.hp))
+            .sum()
+    };
     let mut last = (value(&state, 0), value(&state, 1));
+    let mut last_hp = (hp_sum(&state, 0), hp_sum(&state, 1));
+    let mut combat_started = false;
     let mut quiet = 0u64;
     let mut ran = 1;
     for _ in 1..max_ticks {
         state.tick(&[]);
         ran += 1;
         let now = (value(&state, 0), value(&state, 1));
-        if now == last {
+        let now_hp = (hp_sum(&state, 0), hp_sum(&state, 1));
+        if now_hp.0 < last_hp.0 || now_hp.1 < last_hp.1 {
+            combat_started = true;
+        }
+        // Quiet means no combat progress — hp and value both frozen.
+        // Value alone stayed flat through whole approach marches and
+        // nonlethal exchanges, ending slow matchups as phantom draws.
+        if now == last && now_hp == last_hp {
             quiet += 1
         } else {
             quiet = 0
         }
         last = now;
-        // One side wiped, or nothing has changed for 15 seconds of
-        // sim time: the fight is over.
-        if now.0 == 0 || now.1 == 0 || quiet > 300 {
+        last_hp = now_hp;
+        // One side wiped, or — once battle has actually been joined —
+        // nothing has changed for 15 seconds of sim time. Before first
+        // blood the armies are still marching; a duel where contact
+        // never comes runs to the cap and says so via `ticks`.
+        if now.0 == 0 || now.1 == 0 || (combat_started && quiet > 300) {
             break;
         }
     }
@@ -212,5 +247,34 @@ mod tests {
             3 * UnitKind::Sentinel.stats().cost + 2 * UnitKind::Lancer.stats().cost
         );
         assert!(parse_army("gremlin:4").is_err());
+    }
+
+    #[test]
+    fn a_slow_duel_resolves_instead_of_ending_as_a_phantom_draw() {
+        // Two lone bombards spend hundreds of ticks marching before a
+        // shell flies. Value-only quiescence once ended this at tick
+        // 302 with both sides reported intact; combat-gated quiescence
+        // must let the duel actually resolve.
+        let army = parse_army("bombard:1").unwrap();
+        let out = duel(&army, &army, 42, 20_000).unwrap();
+        assert!(
+            out.a_value == 0 || out.b_value == 0 || out.ticks == 20_000,
+            "the duel neither resolved nor ran honestly to the cap: {out:?}"
+        );
+        assert!(out.ticks > 302, "ended during the approach: {out:?}");
+    }
+
+    #[test]
+    fn harvesters_carry_their_purchase_value() {
+        // A harvester screen is a legitimate experiment; valuing the
+        // workers at zero once declared a live side wiped on the spot.
+        let workers = parse_army("harvester:4").unwrap();
+        let fighters = parse_army("sentinel:1").unwrap();
+        let out = duel(&fighters, &workers, 42, 4_000).unwrap();
+        let worker_cost = army_cost(&workers);
+        assert!(
+            out.b_value > 0 || out.ticks > 50,
+            "a live harvester side must not read as instantly wiped: {out:?} (cost {worker_cost})"
+        );
     }
 }

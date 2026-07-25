@@ -32,6 +32,27 @@ fn dim(color: Color) -> Color {
     Color::new(color.r * 0.55, color.g * 0.55, color.b * 0.55, color.a)
 }
 
+/// The minimap's face of the staleness ramp: memories slide toward the
+/// dim ground color as they age, mirroring the world view's alpha fade
+/// — the documented rule is the same memory story on both surfaces.
+fn stale_toward(color: Color, floor: Color, age: f32) -> Color {
+    let t = super::staleness_fade(age);
+    Color::new(
+        color.r + (floor.r - color.r) * t,
+        color.g + (floor.g - color.g) * t,
+        color.b + (floor.b - color.b) * t,
+        color.a,
+    )
+}
+
+/// Shared stamp read: how long since the player last saw this key
+/// (unstamped memories — loaded saves — start their ramp now).
+fn memory_age(game: &Game, key: (i32, i32)) -> f32 {
+    let mut seen = game.last_seen.borrow_mut();
+    let stamp = *seen.entry(key).or_insert_with(|| game.fx_time());
+    game.fx_time() - stamp
+}
+
 pub(crate) fn mini_faction_color(faction: oxide_sim::Faction) -> Color {
     super::faction_accent(faction)
 }
@@ -121,7 +142,20 @@ pub(crate) fn draw_minimap(game: &Game) {
                 (_, 0) => MINI_GROUND,
                 (_, _) => SCRAP_COLOR,
             };
-            if visible { base } else { dim(base) }
+            if visible {
+                base
+            } else if scrap > 0 {
+                // Remembered salvage ages like the world view's: the
+                // dot stays (recorded honestly) but stops pretending
+                // to be news.
+                stale_toward(
+                    dim(base),
+                    dim(MINI_GROUND),
+                    memory_age(game, (pos.x, pos.y)),
+                )
+            } else {
+                dim(base)
+            }
         };
         draw_rectangle(
             rect.x + pos.x as f32 * scale,
@@ -135,7 +169,12 @@ pub(crate) fn draw_minimap(game: &Game) {
     if !omniscient {
         for ghost in vision.ghosts() {
             let (w, h) = ghost.kind.stats().size;
-            let color = dim(mini_faction_color(game.state.player(ghost.owner).faction));
+            let age = memory_age(game, (ghost.anchor.x, ghost.anchor.y));
+            let color = stale_toward(
+                dim(mini_faction_color(game.state.player(ghost.owner).faction)),
+                dim(MINI_GROUND),
+                age,
+            );
             draw_rectangle(
                 rect.x + ghost.anchor.x as f32 * scale,
                 rect.y + ghost.anchor.y as f32 * scale,

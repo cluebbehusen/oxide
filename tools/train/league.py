@@ -177,22 +177,22 @@ def sample_condition(rng: np.random.Generator, seat: int) -> tuple[int, int, int
 
 def maybe_blunder(
     action: int,
-    logits: np.ndarray,
-    mask: np.ndarray,
+    _logits: np.ndarray,
+    _mask: np.ndarray,
     skill: int,
     rng: np.random.Generator,
 ) -> int:
     """Env-noise blunders, sticky-actions style: the executed action is
-    degraded, the policy trains on what it intended. Near-best picks —
-    a blunder is a plausible mistake, not madness."""
+    degraded, the policy trains on what it intended. A blunder is
+    HESITATION (the decision window passes unused) — matching the
+    shipped sim's model, so sub-1000 conditioning trains under exactly
+    the degradation it deploys with. The old near-best-pick blunders
+    kept spending the Fabricator fund mid-save, which both taught the
+    policy that low skill means spam and mismatched the runtime."""
     eps = (1000 - skill) / 2000.0  # skill 400 -> 30% blunders
     if eps <= 0 or rng.random() >= eps:
         return action
-    order = np.argsort(-logits)
-    legal = [int(i) for i in order if mask[i]]
-    if len(legal) < 2:
-        return action
-    return int(rng.choice(legal[1 : min(3, len(legal))]))
+    return 0  # Action IDLE
 
 
 # Rush teacher — the v3 action menu; feature indices resolved by name.

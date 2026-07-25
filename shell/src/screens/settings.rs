@@ -94,6 +94,12 @@ fn settings_menu(config: &Config) -> Menu {
     )
 }
 
+/// The "Controls..." row's index in [`settings_menu`] — the exit paths
+/// from the Controls face re-select it, and a stale literal here once
+/// left the cursor on Colorblind accents after two rows were inserted
+/// above (a test pins the label to this index).
+const CONTROLS_ROW: usize = 9;
+
 /// Advances one settings row to its next value step. Returns false on
 /// rows that navigate instead of cycling.
 fn cycle_setting(config: &mut Config, row: usize) -> bool {
@@ -296,7 +302,7 @@ impl SettingsScreen {
                 if escaped {
                     self.face = Face::Settings;
                     self.menu = settings_menu(config);
-                    self.menu.select(7);
+                    self.menu.select(CONTROLS_ROW);
                 } else if x_pressed && self.menu.selected < REMAPPABLE.len() {
                     // X on a row unbinds it — outside capture mode, so
                     // the key is free to mean this.
@@ -321,7 +327,7 @@ impl SettingsScreen {
                     } else {
                         self.face = Face::Settings;
                         self.menu = settings_menu(config);
-                        self.menu.select(7);
+                        self.menu.select(CONTROLS_ROW);
                     }
                 }
             }
@@ -479,6 +485,43 @@ mod tests {
         assert_eq!(
             config.bindings.chord_for(Action::Patrol),
             BindingMap::classic().chord_for(Action::Patrol)
+        );
+    }
+
+    #[test]
+    fn escaping_controls_returns_the_cursor_to_the_controls_row() {
+        // Two rows were once inserted above Controls... while the exit
+        // paths kept a stale index: coming back from Controls left the
+        // cursor on Colorblind accents, and the next Enter toggled a
+        // setting instead of reopening the remap screen.
+        let mut config = Config::default();
+        let mut live = config.bindings.clone();
+        let mut screen = SettingsScreen::open(&config);
+        assert_eq!(
+            settings_menu(&config).items[CONTROLS_ROW],
+            "Controls...",
+            "the derived index names the row it claims"
+        );
+        screen.menu.select(CONTROLS_ROW);
+        drive(
+            &mut screen,
+            &mut config,
+            &mut live,
+            &press(Key::Enter),
+            false,
+        );
+        assert!(matches!(screen.face, Face::Controls { .. }));
+        drive(
+            &mut screen,
+            &mut config,
+            &mut live,
+            &press(Key::Escape),
+            false,
+        );
+        assert!(matches!(screen.face, Face::Settings));
+        assert_eq!(
+            screen.menu.selected, CONTROLS_ROW,
+            "the cursor comes back to the row that was activated"
         );
     }
 }

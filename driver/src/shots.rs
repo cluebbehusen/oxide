@@ -42,6 +42,7 @@ fn scratch_home() -> Result<PathBuf> {
     for dir in [
         home.join("Library/Application Support/Oxide"),
         home.join(".config/oxide"),
+        home.join("AppData/Oxide"),
     ] {
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join("config.json"), &text)?;

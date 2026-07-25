@@ -58,7 +58,16 @@ pub fn spawn_shell(opts: &SpawnOptions) -> Result<(ShellGuard, Client)> {
         command.arg("--paused");
     }
     if let Some(home) = &opts.home {
+        // HOME alone is not hermetic: Windows resolves config and
+        // autosaves through APPDATA, and Linux prefers XDG_CONFIG_HOME
+        // / XDG_DATA_HOME over HOME when they are set — a host with
+        // those exported would leak its real settings into (or worse,
+        // take rebinds from) a supposedly throwaway shell. Point every
+        // platform's root into the scratch tree.
         command.env("HOME", home);
+        command.env("XDG_CONFIG_HOME", home.join(".config"));
+        command.env("XDG_DATA_HOME", home.join(".local/share"));
+        command.env("APPDATA", home.join("AppData"));
     }
     let child = command.spawn().context("spawning oxide-shell via cargo")?;
     let guard = ShellGuard(child);

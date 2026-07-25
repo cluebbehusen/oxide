@@ -3,8 +3,9 @@
 //! (hashes, briefly); wall-clock numbers stay a local report so
 //! machine noise can never flake a suite.
 
+use chassis::grid::TilePos;
 use oxide_sim::scenario::{PlayerSpec, UnitSpec};
-use oxide_sim::{Faction, Scenario, UnitKind};
+use oxide_sim::{Command, Faction, PlayerCommand, PlayerId, Scenario, UnitKind};
 
 /// A symmetric mass battle: `per_side` mixed-role units per seat on a
 /// 96x56 open field, foundries far corners, armies deployed in facing
@@ -88,11 +89,49 @@ pub fn mass_battle(per_side: u32, seed: u64) -> Scenario {
     }
 }
 
+/// Sends both armies through each other with crossing attack-moves —
+/// the same opening the hash-identity test uses. Without it a "bench"
+/// times parked idle armies: deployment sits outside aggro range, so
+/// no movement, fire, splash, or collision ever runs.
+pub fn engage(state: &mut oxide_sim::State) {
+    let (a, b): (Vec<_>, Vec<_>) = {
+        let units = state.units();
+        (
+            units
+                .iter()
+                .filter(|u| u.player == PlayerId(0))
+                .map(|u| u.id)
+                .collect(),
+            units
+                .iter()
+                .filter(|u| u.player == PlayerId(1))
+                .map(|u| u.id)
+                .collect(),
+        )
+    };
+    state.tick(&[
+        PlayerCommand {
+            player: PlayerId(0),
+            command: Command::AttackMove {
+                units: a,
+                goal: TilePos::new(80, 28),
+                queue: false,
+            },
+        },
+        PlayerCommand {
+            player: PlayerId(1),
+            command: Command::AttackMove {
+                units: b,
+                goal: TilePos::new(15, 28),
+                queue: false,
+            },
+        },
+    ]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chassis::grid::TilePos;
-    use oxide_sim::{Command, PlayerCommand, PlayerId};
 
     /// Two identical runs at scale, hash-compared every 50 ticks — the
     /// CI face of the bench. Short on purpose: the timed thousands-of-
@@ -102,39 +141,7 @@ mod tests {
         let run = || {
             let scenario = mass_battle(250, 9);
             let mut state = scenario.build().expect("scale scenario builds");
-            let (a, b): (Vec<_>, Vec<_>) = {
-                let units = state.units();
-                (
-                    units
-                        .iter()
-                        .filter(|u| u.player == PlayerId(0))
-                        .map(|u| u.id)
-                        .collect(),
-                    units
-                        .iter()
-                        .filter(|u| u.player == PlayerId(1))
-                        .map(|u| u.id)
-                        .collect(),
-                )
-            };
-            state.tick(&[
-                PlayerCommand {
-                    player: PlayerId(0),
-                    command: Command::AttackMove {
-                        units: a,
-                        goal: TilePos::new(80, 28),
-                        queue: false,
-                    },
-                },
-                PlayerCommand {
-                    player: PlayerId(1),
-                    command: Command::AttackMove {
-                        units: b,
-                        goal: TilePos::new(15, 28),
-                        queue: false,
-                    },
-                },
-            ]);
+            engage(&mut state);
             let mut hashes = Vec::new();
             for tick in 1..=200u32 {
                 state.tick(&[]);
