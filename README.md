@@ -235,9 +235,9 @@ palette from turrets to radar to Reclaimers, wreck salvage and repair
 welding, 2v2 teams with shared sight, order queues and patrols, solid
 units that crowd without gridlocking, attack-move with line-of-sight
 fire, damage retaliation, rally points, control groups, shift-select,
-order feedback, a fog-aware minimap, sound, sixteen maps in a
-format-sectioned browser, per-seat match setup on team maps (pick your
-chair, tune each opponent), building salvage as harvester labor, ally
+order feedback, a fog-aware minimap, sound, nineteen maps in a
+thumbnail-grid browser sectioned by format, per-seat match setup on
+team maps (team-grouped seat cards beside a who-is-where map), building salvage as harvester labor, ally
 inspection with visible orders, touch gestures (pan, tap, long-press,
 pinch, two-finger box), menus, a trained neural opponent with four
 difficulty levels and selectable personalities, save/resume via
