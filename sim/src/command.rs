@@ -108,11 +108,25 @@ pub enum Command {
         building: BuildingId,
     },
     /// Send harvesters to weld a damaged own built building back toward
-    /// full. Repair costs a scrap trickle while the welding runs.
+    /// full. Repair bills per hp welded, prepaid at whole-scrap
+    /// boundaries.
     Repair {
         /// The units to commit (only harvesters are accepted).
         units: Vec<UnitId>,
         /// The patient.
+        building: BuildingId,
+        /// Append behind current orders instead of replacing them.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        queue: bool,
+    },
+    /// Send harvesters to strip an own BUILT building for a partial
+    /// refund, as labor (unbuilt sites keep [`Command::Cancel`];
+    /// Foundries refuse). Issuing this clears repair orders on the same
+    /// building — the two verbs never share a target.
+    Salvage {
+        /// The units to commit (only harvesters are accepted).
+        units: Vec<UnitId>,
+        /// The building coming down.
         building: BuildingId,
         /// Append behind current orders instead of replacing them.
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]

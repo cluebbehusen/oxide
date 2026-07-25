@@ -21,6 +21,9 @@ pub struct PlayerStats {
     pub units_lost: u32,
     /// Buildings lost across the whole match.
     pub buildings_lost: u32,
+    /// Buildings deliberately taken apart by their own crew — never
+    /// counted among losses.
+    pub buildings_salvaged: u32,
 }
 
 /// The whole report.
@@ -67,6 +70,7 @@ pub fn compute(replay: &GameReplay, every: u64) -> Result<MatchStats> {
             army_value: Vec::new(),
             units_lost: 0,
             buildings_lost: 0,
+            buildings_salvaged: 0,
         })
         .collect();
     let mut sample_ticks = Vec::new();
@@ -101,6 +105,9 @@ pub fn compute(replay: &GameReplay, every: u64) -> Result<MatchStats> {
                 }
                 Event::BuildingDestroyed { player, .. } => {
                     stats[player.0 as usize].buildings_lost += 1;
+                }
+                Event::BuildingSalvaged { player, .. } => {
+                    stats[player.0 as usize].buildings_salvaged += 1;
                 }
                 _ => {}
             }

@@ -72,9 +72,9 @@ pub(crate) fn draw_breadcrumbs(game: &Game, input: &InputState) {
                 Color::new(0.85, 0.32, 0.29, 0.55)
             }
             oxide_sim::Order::Harvest { .. } => Color::new(0.85, 0.64, 0.25, 0.55),
-            oxide_sim::Order::Build { .. } | oxide_sim::Order::Repair { .. } => {
-                Color::new(0.25, 0.58, 0.51, 0.55)
-            }
+            oxide_sim::Order::Build { .. }
+            | oxide_sim::Order::Repair { .. }
+            | oxide_sim::Order::Salvage { .. } => Color::new(0.25, 0.58, 0.51, 0.55),
             oxide_sim::Order::Idle => BONE_FAINT,
         };
         let goal_of = |order: &oxide_sim::Order| {
@@ -82,7 +82,9 @@ pub(crate) fn draw_breadcrumbs(game: &Game, input: &InputState) {
                 oxide_sim::Order::Move { goal } | oxide_sim::Order::AttackMove { goal } => *goal,
                 oxide_sim::Order::Harvest { node } => *node,
                 oxide_sim::Order::Build { site } => game.state.building(*site)?.anchor,
-                oxide_sim::Order::Repair { building } => game.state.building(*building)?.anchor,
+                oxide_sim::Order::Repair { building } | oxide_sim::Order::Salvage { building } => {
+                    game.state.building(*building)?.anchor
+                }
                 oxide_sim::Order::Attack { target, .. } => {
                     // A chase target draws only while its ground is
                     // seen — the victim may have slipped back into fog.

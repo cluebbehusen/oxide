@@ -430,11 +430,12 @@ fn the_torch_bills_its_first_scrap_the_tick_it_lights() {
 }
 
 #[test]
-fn the_last_coin_welds_its_whole_prepaid_interval() {
-    // The coin spent at an interval's start buys all ten welding ticks:
-    // broke may only stall the torch at the next billing boundary, never
-    // mid-interval. One coin in the bank must therefore heal exactly the
-    // ramp's first full interval before the stall.
+fn the_last_coin_prepays_its_full_scrap_of_welding() {
+    // The coin drops when the first milli-scrap of debt appears and
+    // prepays a whole scrap of welding: broke may only stall the torch
+    // when a SECOND coin comes due, never mid-prepayment. One coin in
+    // the bank therefore heals exactly the hp whose price-ceiling is
+    // one scrap — derived here with the sim's own billing formula.
     let mut scenario = arena(vec![
         unit(0, UnitKind::Harvester, 4, 2),
         unit(1, UnitKind::Scuttler, 12, 6),
@@ -464,16 +465,30 @@ fn the_last_coin_welds_its_whole_prepaid_interval() {
     });
 
     let stats = BuildingKind::Turret.stats();
-    let ramp = stats.max_hp - stats.max_hp / 5;
-    let ramp_ticks = stats.construction.unwrap().build_ticks;
-    // Ten ticks of the linear ramp from progress zero telescope to
-    // exactly ramp * 10 / ramp_ticks hp.
-    let interval = ramp * 10 / ramp_ticks;
-    assert!(interval > 0, "test premise: an interval heals something");
+    let ramp = u64::from(stats.max_hp - stats.max_hp / 5);
+    let construction = stats.construction.unwrap();
+    let ramp_ticks = u64::from(construction.build_ticks);
+    let basis = u64::from(construction.cost);
+    // Replays the billing derivation: welded hp telescopes along the
+    // ramp, milli-scrap owed is proportional cost at 850 per mille, and
+    // the torch stalls the tick a second whole coin would come due.
+    let millis = |ticks: u64| {
+        (ramp * ticks / ramp_ticks) * basis * oxide_sim::stats::REPAIR_COST_PERMILLE
+            / u64::from(stats.max_hp)
+    };
+    let stall_tick = (0u64..)
+        .find(|&p| millis(p + 1).div_ceil(1000) > 1)
+        .unwrap();
+    let welded = u32::try_from(ramp * stall_tick / ramp_ticks).unwrap();
+    assert!(welded > 0, "test premise: the coin heals something");
+    assert!(
+        millis(stall_tick) <= 1000,
+        "everything welded fits the paid coin"
+    );
     assert_eq!(
         state.building(turret).unwrap().hp,
-        hp_before + interval,
-        "one coin buys the full interval, not a single tick"
+        hp_before + welded,
+        "one coin buys its full prepaid stretch, not a single tick"
     );
     assert_eq!(state.player(PlayerId(0)).scrap, 0);
 }

@@ -157,6 +157,11 @@ fn order_card(order: &Order, active: bool) -> Card {
             "Welding a damaged building; costs a trickle.",
         ),
         Order::AttackMove { .. } => ("X", "Attack-move", "Marching; engages everything met."),
+        Order::Salvage { .. } => (
+            "S",
+            "Salvage",
+            "Stripping a building down for a partial refund.",
+        ),
     };
     Card {
         icon: CardIcon::Glyph(glyph),

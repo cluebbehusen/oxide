@@ -474,3 +474,494 @@ fn a_flyer_downed_over_rock_leaves_no_wreck_bait() {
         "open ground takes the deposit as before"
     );
 }
+
+// ---------------------------------------------------------------------
+// Building salvage (0.11): stripping standing structures as labor.
+
+use oxide_sim::command::RejectReason;
+use oxide_sim::scenario::BuildingSpec;
+use oxide_sim::stats::SALVAGE_REFUND_PERMILLE;
+
+fn standing(player: u8, kind: BuildingKind, x: i32, y: i32) -> BuildingSpec {
+    BuildingSpec { player, kind, x, y }
+}
+
+#[test]
+fn a_full_health_salvage_banks_exactly_its_permille() {
+    let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 7, 2)]);
+    scenario
+        .buildings
+        .push(standing(0, BuildingKind::Turret, 9, 2));
+    let mut state = scenario.build().unwrap();
+    let harvester = state.units()[0].id;
+    let turret = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == BuildingKind::Turret)
+        .unwrap()
+        .id;
+    let bank_before = state.player(PlayerId(0)).scrap;
+    state.tick(&[cmd(
+        0,
+        Command::Salvage {
+            units: vec![harvester],
+            building: turret,
+            queue: false,
+        },
+    )]);
+    let events = run_until(&mut state, 800, |s, _| s.building(turret).is_none());
+    let stats = BuildingKind::Turret.stats();
+    let cost = stats.construction.unwrap().cost;
+    let refund = u32::try_from(u64::from(cost) * SALVAGE_REFUND_PERMILLE / 1000).unwrap();
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        bank_before + refund,
+        "a full-health salvage banks exactly cost * permille"
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::BuildingSalvaged { building, refund: r, .. }
+                if *building == turret && *r == refund
+        )),
+        "the deliberate teardown announces itself with its total"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::BuildingDestroyed { building, .. } if *building == turret)),
+        "salvage is not a loss"
+    );
+    assert_eq!(
+        state.map().wreck_at(TilePos::new(9, 2)),
+        0,
+        "a deliberate teardown leaves no wreck"
+    );
+}
+
+#[test]
+fn an_interrupted_salvage_credits_only_the_hp_it_drained() {
+    let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 7, 2)]);
+    scenario
+        .buildings
+        .push(standing(0, BuildingKind::Turret, 9, 2));
+    let mut state = scenario.build().unwrap();
+    let harvester = state.units()[0].id;
+    let turret = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == BuildingKind::Turret)
+        .unwrap()
+        .id;
+    let bank_before = state.player(PlayerId(0)).scrap;
+    let stats = BuildingKind::Turret.stats();
+    state.tick(&[cmd(
+        0,
+        Command::Salvage {
+            units: vec![harvester],
+            building: turret,
+            queue: false,
+        },
+    )]);
+    // Let it chew partway, then call the crew off.
+    run_until(&mut state, 400, |s, _| {
+        s.building(turret).unwrap().hp < stats.max_hp * 3 / 4
+    });
+    state.tick(&[cmd(
+        0,
+        Command::Stop {
+            units: vec![harvester],
+        },
+    )]);
+    state.tick(&[]);
+    let drained = stats.max_hp - state.building(turret).unwrap().hp;
+    let cost = u64::from(stats.construction.unwrap().cost);
+    let credited = u32::try_from(
+        u64::from(drained) * cost * SALVAGE_REFUND_PERMILLE / (1000 * u64::from(stats.max_hp)),
+    )
+    .unwrap();
+    assert!(
+        drained > 0 && credited > 0,
+        "test premise: real work stopped"
+    );
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        bank_before + credited,
+        "credit follows hp actually drained, floor-truncated, no drift"
+    );
+}
+
+#[test]
+fn the_repair_salvage_pump_strictly_loses_scrap() {
+    // The printer configuration the 0.11 repricing exists to kill:
+    // strip hp out at 800 per mille, weld it back at 850 — the round
+    // trip must strictly lose money at any stopping point.
+    let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 7, 2)]);
+    scenario
+        .buildings
+        .push(standing(0, BuildingKind::Turret, 9, 2));
+    let mut state = scenario.build().unwrap();
+    let harvester = state.units()[0].id;
+    let turret = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == BuildingKind::Turret)
+        .unwrap()
+        .id;
+    let stats = BuildingKind::Turret.stats();
+    let bank_start = state.player(PlayerId(0)).scrap;
+    state.tick(&[cmd(
+        0,
+        Command::Salvage {
+            units: vec![harvester],
+            building: turret,
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| {
+        s.building(turret).unwrap().hp < stats.max_hp / 2
+    });
+    state.tick(&[cmd(
+        0,
+        Command::Repair {
+            units: vec![harvester],
+            building: turret,
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 2000, |s, _| {
+        s.building(turret).unwrap().hp == stats.max_hp
+    });
+    assert!(
+        state.player(PlayerId(0)).scrap < bank_start,
+        "welding back what salvage banked must cost more than it paid: {} -> {}",
+        bank_start,
+        state.player(PlayerId(0)).scrap
+    );
+}
+
+#[test]
+fn fire_finishing_a_salvage_target_wins_and_forfeits_the_rest() {
+    // An Array under both the wrecking crew and enemy guns: the guns
+    // land the killing blow, so the teardown never completes — the
+    // death is a loss with a wreck, and only the pre-death drains ever
+    // credited. The stripper's order pops silently (its target is
+    // simply gone), never stalls.
+    let mut scenario = arena(vec![
+        unit(0, UnitKind::Harvester, 7, 2),
+        unit(1, UnitKind::Scuttler, 11, 1),
+        unit(1, UnitKind::Scuttler, 11, 2),
+        unit(1, UnitKind::Scuttler, 11, 3),
+    ]);
+    scenario
+        .buildings
+        .push(standing(0, BuildingKind::Array, 9, 2));
+    let mut state = scenario.build().unwrap();
+    let harvester = state.units()[0].id;
+    let raiders: Vec<UnitId> = state.units()[1..4].iter().map(|u| u.id).collect();
+    let array = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == BuildingKind::Array)
+        .unwrap()
+        .id;
+    let bank_before = state.player(PlayerId(0)).scrap;
+    state.tick(&[
+        cmd(
+            0,
+            Command::Salvage {
+                units: vec![harvester],
+                building: array,
+                queue: false,
+            },
+        ),
+        cmd(
+            1,
+            Command::Attack {
+                units: raiders,
+                target: Target::Building(array),
+                queue: false,
+            },
+        ),
+    ]);
+    let events = run_until(&mut state, 2000, |s, _| s.building(array).is_none());
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::BuildingDestroyed { building, .. } if *building == array)),
+        "the guns took it: a loss, not a teardown"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::BuildingSalvaged { .. })),
+        "no salvage fanfare for a building fire finished"
+    );
+    assert!(
+        state.map().wreck_at(TilePos::new(9, 2)) > 0,
+        "fire leaves its wreck"
+    );
+    let stats = BuildingKind::Array.stats();
+    let full =
+        u32::try_from(u64::from(stats.construction.unwrap().cost) * SALVAGE_REFUND_PERMILLE / 1000)
+            .unwrap();
+    assert!(
+        state.player(PlayerId(0)).scrap < bank_before + full,
+        "the unfinished teardown must not pay the full refund"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::OrderStalled { unit, .. } if *unit == harvester)),
+        "a vanished target pops the order silently"
+    );
+}
+
+#[test]
+fn foundries_and_sites_refuse_the_wrecking_crew() {
+    let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 4, 2)]);
+    scenario.players[0].scrap = 300;
+    let mut state = scenario.build().unwrap();
+    let harvester = state.units()[0].id;
+    let foundry = state.buildings()[0].id;
+    let report = state.tick(&[cmd(
+        0,
+        Command::Salvage {
+            units: vec![harvester],
+            building: foundry,
+            queue: false,
+        },
+    )]);
+    assert!(
+        report.events.iter().any(|e| matches!(
+            e,
+            Event::CommandRejected {
+                reason: RejectReason::InvalidTarget,
+                ..
+            }
+        )),
+        "the victory token never comes apart by its own crew's hands"
+    );
+    // An unbuilt site is Cancel's domain, not Salvage's.
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![harvester],
+            kind: BuildingKind::Turret,
+            anchor: TilePos::new(9, 2),
+            queue: false,
+        },
+    )]);
+    let site = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == BuildingKind::Turret)
+        .unwrap()
+        .id;
+    let report = state.tick(&[cmd(
+        0,
+        Command::Salvage {
+            units: vec![harvester],
+            building: site,
+            queue: false,
+        },
+    )]);
+    assert!(
+        report.events.iter().any(|e| matches!(
+            e,
+            Event::CommandRejected {
+                reason: RejectReason::InvalidTarget,
+                ..
+            }
+        )),
+        "unbuilt sites keep Cancel's instant refund"
+    );
+}
+
+#[test]
+fn a_salvaged_producer_refunds_its_prepaid_queue_in_full() {
+    // Three strippers take the Fabricator down faster than its first
+    // lancer can train (stacking is the same rule builders follow), so
+    // the whole prepaid line refunds through the CancelTrain rule.
+    let mut scenario = arena(vec![
+        unit(0, UnitKind::Harvester, 7, 1),
+        unit(0, UnitKind::Harvester, 7, 2),
+        unit(0, UnitKind::Harvester, 8, 5),
+    ]);
+    scenario.players[0].scrap = 300;
+    scenario
+        .buildings
+        .push(standing(0, BuildingKind::Fabricator, 9, 2));
+    let mut state = scenario.build().unwrap();
+    let crew: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
+    let fab = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == BuildingKind::Fabricator)
+        .unwrap()
+        .id;
+    let lancer_cost = UnitKind::Lancer.stats().cost;
+    state.tick(&[
+        cmd(
+            0,
+            Command::Train {
+                building: fab,
+                kind: UnitKind::Lancer,
+            },
+        ),
+        cmd(
+            0,
+            Command::Train {
+                building: fab,
+                kind: UnitKind::Lancer,
+            },
+        ),
+    ]);
+    let bank_after_orders = state.player(PlayerId(0)).scrap;
+    assert_eq!(bank_after_orders, 300 - 2 * lancer_cost, "queue prepaid");
+    state.tick(&[cmd(
+        0,
+        Command::Salvage {
+            units: crew,
+            building: fab,
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| s.building(fab).is_none());
+    assert!(
+        !state.units().iter().any(|u| u.kind == UnitKind::Lancer),
+        "test premise: the teardown outran the training line"
+    );
+    let stats = BuildingKind::Fabricator.stats();
+    let refund =
+        u32::try_from(u64::from(stats.construction.unwrap().cost) * SALVAGE_REFUND_PERMILLE / 1000)
+            .unwrap();
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        bank_after_orders + refund + 2 * lancer_cost,
+        "the building refunds its permille, the queue refunds in full"
+    );
+}
+
+#[test]
+fn repair_and_salvage_evict_each_other_from_a_target() {
+    let mut scenario = arena(vec![
+        unit(0, UnitKind::Harvester, 7, 2),
+        unit(0, UnitKind::Harvester, 8, 2),
+    ]);
+    scenario
+        .buildings
+        .push(standing(0, BuildingKind::Turret, 9, 2));
+    let mut state = scenario.build().unwrap();
+    let (stripper, welder) = (state.units()[0].id, state.units()[1].id);
+    let turret = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == BuildingKind::Turret)
+        .unwrap()
+        .id;
+    let stats = BuildingKind::Turret.stats();
+    state.tick(&[cmd(
+        0,
+        Command::Salvage {
+            units: vec![stripper],
+            building: turret,
+            queue: false,
+        },
+    )]);
+    // Wait for a real wound so Repair validates.
+    run_until(&mut state, 400, |s, _| {
+        s.building(turret).unwrap().hp < stats.max_hp
+    });
+    state.tick(&[cmd(
+        0,
+        Command::Repair {
+            units: vec![welder],
+            building: turret,
+            queue: false,
+        },
+    )]);
+    assert!(
+        !matches!(
+            state.unit(stripper).unwrap().order,
+            oxide_sim::Order::Salvage { .. }
+        ),
+        "issuing repair calls the wrecking crew off"
+    );
+    assert!(matches!(
+        state.unit(welder).unwrap().order,
+        oxide_sim::Order::Repair { .. }
+    ));
+    state.tick(&[cmd(
+        0,
+        Command::Salvage {
+            units: vec![stripper],
+            building: turret,
+            queue: false,
+        },
+    )]);
+    assert!(
+        !matches!(
+            state.unit(welder).unwrap().order,
+            oxide_sim::Order::Repair { .. }
+        ),
+        "and issuing salvage sends the welder home"
+    );
+}
+
+#[test]
+fn salvage_walks_the_construction_ramp_backward_on_schedule() {
+    // One stripper takes ceil(max_hp * build_ticks / ramp) ticks to
+    // level a full-health building — the same clock construction runs,
+    // extended over the fifth of hp a site is born with.
+    let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 7, 2)]);
+    scenario
+        .buildings
+        .push(standing(0, BuildingKind::Turret, 9, 2));
+    let mut state = scenario.build().unwrap();
+    let harvester = state.units()[0].id;
+    let turret = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == BuildingKind::Turret)
+        .unwrap()
+        .id;
+    let stats = BuildingKind::Turret.stats();
+    state.tick(&[cmd(
+        0,
+        Command::Salvage {
+            units: vec![harvester],
+            building: turret,
+            queue: false,
+        },
+    )]);
+    let mut first_drain = None;
+    let mut gone_at = None;
+    for _ in 0..2000 {
+        state.tick(&[]);
+        let now = state.current_tick();
+        match state.building(turret) {
+            Some(b) if b.hp < stats.max_hp && first_drain.is_none() => first_drain = Some(now),
+            None => {
+                gone_at = Some(now);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let (start, end) = (first_drain.unwrap(), gone_at.unwrap());
+    let ramp = u64::from(stats.max_hp - stats.max_hp / 5);
+    let build_ticks = u64::from(stats.construction.unwrap().build_ticks);
+    // Total work ticks to drain max_hp on the ramp clock; the span
+    // MEASURED starts at the first visible drop, which trails the
+    // first work tick by however many leading steps floor to zero.
+    let total = u64::from(stats.max_hp)
+        .saturating_mul(build_ticks)
+        .div_ceil(ramp);
+    let first_visible = (1u64..).find(|t| ramp * t / build_ticks >= 1).unwrap();
+    assert_eq!(
+        end - start + 1,
+        total - first_visible + 1,
+        "the teardown runs the construction clock, stretched over the birth fifth"
+    );
+}

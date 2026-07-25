@@ -47,6 +47,20 @@ pub enum Event {
         /// Its center (for shell effects).
         pos: Vec2Fx,
     },
+    /// A building was taken apart by its own crew — deliberate, not a
+    /// loss: no wreck, no scorch, and stat screens must not count it
+    /// among casualties.
+    BuildingSalvaged {
+        /// The dismantled building.
+        building: BuildingId,
+        /// Its owner (also the refund's recipient).
+        player: PlayerId,
+        /// Its center (for shell effects).
+        pos: Vec2Fx,
+        /// Total scrap the whole salvage credited, refunded production
+        /// queue excluded.
+        refund: u32,
+    },
     /// An attack landed this tick. Positions ride along because the victim
     /// may be gone by the time a renderer resolves the ids — a lethal hit
     /// deserves its beam too.

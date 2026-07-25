@@ -70,6 +70,11 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
                 building,
                 queue,
             } => apply_repair(state, pc.player, units, *building, *queue),
+            Command::Salvage {
+                units,
+                building,
+                queue,
+            } => apply_salvage(state, pc.player, units, *building, *queue),
             Command::Stop { units } => apply_stop(state, pc.player, units),
             Command::Train { building, kind } => apply_train(state, pc.player, *building, *kind),
             Command::CancelTrain { building, index } => {
@@ -582,6 +587,7 @@ fn apply_repair(
     if !b.built || b.hp >= b.kind.stats().max_hp {
         return Err(RejectReason::InvalidTarget);
     }
+    purge_opposing_verb(state, player, building, Verb::Salvage);
     let mut landed = 0;
     let mut applied = 0;
     for &id in units {
@@ -599,6 +605,75 @@ fn apply_repair(
         return Err(RejectReason::NoValidUnits);
     }
     (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
+}
+
+/// Stripping is for standing, built, own, non-Foundry buildings —
+/// unbuilt sites keep [`Command::Cancel`]'s instant refund, and the
+/// victory token never comes apart by its own crew's hands.
+fn apply_salvage(
+    state: &mut State,
+    player: PlayerId,
+    units: &[UnitId],
+    building: crate::ids::BuildingId,
+    queue: bool,
+) -> Result<(), RejectReason> {
+    let b = state
+        .building(building)
+        .ok_or(RejectReason::NotYourBuilding)?;
+    if b.player != player {
+        return Err(RejectReason::NotYourBuilding);
+    }
+    if !b.built || b.kind == crate::stats::BuildingKind::Foundry {
+        return Err(RejectReason::InvalidTarget);
+    }
+    purge_opposing_verb(state, player, building, Verb::Repair);
+    let mut landed = 0;
+    let mut applied = 0;
+    for &id in units {
+        if let Some(unit) = state.unit_mut(id)
+            && unit.player == player
+            && unit.kind.stats().harvest.is_some()
+        {
+            if assign(unit, Order::Salvage { building }, queue) {
+                landed += 1;
+            }
+            applied += 1;
+        }
+    }
+    if applied == 0 {
+        return Err(RejectReason::NoValidUnits);
+    }
+    (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
+}
+
+/// The verb a repair/salvage command evicts from its target: the two
+/// never share a building, or a welder and a stripper would feed the
+/// resolver an oscillator (and the bot's deepest-wound repair pick
+/// would re-crew every salvage it sees).
+enum Verb {
+    Repair,
+    Salvage,
+}
+
+/// Clears every own unit's orders of the opposing verb on `building` —
+/// queued legs are dropped, a matching active order advances to its
+/// next leg (the program survives; only the conflicting job dies).
+fn purge_opposing_verb(
+    state: &mut State,
+    player: PlayerId,
+    building: crate::ids::BuildingId,
+    verb: Verb,
+) {
+    let conflicts = |o: &Order| match verb {
+        Verb::Repair => matches!(o, Order::Repair { building: b } if *b == building),
+        Verb::Salvage => matches!(o, Order::Salvage { building: b } if *b == building),
+    };
+    for unit in state.units.iter_mut().filter(|u| u.player == player) {
+        unit.queue.retain(|o| !conflicts(o));
+        if conflicts(&unit.order) {
+            unit.advance_queue();
+        }
+    }
 }
 
 fn apply_stop(state: &mut State, player: PlayerId, units: &[UnitId]) -> Result<(), RejectReason> {

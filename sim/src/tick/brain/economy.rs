@@ -55,7 +55,6 @@ pub(super) fn build(
             builds.push(PendingHpGain {
                 site,
                 step,
-                max_hp: stats.max_hp,
                 completes,
                 player: me,
                 kind,
@@ -76,10 +75,10 @@ pub(super) fn build(
 }
 
 /// Weld a damaged own built building: walk adjacent, then feed it hp
-/// along the same ramp construction climbs, paying one scrap per
-/// [`crate::stats::REPAIR_TICKS_PER_SCRAP`] ticks of torch time. Gains
+/// along the same ramp construction climbs, billed per hp welded at
+/// [`crate::stats::REPAIR_COST_PERMILLE`] of proportional cost. Gains
 /// buffer like construction — fire wins ties — and an empty bank stalls
-/// the job. Several welders stack, each burning their own scrap ticks.
+/// the job. Several welders stack, each billing its own torch time.
 pub(super) fn repair(
     state: &mut State,
     id: UnitId,
@@ -100,20 +99,33 @@ pub(super) fn repair(
     let stats = kind.stats();
     let size = stats.size;
     // The welding rate is the construction ramp; the unbuyable Foundry
-    // repairs on an authored ramp of its own.
-    let ramp_ticks = stats
-        .construction
-        .map_or(crate::stats::FOUNDRY_REPAIR_TICKS, |c| c.build_ticks);
+    // repairs on an authored ramp (and billing basis) of its own.
+    let (ramp_ticks, basis) = stats.construction.map_or(
+        (
+            crate::stats::FOUNDRY_REPAIR_TICKS,
+            crate::stats::FOUNDRY_REPAIR_PRICE,
+        ),
+        |c| (c.build_ticks, c.cost),
+    );
     let tile = state.unit(id).expect("caller checked").tile();
     if tile_adjacent_to_rect(tile, anchor, size) {
-        // The bank is consulted only at billing boundaries: the coin
-        // paid at an interval's start has prepaid the whole interval,
-        // so the torch burns it to the end before broke can stall it —
-        // and a weld shorter than an interval still pays (chip repairs
-        // were free when billing landed at the interval's close).
+        // Billing derives entirely from the welder's own tick meter:
+        // cumulative welded hp telescopes to ramp * p / ramp_ticks, and
+        // scrap owed is the ceiling of its milli-scrap price — so the
+        // first fraction of a scrap bills up front (chip repairs pay
+        // their coin) and a completed weld totals within one scrap of
+        // exact. The meter surviving reissued orders is what keeps a
+        // re-clicked welder from re-entering the prepaid stretch.
+        let start_hp = stats.max_hp / 5;
+        let ramp = stats.max_hp - start_hp;
         let p = state.unit(id).expect("caller checked").progress;
-        if p.is_multiple_of(crate::stats::REPAIR_TICKS_PER_SCRAP) {
-            if state.player(me).scrap == 0 {
+        let owed_millis = |ticks: u32| -> u64 {
+            let welded = u64::from(ramp) * u64::from(ticks) / u64::from(ramp_ticks);
+            welded * u64::from(basis) * crate::stats::REPAIR_COST_PERMILLE / u64::from(stats.max_hp)
+        };
+        let due = owed_millis(p + 1).div_ceil(1000) - owed_millis(p).div_ceil(1000);
+        if due > 0 {
+            if u64::from(state.player(me).scrap) < due {
                 // Broke stalls the torch.
                 let unit = state.unit_mut(id).expect("caller checked");
                 let (player, pos) = (unit.player, unit.pos);
@@ -126,10 +138,8 @@ pub(super) fn repair(
                 });
                 return;
             }
-            state.player_mut(me).scrap -= 1;
+            state.player_mut(me).scrap -= due as u32;
         }
-        let start_hp = stats.max_hp / 5;
-        let ramp = stats.max_hp - start_hp;
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = None;
         unit.progress += 1;
@@ -138,11 +148,63 @@ pub(super) fn repair(
             builds.push(PendingHpGain {
                 site: building,
                 step,
-                max_hp: stats.max_hp,
                 completes: false,
                 player: me,
                 kind,
             });
+        }
+    } else if !approach_rect(state, id, anchor, size) {
+        let unit = state.unit_mut(id).expect("caller checked");
+        let (player, pos) = (unit.player, unit.pos);
+        unit.clear_program();
+        events.push(Event::OrderStalled {
+            unit: id,
+            player,
+            pos,
+            reason: StallReason::NoRoute,
+        });
+    }
+}
+
+/// Strip an own built building for scrap: walk adjacent, then drain hp
+/// along the construction ramp — salvage is labor on the same clock
+/// building is. Drains buffer beside the gains and resolve after
+/// damage; crediting happens in resolution, against hp actually
+/// removed. Several strippers stack like builders.
+pub(super) fn salvage(
+    state: &mut State,
+    id: UnitId,
+    building: crate::ids::BuildingId,
+    events: &mut Vec<Event>,
+    drains: &mut Vec<super::PendingHpDrain>,
+) {
+    let me = state.unit(id).expect("caller checked").player;
+    let Some(b) = state.building(building).filter(|b| {
+        b.player == me && b.built && b.hp > 0 && b.kind != crate::stats::BuildingKind::Foundry
+    }) else {
+        // Stripped bare, destroyed, or never salvageable: the job is
+        // over either way — the program plays on.
+        state.unit_mut(id).expect("caller checked").advance_queue();
+        return;
+    };
+    let (anchor, kind) = (b.anchor, b.kind);
+    let stats = kind.stats();
+    let size = stats.size;
+    let ramp_ticks = stats
+        .construction
+        .expect("non-Foundry salvage targets are buildable")
+        .build_ticks;
+    let tile = state.unit(id).expect("caller checked").tile();
+    if tile_adjacent_to_rect(tile, anchor, size) {
+        let start_hp = stats.max_hp / 5;
+        let ramp = stats.max_hp - start_hp;
+        let unit = state.unit_mut(id).expect("caller checked");
+        unit.path = None;
+        let p = unit.progress;
+        unit.progress += 1;
+        let step = (ramp * (p + 1) / ramp_ticks) - (ramp * p / ramp_ticks);
+        if step > 0 {
+            drains.push(super::PendingHpDrain { building, step });
         }
     } else if !approach_rect(state, id, anchor, size) {
         let unit = state.unit_mut(id).expect("caller checked");

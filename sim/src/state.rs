@@ -93,7 +93,7 @@ pub enum Order {
         site: crate::ids::BuildingId,
     },
     /// Walk adjacent to a damaged own built building and weld it back
-    /// toward full (harvesters only; costs a scrap trickle).
+    /// toward full (harvesters only; billed per hp welded).
     Repair {
         /// The patient.
         building: crate::ids::BuildingId,
@@ -104,6 +104,15 @@ pub enum Order {
     AttackMove {
         /// Destination (always passable — commands snap it).
         goal: TilePos,
+    },
+    /// Walk adjacent to an own built building and strip it down for a
+    /// partial refund (harvesters only; Foundries refuse). Drains
+    /// buffer like damage and resolve after it — fire wins ties, and
+    /// fire-forfeited hp refunds nothing. (Last variant by appending
+    /// discipline: earlier discriminants keep their serialized bytes.)
+    Salvage {
+        /// The building coming down.
+        building: crate::ids::BuildingId,
     },
 }
 
@@ -216,6 +225,19 @@ pub struct Building {
     /// Ticks until this building may fire again (turrets).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub cooldown: u32,
+    /// Total hp drained from this building by salvage work — the
+    /// cumulative ledger refund crediting reads, so truncation never
+    /// drifts across intervals. (Skipped at zero: a building never
+    /// salvaged serializes exactly as it did before the field existed.)
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub salvage_drained: u32,
+    /// Scrap already credited against `salvage_drained`'s target.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub salvage_credited: u32,
+    /// Set when salvage — not fire — took the last hp: cleanup removes
+    /// the building without wreck or a destruction event.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub salvaged: bool,
 }
 
 fn default_true() -> bool {
@@ -564,6 +586,9 @@ impl State {
             rally: None,
             built: true,
             cooldown: 0,
+            salvage_drained: 0,
+            salvage_credited: 0,
+            salvaged: false,
         });
         id
     }

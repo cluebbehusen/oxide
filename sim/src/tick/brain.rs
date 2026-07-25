@@ -31,15 +31,25 @@ struct PendingHit {
 struct PendingHpGain {
     site: crate::ids::BuildingId,
     step: u32,
-    max_hp: u32,
     completes: bool,
     player: crate::ids::PlayerId,
     kind: crate::stats::BuildingKind,
 }
 
+/// A buffered hp drain — salvage work — resolved with the gains as one
+/// signed per-building delta after damage. A building fire zeroed this
+/// tick forfeits every drain (fire wins; forfeited hp refunds
+/// nothing), and refund crediting reads the hp the drain *actually*
+/// removed, never the step it asked for.
+struct PendingHpDrain {
+    building: crate::ids::BuildingId,
+    step: u32,
+}
+
 pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
     let mut hits: Vec<PendingHit> = Vec::new();
     let mut builds: Vec<PendingHpGain> = Vec::new();
+    let mut drains: Vec<PendingHpDrain> = Vec::new();
     let mut launches: Vec<crate::state::Shell> = Vec::new();
     // Alternate direction by tick parity: sequential phases must not hand
     // one seat a standing first-mover edge (with damage buffered, the
@@ -70,6 +80,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
             Order::AttackMove { goal } => attack_move(state, id, goal, events),
             Order::Build { site } => build(state, id, site, events, &mut builds),
             Order::Repair { building } => repair(state, id, building, events, &mut builds),
+            Order::Salvage { building } => salvage(state, id, building, events, &mut drains),
         }
     }
     turret_fire(state, events, &mut hits, &mut launches);
@@ -77,7 +88,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
     // (flight is at least one tick), so ordering here cannot matter.
     land_shells(state, &mut hits, events);
     state.shells.extend(launches);
-    resolve_hits(state, hits, builds, events);
+    resolve_hits(state, hits, builds, drains, events);
 }
 
 mod combat;
@@ -86,7 +97,7 @@ mod locomotion;
 
 use combat::attack;
 use combat::{land_shells, retaliate, target_standing, turret_fire};
-use economy::{build, harvest, repair};
+use economy::{build, harvest, repair, salvage};
 use locomotion::{attack_move, idle, walk};
 
 /// The other half of simultaneity: buffered shots land now, in the order
@@ -99,6 +110,7 @@ fn resolve_hits(
     state: &mut State,
     hits: Vec<PendingHit>,
     builds: Vec<PendingHpGain>,
+    drains: Vec<PendingHpDrain>,
     events: &mut Vec<Event>,
 ) {
     for hit in &hits {
@@ -115,21 +127,87 @@ fn resolve_hits(
             }
         }
     }
-    // Construction gains — and completions — land only on sites that
-    // survived the volley.
+    // Buffered work lands only on buildings that survived the volley
+    // (hp > 0 after hits — fire wins, and a dead site forfeits gains
+    // and drains alike). Per building, gains and drains net into ONE
+    // signed delta clamped once to [0, max_hp]; the hp that delta
+    // actually removed is what salvage crediting counts. In practice
+    // gains and drains never meet on one building (construction wants
+    // !built, salvage wants built, repair and salvage evict each
+    // other), but the resolution is stated so the day they do has one
+    // answer.
+    struct Work {
+        building: crate::ids::BuildingId,
+        gain: i64,
+        drain: i64,
+        completes: Option<(crate::ids::PlayerId, crate::stats::BuildingKind)>,
+    }
+    let mut work: Vec<Work> = Vec::new();
+    let slot = |v: &mut Vec<Work>, building| match v.iter_mut().position(|w| w.building == building)
+    {
+        Some(i) => i,
+        None => {
+            v.push(Work {
+                building,
+                gain: 0,
+                drain: 0,
+                completes: None,
+            });
+            v.len() - 1
+        }
+    };
     for gain in &builds {
-        if let Some(b) = state.building_mut(gain.site)
-            && b.hp > 0
-        {
-            b.hp = (b.hp + gain.step).min(gain.max_hp);
-            if gain.completes {
-                b.built = true;
-                b.progress = 0;
-                events.push(Event::BuildingCompleted {
-                    building: gain.site,
-                    player: gain.player,
-                    kind: gain.kind,
-                });
+        let i = slot(&mut work, gain.site);
+        work[i].gain += i64::from(gain.step);
+        if gain.completes && work[i].completes.is_none() {
+            // First completion wins: two builders can both cross the
+            // finish line in one tick, and the site comes online once.
+            work[i].completes = Some((gain.player, gain.kind));
+        }
+    }
+    for drain in &drains {
+        let i = slot(&mut work, drain.building);
+        work[i].drain += i64::from(drain.step);
+    }
+    for w in &work {
+        let Some(b) = state.building_mut(w.building) else {
+            continue;
+        };
+        if b.hp == 0 {
+            continue; // fire won this tick; every gain and drain forfeits
+        }
+        let stats = b.kind.stats();
+        let before = b.hp;
+        let after = (i64::from(before) + w.gain - w.drain).clamp(0, i64::from(stats.max_hp)) as u32;
+        b.hp = after;
+        if let Some((player, kind)) = w.completes {
+            b.built = true;
+            b.progress = 0;
+            events.push(Event::BuildingCompleted {
+                building: w.building,
+                player,
+                kind,
+            });
+        }
+        if w.drain > 0 && after < before {
+            b.salvage_drained += before - after;
+            // The cumulative ledger: credit whole scrap as the running
+            // target passes it, so truncation never drifts and a
+            // full-health salvage totals exactly cost * permille / 1000.
+            let basis = stats.construction.map_or(0, |c| c.cost);
+            let target = u64::from(b.salvage_drained)
+                * u64::from(basis)
+                * crate::stats::SALVAGE_REFUND_PERMILLE
+                / (1000 * u64::from(stats.max_hp));
+            let due = u32::try_from(target).unwrap_or(u32::MAX) - b.salvage_credited;
+            if after == 0 {
+                b.salvaged = true;
+            }
+            if due > 0 {
+                b.salvage_credited += due;
+                let player = b.player;
+                let bank = &mut state.player_mut(player).scrap;
+                *bank = bank.saturating_add(due);
             }
         }
     }

@@ -440,9 +440,27 @@ never runs it.
   walking and discovering.
 - **Repair reuses construction's machinery.** Welding feeds buffered
   hp gains through the same resolve path as building (fire wins ties),
-  costs a scrap trickle billed at each interval's *start* (chip
-  repairs pay their coin; free healing was an exploit), stalls broke,
-  and stacks across welders.
+  stalls broke, and stacks across welders. Since 0.11 the three
+  economy verbs price per hp against building cost, strictly build
+  (1000‰) > repair (850‰) > salvage (800‰): repair bills through a
+  ceiling-prepaid milli-scrap meter derived from the welder's own
+  tick counter (chip repairs pay their coin up front; free healing
+  was an exploit), so welding back what salvage banked always loses.
+- **Salvage is labor, not a button** (0.11): `Command::Salvage` sends
+  harvesters to strip an own BUILT non-Foundry building down the
+  construction ramp backward. Drains buffer beside the gains
+  (`PendingHpDrain`) and resolve after damage as one signed
+  per-building delta clamped once — fire zeroing the target wins the
+  tick and forfeits everything undrained. Refunds credit in
+  resolution from hp *actually* removed through a cumulative
+  per-building ledger (a full-health salvage totals exactly
+  cost·800‰; a truncation never drifts), the deliberate end is
+  `Event::BuildingSalvaged` (no wreck, no scorch, stat screens must
+  not count it a loss), and a salvaged producer refunds its prepaid
+  queue in full via the CancelTrain rule. Repair and salvage evict
+  each other from a target — the two never coexist, or the bot's
+  deepest-wound repair pick would re-crew every salvage. Unbuilt
+  sites keep Cancel; Foundries refuse outright.
 - **Radar blips detect without identifying.** The Array's outer ring
   surfaces hostile units as bare tiles in `Vision::contacts` — no kind,
   no owner, no memory, no license for a targeted attack. Team sight is
