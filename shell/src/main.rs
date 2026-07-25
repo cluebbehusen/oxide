@@ -271,43 +271,6 @@ fn retint_seat(seat: &mut oxide_sim::scenario::PlayerSpec, faction: oxide_sim::F
     }
 }
 
-/// Draws the softly-panelled fog-free map preview strictly right of
-/// the menu's own rows (shared geometry — no independent arithmetic to
-/// drift out of sync). Returns the texture's screen rect for callers
-/// that mark positions on it; `None` when the window is too narrow.
-fn draw_preview_panel(tex: &Texture2D, rows_right: f32, theme: &str) -> Option<Rect> {
-    let s = render::ui_scale();
-    let left_bound = rows_right + 24.0 * s;
-    let avail = screen_width() - left_bound - 24.0 * s;
-    let max_w = avail.min(screen_width() * 0.26);
-    let max_h = screen_height() * 0.34;
-    if max_w < 96.0 * s {
-        return None;
-    }
-    let scale = (max_w / tex.width()).min(max_h / tex.height());
-    let (pw, ph) = (tex.width() * scale, tex.height() * scale);
-    let x = screen_width() - pw - 24.0 * s;
-    let y = screen_height() * 0.5 - ph * 0.5;
-    draw_rectangle(
-        x - 8.0 * s,
-        y - 8.0 * s,
-        pw + 16.0 * s,
-        ph + 16.0 * s,
-        Color::from_rgba(20, 20, 24, 230),
-    );
-    draw_texture_ex(
-        tex,
-        x,
-        y,
-        render::theme_tint(theme),
-        DrawTextureParams {
-            dest_size: Some(vec2(pw, ph)),
-            ..Default::default()
-        },
-    );
-    Some(Rect::new(x, y, pw, ph))
-}
-
 /// A screenshot request parked until after this frame renders.
 struct PendingScreenshot {
     id: u64,
@@ -696,29 +659,6 @@ async fn run() -> Result<()> {
                     }
                     WizardStep::Setup => {
                         w.draw_setup(&draft, &mut previews);
-                    }
-                    WizardStep::SeatDetail(_) => {
-                        w.menu.draw(w.subtitle(&draft));
-                        // The seat's dials keep the who-is-where map in
-                        // the side panel, its own marker ringed.
-                        if let Some(scenario) = draft.scenario.as_deref()
-                            && let Some((idx, entry)) = w.picked_entry(&draft)
-                            && let Some(tex) = previews.get(idx, entry)
-                            && let Some(rect) =
-                                draw_preview_panel(tex, w.menu.rows_right_edge(), &entry.theme)
-                        {
-                            let focus = match w.step {
-                                WizardStep::SeatDetail(i) => Some(i),
-                                _ => None,
-                            };
-                            screens::wizard::draw_seat_markers(
-                                scenario,
-                                rect,
-                                draft.seat_choice,
-                                focus,
-                                render::ui_scale(),
-                            );
-                        }
                     }
                     _ => {
                         w.menu.draw(w.subtitle(&draft));

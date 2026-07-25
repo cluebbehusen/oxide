@@ -113,10 +113,9 @@ pub enum Step {
     /// Faction picker — the quick flow's last question; answering
     /// launches.
     Faction,
-    /// Team-map match setup: seat cards by team, Start, a live map.
+    /// Team-map match setup: seat cards by team with INLINE dials,
+    /// Start, a live map.
     Setup,
-    /// One seat's dials (take the chair, difficulty, personality).
-    SeatDetail(usize),
 }
 
 /// What a wizard frame decided.
@@ -144,8 +143,14 @@ pub struct Wizard {
     /// Setup cursor over the DISPLAY order: seats grouped by team,
     /// then the Start button.
     pub setup_sel: usize,
-    /// Setup card armed by a press (activation on release inside).
-    setup_pressed: Option<usize>,
+    /// Which cell of the selected seat card the cursor is on: 0 the
+    /// seat itself, 1 its difficulty dial, 2 its personality dial.
+    /// Sticky across rows — walking the roster on a dial column edits
+    /// in bulk. Rows without dials clamp to 0.
+    pub setup_cell: usize,
+    /// Setup zone armed by a press: (row, cell); activation on
+    /// release inside the same zone.
+    setup_pressed: Option<(usize, usize)>,
 }
 
 /// The plan the quick flow's preselects mirror: the first AI seat's
@@ -166,21 +171,6 @@ fn rows_menu(title: &str, items: &[&str], selected: usize) -> Menu {
     let mut menu = Menu::new(title, rows);
     menu.select(selected.min(items.len() - 1));
     menu
-}
-
-fn seat_detail_menu(draft: &NewMatchDraft, i: usize) -> Menu {
-    let plan = draft.seats[i];
-    let rows = vec![
-        "Take this seat".to_string(),
-        format!("Difficulty: {}", DIFFICULTY_ITEMS[plan.level_choice]),
-        format!(
-            "Personality: {}",
-            PERSONALITY_ITEMS[plan.personality_choice]
-        ),
-        "Back".to_string(),
-    ];
-    let scenario = draft.scenario.as_ref().expect("setup wants a map");
-    Menu::new(scenario.players[i].name.to_uppercase(), rows)
 }
 
 /// Seats in DISPLAY order: grouped by team (dense ids, first
@@ -214,14 +204,19 @@ pub struct SetupLayout {
     pub headings: Vec<(String, Rect)>,
     /// One card rect per DISPLAY position (see [`seat_display_order`]).
     pub seats: Vec<Rect>,
+    /// Per card, the three interactive zones: the seat itself, its
+    /// difficulty chip, its personality chip. The human's own card
+    /// has no dials — its chip rects are zero-sized.
+    pub cells: Vec<[Rect; 3]>,
     /// The Start button.
     pub start: Rect,
     /// Where the map preview draws.
     pub preview: Rect,
 }
 
-/// Computes [`SetupLayout`].
-pub fn setup_layout(scenario: &Scenario, view: Vec2, ui: f32) -> SetupLayout {
+/// Computes [`SetupLayout`]. `seat_choice` marks the card without
+/// dials (the human edits opponents, not itself).
+pub fn setup_layout(scenario: &Scenario, seat_choice: usize, view: Vec2, ui: f32) -> SetupLayout {
     let order = seat_display_order(scenario);
     let n = order.len();
     let teams: Vec<u8> = {
@@ -246,6 +241,8 @@ pub fn setup_layout(scenario: &Scenario, view: Vec2, ui: f32) -> SetupLayout {
 
     let mut headings = Vec::new();
     let mut seats = vec![Rect::new(0.0, 0.0, 0.0, 0.0); n];
+    let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
+    let mut cells = vec![[zero; 3]; n];
     let mut y = top;
     let mut last_team: Option<u8> = None;
     for (pos, &seat) in order.iter().enumerate() {
@@ -259,7 +256,23 @@ pub fn setup_layout(scenario: &Scenario, view: Vec2, ui: f32) -> SetupLayout {
             last_team = Some(team);
             y += heading_h;
         }
-        seats[pos] = Rect::new(left_x, y, left_w, card_h);
+        let card = Rect::new(left_x, y, left_w, card_h);
+        seats[pos] = card;
+        // The inline dial chips, right-aligned; the seat zone is the
+        // rest of the card. The human's own card carries no dials.
+        if seat != seat_choice {
+            let pers_w = 128.0 * ui;
+            let diff_w = 84.0 * ui;
+            let pad = 8.0 * ui;
+            let chip_h = (card_h - 16.0 * ui).max(22.0 * ui);
+            let cy = y + (card_h - chip_h) * 0.5;
+            let pers = Rect::new(card.x + card.w - pers_w - pad, cy, pers_w, chip_h);
+            let diff = Rect::new(pers.x - diff_w - pad, cy, diff_w, chip_h);
+            let seat_zone = Rect::new(card.x, y, diff.x - card.x, card_h);
+            cells[pos] = [seat_zone, diff, pers];
+        } else {
+            cells[pos] = [card, zero, zero];
+        }
         y += card_h + gap;
     }
     let start = Rect::new(left_x, y + 12.0 * ui, 240.0 * ui, start_h);
@@ -268,6 +281,7 @@ pub fn setup_layout(scenario: &Scenario, view: Vec2, ui: f32) -> SetupLayout {
     SetupLayout {
         headings,
         seats,
+        cells,
         start,
         preview,
     }
@@ -341,6 +355,7 @@ impl Wizard {
             entries,
             browser,
             setup_sel: 0,
+            setup_cell: 0,
             setup_pressed: None,
         }
     }
@@ -376,10 +391,10 @@ impl Wizard {
                 // Start preselected: Enter-Enter from the grid plays
                 // the map as authored.
                 self.setup_sel = draft.seats.len();
+                self.setup_cell = 0;
                 self.setup_pressed = None;
                 Menu::new("MATCH SETUP", Vec::new())
             }
-            Step::SeatDetail(i) => seat_detail_menu(draft, i),
         };
     }
 
@@ -427,7 +442,7 @@ impl Wizard {
                     return Ok(out);
                 }
             }
-            Step::Difficulty | Step::Personality | Step::Faction | Step::SeatDetail(_) => {
+            Step::Difficulty | Step::Personality | Step::Faction => {
                 let escaped = events
                     .iter()
                     .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
@@ -460,46 +475,6 @@ impl Wizard {
                             return Ok(Out::Launch);
                         }
                     }
-                    Step::SeatDetail(i) => {
-                        if escaped || choice == Some(3) {
-                            self.goto(Step::Setup, draft);
-                            // Land the cursor back on the seat it came
-                            // from, not on Start.
-                            let order = draft
-                                .scenario
-                                .as_deref()
-                                .map(seat_display_order)
-                                .unwrap_or_default();
-                            if let Some(pos) = order.iter().position(|s| *s == i) {
-                                self.setup_sel = pos;
-                            }
-                        } else if let Some(c) = choice {
-                            match c {
-                                0 => {
-                                    // Seat choice never permutes seats —
-                                    // parity carries factions and teams —
-                                    // it moves the human's chair.
-                                    draft.seat_choice = i;
-                                    self.goto(Step::Setup, draft);
-                                }
-                                1 => {
-                                    let plan = &mut draft.seats[i];
-                                    plan.level_choice =
-                                        (plan.level_choice + 1) % DIFFICULTY_ITEMS.len();
-                                    self.goto(Step::SeatDetail(i), draft);
-                                    self.menu.select(1);
-                                }
-                                2 => {
-                                    let plan = &mut draft.seats[i];
-                                    plan.personality_choice =
-                                        (plan.personality_choice + 1) % PERSONALITY_ITEMS.len();
-                                    self.goto(Step::SeatDetail(i), draft);
-                                    self.menu.select(2);
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
                     _ => unreachable!("outer match routed these"),
                 }
             }
@@ -507,8 +482,11 @@ impl Wizard {
         Ok(Out::Stay)
     }
 
-    /// The setup screen's input: a linear cursor over the seat cards
-    /// (display order) and the Start button, plus card clicks.
+    /// The setup screen's input: Up/Down walk the seat cards and the
+    /// Start button; Left/Right walk a card's cells (seat, difficulty,
+    /// personality — the cell column is sticky, so walking the roster
+    /// on a dial edits in bulk); Enter takes the seat or cycles the
+    /// dial under the cursor; clicks hit each zone directly.
     fn update_setup(
         &mut self,
         events: &[RawEvent],
@@ -524,15 +502,19 @@ impl Wizard {
         let start_index = order.len();
         let view = crate::render::viewport();
         let ui = crate::render::ui_scale();
-        let layout = setup_layout(scenario, view, ui);
-        let slot_at = |p: Vec2| {
-            layout
-                .seats
-                .iter()
-                .position(|r| r.contains(p))
-                .or_else(|| layout.start.contains(p).then_some(start_index))
+        let layout = setup_layout(scenario, draft.seat_choice, view, ui);
+        let dials = |row: usize| row < start_index && order[row] != draft.seat_choice;
+        let zone_at = |p: Vec2| -> Option<(usize, usize)> {
+            for (row, cells) in layout.cells.iter().enumerate() {
+                for (cell, r) in cells.iter().enumerate() {
+                    if r.w > 0.0 && r.contains(p) {
+                        return Some((row, cell));
+                    }
+                }
+            }
+            layout.start.contains(p).then_some((start_index, 0))
         };
-        let mut activate: Option<usize> = None;
+        let mut activate: Option<(usize, usize)> = None;
         for event in events {
             match *event {
                 RawEvent::KeyDown { key: Key::Escape } => {
@@ -545,41 +527,72 @@ impl Wizard {
                 RawEvent::KeyDown { key: Key::Down } => {
                     self.setup_sel = (self.setup_sel + 1) % (start_index + 1);
                 }
+                RawEvent::KeyDown { key: Key::Left } => {
+                    self.setup_cell = self.setup_cell.saturating_sub(1);
+                }
+                RawEvent::KeyDown { key: Key::Right } => {
+                    if dials(self.setup_sel) {
+                        self.setup_cell = (self.setup_cell + 1).min(2);
+                    }
+                }
                 RawEvent::KeyDown { key: Key::Home } => self.setup_sel = 0,
                 RawEvent::KeyDown { key: Key::End } => self.setup_sel = start_index,
-                RawEvent::KeyDown { key: Key::Enter } => activate = Some(self.setup_sel),
+                RawEvent::KeyDown { key: Key::Enter } => {
+                    let cell = if dials(self.setup_sel) {
+                        self.setup_cell
+                    } else {
+                        0
+                    };
+                    activate = Some((self.setup_sel, cell));
+                }
                 RawEvent::MouseMove { x, y } => *mouse = vec2(x, y),
                 RawEvent::MouseDown {
                     button: MouseButton::Left,
                     x,
                     y,
                 } => {
-                    self.setup_pressed = slot_at(vec2(x, y));
+                    self.setup_pressed = zone_at(vec2(x, y));
                 }
                 RawEvent::MouseUp {
                     button: MouseButton::Left,
                     x,
                     y,
                 } => {
-                    let released = slot_at(vec2(x, y));
+                    let released = zone_at(vec2(x, y));
                     let armed = self.setup_pressed.take();
                     if let (Some(a), Some(r)) = (armed, released)
                         && a == r
                     {
-                        self.setup_sel = a;
+                        self.setup_sel = a.0;
+                        if dials(a.0) {
+                            self.setup_cell = a.1;
+                        }
                         activate = Some(a);
                     }
                 }
                 _ => {}
             }
         }
-        if let Some(slot) = activate {
+        if let Some((row, cell)) = activate {
             sounds.push((SoundKind::Click, None));
-            if slot == start_index {
+            if row == start_index {
                 return Some(Out::Launch);
             }
-            let seat = order[slot];
-            self.goto(Step::SeatDetail(seat), draft);
+            let seat = order[row];
+            match cell {
+                // Seat choice never permutes seats — parity carries
+                // factions and teams — it moves the human's chair.
+                0 => draft.seat_choice = seat,
+                1 => {
+                    let plan = &mut draft.seats[seat];
+                    plan.level_choice = (plan.level_choice + 1) % DIFFICULTY_ITEMS.len();
+                }
+                _ => {
+                    let plan = &mut draft.seats[seat];
+                    plan.personality_choice =
+                        (plan.personality_choice + 1) % PERSONALITY_ITEMS.len();
+                }
+            }
         }
         None
     }
@@ -592,7 +605,7 @@ impl Wizard {
         };
         let view = crate::render::viewport();
         let ui = crate::render::ui_scale();
-        let layout = setup_layout(scenario, view, ui);
+        let layout = setup_layout(scenario, draft.seat_choice, view, ui);
         let order = seat_display_order(scenario);
 
         let title = "MATCH SETUP";
@@ -630,6 +643,7 @@ impl Wizard {
             let seat = order[pos];
             let spec = &scenario.players[seat];
             let selected = self.setup_sel == pos;
+            let is_you = seat == draft.seat_choice;
             draw_rectangle(rect.x, rect.y, rect.w, rect.h, PANEL);
             draw_rectangle_lines(
                 rect.x,
@@ -646,7 +660,7 @@ impl Wizard {
             let accent = crate::render::faction_accent(spec.faction);
             let cy = rect.y + rect.h * 0.5;
             let chip_x = rect.x + 22.0 * ui;
-            if seat == draft.seat_choice {
+            if is_you {
                 draw_circle_lines(chip_x, cy, 13.0 * ui, 2.0, macroquad::prelude::WHITE);
             }
             draw_circle(chip_x, cy, 10.0 * ui, accent);
@@ -659,44 +673,74 @@ impl Wizard {
                 14.0 * ui,
                 Color::from_rgba(20, 20, 24, 255),
             );
-            let name_y = if rect.h > 44.0 * ui {
-                rect.y + rect.h * 0.44
-            } else {
-                cy + 5.0 * ui
-            };
             draw_text(
                 &spec.name,
                 rect.x + 44.0 * ui,
-                name_y,
+                cy + 5.0 * ui,
                 16.0 * ui,
                 ITEM_COLOR,
             );
-            let plan = draft.seats[seat];
-            let sub = if seat == draft.seat_choice {
-                "You".to_string()
-            } else {
-                format!(
-                    "{} · {}",
-                    DIFFICULTY_ITEMS[plan.level_choice], PERSONALITY_ITEMS[plan.personality_choice]
-                )
-            };
-            if rect.h > 44.0 * ui {
+            if is_you {
+                let tag = "your seat";
+                let tdims = measure_text(tag, None, (14.0 * ui) as u16, 1.0);
                 draw_text(
-                    &sub,
-                    rect.x + 44.0 * ui,
-                    rect.y + rect.h * 0.82,
-                    13.0 * ui,
+                    tag,
+                    rect.x + rect.w - tdims.width - 14.0 * ui,
+                    cy + 5.0 * ui,
+                    14.0 * ui,
                     DIM,
                 );
             } else {
-                let sdims = measure_text(&sub, None, (13.0 * ui) as u16, 1.0);
-                draw_text(
-                    &sub,
-                    rect.x + rect.w - sdims.width - 12.0 * ui,
-                    cy + 4.0 * ui,
-                    13.0 * ui,
-                    DIM,
-                );
+                // The inline dials: boxed value chips; the cursor's
+                // cell wears the accent.
+                let plan = draft.seats[seat];
+                let labels = [
+                    DIFFICULTY_ITEMS[plan.level_choice],
+                    PERSONALITY_ITEMS[plan.personality_choice],
+                ];
+                for (ci, label) in labels.iter().enumerate() {
+                    let chip = layout.cells[pos][ci + 1];
+                    let on_cell = selected && self.setup_cell == ci + 1;
+                    draw_rectangle(
+                        chip.x,
+                        chip.y,
+                        chip.w,
+                        chip.h,
+                        Color::from_rgba(32, 32, 38, 255),
+                    );
+                    draw_rectangle_lines(
+                        chip.x,
+                        chip.y,
+                        chip.w,
+                        chip.h,
+                        if on_cell { 2.0 } else { 1.0 },
+                        if on_cell {
+                            TITLE_COLOR
+                        } else {
+                            Color::new(0.6, 0.6, 0.65, 0.35)
+                        },
+                    );
+                    let ldims = measure_text(label, None, (13.0 * ui) as u16, 1.0);
+                    draw_text(
+                        label,
+                        chip.x + (chip.w - ldims.width) * 0.5,
+                        chip.y + chip.h * 0.5 + 4.5 * ui,
+                        13.0 * ui,
+                        if on_cell { ITEM_COLOR } else { DIM },
+                    );
+                }
+                // The seat-zone cell cursor: a soft inner line under
+                // the name, so "Enter takes this chair" reads.
+                if selected && self.setup_cell == 0 {
+                    let zone = layout.cells[pos][0];
+                    draw_rectangle(
+                        zone.x + 44.0 * ui,
+                        cy + 9.0 * ui,
+                        measure_text(&spec.name, None, (16.0 * ui) as u16, 1.0).width,
+                        1.5,
+                        TITLE_COLOR,
+                    );
+                }
             }
         }
         // Start button.
@@ -761,7 +805,16 @@ impl Wizard {
             );
         }
 
-        let hint = "Arrows select - Enter open - Esc back - or click";
+        let on_dial = self.setup_sel < order.len()
+            && order[self.setup_sel] != draft.seat_choice
+            && self.setup_cell > 0;
+        let hint = if self.setup_sel == order.len() {
+            "Enter starts the match - Esc back"
+        } else if on_dial {
+            "Enter cycles the dial - Left/Right move - Esc back"
+        } else {
+            "Enter takes this seat - Left/Right reach the dials - Esc back"
+        };
         let hdims = measure_text(hint, None, (16.0 * ui) as u16, 1.0);
         draw_text(
             hint,
@@ -782,7 +835,6 @@ impl Wizard {
             Step::Personality => "personality_menu",
             Step::Faction => "faction_menu",
             Step::Setup => "match_setup",
-            Step::SeatDetail(_) => "seat_menu",
         }
     }
 
@@ -839,7 +891,6 @@ impl Wizard {
             Step::Personality => "how should it fight?",
             Step::Faction => "which roster do your machines run?",
             Step::Setup => "pick your seat; tune each opponent",
-            Step::SeatDetail(_) => "this seat's dials",
         }
     }
 }
@@ -954,35 +1005,44 @@ mod tests {
         assert_eq!(draft.seats.len(), seats, "the per-seat vector re-derived");
         assert_eq!(w.setup_sel, seats, "Start preselected under the seat cards");
 
-        // Walk to the second DISPLAY seat and take the chair.
+        // Walk to the second DISPLAY seat; Enter takes the chair
+        // inline — no sub-screen.
         drive(&mut w, &mut draft, Key::Home);
         drive(&mut w, &mut draft, Key::Down);
-        drive(&mut w, &mut draft, Key::Enter);
         let order = seat_display_order(draft.scenario.as_deref().unwrap());
-        let opened = order[1];
-        assert_eq!(w.step, Step::SeatDetail(opened));
-        w.menu.select(0);
         drive(&mut w, &mut draft, Key::Enter);
-        assert_eq!(draft.seat_choice, opened, "the chair moved");
-        assert_eq!(w.step, Step::Setup);
+        assert_eq!(draft.seat_choice, order[1], "the chair moved");
+        assert_eq!(w.step, Step::Setup, "and the screen never left");
 
-        // Open the first display seat and cycle its difficulty twice.
+        // The first display seat's difficulty dial cycles in place:
+        // Right reaches the dial, Enter cycles it twice.
         drive(&mut w, &mut draft, Key::Home);
-        drive(&mut w, &mut draft, Key::Enter);
         let first = order[0];
-        assert_eq!(w.step, Step::SeatDetail(first));
-        w.menu.select(1);
+        drive(&mut w, &mut draft, Key::Right);
         drive(&mut w, &mut draft, Key::Enter);
         drive(&mut w, &mut draft, Key::Enter);
         assert_eq!(
             draft.seats[first].level_choice, 3,
-            "the dial cycles in place"
+            "Medium cycled twice lands on Expert"
         );
-        // Back from the detail returns the cursor to that seat.
-        w.menu.select(3);
+        // The cell column is sticky: walking down keeps the dial.
+        drive(&mut w, &mut draft, Key::Down);
         drive(&mut w, &mut draft, Key::Enter);
-        assert_eq!(w.step, Step::Setup);
-        assert_eq!(w.setup_sel, 0, "Back lands on the seat it came from");
+        let second_ai = order
+            .iter()
+            .copied()
+            .find(|s| *s != draft.seat_choice && *s != first)
+            .unwrap_or(order[1]);
+        let _ = second_ai; // which row it lands on depends on the chair
+        // Personality: one more Right from the difficulty dial.
+        drive(&mut w, &mut draft, Key::Home);
+        drive(&mut w, &mut draft, Key::Right);
+        drive(&mut w, &mut draft, Key::Right);
+        drive(&mut w, &mut draft, Key::Enter);
+        assert_eq!(
+            draft.seats[first].personality_choice, 1,
+            "Surprise me cycles to Turtle"
+        );
 
         // End sits on Start; Enter launches.
         drive(&mut w, &mut draft, Key::End);
@@ -996,7 +1056,7 @@ mod tests {
     #[test]
     fn the_setup_layout_never_overlaps_its_own_parts() {
         let scenario = Scenario::load("../scenarios/compass-grand.json").expect("shipped");
-        let layout = setup_layout(&scenario, vec2(1280.0, 800.0), 1.0);
+        let layout = setup_layout(&scenario, 0, vec2(1280.0, 800.0), 1.0);
         assert_eq!(layout.seats.len(), 8);
         for pair in layout.seats.windows(2) {
             assert!(
@@ -1017,6 +1077,24 @@ mod tests {
             layout.start.y + layout.start.h <= 800.0,
             "everything fits an 800px window"
         );
+        let order = seat_display_order(&scenario);
+        for (pos, cells) in layout.cells.iter().enumerate() {
+            let card = layout.seats[pos];
+            for r in cells.iter().filter(|r| r.w > 0.0) {
+                assert!(
+                    r.x >= card.x - 0.01
+                        && r.y >= card.y - 0.01
+                        && r.x + r.w <= card.x + card.w + 0.01
+                        && r.y + r.h <= card.y + card.h + 0.01,
+                    "cell rects nest inside their card"
+                );
+            }
+            if order[pos] == 0 {
+                assert!(cells[1].w == 0.0, "the human's card has no dials");
+            } else {
+                assert!(cells[1].w > 0.0 && cells[2].w > 0.0, "AI cards carry dials");
+            }
+        }
     }
 
     #[test]

@@ -210,14 +210,6 @@ impl Menu {
         self.hover
     }
 
-    /// Right edge of the row boxes — side panels place themselves
-    /// strictly beyond it, using the same rect the rows draw with, so
-    /// overlap is impossible by construction.
-    pub fn rows_right_edge(&self) -> f32 {
-        let (_, _, first, _) = self.layout();
-        self.item_rect(first).map_or(0.0, |r| r.x + r.w)
-    }
-
     /// Half-open range of rows currently drawn by the scroll window.
     pub fn visible_range(&self) -> [usize; 2] {
         let (_, _, first, visible) = self.layout();
