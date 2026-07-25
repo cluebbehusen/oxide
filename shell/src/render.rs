@@ -273,27 +273,47 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             screen.y -= zoom * 0.18;
         }
         // The allegiance cue draws UNCONDITIONALLY — selection must
-        // never repaint a foe as a friend by swallowing its ring.
-        match allegiance_cue(game, unit.player) {
-            // Teammates wear a soft whitened ring — same language
-            // as the minimap's ally lift.
-            AllegianceCue::Ally => draw_circle_lines(
-                screen.x,
-                screen.y,
-                unit.kind.stats().radius.to_num::<f32>() * zoom + 3.0,
-                1.5,
-                Color::new(0.95, 0.95, 0.9, 0.55),
-            ),
-            // The mirror case rings dark: luminance says foe where
-            // tint cannot, whatever the viewer's color vision.
-            AllegianceCue::HostileTwin => draw_circle_lines(
-                screen.x,
-                screen.y,
-                unit.kind.stats().radius.to_num::<f32>() * zoom + 3.0,
-                1.5,
-                Color::new(0.05, 0.05, 0.07, 0.7),
-            ),
-            AllegianceCue::Mine | AllegianceCue::Hostile => {}
+        // never repaint a foe as a friend by swallowing it. It is a
+        // ground bar under the sprite base (the RTS team-underline
+        // convention), not a halo: rings belong to selection.
+        {
+            let radius = unit.kind.stats().radius.to_num::<f32>() * zoom;
+            let bar_w = radius * 1.8;
+            let bar_h = (zoom * 0.09).clamp(2.0, 4.0);
+            let bar_y = screen.y + radius * 0.85;
+            match allegiance_cue(game, unit.player) {
+                // Teammates stand on a soft whitened pad — same
+                // language as the minimap's ally lift.
+                AllegianceCue::Ally => {
+                    draw_rectangle(
+                        screen.x - bar_w * 0.5,
+                        bar_y,
+                        bar_w,
+                        bar_h,
+                        Color::new(0.95, 0.95, 0.9, 0.7),
+                    );
+                }
+                // The mirror case underlines DARK with a danger edge:
+                // luminance says foe where tint cannot, whatever the
+                // viewer's color vision.
+                AllegianceCue::HostileTwin => {
+                    draw_rectangle(
+                        screen.x - bar_w * 0.5,
+                        bar_y,
+                        bar_w,
+                        bar_h,
+                        Color::new(0.05, 0.05, 0.07, 0.85),
+                    );
+                    draw_rectangle(
+                        screen.x - bar_w * 0.5,
+                        bar_y,
+                        bar_w,
+                        1.0,
+                        Color::new(0.85, 0.32, 0.29, 0.9),
+                    );
+                }
+                AllegianceCue::Mine | AllegianceCue::Hostile => {}
+            }
         }
         if game.selection.units.contains(&unit.id) {
             if unit.player == game.human {
