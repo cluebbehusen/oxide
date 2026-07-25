@@ -48,6 +48,9 @@ pub struct Menu {
     /// Row armed by a press; activation happens on release inside the
     /// same row, so dragging away cancels.
     pressed: Option<usize>,
+    /// Section-label rows: drawn dimmer, skipped by the cursor, never
+    /// activated — the map browser's format headings.
+    headers: Vec<usize>,
 }
 
 fn view_w() -> f32 {
@@ -61,7 +64,13 @@ fn view_h() -> f32 {
 impl Menu {
     /// Builds a menu with the first row highlighted.
     pub fn new(title: impl Into<String>, items: Vec<String>) -> Self {
-        Self {
+        Self::with_headers(title, items, Vec::new())
+    }
+
+    /// A menu whose `headers` rows are section labels: skipped by the
+    /// cursor, inert to clicks, drawn as headings.
+    pub fn with_headers(title: impl Into<String>, items: Vec<String>, headers: Vec<usize>) -> Self {
+        let mut menu = Self {
             title: title.into(),
             items,
             selected: 0,
@@ -69,13 +78,38 @@ impl Menu {
             hover: None,
             wheel_accum: 0.0,
             pressed: None,
+            headers,
+        };
+        menu.selected = menu.snap(0, 1);
+        menu
+    }
+
+    /// Whether a row is a section label.
+    pub fn is_header(&self, index: usize) -> bool {
+        self.headers.contains(&index)
+    }
+
+    /// The nearest non-header row from `index`, walking in `dir`
+    /// (wrapping). Falls back to `index` on an all-header list.
+    fn snap(&self, index: usize, dir: i64) -> usize {
+        let n = self.items.len();
+        if n == 0 {
+            return 0;
         }
+        let mut i = index.min(n - 1);
+        for _ in 0..n {
+            if !self.is_header(i) {
+                return i;
+            }
+            i = (i as i64 + dir).rem_euclid(n as i64) as usize;
+        }
+        index.min(n - 1)
     }
 
     /// Moves the keyboard cursor and scrolls just enough to show it —
     /// the only coupling between selection and the scroll window.
     pub fn select(&mut self, index: usize) {
-        self.selected = index.min(self.items.len().saturating_sub(1));
+        self.selected = self.snap(index.min(self.items.len().saturating_sub(1)), 1);
         self.ensure_visible();
     }
 
@@ -170,7 +204,7 @@ impl Menu {
             match *event {
                 RawEvent::MouseMove { x, y } => {
                     *mouse = vec2(x, y);
-                    self.hover = self.row_at(*mouse);
+                    self.hover = self.row_at(*mouse).filter(|r| !self.is_header(*r));
                 }
                 RawEvent::Wheel { delta } => {
                     // Wheel up shows earlier rows; the pointer stays put
@@ -183,14 +217,14 @@ impl Menu {
                     }
                     self.wheel_accum -= steps;
                     self.scroll_by(if steps > 0.0 { -1 } else { 1 });
-                    self.hover = self.row_at(*mouse);
+                    self.hover = self.row_at(*mouse).filter(|r| !self.is_header(*r));
                 }
                 RawEvent::MouseDown {
                     button: MouseButton::Left,
                     x,
                     y,
                 } => {
-                    self.pressed = self.row_at(vec2(x, y));
+                    self.pressed = self.row_at(vec2(x, y)).filter(|r| !self.is_header(*r));
                 }
                 RawEvent::MouseUp {
                     button: MouseButton::Left,
@@ -210,35 +244,38 @@ impl Menu {
                 }
                 RawEvent::KeyDown { key: Key::Up } => {
                     self.hover = None;
-                    self.selected = self.selected.checked_sub(1).unwrap_or(self.items.len() - 1);
+                    let up = self.selected.checked_sub(1).unwrap_or(self.items.len() - 1);
+                    self.selected = self.snap(up, -1);
                     self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::Down } => {
                     self.hover = None;
-                    self.selected = (self.selected + 1) % self.items.len();
+                    self.selected = self.snap((self.selected + 1) % self.items.len(), 1);
                     self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::PageUp } => {
                     self.hover = None;
                     let (_, _, _, visible) = self.layout();
-                    self.selected = self.selected.saturating_sub(visible);
+                    self.selected = self.snap(self.selected.saturating_sub(visible), -1);
                     self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::PageDown } => {
                     self.hover = None;
                     let (_, _, _, visible) = self.layout();
-                    self.selected =
-                        (self.selected + visible).min(self.items.len().saturating_sub(1));
+                    self.selected = self.snap(
+                        (self.selected + visible).min(self.items.len().saturating_sub(1)),
+                        1,
+                    );
                     self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::Home } => {
                     self.hover = None;
-                    self.selected = 0;
+                    self.selected = self.snap(0, 1);
                     self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::End } => {
                     self.hover = None;
-                    self.selected = self.items.len().saturating_sub(1);
+                    self.selected = self.snap(self.items.len().saturating_sub(1), -1);
                     self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::Enter } => return Some(self.selected),
@@ -283,6 +320,18 @@ impl Menu {
             let Some(rect) = self.item_rect(index) else {
                 continue;
             };
+            if self.is_header(index) {
+                let size = (20.0 * s).min(text_size);
+                let dims = measure_text(label, None, size as u16, 1.0);
+                draw_text(
+                    label,
+                    rect.x + (rect.w - dims.width) * 0.5,
+                    rect.y + rect.h * 0.68,
+                    size,
+                    DIM,
+                );
+                continue;
+            }
             let selected = index == self.selected;
             let hovered = self.hover == Some(index);
             if selected {

@@ -271,6 +271,59 @@ fn retint_seat(seat: &mut oxide_sim::scenario::PlayerSpec, faction: oxide_sim::F
     }
 }
 
+/// Draws the softly-panelled fog-free map preview strictly right of
+/// the menu's own rows (shared geometry — no independent arithmetic to
+/// drift out of sync). Returns the texture's screen rect for callers
+/// that mark positions on it; `None` when the window is too narrow.
+fn draw_preview_panel(tex: &Texture2D, rows_right: f32, theme: &str) -> Option<Rect> {
+    let s = render::ui_scale();
+    let left_bound = rows_right + 24.0 * s;
+    let avail = screen_width() - left_bound - 24.0 * s;
+    let max_w = avail.min(screen_width() * 0.26);
+    let max_h = screen_height() * 0.34;
+    if max_w < 96.0 * s {
+        return None;
+    }
+    let scale = (max_w / tex.width()).min(max_h / tex.height());
+    let (pw, ph) = (tex.width() * scale, tex.height() * scale);
+    let x = screen_width() - pw - 24.0 * s;
+    let y = screen_height() * 0.5 - ph * 0.5;
+    draw_rectangle(
+        x - 8.0 * s,
+        y - 8.0 * s,
+        pw + 16.0 * s,
+        ph + 16.0 * s,
+        Color::from_rgba(20, 20, 24, 230),
+    );
+    draw_texture_ex(
+        tex,
+        x,
+        y,
+        render::theme_tint(theme),
+        DrawTextureParams {
+            dest_size: Some(vec2(pw, ph)),
+            ..Default::default()
+        },
+    );
+    Some(Rect::new(x, y, pw, ph))
+}
+
+/// Every Foundry anchor authored on an ASCII map: `(seat, (x, y))` for
+/// each digit `1`..=`8`, in row-major order.
+fn seat_anchors(map: &[String]) -> Vec<(usize, (i32, i32))> {
+    let mut anchors = Vec::new();
+    for (y, row) in map.iter().enumerate() {
+        for (x, ch) in row.chars().enumerate() {
+            if let Some(digit) = ch.to_digit(10)
+                && (1..=8).contains(&digit)
+            {
+                anchors.push((digit as usize - 1, (x as i32, y as i32)));
+            }
+        }
+    }
+    anchors
+}
+
 /// A screenshot request parked until after this frame renders.
 struct PendingScreenshot {
     id: u64,
@@ -419,6 +472,10 @@ async fn run() -> Result<()> {
         Mode::Home
     };
     let mut draft = NewMatchDraft::default();
+    // A menu-context error line (message, wall-clock deadline): map
+    // and launch failures report here and the menus stay up — the
+    // in-game toast strip only draws with the HUD.
+    let mut menu_notice: Option<(String, f64)> = None;
     let mut previews = PreviewCache::default();
     let mut wizard: Option<Wizard> = None;
     let mut pause: Option<screens::pause::PauseScreen> = None;
@@ -599,12 +656,23 @@ async fn run() -> Result<()> {
                     mode = Mode::Home;
                     continue;
                 };
-                match w.update(
+                // Wizard trouble — an unreadable map file, a scenario
+                // that fails validation — is a dialog problem, never a
+                // process abort: report and stay on the menu.
+                let out = match w.update(
                     &events,
                     &mut input.mouse,
                     &mut draft,
                     &mut game.sounds_pending,
-                )? {
+                ) {
+                    Ok(out) => out,
+                    Err(err) => {
+                        menu_notice =
+                            Some((format!("can't open that map: {err:#}"), get_time() + 5.0));
+                        WizardOut::Stay
+                    }
+                };
+                match out {
                     WizardOut::Home => {
                         wizard = None;
                         mode = Mode::Home;
@@ -613,17 +681,24 @@ async fn run() -> Result<()> {
                         home.menu.draw(home.subtitle());
                         continue;
                     }
-                    WizardOut::Launch => {
-                        let fresh = launch(&draft)?;
-                        tutorial = None;
-                        game = keep_flags(fresh, &game);
-                        game.paused = false;
-                        input.reset_session();
-                        wizard = None;
-                        mode = Mode::Playing;
-                        render::draw(&game, &sprites, &input);
-                        continue;
-                    }
+                    WizardOut::Launch => match launch(&draft) {
+                        Ok(fresh) => {
+                            tutorial = None;
+                            game = keep_flags(fresh, &game);
+                            game.paused = false;
+                            input.reset_session();
+                            wizard = None;
+                            mode = Mode::Playing;
+                            render::draw(&game, &sprites, &input);
+                            continue;
+                        }
+                        Err(err) => {
+                            menu_notice = Some((
+                                format!("can't start that match: {err:#}"),
+                                get_time() + 5.0,
+                            ));
+                        }
+                    },
                     WizardOut::Stay => {}
                 }
                 render::draw(&game, &sprites, &input);
@@ -635,50 +710,88 @@ async fn run() -> Result<()> {
                     // row winning over the keyboard cursor.
                     let focus = w.menu.hover().unwrap_or(w.menu.selected);
                     let subtitle = w
-                        .entries
-                        .get(focus)
-                        .and_then(|e| e.blurb.as_deref())
+                        .entry_at(focus)
+                        .and_then(|(_, e)| e.blurb.as_deref())
                         .unwrap_or("machines eating a dead world");
                     w.menu.draw(subtitle);
                     // Fog-free preview of the highlighted map, softly
-                    // panelled on the right.
-                    if let Some(entry) = w.entries.get(focus)
-                        && let Some(tex) = previews.get(focus, entry)
+                    // panelled on the right. The cache keys by ENTRY
+                    // index — stable whatever rows the headers claim.
+                    if let Some((idx, entry)) = w.entry_at(focus)
+                        && let Some(tex) = previews.get(idx, entry)
+                    {
+                        draw_preview_panel(tex, w.menu.rows_right_edge(), &entry.theme);
+                    }
+                } else if matches!(w.step, WizardStep::Setup | WizardStep::SeatDetail(_)) {
+                    w.menu.draw(w.subtitle(&draft));
+                    // The setup screen answers "who is where": the same
+                    // preview, with every seat's foundry marked in its
+                    // faction color and numbered like the rows. The
+                    // human's chair rings in bone; the highlighted row's
+                    // seat rings in its accent so list and map read as
+                    // one thing.
+                    let row_index = w.entries.iter().position(|e| e.path == draft.scenario_path);
+                    if let Some(scenario) = draft.scenario.as_deref()
+                        && let Some(idx) = row_index
+                        && let Some(entry) = w.entries.get(idx)
+                        && let Some(tex) = previews.get(idx, entry)
+                        && let Some(rect) =
+                            draw_preview_panel(tex, w.menu.rows_right_edge(), &entry.theme)
                     {
                         let s = render::ui_scale();
-                        // Strictly right of the menu's own row rects —
-                        // shared geometry, no independent arithmetic to
-                        // drift out of sync. Too narrow? No panel.
-                        let left_bound = w.menu.rows_right_edge() + 24.0 * s;
-                        let avail = screen_width() - left_bound - 24.0 * s;
-                        let max_w = avail.min(screen_width() * 0.26);
-                        let max_h = screen_height() * 0.34;
-                        if max_w >= 96.0 * s {
-                            let scale = (max_w / tex.width()).min(max_h / tex.height());
-                            let (pw, ph) = (tex.width() * scale, tex.height() * scale);
-                            let x = screen_width() - pw - 24.0 * s;
-                            let y = screen_height() * 0.5 - ph * 0.5;
-                            draw_rectangle(
-                                x - 8.0 * s,
-                                y - 8.0 * s,
-                                pw + 16.0 * s,
-                                ph + 16.0 * s,
-                                Color::from_rgba(20, 20, 24, 230),
-                            );
-                            draw_texture_ex(
-                                tex,
-                                x,
-                                y,
-                                render::theme_tint(&entry.theme),
-                                DrawTextureParams {
-                                    dest_size: Some(vec2(pw, ph)),
-                                    ..Default::default()
-                                },
+                        let map_w = scenario.map.first().map_or(1, |r| r.chars().count()) as f32;
+                        let map_h = scenario.map.len() as f32;
+                        let focus_seat = match w.step {
+                            WizardStep::SeatDetail(i) => Some(i),
+                            _ => w
+                                .menu
+                                .hover()
+                                .or(Some(w.menu.selected))
+                                .filter(|r| *r < scenario.players.len()),
+                        };
+                        for (seat, (ax, ay)) in seat_anchors(&scenario.map) {
+                            let Some(spec) = scenario.players.get(seat) else {
+                                continue;
+                            };
+                            // Foundry anchors are the 2x2's top-left;
+                            // mark its center.
+                            let px = rect.x + (ax as f32 + 1.0) / map_w * rect.w;
+                            let py = rect.y + (ay as f32 + 1.0) / map_h * rect.h;
+                            let accent = render::faction_accent(spec.faction);
+                            if seat == draft.seat_choice {
+                                draw_circle_lines(px, py, 9.0 * s, 2.0, WHITE);
+                            } else if focus_seat == Some(seat) {
+                                draw_circle_lines(px, py, 9.0 * s, 1.5, accent);
+                            }
+                            draw_circle(px, py, 6.5 * s, accent);
+                            let label = format!("{}", seat + 1);
+                            let tw = measure_text(&label, None, (12.0 * s) as u16, 1.0).width;
+                            draw_text(
+                                &label,
+                                px - tw * 0.5,
+                                py + 4.0 * s,
+                                12.0 * s,
+                                Color::from_rgba(20, 20, 24, 255),
                             );
                         }
                     }
                 } else {
                     w.menu.draw(w.subtitle(&draft));
+                }
+                if let Some((msg, until)) = &menu_notice {
+                    if get_time() < *until {
+                        let s = render::ui_scale();
+                        let width = measure_text(msg, None, (16.0 * s) as u16, 1.0).width;
+                        draw_text(
+                            msg,
+                            (screen_width() - width) * 0.5,
+                            screen_height() - 48.0 * s,
+                            16.0 * s,
+                            Color::from_rgba(217, 82, 74, 255),
+                        );
+                    } else {
+                        menu_notice = None;
+                    }
                 }
             }
             Mode::Playing => {

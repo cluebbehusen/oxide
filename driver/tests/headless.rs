@@ -255,3 +255,30 @@ fn overriding_the_tick_count_below_the_commands_is_rejected() {
     let err = runner::run_replay(&replay, Some(50), false).unwrap_err();
     assert!(err.to_string().contains("unconsumed"), "{err}");
 }
+
+#[test]
+fn every_shipped_scenario_names_its_seats_uniquely() {
+    // The banner, panel, and stats all address seats by name, and the
+    // shell's launch refuses collisions — a duplicate authored name
+    // crashed match setup in 0.11 (Trident and Compass shipped two
+    // "West Ferrous" seats each).
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scenarios");
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let scenario =
+            Scenario::load(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+        let mut names: Vec<&str> = scenario.players.iter().map(|p| p.name.as_str()).collect();
+        names.sort_unstable();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            before,
+            "{}: seat names collide",
+            path.display()
+        );
+    }
+}

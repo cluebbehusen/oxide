@@ -1,9 +1,10 @@
 {
   "basalt-spine": "0x0aa01cf9cc67e49f",
-  "compass-grand": "0x3117eee9b78b71c3",
+  "compass-grand": "0xc4b6b2d156dc0827",
   "continental-divide": "0xf60a263a27f81633",
   "derelict-yard": "0x23b5348fadb71ca1",
   "ferric-reach": "0xee93aeb800cb4260",
+  "long-haul": "0x0ad9a7d839cc8a7e",
   "meridian-scar": "0xd1a5b6027a7076ef",
   "open-circuit": "0xf1a2d182c2abbe9f",
   "open-quarry": "0x0affbeb2f194b74d",
@@ -11,8 +12,10 @@
   "rustbelt-canyon": "0x601c2b892c3d613b",
   "scrapyard-brawl": "0x2892fe91cc05d20f",
   "skirmish": "0x5feee47fc2129b04",
+  "slag-expanse": "0x601962f12738ff0d",
   "slagline": "0xa58c392e87e9bdeb",
-  "trident-plateau": "0xde7f47ac68ec849e",
+  "the-crossing": "0x12c504d0e12a875e",
+  "trident-plateau": "0xcd06c83955e8964e",
   "twin-forges": "0x4125094b3e963abe",
   "verdigris-fields": "0xa5628962cc532971"
 }

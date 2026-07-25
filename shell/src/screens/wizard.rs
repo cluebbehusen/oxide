@@ -130,22 +130,52 @@ pub struct Wizard {
     pub menu: Menu,
     /// Scenario entries behind the map list's rows.
     pub entries: Vec<ScenarioEntry>,
+    /// Menu row -> entry index; `None` rows are section headers and
+    /// the trailing Back.
+    pub row_entries: Vec<Option<usize>>,
 }
 
-fn map_menu(draft: &NewMatchDraft) -> (Menu, Vec<ScenarioEntry>) {
+/// The browser's section heading for a seat count.
+fn format_heading(seats: usize) -> String {
+    match seats {
+        2 => "- 1v1 -".to_string(),
+        n if n % 2 == 0 => format!("- {}v{} -", n / 2, n / 2),
+        n => format!("- {n} seats -"),
+    }
+}
+
+fn map_menu(draft: &NewMatchDraft) -> (Menu, Vec<ScenarioEntry>, Vec<Option<usize>>) {
     let entries = discover_scenarios();
-    let mut items: Vec<String> = entries.iter().map(|e| e.label.clone()).collect();
+    // Rows interleave section headings with the sorted entries: the
+    // grouping is VISIBLE, not just an ordering.
+    let mut items: Vec<String> = Vec::new();
+    let mut row_entries: Vec<Option<usize>> = Vec::new();
+    let mut headers: Vec<usize> = Vec::new();
+    let mut last_seats = 0;
+    for (i, entry) in entries.iter().enumerate() {
+        if entry.seats != last_seats {
+            headers.push(items.len());
+            row_entries.push(None);
+            items.push(format_heading(entry.seats));
+            last_seats = entry.seats;
+        }
+        row_entries.push(Some(i));
+        items.push(entry.label.clone());
+    }
+    row_entries.push(None); // Back
     items.push("Back".to_string());
-    let mut menu = Menu::new("OXIDE", items);
+    let mut menu = Menu::with_headers("OXIDE", items, headers);
     // The remembered pick is a PATH: find it wherever the section sort
     // put it this time (a vanished file just lands on the top row).
     let remembered = entries
         .iter()
         .position(|e| e.path == draft.scenario_path)
         .filter(|_| draft.scenario.is_some())
-        .unwrap_or(0);
-    menu.select(remembered);
-    (menu, entries)
+        .and_then(|e| row_entries.iter().position(|r| *r == Some(e)));
+    if let Some(row) = remembered {
+        menu.select(row);
+    }
+    (menu, entries, row_entries)
 }
 
 /// The plan the quick flow's preselects mirror: the first AI seat's
@@ -169,14 +199,17 @@ fn rows_menu(title: &str, items: &[&str], selected: usize) -> Menu {
 }
 
 fn seat_label(draft: &NewMatchDraft, i: usize) -> String {
+    // Latin-1 separators only: the menu font stops there, and an em
+    // dash draws as tofu (the 0.11 setup-screen lesson).
     let scenario = draft.scenario.as_ref().expect("setup wants a map");
     let spec = &scenario.players[i];
     if i == draft.seat_choice {
-        format!("{} — you", spec.name)
+        format!("{}. {} (you)", i + 1, spec.name)
     } else {
         let plan = draft.seats[i];
         format!(
-            "{} — {} · {}",
+            "{}. {} · {} · {}",
+            i + 1,
             spec.name,
             DIFFICULTY_ITEMS[plan.level_choice],
             PERSONALITY_ITEMS[plan.personality_choice]
@@ -214,20 +247,29 @@ fn seat_detail_menu(draft: &NewMatchDraft, i: usize) -> Menu {
 impl Wizard {
     /// Opens at the map list, every row preselected from the draft.
     pub fn open(draft: &NewMatchDraft) -> Self {
-        let (menu, entries) = map_menu(draft);
+        let (menu, entries, row_entries) = map_menu(draft);
         Self {
             step: Step::Map,
             menu,
             entries,
+            row_entries,
         }
+    }
+
+    /// The scenario entry a map-list row means, with its stable entry
+    /// index (headers and Back mean nothing).
+    pub fn entry_at(&self, row: usize) -> Option<(usize, &ScenarioEntry)> {
+        let index = self.row_entries.get(row).copied().flatten()?;
+        self.entries.get(index).map(|e| (index, e))
     }
 
     fn goto(&mut self, step: Step, draft: &NewMatchDraft) {
         self.step = step;
         self.menu = match step {
             Step::Map => {
-                let (menu, entries) = map_menu(draft);
+                let (menu, entries, row_entries) = map_menu(draft);
                 self.entries = entries;
+                self.row_entries = row_entries;
                 menu
             }
             Step::Difficulty => {
@@ -277,16 +319,17 @@ impl Wizard {
                     return Ok(Out::Home);
                 }
                 if let Some(c) = choice {
-                    if c >= self.entries.len() {
-                        // The appended Back row returns to the front door.
+                    // Headers can't activate, so a row meaning no entry
+                    // is the appended Back: return to the front door.
+                    let Some(entry) = self.row_entries.get(c).copied().flatten() else {
                         return Ok(Out::Home);
-                    }
-                    let scenario = match &self.entries[c].path {
+                    };
+                    let scenario = match &self.entries[entry].path {
                         Some(path) => Scenario::load(path)
                             .with_context(|| format!("loading {}", path.display()))?,
                         None => Scenario::skirmish(),
                     };
-                    draft.set_scenario(scenario, self.entries[c].path.clone());
+                    draft.set_scenario(scenario, self.entries[entry].path.clone());
                     if draft.team_map() {
                         self.goto(Step::Setup, draft);
                     } else {
@@ -471,13 +514,18 @@ mod tests {
         w.menu.select(last);
         assert_eq!(drive(&mut w, &mut draft, Key::Enter), Out::Stay);
         assert_eq!(w.step, Step::Map, "Back walks one step");
-        let expected = w
+        let entry = w
             .entries
             .iter()
             .position(|e| e.path == draft.scenario_path)
             .unwrap();
+        let expected_row = w
+            .row_entries
+            .iter()
+            .position(|r| *r == Some(entry))
+            .unwrap();
         assert_eq!(
-            w.menu.selected, expected,
+            w.menu.selected, expected_row,
             "the map list re-offers the earlier pick, found by PATH"
         );
     }
