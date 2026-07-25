@@ -465,6 +465,7 @@ def rollout(
     device: str,
     tech_bonus: float = 0.0,
     mix_bonus: float = 0.0,
+    salvage_bonus: float = 0.0,
 ) -> tuple[tuple[np.ndarray, ...], np.ndarray, list[float]]:
     lanes = {(id(j), s): Lane(j.worker, s) for j in jobs for s in j.learner_seats}
     finished_rewards = []
@@ -561,6 +562,11 @@ def rollout(
                         TEL["ep_teched"] += 1
                     if s in j.salvaged:
                         TEL["ep_salvage"] += 1
+                        # Same instrument as the tech bonus, same
+                        # rules: own-state evidence (the seat's own
+                        # picked action), annealed to zero so the true
+                        # objective decides whether the verb survives.
+                        mut_bonus += salvage_bonus
                     if mix_bonus > 0.0:
                         # The seat's frozen last view carries its final
                         # army; two bits (a real three-way mix) earns
@@ -723,6 +729,14 @@ def main() -> None:
         "zero (0 = the full --updates span)",
     )
     ap.add_argument(
+        "--salvage-bonus",
+        type=float,
+        default=0.0,
+        help="terminal bonus paid when the seat picked Salvage this "
+        "episode (own-state only, fog-safe); annealed on the "
+        "--tech-anneal schedule. 0 disables.",
+    )
+    ap.add_argument(
         "--mix-bonus",
         type=float,
         default=0.0,
@@ -837,8 +851,20 @@ def main() -> None:
                 update - start_update - 1,
                 args.tech_anneal or args.updates,
             )
+            sb = tech_bonus_at(
+                args.salvage_bonus,
+                update - start_update - 1,
+                args.tech_anneal or args.updates,
+            )
             batch, last_val, finals = rollout(
-                policy, jobs, seeds, args.steps, device, tech_bonus=tb, mix_bonus=mb
+                policy,
+                jobs,
+                seeds,
+                args.steps,
+                device,
+                tech_bonus=tb,
+                mix_bonus=mb,
+                salvage_bonus=sb,
             )
             rollout_sec = time.time() - t0
             obs_b, mask_b, act_b, logp_b, val_b, rew_b, done_b, valid_b = batch
@@ -894,6 +920,8 @@ def main() -> None:
             }
             if args.tech_bonus:
                 entry["tech_bonus"] = round(tb, 4)
+            if args.salvage_bonus:
+                entry["salvage_bonus"] = round(sb, 4)
             if update % args.pool_every == 0:
                 save_policy(
                     policy,

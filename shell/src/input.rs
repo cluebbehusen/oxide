@@ -31,6 +31,22 @@ const PICK_RADIUS: f32 = 0.6;
 /// Camera pan speed in screen pixels per second (converted by zoom).
 const PAN_PX_PER_SEC: f32 = 900.0;
 
+/// One live finger on the screen.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TouchPoint {
+    /// Where it landed.
+    pub origin: Vec2,
+    /// Where it is now.
+    pub at: Vec2,
+    /// Wall clock at touch-down (the injected `now`).
+    pub down_at: f64,
+    /// Whether it ever left the slop circle — a moved finger is a
+    /// drag, never a tap or a long-press.
+    pub moved: bool,
+    /// Whether its long-press already fired (fire once per touch).
+    pub fired: bool,
+}
+
 /// Cross-frame input state (cursor, held keys, drag origin).
 pub struct InputState {
     /// Last known cursor position, window pixels.
@@ -74,6 +90,18 @@ pub struct InputState {
     pub(crate) now: f64,
     /// Camera feel from settings, injected per frame.
     pub(crate) camera_prefs: crate::config::CameraPrefs,
+    /// Touch timing windows, injected from config each frame.
+    pub(crate) touch_prefs: crate::config::TouchPrefs,
+    /// Live fingers, in touch-down order (deterministic; two at most
+    /// matter). Each carries its origin, latest point, down time, and
+    /// whether it moved past the slop or already fired a long-press.
+    pub(crate) touches: Vec<(u64, TouchPoint)>,
+    /// Wall-clock stamp of the last completed tap, for double-taps.
+    pub(crate) last_tap: Option<(f64, macroquad::prelude::Vec2)>,
+    /// A two-finger pair that spread or squeezed reads as a pinch for
+    /// its whole lifetime — lifting one finger of a pinch must not
+    /// commit a box-select.
+    pub(crate) pinching: bool,
     /// The active binding profile (Classic until settings can edit it).
     pub(crate) bindings: BindingMap,
     /// Chord state: modifier truth and held actions.
@@ -110,6 +138,10 @@ impl InputState {
             ui: 1.0,
             now: 0.0,
             camera_prefs: crate::config::CameraPrefs::default(),
+            touch_prefs: crate::config::TouchPrefs::default(),
+            touches: Vec::new(),
+            last_tap: None,
+            pinching: false,
             bookmarks: [None; 4],
             bindings: crate::config::Config::load().bindings,
             resolver: ActionResolver::default(),
@@ -135,6 +167,9 @@ impl InputState {
         self.placing = None;
         self.salvaging = false;
         self.build_menu = false;
+        self.touches.clear();
+        self.last_tap = None;
+        self.pinching = false;
     }
 
     /// Everything `reset_transient` drops, plus state that assumes the
@@ -436,31 +471,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     .find(|(r, _)| r.w > 0.0 && r.contains(vec2(x, y)))
                     .map(|(_, a)| *a);
                 if let Some(action) = card_hit {
-                    match action {
-                        crate::panel::CardAction::Dispatch(a) => {
-                            dispatch_action(game, input, a);
-                        }
-                        crate::panel::CardAction::ArmBuild(kind) => {
-                            input.build_menu = false;
-                            input.placing = Some(kind);
-                            let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
-                            game.toast(format!(
-                                "placing {} ({} scrap): click to build, Esc to cancel",
-                                kind.name(),
-                                cost
-                            ));
-                        }
-                        crate::panel::CardAction::CancelQueue(building, index) => {
-                            game.issue(Command::CancelTrain { building, index });
-                        }
-                        crate::panel::CardAction::ClearRally(building) => {
-                            game.issue(Command::SetRally {
-                                building,
-                                rally: None,
-                            });
-                        }
-                        crate::panel::CardAction::None => {}
-                    }
+                    activate_card(game, input, action);
                     continue;
                 }
                 // The idle badge cycles workers on click.
@@ -579,12 +590,180 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 let _ = input.key_edge(key, false);
             }
             // Desktop shell; the mobile shell will map these.
-            RawEvent::TouchDown { .. } | RawEvent::TouchMove { .. } | RawEvent::TouchUp { .. } => {}
+            RawEvent::TouchDown { id, x, y } => {
+                let p = vec2(x, y);
+                input.touches.retain(|(tid, _)| *tid != id);
+                input.touches.push((
+                    id,
+                    TouchPoint {
+                        origin: p,
+                        at: p,
+                        down_at: input.now,
+                        moved: false,
+                        fired: false,
+                    },
+                ));
+                if input.touches.len() > 2 {
+                    // Three fingers mean nothing yet; the oldest yields.
+                    input.touches.remove(0);
+                }
+            }
+            RawEvent::TouchMove { id, x, y } => {
+                let p = vec2(x, y);
+                let slop = click_slop(input.ui) * 2.0;
+                let two = input.touches.len() == 2;
+                let old_dist =
+                    two.then(|| (input.touches[0].1.at - input.touches[1].1.at).length());
+                let mut delta = Vec2::ZERO;
+                if let Some((_, tp)) = input.touches.iter_mut().find(|(tid, _)| *tid == id) {
+                    delta = p - tp.at;
+                    tp.at = p;
+                    if (p - tp.origin).length() > slop {
+                        tp.moved = true;
+                    }
+                }
+                match input.touches.len() {
+                    // One moved finger drags the world under the hand.
+                    1 if input.touches[0].1.moved => {
+                        game.camera.center -= delta / game.camera.zoom;
+                        game.camera.pan(Vec2::ZERO); // re-clamp
+                    }
+                    // Two fingers: a changing spread is a pinch (zoom at
+                    // the midpoint); a steady spread stays a box-select
+                    // candidate until release.
+                    2 => {
+                        let new_dist = (input.touches[0].1.at - input.touches[1].1.at).length();
+                        if let Some(old) = old_dist {
+                            let spread = new_dist - old;
+                            if spread.abs() > 1.0 {
+                                input.pinching = true;
+                                let mid = (input.touches[0].1.at + input.touches[1].1.at) * 0.5;
+                                game.camera.zoom_at(mid, spread * 0.02);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            RawEvent::TouchUp { id, x, y } => {
+                let p = vec2(x, y);
+                let Some(pos) = input.touches.iter().position(|(tid, _)| *tid == id) else {
+                    continue;
+                };
+                let (_, lifted) = input.touches.remove(pos);
+                match input.touches.len() {
+                    // Second finger of a pair released: a pair that
+                    // never pinched commits the box between the fingers.
+                    1 => {
+                        if !input.pinching {
+                            let other = input.touches[0].1.at;
+                            box_select(game, other, p, false);
+                            // The survivor is spent: it must not read as
+                            // a tap (or drag) on its own release.
+                            input.touches[0].1.moved = true;
+                        }
+                    }
+                    0 => {
+                        input.pinching = false;
+                        if !lifted.moved && !lifted.fired {
+                            // A short still touch is a tap: select. Two
+                            // taps inside the window sweep the kind,
+                            // like a double-click.
+                            let double = input.last_tap.is_some_and(|(t, at)| {
+                                (input.now - t) * 1000.0
+                                    < f64::from(input.touch_prefs.double_tap_ms)
+                                    && (at - p).length() < click_slop(input.ui) * 2.0
+                            });
+                            // Chrome first, through the touch pad: a
+                            // fingertip needs 44 logical px even where
+                            // the drawn card is smaller.
+                            let layout = game.layout.get();
+                            let card = layout.cards[..layout.card_count]
+                                .iter()
+                                .chain(layout.queue_slots[..layout.queue_count].iter())
+                                .find(|(r, _)| {
+                                    r.w > 0.0 && crate::layout::touch_pad(*r, input.ui).contains(p)
+                                })
+                                .map(|(_, a)| *a);
+                            if let Some(action) = card {
+                                activate_card(game, input, action);
+                            } else if double {
+                                select_all_of_kind_on_screen(game, p, input.ui);
+                                input.last_tap = None;
+                            } else {
+                                click_select(game, p, false, input.ui);
+                                input.last_tap = Some((input.now, p));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 }
 
 /// Continuous per-frame input (held-key panning).
+/// One panel card pressed — by mouse or fingertip, the same act its
+/// hotkey performs.
+fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::CardAction) {
+    match action {
+        crate::panel::CardAction::Dispatch(a) => {
+            dispatch_action(game, input, a);
+        }
+        crate::panel::CardAction::ArmBuild(kind) => {
+            input.build_menu = false;
+            input.placing = Some(kind);
+            let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
+            game.toast(format!(
+                "placing {} ({} scrap): click to build, Esc to cancel",
+                kind.name(),
+                cost
+            ));
+        }
+        crate::panel::CardAction::CancelQueue(building, index) => {
+            game.issue(Command::CancelTrain { building, index });
+        }
+        crate::panel::CardAction::ClearRally(building) => {
+            game.issue(Command::SetRally {
+                building,
+                rally: None,
+            });
+        }
+        crate::panel::CardAction::None => {}
+    }
+}
+
+/// The long-press carrier: a held finger emits no events, so its timer
+/// rides the frame loop beside `update_held`. A single still touch
+/// past the window fires the context gesture ONCE — on an entity it
+/// inspects (tap-select), on ground it issues the context order for
+/// the current selection, exactly like a right-click.
+pub fn update_touch(game: &mut Game, input: &mut InputState) {
+    if input.touches.len() != 1 {
+        return;
+    }
+    let (_, tp) = input.touches[0];
+    if tp.moved || tp.fired {
+        return;
+    }
+    if (input.now - tp.down_at) * 1000.0 < f64::from(input.touch_prefs.long_press_ms) {
+        return;
+    }
+    input.touches[0].1.fired = true;
+    let world = game.camera.to_world(tp.at);
+    let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    let on_entity = game.state.units().iter().any(|u| {
+        let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
+        p.distance(world) <= PICK_RADIUS
+    }) || game.state.building_at(tile).is_some();
+    if on_entity && game.selection.units.is_empty() {
+        select::click_select(game, tp.at, false, input.ui);
+    } else {
+        orders::context_order(game, tp.at, false);
+    }
+}
+
 pub fn update_held(game: &mut Game, input: &InputState, dt: f32) {
     let mut dir = vec2(0.0, 0.0);
     if input.resolver.is_held(Action::PanUp) {

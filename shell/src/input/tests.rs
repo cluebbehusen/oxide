@@ -751,3 +751,159 @@ fn a_selection_never_mixes_allegiances() {
         "a mixed box keeps only what the player can command"
     );
 }
+
+#[test]
+fn touch_taps_select_and_a_still_hold_orders() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let unit = game.state.units()[0].id;
+    let pos = game.state.units()[0].pos;
+    let screen = game
+        .camera
+        .to_screen(vec2(pos.x.to_num::<f32>(), pos.y.to_num::<f32>()));
+    // A short still touch is a tap: select.
+    input.now = 5.0;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchDown {
+            id: 1,
+            x: screen.x,
+            y: screen.y,
+        }],
+    );
+    input.now = 5.1;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchUp {
+            id: 1,
+            x: screen.x,
+            y: screen.y,
+        }],
+    );
+    assert_eq!(game.selection.units, vec![unit], "a tap selects");
+
+    // A finger held still past the window fires the context order for
+    // the live selection — a long-press is touch's right-click.
+    let ground = game.camera.to_screen(vec2(
+        pos.x.to_num::<f32>() + 4.0,
+        pos.y.to_num::<f32>() + 2.0,
+    ));
+    input.now = 6.0;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchDown {
+            id: 2,
+            x: ground.x,
+            y: ground.y,
+        }],
+    );
+    input.now = 6.2;
+    update_touch(&mut game, &mut input);
+    assert!(game.pending.is_empty(), "0.2s is not a long-press yet");
+    input.now = 6.5;
+    update_touch(&mut game, &mut input);
+    assert!(
+        game.pending
+            .iter()
+            .any(|c| matches!(c.command, Command::AttackMove { .. })),
+        "the held finger issued the ground order: {:?}",
+        game.pending
+    );
+    let staged = game.pending.len();
+    input.now = 7.0;
+    update_touch(&mut game, &mut input);
+    assert_eq!(game.pending.len(), staged, "a long-press fires once");
+}
+
+#[test]
+fn one_finger_drags_the_camera_and_two_box_select() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let before = game.camera.center;
+    // One moved finger pans the world under the hand.
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchDown {
+            id: 1,
+            x: 400.0,
+            y: 300.0,
+        }],
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchMove {
+            id: 1,
+            x: 340.0,
+            y: 300.0,
+        }],
+    );
+    assert!(
+        game.camera.center.x > before.x,
+        "dragging left shows ground to the east"
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchUp {
+            id: 1,
+            x: 340.0,
+            y: 300.0,
+        }],
+    );
+    assert!(
+        game.selection.units.is_empty(),
+        "a drag is never a tap-select"
+    );
+
+    // Two steady fingers box-select everything between them.
+    let a = game.camera.to_screen(vec2(2.0, 2.0));
+    let b = game.camera.to_screen(vec2(12.0, 10.0));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchDown {
+            id: 1,
+            x: a.x,
+            y: a.y,
+        }],
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchDown {
+            id: 2,
+            x: b.x,
+            y: b.y,
+        }],
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchUp {
+            id: 2,
+            x: b.x,
+            y: b.y,
+        }],
+    );
+    assert!(
+        !game.selection.units.is_empty(),
+        "the finger-box swept the base"
+    );
+}
+
+#[test]
+fn touch_windows_keep_their_ordering_invariant() {
+    // A hand-edited config cannot make a lazy double-tap read as a
+    // long-press: the press window clamps strictly above the tap one.
+    let prefs = crate::config::TouchPrefs {
+        double_tap_ms: 600,
+        long_press_ms: 300,
+    }
+    .clamped();
+    assert!(prefs.long_press_ms > prefs.double_tap_ms);
+}

@@ -61,6 +61,39 @@ impl Default for CameraPrefs {
     }
 }
 
+/// Touch gesture timing windows, in milliseconds.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TouchPrefs {
+    /// Two taps inside this window read as a double-tap.
+    pub double_tap_ms: u32,
+    /// A still finger held this long fires the context gesture.
+    pub long_press_ms: u32,
+}
+
+impl Default for TouchPrefs {
+    fn default() -> Self {
+        Self {
+            double_tap_ms: 350,
+            long_press_ms: 400,
+        }
+    }
+}
+
+impl TouchPrefs {
+    /// The invariant a hand-edited config cannot break: a lazy
+    /// double-tap must never read as a long-press, so the press window
+    /// always sits strictly above the tap window.
+    pub fn clamped(self) -> Self {
+        Self {
+            double_tap_ms: self.double_tap_ms.clamp(50, 1000),
+            long_press_ms: self
+                .long_press_ms
+                .clamp(50, 2000)
+                .max(self.double_tap_ms.clamp(50, 1000) + 50),
+        }
+    }
+}
+
 /// The whole persisted surface.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
@@ -86,6 +119,9 @@ pub struct Config {
     /// colors only; sprite art is untouched).
     #[serde(default)]
     pub colorblind: bool,
+    /// Touch gesture timing (absent in configs saved before touch).
+    #[serde(default)]
+    pub touch: TouchPrefs,
 }
 
 impl Default for Config {
@@ -99,6 +135,7 @@ impl Default for Config {
             window: (1280, 800),
             reduced_motion: false,
             colorblind: false,
+            touch: TouchPrefs::default(),
         }
     }
 }
@@ -199,6 +236,7 @@ impl Config {
                     }
                 }
                 config.window = Self::sane_window(config.window);
+                config.touch = config.touch.clamped();
                 config
             }
             _ => Self::default(),
