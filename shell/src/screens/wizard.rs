@@ -23,13 +23,16 @@ const ITEM_COLOR: Color = color_u8!(214, 210, 196, 255);
 const DIM: Color = color_u8!(214, 210, 196, 120);
 const PANEL: Color = color_u8!(20, 20, 24, 230);
 
-/// One AI seat's dials in the draft.
+/// One seat's dials in the draft.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SeatPlan {
     /// Difficulty row (indexes `Level::LADDER`).
     pub level_choice: usize,
     /// Personality row (feeds [`personality_knob`]).
     pub personality_choice: usize,
+    /// Faction chip (feeds [`faction_override`]): 0 keeps the map's
+    /// authored roster. The one dial the human's own card carries too.
+    pub faction_choice: usize,
 }
 
 impl Default for SeatPlan {
@@ -37,8 +40,33 @@ impl Default for SeatPlan {
         Self {
             level_choice: 1, // Medium is the fair default
             personality_choice: 0,
+            faction_choice: 0, // the authored roster
         }
     }
+}
+
+/// The faction a chip value forces onto its seat; `None` keeps the
+/// map's authored faction.
+pub fn faction_override(choice: usize) -> Option<oxide_sim::Faction> {
+    match choice {
+        1 => Some(oxide_sim::Faction::Ferrous),
+        2 => Some(oxide_sim::Faction::Cupric),
+        _ => None,
+    }
+}
+
+/// The faction a seat will actually run: its chip override, or the
+/// map's authored roster.
+pub fn effective_faction(
+    scenario: &Scenario,
+    draft: &NewMatchDraft,
+    seat: usize,
+) -> oxide_sim::Faction {
+    draft
+        .seats
+        .get(seat)
+        .and_then(|p| faction_override(p.faction_choice))
+        .unwrap_or(scenario.players[seat].faction)
 }
 
 /// Everything New Match has chosen so far. The draft outlives every
@@ -89,6 +117,9 @@ impl NewMatchDraft {
 const DIFFICULTY_ITEMS: [&str; 4] = ["Easy", "Medium", "Hard", "Expert"];
 const PERSONALITY_ITEMS: [&str; 4] = ["Surprise me", "Turtle", "Balanced", "Aggressive"];
 const FACTION_ITEMS: [&str; 3] = ["Ferrous", "Cupric", "Surprise me"];
+/// The setup cards' faction chip values, aligned with
+/// [`faction_override`].
+const FACTION_CHIP_ITEMS: [&str; 3] = ["Auto", "Ferrous", "Cupric"];
 
 /// The personality dial a wizard row means; `None` lets the scenario
 /// seed deal one.
@@ -204,10 +235,11 @@ pub struct SetupLayout {
     pub headings: Vec<(String, Rect)>,
     /// One card rect per DISPLAY position (see [`seat_display_order`]).
     pub seats: Vec<Rect>,
-    /// Per card, the three interactive zones: the seat itself, its
-    /// difficulty chip, its personality chip. The human's own card
-    /// has no dials — its chip rects are zero-sized.
-    pub cells: Vec<[Rect; 3]>,
+    /// Per card, the four interactive zones: the seat itself, its
+    /// difficulty chip, its personality chip, its faction chip. The
+    /// human's own card keeps only seat and faction — the AI dials'
+    /// rects are zero-sized there.
+    pub cells: Vec<[Rect; 4]>,
     /// The Start button.
     pub start: Rect,
     /// Where the map preview draws.
@@ -242,7 +274,7 @@ pub fn setup_layout(scenario: &Scenario, seat_choice: usize, view: Vec2, ui: f32
     let mut headings = Vec::new();
     let mut seats = vec![Rect::new(0.0, 0.0, 0.0, 0.0); n];
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
-    let mut cells = vec![[zero; 3]; n];
+    let mut cells = vec![[zero; 4]; n];
     let mut y = top;
     let mut last_team: Option<u8> = None;
     for (pos, &seat) in order.iter().enumerate() {
@@ -259,19 +291,23 @@ pub fn setup_layout(scenario: &Scenario, seat_choice: usize, view: Vec2, ui: f32
         let card = Rect::new(left_x, y, left_w, card_h);
         seats[pos] = card;
         // The inline dial chips, right-aligned; the seat zone is the
-        // rest of the card. The human's own card carries no dials.
+        // rest of the card. Every card carries the faction chip —
+        // the human's own card carries ONLY that.
+        let fac_w = 82.0 * ui;
+        let pers_w = 118.0 * ui;
+        let diff_w = 78.0 * ui;
+        let pad = 8.0 * ui;
+        let chip_h = (card_h - 16.0 * ui).max(22.0 * ui);
+        let cy = y + (card_h - chip_h) * 0.5;
+        let fac = Rect::new(card.x + card.w - fac_w - pad, cy, fac_w, chip_h);
         if seat != seat_choice {
-            let pers_w = 128.0 * ui;
-            let diff_w = 84.0 * ui;
-            let pad = 8.0 * ui;
-            let chip_h = (card_h - 16.0 * ui).max(22.0 * ui);
-            let cy = y + (card_h - chip_h) * 0.5;
-            let pers = Rect::new(card.x + card.w - pers_w - pad, cy, pers_w, chip_h);
+            let pers = Rect::new(fac.x - pers_w - pad, cy, pers_w, chip_h);
             let diff = Rect::new(pers.x - diff_w - pad, cy, diff_w, chip_h);
             let seat_zone = Rect::new(card.x, y, diff.x - card.x, card_h);
-            cells[pos] = [seat_zone, diff, pers];
+            cells[pos] = [seat_zone, diff, pers, fac];
         } else {
-            cells[pos] = [card, zero, zero];
+            let seat_zone = Rect::new(card.x, y, fac.x - card.x, card_h);
+            cells[pos] = [seat_zone, zero, zero, fac];
         }
         y += card_h + gap;
     }
@@ -304,10 +340,12 @@ pub fn seat_anchors(map: &[String]) -> Vec<(usize, (i32, i32))> {
 }
 
 /// Marks every seat's foundry on a drawn preview rect: numbered discs
-/// in faction color, a white ring for the human's chair, an accent
-/// ring for the focused seat — the list and the map read as one thing.
+/// in the seat's EFFECTIVE faction color (chip overrides included), a
+/// white ring for the human's chair, an accent ring for the focused
+/// seat — the list and the map read as one thing.
 pub fn draw_seat_markers(
     scenario: &Scenario,
+    draft: &NewMatchDraft,
     rect: Rect,
     seat_choice: usize,
     focus_seat: Option<usize>,
@@ -316,13 +354,13 @@ pub fn draw_seat_markers(
     let map_w = scenario.map.first().map_or(1, |r| r.chars().count()) as f32;
     let map_h = scenario.map.len() as f32;
     for (seat, (ax, ay)) in seat_anchors(&scenario.map) {
-        let Some(spec) = scenario.players.get(seat) else {
+        if scenario.players.get(seat).is_none() {
             continue;
-        };
+        }
         // Foundry anchors are the 2x2's top-left; mark its center.
         let px = rect.x + (ax as f32 + 1.0) / map_w * rect.w;
         let py = rect.y + (ay as f32 + 1.0) / map_h * rect.h;
-        let accent = crate::render::faction_accent(spec.faction);
+        let accent = crate::render::faction_accent(effective_faction(scenario, draft, seat));
         if seat == seat_choice {
             draw_circle_lines(px, py, 10.0 * ui, 2.5, macroquad::prelude::WHITE);
         } else if focus_seat == Some(seat) {
@@ -503,7 +541,11 @@ impl Wizard {
         let view = crate::render::viewport();
         let ui = crate::render::ui_scale();
         let layout = setup_layout(scenario, draft.seat_choice, view, ui);
-        let dials = |row: usize| row < start_index && order[row] != draft.seat_choice;
+        // A cell is walkable when its zone has width: the human's own
+        // card keeps only the seat zone and the faction chip.
+        let cell_live = |row: usize, cell: usize| -> bool {
+            row < start_index && (cell == 0 || layout.cells[row][cell].w > 0.0)
+        };
         let zone_at = |p: Vec2| -> Option<(usize, usize)> {
             for (row, cells) in layout.cells.iter().enumerate() {
                 for (cell, r) in cells.iter().enumerate() {
@@ -528,17 +570,30 @@ impl Wizard {
                     self.setup_sel = (self.setup_sel + 1) % (start_index + 1);
                 }
                 RawEvent::KeyDown { key: Key::Left } => {
-                    self.setup_cell = self.setup_cell.saturating_sub(1);
+                    let mut c = self.setup_cell;
+                    while c > 0 {
+                        c -= 1;
+                        if cell_live(self.setup_sel, c) {
+                            break;
+                        }
+                    }
+                    self.setup_cell = c;
                 }
                 RawEvent::KeyDown { key: Key::Right } => {
-                    if dials(self.setup_sel) {
-                        self.setup_cell = (self.setup_cell + 1).min(2);
+                    let mut c = self.setup_cell + 1;
+                    while c <= 3 && !cell_live(self.setup_sel, c) {
+                        c += 1;
+                    }
+                    if c <= 3 && cell_live(self.setup_sel, c) {
+                        self.setup_cell = c;
                     }
                 }
                 RawEvent::KeyDown { key: Key::Home } => self.setup_sel = 0,
                 RawEvent::KeyDown { key: Key::End } => self.setup_sel = start_index,
                 RawEvent::KeyDown { key: Key::Enter } => {
-                    let cell = if dials(self.setup_sel) {
+                    // The sticky column falls back to the seat zone on
+                    // rows where its cell is dead.
+                    let cell = if cell_live(self.setup_sel, self.setup_cell) {
                         self.setup_cell
                     } else {
                         0
@@ -564,7 +619,7 @@ impl Wizard {
                         && a == r
                     {
                         self.setup_sel = a.0;
-                        if dials(a.0) {
+                        if cell_live(a.0, a.1) {
                             self.setup_cell = a.1;
                         }
                         activate = Some(a);
@@ -580,17 +635,21 @@ impl Wizard {
             }
             let seat = order[row];
             match cell {
-                // Seat choice never permutes seats — parity carries
-                // factions and teams — it moves the human's chair.
+                // Seat choice never permutes seats — teams and dials
+                // stay put — it moves the human's chair.
                 0 => draft.seat_choice = seat,
                 1 => {
                     let plan = &mut draft.seats[seat];
                     plan.level_choice = (plan.level_choice + 1) % DIFFICULTY_ITEMS.len();
                 }
-                _ => {
+                2 => {
                     let plan = &mut draft.seats[seat];
                     plan.personality_choice =
                         (plan.personality_choice + 1) % PERSONALITY_ITEMS.len();
+                }
+                _ => {
+                    let plan = &mut draft.seats[seat];
+                    plan.faction_choice = (plan.faction_choice + 1) % FACTION_CHIP_ITEMS.len();
                 }
             }
         }
@@ -657,7 +716,7 @@ impl Wizard {
                     Color::new(0.6, 0.6, 0.65, 0.3)
                 },
             );
-            let accent = crate::render::faction_accent(spec.faction);
+            let accent = crate::render::faction_accent(effective_faction(scenario, draft, seat));
             let cy = rect.y + rect.h * 0.5;
             let chip_x = rect.x + 22.0 * ui;
             if is_you {
@@ -683,64 +742,69 @@ impl Wizard {
             if is_you {
                 let tag = "your seat";
                 let tdims = measure_text(tag, None, (14.0 * ui) as u16, 1.0);
+                let fac = layout.cells[pos][3];
                 draw_text(
                     tag,
-                    rect.x + rect.w - tdims.width - 14.0 * ui,
+                    fac.x - tdims.width - 14.0 * ui,
                     cy + 5.0 * ui,
                     14.0 * ui,
                     DIM,
                 );
-            } else {
-                // The inline dials: boxed value chips; the cursor's
-                // cell wears the accent.
-                let plan = draft.seats[seat];
-                let labels = [
-                    DIFFICULTY_ITEMS[plan.level_choice],
-                    PERSONALITY_ITEMS[plan.personality_choice],
-                ];
-                for (ci, label) in labels.iter().enumerate() {
-                    let chip = layout.cells[pos][ci + 1];
-                    let on_cell = selected && self.setup_cell == ci + 1;
-                    draw_rectangle(
-                        chip.x,
-                        chip.y,
-                        chip.w,
-                        chip.h,
-                        Color::from_rgba(32, 32, 38, 255),
-                    );
-                    draw_rectangle_lines(
-                        chip.x,
-                        chip.y,
-                        chip.w,
-                        chip.h,
-                        if on_cell { 2.0 } else { 1.0 },
-                        if on_cell {
-                            TITLE_COLOR
-                        } else {
-                            Color::new(0.6, 0.6, 0.65, 0.35)
-                        },
-                    );
-                    let ldims = measure_text(label, None, (13.0 * ui) as u16, 1.0);
-                    draw_text(
-                        label,
-                        chip.x + (chip.w - ldims.width) * 0.5,
-                        chip.y + chip.h * 0.5 + 4.5 * ui,
-                        13.0 * ui,
-                        if on_cell { ITEM_COLOR } else { DIM },
-                    );
+            }
+            // The inline dials: boxed value chips; the cursor's cell
+            // wears the accent. The human's own card shows only its
+            // faction chip.
+            let plan = draft.seats[seat];
+            let labels = [
+                DIFFICULTY_ITEMS[plan.level_choice],
+                PERSONALITY_ITEMS[plan.personality_choice],
+                FACTION_CHIP_ITEMS[plan.faction_choice],
+            ];
+            for (ci, label) in labels.iter().enumerate() {
+                let chip = layout.cells[pos][ci + 1];
+                if chip.w <= 0.0 {
+                    continue;
                 }
-                // The seat-zone cell cursor: a soft inner line under
-                // the name, so "Enter takes this chair" reads.
-                if selected && self.setup_cell == 0 {
-                    let zone = layout.cells[pos][0];
-                    draw_rectangle(
-                        zone.x + 44.0 * ui,
-                        cy + 9.0 * ui,
-                        measure_text(&spec.name, None, (16.0 * ui) as u16, 1.0).width,
-                        1.5,
-                        TITLE_COLOR,
-                    );
-                }
+                let on_cell = selected && self.setup_cell == ci + 1;
+                draw_rectangle(
+                    chip.x,
+                    chip.y,
+                    chip.w,
+                    chip.h,
+                    Color::from_rgba(32, 32, 38, 255),
+                );
+                draw_rectangle_lines(
+                    chip.x,
+                    chip.y,
+                    chip.w,
+                    chip.h,
+                    if on_cell { 2.0 } else { 1.0 },
+                    if on_cell {
+                        TITLE_COLOR
+                    } else {
+                        Color::new(0.6, 0.6, 0.65, 0.35)
+                    },
+                );
+                let ldims = measure_text(label, None, (13.0 * ui) as u16, 1.0);
+                draw_text(
+                    label,
+                    chip.x + (chip.w - ldims.width) * 0.5,
+                    chip.y + chip.h * 0.5 + 4.5 * ui,
+                    13.0 * ui,
+                    if on_cell { ITEM_COLOR } else { DIM },
+                );
+            }
+            // The seat-zone cell cursor: a soft inner line under
+            // the name, so "Enter takes this chair" reads.
+            if selected && self.setup_cell == 0 && !is_you {
+                let zone = layout.cells[pos][0];
+                draw_rectangle(
+                    zone.x + 44.0 * ui,
+                    cy + 9.0 * ui,
+                    measure_text(&spec.name, None, (16.0 * ui) as u16, 1.0).width,
+                    1.5,
+                    TITLE_COLOR,
+                );
             }
         }
         // Start button.
@@ -798,6 +862,7 @@ impl Wizard {
             let focus = (self.setup_sel < order.len()).then(|| order[self.setup_sel]);
             draw_seat_markers(
                 scenario,
+                draft,
                 Rect::new(x, y, pw, ph),
                 draft.seat_choice,
                 focus,
@@ -805,9 +870,7 @@ impl Wizard {
             );
         }
 
-        let on_dial = self.setup_sel < order.len()
-            && order[self.setup_sel] != draft.seat_choice
-            && self.setup_cell > 0;
+        let on_dial = self.setup_sel < order.len() && self.setup_cell > 0;
         let hint = if self.setup_sel == order.len() {
             "Enter starts the match - Esc back"
         } else if on_dial {
@@ -856,16 +919,22 @@ impl Wizard {
                             .into_iter()
                             .map(|seat| {
                                 let spec = &sc.players[seat];
+                                let plan = draft.seats[seat];
                                 if seat == draft.seat_choice {
-                                    format!("{}. {} (you)", seat + 1, spec.name)
-                                } else {
-                                    let plan = draft.seats[seat];
                                     format!(
-                                        "{}. {} · {} · {}",
+                                        "{}. {} (you) · {}",
+                                        seat + 1,
+                                        spec.name,
+                                        FACTION_CHIP_ITEMS[plan.faction_choice]
+                                    )
+                                } else {
+                                    format!(
+                                        "{}. {} · {} · {} · {}",
                                         seat + 1,
                                         spec.name,
                                         DIFFICULTY_ITEMS[plan.level_choice],
-                                        PERSONALITY_ITEMS[plan.personality_choice]
+                                        PERSONALITY_ITEMS[plan.personality_choice],
+                                        FACTION_CHIP_ITEMS[plan.faction_choice]
                                     )
                                 }
                             })
@@ -1051,6 +1120,47 @@ mod tests {
         draft.set_scenario(Scenario::skirmish(), None);
         assert_eq!(draft.seats.len(), 2, "re-derived at the new width");
         assert!(draft.seat_choice < 2, "the chair clamped onto the board");
+    }
+
+    #[test]
+    fn the_faction_chip_cycles_on_every_card_including_yours() {
+        let mut draft = NewMatchDraft::default();
+        let mut w = Wizard::open(&draft);
+        let Some(team_entry) = w.entries.iter().position(|e| e.seats > 2) else {
+            return; // no team maps discovered (bare checkout)
+        };
+        w.browser.selected = team_entry;
+        drive(&mut w, &mut draft, Key::Enter);
+        let order = seat_display_order(draft.scenario.as_deref().unwrap());
+        assert_eq!(order[0], draft.seat_choice, "the human opens in seat 0");
+
+        // Your own card: Right skips the dead AI dials straight to the
+        // faction chip; Enter cycles Auto to Ferrous.
+        drive(&mut w, &mut draft, Key::Home);
+        drive(&mut w, &mut draft, Key::Right);
+        drive(&mut w, &mut draft, Key::Enter);
+        assert_eq!(
+            draft.seats[draft.seat_choice].faction_choice, 1,
+            "your own chip cycled to Ferrous"
+        );
+        assert_eq!(
+            w.step,
+            Step::Setup,
+            "cycling a chip never leaves the screen"
+        );
+
+        // The sticky column carries the faction cell onto an AI card.
+        drive(&mut w, &mut draft, Key::Down);
+        drive(&mut w, &mut draft, Key::Enter);
+        assert_eq!(draft.seats[order[1]].faction_choice, 1);
+        // Left from the faction chip reaches the AI-only personality
+        // dial — the full chip row exists on an opponent's card.
+        drive(&mut w, &mut draft, Key::Left);
+        drive(&mut w, &mut draft, Key::Enter);
+        assert_eq!(
+            draft.seats[order[1]].personality_choice, 1,
+            "cell 2 is the personality dial"
+        );
     }
 
     #[test]

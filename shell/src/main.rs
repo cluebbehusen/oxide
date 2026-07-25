@@ -217,10 +217,18 @@ fn launch(draft: &NewMatchDraft) -> Result<Game> {
             None
         };
     }
-    // The 1v1 quick flow keeps its faction question; team maps have
-    // none — picking a seat IS picking its authored faction (retinting
-    // one seat of a faction-mixed team collides names and manufactures
-    // hostile twins).
+    // Per-seat faction chips (the setup screen's): Auto keeps the
+    // authored roster; an override retints the seat, starting units
+    // remapped through their roles. Same-faction opponents are
+    // readable now — the allegiance accents carry friend-or-foe, so
+    // faction is a free choice, not a fairness rule.
+    for (i, plan) in draft.seats.iter().enumerate() {
+        if let Some(faction) = screens::wizard::faction_override(plan.faction_choice) {
+            scenario.retint_seat(i, faction);
+        }
+    }
+    // The 1v1 quick flow keeps its faction question (the duel screens
+    // never show the per-seat chips).
     if scenario.players.len() == 2 {
         let faction = match draft.faction_choice {
             0 => oxide_sim::Faction::Ferrous,
@@ -234,18 +242,31 @@ fn launch(draft: &NewMatchDraft) -> Result<Game> {
             oxide_sim::Faction::Ferrous => oxide_sim::Faction::Cupric,
             oxide_sim::Faction::Cupric => oxide_sim::Faction::Ferrous,
         };
-        if let Some(human) = scenario.players.iter_mut().find(|p| !p.bot) {
-            retint_seat(human, faction);
+        if let Some(i) = scenario.players.iter().position(|p| !p.bot) {
+            scenario.retint_seat(i, faction);
         }
-        // In a duel, faction is also the only allegiance cue on screen —
-        // the opponent takes the other roster, or two same-color armies
-        // would fight an unreadable war.
-        if let Some(bot) = scenario.players.iter_mut().find(|p| p.bot) {
-            retint_seat(bot, complement);
+        // In a duel the quick flow deals the opponent the other
+        // roster — the classic matchup. (The setup screen's per-seat
+        // chips are where same-faction wars get arranged.)
+        if let Some(i) = scenario.players.iter().position(|p| p.bot) {
+            scenario.retint_seat(i, complement);
         }
     }
     // Seat names must stay unique: the victory banner, the panel, and
-    // the stats screen all address seats by name.
+    // the stats screen all address seats by name. Retints can land two
+    // seats on one faction-derived label ("North West Ferrous" twice),
+    // so duplicates take an ordinal instead of refusing to launch.
+    let mut seen: Vec<String> = Vec::new();
+    for player in scenario.players.iter_mut() {
+        if seen.contains(&player.name) {
+            let mut n = 2;
+            while seen.contains(&format!("{} {n}", player.name)) {
+                n += 1;
+            }
+            player.name = format!("{} {n}", player.name);
+        }
+        seen.push(player.name.clone());
+    }
     let mut names: Vec<&str> = scenario.players.iter().map(|p| p.name.as_str()).collect();
     names.sort_unstable();
     names.dedup();
@@ -254,21 +275,6 @@ fn launch(draft: &NewMatchDraft) -> Result<Game> {
         "seat names collide after setup"
     );
     Game::new(scenario)
-}
-
-/// Moves a seat onto a roster, keeping any faction-derived name honest:
-/// the shipped maps name seats after their faction ("Cupric", "West
-/// Ferrous"), and a stale name makes the victory banner announce the
-/// wrong side.
-fn retint_seat(seat: &mut oxide_sim::scenario::PlayerSpec, faction: oxide_sim::Faction) {
-    let label = |f: oxide_sim::Faction| match f {
-        oxide_sim::Faction::Ferrous => "Ferrous",
-        oxide_sim::Faction::Cupric => "Cupric",
-    };
-    if seat.faction != faction {
-        seat.name = seat.name.replace(label(seat.faction), label(faction));
-        seat.faction = faction;
-    }
 }
 
 /// A screenshot request parked until after this frame renders.
@@ -1421,8 +1427,29 @@ mod tests {
                 assert_eq!(config.level, oxide_sim::bot::Level::Medium);
             }
         }
-        // Team maps never retint: the seat's authored faction stands.
+        // Auto chips keep the seat's authored faction.
         assert_eq!(players[2].faction, oxide_sim::Faction::Ferrous);
+    }
+
+    #[test]
+    fn a_faction_chip_retints_the_seat_and_collided_names_take_ordinals() {
+        let mut draft = NewMatchDraft::default();
+        let scenario = Scenario::load("../scenarios/gatework-array.json").expect("shipped map");
+        draft.set_scenario(scenario, None);
+        // "North West Cupric" flips Ferrous — its retinted label
+        // collides with seat 0's "North West Ferrous".
+        draft.seats[1].faction_choice = 1;
+        let game = launch(&draft).expect("a legitimate faction choice never refuses to launch");
+        let players = &game.scenario.players;
+        assert_eq!(players[1].faction, oxide_sim::Faction::Ferrous);
+        assert_eq!(
+            players[1].name, "North West Ferrous 2",
+            "the duplicate label took an ordinal"
+        );
+        let mut names: Vec<&str> = players.iter().map(|p| p.name.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), players.len(), "every banner name stays unique");
     }
 
     #[test]
