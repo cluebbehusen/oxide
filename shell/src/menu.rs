@@ -80,7 +80,7 @@ impl Menu {
             pressed: None,
             headers,
         };
-        menu.selected = menu.snap(0, 1);
+        menu.selected = menu.snap_clamped(0, 1);
         menu
     }
 
@@ -89,8 +89,9 @@ impl Menu {
         self.headers.contains(&index)
     }
 
-    /// The nearest non-header row from `index`, walking in `dir`
-    /// (wrapping). Falls back to `index` on an all-header list.
+    /// The nearest non-header row from `index`, walking in `dir` and
+    /// WRAPPING — the arrow keys' semantics (Up from the first real row
+    /// lands on the last). Falls back to `index` on an all-header list.
     fn snap(&self, index: usize, dir: i64) -> usize {
         let n = self.items.len();
         if n == 0 {
@@ -106,10 +107,39 @@ impl Menu {
         index.min(n - 1)
     }
 
+    /// The nearest non-header row from `index` WITHOUT wrapping: walk
+    /// `dir` to the list's edge, then fall back the other way — jump
+    /// keys (Home, End, paging) and programmatic selects must land
+    /// NEAR their target, never teleport across the list because a
+    /// section label sat in the way (PageUp once snapped to the bottom
+    /// Back row through the browser's leading header).
+    fn snap_clamped(&self, index: usize, dir: i64) -> usize {
+        let n = self.items.len() as i64;
+        if n == 0 {
+            return 0;
+        }
+        let start = (index as i64).min(n - 1);
+        let mut i = start;
+        while (0..n).contains(&i) {
+            if !self.is_header(i as usize) {
+                return i as usize;
+            }
+            i += dir;
+        }
+        let mut i = start - dir;
+        while (0..n).contains(&i) {
+            if !self.is_header(i as usize) {
+                return i as usize;
+            }
+            i -= dir;
+        }
+        start as usize
+    }
+
     /// Moves the keyboard cursor and scrolls just enough to show it —
     /// the only coupling between selection and the scroll window.
     pub fn select(&mut self, index: usize) {
-        self.selected = self.snap(index.min(self.items.len().saturating_sub(1)), 1);
+        self.selected = self.snap_clamped(index.min(self.items.len().saturating_sub(1)), 1);
         self.ensure_visible();
     }
 
@@ -134,7 +164,7 @@ impl Menu {
         let clamped = self
             .selected
             .clamp(self.scroll, self.scroll + visible.saturating_sub(1));
-        self.selected = self.snap(clamped, if clamped < self.selected { -1 } else { 1 });
+        self.selected = self.snap_clamped(clamped, if clamped < self.selected { -1 } else { 1 });
     }
 
     fn row_at(&self, point: Vec2) -> Option<usize> {
@@ -259,13 +289,13 @@ impl Menu {
                 RawEvent::KeyDown { key: Key::PageUp } => {
                     self.hover = None;
                     let (_, _, _, visible) = self.layout();
-                    self.selected = self.snap(self.selected.saturating_sub(visible), -1);
+                    self.selected = self.snap_clamped(self.selected.saturating_sub(visible), -1);
                     self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::PageDown } => {
                     self.hover = None;
                     let (_, _, _, visible) = self.layout();
-                    self.selected = self.snap(
+                    self.selected = self.snap_clamped(
                         (self.selected + visible).min(self.items.len().saturating_sub(1)),
                         1,
                     );
@@ -273,12 +303,12 @@ impl Menu {
                 }
                 RawEvent::KeyDown { key: Key::Home } => {
                     self.hover = None;
-                    self.selected = self.snap(0, 1);
+                    self.selected = self.snap_clamped(0, 1);
                     self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::End } => {
                     self.hover = None;
-                    self.selected = self.snap(self.items.len().saturating_sub(1), -1);
+                    self.selected = self.snap_clamped(self.items.len().saturating_sub(1), -1);
                     self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::Enter } => return Some(self.selected),

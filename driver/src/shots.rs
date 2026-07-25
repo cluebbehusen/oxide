@@ -176,14 +176,13 @@ fn walk(client: &mut Client, bless: bool, dir: &Path, threshold: f64) -> Result<
     // The wizard.
     auto::activate_labeled(suite.client, "play")?;
     suite.shot("wizard-map", "main_menu")?;
-    // The team-map setup screen (per-seat rows + the who-is-where
-    // preview): End sits on Back, one Up is the last team map.
+    // The team-map setup screen (seat cards + the who-is-where map):
+    // End is the grid's last entry — the biggest team map.
     auto::press_key(suite.client, Key::End)?;
-    auto::press_key(suite.client, Key::Up)?;
     auto::press_key(suite.client, Key::Enter)?;
     suite.shot("match-setup", "match_setup")?;
     auto::press_key(suite.client, Key::Escape)?;
-    // Back on the map list, return to the top 1v1 for the quick flow.
+    // Back on the grid, return to the first 1v1 for the quick flow.
     auto::press_key(suite.client, Key::Home)?;
     auto::press_key(suite.client, Key::Enter)?;
     suite.shot("wizard-difficulty", "difficulty_menu")?;

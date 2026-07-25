@@ -907,3 +907,324 @@ fn touch_windows_keep_their_ordering_invariant() {
     .clamped();
     assert!(prefs.long_press_ms > prefs.double_tap_ms);
 }
+
+#[test]
+fn a_foreign_box_never_reaches_through_fog() {
+    // One visible enemy scout at the fog's edge must not drag its
+    // owner's HIDDEN units into an inspectable selection.
+    let scenario = oxide_sim::Scenario::from_json(
+        "{
+        \"name\": \"fog box\",
+        \"seed\": 9,
+        \"players\": [
+            {\"name\": \"me\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false},
+            {\"name\": \"foe\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true}
+        ],
+        \"map\": [
+            \"##############################\",
+            \"#............................#\",
+            \"#..1.........................#\",
+            \"#............................#\",
+            \"#..........................2.#\",
+            \"#............................#\",
+            \"##############################\"
+        ],
+        \"units\": [
+            {\"player\": 0, \"kind\": \"harvester\", \"x\": 6, \"y\": 2},
+            {\"player\": 1, \"kind\": \"scuttler\", \"x\": 10, \"y\": 2},
+            {\"player\": 1, \"kind\": \"scuttler\", \"x\": 20, \"y\": 2}
+        ]
+    }",
+    )
+    .expect("parses");
+    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("builds");
+    let mut input = InputState::new();
+    let near = game.state.units()[1].id;
+    let far = game.state.units()[2].id;
+    assert!(
+        game.my_vision()
+            .visible(game.state.unit(near).unwrap().tile()),
+        "premise: the scout stands in sight"
+    );
+    assert!(
+        !game
+            .my_vision()
+            .visible(game.state.unit(far).unwrap().tile()),
+        "premise: its army hides in fog"
+    );
+    // A box spanning both, with no own units inside.
+    let a = game.camera.to_screen(vec2(9.0, 1.2));
+    let b = game.camera.to_screen(vec2(21.5, 3.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: a.x,
+                y: a.y,
+            },
+            RawEvent::MouseMove { x: b.x, y: b.y },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: b.x,
+                y: b.y,
+            },
+        ],
+    );
+    assert_eq!(
+        game.selection.units,
+        vec![near],
+        "only the visible scout inspects"
+    );
+}
+
+#[test]
+fn a_selected_hostile_drops_when_fog_recovers_it() {
+    // The panel reads live hp off the selection: an inspection must
+    // never become a tracking beacon into ground the player no longer
+    // sees. Once nothing of the player's stands near the foe, its
+    // ground goes dark and the selection lets go.
+    let scenario = oxide_sim::Scenario::from_json(
+        "{
+        \"name\": \"beacon\",
+        \"seed\": 4,
+        \"players\": [
+            {\"name\": \"me\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false},
+            {\"name\": \"foe\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true}
+        ],
+        \"map\": [
+            \"##############################\",
+            \"#............................#\",
+            \"#..1.........................#\",
+            \"#............................#\",
+            \"#........................s.2.#\",
+            \"#............................#\",
+            \"##############################\"
+        ],
+        \"units\": [
+            {\"player\": 0, \"kind\": \"harvester\", \"x\": 12, \"y\": 2},
+            {\"player\": 1, \"kind\": \"harvester\", \"x\": 14, \"y\": 2}
+        ]
+    }",
+    )
+    .expect("parses");
+    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("builds");
+    let mut input = InputState::new();
+    let foe = game.state.units()[1].id;
+    let pos = game.state.units()[1].pos;
+    assert!(
+        game.my_vision()
+            .visible(game.state.unit(foe).unwrap().tile()),
+        "premise: the foe worker stands in my harvester's sight"
+    );
+    let screen = game
+        .camera
+        .to_screen(vec2(pos.x.to_num::<f32>(), pos.y.to_num::<f32>()));
+    apply_events(&mut game, &mut input, &click(screen.x, screen.y));
+    assert_eq!(game.selection.units, vec![foe]);
+    // Send my only nearby eyes home; the foe's bot recalls its
+    // harvester east to mine — both walks end my sight of it, and the
+    // selection must end with the sight (the machine itself lives on).
+    let mine = game.state.units()[0].id;
+    game.issue(Command::Move {
+        units: vec![mine],
+        goal: TilePos::new(3, 4),
+        queue: false,
+    });
+    for _ in 0..600 {
+        game.do_tick();
+        if game.selection.units.is_empty() {
+            break;
+        }
+    }
+    assert!(
+        game.state.unit(foe).is_some(),
+        "test premise: the machine is alive, only unseen"
+    );
+    assert!(
+        game.selection.units.is_empty(),
+        "the inspection let go with the sight"
+    );
+}
+
+/// Publishes a layout whose minimap owns the window's bottom-right
+/// corner — the chrome-ownership tests need real rects, exactly as the
+/// renderer would publish them.
+fn publish_minimap(game: &Game) -> macroquad::math::Rect {
+    let minimap = macroquad::math::Rect::new(1060.0, 590.0, 200.0, 190.0);
+    let zero = macroquad::math::Rect::new(0.0, 0.0, 0.0, 0.0);
+    game.layout.set(crate::layout::LayoutModel::compute(
+        vec2(1280.0, 800.0),
+        1.0,
+        f32::INFINITY,
+        0.0,
+        zero,
+        minimap,
+        zero,
+        [(zero, crate::panel::CardAction::None); 16],
+        0,
+        [(zero, crate::panel::CardAction::None); 8],
+        0,
+    ));
+    minimap
+}
+
+#[test]
+fn touch_respects_chrome_ownership() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let minimap = publish_minimap(&game);
+    let (mx, my) = (minimap.x + 40.0, minimap.y + 40.0);
+    // Zoom in so the camera has travel (the whole small map fits the
+    // default view and clamping would eat any jump).
+    game.camera.zoom_at(vec2(640.0, 400.0), 4.0);
+    game.camera.update(1.0); // land the glide: headless has no frames
+    game.camera.center = vec2(4.0, 4.0);
+    game.camera.pan(macroquad::prelude::Vec2::ZERO);
+    // A tap on the minimap jumps the camera — it must not select the
+    // world ground hiding under the chrome pixel.
+    let before = game.camera.center;
+    game.selection.units = vec![game.state.units()[0].id];
+    let selected = game.selection.units.clone();
+    input.now = 3.0;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchDown {
+            id: 9,
+            x: mx,
+            y: my,
+        }],
+    );
+    input.now = 3.1;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchUp {
+            id: 9,
+            x: mx,
+            y: my,
+        }],
+    );
+    assert_ne!(game.camera.center, before, "the tap steered the camera");
+    assert_eq!(game.selection.units, selected, "and stole no selection");
+
+    // A long-press there orders nothing: chrome owns its ground for
+    // the held finger too.
+    input.now = 4.0;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchDown {
+            id: 10,
+            x: mx,
+            y: my,
+        }],
+    );
+    input.now = 4.6;
+    update_touch(&mut game, &mut input);
+    assert!(
+        game.pending.is_empty(),
+        "a held finger on the minimap commands nothing: {:?}",
+        game.pending
+    );
+}
+
+#[test]
+fn a_slow_pinch_zooms_and_never_commits_a_box() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    game.selection.units = vec![game.state.units()[0].id];
+    let keep = game.selection.units.clone();
+    let zoom_before = game.camera.zoom;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchDown {
+            id: 1,
+            x: 600.0,
+            y: 400.0,
+        }],
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchDown {
+            id: 2,
+            x: 640.0,
+            y: 400.0,
+        }],
+    );
+    // Sub-pixel-per-event spread: forty gentle half-pixel steps sum to
+    // a real pinch even though no single event crosses a threshold.
+    for i in 0..40 {
+        let x = 640.0 + (i as f32) * 0.9;
+        apply_events(
+            &mut game,
+            &mut input,
+            &[RawEvent::TouchMove { id: 2, x, y: 400.0 }],
+        );
+    }
+    assert!(input.pinching, "the cumulative spread reads as a pinch");
+    game.camera.update(1.0); // land the glide: headless has no frames
+    assert!(game.camera.zoom > zoom_before, "and it zoomed in");
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchUp {
+            id: 2,
+            x: 676.0,
+            y: 400.0,
+        }],
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchUp {
+            id: 1,
+            x: 600.0,
+            y: 400.0,
+        }],
+    );
+    assert_eq!(
+        game.selection.units, keep,
+        "a pinch's release never box-selects"
+    );
+
+    // And the NEXT pair starts undecided: a fresh steady pair still
+    // commits its box (pinch state must not outlive its fingers).
+    let a = game.camera.to_screen(vec2(2.0, 2.0));
+    let b = game.camera.to_screen(vec2(12.0, 10.0));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchDown {
+            id: 3,
+            x: a.x,
+            y: a.y,
+        }],
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchDown {
+            id: 4,
+            x: b.x,
+            y: b.y,
+        }],
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchUp {
+            id: 4,
+            x: b.x,
+            y: b.y,
+        }],
+    );
+    assert!(
+        !game.selection.units.is_empty(),
+        "the fresh pair's box landed"
+    );
+}

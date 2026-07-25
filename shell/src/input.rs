@@ -102,6 +102,10 @@ pub struct InputState {
     /// its whole lifetime — lifting one finger of a pinch must not
     /// commit a box-select.
     pub(crate) pinching: bool,
+    /// The pair's spread when it formed: pinch detection compares the
+    /// CUMULATIVE change against this, so a slow pinch (under a pixel
+    /// per event) still reads as one instead of committing a box.
+    pub(crate) pair_dist: Option<f32>,
     /// The active binding profile (Classic until settings can edit it).
     pub(crate) bindings: BindingMap,
     /// Chord state: modifier truth and held actions.
@@ -142,6 +146,7 @@ impl InputState {
             touches: Vec::new(),
             last_tap: None,
             pinching: false,
+            pair_dist: None,
             bookmarks: [None; 4],
             bindings: crate::config::Config::load().bindings,
             resolver: ActionResolver::default(),
@@ -170,6 +175,7 @@ impl InputState {
         self.touches.clear();
         self.last_tap = None;
         self.pinching = false;
+        self.pair_dist = None;
     }
 
     /// Everything `reset_transient` drops, plus state that assumes the
@@ -607,6 +613,16 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     // Three fingers mean nothing yet; the oldest yields.
                     input.touches.remove(0);
                 }
+                if input.touches.len() == 2 {
+                    // A fresh pair starts undecided, whatever the last
+                    // pair was doing — a pinch must not outlive its
+                    // fingers and swallow the next pair's box.
+                    input.pinching = false;
+                    input.pair_dist =
+                        Some((input.touches[0].1.at - input.touches[1].1.at).length());
+                } else {
+                    input.pair_dist = None;
+                }
             }
             RawEvent::TouchMove { id, x, y } => {
                 let p = vec2(x, y);
@@ -628,15 +644,23 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         game.camera.center -= delta / game.camera.zoom;
                         game.camera.pan(Vec2::ZERO); // re-clamp
                     }
-                    // Two fingers: a changing spread is a pinch (zoom at
-                    // the midpoint); a steady spread stays a box-select
-                    // candidate until release.
+                    // Two fingers: a spread that has CUMULATIVELY moved
+                    // past the threshold is a pinch (zoom at the
+                    // midpoint) — per-event deltas would miss a slow
+                    // pinch entirely and mis-commit it as a box select.
                     2 => {
                         let new_dist = (input.touches[0].1.at - input.touches[1].1.at).length();
-                        if let Some(old) = old_dist {
+                        if !input.pinching
+                            && let Some(start) = input.pair_dist
+                            && (new_dist - start).abs() > 24.0 * input.ui
+                        {
+                            input.pinching = true;
+                        }
+                        if input.pinching
+                            && let Some(old) = old_dist
+                        {
                             let spread = new_dist - old;
-                            if spread.abs() > 1.0 {
-                                input.pinching = true;
+                            if spread != 0.0 {
                                 let mid = (input.touches[0].1.at + input.touches[1].1.at) * 0.5;
                                 game.camera.zoom_at(mid, spread * 0.02);
                             }
@@ -658,13 +682,16 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         if !input.pinching {
                             let other = input.touches[0].1.at;
                             box_select(game, other, p, false);
-                            // The survivor is spent: it must not read as
-                            // a tap (or drag) on its own release.
-                            input.touches[0].1.moved = true;
                         }
+                        // The survivor is spent EITHER way: after a box
+                        // or a pinch, its own still release must not
+                        // read as a tap and select whatever sits under
+                        // the resting finger.
+                        input.touches[0].1.moved = true;
                     }
                     0 => {
                         input.pinching = false;
+                        input.pair_dist = None;
                         if !lifted.moved && !lifted.fired {
                             // A short still touch is a tap: select. Two
                             // taps inside the window sweep the kind,
@@ -674,7 +701,19 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                                     < f64::from(input.touch_prefs.double_tap_ms)
                                     && (at - p).length() < click_slop(input.ui) * 2.0
                             });
-                            // Chrome first, through the touch pad: a
+                            // The minimap owns its taps (jump the
+                            // camera), and HUD chrome swallows the
+                            // rest — same ownership order as clicks,
+                            // or a tap behind the panel would select
+                            // (and a minimap tap would grab) whatever
+                            // world ground happens to sit under the
+                            // chrome pixel.
+                            if let Some(world) = crate::render::minimap_world_at(game, p) {
+                                game.camera.center = world;
+                                game.camera.pan(Vec2::ZERO); // re-clamp
+                                continue;
+                            }
+                            // Chrome next, through the touch pad: a
                             // fingertip needs 44 logical px even where
                             // the drawn card is smaller.
                             let layout = game.layout.get();
@@ -687,6 +726,8 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                                 .map(|(_, a)| *a);
                             if let Some(action) = card {
                                 activate_card(game, input, action);
+                            } else if click_on_hud(game, p) {
+                                // Bare chrome: the tap is swallowed.
                             } else if double {
                                 select_all_of_kind_on_screen(game, p, input.ui);
                                 input.last_tap = None;
@@ -751,6 +792,12 @@ pub fn update_touch(game: &mut Game, input: &mut InputState) {
         return;
     }
     input.touches[0].1.fired = true;
+    // Chrome owns its ground for the held finger too: a long-press on
+    // the minimap or panel band must not order the army to the world
+    // point hiding under the HUD.
+    if crate::render::minimap_world_at(game, tp.at).is_some() || click_on_hud(game, tp.at) {
+        return;
+    }
     let world = game.camera.to_world(tp.at);
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     let on_entity = game.state.units().iter().any(|u| {

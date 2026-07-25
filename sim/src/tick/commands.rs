@@ -587,7 +587,6 @@ fn apply_repair(
     if !b.built || b.hp >= b.kind.stats().max_hp {
         return Err(RejectReason::InvalidTarget);
     }
-    purge_opposing_verb(state, player, building, Verb::Salvage);
     let mut landed = 0;
     let mut applied = 0;
     for &id in units {
@@ -604,7 +603,16 @@ fn apply_repair(
     if applied == 0 {
         return Err(RejectReason::NoValidUnits);
     }
-    (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
+    if landed == 0 {
+        return Err(RejectReason::QueueFull);
+    }
+    // Eviction only on a command that actually landed: a REJECTED
+    // command must leave the world untouched (a misfiring client once
+    // cancelled its own welders with an invalid salvage), and running
+    // it after the assignment is safe because the purge only matches
+    // the OPPOSING verb.
+    purge_opposing_verb(state, player, building, Verb::Salvage);
+    Ok(())
 }
 
 /// Stripping is for standing, built, own, non-Foundry buildings —
@@ -626,7 +634,6 @@ fn apply_salvage(
     if !b.built || b.kind == crate::stats::BuildingKind::Foundry {
         return Err(RejectReason::InvalidTarget);
     }
-    purge_opposing_verb(state, player, building, Verb::Repair);
     let mut landed = 0;
     let mut applied = 0;
     for &id in units {
@@ -643,7 +650,11 @@ fn apply_salvage(
     if applied == 0 {
         return Err(RejectReason::NoValidUnits);
     }
-    (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
+    if landed == 0 {
+        return Err(RejectReason::QueueFull);
+    }
+    purge_opposing_verb(state, player, building, Verb::Repair);
+    Ok(())
 }
 
 /// The verb a repair/salvage command evicts from its target: the two
@@ -671,7 +682,11 @@ fn purge_opposing_verb(
     for unit in state.units.iter_mut().filter(|u| u.player == player) {
         unit.queue.retain(|o| !conflicts(o));
         if conflicts(&unit.order) {
+            // A looping program ROTATES the finished order to the back
+            // of the queue we just cleaned — strip it again, or a
+            // patrolling welder brings the evicted job around forever.
             unit.advance_queue();
+            unit.queue.retain(|o| !conflicts(o));
         }
     }
 }

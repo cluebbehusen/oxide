@@ -360,9 +360,22 @@ impl Game {
             }
             self.spawn_fx(&report.events);
         }
-        self.selection
-            .units
-            .retain(|id| self.state.unit(*id).is_some());
+        // Dead units leave the selection — and so do HOSTILES whose
+        // ground fog has re-covered: the panel reads live hp from the
+        // selection, and an inspection must never become a tracking
+        // beacon into the dark. (Allies stay: team sight is standing.)
+        let human = self.human;
+        let all_seeing = self.all_seeing();
+        {
+            let state = &self.state;
+            self.selection.units.retain(|id| {
+                state.unit(*id).is_some_and(|u| {
+                    !state.hostile(human, u.player) || all_seeing || {
+                        state.vision(human).visible(u.tile())
+                    }
+                })
+            });
+        }
         let state = &self.state;
         self.facing
             .retain(|id, _| state.unit(UnitId(*id)).is_some());
@@ -371,7 +384,11 @@ impl Game {
         self.aim_buildings
             .retain(|id, _| state.building(oxide_sim::BuildingId(*id)).is_some());
         if let Some(b) = self.selection.building
-            && self.state.building(b).is_none()
+            && !self.state.building(b).is_some_and(|b| {
+                !self.state.hostile(human, b.player)
+                    || all_seeing
+                    || b.tiles().any(|t| self.state.vision(human).visible(t))
+            })
         {
             self.selection.building = None;
         }

@@ -6,6 +6,7 @@
 //! transition — windowless by construction, so the whole flow drives
 //! in unit tests. The main loop keeps only drawing and session wiring.
 
+pub mod browser;
 pub mod home;
 pub mod pause;
 pub mod playback;

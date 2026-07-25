@@ -1112,3 +1112,161 @@ fn foundry_repair_bills_against_its_authored_price() {
         "one coin's worth of foundry welding, on the authored basis"
     );
 }
+
+#[test]
+fn a_rejected_command_never_evicts_the_working_crew() {
+    // A salvage with no valid units (or a full queue) is DROPPED — and
+    // a dropped command must leave the world untouched: the old order
+    // ran the eviction before validating, so a misfiring client could
+    // cancel its own welders with a lancer-only salvage click.
+    let mut scenario = arena(vec![
+        unit(0, UnitKind::Harvester, 7, 2),
+        unit(0, UnitKind::Sentinel, 8, 2),
+    ]);
+    scenario
+        .buildings
+        .push(standing(0, BuildingKind::Turret, 9, 2));
+    let mut state = scenario.build().unwrap();
+    let (welder, lancer) = (state.units()[0].id, state.units()[1].id);
+    let turret = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == BuildingKind::Turret)
+        .unwrap()
+        .id;
+    // Wound the turret with a real salvage pass, then set the welder.
+    state.tick(&[cmd(
+        0,
+        Command::Salvage {
+            units: vec![welder],
+            building: turret,
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| {
+        s.building(turret).unwrap().hp < BuildingKind::Turret.stats().max_hp
+    });
+    state.tick(&[cmd(
+        0,
+        Command::Repair {
+            units: vec![welder],
+            building: turret,
+            queue: false,
+        },
+    )]);
+    assert!(matches!(
+        state.unit(welder).unwrap().order,
+        oxide_sim::Order::Repair { .. }
+    ));
+    // A sentinel can't salvage: the command rejects — and the welder
+    // must still be welding.
+    let report = state.tick(&[cmd(
+        0,
+        Command::Salvage {
+            units: vec![lancer],
+            building: turret,
+            queue: false,
+        },
+    )]);
+    assert!(
+        report.events.iter().any(|e| matches!(
+            e,
+            Event::CommandRejected {
+                reason: RejectReason::NoValidUnits,
+                ..
+            }
+        )),
+        "test premise: the fighter-only salvage drops"
+    );
+    assert!(
+        matches!(
+            state.unit(welder).unwrap().order,
+            oxide_sim::Order::Repair { .. }
+        ),
+        "a dropped command left the welder alone"
+    );
+}
+
+#[test]
+fn eviction_reaches_a_looping_programs_rotation() {
+    // A patrolling welder's Repair leg must not come around again
+    // after salvage claims the target: advance_queue rotates the
+    // finished leg to the loop's back, and the eviction strips it
+    // there too — or the welder and stripper trade the building
+    // forever.
+    let mut scenario = arena(vec![
+        unit(0, UnitKind::Harvester, 7, 2),
+        unit(0, UnitKind::Harvester, 8, 2),
+    ]);
+    scenario
+        .buildings
+        .push(standing(0, BuildingKind::Turret, 11, 2));
+    let mut state = scenario.build().unwrap();
+    let (patroller, stripper) = (state.units()[0].id, state.units()[1].id);
+    let turret = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == BuildingKind::Turret)
+        .unwrap()
+        .id;
+    // Wound it so Repair validates, then build the looping program:
+    // patrol legs plus a queued Repair, looping on.
+    state.tick(&[cmd(
+        0,
+        Command::Salvage {
+            units: vec![stripper],
+            building: turret,
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| {
+        s.building(turret).unwrap().hp < BuildingKind::Turret.stats().max_hp
+    });
+    state.tick(&[cmd(
+        0,
+        Command::Patrol {
+            units: vec![patroller],
+            waypoints: vec![TilePos::new(3, 6), TilePos::new(9, 6)],
+        },
+    )]);
+    state.tick(&[cmd(
+        0,
+        Command::Repair {
+            units: vec![patroller],
+            building: turret,
+            queue: true,
+        },
+    )]);
+    assert!(state.unit(patroller).unwrap().looping, "premise: a loop");
+    // March the loop until the Repair leg is ACTIVE.
+    run_until(&mut state, 2000, |s, _| {
+        matches!(
+            s.unit(patroller).unwrap().order,
+            oxide_sim::Order::Repair { .. }
+        )
+    });
+    // Salvage claims the target: the active Repair leg must go AND
+    // stay gone — not rotate to the loop's back.
+    state.tick(&[cmd(
+        0,
+        Command::Salvage {
+            units: vec![stripper],
+            building: turret,
+            queue: false,
+        },
+    )]);
+    let unit = state.unit(patroller).unwrap();
+    assert!(
+        !matches!(unit.order, oxide_sim::Order::Repair { .. }),
+        "the active leg was evicted"
+    );
+    assert!(
+        !unit
+            .queue
+            .iter()
+            .any(|o| matches!(o, oxide_sim::Order::Repair { .. })),
+        "and the loop's rotation did not smuggle it back: {:?}",
+        unit.queue
+    );
+    assert!(unit.looping, "the patrol itself survives");
+}

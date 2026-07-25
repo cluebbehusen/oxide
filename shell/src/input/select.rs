@@ -162,11 +162,15 @@ pub(super) fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2, additi
             .map(|u| u.player)
             .min();
         if let Some(owner) = foreign_owner {
+            // Re-apply visibility: the box may span a fog boundary,
+            // and this owner's HIDDEN units inside it are exactly what
+            // the fog is for — one visible scout must not drag its
+            // unseen army into an inspectable selection.
             game.selection.units = game
                 .state
                 .units()
                 .iter()
-                .filter(|u| u.player == owner)
+                .filter(|u| u.player == owner && selectable(game, u))
                 .filter(inside)
                 .map(|u| u.id)
                 .collect();

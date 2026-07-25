@@ -308,22 +308,6 @@ fn draw_preview_panel(tex: &Texture2D, rows_right: f32, theme: &str) -> Option<R
     Some(Rect::new(x, y, pw, ph))
 }
 
-/// Every Foundry anchor authored on an ASCII map: `(seat, (x, y))` for
-/// each digit `1`..=`8`, in row-major order.
-fn seat_anchors(map: &[String]) -> Vec<(usize, (i32, i32))> {
-    let mut anchors = Vec::new();
-    for (y, row) in map.iter().enumerate() {
-        for (x, ch) in row.chars().enumerate() {
-            if let Some(digit) = ch.to_digit(10)
-                && (1..=8).contains(&digit)
-            {
-                anchors.push((digit as usize - 1, (x as i32, y as i32)));
-            }
-        }
-    }
-    anchors
-}
-
 /// A screenshot request parked until after this frame renders.
 struct PendingScreenshot {
     id: u64,
@@ -493,7 +477,9 @@ async fn run() -> Result<()> {
     let mut input = input::InputState::new();
     let mut injected: Vec<RawEvent> = Vec::new();
     let mut pending_shots: Vec<PendingScreenshot> = Vec::new();
-    let mut ui_view = capture_ui(&mode, &home, &wizard, &shelf, &pause, &settings, &game);
+    let mut ui_view = capture_ui(
+        &mode, &home, &wizard, &draft, &shelf, &pause, &settings, &game,
+    );
 
     loop {
         let dt = get_frame_time();
@@ -704,79 +690,39 @@ async fn run() -> Result<()> {
                 render::draw(&game, &sprites, &input);
                 veil();
                 let w = wizard.as_ref().expect("still open on Stay");
-                if w.step == WizardStep::Map {
-                    // The subtitle browses with the player: the
-                    // highlighted map's hook and badges, the pointer's
-                    // row winning over the keyboard cursor.
-                    let focus = w.menu.hover().unwrap_or(w.menu.selected);
-                    let subtitle = w
-                        .entry_at(focus)
-                        .and_then(|(_, e)| e.blurb.as_deref())
-                        .unwrap_or("machines eating a dead world");
-                    w.menu.draw(subtitle);
-                    // Fog-free preview of the highlighted map, softly
-                    // panelled on the right. The cache keys by ENTRY
-                    // index — stable whatever rows the headers claim.
-                    if let Some((idx, entry)) = w.entry_at(focus)
-                        && let Some(tex) = previews.get(idx, entry)
-                    {
-                        draw_preview_panel(tex, w.menu.rows_right_edge(), &entry.theme);
+                match w.step {
+                    WizardStep::Map => {
+                        w.browser.draw(&w.entries, &mut previews);
                     }
-                } else if matches!(w.step, WizardStep::Setup | WizardStep::SeatDetail(_)) {
-                    w.menu.draw(w.subtitle(&draft));
-                    // The setup screen answers "who is where": the same
-                    // preview, with every seat's foundry marked in its
-                    // faction color and numbered like the rows. The
-                    // human's chair rings in bone; the highlighted row's
-                    // seat rings in its accent so list and map read as
-                    // one thing.
-                    let row_index = w.entries.iter().position(|e| e.path == draft.scenario_path);
-                    if let Some(scenario) = draft.scenario.as_deref()
-                        && let Some(idx) = row_index
-                        && let Some(entry) = w.entries.get(idx)
-                        && let Some(tex) = previews.get(idx, entry)
-                        && let Some(rect) =
-                            draw_preview_panel(tex, w.menu.rows_right_edge(), &entry.theme)
-                    {
-                        let s = render::ui_scale();
-                        let map_w = scenario.map.first().map_or(1, |r| r.chars().count()) as f32;
-                        let map_h = scenario.map.len() as f32;
-                        let focus_seat = match w.step {
-                            WizardStep::SeatDetail(i) => Some(i),
-                            _ => w
-                                .menu
-                                .hover()
-                                .or(Some(w.menu.selected))
-                                .filter(|r| *r < scenario.players.len()),
-                        };
-                        for (seat, (ax, ay)) in seat_anchors(&scenario.map) {
-                            let Some(spec) = scenario.players.get(seat) else {
-                                continue;
+                    WizardStep::Setup => {
+                        w.draw_setup(&draft, &mut previews);
+                    }
+                    WizardStep::SeatDetail(_) => {
+                        w.menu.draw(w.subtitle(&draft));
+                        // The seat's dials keep the who-is-where map in
+                        // the side panel, its own marker ringed.
+                        if let Some(scenario) = draft.scenario.as_deref()
+                            && let Some((idx, entry)) = w.picked_entry(&draft)
+                            && let Some(tex) = previews.get(idx, entry)
+                            && let Some(rect) =
+                                draw_preview_panel(tex, w.menu.rows_right_edge(), &entry.theme)
+                        {
+                            let focus = match w.step {
+                                WizardStep::SeatDetail(i) => Some(i),
+                                _ => None,
                             };
-                            // Foundry anchors are the 2x2's top-left;
-                            // mark its center.
-                            let px = rect.x + (ax as f32 + 1.0) / map_w * rect.w;
-                            let py = rect.y + (ay as f32 + 1.0) / map_h * rect.h;
-                            let accent = render::faction_accent(spec.faction);
-                            if seat == draft.seat_choice {
-                                draw_circle_lines(px, py, 9.0 * s, 2.0, WHITE);
-                            } else if focus_seat == Some(seat) {
-                                draw_circle_lines(px, py, 9.0 * s, 1.5, accent);
-                            }
-                            draw_circle(px, py, 6.5 * s, accent);
-                            let label = format!("{}", seat + 1);
-                            let tw = measure_text(&label, None, (12.0 * s) as u16, 1.0).width;
-                            draw_text(
-                                &label,
-                                px - tw * 0.5,
-                                py + 4.0 * s,
-                                12.0 * s,
-                                Color::from_rgba(20, 20, 24, 255),
+                            screens::wizard::draw_seat_markers(
+                                scenario,
+                                rect,
+                                draft.seat_choice,
+                                focus,
+                                render::ui_scale(),
                             );
                         }
                     }
-                } else {
-                    w.menu.draw(w.subtitle(&draft));
+                    _ => {
+                        w.menu.draw(w.subtitle(&draft));
+                    }
                 }
                 if let Some((msg, until)) = &menu_notice {
                     if get_time() < *until {
@@ -1016,7 +962,9 @@ async fn run() -> Result<()> {
         if std::mem::discriminant(&mode) != mode_before {
             input.reset_transient();
         }
-        ui_view = capture_ui(&mode, &home, &wizard, &shelf, &pause, &settings, &game);
+        ui_view = capture_ui(
+            &mode, &home, &wizard, &draft, &shelf, &pause, &settings, &game,
+        );
 
         // The mixer serves whichever session is on screen: a playback
         // viewer queues its own sounds on its own game, and draining the
@@ -1108,10 +1056,12 @@ fn keep_flags(mut fresh: Game, old: &Game) -> Game {
     fresh
 }
 
+#[allow(clippy::too_many_arguments)]
 fn capture_ui(
     mode: &Mode,
     home: &screens::home::HomeScreen,
     wizard: &Option<Wizard>,
+    draft: &NewMatchDraft,
     shelf: &Option<screens::shelf::Shelf>,
     pause: &Option<screens::pause::PauseScreen>,
     settings: &Option<screens::settings::SettingsScreen>,
@@ -1139,6 +1089,24 @@ fn capture_ui(
             pause.as_ref().map(|p| &p.menu),
         ),
     };
+    // The wizard's custom screens (grid, setup) speak the same
+    // protocol surface the row menus do — automation keeps its
+    // footing across redesigns.
+    if let (Mode::Wizard, Some(w)) = (mode, wizard.as_ref())
+        && matches!(w.step, WizardStep::Map | WizardStep::Setup)
+    {
+        let (title, items, selected) = w.ui_surface(draft);
+        let len = items.len();
+        return UiView {
+            mode: w.mode_name().to_string(),
+            title: Some(title),
+            selected: Some(selected),
+            items,
+            visible_range: Some([0, len]),
+            hover: None,
+            chrome: None,
+        };
+    }
     UiView {
         mode: mode_name.to_string(),
         title: menu.map(|menu| menu.title.clone()),
@@ -1536,12 +1504,6 @@ mod tests {
         let mut draft = team_draft();
         draft.seats.truncate(2);
         assert!(launch(&draft).is_err());
-    }
-
-    #[test]
-    fn seat_anchors_reads_the_authored_digits() {
-        let map: Vec<String> = vec!["####".into(), "#1.#".into(), "#.2#".into()];
-        assert_eq!(seat_anchors(&map), vec![(0, (1, 1)), (1, (2, 2))]);
     }
 
     #[test]
