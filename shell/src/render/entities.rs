@@ -176,6 +176,11 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
             let screen = game
                 .camera
                 .to_screen(vec2(ghost.anchor.x as f32, ghost.anchor.y as f32));
+            // A remembered hostile twin keeps its dark border (scaled
+            // with the memory's fade): a translucent own-faction sprite
+            // is also how the player's own construction sites draw, and
+            // a memory must never masquerade as one of those.
+            let twin_border = allegiance_cue(game, ghost.owner) == AllegianceCue::HostileTwin;
             // A remembered site stays translucent scaffolding until its
             // completion has actually been observed.
             let tint = if ghost.built {
@@ -216,6 +221,16 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                         source: Some(sprites.turret_barrel(faction)),
                         ..Default::default()
                     },
+                );
+            }
+            if twin_border {
+                draw_rectangle_lines(
+                    screen.x,
+                    screen.y,
+                    w as f32 * zoom,
+                    h as f32 * zoom,
+                    3.0,
+                    Color::new(0.05, 0.05, 0.07, 0.7 * fade),
                 );
             }
         }

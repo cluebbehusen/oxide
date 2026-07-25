@@ -185,8 +185,11 @@ pub(crate) fn draw_minimap(game: &Game) {
         for ghost in vision.ghosts() {
             let (w, h) = ghost.kind.stats().size;
             let age = memory_age(game, (ghost.anchor.x, ghost.anchor.y));
+            // Through the allegiance cue like every live marker: a
+            // remembered hostile twin must keep its dark press, or the
+            // cue vanishes exactly when the player plans from memory.
             let color = stale_toward(
-                dim(mini_faction_color(game.state.player(ghost.owner).faction)),
+                dim(mini_entity_color(game, ghost.owner)),
                 dim(MINI_GROUND),
                 age,
             );
