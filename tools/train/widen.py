@@ -18,6 +18,8 @@ Usage:
 import argparse
 import json
 
+import torch
+
 # The v5 contract this bridge widens TO. Kept as explicit literals so
 # a rerun against the wrong source fails loudly instead of stacking.
 SRC_VERSION = 4
@@ -35,7 +37,17 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument(
+        "--ckpt",
+        action="store_true",
+        help="widen a float .pt checkpoint (explorable new action) "
+        "instead of a quantized .json artifact (unreachable new action)",
+    )
     args = ap.parse_args()
+
+    if args.ckpt:
+        widen_ckpt(args.src, args.out)
+        return
 
     with open(args.src) as f:
         art = json.load(f)
@@ -76,6 +88,44 @@ def main() -> None:
         json.dump(art, f)
         f.write("\n")
     print(f"widened v{SRC_VERSION} -> v{DST_VERSION}: {args.out}")
+
+
+def widen_ckpt(src: str, out: str) -> None:
+    """Widens a v4 FLOAT checkpoint to the v5 shape for training: the
+    new feature column enters at zero weight, and the new action row
+    enters at zero weight and ZERO bias — reachable, so PPO can
+    explore the verb (the shipped artifact's unreachable floor is the
+    opposite choice, made for the opposite reason)."""
+    blob = torch.load(src, map_location="cpu", weights_only=True)
+    if not (isinstance(blob, dict) and "state" in blob):
+        raise SystemExit("expected a save_policy blob with arch + state")
+    recorded = blob.get("gym_version")
+    if recorded is not None and recorded != SRC_VERSION:
+        raise SystemExit(
+            f"checkpoint speaks gym v{recorded}, widen expects v{SRC_VERSION}"
+        )
+    state = blob["state"]
+    first = "trunk.0.weight"
+    w = state[first]
+    if w.shape[1] != SRC_FEATURES + 3:
+        raise SystemExit(
+            f"first layer reads {w.shape[1]} inputs, expected {SRC_FEATURES + 3}"
+        )
+    for idx in sorted(NEW_FEATURE_SCALES):
+        zero_col = torch.zeros(w.shape[0], 1, dtype=w.dtype)
+        w = torch.cat([w[:, :idx], zero_col, w[:, idx:]], dim=1)
+    state[first] = w
+    pi_w, pi_b = state["pi.weight"], state["pi.bias"]
+    if pi_w.shape[0] != SRC_ACTIONS:
+        raise SystemExit(f"head emits {pi_w.shape[0]} logits, expected {SRC_ACTIONS}")
+    grow = DST_ACTIONS - SRC_ACTIONS
+    state["pi.weight"] = torch.cat(
+        [pi_w, torch.zeros(grow, pi_w.shape[1], dtype=pi_w.dtype)]
+    )
+    state["pi.bias"] = torch.cat([pi_b, torch.zeros(grow, dtype=pi_b.dtype)])
+    blob["gym_version"] = DST_VERSION
+    torch.save(blob, out)
+    print(f"widened checkpoint v{SRC_VERSION} -> v{DST_VERSION}: {out}")
 
 
 if __name__ == "__main__":
