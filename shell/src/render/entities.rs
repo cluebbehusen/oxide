@@ -40,6 +40,73 @@ pub(crate) fn draw_placement_ghost(game: &Game, sprites: &Sprites, input: &Input
 /// Queued waypoints of the selection, drawn as a faint chain; a patrol
 /// closes the loop. While arming a patrol (`R`), the collected route
 /// draws in scrap-amber instead.
+/// The screen-space waypoints one selected unit's program draws — pure,
+/// so the fog rules are testable: a FOREIGN unit yields no points at
+/// all (an ally's or enemy's order chain is intent the viewer has no
+/// license to read — fog holds positions, never plans), and own goals
+/// draw only on explored ground (the harvest brain can retarget to a
+/// node the player has never seen). Each verb speaks its own color:
+/// bone walks, danger fights, scrap-gold harvests, patina builds,
+/// welds, and strips.
+pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(Vec2, Color)> {
+    if unit.player != game.human {
+        return Vec::new();
+    }
+    let verb_color = |order: &oxide_sim::Order| match order {
+        oxide_sim::Order::Move { .. } => BONE_FAINT,
+        oxide_sim::Order::AttackMove { .. } | oxide_sim::Order::Attack { .. } => {
+            Color::new(0.85, 0.32, 0.29, 0.55)
+        }
+        oxide_sim::Order::Harvest { .. } => Color::new(0.85, 0.64, 0.25, 0.55),
+        oxide_sim::Order::Build { .. }
+        | oxide_sim::Order::Repair { .. }
+        | oxide_sim::Order::Salvage { .. } => Color::new(0.25, 0.58, 0.51, 0.55),
+        oxide_sim::Order::Idle => BONE_FAINT,
+    };
+    let goal_of = |order: &oxide_sim::Order| {
+        let goal = match order {
+            oxide_sim::Order::Move { goal } | oxide_sim::Order::AttackMove { goal } => *goal,
+            oxide_sim::Order::Harvest { node } => *node,
+            oxide_sim::Order::Build { site } => game.state.building(*site)?.anchor,
+            oxide_sim::Order::Repair { building } | oxide_sim::Order::Salvage { building } => {
+                game.state.building(*building)?.anchor
+            }
+            oxide_sim::Order::Attack { target, .. } => {
+                // A chase target draws only while its ground is
+                // seen — the victim may have slipped back into fog.
+                let tile = match target {
+                    oxide_sim::Target::Unit(uid) => game.state.unit(*uid)?.tile(),
+                    oxide_sim::Target::Building(bid) => game.state.building(*bid)?.anchor,
+                };
+                if game.all_seeing() || game.my_vision().visible(tile) {
+                    return Some((tile, verb_color(order)));
+                }
+                return None;
+            }
+            oxide_sim::Order::Idle => return None,
+        };
+        (game.all_seeing() || game.my_vision().explored(goal)).then_some((goal, verb_color(order)))
+    };
+    let mut points: Vec<(Vec2, Color)> = Vec::new();
+    if let Some((g, c)) = goal_of(&unit.order) {
+        points.push((
+            game.camera
+                .to_screen(vec2(g.x as f32 + 0.5, g.y as f32 + 0.5)),
+            c,
+        ));
+    }
+    for order in &unit.queue {
+        if let Some((g, c)) = goal_of(order) {
+            points.push((
+                game.camera
+                    .to_screen(vec2(g.x as f32 + 0.5, g.y as f32 + 0.5)),
+                c,
+            ));
+        }
+    }
+    points
+}
+
 pub(crate) fn draw_breadcrumbs(game: &Game, input: &InputState) {
     let dot = |p: Vec2, color: Color| draw_circle(p.x, p.y, 3.0, color);
     if let Some(route) = &input.patrol_route {
@@ -60,65 +127,7 @@ pub(crate) fn draw_breadcrumbs(game: &Game, input: &InputState) {
         let Some(unit) = game.state.unit(*id) else {
             continue;
         };
-        // Only explored targets draw: the harvest brain can retarget to a
-        // node the player has never seen, and a breadcrumb there would
-        // leak it through the fog. Each verb speaks its own color: bone
-        // walks, danger fights, scrap-gold harvests, patina builds and
-        // welds — the program reads at a glance instead of as one gray
-        // chain.
-        let verb_color = |order: &oxide_sim::Order| match order {
-            oxide_sim::Order::Move { .. } => BONE_FAINT,
-            oxide_sim::Order::AttackMove { .. } | oxide_sim::Order::Attack { .. } => {
-                Color::new(0.85, 0.32, 0.29, 0.55)
-            }
-            oxide_sim::Order::Harvest { .. } => Color::new(0.85, 0.64, 0.25, 0.55),
-            oxide_sim::Order::Build { .. }
-            | oxide_sim::Order::Repair { .. }
-            | oxide_sim::Order::Salvage { .. } => Color::new(0.25, 0.58, 0.51, 0.55),
-            oxide_sim::Order::Idle => BONE_FAINT,
-        };
-        let goal_of = |order: &oxide_sim::Order| {
-            let goal = match order {
-                oxide_sim::Order::Move { goal } | oxide_sim::Order::AttackMove { goal } => *goal,
-                oxide_sim::Order::Harvest { node } => *node,
-                oxide_sim::Order::Build { site } => game.state.building(*site)?.anchor,
-                oxide_sim::Order::Repair { building } | oxide_sim::Order::Salvage { building } => {
-                    game.state.building(*building)?.anchor
-                }
-                oxide_sim::Order::Attack { target, .. } => {
-                    // A chase target draws only while its ground is
-                    // seen — the victim may have slipped back into fog.
-                    let tile = match target {
-                        oxide_sim::Target::Unit(uid) => game.state.unit(*uid)?.tile(),
-                        oxide_sim::Target::Building(bid) => game.state.building(*bid)?.anchor,
-                    };
-                    if game.all_seeing() || game.my_vision().visible(tile) {
-                        return Some((tile, verb_color(order)));
-                    }
-                    return None;
-                }
-                oxide_sim::Order::Idle => return None,
-            };
-            (game.all_seeing() || game.my_vision().explored(goal))
-                .then_some((goal, verb_color(order)))
-        };
-        let mut points: Vec<(Vec2, Color)> = Vec::new();
-        if let Some((g, c)) = goal_of(&unit.order) {
-            points.push((
-                game.camera
-                    .to_screen(vec2(g.x as f32 + 0.5, g.y as f32 + 0.5)),
-                c,
-            ));
-        }
-        for order in &unit.queue {
-            if let Some((g, c)) = goal_of(order) {
-                points.push((
-                    game.camera
-                        .to_screen(vec2(g.x as f32 + 0.5, g.y as f32 + 0.5)),
-                    c,
-                ));
-            }
-        }
+        let points = breadcrumb_points(game, unit);
         if points.is_empty() {
             continue;
         }
@@ -874,7 +883,9 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
     };
 
     for id in game.selection.units.iter().take(DECOR_CAP) {
-        if let Some(unit) = game.state.unit(*id) {
+        if let Some(unit) = game.state.unit(*id)
+            && unit.player == game.human
+        {
             let world = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
             unit_rings(world, unit.kind.stats());
         }

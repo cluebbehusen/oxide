@@ -378,7 +378,7 @@ fn a_shift_click_on_the_wounded_wall_queues_the_weld_not_the_rat() {
         \"seed\": 7,
         \"players\": [
             {\"name\": \"F\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false},
-            {\"name\": \"C\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": false}
+            {\"name\": \"C\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true}
         ],
         \"map\": [
             \"####################\",
@@ -571,4 +571,183 @@ fn the_armed_salvage_verb_strips_by_click_and_refuses_the_foundry() {
         game.pending
     );
     assert!(!input.salvaging, "a plain click finishes the job");
+}
+
+/// A 2v1 team scenario: the human and a configured bot ally on one
+/// team, a lone enemy on the other — the readability tests' stage.
+fn team_game() -> Game {
+    let scenario = oxide_sim::Scenario::from_json(
+        "{
+        \"name\": \"team stage\",
+        \"seed\": 9,
+        \"players\": [
+            {\"name\": \"me\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false, \"team\": 1},
+            {\"name\": \"pal\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true, \"team\": 1,
+             \"bot_config\": {\"level\": \"easy\"}},
+            {\"name\": \"foe\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true}
+        ],
+        \"map\": [
+            \"########################\",
+            \"#......................#\",
+            \"#..1...................#\",
+            \"#......................#\",
+            \"#..2...................#\",
+            \"#......................#\",
+            \"#..................3...#\",
+            \"#......................#\",
+            \"########################\"
+        ],
+        \"units\": [
+            {\"player\": 0, \"kind\": \"harvester\", \"x\": 7, \"y\": 2},
+            {\"player\": 1, \"kind\": \"harvester\", \"x\": 7, \"y\": 4},
+            {\"player\": 2, \"kind\": \"scuttler\", \"x\": 9, \"y\": 3}
+        ]
+    }",
+    )
+    .expect("team stage parses");
+    Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("builds")
+}
+
+#[test]
+fn an_ally_selection_reads_its_orders_but_takes_none() {
+    let mut game = team_game();
+    let mut input = InputState::new();
+    let ally = game.state.units()[1].id;
+    let pos = game.state.units()[1].pos;
+    let screen = game
+        .camera
+        .to_screen(vec2(pos.x.to_num::<f32>(), pos.y.to_num::<f32>()));
+    apply_events(&mut game, &mut input, &click(screen.x, screen.y));
+    assert_eq!(game.selection.units, vec![ally], "allies are selectable");
+
+    // The panel is read-only: no command cards; a single ally shows
+    // its order chips.
+    let panel = crate::panel::build(&game, &input.bindings).expect("a panel");
+    assert!(panel.cards.is_empty(), "no verbs on an ally panel");
+    assert!(!panel.queue.is_empty(), "the ally's orders show");
+    assert_eq!(
+        panel.faction,
+        oxide_sim::Faction::Cupric,
+        "its colors, not mine"
+    );
+
+    // Every command path refuses: right-click stages nothing…
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::MouseDown {
+            button: MouseButton::Right,
+            x: screen.x + 60.0,
+            y: screen.y,
+        }],
+    );
+    assert!(game.pending.is_empty(), "ally units take no orders");
+    // …and group assignment drops the foreign pick.
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::Ctrl },
+            RawEvent::KeyDown { key: Key::Num1 },
+            RawEvent::KeyUp { key: Key::Num1 },
+            RawEvent::KeyUp { key: Key::Ctrl },
+        ],
+    );
+    assert!(input.groups[0].is_empty(), "no ally in a control group");
+}
+
+#[test]
+fn a_hostile_selection_inspects_and_leaks_nothing() {
+    let mut game = team_game();
+    let mut input = InputState::new();
+    let foe = game.state.units()[2].id;
+    let pos = game.state.units()[2].pos;
+    assert!(
+        game.my_vision().visible(game.state.units()[2].tile()),
+        "test premise: the raider stands in sight"
+    );
+    let screen = game
+        .camera
+        .to_screen(vec2(pos.x.to_num::<f32>(), pos.y.to_num::<f32>()));
+    apply_events(&mut game, &mut input, &click(screen.x, screen.y));
+    assert_eq!(game.selection.units, vec![foe], "a visible foe inspects");
+
+    // hp and kind only: zero cards, zero chips — order state is intent
+    // the fog never licensed.
+    let panel = crate::panel::build(&game, &input.bindings).expect("a panel");
+    assert!(panel.cards.is_empty(), "no verbs on a hostile panel");
+    assert!(panel.queue.is_empty(), "no order chips on a hostile panel");
+
+    // And no breadcrumbs, whatever program the enemy runs.
+    let unit = game.state.unit(foe).unwrap();
+    assert!(
+        crate::render::entities::breadcrumb_points(&game, unit).is_empty(),
+        "a foreign program draws no waypoints"
+    );
+}
+
+#[test]
+fn a_selection_never_mixes_allegiances() {
+    let mut game = team_game();
+    let mut input = InputState::new();
+    let (mine, ally) = (game.state.units()[0].id, game.state.units()[1].id);
+    let my_pos = game.state.units()[0].pos;
+    let ally_pos = game.state.units()[1].pos;
+    let my_screen = game
+        .camera
+        .to_screen(vec2(my_pos.x.to_num::<f32>(), my_pos.y.to_num::<f32>()));
+    let ally_screen = game
+        .camera
+        .to_screen(vec2(ally_pos.x.to_num::<f32>(), ally_pos.y.to_num::<f32>()));
+    // Own selected, shift-click the ally: REPLACE, never merge.
+    apply_events(&mut game, &mut input, &click(my_screen.x, my_screen.y));
+    assert_eq!(game.selection.units, vec![mine]);
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::Shift },
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: ally_screen.x,
+                y: ally_screen.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: ally_screen.x,
+                y: ally_screen.y,
+            },
+            RawEvent::KeyUp { key: Key::Shift },
+        ],
+    );
+    assert_eq!(
+        game.selection.units,
+        vec![ally],
+        "a different owner replaces the selection"
+    );
+    // A box over both takes the OWN units only.
+    let a = game.camera.to_screen(vec2(6.0, 1.5));
+    let b = game.camera.to_screen(vec2(9.0, 5.0));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: a.x,
+                y: a.y,
+            },
+            RawEvent::MouseMove { x: b.x, y: b.y },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: b.x,
+                y: b.y,
+            },
+        ],
+    );
+    assert_eq!(
+        game.selection.units,
+        vec![mine],
+        "a mixed box keeps only what the player can command"
+    );
 }

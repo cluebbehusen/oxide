@@ -61,7 +61,10 @@ pub(crate) fn draw_panel(
         Color::new(0.6, 0.6, 0.65, 0.4),
     );
 
-    let faction = game.state.player(game.human).faction;
+    // The panel says whose colors it wears: an inspected ally or
+    // enemy draws in its owner's faction, not the viewer's. Own
+    // panels carry the human's faction, so roster cards stay right.
+    let faction = panel.faction;
     let icon_source = |icon: &CardIcon| match icon {
         CardIcon::Unit(kind) => Some(sprites.unit(*kind, faction)),
         CardIcon::Building(kind) => Some(sprites.building(*kind, faction)),

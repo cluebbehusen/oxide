@@ -94,6 +94,10 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         }
         return;
     }
+    if !game.selection_commandable() {
+        game.toast("ally units are read-only");
+        return;
+    }
     let units = game.selection.units.clone();
     let has_harvester = units.iter().any(|id| {
         game.state

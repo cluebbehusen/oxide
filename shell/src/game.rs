@@ -30,9 +30,11 @@ pub use oxide_kit::GameReplay;
 /// What the player currently has selected.
 #[derive(Default)]
 pub struct Selection {
-    /// Selected own units.
+    /// Selected units — single-allegiance by construction (own for
+    /// command, ally/enemy for read-only inspection).
     pub units: Vec<UnitId>,
-    /// Selected own building (mutually exclusive with units in practice).
+    /// Selected building of any owner (mutually exclusive with units
+    /// in practice); commands validate ownership at their own gates.
     pub building: Option<BuildingId>,
 }
 
@@ -149,7 +151,26 @@ impl Game {
         let state = scenario.build()?;
         let bots = seat_bots(&scenario);
         let recorder = Replay::new(SIM_VERSION, scenario.clone());
-        let human = PlayerId(0);
+        // The human is the scenario's single non-bot seat — seat choice
+        // never permutes seats (parity carries factions, teams, and the
+        // automation harness), it just moves which chair the human
+        // takes. Anything but exactly one non-bot seat is a malformed
+        // session, and a bot seat without a config would fall to the
+        // team-blind classic bot on team maps.
+        let humans: Vec<PlayerId> = scenario
+            .players
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| !p.bot)
+            .map(|(i, _)| PlayerId(i as u8))
+            .collect();
+        let human = match humans.as_slice() {
+            [seat] => *seat,
+            _ => anyhow::bail!(
+                "a session wants exactly one non-bot seat, got {}",
+                humans.len()
+            ),
+        };
         let focus = state
             .buildings()
             .iter()
@@ -467,6 +488,17 @@ impl Game {
         } else {
             (self.accum / TICK_DT).clamp(0.0, 1.0)
         }
+    }
+
+    /// Whether the current unit selection is the human's to command.
+    /// Empty selections read as own (nothing to gate); a foreign
+    /// selection is read-only everywhere a verb would act.
+    pub fn selection_commandable(&self) -> bool {
+        self.selection
+            .units
+            .first()
+            .and_then(|id| self.state.unit(*id))
+            .is_none_or(|u| u.player == self.human)
     }
 
     /// Stages a command from the local player for the next tick.

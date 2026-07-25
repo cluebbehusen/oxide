@@ -77,7 +77,7 @@ pub fn staleness_fade(age: f32) -> f32 {
 }
 
 mod chrome;
-mod entities;
+pub(crate) mod entities;
 mod minimap;
 mod panel_draw;
 mod world;
@@ -272,36 +272,49 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             // The body rides visibly above its shadow.
             screen.y -= zoom * 0.18;
         }
-        let selected = game.selection.units.contains(&unit.id);
-        if selected {
-            draw_circle_lines(
+        // The allegiance cue draws UNCONDITIONALLY — selection must
+        // never repaint a foe as a friend by swallowing its ring.
+        match allegiance_cue(game, unit.player) {
+            // Teammates wear a soft whitened ring — same language
+            // as the minimap's ally lift.
+            AllegianceCue::Ally => draw_circle_lines(
                 screen.x,
                 screen.y,
-                unit.kind.stats().radius.to_num::<f32>() * zoom + 4.0,
-                2.0,
-                BONE,
-            );
-        } else {
-            match allegiance_cue(game, unit.player) {
-                // Teammates wear a soft whitened ring — same language
-                // as the minimap's ally lift.
-                AllegianceCue::Ally => draw_circle_lines(
+                unit.kind.stats().radius.to_num::<f32>() * zoom + 3.0,
+                1.5,
+                Color::new(0.95, 0.95, 0.9, 0.55),
+            ),
+            // The mirror case rings dark: luminance says foe where
+            // tint cannot, whatever the viewer's color vision.
+            AllegianceCue::HostileTwin => draw_circle_lines(
+                screen.x,
+                screen.y,
+                unit.kind.stats().radius.to_num::<f32>() * zoom + 3.0,
+                1.5,
+                Color::new(0.05, 0.05, 0.07, 0.7),
+            ),
+            AllegianceCue::Mine | AllegianceCue::Hostile => {}
+        }
+        if game.selection.units.contains(&unit.id) {
+            if unit.player == game.human {
+                draw_circle_lines(
                     screen.x,
                     screen.y,
-                    unit.kind.stats().radius.to_num::<f32>() * zoom + 3.0,
-                    1.5,
-                    Color::new(0.95, 0.95, 0.9, 0.55),
-                ),
-                // The mirror case rings dark: luminance says foe where
-                // tint cannot, whatever the viewer's color vision.
-                AllegianceCue::HostileTwin => draw_circle_lines(
+                    unit.kind.stats().radius.to_num::<f32>() * zoom + 4.0,
+                    2.0,
+                    BONE,
+                );
+            } else {
+                // Inspected, not commanded: a fainter ring outside the
+                // allegiance cue — "selected" and "mine" stay
+                // different claims.
+                draw_circle_lines(
                     screen.x,
                     screen.y,
-                    unit.kind.stats().radius.to_num::<f32>() * zoom + 3.0,
+                    unit.kind.stats().radius.to_num::<f32>() * zoom + 5.5,
                     1.5,
-                    Color::new(0.05, 0.05, 0.07, 0.7),
-                ),
-                AllegianceCue::Mine | AllegianceCue::Hostile => {}
+                    BONE_FAINT,
+                );
             }
         }
         // A recent shot owns the heading: the mount tracks its victim
