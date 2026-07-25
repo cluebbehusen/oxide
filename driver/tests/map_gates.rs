@@ -42,6 +42,12 @@ fn every_map_carries_complete_metadata() {
             meta.pace
         );
         assert!(!meta.mode.is_empty(), "{name}: mode missing");
+        assert!(
+            matches!(meta.richness.as_str(), "lean" | "standard" | "rich"),
+            "{name}: richness '{}' is not a recognized label (an empty \
+             one once rendered a dangling badge separator in the map list)",
+            meta.richness
+        );
         assert!(!meta.theme.is_empty(), "{name}: theme missing");
     }
 }

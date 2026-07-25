@@ -266,6 +266,7 @@
   "hook": "Three lanes, one verdict: hold yours, break another.",
   "pace": "vast",
   "mode": "3v3",
-  "theme": "basalt"
+  "theme": "basalt",
+  "richness": "standard"
  }
 }

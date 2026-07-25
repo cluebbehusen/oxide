@@ -386,10 +386,16 @@ pub fn discover_scenarios() -> Vec<ScenarioEntry> {
         paths.sort();
         for path in paths {
             if let Ok(scenario) = Scenario::load(&path) {
-                let blurb = scenario
-                    .meta
-                    .as_ref()
-                    .map(|m| format!("{}  [{} - {} - {}]", m.hook, m.pace, m.mode, m.richness));
+                let blurb = scenario.meta.as_ref().map(|m| {
+                    // Only badges that exist: a missing field must
+                    // not render as a dangling separator.
+                    let badges: Vec<&str> = [&m.pace, &m.mode, &m.richness]
+                        .into_iter()
+                        .filter(|s| !s.is_empty())
+                        .map(String::as_str)
+                        .collect();
+                    format!("{}  [{}]", m.hook, badges.join(" - "))
+                });
                 let theme = scenario
                     .meta
                     .as_ref()

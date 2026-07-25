@@ -131,6 +131,7 @@
   "hook": "A mountain wall splits a continent; the doors decide it.",
   "pace": "vast",
   "mode": "1v1",
-  "theme": "basalt"
+  "theme": "basalt",
+  "richness": "standard"
  }
 }

@@ -344,6 +344,7 @@
   "hook": "Eight foundries on four fronts; the doors carry the war.",
   "pace": "vast",
   "mode": "4v4",
-  "theme": "basalt"
+  "theme": "basalt",
+  "richness": "standard"
  }
 }
