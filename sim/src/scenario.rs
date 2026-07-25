@@ -198,6 +198,30 @@ impl Scenario {
             .expect("embedded skirmish scenario is validated by tests")
     }
 
+    /// Moves a seat onto a roster: swaps the faction, keeps any
+    /// faction-derived name honest ("North West Cupric" retints to
+    /// "North West Ferrous"), and remaps the seat's authored starting
+    /// units through their role so faction-bound kinds survive the
+    /// flip. Name collisions are the caller's to resolve — two seats
+    /// may legitimately end up on one roster.
+    pub fn retint_seat(&mut self, seat: usize, faction: Faction) {
+        let label = |f: Faction| match f {
+            Faction::Ferrous => "Ferrous",
+            Faction::Cupric => "Cupric",
+        };
+        let Some(player) = self.players.get_mut(seat) else {
+            return;
+        };
+        if player.faction == faction {
+            return;
+        }
+        player.name = player.name.replace(label(player.faction), label(faction));
+        player.faction = faction;
+        for unit in self.units.iter_mut().filter(|u| u.player as usize == seat) {
+            unit.kind = unit.kind.role().unit_for(faction);
+        }
+    }
+
     /// Validates the scenario and constructs the initial [`State`].
     ///
     /// Building the same scenario twice yields bit-identical states (a test
@@ -374,6 +398,43 @@ mod tests {
         assert_eq!(a.buildings.len(), 2);
         assert_eq!(a.units.len(), 8);
         assert!(a.players.iter().all(|p| p.scrap > 0));
+    }
+
+    #[test]
+    fn retint_swaps_roster_name_and_faction_bound_kinds() {
+        let mut scenario = Scenario::skirmish();
+        // A faction-bound starter proves the role remap.
+        scenario.units.push(UnitSpec {
+            player: 1,
+            kind: UnitKind::Stinger,
+            x: 3,
+            y: 3,
+        });
+        let old_name = scenario.players[1].name.clone();
+        assert_eq!(scenario.players[1].faction, Faction::Cupric);
+        scenario.retint_seat(1, Faction::Ferrous);
+        assert_eq!(scenario.players[1].faction, Faction::Ferrous);
+        assert_ne!(
+            scenario.players[1].name, old_name,
+            "a faction-derived name follows the roster"
+        );
+        assert!(
+            scenario
+                .units
+                .iter()
+                .filter(|u| u.player == 1)
+                .all(|u| u.kind.faction() != Some(Faction::Cupric)),
+            "no seat keeps the other roster's kinds"
+        );
+        assert!(
+            scenario.units.iter().any(|u| u.kind == UnitKind::Flakhound),
+            "the stinger crossed to its ferrous role twin"
+        );
+        // Same faction again: a no-op, not a name churn.
+        let name = scenario.players[1].name.clone();
+        scenario.retint_seat(1, Faction::Ferrous);
+        assert_eq!(scenario.players[1].name, name);
+        scenario.build().expect("a retinted scenario still builds");
     }
 
     #[test]
