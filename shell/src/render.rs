@@ -35,6 +35,39 @@ pub fn faction_accent(faction: oxide_sim::Faction) -> Color {
     }
 }
 
+/// What allegiance signal an entity owes the human viewer. Factions
+/// are two seats' worth of identity on team maps — Compass Grand pits
+/// the Ferrous human against a Ferrous seat — so the renderers key
+/// their friend-or-foe cues off this, never off sprite color alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AllegianceCue {
+    /// The viewer's own machines: no ring, plain faction color.
+    Mine,
+    /// Friendly, not yours: the whitened ring / minimap lift.
+    Ally,
+    /// A hostile wearing the viewer's own faction: the dark ring /
+    /// minimap press — luminance says foe where tint cannot.
+    HostileTwin,
+    /// An ordinary hostile: faction color already reads as enemy.
+    Hostile,
+}
+
+pub(crate) fn allegiance_cue(
+    game: &crate::game::Game,
+    owner: oxide_sim::PlayerId,
+) -> AllegianceCue {
+    if owner == game.human {
+        return AllegianceCue::Mine;
+    }
+    if !game.state.hostile(game.human, owner) {
+        return AllegianceCue::Ally;
+    }
+    if game.state.player(owner).faction == game.state.player(game.human).faction {
+        return AllegianceCue::HostileTwin;
+    }
+    AllegianceCue::Hostile
+}
+
 /// How faded a memory draws after `age` seconds unseen: 0 fresh,
 /// climbing to a 0.55 fade over ninety seconds. Memories never vanish
 /// — the player recorded them honestly — they just stop pretending to
@@ -248,17 +281,28 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                 2.0,
                 BONE,
             );
-        } else if unit.player != game.human && !game.state.hostile(game.human, unit.player) {
-            // Teammates wear a soft whitened ring — same language as the
-            // minimap's ally lift, because two teams can field the same
-            // faction and sprite color alone cannot say friend or foe.
-            draw_circle_lines(
-                screen.x,
-                screen.y,
-                unit.kind.stats().radius.to_num::<f32>() * zoom + 3.0,
-                1.5,
-                Color::new(0.95, 0.95, 0.9, 0.55),
-            );
+        } else {
+            match allegiance_cue(game, unit.player) {
+                // Teammates wear a soft whitened ring — same language
+                // as the minimap's ally lift.
+                AllegianceCue::Ally => draw_circle_lines(
+                    screen.x,
+                    screen.y,
+                    unit.kind.stats().radius.to_num::<f32>() * zoom + 3.0,
+                    1.5,
+                    Color::new(0.95, 0.95, 0.9, 0.55),
+                ),
+                // The mirror case rings dark: luminance says foe where
+                // tint cannot, whatever the viewer's color vision.
+                AllegianceCue::HostileTwin => draw_circle_lines(
+                    screen.x,
+                    screen.y,
+                    unit.kind.stats().radius.to_num::<f32>() * zoom + 3.0,
+                    1.5,
+                    Color::new(0.05, 0.05, 0.07, 0.7),
+                ),
+                AllegianceCue::Mine | AllegianceCue::Hostile => {}
+            }
         }
         // A recent shot owns the heading: the mount tracks its victim
         // for a beat, with a recoil nudge fading over the first tenth
@@ -436,5 +480,28 @@ mod tests {
             (capped - 0.55).abs() < 1e-6,
             "old memories fade to a floor, never vanish"
         );
+    }
+
+    #[test]
+    fn the_allegiance_cue_reads_teams_not_sprite_colors() {
+        // Compass Grand pits the Ferrous human (seat 0) against a
+        // Ferrous seat 4 — the exact ambiguity the cue exists for.
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../scenarios/compass-grand.json");
+        let scenario = oxide_sim::Scenario::load(&path).expect("shipped map loads");
+        let game =
+            crate::game::Game::with_viewport(scenario, macroquad::prelude::vec2(1280.0, 800.0))
+                .expect("compass grand builds");
+        use super::AllegianceCue::*;
+        let cue = |seat: u8| super::allegiance_cue(&game, oxide_sim::PlayerId(seat));
+        assert_eq!(cue(0), Mine);
+        assert_eq!(cue(1), Ally, "west Cupric teammate");
+        assert_eq!(cue(2), Ally, "west Ferrous teammate");
+        assert_eq!(
+            cue(4),
+            HostileTwin,
+            "the Ferrous foe must not read as the player's own"
+        );
+        assert_eq!(cue(5), Hostile, "the Cupric foe reads by tint alone");
     }
 }

@@ -401,6 +401,11 @@ impl Game {
         self.fx.clear();
         self.sounds_pending.clear();
         self.toasts.clear();
+        // Aim holds and recoil stamps are per-timeline: after a seek,
+        // an id that exists at the destination must not face or flash
+        // for a shot fired on the timeline we just left.
+        self.aim_units.clear();
+        self.aim_buildings.clear();
     }
 
     /// The effect clock — what aim holds and recoil age against.

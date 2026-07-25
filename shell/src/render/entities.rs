@@ -258,6 +258,19 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 ..Default::default()
             },
         );
+        // A hostile building wearing the player's own colors (team maps
+        // pit same-faction seats against each other) gets a dark border
+        // — the buildings' face of the unit ring's luminance cue.
+        if allegiance_cue(game, building.player) == AllegianceCue::HostileTwin {
+            draw_rectangle_lines(
+                screen.x,
+                screen.y,
+                dest.x,
+                dest.y,
+                3.0,
+                Color::new(0.05, 0.05, 0.07, 0.7),
+            );
+        }
         // A rising site wears its scaffold: dense lattice early, sparse
         // once the hull carries the silhouette, gone at completion.
         // Progress-keyed, so reduced motion needs no special case.
@@ -283,7 +296,14 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
         }
         if building.built && building.kind == oxide_sim::BuildingKind::Foundry {
             // The melt pool breathes: a soft faction-tinted pulse.
-            let pulse = ((get_time() * 2.6 + f64::from(building.id.0)).sin() * 0.5 + 0.5) as f32;
+            // Decorative motion — reduced motion holds it at its
+            // midpoint (which also keeps the shot suite's pinned
+            // backdrop from drifting with the wall clock).
+            let pulse = if reduced_motion() {
+                0.5
+            } else {
+                ((get_time() * 2.6 + f64::from(building.id.0)).sin() * 0.5 + 0.5) as f32
+            };
             let glow = match faction {
                 oxide_sim::Faction::Ferrous => Color::new(0.97, 0.62, 0.45, 0.10 + 0.10 * pulse),
                 oxide_sim::Faction::Cupric => Color::new(0.55, 0.87, 0.78, 0.10 + 0.10 * pulse),

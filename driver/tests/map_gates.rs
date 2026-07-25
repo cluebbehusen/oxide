@@ -29,6 +29,22 @@ fn shipped() -> Vec<(String, Scenario)> {
 }
 
 #[test]
+fn every_map_seats_a_human_and_live_opponents() {
+    // Seat 0 is the human chair; every other seat must actually play.
+    // Continental Divide once shipped with both seats bot:false — an
+    // advertised 1v1 whose opponent never harvested, trained, or moved.
+    for (name, scenario) in shipped() {
+        assert!(
+            !scenario.players[0].bot,
+            "{name}: seat 0 is the human chair"
+        );
+        for (i, seat) in scenario.players.iter().enumerate().skip(1) {
+            assert!(seat.bot, "{name}: seat {i} is a dead chair (bot: false)");
+        }
+    }
+}
+
+#[test]
 fn every_map_carries_complete_metadata() {
     for (name, scenario) in shipped() {
         let meta = scenario
