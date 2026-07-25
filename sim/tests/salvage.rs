@@ -272,6 +272,7 @@ fn foundations_bury_wrecks() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor: grave,
+            queue: false,
         },
     )]);
     assert!(
@@ -303,6 +304,7 @@ fn a_dead_building_splits_its_wreck_across_the_footprint() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor,
+            queue: false,
         },
     )]);
     assert!(

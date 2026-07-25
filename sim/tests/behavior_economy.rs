@@ -271,6 +271,7 @@ fn fabricator_gates_the_advanced_roster() {
             units: vec![builder],
             kind: BuildingKind::Fabricator,
             anchor,
+            queue: false,
         },
     )]);
     let fab = state
@@ -393,6 +394,7 @@ fn harvesters_deposit_only_at_built_foundries() {
             units: vec![worker],
             kind: BuildingKind::Turret,
             anchor,
+            queue: false,
         },
     )]);
     run_until(&mut state, 700, |s, _| {

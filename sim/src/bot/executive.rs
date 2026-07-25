@@ -232,6 +232,7 @@ impl Executive {
                                 units: vec![builder],
                                 kind: *kind,
                                 anchor: *anchor,
+                                queue: false,
                             },
                         });
                     }
@@ -340,6 +341,7 @@ impl Executive {
                             command: Command::Repair {
                                 units: vec![welder],
                                 building: *building,
+                                queue: false,
                             },
                         });
                     }

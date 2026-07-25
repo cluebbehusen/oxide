@@ -62,9 +62,14 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
                 units,
                 kind,
                 anchor,
-            } => apply_build(state, pc.player, units, *kind, *anchor),
+                queue,
+            } => apply_build(state, pc.player, units, *kind, *anchor, *queue),
             Command::Cancel { building } => apply_cancel(state, pc.player, *building, events),
-            Command::Repair { units, building } => apply_repair(state, pc.player, units, *building),
+            Command::Repair {
+                units,
+                building,
+                queue,
+            } => apply_repair(state, pc.player, units, *building, *queue),
             Command::Stop { units } => apply_stop(state, pc.player, units),
             Command::Train { building, kind } => apply_train(state, pc.player, *building, *kind),
             Command::CancelTrain { building, index } => {
@@ -437,6 +442,7 @@ fn apply_build(
     units: &[UnitId],
     kind: crate::stats::BuildingKind,
     anchor: TilePos,
+    queue: bool,
 ) -> Result<(), RejectReason> {
     if !in_envelope(state, anchor) {
         return Err(RejectReason::OutOfBounds);
@@ -450,12 +456,33 @@ fn apply_build(
         })
         .ok_or(RejectReason::NoValidUnits)?;
 
-    // Resume an existing site of ours at this anchor?
+    // Resume an existing site of ours at this anchor? Every accepted
+    // harvester joins — builders stack, and a dead builder's work is
+    // picked back up by however many hands the player sends.
     let existing = state
         .buildings
         .iter()
         .find(|b| b.anchor == anchor && b.kind == kind && b.player == player && !b.built)
         .map(|b| b.id);
+    if let Some(site) = existing {
+        let crew: Vec<UnitId> = accepted_units(state, player, units)
+            .into_iter()
+            .filter(|id| {
+                state
+                    .unit(*id)
+                    .is_some_and(|u| u.kind.stats().harvest.is_some())
+            })
+            .collect();
+        let mut landed = 0;
+        for id in crew {
+            if let Some(unit) = state.unit_mut(id)
+                && assign(unit, Order::Build { site }, queue)
+            {
+                landed += 1;
+            }
+        }
+        return (landed > 0).then_some(()).ok_or(RejectReason::QueueFull);
+    }
     let site = match existing {
         Some(site) => site,
         None => {
@@ -480,6 +507,16 @@ fn apply_build(
                 state.retract_site(site);
                 return Err(RejectReason::UnreachableGoal);
             }
+            // Assign BEFORE paying: a builder whose order queue is
+            // full must reject the whole command with the site
+            // retracted and nothing spent — the old code discarded
+            // this result and could charge for a site nobody was
+            // ordered to build.
+            let unit = state.unit_mut(builder).expect("filtered above");
+            if !assign(unit, Order::Build { site }, queue) {
+                state.retract_site(site);
+                return Err(RejectReason::QueueFull);
+            }
             state.player_mut(player).scrap -= cost;
             // The accepted foundation buries whatever wreck salvage lay
             // there (only now — a rejected site must leave no trace).
@@ -492,8 +529,7 @@ fn apply_build(
             site
         }
     };
-    let unit = state.unit_mut(builder).expect("filtered above");
-    assign(unit, Order::Build { site }, false);
+    let _ = site;
     Ok(())
 }
 
@@ -535,6 +571,7 @@ fn apply_repair(
     player: PlayerId,
     units: &[UnitId],
     building: crate::ids::BuildingId,
+    queue: bool,
 ) -> Result<(), RejectReason> {
     let b = state
         .building(building)
@@ -552,7 +589,7 @@ fn apply_repair(
             && unit.player == player
             && unit.kind.stats().harvest.is_some()
         {
-            if assign(unit, Order::Repair { building }, false) {
+            if assign(unit, Order::Repair { building }, queue) {
                 landed += 1;
             }
             applied += 1;

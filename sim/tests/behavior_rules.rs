@@ -569,6 +569,7 @@ fn losing_the_last_foundry_ends_the_match_despite_other_buildings() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor,
+            queue: false,
         },
     )]);
     run_until(&mut state, 700, |s, _| {

@@ -370,10 +370,14 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                             continue;
                         }
                         let units = game.selection.units.clone();
+                        // Shift both keeps placing AND queues the build
+                        // behind the builder's current program — chained
+                        // construction in one gesture.
                         game.issue(Command::Build {
                             units,
                             kind,
                             anchor,
+                            queue: input.resolver.shift_held(),
                         });
                         game.ping(world, PingKind::Rally);
                         // Shift keeps placing: walls go up one click at

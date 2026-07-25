@@ -250,6 +250,7 @@ impl Bot {
                     units: vec![builder],
                     kind: b.kind,
                     anchor: b.anchor,
+                    queue: false,
                 }));
             }
         }
@@ -273,6 +274,7 @@ impl Bot {
                 units: vec![builder],
                 kind: crate::stats::BuildingKind::Fabricator,
                 anchor,
+                queue: false,
             }));
         }
 
@@ -291,6 +293,7 @@ impl Bot {
                 units: vec![builder],
                 kind: crate::stats::BuildingKind::Turret,
                 anchor,
+                queue: false,
             }));
         }
 

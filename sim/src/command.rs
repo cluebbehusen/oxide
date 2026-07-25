@@ -88,13 +88,19 @@ pub enum Command {
     /// The full price is paid on placement; cancelling salvages
     /// `cost x hp / max_hp`.
     Build {
-        /// Candidate builders (the first accepted harvester builds;
-        /// the rest are ignored).
+        /// Candidate builders. Fresh placement sends the first accepted
+        /// harvester; resuming an existing site sends every accepted
+        /// harvester (builders stack).
         units: Vec<UnitId>,
         /// What to construct.
         kind: crate::stats::BuildingKind,
         /// Top-left tile of the footprint.
         anchor: TilePos,
+        /// Append behind current orders instead of replacing them.
+        /// Payment and the ground claim still happen NOW — the queue
+        /// defers only the walk-and-work leg.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        queue: bool,
     },
     /// Scrap an own unfinished site for a partial refund.
     Cancel {
@@ -108,6 +114,9 @@ pub enum Command {
         units: Vec<UnitId>,
         /// The patient.
         building: BuildingId,
+        /// Append behind current orders instead of replacing them.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        queue: bool,
     },
     /// Remove one queued unit from a producer, refunding its full cost
     /// (scrap was paid on enqueue; training spends only time). Cancelling

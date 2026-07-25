@@ -417,6 +417,7 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor,
+            queue: false,
         },
     )]);
     let turret = state
@@ -490,6 +491,7 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor,
+            queue: false,
         },
     )]);
     let turret = state
@@ -546,6 +548,7 @@ fn turret_fires_at_its_stated_cadence() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor,
+            queue: false,
         },
     )]);
     run_until(&mut state, 700, |s, _| {

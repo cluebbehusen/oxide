@@ -90,6 +90,7 @@ fn wounded_turret(
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor: TilePos::new(3, 3),
+            queue: false,
         },
     )]);
     run_until(state, 500, |_, events| {
@@ -172,6 +173,7 @@ fn harvesters_weld_wounds_shut_for_a_price() {
         Command::Repair {
             units: vec![welder],
             building: turret,
+            queue: false,
         },
     )]);
     run_until(&mut state, 600, |s, _| {
@@ -209,6 +211,7 @@ fn an_empty_bank_stalls_the_torch() {
         Command::Repair {
             units: vec![welder],
             building: turret,
+            queue: false,
         },
     )]);
     run_until(&mut state, 300, |_, events| {
@@ -258,6 +261,7 @@ fn repair_rejects_the_healthy_the_foreign_and_the_unfinished() {
             Command::Repair {
                 units: vec![builder],
                 building,
+                queue: false,
             },
         )]);
         assert!(
@@ -275,6 +279,7 @@ fn repair_rejects_the_healthy_the_foreign_and_the_unfinished() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor: TilePos::new(6, 1),
+            queue: false,
         },
     )]);
     let site = state
@@ -288,6 +293,7 @@ fn repair_rejects_the_healthy_the_foreign_and_the_unfinished() {
         Command::Repair {
             units: vec![builder],
             building: site,
+            queue: false,
         },
     )]);
     assert!(report.events.iter().any(|e| matches!(
@@ -311,6 +317,7 @@ fn reclaimers_trickle_scrap_forever() {
             units: vec![builder],
             kind: BuildingKind::Reclaimer,
             anchor: TilePos::new(5, 1),
+            queue: false,
         },
     )]);
     run_until(&mut state, 500, |_, events| {
@@ -364,6 +371,7 @@ fn reissued_repairs_still_pay_for_the_welding() {
             Command::Repair {
                 units: vec![welder],
                 building: turret,
+                queue: false,
             },
         )]);
         for _ in 0..3 {
@@ -405,6 +413,7 @@ fn the_torch_bills_its_first_scrap_the_tick_it_lights() {
         Command::Repair {
             units: vec![welder],
             building: turret,
+            queue: false,
         },
     )]);
     // The welder trained adjacent to the foundry and must walk over; give
@@ -444,6 +453,7 @@ fn the_last_coin_welds_its_whole_prepaid_interval() {
         Command::Repair {
             units: vec![welder],
             building: turret,
+            queue: false,
         },
     )]);
     run_until(&mut state, 300, |_, events| {
@@ -465,4 +475,54 @@ fn the_last_coin_welds_its_whole_prepaid_interval() {
         "one coin buys the full interval, not a single tick"
     );
     assert_eq!(state.player(PlayerId(0)).scrap, 0);
+}
+
+#[test]
+fn a_queued_repair_waits_its_turn_then_welds() {
+    // Shift-repair appends behind the current job instead of wiping it:
+    // the welder finishes its walk first, then turns to the wound.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 3, 2),
+        unit(1, UnitKind::Scuttler, 12, 6),
+        unit(1, UnitKind::Scuttler, 12, 7),
+    ])
+    .build()
+    .unwrap();
+    let (builder, r1, r2) = (
+        state.units()[0].id,
+        state.units()[1].id,
+        state.units()[2].id,
+    );
+    let (turret, welder, wounded_hp) = wounded_turret(&mut state, builder, vec![r1, r2]);
+
+    // Send the welder marching, then queue the weld behind the march.
+    let waypoint = TilePos::new(10, 2);
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![welder],
+            goal: waypoint,
+            queue: false,
+        },
+    )]);
+    state.tick(&[cmd(
+        0,
+        Command::Repair {
+            units: vec![welder],
+            building: turret,
+            queue: true,
+        },
+    )]);
+    assert!(
+        matches!(state.unit(welder).unwrap().order, Order::Move { .. }),
+        "the march survives the shift-repair"
+    );
+    assert_eq!(state.unit(welder).unwrap().queue.len(), 1);
+    // The march lands, the weld begins, the wound closes.
+    run_until(&mut state, 400, |s, _| {
+        s.unit(welder).unwrap().tile() == waypoint
+    });
+    run_until(&mut state, 2_000, |s, _| {
+        s.building(turret).unwrap().hp > wounded_hp
+    });
 }

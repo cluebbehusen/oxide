@@ -151,6 +151,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         game.issue(Command::Repair {
             units,
             building: building.id,
+            queue,
         });
         game.ping(world, PingKind::Harvest);
         return;

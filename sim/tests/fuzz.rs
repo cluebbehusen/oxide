@@ -80,6 +80,7 @@ fn command(rng: &mut Pcg32) -> PlayerCommand {
                 oxide_sim::stats::BuildingKind::Foundry // must reject
             },
             anchor: tile(rng),
+            queue: false,
         },
         9 => Command::Cancel {
             building: BuildingId(rng.next_below(12)),
