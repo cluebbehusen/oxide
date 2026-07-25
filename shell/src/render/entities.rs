@@ -152,6 +152,18 @@ pub(crate) fn draw_breadcrumbs(game: &Game, input: &InputState) {
 
 pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
     let zoom = game.camera.zoom;
+    // Buildings an own crew is actively stripping (the salvage
+    // read-back's fog-safe evidence).
+    let salvaging: Vec<oxide_sim::BuildingId> = game
+        .state
+        .units()
+        .iter()
+        .filter(|u| u.player == game.human)
+        .filter_map(|u| match u.order {
+            oxide_sim::Order::Salvage { building } => Some(building),
+            _ => None,
+        })
+        .collect();
     // Live enemy buildings only where we have sight; remembered ghosts
     // cover explored-but-unseen ground (skipped in the omniscient overlay).
     if !game.all_seeing() {
@@ -473,13 +485,53 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 BONE,
             );
         }
+        // One bar per story: a site's partial hp is what the ramp
+        // GRANTS, so the progress bar tells it alone — the hp bar
+        // joins only when fire has taken hp construction already gave.
+        // The check mirrors the sim's integer ramp exactly (a float
+        // restatement flickers), and gates on !built because progress
+        // doubles as the train counter on finished producers.
         let max_hp = building.kind.stats().max_hp;
-        if building.hp < max_hp {
+        let under_own_salvage = building.built && salvaging.contains(&building.id);
+        let wounded = if under_own_salvage {
+            // The gold teardown bar below carries the fraction; a
+            // second bar restating it in hp colors is the double-bar
+            // disease this pass exists to cure.
+            false
+        } else if building.built {
+            building.hp < max_hp
+        } else {
+            let ticks = building
+                .kind
+                .stats()
+                .construction
+                .map(|c| c.build_ticks)
+                .unwrap_or(1);
+            let start = max_hp / 5;
+            let expected = start + (max_hp - start) * building.progress.min(ticks) / ticks;
+            building.hp < expected
+        };
+        if wounded {
             hp_bar(screen.x, screen.y - 8.0, dest.x, building.hp, max_hp);
         }
         // Production progress, drawn under the works.
         if let Some(kind) = building.queue.front() {
             let fraction = building.progress as f32 / kind.stats().train_ticks as f32;
+            draw_rectangle(screen.x, screen.y + dest.y + 3.0, dest.x, 4.0, HP_BACK);
+            draw_rectangle(
+                screen.x,
+                screen.y + dest.y + 3.0,
+                dest.x * fraction,
+                4.0,
+                SCRAP_COLOR,
+            );
+        }
+        // A teardown in progress: gold — the scrap coming back — over
+        // remaining substance. Keyed on an OWN crew's Order::Salvage,
+        // never on hp shape (shelling looks identical), so enemy
+        // salvage shows nothing through the fog.
+        if under_own_salvage {
+            let fraction = building.hp as f32 / max_hp as f32;
             draw_rectangle(screen.x, screen.y + dest.y + 3.0, dest.x, 4.0, HP_BACK);
             draw_rectangle(
                 screen.x,

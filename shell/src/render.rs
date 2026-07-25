@@ -347,13 +347,61 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                 ..Default::default()
             },
         );
-        if unit.kind == UnitKind::Harvester && unit.carrying > 0 {
-            let bob = if reduced_motion() {
-                0.0
-            } else {
-                ((get_time() * 7.0 + f64::from(unit.id.0)).sin() * 0.015) as f32
-            };
-            draw_circle(screen.x, screen.y, zoom * (0.09 + bob), SCRAP_COLOR);
+        // The cargo eye: a fixed ring that FILLS with carrying/capacity
+        // — load reads as area, not as a pulse (and needs no motion at
+        // all). The scoop cycle above stays the "actually working"
+        // tell; the eye only says how much is aboard.
+        if unit.kind == UnitKind::Harvester
+            && let Some(hstats) = unit.kind.stats().harvest
+            && (unit.carrying > 0 || matches!(unit.order, oxide_sim::Order::Harvest { .. }))
+        {
+            let r = zoom * 0.11;
+            let frac = (unit.carrying as f32 / hstats.capacity as f32).clamp(0.0, 1.0);
+            draw_circle_lines(screen.x, screen.y, r, 1.0, SCRAP_COLOR);
+            if frac > 0.0 {
+                // Area-linear: half a load LOOKS half full.
+                draw_circle(screen.x, screen.y, r * frac.sqrt(), SCRAP_COLOR);
+            }
+        }
+        // Slow guns charge up through the same yellow circle: drawn
+        // only while the shot is still coming back (an idle ready gun
+        // wears nothing), for heavy cooldowns anywhere plus whatever
+        // the player has selected. A spotter gun whose current victim
+        // the team can't see hollows — a filling eye must not promise
+        // a shot the fire gate is blocking.
+        let stats = unit.kind.stats();
+        if let Some(weapon) = stats.weapons.first() {
+            let selected = game
+                .selection
+                .units
+                .iter()
+                .take(DECOR_CAP)
+                .any(|i| *i == unit.id);
+            let remaining = unit.cooldowns[0];
+            if remaining > 0 && (weapon.cooldown_ticks >= CHARGE_EYE_COOLDOWN || selected) {
+                let r = zoom * 0.11;
+                let frac = 1.0 - remaining as f32 / weapon.cooldown_ticks as f32;
+                let gated = unit.player == game.human
+                    && weapon.range.to_num::<f32>() > stats.vision as f32
+                    && match unit.order {
+                        oxide_sim::Order::Attack { target, .. } => {
+                            let tile = match target {
+                                oxide_sim::Target::Unit(id) => {
+                                    game.state.unit(id).map(|u| u.tile())
+                                }
+                                oxide_sim::Target::Building(id) => {
+                                    game.state.building(id).map(|b| b.anchor)
+                                }
+                            };
+                            tile.is_some_and(|t| !game.my_vision().visible(t))
+                        }
+                        _ => false,
+                    };
+                draw_circle_lines(screen.x, screen.y, r, 1.0, SCRAP_COLOR);
+                if !gated && frac > 0.0 {
+                    draw_circle(screen.x, screen.y, r * frac.sqrt(), SCRAP_COLOR);
+                }
+            }
         }
         let max_hp = unit.kind.stats().max_hp;
         if unit.hp < max_hp {
@@ -404,6 +452,11 @@ fn hp_bar(x: f32, y: f32, w: f32, hp: u32, max_hp: u32) {
 /// How many selected units draw their rings and programs — a boxed
 /// army of forty must not paint forty overlapping circles.
 const DECOR_CAP: usize = 12;
+
+/// Primary-weapon cooldown at which the charge eye draws unbidden
+/// (lancer 60, bastion 90, bombard 100 — deliberately above the
+/// Buzzard's 50, which flies in flocks and would wear twelve eyes).
+const CHARGE_EYE_COOLDOWN: u32 = 55;
 
 // --- Minimap ------------------------------------------------------------
 
