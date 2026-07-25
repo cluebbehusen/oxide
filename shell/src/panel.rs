@@ -332,7 +332,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
     });
     if has_builder {
         panel.cards.push(Card {
-            icon: CardIcon::Glyph("⛏"),
+            icon: CardIcon::Glyph("V"),
             title: "Salvage".into(),
             cost: None,
             hotkey: chord(bindings, Action::Salvage),
