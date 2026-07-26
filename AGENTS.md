@@ -61,11 +61,17 @@ in the commit message.
 ## Build, test, bless
 
 ```sh
-cargo test --workspace               # all tests, headless, ~seconds
+cargo test --workspace               # all tests, headless, ~20s
 cargo clippy --workspace --all-targets
 cargo fmt --all
 BLESS=1 cargo test -p oxide-driver   # regenerate goldens after intended change
 ```
+
+The three map-sweep suites (every-shipped-map bot play-through, the
+neural ladder yardstick, the hash fixtures) fan their independent
+deterministic sims across threads — grown-shelf sweeps stay a
+dozen-seconds affair, and a new sweep over per-map runs should spawn
+the same way.
 
 Before committing: fmt + clippy clean, tests green. Golden files live in
 `driver/tests/goldens/`: byte-exact PNGs (a mismatch writes the actual
@@ -199,9 +205,11 @@ hash fixtures pin the weights like any other rule). Difficulty is a
 dial into one mind: `bot::Level` (Easy/Medium/Hard/Expert) sets a
 skill knob whose degradation the network *trained under*; a second
 knob picks the personality (turtle → aggressive), dealt from the
-scenario seed when unset; a third carries the seat's faction (by map
-convention, even seats run Ferrous — every shipped and generated map
-follows it, and the knob is honest, never sampled). Scenario seats opt
+scenario seed when unset; a third carries the seat's faction, honest
+and never sampled (authored maps deal even seats Ferrous; launch-time
+retints feed the knob the seat's ACTUAL faction, and the 0.11
+flipped-seat probe measured the policy at full strength from
+orientations it never trained). Scenario seats opt
 in via `PlayerSpec.bot_config`; a seat without one gets the legacy
 rule-cascade bot, which is what keeps pre-0.7 replays reproducing
 (that bot is team-blind by design — team seats must set a config).
@@ -307,8 +315,8 @@ and the foundry-durability bless exist for this; the lancer's
 damage bless is what made the tech tree worth climbing — the matchup
 instrument condemned the old rail at true par cost).
 
-`driver shots` is the perceptual-diff screenshot suite: ten canonical
-screens from a spawned automation shell (throwaway HOME, reduced
+`driver shots` is the perceptual-diff screenshot suite: eleven
+canonical screens from a spawned automation shell (throwaway HOME, reduced
 motion pinned so the Home backdrop can't drift), compared against
 per-machine references in the gitignored `shots/` directory on a mean
 per-channel metric. The default threshold is calibrated between font
@@ -457,8 +465,10 @@ never runs it.
 - **Factions are one roster deal, not two stat tables.** Variant kinds
   are separate `UnitKind`s sharing kind-keyed static stats;
   `Role::unit_for(faction)` maps the varied slots and `apply_train`
-  rejects cross-faction kinds. Even seats run Ferrous on every shipped
-  and generated map — the training stack's faction knob depends on it.
+  rejects cross-faction kinds. Even seats run Ferrous on every
+  AUTHORED and generated map — the training curriculum's default —
+  but faction is fully choosable at launch (`Scenario::retint_seat`),
+  and the flipped-seat probe cleared the policy for it.
 - **Wrecks are a second salvage layer, not nodes.** Deaths leave a
   fraction of cost as `Tile.wreck`: never blocks movement, stripped
   standing ON the tile, decays on a global cadence, buried by accepted
@@ -473,6 +483,9 @@ never runs it.
   ceiling-prepaid milli-scrap meter derived from the welder's own
   tick counter (chip repairs pay their coin up front; free healing
   was an exploit), so welding back what salvage banked always loses.
+  Stacked welders bill against the same start-of-tick reading, so
+  resolution refunds a welder whose whole step the hp ceiling
+  rejected — the crew bills the job, not the crew size.
 - **Salvage is labor, not a button** (0.11): `Command::Salvage` sends
   harvesters to strip an own BUILT non-Foundry building down the
   construction ramp backward. Drains buffer beside the gains
@@ -507,7 +520,10 @@ never runs it.
   never vanish — they stop pretending to be news.
 - **Replays are an end-of-match affair**: Watch Replay appears once
   the match is decided; `autosave-` records are Continue-only.
-  Mid-match playback was a fog-free scout of the enemy.
+  Mid-match playback was a fog-free scout of the enemy. The viewer
+  opens through `Game::spectator` — no command seat required, so
+  all-bot records (driver benchmarks, bot-vs-bot spectacles) play
+  back like any save.
 - **The command panel is one grammar** (shell/src/panel.rs): a pure
   model (portrait, sprite cards carrying the exact Action their
   hotkey dispatches, queue thumbnails carrying CancelQueue) built
@@ -529,9 +545,9 @@ never runs it.
   (shell/src/action.rs) into Actions — "Oxide Classic" is the default
   profile, the Controls screen rebinds with conflict refusal, and
   chord matching grades exact → same-Ctrl → bare. The frame loop
-  injects ui scale, wall clock, and camera prefs into `InputState`,
-  so the whole event path runs headless (input.rs has real
-  integration tests against the sim).
+  injects ui scale, wall clock, and camera + touch prefs into
+  `InputState`, so the whole event path runs headless (input.rs has
+  real integration tests against the sim).
 - **Chrome geometry has one source.** The renderer computes a
   `LayoutModel` (top bar, panel band + clickable slots, minimap, idle
   badge) as it draws and publishes it on `Game`; hit-testing and
@@ -540,11 +556,13 @@ never runs it.
   is structurally extinct only while this holds. ui_scale() is the
   USER factor only: macroquad's coordinate space is logical, and
   multiplying dpi in is the double-scaling disease (fixed 0.9).
-- **Presentation config persists** (shell/src/config.rs): bindings,
-  volumes, ui scale, camera feel, window size, reduced motion —
-  platform config dir, versioned separately from replays, silent
-  defaults on any trouble (and replace-not-rename on save, for
-  Windows).
+- **Presentation config persists** (shell/src/config.rs): bindings
+  (explicit unbindings survive via a tombstone list — a missing row
+  alone reads as "verb newer than this config" and would re-adopt
+  its classic chord), volumes, ui scale, camera feel, touch timing,
+  window size, reduced motion, colorblind — platform config dir,
+  versioned separately from replays, silent defaults on any trouble
+  (and replace-not-rename on save, for Windows).
 - **Screens are draft-driven.** The New Match wizard's choices live in
   a NewMatchDraft that survives Back; destructive pause choices
   confirm with Cancel preselected; menus scroll independently of
@@ -553,9 +571,12 @@ never runs it.
   The front door is a thumbnail-grid map browser sectioned by format
   (shell/src/screens/browser.rs, themed preview cards, remembers the
   pick by path); team maps then land on one inline setup screen —
-  team-grouped seat cards with difficulty/personality chips edited in
-  place beside a who-is-where preview (no sub-screen; the cell cursor
-  moves with Left/Right and Enter takes a seat or cycles a dial).
+  team-grouped seat cards with difficulty/personality/faction chips
+  edited in place beside a who-is-where preview (no sub-screen; the
+  cell cursor moves with Left/Right and Enter takes a seat or cycles
+  a dial; the human's card keeps its faction chip). Small windows
+  compress margins, chrome, then cards — every control stays on
+  screen at every supported size, keyboard and pointer alike.
   Allegiance reads as team color ON the art (the RTS convention,
   semantic flavor): every faction-varied sprite carries a derived
   accent mask in the atlas — gen_sprites.py diffs the two faction
@@ -604,9 +625,17 @@ never runs it.
   iterates in fixed id order) compounds without blunder noise. At the
   shipped Medium default both effects vanish (12/12 decisive, no
   consistent lean), and a human in the match breaks symmetry at any
-  level — bounded to bot-vs-bot spectacles. Candidate engine
-  experiment for 0.9: parity-alternate `movement::run` like the brain
+  level — bounded to bot-vs-bot spectacles. Standing candidate engine
+  experiment: parity-alternate `movement::run` like the brain
   loop (hash-moving; needs a bless and a re-measure).
+- **The 0.11 artifact leans Cupric on skirmish** (34-6 at Expert
+  across seat-swapped pairs, dealt personalities — present in the
+  shipped convention configuration, same artifact-specific class as
+  the Parallel Works lean above). Same-faction mirror duels, newly
+  player-reachable through the faction chips, decide at human
+  timescales (Cupric mirror 12/12 by 120k ticks, Ferrous 10/12 with
+  a two-game grind tail) — the near-deterministic mirror residual,
+  broken by any human in the match.
 - **The learned policy is a middling teammate beside a scripted ally**
   (25-31% on the mixed-ally 2v2 bracket vs scripted pairs, up 5x from
   pre-team-training). Shipped 2v2 seats are all-neural, which is the

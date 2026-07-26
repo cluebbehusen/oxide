@@ -20,12 +20,15 @@ replay that re-executes headless to a bit-identical state hash.
 
 ## Playing
 
-The front door offers Play, Replays, Settings, and Quit (plus
-Continue when an autosave waits). Settings holds live volume buses,
-UI scale, camera feel, and full key remapping — every change applies
-immediately and persists. The map list shows each map's hook and pace
-badges with a fog-free, theme-graded preview, and every choice you
-make on the way to a match survives backing up a screen. Selected
+The front door offers Play, Tutorial, Replays, Settings, and Quit
+(plus Continue when an autosave waits). Settings holds live volume
+buses, UI scale, camera feel, accessibility switches (reduced motion,
+colorblind-safe accents, a left-handed preset), and full key
+remapping — every change applies immediately and persists, explicit
+unbindings included. Play opens a thumbnail grid of every map,
+sectioned by format, each card carrying a fog-free, theme-graded
+preview and pace badge — and every choice you make on the way to a
+match survives backing up a screen. Selected
 machines draw their weapon ranges (and radar rings); stalls and
 rejections say why in words. Clicking anything opens its command
 panel: portrait, sprite cards for everything it can do (costs,
@@ -55,7 +58,10 @@ Gatework Array (4v4), lane wars where the
 ridge doors carry the fight sideways — then asks three questions: how hard
 should the opponent think (**Easy, Medium, Hard, Expert**), who is it
 (**turtle, balanced, aggressive**, or let the map decide), and which
-faction you run (**Ferrous, Cupric**, or let the seed decide). Every
+faction you run (**Ferrous, Cupric**, or let the seed decide). Team
+maps open one setup screen instead: pick your chair from the
+team-grouped cards and tune every seat's difficulty, personality,
+and faction in place beside a who-is-where preview. Every
 opponent is the same trained neural commander with different dials: it
 sees only what its units see, plays by exactly your rules, and its
 mistakes at lower settings are misjudgments, not lobotomies. On the
