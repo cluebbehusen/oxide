@@ -44,10 +44,11 @@ fn embedded_weights_parse() {
 }
 
 /// Wins for `level` against every scripted tier over the pinned seed
-/// set — the ladder's external yardstick.
+/// set — the ladder's external yardstick. Every match is an
+/// independent deterministic sim, so the slate fans out across
+/// threads; the total is order-free.
 fn yardstick_wins(level: Level) -> u32 {
     use oxide_sim::state::GameResult as GR;
-    let mut wins = 0;
     // Prime is the discriminating tier — the upper rungs separate on
     // how often they beat it — so it carries most of the slate.
     let slate: [(Difficulty, &[u64]); 4] = [
@@ -56,30 +57,45 @@ fn yardstick_wins(level: Level) -> u32 {
         (Difficulty::Veteran, &[3000, 3001]),
         (Difficulty::Prime, &[3000, 3001, 3002, 3003, 3004, 3005]),
     ];
+    let mut matches = Vec::new();
     for (tier, seeds) in slate {
         for &seed in seeds {
             for seat in [0u8, 1] {
-                let mut sc = Scenario::skirmish();
-                sc.seed = seed;
-                let mut state = sc.build().unwrap();
-                let faction = sc.players[seat as usize].faction;
-                let mut bot = NeuralBot::ladder(PlayerId(seat), seed, level, Some(500), faction);
-                let mut opp = Brain::for_tier(PlayerId(1 - seat), seed, tier);
-                for _ in 0..40_000u32 {
-                    let mut commands = bot.act(&state);
-                    commands.extend(opp.act(&state));
-                    state.tick(&commands);
-                    if state.result().is_some() {
-                        break;
-                    }
-                }
-                let won = matches!(state.result(), Some(GR::Victory { .. }))
-                    && state.winners().contains(&PlayerId(seat));
-                wins += u32::from(won);
+                matches.push((tier, seed, seat));
             }
         }
     }
-    wins
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = matches
+            .into_iter()
+            .map(|(tier, seed, seat)| {
+                scope.spawn(move || {
+                    let mut sc = Scenario::skirmish();
+                    sc.seed = seed;
+                    let mut state = sc.build().unwrap();
+                    let faction = sc.players[seat as usize].faction;
+                    let mut bot =
+                        NeuralBot::ladder(PlayerId(seat), seed, level, Some(500), faction);
+                    let mut opp = Brain::for_tier(PlayerId(1 - seat), seed, tier);
+                    for _ in 0..40_000u32 {
+                        let mut commands = bot.act(&state);
+                        commands.extend(opp.act(&state));
+                        state.tick(&commands);
+                        if state.result().is_some() {
+                            break;
+                        }
+                    }
+                    let won = matches!(state.result(), Some(GR::Victory { .. }))
+                        && state.winners().contains(&PlayerId(seat));
+                    u32::from(won)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("a yardstick match panicked"))
+            .sum()
+    })
 }
 
 #[test]

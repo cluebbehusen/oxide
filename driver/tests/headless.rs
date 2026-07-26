@@ -29,42 +29,60 @@ fn recorded_scenario_run_reproduces_from_its_replay() {
 #[test]
 fn every_shipped_scenario_builds_and_plays() {
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scenarios");
-    let mut checked = 0;
-    for entry in std::fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
+    let paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
+        .collect();
+    assert!(
+        paths.len() >= 4,
+        "expected the shipped maps, found {}",
+        paths.len()
+    );
+    // Every map is an independent deterministic sim — the sweep fans
+    // out across threads, or 25 maps at 12k bot-vs-bot ticks dominate
+    // the whole workspace suite's wall clock.
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = paths
+            .iter()
+            .map(|path| {
+                scope.spawn(move || {
+                    let mut scenario = Scenario::load(path)
+                        .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+                    for player in &mut scenario.players {
+                        player.bot = true;
+                        // The shipped default opponent; a configless flip
+                        // would field the team-blind classic bot, which
+                        // team maps now reject.
+                        player
+                            .bot_config
+                            .get_or_insert(oxide_sim::scenario::BotConfig {
+                                level: oxide_sim::bot::Level::Medium,
+                                aggression: None,
+                            });
+                    }
+                    // Playable means *alive*, not merely parseable: after
+                    // 12k ticks of bot-vs-bot the match must either be
+                    // decided or still producing — unit ids are monotonic,
+                    // so a high id proves Foundries kept working.
+                    // (Reaching the tick count alone once masked a total
+                    // economy freeze.)
+                    let outcome = runner::run_scenario(&scenario, 12_000, true, false)
+                        .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+                    assert_eq!(outcome.state.current_tick(), 12_000, "{}", path.display());
+                    let produced = outcome.state.units().iter().any(|u| u.id.0 >= 16);
+                    assert!(
+                        outcome.state.result().is_some() || produced,
+                        "{}: no victory and no production after 12k ticks — the map stalled",
+                        path.display()
+                    );
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("a map sweep thread panicked");
         }
-        checked += 1;
-        let mut scenario =
-            Scenario::load(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-        for player in &mut scenario.players {
-            player.bot = true;
-            // The shipped default opponent; a configless flip would field
-            // the team-blind classic bot, which team maps now reject.
-            player
-                .bot_config
-                .get_or_insert(oxide_sim::scenario::BotConfig {
-                    level: oxide_sim::bot::Level::Medium,
-                    aggression: None,
-                });
-        }
-        // Playable means *alive*, not merely parseable: after 12k ticks of
-        // bot-vs-bot the match must either be decided or still producing —
-        // unit ids are monotonic, so a high id proves Foundries kept
-        // working. (Reaching the tick count alone once masked a total
-        // economy freeze.)
-        let outcome = runner::run_scenario(&scenario, 12_000, true, false)
-            .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-        assert_eq!(outcome.state.current_tick(), 12_000, "{}", path.display());
-        let produced = outcome.state.units().iter().any(|u| u.id.0 >= 16);
-        assert!(
-            outcome.state.result().is_some() || produced,
-            "{}: no victory and no production after 12k ticks — the map stalled",
-            path.display()
-        );
-    }
-    assert!(checked >= 4, "expected the shipped maps, found {checked}");
+    });
 }
 
 #[test]

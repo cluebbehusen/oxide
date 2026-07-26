@@ -16,30 +16,44 @@ const FIXTURE_TICKS: u64 = 2_000;
 
 fn compute_hashes() -> BTreeMap<String, String> {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scenarios");
-    let mut hashes = BTreeMap::new();
-    for entry in std::fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        let name = path.file_stem().unwrap().to_string_lossy().into_owned();
-        let mut scenario =
-            Scenario::load(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-        for player in &mut scenario.players {
-            player.bot = true;
-            // The fixtures pin the *shipped* opponent: the neural ladder
-            // at full strength, personalities dealt from the map seed.
-            // Weight changes now trip the tripwire, exactly like rule
-            // changes — the network is part of the sim's behavior.
-            player.bot_config = Some(oxide_sim::scenario::BotConfig {
-                level: oxide_sim::bot::Level::Expert,
-                aggression: None,
-            });
-        }
-        let outcome = runner::run_scenario(&scenario, FIXTURE_TICKS, true, false)
-            .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-        hashes.insert(name, oxide_protocol::hash_hex(outcome.state.hash()));
-    }
+    let paths: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
+        .collect();
+    // Independent deterministic runs; the map keys restore a canonical
+    // order whatever the thread finish order.
+    let hashes: BTreeMap<String, String> = std::thread::scope(|scope| {
+        let handles: Vec<_> = paths
+            .iter()
+            .map(|path| {
+                scope.spawn(move || {
+                    let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+                    let mut scenario = Scenario::load(path)
+                        .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+                    for player in &mut scenario.players {
+                        player.bot = true;
+                        // The fixtures pin the *shipped* opponent: the
+                        // neural ladder at full strength, personalities
+                        // dealt from the map seed. Weight changes now trip
+                        // the tripwire, exactly like rule changes — the
+                        // network is part of the sim's behavior.
+                        player.bot_config = Some(oxide_sim::scenario::BotConfig {
+                            level: oxide_sim::bot::Level::Expert,
+                            aggression: None,
+                        });
+                    }
+                    let outcome = runner::run_scenario(&scenario, FIXTURE_TICKS, true, false)
+                        .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+                    (name, oxide_protocol::hash_hex(outcome.state.hash()))
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("a fixture run panicked"))
+            .collect()
+    });
     assert!(
         hashes.len() >= 5,
         "expected the shipped maps, found {}",
