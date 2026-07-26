@@ -204,6 +204,10 @@ fn launch(draft: &NewMatchDraft) -> Result<Game> {
         draft.seats.len() == scenario.players.len(),
         "draft seats out of step with the map"
     );
+    // Discovery lists every parseable JSON without building it, so a
+    // zero-seat file can reach here — refuse it as a launch error
+    // instead of underflowing the seat clamp below.
+    anyhow::ensure!(!scenario.players.is_empty(), "the map has no player seats");
     let seat_choice = draft.seat_choice.min(scenario.players.len() - 1);
     for (i, player) in scenario.players.iter_mut().enumerate() {
         player.bot = i != seat_choice;
@@ -726,6 +730,7 @@ async fn run() -> Result<()> {
                 input.ui = render::ui_scale();
                 input.now = get_time();
                 input.camera_prefs = config.camera;
+                input.touch_prefs = config.touch;
                 input::apply_events(&mut game, &mut input, &events);
                 input::update_held(&mut game, &input, dt);
                 input::update_touch(&mut game, &mut input);
@@ -1429,6 +1434,21 @@ mod tests {
         }
         // Auto chips keep the seat's authored faction.
         assert_eq!(players[2].faction, oxide_sim::Faction::Ferrous);
+    }
+
+    #[test]
+    fn a_zero_seat_map_refuses_to_launch_instead_of_panicking() {
+        // Discovery lists any parseable JSON; a players: [] file used
+        // to underflow the seat clamp.
+        let mut scenario = Scenario::skirmish();
+        scenario.players.clear();
+        scenario.units.clear();
+        let mut draft = NewMatchDraft::default();
+        draft.set_scenario(scenario, None);
+        assert!(
+            launch(&draft).is_err(),
+            "an empty seat list is a launch error, not a crash"
+        );
     }
 
     #[test]

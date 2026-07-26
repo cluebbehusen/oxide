@@ -24,7 +24,10 @@ use serde::{Deserialize, Serialize};
 
 /// Observation schema version — bump when the shape changes so recorded
 /// training data and shipped policies can refuse mismatched worlds.
-pub const OBSERVATION_VERSION: u32 = 4;
+/// v5: `UnitObs` gained the required `salvaging` field (0.11) — v4
+/// recordings no longer deserialize, and claiming their version would
+/// have made the mismatch fail confusingly instead of cleanly.
+pub const OBSERVATION_VERSION: u32 = 5;
 
 /// One unit as a bot sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

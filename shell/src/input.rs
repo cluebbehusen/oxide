@@ -397,75 +397,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 y,
             } => {
                 input.mouse = vec2(x, y);
-                if let Some(kind) = input.placing {
-                    // The minimap keeps its meaning while placing: jump
-                    // the camera, never misread the click as world ground
-                    // (that would spend scrap on a bogus tile).
-                    if let Some(world) = crate::render::minimap_world_at(game, vec2(x, y)) {
-                        game.camera.center = world;
-                        game.camera.pan(Vec2::ZERO); // re-clamp
-                    } else if !click_on_hud(game, vec2(x, y)) {
-                        let world = game.camera.to_world(vec2(x, y));
-                        let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-                        // The ghost already showed red; a misclick must
-                        // not throw away the armed mode on top of it.
-                        if !game.state.can_place(game.human, kind, anchor) {
-                            game.toast("can't build there: needs open, visible ground");
-                            game.sounds_pending
-                                .push((crate::game::SoundKind::Denied, None));
-                            continue;
-                        }
-                        let units = game.selection.units.clone();
-                        // Shift both keeps placing AND queues the build
-                        // behind the builder's current program — chained
-                        // construction in one gesture.
-                        game.issue(Command::Build {
-                            units,
-                            kind,
-                            anchor,
-                            queue: input.resolver.shift_held(),
-                        });
-                        game.ping(world, PingKind::Rally);
-                        // Shift keeps placing: walls go up one click at
-                        // a time, not one arming at a time.
-                        if !input.resolver.shift_held() {
-                            input.placing = None;
-                        }
-                    }
-                    continue;
-                }
-                if input.salvaging {
-                    // The same manners placement keeps: minimap jumps
-                    // the camera, a misclick keeps the mode armed, and
-                    // Shift chains teardowns behind the crew's program.
-                    if let Some(world) = crate::render::minimap_world_at(game, vec2(x, y)) {
-                        game.camera.center = world;
-                        game.camera.pan(Vec2::ZERO); // re-clamp
-                    } else if !click_on_hud(game, vec2(x, y)) {
-                        let world = game.camera.to_world(vec2(x, y));
-                        let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-                        let target = game.state.building_at(tile).filter(|b| {
-                            b.player == game.human
-                                && b.built
-                                && b.kind != oxide_sim::BuildingKind::Foundry
-                        });
-                        let Some(building) = target.map(|b| b.id) else {
-                            game.toast("salvage wants an own built building (not a Foundry)");
-                            game.sounds_pending
-                                .push((crate::game::SoundKind::Denied, None));
-                            continue;
-                        };
-                        let units = game.selection.units.clone();
-                        game.issue(Command::Salvage {
-                            units,
-                            building,
-                            queue: input.resolver.shift_held(),
-                        });
-                        game.ping(world, PingKind::Harvest);
-                        if !input.resolver.shift_held() {
-                            input.salvaging = false;
-                        }
-                    }
+                if armed_click(game, input, vec2(x, y)) {
                     continue;
                 }
                 // Panel cards are buttons: each carries the exact action
@@ -546,7 +478,10 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         }
                     } else {
                         let units = game.selection.units.clone();
-                        if !units.is_empty() {
+                        // The same commandability gate the world path
+                        // applies: an inspected ally or enemy takes no
+                        // orders from the minimap either.
+                        if !units.is_empty() && game.selection_commandable() {
                             game.issue(Command::AttackMove {
                                 units,
                                 goal: tile,
@@ -701,6 +636,14 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                                     < f64::from(input.touch_prefs.double_tap_ms)
                                     && (at - p).length() < click_slop(input.ui) * 2.0
                             });
+                            // Armed modes first, exactly like the
+                            // mouse: the tap that follows an armed
+                            // Build or Salvage card completes the
+                            // command instead of selecting under it.
+                            if armed_click(game, input, p) {
+                                input.last_tap = None;
+                                continue;
+                            }
                             // The minimap owns its taps (jump the
                             // camera), and HUD chrome swallows the
                             // rest — same ownership order as clicks,
@@ -742,6 +685,84 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
             }
         }
     }
+}
+
+/// One armed world click or tap — placement or salvage — at screen
+/// point `p`. Returns whether an armed mode consumed the event
+/// (whatever the outcome: issued, denied, or a minimap camera jump).
+/// Mouse and touch route here identically: a fingertip that armed a
+/// Build card completes the build with its next tap.
+fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
+    if let Some(kind) = input.placing {
+        // The minimap keeps its meaning while placing: jump the
+        // camera, never misread the click as world ground (that would
+        // spend scrap on a bogus tile).
+        if let Some(world) = crate::render::minimap_world_at(game, p) {
+            game.camera.center = world;
+            game.camera.pan(Vec2::ZERO); // re-clamp
+        } else if !click_on_hud(game, p) {
+            let world = game.camera.to_world(p);
+            let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+            // The ghost already showed red; a misclick must not throw
+            // away the armed mode on top of it.
+            if !game.state.can_place(game.human, kind, anchor) {
+                game.toast("can't build there: needs open, visible ground");
+                game.sounds_pending
+                    .push((crate::game::SoundKind::Denied, None));
+                return true;
+            }
+            let units = game.selection.units.clone();
+            // Shift both keeps placing AND queues the build behind the
+            // builder's current program — chained construction in one
+            // gesture.
+            game.issue(Command::Build {
+                units,
+                kind,
+                anchor,
+                queue: input.resolver.shift_held(),
+            });
+            game.ping(world, PingKind::Rally);
+            // Shift keeps placing: walls go up one click at a time,
+            // not one arming at a time.
+            if !input.resolver.shift_held() {
+                input.placing = None;
+            }
+        }
+        return true;
+    }
+    if input.salvaging {
+        // The same manners placement keeps: minimap jumps the camera,
+        // a misclick keeps the mode armed, and Shift chains teardowns
+        // behind the crew's program.
+        if let Some(world) = crate::render::minimap_world_at(game, p) {
+            game.camera.center = world;
+            game.camera.pan(Vec2::ZERO); // re-clamp
+        } else if !click_on_hud(game, p) {
+            let world = game.camera.to_world(p);
+            let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+            let target = game.state.building_at(tile).filter(|b| {
+                b.player == game.human && b.built && b.kind != oxide_sim::BuildingKind::Foundry
+            });
+            let Some(building) = target.map(|b| b.id) else {
+                game.toast("salvage wants an own built building (not a Foundry)");
+                game.sounds_pending
+                    .push((crate::game::SoundKind::Denied, None));
+                return true;
+            };
+            let units = game.selection.units.clone();
+            game.issue(Command::Salvage {
+                units,
+                building,
+                queue: input.resolver.shift_held(),
+            });
+            game.ping(world, PingKind::Harvest);
+            if !input.resolver.shift_held() {
+                input.salvaging = false;
+            }
+        }
+        return true;
+    }
+    false
 }
 
 /// Continuous per-frame input (held-key panning).
@@ -800,10 +821,17 @@ pub fn update_touch(game: &mut Game, input: &mut InputState) {
     }
     let world = game.camera.to_world(tp.at);
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    // Only entities the viewer can actually SEE steer the gesture — an
+    // omniscient probe here let a hidden hostile under the fog flip a
+    // rally into a select, making occupancy observable through touch.
+    let sees = |t: TilePos| game.all_seeing() || game.my_vision().visible(t);
     let on_entity = game.state.units().iter().any(|u| {
         let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
-        p.distance(world) <= PICK_RADIUS
-    }) || game.state.building_at(tile).is_some();
+        p.distance(world) <= PICK_RADIUS && (u.player == game.human || sees(u.tile()))
+    }) || game
+        .state
+        .building_at(tile)
+        .is_some_and(|b| b.player == game.human || sees(tile));
     if on_entity && game.selection.units.is_empty() {
         select::click_select(game, tp.at, false, input.ui);
     } else {

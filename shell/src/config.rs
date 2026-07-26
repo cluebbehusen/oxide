@@ -122,6 +122,13 @@ pub struct Config {
     /// Touch gesture timing (absent in configs saved before touch).
     #[serde(default)]
     pub touch: TouchPrefs,
+    /// Actions the player EXPLICITLY unbound (Controls > X). A missing
+    /// binding row alone is ambiguous — it also means "verb added
+    /// after this config was saved" — and the migration that adopts
+    /// classic chords for new verbs must not resurrect a deliberate
+    /// unbinding on every restart.
+    #[serde(default)]
+    pub unbound: Vec<crate::action::Action>,
 }
 
 impl Default for Config {
@@ -136,6 +143,7 @@ impl Default for Config {
             reduced_motion: false,
             colorblind: false,
             touch: TouchPrefs::default(),
+            unbound: Vec::new(),
         }
     }
 }
@@ -224,14 +232,16 @@ impl Config {
                 // at all: adopt its classic chord so new features
                 // arrive keyboard-reachable. Refusal (the player
                 // claimed that chord for something else) leaves the
-                // verb unbound — panels still reach it by click.
+                // verb unbound — panels still reach it by click. A row
+                // the player EXPLICITLY unbound is not a new verb:
+                // the tombstone list keeps it unbound across restarts.
                 for default in BindingMap::classic().bindings().to_vec() {
                     let known = config
                         .bindings
                         .bindings()
                         .iter()
                         .any(|b| b.action == default.action);
-                    if !known {
+                    if !known && !config.unbound.contains(&default.action) {
                         let _ = config.bindings.rebind(default.action, default.chord);
                     }
                 }
@@ -301,6 +311,26 @@ mod tests {
             loaded.bindings.chord_for(crate::action::Action::Patrol),
             Some(crate::action::Chord::bare(oxide_protocol::Key::J)),
             "the customization survived validation"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_explicit_unbinding_survives_the_restart() {
+        // Controls > X removes the row AND records the choice; without
+        // the tombstone the new-verb migration read the missing row as
+        // an old config and resurrected the classic chord every load.
+        let dir = std::env::temp_dir().join(format!("oxide-config-unbind-{}", std::process::id()));
+        let path = dir.join("config.json");
+        let mut config = Config::default();
+        config.bindings.unbind(crate::action::Action::Patrol);
+        config.unbound.push(crate::action::Action::Patrol);
+        config.save_to(&path).expect("save");
+        let loaded = Config::load_from(Some(path.clone()));
+        assert_eq!(
+            loaded.bindings.chord_for(crate::action::Action::Patrol),
+            None,
+            "the deliberate unbinding persisted"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

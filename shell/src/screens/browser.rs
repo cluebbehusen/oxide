@@ -103,10 +103,15 @@ fn metrics(view: Vec2, ui: f32) -> (f32, f32, f32, f32, f32, f32, f32) {
     let band_x = (view.x - band_w) * 0.5;
     let gap = 12.0 * ui;
     let card_w = (band_w - gap * (cols - 1.0)) / cols;
-    let card_h = card_w * 0.5 + 26.0 * ui;
     let heading_h = 30.0 * ui;
-    let top = 108.0 * ui;
-    let bottom = view.y - 76.0 * ui;
+    // Margins yield before content does: a small window (or a large
+    // UI scale) compresses the title and hint zones first.
+    let top = (108.0 * ui).min(view.y * 0.22);
+    let bottom = view.y - (76.0 * ui).min(view.y * 0.14);
+    // At least one heading + card row must ALWAYS fit the window, or
+    // the grid draws nothing while Enter still activates the hidden
+    // selection. The 16ui row gap below matches layout().
+    let card_h = (card_w * 0.5 + 26.0 * ui).min(bottom - top - heading_h - 16.0 * ui);
     (band_x, band_w, card_w, card_h, heading_h, top, bottom)
 }
 
@@ -285,6 +290,25 @@ impl Browser {
                         self.scroll_line = (self.scroll_line + 1).min(max);
                     }
                     self.hover = card_at(self, *mouse);
+                    // The row-menu rule: scrolling drags the selection
+                    // along, so Enter always fires a card the player
+                    // can see — never one hidden past the window edge.
+                    let visible: Vec<usize> = self
+                        .layout(entries, view, ui)
+                        .cards
+                        .iter()
+                        .map(|(e, _)| *e)
+                        .collect();
+                    if let (Some(&first), Some(&last_vis)) = (visible.first(), visible.last())
+                        && !visible.contains(&self.selected)
+                    {
+                        let (li, _) = Self::locate(entries, cols, self.selected);
+                        self.selected = if li < self.scroll_line {
+                            first
+                        } else {
+                            last_vis
+                        };
+                    }
                 }
                 RawEvent::MouseMove { x, y } => {
                     *mouse = vec2(x, y);
@@ -494,6 +518,50 @@ mod tests {
             b.selected, 4,
             "the column narrows through a one-wide row (standard grid feel)"
         );
+    }
+
+    #[test]
+    fn wheel_scroll_drags_the_selection_into_view() {
+        let entries = shelf();
+        let mut b = Browser::new();
+        let mut mouse = vec2(0.0, 0.0);
+        // Scroll far past the first section: the selection must ride
+        // along, or Enter fires a card the player cannot see.
+        for _ in 0..8 {
+            b.handle(&entries, &[RawEvent::Wheel { delta: -1.0 }], &mut mouse);
+            let view = crate::render::viewport();
+            let ui = crate::render::ui_scale();
+            let visible: Vec<usize> = b
+                .layout(&entries, view, ui)
+                .cards
+                .iter()
+                .map(|(e, _)| *e)
+                .collect();
+            if !visible.is_empty() {
+                assert!(
+                    visible.contains(&b.selected),
+                    "selection {} hidden by scroll (visible {:?})",
+                    b.selected,
+                    visible
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_small_window_at_max_scale_still_shows_cards() {
+        let entries = shelf();
+        let b = Browser::new();
+        // 640x400 at the 150% user scale used to reject every card
+        // row: headings drew, cards vanished, Enter still fired.
+        let layout = b.layout(&entries, vec2(640.0, 400.0), 1.5);
+        assert!(
+            !layout.cards.is_empty(),
+            "at least one card row fits every supported window"
+        );
+        for (_, r) in &layout.cards {
+            assert!(r.h > 20.0, "cards stay tall enough to read and click");
+        }
     }
 
     #[test]

@@ -145,18 +145,26 @@ impl Game {
         Self::with_viewport(scenario, crate::render::viewport())
     }
 
+    /// A read-only vantage for the playback viewer: no command seat is
+    /// required — `human` only anchors the opening camera and the
+    /// viewer is fog-free anyway. All-bot records (driver benchmarks,
+    /// bot-vs-bot spectacles) open here; the first non-bot seat, else
+    /// seat 0, is the initial vantage.
+    pub fn spectator(scenario: Scenario) -> Result<Self> {
+        let vantage = scenario.players.iter().position(|p| !p.bot).unwrap_or(0) as u8;
+        Self::assemble(scenario, crate::render::viewport(), PlayerId(vantage))
+    }
+
     /// `new` with the window injected — the only constructor tests use,
     /// because it never touches macroquad.
     pub fn with_viewport(scenario: Scenario, viewport: Vec2) -> Result<Self> {
-        let state = scenario.build()?;
-        let bots = seat_bots(&scenario);
-        let recorder = Replay::new(SIM_VERSION, scenario.clone());
         // The human is the scenario's single non-bot seat — seat choice
         // never permutes seats (parity carries factions, teams, and the
         // automation harness), it just moves which chair the human
         // takes. Anything but exactly one non-bot seat is a malformed
-        // session, and a bot seat without a config would fall to the
-        // team-blind classic bot on team maps.
+        // PLAYABLE session (a bot seat without a config would fall to
+        // the team-blind classic bot on team maps); the spectator
+        // constructor above is the lenient door.
         let humans: Vec<PlayerId> = scenario
             .players
             .iter()
@@ -171,6 +179,13 @@ impl Game {
                 humans.len()
             ),
         };
+        Self::assemble(scenario, viewport, human)
+    }
+
+    fn assemble(scenario: Scenario, viewport: Vec2, human: PlayerId) -> Result<Self> {
+        let state = scenario.build()?;
+        let bots = seat_bots(&scenario);
+        let recorder = Replay::new(SIM_VERSION, scenario.clone());
         let focus = state
             .buildings()
             .iter()

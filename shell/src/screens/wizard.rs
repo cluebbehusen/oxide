@@ -204,22 +204,37 @@ fn rows_menu(title: &str, items: &[&str], selected: usize) -> Menu {
     menu
 }
 
-/// Seats in DISPLAY order: grouped by team (dense ids, first
-/// appearance), seat order within — the setup screen's visual order
-/// and its cursor's walking order are the same list.
+/// One collision-free team key per seat: an authored id stays
+/// itself; an omitted seat surrogates as its own index lifted above
+/// the whole u8 range, so no authored id can alias it and every pass
+/// that groups seats derives the identical key. (The old scheme keyed
+/// omitted seats two different ways — `teams.len()` in one pass, the
+/// seat index in the next — and a mixed-team map could drop a seat
+/// from the setup order entirely.)
+fn seat_team_keys(scenario: &Scenario) -> Vec<u16> {
+    scenario
+        .players
+        .iter()
+        .enumerate()
+        .map(|(i, p)| p.team.map(u16::from).unwrap_or(256 + i as u16))
+        .collect()
+}
+
+/// Seats in DISPLAY order: grouped by team (first appearance), seat
+/// order within — the setup screen's visual order and its cursor's
+/// walking order are the same list.
 pub fn seat_display_order(scenario: &Scenario) -> Vec<usize> {
-    let mut teams: Vec<u8> = Vec::new();
-    for p in &scenario.players {
-        let t = p.team.unwrap_or(200 + teams.len() as u8);
-        if !teams.contains(&t) {
-            teams.push(t);
+    let keys = seat_team_keys(scenario);
+    let mut teams: Vec<u16> = Vec::new();
+    for &k in &keys {
+        if !teams.contains(&k) {
+            teams.push(k);
         }
     }
     let mut order: Vec<usize> = Vec::new();
     for team in &teams {
-        for (i, p) in scenario.players.iter().enumerate() {
-            let t = p.team.unwrap_or(200 + i as u8);
-            if t == *team && !order.contains(&i) {
+        for (i, &k) in keys.iter().enumerate() {
+            if k == *team {
                 order.push(i);
             }
         }
@@ -251,10 +266,11 @@ pub struct SetupLayout {
 pub fn setup_layout(scenario: &Scenario, seat_choice: usize, view: Vec2, ui: f32) -> SetupLayout {
     let order = seat_display_order(scenario);
     let n = order.len();
-    let teams: Vec<u8> = {
+    let keys = seat_team_keys(scenario);
+    let teams: Vec<u16> = {
         let mut seen = Vec::new();
         for &s in &order {
-            let t = scenario.players[s].team.unwrap_or(200 + s as u8);
+            let t = keys[s];
             if !seen.contains(&t) {
                 seen.push(t);
             }
@@ -263,22 +279,34 @@ pub fn setup_layout(scenario: &Scenario, seat_choice: usize, view: Vec2, ui: f32
     };
     let left_x = 56.0 * ui;
     let left_w = (view.x * 0.42).min(520.0 * ui);
-    let top = 132.0 * ui;
-    let bottom = view.y - 44.0 * ui;
-    let heading_h = 26.0 * ui;
-    let start_h = 46.0 * ui;
-    let gap = 6.0 * ui;
-    let avail = bottom - top - teams.len() as f32 * heading_h - start_h - 24.0 * ui;
-    let card_h = ((avail / n.max(1) as f32) - gap).clamp(34.0 * ui, 56.0 * ui);
+    // Margins yield before content: small windows compress the title
+    // zone first, then chrome, then the cards — the full roster and
+    // the Start button stay on screen by construction (the old fixed
+    // 34ui card floor pushed Start past the bottom of a 640x400
+    // window on eight-seat maps, with no scrolling to reach it).
+    let top = (132.0 * ui).min(view.y * 0.22);
+    let bottom = view.y - (44.0 * ui).min(view.y * 0.08);
+    let mut heading_h = 26.0 * ui;
+    let mut start_h = 46.0 * ui;
+    let mut gap = 6.0 * ui;
+    let mut avail = bottom - top - teams.len() as f32 * heading_h - start_h - 24.0 * ui;
+    let mut card_h = ((avail / n.max(1) as f32) - gap).clamp(34.0 * ui, 56.0 * ui);
+    if n as f32 * (card_h + gap) > avail {
+        heading_h *= 0.7;
+        start_h *= 0.75;
+        gap *= 0.5;
+        avail = bottom - top - teams.len() as f32 * heading_h - start_h - 24.0 * ui;
+        card_h = ((avail / n.max(1) as f32) - gap).max(18.0 * ui);
+    }
 
     let mut headings = Vec::new();
     let mut seats = vec![Rect::new(0.0, 0.0, 0.0, 0.0); n];
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut cells = vec![[zero; 4]; n];
     let mut y = top;
-    let mut last_team: Option<u8> = None;
+    let mut last_team: Option<u16> = None;
     for (pos, &seat) in order.iter().enumerate() {
-        let team = scenario.players[seat].team.unwrap_or(200 + seat as u8);
+        let team = keys[seat];
         if last_team != Some(team) {
             let label = format!(
                 "TEAM {}",
@@ -297,7 +325,8 @@ pub fn setup_layout(scenario: &Scenario, seat_choice: usize, view: Vec2, ui: f32
         let pers_w = 118.0 * ui;
         let diff_w = 78.0 * ui;
         let pad = 8.0 * ui;
-        let chip_h = (card_h - 16.0 * ui).max(22.0 * ui);
+        // Proportional, so a squeezed card keeps its chips inside.
+        let chip_h = (card_h * 0.72).clamp(14.0 * ui, 40.0 * ui);
         let cy = y + (card_h - chip_h) * 0.5;
         let fac = Rect::new(card.x + card.w - fac_w - pad, cy, fac_w, chip_h);
         if seat != seat_choice {
@@ -1123,6 +1152,33 @@ mod tests {
     }
 
     #[test]
+    fn omitted_singleton_teams_keep_their_setup_card() {
+        let mut scenario = Scenario::load("../scenarios/trident-plateau.json").expect("shipped");
+        // Two explicit teammates then an omitted singleton — the shape
+        // that used to derive two different surrogate keys and drop
+        // the seat from the display order (Enter on Start then indexed
+        // past the order and panicked).
+        scenario.players[2].team = None;
+        let order = seat_display_order(&scenario);
+        assert_eq!(
+            order.len(),
+            scenario.players.len(),
+            "every seat keeps a card"
+        );
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..scenario.players.len()).collect::<Vec<_>>());
+        let layout = setup_layout(&scenario, 0, vec2(1280.0, 800.0), 1.0);
+        assert_eq!(layout.seats.len(), scenario.players.len());
+
+        // An authored id inside the old surrogate range must not
+        // swallow an omitted seat either.
+        scenario.players[2].team = Some(202);
+        let order = seat_display_order(&scenario);
+        assert_eq!(order.len(), scenario.players.len());
+    }
+
+    #[test]
     fn the_faction_chip_cycles_on_every_card_including_yours() {
         let mut draft = NewMatchDraft::default();
         let mut w = Wizard::open(&draft);
@@ -1161,6 +1217,35 @@ mod tests {
             draft.seats[order[1]].personality_choice, 1,
             "cell 2 is the personality dial"
         );
+    }
+
+    #[test]
+    fn the_setup_layout_fits_the_smallest_supported_window() {
+        // Eight seats at 640x400: the old fixed card floor pushed the
+        // Start button past the window bottom with no way to scroll.
+        let scenario = Scenario::load("../scenarios/compass-grand.json").expect("shipped");
+        let layout = setup_layout(&scenario, 0, vec2(640.0, 400.0), 1.0);
+        assert_eq!(layout.seats.len(), 8);
+        for card in &layout.seats {
+            assert!(card.h >= 16.0, "cards stay clickable, not vestigial");
+            assert!(
+                card.y + card.h <= 400.0,
+                "every card stays on screen (card at y={})",
+                card.y
+            );
+        }
+        assert!(
+            layout.start.y + layout.start.h <= 400.0,
+            "Start stays reachable (ends at {})",
+            layout.start.y + layout.start.h
+        );
+        for cells in &layout.cells {
+            for (card, chip) in layout.seats.iter().zip(cells.iter().skip(1)) {
+                if chip.w > 0.0 {
+                    assert!(chip.h <= card.h, "chips never overflow their card");
+                }
+            }
+        }
     }
 
     #[test]

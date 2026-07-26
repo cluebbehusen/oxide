@@ -819,6 +819,117 @@ fn touch_taps_select_and_a_still_hold_orders() {
 }
 
 #[test]
+fn an_armed_build_completes_on_a_tap() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let harvester = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.kind == UnitKind::Harvester && u.player == game.human)
+        .unwrap()
+        .id;
+    game.selection.units = vec![harvester];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    let foundry = game.state.buildings()[0].anchor;
+    let open = game
+        .camera
+        .to_screen(vec2(foundry.x as f32 + 3.5, foundry.y as f32 + 3.5));
+    input.now = 5.0;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchDown {
+            id: 1,
+            x: open.x,
+            y: open.y,
+        }],
+    );
+    input.now = 5.1;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchUp {
+            id: 1,
+            x: open.x,
+            y: open.y,
+        }],
+    );
+    assert!(
+        game.pending
+            .iter()
+            .any(|c| matches!(c.command, Command::Build { .. })),
+        "the tap after an armed card places the site, not a select: {:?}",
+        game.pending
+    );
+    assert!(
+        input.placing.is_none(),
+        "an unmodified tap disarms like a plain click"
+    );
+    assert_eq!(
+        game.selection.units,
+        vec![harvester],
+        "the armed tap never re-selected under the fingertip"
+    );
+}
+
+#[test]
+fn a_fogged_hostile_never_steers_the_long_press() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    // Own Foundry selected: a long-press on ground stages its rally.
+    let own = game
+        .state
+        .buildings()
+        .iter()
+        .find(|b| b.player == game.human)
+        .unwrap()
+        .id;
+    game.selection.building = Some(own);
+    // The enemy Foundry's ground is unexplored — but an omniscient
+    // entity probe would still see the building there and flip the
+    // gesture from rally to select, leaking hidden occupancy.
+    let foe = game
+        .state
+        .buildings()
+        .iter()
+        .find(|b| b.player != game.human)
+        .unwrap();
+    let center = vec2(foe.anchor.x as f32 + 1.0, foe.anchor.y as f32 + 1.0);
+    let foe_tile = foe.anchor;
+    assert!(
+        !game.my_vision().visible(foe_tile),
+        "the probe point must sit under fog for this test to bite"
+    );
+    game.camera.center = center;
+    let screen = game.camera.to_screen(center);
+    input.now = 9.0;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchDown {
+            id: 7,
+            x: screen.x,
+            y: screen.y,
+        }],
+    );
+    input.now = 9.9;
+    update_touch(&mut game, &mut input);
+    assert_eq!(
+        game.selection.building,
+        Some(own),
+        "the hidden building must not turn the gesture into a select"
+    );
+    assert!(
+        game.pending
+            .iter()
+            .any(|c| matches!(c.command, Command::SetRally { .. })),
+        "fogged ground long-press means rally, occupied or not: {:?}",
+        game.pending
+    );
+}
+
+#[test]
 fn one_finger_drags_the_camera_and_two_box_select() {
     let mut game = headless_game();
     let mut input = InputState::new();
@@ -1068,6 +1179,57 @@ fn publish_minimap(game: &Game) -> macroquad::math::Rect {
         0,
     ));
     minimap
+}
+
+#[test]
+fn a_minimap_right_click_never_commands_a_foreign_selection() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let minimap = publish_minimap(&game);
+    let foe = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player != game.human)
+        .unwrap()
+        .id;
+    game.selection.units = vec![foe];
+    let right = |x: f32, y: f32| RawEvent::MouseDown {
+        button: MouseButton::Right,
+        x,
+        y,
+    };
+    apply_events(
+        &mut game,
+        &mut input,
+        &[right(minimap.x + 30.0, minimap.y + 30.0)],
+    );
+    assert!(
+        game.pending.is_empty(),
+        "an inspected foreign army takes no minimap orders: {:?}",
+        game.pending
+    );
+    // The gate is about allegiance, not the minimap: an own selection
+    // still orders through it.
+    let mine = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human)
+        .unwrap()
+        .id;
+    game.selection.units = vec![mine];
+    apply_events(
+        &mut game,
+        &mut input,
+        &[right(minimap.x + 30.0, minimap.y + 30.0)],
+    );
+    assert!(
+        game.pending
+            .iter()
+            .any(|c| matches!(c.command, Command::AttackMove { .. })),
+        "own machines still take the minimap order"
+    );
 }
 
 #[test]

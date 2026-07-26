@@ -18,7 +18,9 @@ import torch
 
 from league import (
     FAB_BUILT,
+    SHAPE_K,
     TEL,
+    F,
     Job,
     comp_entropy,
     faction_knob,
@@ -445,6 +447,30 @@ class TestTerminalObservations:
         rew = self._run(frames)
         assert rew[1][0] == pytest.approx(-1.0), "a lost fab earns nothing"
         assert rew[1][1] == pytest.approx(1.0 + 0.05), "a standing fab pays"
+
+    def test_the_terminal_step_still_prices_the_potential(self) -> None:
+        # A salvage (or an army loss) landing on the terminal cadence
+        # must not escape the building-value shaping: seat 0 carries
+        # standing value mid-episode that is GONE on the final frame,
+        # and the terminal reward carries the negative delta the
+        # nonterminal branch would have priced.
+        rich = _tech_view(0)
+        rich.raw[F["my_building_value"]] = 300
+        frames = [
+            Frame(False, 16, seats={0: rich, 1: _tech_view(0)}),
+            Frame(
+                True,
+                32,
+                winners=[1],
+                seats={0: _tech_view(0), 1: _tech_view(0)},
+            ),
+        ]
+        rew = self._run(frames)
+        drop = SHAPE_K * (0.0 - (300 / 3.0) / 500.0)
+        assert rew[1][0] == pytest.approx(-1.0 + drop), (
+            "the final step's lost value is priced into the terminal reward"
+        )
+        assert rew[1][1] == pytest.approx(1.0), "a flat seat sees no delta"
 
     def test_a_dead_seat_settles_on_its_frozen_last_view(self) -> None:
         # Seat 1 dies mid-episode (drops from the frame) after standing

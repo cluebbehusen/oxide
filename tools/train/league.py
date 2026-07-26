@@ -574,7 +574,16 @@ def rollout(
                         h = comp_entropy(j.seat_view(s).raw)
                         TEL["mix_ent"] += h
                         mut_bonus += mix_bonus * min(h, 2.0) / 2.0
-                    lane.rew.append(frame.reward(s) + mut_bonus)
+                    # Close the potential on the true final position:
+                    # without this delta, a salvage (or an army loss)
+                    # landing on the terminal cadence escaped the
+                    # shaping entirely — the anti-salvage
+                    # building-value term never priced the final step.
+                    # A dead lane's frozen view prices a zero delta by
+                    # construction (last_pot froze with it).
+                    final_pot = potential(j.seat_view(s).raw)
+                    shape = SHAPE_K * (final_pot - lane.last_pot)
+                    lane.rew.append(frame.reward(s) + mut_bonus + shape)
                     lane.done.append(True)
                     finished_rewards.append(frame.reward(s))
                 j.reset(next(seeds))
