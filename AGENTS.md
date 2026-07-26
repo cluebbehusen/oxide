@@ -310,7 +310,8 @@ this kind of harness work).
 with every bot seat thinking — the heaviest honest shape; 0.11
 measured 3,073 ticks/s deep-game, so no perf window is open); CI
 asserts only hash-identity at scale. The 0.10 pacing findings and levers live in
-EXPERIMENTS.md; matches target tens of minutes (the `vast` map class
+`experiments/` (the per-era lab notebook — its README indexes the
+campaigns); matches target tens of minutes (the `vast` map class
 and the foundry-durability bless exist for this; the lancer's
 damage bless is what made the tech tree worth climbing — the matchup
 instrument condemned the old rail at true par cost).
