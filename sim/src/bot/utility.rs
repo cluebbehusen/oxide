@@ -618,6 +618,12 @@ impl UtilityPolicy {
             .my_buildings
             .iter()
             .filter(|b| b.built && b.hp * 10 < b.kind.stats().max_hp * 8)
+            // A building an own crew is stripping is being LIQUIDATED
+            // on purpose — repair and salvage evict each other in the
+            // sim, so a repair intent here would re-crew the teardown
+            // and reverse it (the gym's lowering applies this same
+            // filter).
+            .filter(|b| !obs.my_units.iter().any(|u| u.salvaging == Some(b.id)))
             .map(|b| {
                 let deficit = b.kind.stats().max_hp - b.hp;
                 (std::cmp::Reverse(deficit), b.anchor.y, b.anchor.x, b.id)

@@ -194,6 +194,113 @@ fn harvesters_weld_wounds_shut_for_a_price() {
 }
 
 #[test]
+fn a_rejected_welders_prepaid_coin_comes_back() {
+    // The review scenario, made deterministic: two FRESH welders join
+    // a turret one hp from full. Their meters run in phase — both bill
+    // their first scrap on the same tick — but the ceiling accepts one
+    // step and rejects the other whole. The rejected welder's prepaid
+    // coin must come back at resolution; before the refund it simply
+    // vanished, and the crew paid two scrap for one hp.
+    let mut scenario = arena(vec![
+        unit(0, UnitKind::Harvester, 4, 2),
+        unit(1, UnitKind::Scuttler, 12, 6),
+        unit(1, UnitKind::Scuttler, 12, 7),
+    ]);
+    // Room for the turret, three trained torches, and the weld.
+    scenario.players[0].scrap = 500;
+    let mut state = scenario.build().unwrap();
+    let builder = state.units()[0].id;
+    let raiders = vec![state.units()[1].id, state.units()[2].id];
+    let (turret, opener, _) = wounded_turret(&mut state, builder, raiders);
+    // Two more torches, parked adjacent BEFORE they are needed so
+    // their first weld ticks are their first meter ticks.
+    let foundry = state
+        .buildings()
+        .iter()
+        .find(|b| b.player == PlayerId(0) && b.kind == BuildingKind::Foundry)
+        .unwrap()
+        .id;
+    let mut fresh = Vec::new();
+    // South-side parks: away from the foundry's spawn traffic, so each
+    // torch walks alone and lands exactly on its goal.
+    for park in [TilePos::new(2, 4), TilePos::new(4, 4)] {
+        state.tick(&[cmd(
+            0,
+            Command::Train {
+                building: foundry,
+                kind: UnitKind::Harvester,
+            },
+        )]);
+        let mut trained = None;
+        run_until(&mut state, 200, |_, events| {
+            events.iter().any(|e| {
+                if let Event::UnitTrained { unit, .. } = e {
+                    trained = Some(*unit);
+                    true
+                } else {
+                    false
+                }
+            })
+        });
+        let torch = trained.expect("trained");
+        state.tick(&[cmd(
+            0,
+            Command::Move {
+                units: vec![torch],
+                goal: park,
+                queue: false,
+            },
+        )]);
+        run_until(&mut state, 300, |s, _| {
+            s.unit(torch).unwrap().tile() == park
+        });
+        fresh.push(torch);
+    }
+    // The opener welds to exactly one hp short (turret steps are never
+    // more than 1 hp per tick: ramp 280 over 300 ticks), then stands
+    // down.
+    let max = BuildingKind::Turret.stats().max_hp;
+    state.tick(&[cmd(
+        0,
+        Command::Repair {
+            units: vec![opener],
+            building: turret,
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 900, |s, _| {
+        s.building(turret).unwrap().hp >= max - 1
+    });
+    assert_eq!(
+        state.building(turret).unwrap().hp,
+        max - 1,
+        "test premise: stopped one hp short"
+    );
+    state.tick(&[cmd(
+        0,
+        Command::Stop {
+            units: vec![opener],
+        },
+    )]);
+    // Both fresh torches take the last hp together.
+    let bank_before = state.player(PlayerId(0)).scrap;
+    state.tick(&[cmd(
+        0,
+        Command::Repair {
+            units: fresh.clone(),
+            building: turret,
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 60, |s, _| s.building(turret).unwrap().hp == max);
+    let spent = bank_before - state.player(PlayerId(0)).scrap;
+    assert_eq!(
+        spent, 1,
+        "one hp landed, one scrap billed — the rejected step's coin refunds"
+    );
+}
+
+#[test]
 fn an_empty_bank_stalls_the_torch() {
     let mut scenario = arena(vec![
         unit(0, UnitKind::Harvester, 4, 2),

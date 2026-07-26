@@ -244,6 +244,9 @@ impl BindingMap {
             (Action::CycleIdleWorker, Key::U),
             (Action::JumpToLastAlert, Key::I),
             (Action::TogglePause, Key::P),
+            // Every gameplay verb crosses over — Salvage shipped after
+            // this preset and once stayed marooned on classic's V.
+            (Action::Salvage, Key::J),
         ] {
             // Order matters: unbind the target key's old meaning first
             // so the rebind never reports a conflict.
@@ -439,6 +442,22 @@ mod tests {
             map.resolve(Key::H, true, false),
             Some(Action::TrainSlot(0)),
             "a held modifier never mutes an unmodified binding"
+        );
+    }
+
+    #[test]
+    fn the_left_handed_preset_crosses_every_gameplay_verb_over() {
+        // The preset's guarantee: verbs live on the right hand. Salvage
+        // shipped after the preset and once stayed marooned on V.
+        let map = BindingMap::left_handed();
+        assert_eq!(
+            map.chord_for(Action::Salvage),
+            Some(Chord::bare(Key::J)),
+            "salvage crossed over with the rest"
+        );
+        assert_eq!(
+            map.chord_for(Action::StopOrScrap),
+            Some(Chord::bare(Key::M))
         );
     }
 

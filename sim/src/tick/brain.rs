@@ -34,6 +34,12 @@ struct PendingHpGain {
     completes: bool,
     player: crate::ids::PlayerId,
     kind: crate::stats::BuildingKind,
+    /// Scrap this welder prepaid for this tick's step (zero for
+    /// construction, which pays at placement). Stacked welders bill
+    /// their own meters against the same start-of-tick reading, so a
+    /// welder whose whole step lands past the hp ceiling gets exactly
+    /// this coin back at resolution.
+    paid: u32,
 }
 
 /// A buffered hp drain — salvage work — resolved with the gains as one
@@ -124,6 +130,38 @@ fn resolve_hits(
                 if let Some(b) = state.building_mut(bid) {
                     b.hp = b.hp.saturating_sub(hit.damage);
                 }
+            }
+        }
+    }
+    // Stacked welders each prepaid their own meter against the same
+    // start-of-tick hp reading, but the ceiling accepts hp in decision
+    // order — a welder whose WHOLE step lands past it gets this tick's
+    // coin back (the marginal welder's partially-accepted step keeps
+    // its ceil-billed fraction: within the billing doc's one-scrap
+    // tolerance). A building fire zeroed this tick refunds nothing —
+    // fire wins and the crew's coin forfeits with its work.
+    {
+        let mut rooms: Vec<(crate::ids::BuildingId, i64)> = Vec::new();
+        for gain in &builds {
+            if gain.paid == 0 {
+                continue;
+            }
+            let Some(b) = state.building(gain.site).filter(|b| b.hp > 0) else {
+                continue;
+            };
+            let i = match rooms.iter().position(|(id, _)| *id == gain.site) {
+                Some(i) => i,
+                None => {
+                    let room = i64::from(b.kind.stats().max_hp) - i64::from(b.hp);
+                    rooms.push((gain.site, room));
+                    rooms.len() - 1
+                }
+            };
+            if rooms[i].1 <= 0 {
+                let bank = &mut state.player_mut(gain.player).scrap;
+                *bank = bank.saturating_add(gain.paid);
+            } else {
+                rooms[i].1 -= i64::from(gain.step);
             }
         }
     }

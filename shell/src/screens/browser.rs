@@ -236,6 +236,21 @@ impl Browser {
         let view = crate::render::viewport();
         let ui = crate::render::ui_scale();
         let cols = columns(view.x, ui);
+        // A resize can shrink the window out from under the selection —
+        // layout() recomputes each frame but scroll state does not, and
+        // Enter would fire a card no longer on screen. Scroll the
+        // window back to the selection before acting on anything.
+        {
+            let shown: Vec<usize> = self
+                .layout(entries, view, ui)
+                .cards
+                .iter()
+                .map(|(e, _)| *e)
+                .collect();
+            if !shown.is_empty() && !shown.contains(&self.selected) {
+                self.ensure_visible(entries);
+            }
+        }
         let last = entries.len() - 1;
         let card_at = |browser: &Self, p: Vec2| {
             browser
@@ -546,6 +561,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_resize_scrolls_the_window_back_to_the_selection() {
+        let entries = shelf();
+        let mut b = Browser::new();
+        let mut mouse = vec2(0.0, 0.0);
+        b.handle(&entries, &[RawEvent::KeyDown { key: Key::End }], &mut mouse);
+        // The window shrinks out from under the tail selection; the
+        // next frame must scroll back to it, or Enter fires a card
+        // the player cannot see.
+        crate::render::set_viewport(640.0, 400.0);
+        b.handle(
+            &entries,
+            &[RawEvent::MouseMove { x: 0.0, y: 0.0 }],
+            &mut mouse,
+        );
+        let ui = crate::render::ui_scale();
+        let visible: Vec<usize> = b
+            .layout(&entries, vec2(640.0, 400.0), ui)
+            .cards
+            .iter()
+            .map(|(e, _)| *e)
+            .collect();
+        crate::render::set_viewport(1280.0, 800.0);
+        assert!(
+            visible.contains(&b.selected),
+            "the selection is back on screen (visible {visible:?}, selected {})",
+            b.selected
+        );
     }
 
     #[test]

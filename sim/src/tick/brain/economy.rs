@@ -58,6 +58,7 @@ pub(super) fn build(
                 completes,
                 player: me,
                 kind,
+                paid: 0, // construction paid at placement
             });
         }
         state.unit_mut(id).expect("caller checked").path = None;
@@ -151,6 +152,7 @@ pub(super) fn repair(
                 completes: false,
                 player: me,
                 kind,
+                paid: due as u32,
             });
         }
     } else if !approach_rect(state, id, anchor, size) {

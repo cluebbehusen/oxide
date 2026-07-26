@@ -667,8 +667,17 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                                     r.w > 0.0 && crate::layout::touch_pad(*r, input.ui).contains(p)
                                 })
                                 .map(|(_, a)| *a);
+                            let badge = layout.idle_badge;
                             if let Some(action) = card {
                                 activate_card(game, input, action);
+                            } else if badge.w > 0.0
+                                && crate::layout::touch_pad(badge, input.ui).contains(p)
+                            {
+                                // The idle badge cycles workers by
+                                // fingertip too — it sits in the top
+                                // bar, which the bare-chrome swallow
+                                // below would otherwise eat.
+                                cycle_idle_worker(game);
                             } else if click_on_hud(game, p) {
                                 // Bare chrome: the tap is swallowed.
                             } else if double {

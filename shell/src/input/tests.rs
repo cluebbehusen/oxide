@@ -1182,6 +1182,57 @@ fn publish_minimap(game: &Game) -> macroquad::math::Rect {
 }
 
 #[test]
+fn a_tap_on_the_idle_badge_cycles_workers() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    // Publish chrome with a live idle badge in the top bar — the
+    // bare-chrome swallow used to eat fingertip taps on it while the
+    // mouse path cycled workers.
+    let badge = macroquad::math::Rect::new(200.0, 4.0, 60.0, 24.0);
+    let zero = macroquad::math::Rect::new(0.0, 0.0, 0.0, 0.0);
+    game.layout.set(crate::layout::LayoutModel::compute(
+        vec2(1280.0, 800.0),
+        1.0,
+        f32::INFINITY,
+        0.0,
+        zero,
+        zero,
+        badge,
+        [(zero, crate::panel::CardAction::None); 16],
+        0,
+        [(zero, crate::panel::CardAction::None); 8],
+        0,
+    ));
+    let before = game.camera.center;
+    input.now = 3.0;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchDown {
+            id: 1,
+            x: badge.x + 10.0,
+            y: badge.y + 10.0,
+        }],
+    );
+    input.now = 3.1;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchUp {
+            id: 1,
+            x: badge.x + 10.0,
+            y: badge.y + 10.0,
+        }],
+    );
+    // Cycling an idle worker selects it and jumps the camera to it —
+    // either effect proves the badge answered the fingertip.
+    assert!(
+        !game.selection.units.is_empty() || game.camera.center != before,
+        "the badge answers a tap like it answers a click"
+    );
+}
+
+#[test]
 fn a_minimap_right_click_never_commands_a_foreign_selection() {
     let mut game = headless_game();
     let mut input = InputState::new();

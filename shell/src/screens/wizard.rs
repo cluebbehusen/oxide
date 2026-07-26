@@ -297,6 +297,13 @@ pub fn setup_layout(scenario: &Scenario, seat_choice: usize, view: Vec2, ui: f32
         gap *= 0.5;
         avail = bottom - top - teams.len() as f32 * heading_h - start_h - 24.0 * ui;
         card_h = ((avail / n.max(1) as f32) - gap).max(18.0 * ui);
+        // A large UI scale cannot conjure height: when the ui-scaled
+        // floor still overflows, the floor goes PHYSICAL — controls
+        // run small, but the whole roster and Start stay on screen
+        // and clickable at every supported window.
+        if n as f32 * (card_h + gap) > avail {
+            card_h = ((avail / n.max(1) as f32) - gap).max(14.0);
+        }
     }
 
     let mut headings = Vec::new();
@@ -320,18 +327,27 @@ pub fn setup_layout(scenario: &Scenario, seat_choice: usize, view: Vec2, ui: f32
         seats[pos] = card;
         // The inline dial chips, right-aligned; the seat zone is the
         // rest of the card. Every card carries the faction chip —
-        // the human's own card carries ONLY that.
-        let fac_w = 82.0 * ui;
-        let pers_w = 118.0 * ui;
-        let diff_w = 78.0 * ui;
+        // the human's own card carries ONLY that. The seat zone keeps
+        // a guaranteed share: at narrow widths the three fixed-width
+        // chips once summed past the whole card, driving the zone to
+        // negative width — nothing left to click to take a chair.
+        // Chips scale into what the zone leaves; their text fits
+        // itself at draw.
         let pad = 8.0 * ui;
+        let seat_min = (card.w * 0.34).max(96.0 * ui).min(card.w * 0.55);
+        let chip_scale =
+            ((card.w - pad - seat_min) / ((78.0 + 118.0 + 82.0 + 16.0) * ui)).clamp(0.3, 1.0);
+        let fac_w = 82.0 * ui * chip_scale;
+        let pers_w = 118.0 * ui * chip_scale;
+        let diff_w = 78.0 * ui * chip_scale;
         // Proportional, so a squeezed card keeps its chips inside.
-        let chip_h = (card_h * 0.72).clamp(14.0 * ui, 40.0 * ui);
+        let chip_h = (card_h * 0.72).clamp(10.0, 40.0 * ui);
         let cy = y + (card_h - chip_h) * 0.5;
         let fac = Rect::new(card.x + card.w - fac_w - pad, cy, fac_w, chip_h);
         if seat != seat_choice {
-            let pers = Rect::new(fac.x - pers_w - pad, cy, pers_w, chip_h);
-            let diff = Rect::new(pers.x - diff_w - pad, cy, diff_w, chip_h);
+            let cpad = pad * chip_scale;
+            let pers = Rect::new(fac.x - pers_w - cpad, cy, pers_w, chip_h);
+            let diff = Rect::new(pers.x - diff_w - cpad, cy, diff_w, chip_h);
             let seat_zone = Rect::new(card.x, y, diff.x - card.x, card_h);
             cells[pos] = [seat_zone, diff, pers, fac];
         } else {
@@ -814,12 +830,19 @@ impl Wizard {
                         Color::new(0.6, 0.6, 0.65, 0.35)
                     },
                 );
-                let ldims = measure_text(label, None, (13.0 * ui) as u16, 1.0);
+                // The label fits ITS chip: squeezed cards shrink the
+                // type instead of spilling text across neighbors.
+                let mut font = 13.0 * ui;
+                let mut ldims = measure_text(label, None, font as u16, 1.0);
+                if ldims.width > chip.w - 6.0 {
+                    font = (font * (chip.w - 6.0) / ldims.width).max(8.0);
+                    ldims = measure_text(label, None, font as u16, 1.0);
+                }
                 draw_text(
                     label,
                     chip.x + (chip.w - ldims.width) * 0.5,
-                    chip.y + chip.h * 0.5 + 4.5 * ui,
-                    13.0 * ui,
+                    chip.y + chip.h * 0.5 + font * 0.35,
+                    font,
                     if on_cell { ITEM_COLOR } else { DIM },
                 );
             }
@@ -1221,28 +1244,41 @@ mod tests {
 
     #[test]
     fn the_setup_layout_fits_the_smallest_supported_window() {
-        // Eight seats at 640x400: the old fixed card floor pushed the
-        // Start button past the window bottom with no way to scroll.
+        // Eight seats at the supported extremes: 640x400 at 1x (the
+        // old fixed card floor pushed Start off-screen; the old fixed
+        // chip widths drove the seat zone NEGATIVE — unclickable
+        // chairs) and 960x400 at the 150% user scale (the ui-scaled
+        // emergency floor still overflowed).
         let scenario = Scenario::load("../scenarios/compass-grand.json").expect("shipped");
-        let layout = setup_layout(&scenario, 0, vec2(640.0, 400.0), 1.0);
-        assert_eq!(layout.seats.len(), 8);
-        for card in &layout.seats {
-            assert!(card.h >= 16.0, "cards stay clickable, not vestigial");
+        for (view, ui) in [(vec2(640.0, 400.0), 1.0), (vec2(960.0, 400.0), 1.5)] {
+            let layout = setup_layout(&scenario, 0, view, ui);
+            assert_eq!(layout.seats.len(), 8);
+            for card in &layout.seats {
+                assert!(card.h >= 13.0, "cards stay clickable, not vestigial");
+                assert!(
+                    card.y + card.h <= view.y,
+                    "every card stays on screen at {view:?} x{ui} (card at y={})",
+                    card.y
+                );
+            }
             assert!(
-                card.y + card.h <= 400.0,
-                "every card stays on screen (card at y={})",
-                card.y
+                layout.start.y + layout.start.h <= view.y,
+                "Start stays reachable at {view:?} x{ui} (ends at {})",
+                layout.start.y + layout.start.h
             );
-        }
-        assert!(
-            layout.start.y + layout.start.h <= 400.0,
-            "Start stays reachable (ends at {})",
-            layout.start.y + layout.start.h
-        );
-        for cells in &layout.cells {
-            for (card, chip) in layout.seats.iter().zip(cells.iter().skip(1)) {
-                if chip.w > 0.0 {
-                    assert!(chip.h <= card.h, "chips never overflow their card");
+            for (pos, cells) in layout.cells.iter().enumerate() {
+                let card = layout.seats[pos];
+                assert!(
+                    cells[0].w > 24.0,
+                    "the seat zone stays clickable at {view:?} x{ui} (w={})",
+                    cells[0].w
+                );
+                for chip in cells.iter().skip(1).filter(|c| c.w > 0.0) {
+                    assert!(chip.h <= card.h + 0.01, "chips never overflow their card");
+                    assert!(
+                        chip.x >= card.x,
+                        "chips stay inside the card at {view:?} x{ui}"
+                    );
                 }
             }
         }
