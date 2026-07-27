@@ -114,3 +114,113 @@ fn prospecting_never_stamps_the_intel_age_feature() {
         state.tick(&commands);
     }
 }
+
+/// A scrap-free yard: nothing harvestable anywhere, so the ladder's
+/// rung 2 wants a prospector every think — while the chosen action
+/// spends a harvester the executive picks only at lowering time. The
+/// two must never pick the same machine.
+fn barren_yard(harvesters: usize) -> Scenario {
+    let units: Vec<_> = (0..harvesters)
+        .map(|i| serde_json::json!({"player": 0, "kind": "harvester", "x": 5 + i as i32, "y": 4}))
+        .collect();
+    Scenario::from_json(
+        &serde_json::json!({
+            "name": "Barren Yard",
+            "seed": 5,
+            "players": [
+                {"name": "Digger", "faction": "ferrous", "scrap": 500, "bot": false},
+                {"name": "Idle", "faction": "cupric", "scrap": 0, "bot": false}
+            ],
+            "map": [
+                "################",
+                "#..............#",
+                "#..............#",
+                "#..1...........#",
+                "#..............#",
+                "#............2.#",
+                "#..............#",
+                "################"
+            ],
+            "units": units,
+            "buildings": [
+                {"player": 0, "kind": "turret", "x": 10, "y": 2}
+            ]
+        })
+        .to_string(),
+    )
+    .expect("the barren yard parses")
+}
+
+#[test]
+fn the_prospector_never_strips_the_actions_builder() {
+    use oxide_sim::Command;
+    for harvesters in 1..=3 {
+        let state = barren_yard(harvesters)
+            .build()
+            .expect("the barren yard builds");
+        let mut gym = GymBot::new(PlayerId(0));
+        let commands = gym.step(&state, Action::BuildFabricator);
+        let builder = commands
+            .iter()
+            .find_map(|pc| match &pc.command {
+                Command::Build { units, .. } => units.first().copied(),
+                _ => None,
+            })
+            .expect("the action staged its site");
+        let stripped = commands.iter().any(|pc| match &pc.command {
+            Command::Move { units, .. } => units.contains(&builder),
+            _ => false,
+        });
+        assert!(
+            !stripped,
+            "{harvesters} harvesters: the prospecting sweep replaced the \
+             builder's order — the site is paid for and orphaned: {commands:?}"
+        );
+    }
+}
+
+#[test]
+fn the_paid_site_is_actually_under_construction_next_tick() {
+    use oxide_sim::Order;
+    let mut state = barren_yard(1).build().expect("builds");
+    let mut gym = GymBot::new(PlayerId(0));
+    let commands = gym.step(&state, Action::BuildFabricator);
+    state.tick(&commands);
+    let site = state
+        .buildings()
+        .iter()
+        .find(|b| !b.built)
+        .expect("the paid site stands")
+        .id;
+    assert!(
+        state
+            .units()
+            .iter()
+            .any(|u| matches!(u.order, Order::Build { site: s } if s == site)),
+        "the only harvester walked off to prospect instead of building \
+         the site its own action paid for"
+    );
+}
+
+#[test]
+fn the_prospector_never_strips_the_salvage_crew() {
+    use oxide_sim::Command;
+    let state = barren_yard(1).build().expect("builds");
+    let mut gym = GymBot::new(PlayerId(0));
+    let commands = gym.step(&state, Action::Salvage);
+    let crew = commands
+        .iter()
+        .find_map(|pc| match &pc.command {
+            Command::Salvage { units, .. } => units.first().copied(),
+            _ => None,
+        })
+        .expect("the action staged its strip");
+    let stripped = commands.iter().any(|pc| match &pc.command {
+        Command::Move { units, .. } => units.contains(&crew),
+        _ => false,
+    });
+    assert!(
+        !stripped,
+        "the prospecting sweep replaced the salvage order: {commands:?}"
+    );
+}

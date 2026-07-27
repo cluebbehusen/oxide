@@ -310,7 +310,12 @@ impl UtilityPolicy {
     /// `known_scrap`. Deliberately disjoint from the scout machinery:
     /// prospecting never stamps `scouted_at` (that feeds the trained
     /// `intel_age` feature) and never claims `self.scout`.
-    pub(super) fn prospect(&mut self, obs: &Observation, intents: &mut Vec<Intent>) {
+    pub(super) fn prospect(
+        &mut self,
+        obs: &Observation,
+        spoken_for: &[UnitId],
+        intents: &mut Vec<Intent>,
+    ) {
         // Economy's assignments this think are still in the ledger
         // (the audits drained it at the think's start).
         let assigned: Vec<UnitId> = self.last_sent.iter().map(|(id, _)| *id).collect();
@@ -322,6 +327,7 @@ impl UtilityPolicy {
                     && u.idle
                     && Some(u.id) != self.scout
                     && !assigned.contains(&u.id)
+                    && !spoken_for.contains(&u.id)
             })
             .map(|u| (u.id, u.tile))
             .collect();

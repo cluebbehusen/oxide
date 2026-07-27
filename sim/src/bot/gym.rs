@@ -850,7 +850,16 @@ impl GymBot {
         // prospect; the scripted yardstick tiers never do), orphaned
         // sites resumed (paid-for progress must not strand).
         self.policy.economy(&obs, home, &mut intents);
-        self.policy.prospect(&obs, &mut intents);
+        // The action's Build/Repair/Salvage spends a harvester the
+        // executive picks only at lowering time, and Scout's lowering
+        // is unconditional: a prospector drawn from that same machine
+        // would replace the order the action just paid for. Preview the
+        // labor claims in world space (the anchors `apply` will see)
+        // and keep the ladder off them.
+        let spoken_for = self
+            .exec
+            .labor_claims(&world, &orientation.emit(intents.clone()));
+        self.policy.prospect(&obs, &spoken_for, &mut intents);
         if let Some(site) = obs
             .my_buildings
             .iter()
