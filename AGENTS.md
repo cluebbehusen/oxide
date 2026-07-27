@@ -305,6 +305,13 @@ learner never found the counter" from "no counter exists"
 stand in front of side B, priced into its verdict — scenarios grew a
 serde-default `buildings` list of pre-built structures for exactly
 this kind of harness work).
+`driver sweep` (0.12) is the decisiveness instrument: N seeds of
+bot-vs-bot on one 1v1 map at one level, each seed played in both
+personality orientations (the dealt pair exchanged between the
+seats), reporting decided/undecided counts, seat bias that survives
+the exchange, and decision-tick medians — where balance-probe asks
+what armies were made of, sweep asks whether games END. The 0.12 bot
+phases gate on it.
 `driver bench` times a 500-unit mass battle locally
 (`--scenario scenarios/compass-grand.json` instead runs a shipped map
 with EVERY chair converted to a thinking Expert — the heaviest honest

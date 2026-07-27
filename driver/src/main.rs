@@ -110,6 +110,30 @@ enum Cmd {
         #[arg(long)]
         out: Option<String>,
     },
+    /// Decisiveness seed sweep: N seeds of bot-vs-bot on one 1v1 map,
+    /// each seed played in both personality orientations — do games
+    /// END, and does a seat lean survive the exchange? The 0.12 bot
+    /// phases gate on this.
+    Sweep {
+        /// Scenario path, or "skirmish".
+        #[arg(long, default_value = "skirmish")]
+        scenario: String,
+        /// Ladder level to sweep ("easy".."expert").
+        #[arg(long, default_value = "medium")]
+        level: String,
+        /// Seeds (each played twice: dealt and personality-swapped).
+        #[arg(long, default_value_t = 24, value_parser = clap::value_parser!(u64).range(1..))]
+        seeds: u64,
+        /// Tick cap per match (the 0.11 probes read at 40k).
+        #[arg(long, default_value_t = 40_000, value_parser = clap::value_parser!(u64).range(1..))]
+        ticks: u64,
+        /// First scenario seed; offsets count up from here.
+        #[arg(long, default_value_t = 7_000)]
+        seed_base: u64,
+        /// Raw JSON output path.
+        #[arg(long)]
+        out: Option<String>,
+    },
     /// Timed mass-battle bench: ticks/second at scale, plus a hash
     /// self-check. Wall-clock stays local; CI asserts only correctness.
     Bench {
@@ -229,6 +253,16 @@ mod parse;
 
 use live_cli::{LiveCmd, capture_sequence, live_requests};
 
+fn parse_level(level: &str) -> Result<oxide_sim::bot::Level> {
+    Ok(match level {
+        "easy" => oxide_sim::bot::Level::Easy,
+        "medium" => oxide_sim::bot::Level::Medium,
+        "hard" => oxide_sim::bot::Level::Hard,
+        "expert" => oxide_sim::bot::Level::Expert,
+        other => anyhow::bail!("unknown level '{other}'"),
+    })
+}
+
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Run {
@@ -292,6 +326,24 @@ fn main() -> Result<()> {
             render::save_png(&outcome.state, &out)?;
             eprintln!("wrote {}", out.display());
         }
+        Cmd::Sweep {
+            scenario,
+            level,
+            seeds,
+            ticks,
+            seed_base,
+            out,
+        } => {
+            let level = parse_level(&level)?;
+            oxide_driver::sweep::sweep_report(
+                &scenario,
+                level,
+                seeds,
+                ticks,
+                seed_base,
+                out.as_deref(),
+            )?;
+        }
         Cmd::BalanceProbe {
             dir,
             level,
@@ -303,13 +355,7 @@ fn main() -> Result<()> {
             weights,
             out,
         } => {
-            let level = match level.as_str() {
-                "easy" => oxide_sim::bot::Level::Easy,
-                "medium" => oxide_sim::bot::Level::Medium,
-                "hard" => oxide_sim::bot::Level::Hard,
-                "expert" => oxide_sim::bot::Level::Expert,
-                other => anyhow::bail!("unknown level '{other}'"),
-            };
+            let level = parse_level(&level)?;
             oxide_driver::balance::balance_probe(
                 &dir,
                 level,
