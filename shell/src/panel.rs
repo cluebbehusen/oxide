@@ -14,7 +14,7 @@ use oxide_sim::stats::{BuildingKind, UnitKind};
 use oxide_sim::{BuildingId, Order};
 
 /// What a card wears.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CardIcon {
     /// A unit sprite (drawn in the human's faction colors).
     Unit(UnitKind),
@@ -157,14 +157,18 @@ fn order_card(order: &Order, active: bool) -> Card {
         Order::Harvest { .. } => ("H", "Harvest", "Working a scrap node, hauling home."),
         Order::Attack { .. } => ("A", "Attack", "Chasing one target until it is gone."),
         Order::Build { .. } => ("B", "Build", "Standing up a construction site."),
+        // Chip letters must not contradict the chords: "X" on the
+        // attack-move chip while X meant Stop, and "R" on repair while
+        // R meant Patrol, taught exactly the wrong reflexes. W is
+        // welding — the game's own word for it.
         Order::Repair { .. } => (
-            "R",
+            "W",
             "Repair",
             "Welding a damaged building; costs a trickle.",
         ),
-        Order::AttackMove { .. } => ("X", "Attack-move", "Marching; engages everything met."),
+        Order::AttackMove { .. } => ("E", "Attack-move", "Marching; engages everything met."),
         Order::Salvage { .. } => (
-            "S",
+            "V",
             "Salvage",
             "Stripping a building down for a partial refund.",
         ),
@@ -375,7 +379,9 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         desc: vec!["Clear orders; stand and auto-engage.".into()],
     });
     panel.cards.push(Card {
-        icon: CardIcon::Glyph("P"),
+        // The letter is the classic chord (R), not the initial — "P"
+        // on a card whose key is R, while P pauses, was a small lie.
+        icon: CardIcon::Glyph("R"),
         title: "Patrol".into(),
         cost: None,
         hotkey: chord(bindings, Action::Patrol),
@@ -459,6 +465,48 @@ mod tests {
     fn nothing_selected_builds_no_panel() {
         let game = game();
         assert!(build(&game, &BindingMap::classic()).is_none());
+    }
+
+    #[test]
+    fn verb_letters_do_not_contradict_the_classic_chords() {
+        use chassis::grid::TilePos;
+        use oxide_sim::UnitKind;
+        let mut game = game();
+        let sentinel = game
+            .state
+            .units()
+            .iter()
+            .find(|u| u.player == game.human && u.kind == UnitKind::Sentinel)
+            .expect("skirmish authors a sentinel")
+            .id;
+        game.state.tick(&[PlayerCommand {
+            player: game.human,
+            command: Command::AttackMove {
+                units: vec![sentinel],
+                goal: TilePos::new(20, 12),
+                queue: false,
+            },
+        }]);
+        game.selection.units = vec![sentinel];
+        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        let patrol = panel
+            .cards
+            .iter()
+            .find(|c| c.title == "Patrol")
+            .expect("patrol card");
+        assert_eq!(
+            patrol.icon,
+            CardIcon::Glyph("R"),
+            "the card letter IS the chord"
+        );
+        assert_eq!(patrol.hotkey, "R");
+        let chip = &panel.queue[0];
+        assert!(chip.title.starts_with("Attack-move"), "{}", chip.title);
+        assert_eq!(
+            chip.icon,
+            CardIcon::Glyph("E"),
+            "the marching chip must not wear the Stop chord's letter"
+        );
     }
 
     #[test]
