@@ -226,12 +226,13 @@ pub(crate) fn draw_panel(
             Color::new(0.6, 0.6, 0.65, 0.4),
         );
         draw_text(
-            panel.queue_label,
+            &panel.queue_label,
             8.0 * s,
             dock_top + 15.0 * s,
             13.0 * s,
             BONE_FAINT,
         );
+        let orders_dock = panel.queue_label.starts_with("orders");
         for (i, card) in panel.queue.iter().take(n).enumerate() {
             let rect = Rect::new(8.0 * s, dock_top + label_h + i as f32 * (qw + qgap), qw, qw);
             let hovered = rect.contains(input.mouse);
@@ -242,18 +243,32 @@ pub(crate) fn draw_panel(
                 rect.h,
                 Color::new(0.14, 0.14, 0.18, 1.0),
             );
+            // The chip in progress wears the bright border, not just a
+            // "(now)" hidden in its tooltip.
+            let active = orders_dock && i == 0;
             draw_rectangle_lines(
                 rect.x,
                 rect.y,
                 rect.w,
                 rect.h,
-                1.2 * s,
-                if hovered {
+                if active { 2.0 * s } else { 1.2 * s },
+                if hovered || active {
                     BONE
                 } else {
                     Color::new(0.45, 0.45, 0.52, 0.8)
                 },
             );
+            // Order chips carry the same numbers the world breadcrumbs
+            // wear — chip 2 IS waypoint 2.
+            if orders_dock && n > 1 {
+                draw_text(
+                    format!("{}", i + 1),
+                    rect.x + 3.0 * s,
+                    rect.y + 13.0 * s,
+                    11.0 * s,
+                    BONE_FAINT,
+                );
+            }
             {
                 let isz = 34.0 * s;
                 draw_texture_ex(

@@ -104,8 +104,39 @@ pub struct Panel {
     pub cards: Vec<Card>,
     /// Queue thumbnails (production or orders).
     pub queue: Vec<Card>,
-    /// What the queue strip is labeled.
-    pub queue_label: &'static str,
+    /// What the queue strip is labeled — for order docks, WHOSE
+    /// program it shows ("orders - harvester"), because the dock draws
+    /// one unit's story while breadcrumbs draw many.
+    pub queue_label: String,
+}
+
+/// The selection's SUBJECT: the unit whose program the dock, the
+/// portrait, and the full-opacity breadcrumbs all describe — one rule,
+/// so the surfaces can never disagree. Majority kind first (a mixed
+/// army reads as its bulk, not its lowest id), lowest id inside it as
+/// the deterministic tie-break.
+pub fn subject_unit(game: &Game) -> Option<oxide_sim::UnitId> {
+    let units: Vec<_> = game
+        .selection
+        .units
+        .iter()
+        .filter_map(|id| game.state.unit(*id))
+        .collect();
+    let mut counts: Vec<(UnitKind, usize)> = Vec::new();
+    for u in &units {
+        match counts.iter_mut().find(|(k, _)| *k == u.kind) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((u.kind, 1)),
+        }
+    }
+    let (majority, _) = counts
+        .into_iter()
+        .max_by_key(|&(k, n)| (n, std::cmp::Reverse(k.name())))?;
+    units
+        .iter()
+        .filter(|u| u.kind == majority)
+        .map(|u| u.id)
+        .min()
 }
 
 /// One-line flavor per unit kind — tooltip and codex copy.
@@ -252,7 +283,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             faction: game.state.player(owner).faction,
             cards: Vec::new(),
             queue: Vec::new(),
-            queue_label: "queue",
+            queue_label: "queue".to_string(),
         };
         if owner != game.human {
             // Foreign buildings inspect read-only: an ally's works say
@@ -360,7 +391,8 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         .iter()
         .filter_map(|id| game.state.unit(*id))
         .collect();
-    let first = units.first()?;
+    let subject_id = subject_unit(game)?;
+    let first = units.iter().find(|u| u.id == subject_id)?;
     let owner = first.player;
     let has_builder = units.iter().any(|u| u.kind == UnitKind::Harvester);
     let mut desc = vec![unit_flavor(first.kind).to_string()];
@@ -388,7 +420,12 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         faction: game.state.player(owner).faction,
         cards: Vec::new(),
         queue: Vec::new(),
-        queue_label: "orders",
+        queue_label: if units.len() == 1 {
+            "orders".to_string()
+        } else {
+            // The dock shows ONE unit's program; say whose.
+            format!("orders - {}", first.kind.name())
+        },
     };
     if owner != game.human {
         // Foreign units inspect read-only. An ally shows its orders —

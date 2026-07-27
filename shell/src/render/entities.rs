@@ -57,9 +57,11 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(Vec
     }
     let verb_color = |order: &oxide_sim::Order| match order {
         oxide_sim::Order::Move { .. } => BONE_FAINT,
-        oxide_sim::Order::AttackMove { .. } | oxide_sim::Order::Attack { .. } => {
-            Color::new(0.85, 0.32, 0.29, 0.55)
-        }
+        // A chase and a march are different promises: the chase burns
+        // crimson at its victim, the fighting march runs ember toward
+        // ground.
+        oxide_sim::Order::Attack { .. } => Color::new(0.85, 0.32, 0.29, 0.55),
+        oxide_sim::Order::AttackMove { .. } => Color::new(0.88, 0.55, 0.26, 0.55),
         oxide_sim::Order::Harvest { .. } => Color::new(0.85, 0.64, 0.25, 0.55),
         oxide_sim::Order::Build { .. }
         | oxide_sim::Order::Repair { .. }
@@ -126,6 +128,10 @@ pub(crate) fn draw_breadcrumbs(game: &Game, input: &InputState) {
         }
         return;
     }
+    // The dock tells ONE unit's story; the world agrees: the subject's
+    // trail draws full strength and numbered, the rest of the
+    // selection's trails dim to context.
+    let subject = crate::panel::subject_unit(game);
     for id in game.selection.units.iter().take(DECOR_CAP) {
         let Some(unit) = game.state.unit(*id) else {
             continue;
@@ -134,22 +140,32 @@ pub(crate) fn draw_breadcrumbs(game: &Game, input: &InputState) {
         if points.is_empty() {
             continue;
         }
+        let is_subject = subject == Some(unit.id);
+        let fade = |c: Color| {
+            if is_subject {
+                c
+            } else {
+                Color::new(c.r, c.g, c.b, c.a * 0.35)
+            }
+        };
         let start = game
             .camera
             .to_screen(vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>()));
         let s = ui_scale();
         let mut prev = start;
         for (i, (p, color)) in points.iter().enumerate() {
-            draw_line(prev.x, prev.y, p.x, p.y, 1.0, *color);
-            dot(*p, *color);
-            // Numbered waypoints once a program has legs.
-            if points.len() > 1 {
+            let color = fade(*color);
+            draw_line(prev.x, prev.y, p.x, p.y, 1.0, color);
+            dot(*p, color);
+            // Numbered waypoints once a program has legs — the same
+            // numbers the dock's chips wear, subject only.
+            if is_subject && points.len() > 1 {
                 draw_text(
                     format!("{}", i + 1),
                     p.x + 6.0 * s,
                     p.y - 4.0 * s,
                     14.0 * s,
-                    *color,
+                    color,
                 );
             }
             prev = *p;
@@ -157,6 +173,7 @@ pub(crate) fn draw_breadcrumbs(game: &Game, input: &InputState) {
         // A patrol is a circuit: close it.
         if unit.looping && points.len() > 1 {
             let (first, color) = points[0];
+            let color = fade(color);
             draw_line(prev.x, prev.y, first.x, first.y, 1.0, color);
         }
     }
