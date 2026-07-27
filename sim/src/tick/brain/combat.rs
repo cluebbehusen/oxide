@@ -404,7 +404,22 @@ pub(super) fn attack(
                 unit.order = Order::AttackMove { goal };
                 unit.path = None;
             }
-            None => unit.advance_queue(),
+            None => {
+                // VICTORY (the target is gone) keeps the baseline
+                // rhythm exactly: stand down where the fight ended
+                // and let next tick's idle() pick the next one —
+                // walking home mid-battle lost duels, and re-hunting
+                // inside this arm perturbed scripted battles enough
+                // to flip whole tier rungs onto the seat-parity coin.
+                // A tethered victor stays STATIONED though, so its
+                // next acquisition re-tethers on the spot: one
+                // sacrificial unit must not buy the bait an
+                // unleashed guard.
+                if unit.leash.take().is_some() {
+                    unit.settled = crate::stats::LEASH_STATION_TICKS;
+                }
+                unit.advance_queue();
+            }
         }
         return;
     };
@@ -460,6 +475,18 @@ pub(super) fn attack(
     {
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = None;
+        // Blood drawn: reaching the firing stance refreshes the warm
+        // window, buying followthrough past the radius — what lets a
+        // guard finish the wounded runner rotating to the rear (the
+        // scripted tiers' preservation trick, otherwise unpunishable)
+        // without licensing a cross-map dive. A kiting harvester
+        // outruns every line fighter, never grants a window, and its
+        // chaser breaks at the radius line exactly.
+        if resume.is_none()
+            && let Some(leash) = unit.leash.as_mut()
+        {
+            leash.patience = crate::stats::LEASH_PATIENCE;
+        }
         if cooldowns[pi] == 0 {
             unit.cooldowns[pi] = weapon.cooldown_ticks;
             if weapon.projectile {
@@ -496,6 +523,39 @@ pub(super) fn attack(
     }
     // Opportunist guns don't wait for the march to end.
     fire_sidearms(state, id, pi, hits, events);
+
+    // The tether binds here — the chase, not the trigger and not the
+    // firing stand above. It measures the GUARD's own distance from
+    // its anchor, never the target's: the promise is "a stationed
+    // machine travels at most the radius from its post (plus the
+    // warm window)", and a target-based measure made the effective
+    // pursuit depend on how far the chaser trails — weapon range and
+    // speed matchup — turning a zero-window guard home while still
+    // tiles inside its own zone. Inside the radius the guard hunts
+    // freely (that ground is its zone); beyond it every chase tick
+    // spends the warm-blood window, and an empty window sends the
+    // guard walking home, leash kept so the homecoming arms the post
+    // cooldown.
+    if resume.is_none()
+        && let Some(leash) = state.unit(id).expect("caller checked").leash
+    {
+        let radius_sq = crate::stats::LEASH_RADIUS * crate::stats::LEASH_RADIUS;
+        if leash.anchor.center().dist_sq(pos) > radius_sq {
+            if leash.patience == 0 {
+                let unit = state.unit_mut(id).expect("caller checked");
+                unit.order = Order::Move { goal: leash.anchor };
+                unit.path = None;
+                return;
+            }
+            state
+                .unit_mut(id)
+                .expect("caller checked")
+                .leash
+                .as_mut()
+                .expect("just seen")
+                .patience -= 1;
+        }
+    }
 
     // Out of range (or blind, or blocked): chase.
     let reached: Result<(), StallReason> = match target {
@@ -576,6 +636,16 @@ pub(super) fn attack(
     };
     if let Err(reason) = reached {
         let unit = state.unit_mut(id).expect("caller checked");
+        // A tethered chase that cannot route breaks off home quietly:
+        // abandoning its own acquisition is the guard's decision, not
+        // a player order failing — no stall toast.
+        if resume.is_none()
+            && let Some(leash) = unit.leash
+        {
+            unit.order = Order::Move { goal: leash.anchor };
+            unit.path = None;
+            return;
+        }
         let (player, pos) = (unit.player, unit.pos);
         unit.clear_program();
         events.push(Event::OrderStalled {
@@ -689,6 +759,12 @@ pub(super) fn retaliate(state: &mut State, victim: UnitId, attacker: Target) {
     let resume = match unit.order {
         Order::Idle => None,
         Order::AttackMove { goal } => Some(goal),
+        // A tethered homecoming answers fire: the walk home resumes
+        // through the leash once the attacker falls, so no resume
+        // goal is carried. A plain Move stays oblivious — it is the
+        // player's recall verb, and auto-engaging on damage would
+        // undo exactly what it was issued to do.
+        Order::Move { .. } if unit.leash.is_some() => None,
         // An attack aimed at something that just died in resolution is no
         // engagement — a victim auto-acquired a neighbor this tick, the
         // neighbor fell in the volley, and without this arm the busy-guard
@@ -703,6 +779,34 @@ pub(super) fn retaliate(state: &mut State, victim: UnitId, attacker: Target) {
         resume,
     };
     unit.path = None;
+    // Answering a hit is blood drawn: the warm window refreshes, so
+    // the answer can reach an attacker just past the radius (the
+    // repositioning-Bombard case) without opening a cross-map dive.
+    // An answer that resumes a march keeps its player commitment
+    // un-tethered; an answer with no resume is self-acquisition by
+    // damage — an existing tether keeps its anchor (never re-anchored
+    // forward), and a STATIONED machine gets a fresh one where it
+    // stood. An unsettled machine (battle-cycling) answers unleashed,
+    // like it always did.
+    if resume.is_none() {
+        let stationed = unit.settled >= crate::stats::LEASH_STATION_TICKS;
+        unit.settled = 0;
+        match unit.leash.as_mut() {
+            Some(leash) => {
+                leash.patience = crate::stats::LEASH_PATIENCE;
+                leash.cooldown = 0;
+            }
+            None if stationed => {
+                let anchor = unit.tile();
+                unit.leash = Some(crate::state::Leash {
+                    anchor,
+                    patience: crate::stats::LEASH_PATIENCE,
+                    cooldown: 0,
+                });
+            }
+            None => {}
+        }
+    }
 }
 
 /// Whether a target is still on the field with hit points.

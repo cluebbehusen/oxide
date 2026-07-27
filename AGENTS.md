@@ -56,7 +56,10 @@ assert this.
 
 If a change legitimately alters sim behavior, hashes and goldens move.
 Re-bless (below), *look at* the regenerated goldens, and explain the change
-in the commit message.
+in the commit message. A branch that blesses `state-hashes.json` must
+already carry its cycle's workspace version: SIM_VERSION stamps every
+replay and autosave, and a behavior change wearing last release's
+number lets an old binary silently reconstruct a different world.
 
 ## Build, test, bless
 
@@ -189,7 +192,8 @@ and test fixtures inside crate `tests/` directories.
   Cupric — the AUTHORED default. Since 0.11 any seat can retint at
   launch (`Scenario::retint_seat`: faction, faction-derived name,
   and starting units remapped through their roles) — the setup
-  screen's faction chips and the 1v1 quick flow both land there.
+  screen's faction chips land there (the retired 1v1 quick flow did
+  too).
   `Scenario::skirmish()` embeds `scenarios/skirmish.json` at compile
   time.
 - **Balance numbers** all live in `sim/src/stats.rs`; expect hash churn
@@ -205,7 +209,10 @@ hash fixtures pin the weights like any other rule). Difficulty is a
 dial into one mind: `bot::Level` (Easy/Medium/Hard/Expert) sets a
 skill knob whose degradation the network *trained under*; a second
 knob picks the personality (turtle → aggressive), dealt from the
-scenario seed when unset; a third carries the seat's faction, honest
+scenario seed when unset — since 0.12 the deal draws from 250-900
+(`bot::deal_aggression`, the one definition the driver probes also
+call), because a dealt deep turtle reads as a bot that never attacks;
+the full 0..=1000 range stays reachable through explicit picks; a third carries the seat's faction, honest
 and never sampled (authored maps deal even seats Ferrous; launch-time
 retints feed the knob the seat's ACTUAL faction, and the 0.11
 flipped-seat probe measured the policy at full strength from
@@ -305,6 +312,19 @@ learner never found the counter" from "no counter exists"
 stand in front of side B, priced into its verdict — scenarios grew a
 serde-default `buildings` list of pre-built structures for exactly
 this kind of harness work).
+`driver sweep` (0.12) is the decisiveness instrument: N seeds of
+bot-vs-bot on one 1v1 map at one level, each seed played in both
+personality orientations (the dealt pair exchanged between the
+seats), reporting decided/undecided counts, seat bias that survives
+the exchange, and decision-tick medians — where balance-probe asks
+what armies were made of, sweep asks whether games END. The 0.12 bot
+phases gate on it. Its siblings: `driver duel --a <level> --b <level>`
+fights two ladder profiles (candidate `--a-skill/--a-cadence` dials
+included) seat-swapped across seeds, and `driver yardstick --level
+<level> [--skill --cadence]` measures one profile against all four
+scripted tiers over as many seeds as recalibration wants — the
+doctrinal strength instrument, since neural head-to-heads reward
+patience and stopped ordering the ladder in 0.10.
 `driver bench` times a 500-unit mass battle locally
 (`--scenario scenarios/compass-grand.json` instead runs a shipped map
 with EVERY chair converted to a thinking Expert — the heaviest honest
@@ -351,6 +371,21 @@ never runs it.
   workers take `ANCHORED_PUSH_SHARE` of pair separation so crowds flow
   around them, and collision applies pairs Gauss-Seidel-style in id order —
   symmetric cancellation once froze the whole economy.
+- **Moving bodies slide, parked bodies push (0.12).** `movement::run`
+  hands its per-tick displacement to the collision resolver; a body
+  that traveled INTO a contact takes its correction as
+  `SLIDE_RADIAL_SHARE · away + SLIDE_LATERAL_SHARE · sideways`, the
+  side picked toward its own travel (geometric, 180°-equivariant;
+  head-on pairs provably pick opposite world sides). Pure radial push
+  survives for parked, non-closing, and perfectly stacked bodies, so
+  the settle probe holds by construction. A slide the terrain rejects
+  drops the lateral against a head-on partner — never reverses into
+  the partner's side, which would wall a corridor pair back into the
+  freeze. Before the slide, a collinear head-on pair froze PERMANENTLY
+  (radial pushback exactly cancels path speed) and army movement
+  averaged 82% of nominal; after, the lab's head-on pair passes at
+  exactly solo time and a 20-unit assault reaches 20/20 concurrent
+  contact. `sim/tests/movement_lab.rs` is the instrument.
 - **Orders are programs since 0.5**: every unit carries a bounded queue
   plus a looping flag; completion pops (or rotates — that's patrol),
   stalls drop the whole program with `OrderStalled`, plain orders replace
@@ -371,7 +406,14 @@ never runs it.
   surviving attacker gets the answer.
 - **Construction claims ground instantly**: full price on placement
   (refused — and refunded nothing — if no doorstep is reachable), a
-  fifth of max hp standing, blind and inert until built. Ground closing
+  fifth of max hp standing, blind and inert until built. Since 0.12
+  friendly machines never block placement — the builder founds a
+  building under its own feet and steps to the canonical doorstep,
+  and every other friendly on the footprint (allies included) deals
+  deterministically onto the perimeter ring as the site claims the
+  ground; a visible HOSTILE machine still denies its tile, and all
+  relocation runs strictly after the last rejection path so a
+  refused command leaves no trace on the hash. Ground closing
   mid-walk is real: movement revalidates each waypoint and repaths
   around fresh sites. Progress needs an adjacent builder — **several
   adjacent builders stack**, each contributing a tick, so two roughly
@@ -393,14 +435,27 @@ never runs it.
 - **Units are solid but never block tiles.** Collision is iterative pair
   relaxation after movement; pathfinding ignores units entirely, so crowds
   jostle but can't deadlock a corridor the way tile-reservation schemes do.
-- **Fire at will is the only stance.** The shell's right-click issues
-  `AttackMove` for ground orders: units engage in aggro range, fight via
-  `Order::Attack { resume: Some(goal) }`, and pick the march back up. Idle
-  units auto-acquire (attackers must close inside aggro to shoot, so
-  standing units always retaliate). Plain `Move` stays oblivious and
-  remains protocol/bot-only — it becomes a player verb again if stealth
-  or hold-fire ever exist. If a future unit outranges aggro, add
-  damage-triggered retaliation; today nothing does.
+- **Fire at will is the only stance — but stationed guards fight on a
+  tether (0.12).** The shell's right-click issues `AttackMove` for
+  ground orders: units engage in aggro range, fight via
+  `Order::Attack { resume: Some(goal) }`, and pick the march back up.
+  Idle units auto-acquire, and a machine that stood
+  `LEASH_STATION_TICKS` first acquires on a leash: free hunting
+  inside `LEASH_RADIUS` of its anchor (kept ≥ the Bombard's reach so
+  siege stays answerable — pinned by test), a `LEASH_PATIENCE`
+  warm-blood window beyond it that only a joined fight refreshes (a
+  bait never in reach grants none — the kited picket breaks at the
+  radius line), then the walk home and a re-acquire cooldown at the
+  post. Victories stand their ground still stationed; only break-offs
+  walk home (walking home mid-battle measurably lost rush defenses).
+  A unit cycling through idle mid-battle hunts unleashed exactly as
+  before — tethering those collapsed the scripted tier ladder to a
+  seat-parity coin. Player commands are commitments: an explicit
+  attack never tethers, and `assign` clears any leash unconditionally,
+  no-op reissues included. Plain `Move` stays oblivious and since 0.12
+  is the player's **Run** verb (`M`, panel card between Stop and
+  Patrol) — the recall that works while standing next to an enemy.
+  `sim/tests/behavior_leash.rs` pins the contract.
 - **Ghost memory lives in `Vision`**: enemy-building records refresh while
   their ground is visible and freeze when sight is lost; seeing the ground
   empty erases them. Scrap amounts get the same treatment via a per-player
@@ -573,11 +628,16 @@ never runs it.
   windows and are #[ignore]d — run them explicitly, never in CI).
   The front door is a thumbnail-grid map browser sectioned by format
   (shell/src/screens/browser.rs, themed preview cards, remembers the
-  pick by path); team maps then land on one inline setup screen —
-  team-grouped seat cards with difficulty/personality/faction chips
-  edited in place beside a who-is-where preview (no sub-screen; the
-  cell cursor moves with Left/Right and Enter takes a seat or cycles
-  a dial; the human's card keeps its faction chip). Small windows
+  pick by path); every map then lands on one inline setup screen —
+  seat cards with difficulty/personality/faction chips edited in
+  place beside a who-is-where preview (no sub-screen; the cell
+  cursor moves with Left/Right and Enter takes a seat or cycles a
+  dial; the human's card keeps its faction chip). Since 0.12 duels
+  land there too — the 1v1 quick-question flow is gone, Start stays
+  preselected so Enter-Enter still launches the classic matchup,
+  team headings draw only when a team actually groups seats, and
+  picking a DIFFERENT map resets the chair and dials while
+  re-entering the same map keeps them. Small windows
   compress margins, chrome, then cards — every control stays on
   screen at every supported size, keyboard and pointer alike.
   Allegiance reads as team color ON the art (the RTS convention,
@@ -645,6 +705,20 @@ never runs it.
   configuration it trained; deeper mixed-ally training is the known
   lever and costs duel sharpness — revisit when 2v2 becomes a
   headline mode.
+- **Expert's outright yardstick sweep is on loan to the movement era.**
+  The 0.12 overhaul (pursuit tether + collision slide) re-rolled every
+  bot-vs-bot match: un-ground movement helps massed scripted pushes
+  most and the shipped policy trained under the old physics, so Expert
+  reads 60/80 on the widened slate instead of sweeping. The ladder
+  still orders — strictly by pace of victory, Expert holding the top
+  win count outright, which is exactly what `neural_ladder.rs` now
+  asserts — and decisiveness carried over intact (`driver sweep`
+  skirmish Medium: 48/48 decided before and after, medians within 2%;
+  the 8-40 Cupric seat lean predates the overhaul). The next training
+  campaign trains under the new movement and takes the sweep bar
+  back, along with the fog-honest duel gate's per-seat floor (its
+  seat split whipsaws with every physics change: [6,15] → [11,15] →
+  [17,4]).
 
 ## Gotchas learned the hard way
 
@@ -664,7 +738,10 @@ never runs it.
 - Injected pointer events use *logical* coordinates (what
   `screen_width()` reports); screenshots come back in *physical* pixels
   (2× on retina). Don't dpi-scale injected clicks to match a screenshot
-  — halve the screenshot's coordinates instead.
+  — halve the screenshot's coordinates instead. The miniquad RAW input
+  stream (the shell's hardware pointer source since 0.12) is physical
+  too: `PointerStream` divides by the injected `dpi_scale` once at the
+  adapter, and nothing downstream may scale again.
 - A paused shell stages socket commands for the *next* tick; drive one
   `AdvanceTicks` before asserting on their effects, or the assert races
   the order.

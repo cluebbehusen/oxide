@@ -845,9 +845,21 @@ impl GymBot {
             }
         }
 
-        // Chores after the action: idle harvesters to work, orphaned
+        // Chores after the action: idle harvesters to work (with the
+        // starvation ladder behind the normal channel — neural bots
+        // prospect; the scripted yardstick tiers never do), orphaned
         // sites resumed (paid-for progress must not strand).
         self.policy.economy(&obs, home, &mut intents);
+        // The action's Build/Repair/Salvage spends a harvester the
+        // executive picks only at lowering time, and Scout's lowering
+        // is unconditional: a prospector drawn from that same machine
+        // would replace the order the action just paid for. Preview the
+        // labor claims in world space (the anchors `apply` will see)
+        // and keep the ladder off them.
+        let spoken_for = self
+            .exec
+            .labor_claims(&world, &orientation.emit(intents.clone()));
+        self.policy.prospect(&obs, &spoken_for, &mut intents);
         if let Some(site) = obs
             .my_buildings
             .iter()

@@ -116,6 +116,38 @@ pub enum Order {
     },
 }
 
+/// A self-acquired fight's tether: where the machine stood when it
+/// picked the fight itself, and how much chase it has left. Only idle
+/// auto-acquisition and retaliation ever set one — an explicit player
+/// attack is a commitment and carries no leash — and any new command
+/// clears it. The tether binds *locomotion*, not the trigger: chasing
+/// spends patience and respects the radius; standing in range and
+/// firing costs nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Leash {
+    /// The station to walk back to when the fight ends or the tether
+    /// runs out.
+    pub anchor: TilePos,
+    /// The warm-blood window: chase ticks the guard may spend BEYOND
+    /// the radius, granted only by a joined fight — refreshed to
+    /// [`crate::stats::LEASH_PATIENCE`] every time the guard reaches
+    /// its firing stance or answers a hit, spent only while chasing
+    /// past the radius. A bait that never comes in reach never grants
+    /// any: its chaser breaks at the radius line exactly. Inside the
+    /// radius the guard fights freely — that ground is its zone.
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub patience: u16,
+    /// Ticks left standing at the post before the guard looks for the
+    /// next fight; the leash clears when it reaches zero. Nonzero only
+    /// while idle — the answer to an enemy dancing at the aggro edge.
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub cooldown: u16,
+}
+
+fn is_zero_u16(v: &u16) -> bool {
+    *v == 0
+}
+
 /// An in-progress walk along an A* path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PathFollow {
@@ -159,6 +191,18 @@ pub struct Unit {
     pub looping: bool,
     /// Current walk, if any.
     pub path: Option<PathFollow>,
+    /// The tether of a self-acquired fight, if one is live (absent in
+    /// old replays, hence the default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leash: Option<Leash>,
+    /// Ticks spent standing idle with nothing to fight — a unit is a
+    /// STATIONED guard (its acquisitions tether) only past
+    /// [`crate::stats::LEASH_STATION_TICKS`]. A unit cycling through
+    /// idle mid-battle re-acquires unleashed, which is what keeps the
+    /// tether from deciding army fights; leashing every idle machine
+    /// once collapsed the scripted tier ladder to a seat-parity coin.
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub settled: u16,
 }
 
 impl Unit {
@@ -561,6 +605,8 @@ impl State {
             queue: std::collections::VecDeque::new(),
             looping: false,
             path: None,
+            leash: None,
+            settled: 0,
         });
         id
     }
@@ -625,36 +671,78 @@ impl State {
     /// Whether `player` may start `kind` at `anchor` right now: every
     /// footprint tile *currently visible* to them, open ground, and free
     /// of buildings and standing units. Visibility (not mere exploration)
-    /// is the fog-honest rule — the occupancy checks below read live
-    /// state, and a red ghost over explored-but-unseen ground would
-    /// otherwise leak hidden enemies. One predicate serves command
-    /// validation and the shell's placement preview — they must never
-    /// disagree.
+    /// is the fog-honest rule — the occupancy checks read live state,
+    /// and a red ghost over explored-but-unseen ground would otherwise
+    /// leak hidden enemies. One predicate serves command validation and
+    /// the shell's placement preview — they must never disagree, which
+    /// is why this is literally [`State::place_refusal`] with the
+    /// reason thrown away.
     pub fn can_place(&self, player: PlayerId, kind: BuildingKind, anchor: TilePos) -> bool {
+        self.place_refusal(player, kind, anchor).is_none()
+    }
+
+    /// Why a placement is refused, or `None` when it is allowed — the
+    /// toast's vocabulary. The first blocking reason in footprint scan
+    /// order wins; every check is fog-safe by construction (it reads
+    /// only what `player` currently sees, exactly like the predicate).
+    pub fn place_refusal(
+        &self,
+        player: PlayerId,
+        kind: BuildingKind,
+        anchor: TilePos,
+    ) -> Option<PlaceRefusal> {
         if kind.stats().construction.is_none() {
-            return false; // scenario-only kinds are never placeable
+            return Some(PlaceRefusal::NotConstructible);
         }
         let (w, h) = kind.stats().size;
         for dy in 0..h {
             for dx in 0..w {
                 let t = anchor.offset(dx, dy);
-                if !self.vision(player).visible(t)
-                    || !self.map.terrain_passable(t)
-                    || self.building_at(t).is_some()
-                {
-                    return false;
+                if !self.vision(player).visible(t) {
+                    return Some(PlaceRefusal::Fog);
+                }
+                if !self.map.terrain_passable(t) {
+                    return Some(PlaceRefusal::Terrain);
+                }
+                if self.building_at(t).is_some() {
+                    return Some(PlaceRefusal::Building);
                 }
             }
         }
-        // Standing machines hold their ground — no foundations under feet.
-        // A flyer passing overhead blocks nothing.
-        !self.units.iter().any(|u| {
-            u.hp > 0 && u.kind.stats().domain == crate::stats::Domain::Ground && {
-                let t = u.tile();
-                t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h
-            }
-        })
+        // Hostile machines hold their ground — standing on a tile
+        // denies it to the enemy's foundations. Friendly machines
+        // (allies included) never block: the accept path relocates
+        // them to the perimeter as the site claims the ground. A flyer
+        // passing overhead blocks nothing either way.
+        let hostile_in_footprint = self.units.iter().any(|u| {
+            u.hp > 0
+                && self.hostile(player, u.player)
+                && u.kind.stats().domain == crate::stats::Domain::Ground
+                && {
+                    let t = u.tile();
+                    t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h
+                }
+        });
+        hostile_in_footprint.then_some(PlaceRefusal::Unit)
     }
+}
+
+/// Why [`State::place_refusal`] said no. Own-state facts only — no
+/// variant may ever derive from what fog hides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaceRefusal {
+    /// The kind is scenario-authored, never player-buildable.
+    NotConstructible,
+    /// A footprint tile is not currently visible.
+    Fog,
+    /// A footprint tile is impassable ground.
+    Terrain,
+    /// A building already holds a footprint tile.
+    Building,
+    /// A hostile machine holds a footprint tile (friendly machines
+    /// make way instead of blocking).
+    Unit,
 }
 
 #[cfg(test)]

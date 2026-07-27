@@ -139,6 +139,11 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 game.toast("salvage cancelled");
                 return;
             }
+            if input.running {
+                input.running = false;
+                game.toast("run cancelled");
+                return;
+            }
             if input.patrol_route.take().is_some() {
                 game.toast("patrol cancelled");
                 return;
@@ -169,10 +174,31 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                     .is_some_and(|u| u.kind == UnitKind::Harvester && u.player == game.human)
             });
             if has_harvester {
+                input.disarm_click_verbs();
                 input.salvaging = true;
                 game.toast("salvage: click an own building to strip it, Esc to cancel");
             } else {
                 game.toast("no harvester to salvage with");
+            }
+        }
+        Action::Run => {
+            // A toggle, like salvage: pressing again stands down.
+            if input.running {
+                input.running = false;
+                game.toast("run cancelled");
+                return;
+            }
+            let has_own_unit = game
+                .selection
+                .units
+                .iter()
+                .any(|id| game.state.unit(*id).is_some_and(|u| u.player == game.human));
+            if has_own_unit {
+                input.disarm_click_verbs();
+                input.running = true;
+                game.toast("run: click ground to move without engaging, Esc to cancel");
+            } else {
+                game.toast("no machines selected to run");
             }
         }
         Action::CycleIdleWorker => cycle_idle_worker(game),

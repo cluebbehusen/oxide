@@ -178,8 +178,8 @@ enum Mode {
     /// Settings and the Controls remap screen (state in the `settings`
     /// session local).
     Settings,
-    /// The New Match wizard (map, difficulty, personality, faction);
-    /// its state lives in the `wizard` session local.
+    /// The New Match wizard (map grid, then match setup); its state
+    /// lives in the `wizard` session local.
     Wizard,
     /// The game proper.
     Playing,
@@ -196,10 +196,9 @@ use screens::wizard::{NewMatchDraft, Out as WizardOut, Step as WizardStep, Wizar
 
 fn launch(draft: &NewMatchDraft) -> Result<Game> {
     let mut scenario = (**draft.scenario.as_ref().context("draft has a map")?).clone();
-    // ONE consumer, one source: the per-seat vector. Whatever flow
-    // filled the draft — the 1v1 quick screens or the team setup —
-    // every AI seat gets its own config here, and the vacated human
-    // seat can never fall to the team-blind classic bot.
+    // ONE consumer, one source: the per-seat vector the setup screen
+    // filled. Every AI seat gets its own config here, and the vacated
+    // human seat can never fall to the team-blind classic bot.
     anyhow::ensure!(
         draft.seats.len() == scenario.players.len(),
         "draft seats out of step with the map"
@@ -231,31 +230,12 @@ fn launch(draft: &NewMatchDraft) -> Result<Game> {
             scenario.retint_seat(i, faction);
         }
     }
-    // The 1v1 quick flow keeps its faction question (the duel screens
-    // never show the per-seat chips).
-    if scenario.players.len() == 2 {
-        let faction = match draft.faction_choice {
-            0 => oxide_sim::Faction::Ferrous,
-            1 => oxide_sim::Faction::Cupric,
-            _ => match scenario.seed % 2 {
-                0 => oxide_sim::Faction::Ferrous,
-                _ => oxide_sim::Faction::Cupric,
-            },
-        };
-        let complement = match faction {
-            oxide_sim::Faction::Ferrous => oxide_sim::Faction::Cupric,
-            oxide_sim::Faction::Cupric => oxide_sim::Faction::Ferrous,
-        };
-        if let Some(i) = scenario.players.iter().position(|p| !p.bot) {
-            scenario.retint_seat(i, faction);
-        }
-        // In a duel the quick flow deals the opponent the other
-        // roster — the classic matchup. (The setup screen's per-seat
-        // chips are where same-faction wars get arranged.)
-        if let Some(i) = scenario.players.iter().position(|p| p.bot) {
-            scenario.retint_seat(i, complement);
-        }
-    }
+    // Duels run through the same per-seat chips as every other map:
+    // Auto keeps the authored roster (even seats Ferrous, odd Cupric —
+    // the classic matchup), and a chip override is how a mirror match
+    // or a faction swap gets arranged. The old quick flow forced the
+    // opponent onto the complementary roster; nothing forces anything
+    // now.
     // Seat names must stay unique: the victory banner, the panel, and
     // the stats screen all address seats by name. Retints can land two
     // seats on one faction-derived label ("North West Ferrous" twice),
@@ -492,7 +472,7 @@ async fn run() -> Result<()> {
         let mut events = if args.automation {
             Vec::new()
         } else {
-            input::poll_events(&mut input)
+            input::poll_events()
         };
         events.append(&mut injected);
         // Start-of-frame modifier truth, saved before the fold below:
@@ -669,9 +649,6 @@ async fn run() -> Result<()> {
                     }
                     WizardStep::Setup => {
                         w.draw_setup(&draft, &mut previews);
-                    }
-                    _ => {
-                        w.menu.draw(w.subtitle(&draft));
                     }
                 }
                 if let Some((msg, until)) = &menu_notice {
@@ -1024,10 +1001,9 @@ fn capture_ui(
             settings.as_ref().map_or("settings", |s| s.mode_name()),
             settings.as_ref().map(|s| &s.menu),
         ),
-        Mode::Wizard => (
-            wizard.as_ref().map_or("main_menu", |w| w.mode_name()),
-            wizard.as_ref().map(|w| &w.menu),
-        ),
+        // Both wizard screens are custom (grid, setup) and report
+        // through ui_surface below — no row menu to borrow.
+        Mode::Wizard => (wizard.as_ref().map_or("main_menu", |w| w.mode_name()), None),
         Mode::Playing => ("playing", None),
         Mode::Playback => ("playback", None),
         Mode::Replays => ("replays", shelf.as_ref().map(|s| &s.menu)),
@@ -1043,9 +1019,7 @@ fn capture_ui(
     // The wizard's custom screens (grid, setup) speak the same
     // protocol surface the row menus do — automation keeps its
     // footing across redesigns.
-    if let (Mode::Wizard, Some(w)) = (mode, wizard.as_ref())
-        && matches!(w.step, WizardStep::Map | WizardStep::Setup)
-    {
+    if let (Mode::Wizard, Some(w)) = (mode, wizard.as_ref()) {
         let (title, items, selected) = w.ui_surface(draft);
         let len = items.len();
         return UiView {
@@ -1054,7 +1028,7 @@ fn capture_ui(
             selected: Some(selected),
             items,
             visible_range: Some([0, len]),
-            hover: None,
+            hover: w.ui_hover(),
             chrome: None,
         };
     }
@@ -1473,15 +1447,22 @@ mod tests {
     }
 
     #[test]
-    fn a_1v1_launch_retints_both_seats_around_the_faction_choice() {
+    fn a_duel_chip_override_retints_only_its_seat() {
         let mut draft = NewMatchDraft::default();
         draft.set_scenario(Scenario::skirmish(), None);
-        draft.faction_choice = 1; // Cupric
+        draft.seats[0].faction_choice = 2; // the human goes Cupric
         let game = launch(&draft).expect("launches");
         let players = &game.scenario.players;
         assert_eq!(players[0].faction, oxide_sim::Faction::Cupric);
-        assert_eq!(players[1].faction, oxide_sim::Faction::Ferrous);
-        assert_ne!(players[0].name, players[1].name, "names follow factions");
+        assert_eq!(
+            players[1].faction,
+            oxide_sim::Faction::Cupric,
+            "Auto keeps the authored roster - the mirror the quick flow forbade"
+        );
+        assert_ne!(
+            players[0].name, players[1].name,
+            "ordinals keep names unique"
+        );
     }
 
     #[test]

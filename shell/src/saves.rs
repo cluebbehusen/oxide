@@ -131,6 +131,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_shelf_badge_compares_versions_and_never_guesses() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxide-shelf-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let scenario = oxide_sim::Scenario::skirmish();
+        let ours: GameReplay = chassis::replay::Replay::new(SIM_VERSION, scenario.clone());
+        ours.save(dir.join("ours.json")).unwrap();
+        let mut foreign: GameReplay = chassis::replay::Replay::new(SIM_VERSION, scenario);
+        foreign.meta.sim_version = "0.0.1".to_string();
+        foreign.save(dir.join("foreign.json")).unwrap();
+
+        let mut out = Vec::new();
+        scan(&dir, &mut out);
+        let entry = |name: &str| {
+            out.iter()
+                .map(|(_, e)| e)
+                .find(|e| e.path.file_stem().unwrap() == name)
+                .expect("scanned")
+        };
+        assert!(entry("ours").compatible, "our own version wears the badge");
+        let foreign = entry("foreign");
+        assert!(!foreign.compatible, "a foreign version never does");
+        assert!(
+            foreign.blurb.contains("0.0.1") && foreign.blurb.contains(SIM_VERSION),
+            "the honest badge names both versions: {}",
+            foreign.blurb
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn the_calendar_is_honest_without_a_time_crate() {
         assert_eq!(civil_date(0), "1970-01-01");
         assert_eq!(civil_date(86_399), "1970-01-01", "last second of day one");

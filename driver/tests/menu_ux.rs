@@ -42,17 +42,26 @@ fn hover(client: &mut Client, x: f32, y: f32) -> Result<()> {
     Ok(())
 }
 
+/// The x the row tests probe and click at. The front door is a card
+/// GRID since 0.11: the window's horizontal center (640 at the pinned
+/// 1280x800) is a column gutter where no card hovers, so the probe
+/// column sits inside the second card column instead.
+const GRID_X: f32 = 500.0;
+
 /// Sweeps the window's vertical axis and returns every y where the
 /// hover highlight changed — one entry per row boundary crossed, in
-/// top-to-bottom order. Resolution-independent row discovery.
+/// top-to-bottom order. Resolution-independent row discovery. The
+/// front door is a thumbnail grid since 0.11: two tall card rows fit
+/// the default window where six menu rows once did, so the sweep
+/// steps fine and two hits suffice.
 fn find_rows(client: &mut Client) -> Result<Vec<(f32, usize)>> {
     // Row discovery watches the hover highlight — the pointer's only
     // effect on a healthy menu.
     let mut prev = ui(client)?.hover;
     let mut hits: Vec<(f32, usize)> = Vec::new();
-    for step in 0..40 {
-        let y = 200.0 + step as f32 * 15.0;
-        hover(client, 640.0, y)?;
+    for step in 0..64 {
+        let y = 160.0 + step as f32 * 10.0;
+        hover(client, GRID_X, y)?;
         let hovered = ui(client)?.hover;
         if hovered != prev
             && let Some(h) = hovered
@@ -61,7 +70,7 @@ fn find_rows(client: &mut Client) -> Result<Vec<(f32, usize)>> {
         }
         prev = hovered;
     }
-    if hits.len() < 3 {
+    if hits.len() < 2 {
         bail!("could not locate menu rows by sweeping ({hits:?})");
     }
     Ok(hits)
@@ -82,10 +91,10 @@ fn a_stationary_pointer_never_changes_the_row_beneath_it() -> Result<()> {
     for _ in 0..6 {
         press_key(&mut client, Key::Down)?;
     }
-    hover(&mut client, 640.0, top_row_y)?;
+    hover(&mut client, GRID_X, top_row_y)?;
     let settled = ui(&mut client)?;
     for i in 0..6 {
-        hover(&mut client, 640.0, top_row_y + (i % 2) as f32)?;
+        hover(&mut client, GRID_X, top_row_y + (i % 2) as f32)?;
         let now = ui(&mut client)?;
         assert_eq!(now.hover, settled.hover, "the hover crawled");
         assert_eq!(now.selected, settled.selected, "the selection crawled");
@@ -111,7 +120,7 @@ fn menu_rows_activate_on_release_not_on_press() -> Result<()> {
     client.call(Request::InjectEvent {
         event: RawEvent::MouseDown {
             button: MouseButton::Left,
-            x: 640.0,
+            x: GRID_X,
             y: row_y,
         },
     })?;
@@ -132,29 +141,34 @@ fn menu_rows_activate_on_release_not_on_press() -> Result<()> {
     let released = ui(&mut client)?.mode;
     assert_eq!(released, before, "a drag-away release still activated");
 
-    // And the honest path works: press and release inside the same row
-    // advances to the difficulty screen.
+    // And the honest path works: a click inside the card selects it,
+    // and a second click on the selected card advances to match setup.
     client.call(Request::InjectEvent {
-        event: RawEvent::MouseMove { x: 640.0, y: row_y },
-    })?;
-    client.call(Request::InjectEvent {
-        event: RawEvent::MouseDown {
-            button: MouseButton::Left,
-            x: 640.0,
+        event: RawEvent::MouseMove {
+            x: GRID_X,
             y: row_y,
         },
     })?;
-    client.call(Request::InjectEvent {
-        event: RawEvent::MouseUp {
-            button: MouseButton::Left,
-            x: 640.0,
-            y: row_y,
-        },
-    })?;
+    for _ in 0..2 {
+        client.call(Request::InjectEvent {
+            event: RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: GRID_X,
+                y: row_y,
+            },
+        })?;
+        client.call(Request::InjectEvent {
+            event: RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: GRID_X,
+                y: row_y,
+            },
+        })?;
+    }
     assert_eq!(
         ui(&mut client)?.mode,
-        "difficulty_menu",
-        "release inside the row activates"
+        "match_setup",
+        "click selects, click again activates"
     );
     press_key(&mut client, Key::Escape)?;
     Ok(())
@@ -187,17 +201,15 @@ fn every_screen_transition_answers_the_walk() -> Result<()> {
     activate_labeled(&mut client, "play")?;
     assert_mode(&mut client, "main_menu", "Home > Play")?;
     activate_labeled(&mut client, "skirmish")?;
-    assert_mode(&mut client, "difficulty_menu", "map picked")?;
-    activate_labeled(&mut client, "medium")?;
-    assert_mode(&mut client, "personality_menu", "difficulty picked")?;
-    // Back walks the wizard without losing the draft.
+    assert_mode(&mut client, "match_setup", "map picked")?;
+    // Back walks to the grid without losing the draft.
     press_key(&mut client, Key::Escape)?;
-    assert_mode(&mut client, "difficulty_menu", "personality > Esc")?;
-    activate_labeled(&mut client, "medium")?;
-    activate_labeled(&mut client, "surprise")?;
-    assert_mode(&mut client, "faction_menu", "personality picked")?;
-    activate_labeled(&mut client, "ferrous")?;
-    assert_mode(&mut client, "playing", "faction picked starts the match")?;
+    assert_mode(&mut client, "main_menu", "setup > Esc")?;
+    activate_labeled(&mut client, "skirmish")?;
+    assert_mode(&mut client, "match_setup", "map re-picked")?;
+    // Start is preselected: Enter launches the classic matchup.
+    press_key(&mut client, Key::Enter)?;
+    assert_mode(&mut client, "playing", "Start launches the match")?;
 
     press_key(&mut client, Key::Escape)?;
     assert_mode(&mut client, "pause_menu", "Playing > Esc")?;

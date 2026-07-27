@@ -27,7 +27,10 @@ pub use command::{Command, PlayerCommand};
 pub use event::{Event, StallReason, TickReport};
 pub use ids::{BuildingId, PlayerId, Target, UnitId};
 pub use scenario::Scenario;
-pub use state::{Building, Faction, GameResult, Order, Player, State, StateIntegrityError, Unit};
+pub use state::{
+    Building, Faction, GameResult, Leash, Order, PlaceRefusal, Player, State, StateIntegrityError,
+    Unit,
+};
 pub use stats::{BuildingKind, UnitKind};
 pub use vision::{GhostBuilding, Vision};
 

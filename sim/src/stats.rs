@@ -842,3 +842,47 @@ pub const ANCHORED_PUSH_SHARE: Fx = Fx::lit("0.1");
 /// Furthest one collision pass may displace one unit, in tiles. Keeps
 /// packed crowds settling smoothly instead of popping apart.
 pub const COLLISION_MAX_STEP: Fx = Fx::lit("0.12");
+
+/// The slide blend for a MOVING unit's collision correction: instead
+/// of a pure push along the contact normal (which a head-on pair's
+/// path following exactly undoes — the measured permanent freeze at
+/// 0.700 separation), a mover's correction is
+/// `RADIAL_SHARE * away + LATERAL_SHARE * sideways`, the sideways
+/// half picked toward the mover's own travel. Both constants are
+/// exactly representable in Q32.32 and their squares sum to
+/// 0.98828125 < 1, so the blended direction never exceeds unit
+/// length and [`COLLISION_MAX_STEP`] keeps meaning what it says.
+/// The radial share must stay well below the closing rate's half or
+/// the freeze returns; the lateral share is what converts a grind
+/// into a pass-by.
+pub const SLIDE_RADIAL_SHARE: Fx = Fx::lit("0.5");
+/// See [`SLIDE_RADIAL_SHARE`].
+pub const SLIDE_LATERAL_SHARE: Fx = Fx::lit("0.859375");
+
+/// How far from its anchor a self-acquired chase may reach before the
+/// guard breaks off and walks home, in tiles. MUST stay >= the
+/// Bombard's 9.5 weapon range: a shorter tether would let siege
+/// pieces shell a guard that turns back before ever answering
+/// (pinned by `retaliation_can_still_reach_a_bombard`).
+pub const LEASH_RADIUS: Fx = Fx::lit("10");
+
+/// The warm-blood window, in ticks (3 s): how long a self-acquired
+/// chase may continue BEYOND the leash radius after the fight was
+/// actually joined (a shot fired or answered — each refreshes the
+/// window). Roughly 7 tiles of followthrough: enough to finish a
+/// wounded runner rotating to the rear, nothing like the door to a
+/// cross-map dive. A bait that never came in reach grants none, so
+/// the kited guard breaks at the radius line exactly.
+pub const LEASH_PATIENCE: u16 = 60;
+
+/// Ticks a returned guard stands at its post before re-acquiring
+/// (3 s). Without it, an enemy dancing at the aggro edge strips a
+/// picket in an endless acquire/return cycle.
+pub const LEASH_REACQUIRE_COOLDOWN: u16 = 60;
+
+/// Ticks of standing idle before a machine counts as STATIONED — only
+/// a stationed machine's self-acquired fights tether. A unit cycling
+/// through idle mid-battle (its target fell, the next is a tick away)
+/// re-acquires unleashed: tethering those turned army fights into
+/// seat-parity coin flips and collapsed the scripted tier ladder.
+pub const LEASH_STATION_TICKS: u16 = 40;

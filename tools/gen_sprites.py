@@ -66,6 +66,15 @@ def canvas(px: int, color=(0, 0, 0, 0)) -> tuple[Image.Image, ImageDraw.ImageDra
     return img, ImageDraw.Draw(img)
 
 
+def finish_wh(img: Image.Image, w: int, h: int, name: str) -> None:
+    """`finish` for non-square sprites (the peak crowns overhang their
+    tile); no rim light — terrain never gets it."""
+    img = img.resize((w, h), Image.LANCZOS)
+    img.save(OUT / f"{name}.png")
+    REGISTRY[name] = img
+    print(f"  {name}.png")
+
+
 def finish(img: Image.Image, px: int, name: str) -> None:
     img = img.resize((px, px), Image.LANCZOS)
     if name.startswith(
@@ -253,21 +262,23 @@ def _mix(a, b, t):
 PEAK_EDGE_TOP = 40
 
 
-def _peak_mass(d, rng, sky, caps):
+def _peak_mass(d, rng, sky, caps, base_y=64, cap_below=16):
     """Fill and facet a mountain mass under a left-to-right piecewise
     skyline. `caps` are indices into `sky` marking crest apexes; only
-    the tallest earns the bright cap, and only when it stands high."""
+    the tallest earns the bright cap, and only when it stands high
+    (`cap_below`). `base_y` is the mass's floor — 96-tall crown
+    sprites root their bottom tile there."""
 
     def sky_y(x):
         for (x0, y0), (x1, y1) in zip(sky, sky[1:]):
             if x0 <= x <= x1:
                 t = 0.0 if x1 == x0 else (x - x0) / (x1 - x0)
                 return y0 + (y1 - y0) * t
-        return 64.0
+        return float(base_y)
 
     base = _mix(PEAK_DARK, PEAK, 0.4)
     poly = [(s(x), s(y)) for x, y in sky]
-    poly += [(s(sky[-1][0]), s(64)), (s(sky[0][0]), s(64))]
+    poly += [(s(sky[-1][0]), s(base_y)), (s(sky[0][0]), s(base_y))]
     d.polygon(poly, fill=(*base, 255))
     tallest = min(caps, key=lambda i: sky[i][1])
     for i in caps:
@@ -277,25 +288,41 @@ def _peak_mass(d, rng, sky, caps):
         left = max(sky[0][0] + 1, ax - 16)
         fall = left + (ax - left) * 0.45
         d.polygon(
-            [(s(left), s(64)), (s(ax), s(ay)), (s(fall), s(64))],
+            [(s(left), s(base_y)), (s(ax), s(ay)), (s(fall), s(base_y))],
             fill=(*_mix(base, PEAK_LIGHT, 0.5), 255),
         )
         d.line(
-            [(s(ax), s(ay)), (s(ax + 8), s(ay + (64 - ay) * 0.5))],
+            [(s(ax), s(ay)), (s(ax + 8), s(ay + (base_y - ay) * 0.5))],
             fill=(*_mix(base, PEAK_LIGHT, 0.7), 255),
             width=SS,
         )
-        if i == tallest and ay < 16:
+        if i == tallest and ay < cap_below:
             d.polygon(
                 [(s(ax - 2), s(ay + 5)), (s(ax), s(ay - 1)), (s(ax + 2), s(ay + 5))],
                 fill=(*_mix(PEAK_LIGHT, BONE, 0.45), 255),
             )
     # Scree inside the mass so the rock reads as rock, not paint.
     for _ in range(46):
-        x, y = rng.randrange(0, 64), rng.randrange(0, 64)
+        x, y = rng.randrange(0, 64), rng.randrange(0, base_y)
         if y > sky_y(x) + 2:
             tone = _mix(PEAK_DARK, PEAK, rng.random() * 0.5)
             d.rectangle([s(x), s(y), s(x + 1), s(y + 1)], fill=(*tone, 255))
+
+
+# The crown sprites are 1x1.5 tiles: the bottom 64 sprite-units are the
+# peak's own tile (edge/toe contract unchanged, shifted by CROWN_RISE),
+# the top 32 are overhang the shell draws into the tile above. Crests
+# lift toward the overhang; tile-edge and toe points keep their exact
+# contract heights so ridges chain seamlessly.
+CROWN_RISE = 32
+
+
+def _crown_lift(sky):
+    out = []
+    for x, y in sky:
+        lift = round((PEAK_EDGE_TOP - y) * 0.85) if y < PEAK_EDGE_TOP else 0
+        out.append((x, y + CROWN_RISE - lift))
+    return out
 
 
 def peak_sky(w_conn: int, e_conn: int, variant: int) -> None:
@@ -304,7 +331,9 @@ def peak_sky(w_conn: int, e_conn: int, variant: int) -> None:
     below joins cleanly). Connected sides meet the edge at
     PEAK_EDGE_TOP; open sides fall to a low toe at the corner."""
     px = 64
-    img, d = canvas(px)
+    img, _ = canvas(px)
+    tall = Image.new("RGBA", (64 * SS, 96 * SS), (0, 0, 0, 0))
+    d = ImageDraw.Draw(tall)
     rng = random.Random(509 + w_conn * 131 + e_conn * 47 + variant * 71)
     sky = []
     if w_conn:
@@ -329,15 +358,18 @@ def peak_sky(w_conn: int, e_conn: int, variant: int) -> None:
         sky += [(59, PEAK_EDGE_TOP - rng.randrange(0, 4)), (64, PEAK_EDGE_TOP)]
     else:
         sky += [(57, 48 + rng.randrange(0, 6)), (64, 59 + rng.randrange(0, 3))]
-    _peak_mass(d, rng, sky, caps)
-    finish(img, px, f"peak_sky_{w_conn}{e_conn}_{variant}")
+    _peak_mass(d, rng, _crown_lift(sky), caps, base_y=96, cap_below=34)
+    del img
+    finish_wh(tall, 64, 96, f"peak_sky_{w_conn}{e_conn}_{variant}")
 
 
 def peak_lone(variant: int) -> None:
     """A single standing peak, feet inset so the ground shows at the
     corners instead of a hard square cut."""
     px = 64
-    img, d = canvas(px)
+    img, _ = canvas(px)
+    tall = Image.new("RGBA", (64 * SS, 96 * SS), (0, 0, 0, 0))
+    d = ImageDraw.Draw(tall)
     rng = random.Random(823 + variant * 71)
     foot_l = 5 + rng.randrange(0, 4)
     foot_r = 57 + rng.randrange(0, 4)
@@ -357,8 +389,9 @@ def peak_lone(variant: int) -> None:
             (foot_r, 62),
         ]
         caps = [1]
-    _peak_mass(d, rng, sky, caps)
-    finish(img, px, f"peak_lone_{variant}")
+    _peak_mass(d, rng, _crown_lift(sky), caps, base_y=96, cap_below=34)
+    del img
+    finish_wh(tall, 64, 96, f"peak_lone_{variant}")
 
 
 def peak_body(variant: int) -> None:
@@ -1088,6 +1121,149 @@ def scorch() -> None:
     finish(img, px, "scorch")
 
 
+ICON = 48
+
+
+def _icon_bar(d, a, b, w: float, color) -> None:
+    """A thick line as a polygon — PIL's line joins are ragged at 4x."""
+    import math as _m
+
+    (x0, y0), (x1, y1) = a, b
+    dx, dy = x1 - x0, y1 - y0
+    ln = _m.hypot(dx, dy) or 1.0
+    px, py = -dy / ln * w * 0.5, dx / ln * w * 0.5
+    d.polygon(
+        [
+            (s(x0 + px), s(y0 + py)),
+            (s(x1 + px), s(y1 + py)),
+            (s(x1 - px), s(y1 - py)),
+            (s(x0 - px), s(y0 - py)),
+        ],
+        fill=color,
+    )
+
+
+def icon_stop() -> None:
+    """Everything halts: one solid block."""
+    img, d = canvas(ICON)
+    d.rectangle([s(13), s(13), s(35), s(35)], fill=(*BONE, 255))
+    finish(img, ICON, "icon_stop")
+
+
+def icon_move() -> None:
+    """A plain march: arrow up, no opinions."""
+    img, d = canvas(ICON)
+    d.polygon([(s(24), s(6)), (s(40), s(24)), (s(8), s(24))], fill=(*BONE, 255))
+    d.rectangle([s(19), s(24), s(29), s(42)], fill=(*BONE, 255))
+    finish(img, ICON, "icon_move")
+
+
+def icon_attack_move() -> None:
+    """The fighting march: the move arrow wearing blades."""
+    img, d = canvas(ICON)
+    d.polygon([(s(24), s(4)), (s(40), s(22)), (s(8), s(22))], fill=(*BONE, 255))
+    d.rectangle([s(19), s(22), s(29), s(40)], fill=(*BONE, 255))
+    # Blades off the arrowhead.
+    d.polygon([(s(4), s(28)), (s(14), s(24)), (s(12), s(33))], fill=(*SCRAP_LIGHT, 255))
+    d.polygon([(s(44), s(28)), (s(34), s(24)), (s(36), s(33))], fill=(*SCRAP_LIGHT, 255))
+    finish(img, ICON, "icon_attack_move")
+
+
+def icon_attack() -> None:
+    """A strike burst: eight points of contact."""
+    img, d = canvas(ICON)
+    cx, cy = 24, 24
+    import math as _m
+
+    pts = []
+    for i in range(16):
+        ang = _m.pi * 2 * i / 16 - _m.pi / 2
+        r = 19 if i % 2 == 0 else 8
+        pts.append((s(cx + _m.cos(ang) * r), s(cy + _m.sin(ang) * r)))
+    d.polygon(pts, fill=(*BONE, 255))
+    d.ellipse([s(19), s(19), s(29), s(29)], fill=(*SCRAP, 255))
+    finish(img, ICON, "icon_attack")
+
+
+def icon_patrol() -> None:
+    """A closed round: the loop with its arrowhead."""
+    img, d = canvas(ICON)
+    for a, b in [
+        ((12, 10), (36, 10)),
+        ((38, 12), (38, 36)),
+        ((36, 38), (18, 38)),
+        ((10, 36), (10, 12)),
+    ]:
+        _icon_bar(d, a, b, 5.0, (*BONE, 255))
+    # Arrowhead riding the bottom leg, pointing the way around.
+    d.polygon([(s(12), s(38)), (s(22), s(30)), (s(22), s(46))], fill=(*BONE, 255))
+    finish(img, ICON, "icon_patrol")
+
+
+def icon_harvest() -> None:
+    """The scrap pyramid: what the economy is made of."""
+    img, d = canvas(ICON)
+    for x, y in [(14, 14), (26, 14), (8, 26), (20, 26), (32, 26)]:
+        d.rectangle([s(x), s(y), s(x + 9), s(y + 9)], fill=(*SCRAP, 255))
+        d.rectangle([s(x), s(y), s(x + 9), s(y + 3)], fill=(*SCRAP_LIGHT, 255))
+    finish(img, ICON, "icon_harvest")
+
+
+def icon_build() -> None:
+    """A wrench over the work."""
+    img, d = canvas(ICON)
+    d.ellipse([s(6), s(6), s(24), s(24)], fill=(*BONE, 255))
+    d.ellipse([s(11), s(11), s(19), s(19)], fill=(0, 0, 0, 0))
+    # The jaw notch.
+    d.polygon([(s(20), s(4)), (s(30), s(14)), (s(20), s(20))], fill=(0, 0, 0, 0))
+    _icon_bar(d, (17, 17), (38, 38), 7.5, (*BONE, 255))
+    d.rectangle([s(33), s(33), s(43), s(43)], fill=(*BONE, 255))
+    finish(img, ICON, "icon_build")
+
+
+def icon_repair() -> None:
+    """The weld: a plus, sparking."""
+    img, d = canvas(ICON)
+    d.rectangle([s(19), s(9), s(29), s(39)], fill=(*BONE, 255))
+    d.rectangle([s(9), s(19), s(39), s(29)], fill=(*BONE, 255))
+    d.ellipse([s(33), s(7), s(41), s(15)], fill=(*SCRAP_LIGHT, 255))
+    finish(img, ICON, "icon_repair")
+
+
+def icon_salvage() -> None:
+    """Value coming back down: an arrow into the pile."""
+    img, d = canvas(ICON)
+    d.rectangle([s(19), s(4), s(29), s(20)], fill=(*BONE, 255))
+    d.polygon([(s(24), s(32)), (s(38), s(18)), (s(10), s(18))], fill=(*BONE, 255))
+    for x in (10, 20, 30):
+        d.rectangle([s(x), s(36), s(x + 8), s(44)], fill=(*SCRAP, 255))
+    finish(img, ICON, "icon_salvage")
+
+
+def icon_cancel() -> None:
+    """A refusal: the cross."""
+    img, d = canvas(ICON)
+    _icon_bar(d, (11, 11), (37, 37), 8.0, (*BONE, 255))
+    _icon_bar(d, (37, 11), (11, 37), 8.0, (*BONE, 255))
+    finish(img, ICON, "icon_cancel")
+
+
+def icon_rally() -> None:
+    """The rally pennant on its pole."""
+    img, d = canvas(ICON)
+    d.rectangle([s(12), s(6), s(17), s(42)], fill=(*BONE, 255))
+    d.polygon([(s(17), s(8)), (s(42), s(15)), (s(17), s(24))], fill=(*SCRAP, 255))
+    finish(img, ICON, "icon_rally")
+
+
+def icon_idle() -> None:
+    """Standing by: the three-beat wait."""
+    img, d = canvas(ICON)
+    for i, x in enumerate((8, 20, 32)):
+        d.ellipse([s(x), s(21), s(x + 8), s(29)], fill=(*BONE, 200 - i * 30))
+    finish(img, ICON, "icon_idle")
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     print(f"writing {OUT}")
@@ -1142,6 +1318,18 @@ def main() -> None:
         array(faction)
         reclaimer(faction)
     accent_masks()
+    icon_stop()
+    icon_move()
+    icon_attack_move()
+    icon_attack()
+    icon_patrol()
+    icon_harvest()
+    icon_build()
+    icon_repair()
+    icon_salvage()
+    icon_cancel()
+    icon_rally()
+    icon_idle()
     pack_atlas()
     print("done")
 

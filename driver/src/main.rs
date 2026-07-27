@@ -110,6 +110,98 @@ enum Cmd {
         #[arg(long)]
         out: Option<String>,
     },
+    /// Decisiveness seed sweep: N seeds of bot-vs-bot on one 1v1 map,
+    /// each seed played in both personality orientations — do games
+    /// END, and does a seat lean survive the exchange? The 0.12 bot
+    /// phases gate on this.
+    Sweep {
+        /// Scenario path, or "skirmish".
+        #[arg(long, default_value = "skirmish")]
+        scenario: String,
+        /// Ladder level to sweep ("easy".."expert").
+        #[arg(long, default_value = "medium")]
+        level: String,
+        /// Seeds (each played twice: dealt and personality-swapped).
+        #[arg(long, default_value_t = 24, value_parser = clap::value_parser!(u64).range(1..))]
+        seeds: u64,
+        /// Tick cap per match (the 0.11 probes read at 40k).
+        #[arg(long, default_value_t = 40_000, value_parser = clap::value_parser!(u64).range(1..))]
+        ticks: u64,
+        /// First scenario seed; offsets count up from here.
+        #[arg(long, default_value_t = 7_000)]
+        seed_base: u64,
+        /// Raw JSON output path.
+        #[arg(long)]
+        out: Option<String>,
+    },
+    /// Head-to-head duel between two ladder profiles (optionally with
+    /// candidate skill/cadence dial overrides), each seed fought from
+    /// both seats — the re-metering experiments' measuring stick.
+    Duel {
+        /// Side A level ("easy".."expert").
+        #[arg(long)]
+        a: String,
+        /// Side A skill-knob override (candidate dials).
+        #[arg(long)]
+        a_skill: Option<u32>,
+        /// Side A cadence override.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        a_cadence: Option<u64>,
+        /// Side B level ("easy".."expert").
+        #[arg(long)]
+        b: String,
+        /// Side B skill-knob override.
+        #[arg(long)]
+        b_skill: Option<u32>,
+        /// Side B cadence override.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        b_cadence: Option<u64>,
+        /// Scenario path, or "skirmish".
+        #[arg(long, default_value = "skirmish")]
+        scenario: String,
+        /// Seeds (each fought from both seats).
+        #[arg(long, default_value_t = 12, value_parser = clap::value_parser!(u64).range(1..))]
+        seeds: u64,
+        /// Tick cap per match.
+        #[arg(long, default_value_t = 40_000, value_parser = clap::value_parser!(u64).range(1..))]
+        ticks: u64,
+        /// First scenario seed; offsets count up from here.
+        #[arg(long, default_value_t = 7_000)]
+        seed_base: u64,
+        /// Raw JSON output path.
+        #[arg(long)]
+        out: Option<String>,
+    },
+    /// Widened scripted-yardstick measurement for one ladder profile
+    /// (optionally with candidate dials): the profile vs all four
+    /// scripted tiers over N seeds per tier, both seats — the
+    /// doctrinal strength instrument for re-metering.
+    Yardstick {
+        /// Profile level ("easy".."expert").
+        #[arg(long, default_value = "medium")]
+        level: String,
+        /// Skill-knob override (candidate dials).
+        #[arg(long)]
+        skill: Option<u32>,
+        /// Cadence override.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        cadence: Option<u64>,
+        /// Scenario path, or "skirmish".
+        #[arg(long, default_value = "skirmish")]
+        scenario: String,
+        /// Seeds per tier (each fought from both seats).
+        #[arg(long, default_value_t = 6, value_parser = clap::value_parser!(u64).range(1..))]
+        seeds: u64,
+        /// Tick cap per match.
+        #[arg(long, default_value_t = 40_000, value_parser = clap::value_parser!(u64).range(1..))]
+        ticks: u64,
+        /// First scenario seed (the gate's slate starts at 3000).
+        #[arg(long, default_value_t = 3_000)]
+        seed_base: u64,
+        /// Raw JSON output path.
+        #[arg(long)]
+        out: Option<String>,
+    },
     /// Timed mass-battle bench: ticks/second at scale, plus a hash
     /// self-check. Wall-clock stays local; CI asserts only correctness.
     Bench {
@@ -229,6 +321,16 @@ mod parse;
 
 use live_cli::{LiveCmd, capture_sequence, live_requests};
 
+fn parse_level(level: &str) -> Result<oxide_sim::bot::Level> {
+    Ok(match level {
+        "easy" => oxide_sim::bot::Level::Easy,
+        "medium" => oxide_sim::bot::Level::Medium,
+        "hard" => oxide_sim::bot::Level::Hard,
+        "expert" => oxide_sim::bot::Level::Expert,
+        other => anyhow::bail!("unknown level '{other}'"),
+    })
+}
+
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Run {
@@ -292,6 +394,81 @@ fn main() -> Result<()> {
             render::save_png(&outcome.state, &out)?;
             eprintln!("wrote {}", out.display());
         }
+        Cmd::Sweep {
+            scenario,
+            level,
+            seeds,
+            ticks,
+            seed_base,
+            out,
+        } => {
+            let level = parse_level(&level)?;
+            oxide_driver::sweep::sweep_report(
+                &scenario,
+                level,
+                seeds,
+                ticks,
+                seed_base,
+                out.as_deref(),
+            )?;
+        }
+        Cmd::Duel {
+            a,
+            a_skill,
+            a_cadence,
+            b,
+            b_skill,
+            b_cadence,
+            scenario,
+            seeds,
+            ticks,
+            seed_base,
+            out,
+        } => {
+            let a = oxide_driver::sweep::DuelSide {
+                level: parse_level(&a)?,
+                skill: a_skill,
+                cadence: a_cadence,
+            };
+            let b = oxide_driver::sweep::DuelSide {
+                level: parse_level(&b)?,
+                skill: b_skill,
+                cadence: b_cadence,
+            };
+            oxide_driver::sweep::duel_report(
+                &scenario,
+                &a,
+                &b,
+                seeds,
+                ticks,
+                seed_base,
+                out.as_deref(),
+            )?;
+        }
+        Cmd::Yardstick {
+            level,
+            skill,
+            cadence,
+            scenario,
+            seeds,
+            ticks,
+            seed_base,
+            out,
+        } => {
+            let side = oxide_driver::sweep::DuelSide {
+                level: parse_level(&level)?,
+                skill,
+                cadence,
+            };
+            oxide_driver::sweep::yardstick_report(
+                &scenario,
+                &side,
+                seeds,
+                ticks,
+                seed_base,
+                out.as_deref(),
+            )?;
+        }
         Cmd::BalanceProbe {
             dir,
             level,
@@ -303,13 +480,7 @@ fn main() -> Result<()> {
             weights,
             out,
         } => {
-            let level = match level.as_str() {
-                "easy" => oxide_sim::bot::Level::Easy,
-                "medium" => oxide_sim::bot::Level::Medium,
-                "hard" => oxide_sim::bot::Level::Hard,
-                "expert" => oxide_sim::bot::Level::Expert,
-                other => anyhow::bail!("unknown level '{other}'"),
-            };
+            let level = parse_level(&level)?;
             oxide_driver::balance::balance_probe(
                 &dir,
                 level,

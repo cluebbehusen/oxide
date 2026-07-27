@@ -14,14 +14,43 @@ use oxide_sim::stats::{BuildingKind, UnitKind};
 use oxide_sim::{BuildingId, Order};
 
 /// What a card wears.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CardIcon {
     /// A unit sprite (drawn in the human's faction colors).
     Unit(UnitKind),
     /// A building sprite.
     Building(BuildingKind),
-    /// A text glyph — order verbs and other spriteless notions.
-    Glyph(&'static str),
+    /// A verb pictogram from the atlas's icon family.
+    Verb(VerbIcon),
+}
+
+/// The atlas's verb pictograms, in `Sprites::verb_icons` order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerbIcon {
+    /// Everything halts.
+    Stop,
+    /// The oblivious walk.
+    Move,
+    /// The fighting march.
+    AttackMove,
+    /// The strike burst.
+    Attack,
+    /// The loop.
+    Patrol,
+    /// The scrap pyramid.
+    Harvest,
+    /// The wrench.
+    Build,
+    /// The weld.
+    Repair,
+    /// Value coming back down.
+    Salvage,
+    /// The refusal cross.
+    Cancel,
+    /// The rally pennant.
+    Rally,
+    /// The three-beat wait.
+    Idle,
 }
 
 /// What clicking a card does.
@@ -35,6 +64,9 @@ pub enum CardAction {
     CancelQueue(BuildingId, u8),
     /// Clear a producer's rally point.
     ClearRally(BuildingId),
+    /// Narrow the selection to one kind (Ctrl-click removes it
+    /// instead) — the mixed-army type strip.
+    FilterKind(UnitKind),
     /// Display only.
     None,
 }
@@ -75,8 +107,39 @@ pub struct Panel {
     pub cards: Vec<Card>,
     /// Queue thumbnails (production or orders).
     pub queue: Vec<Card>,
-    /// What the queue strip is labeled.
-    pub queue_label: &'static str,
+    /// What the queue strip is labeled — for order docks, WHOSE
+    /// program it shows ("orders - harvester"), because the dock draws
+    /// one unit's story while breadcrumbs draw many.
+    pub queue_label: String,
+}
+
+/// The selection's SUBJECT: the unit whose program the dock, the
+/// portrait, and the full-opacity breadcrumbs all describe — one rule,
+/// so the surfaces can never disagree. Majority kind first (a mixed
+/// army reads as its bulk, not its lowest id), lowest id inside it as
+/// the deterministic tie-break.
+pub fn subject_unit(game: &Game) -> Option<oxide_sim::UnitId> {
+    let units: Vec<_> = game
+        .selection
+        .units
+        .iter()
+        .filter_map(|id| game.state.unit(*id))
+        .collect();
+    let mut counts: Vec<(UnitKind, usize)> = Vec::new();
+    for u in &units {
+        match counts.iter_mut().find(|(k, _)| *k == u.kind) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((u.kind, 1)),
+        }
+    }
+    let (majority, _) = counts
+        .into_iter()
+        .max_by_key(|&(k, n)| (n, std::cmp::Reverse(k.name())))?;
+    units
+        .iter()
+        .filter(|u| u.kind == majority)
+        .map(|u| u.id)
+        .min()
 }
 
 /// One-line flavor per unit kind — tooltip and codex copy.
@@ -103,7 +166,9 @@ pub fn building_flavor(kind: BuildingKind) -> &'static str {
     match kind {
         BuildingKind::Foundry => "Trains the basics. Lose every Foundry and the seat falls.",
         BuildingKind::Fabricator => "Unlocks the advanced roster and the air wing.",
-        BuildingKind::Turret => "Static ground defense. Holds a line by standing on it.",
+        BuildingKind::Turret => {
+            "Static ground defense. Holds a line by standing on it - the answer to a swarm."
+        }
         BuildingKind::FlakTurret => "Static anti-air. The roof over your harvest line.",
         BuildingKind::Bastion => "Siege gun emplacement. Arcs shells beyond its sight.",
         BuildingKind::Array => "Radar mast. True sight close, nameless contacts far.",
@@ -145,30 +210,46 @@ pub fn weapon_lines(kind: UnitKind) -> Vec<String> {
 }
 
 fn order_card(order: &Order, active: bool) -> Card {
-    let (glyph, title, desc): (&str, &str, &str) = match order {
+    let (icon, title, desc): (VerbIcon, &str, &str) = match order {
         Order::Idle => (
-            "·",
+            VerbIcon::Idle,
             "Idle",
             "Standing by; fighters auto-engage in aggro range.",
         ),
-        Order::Move { .. } => ("M", "Move", "Walking; oblivious to enemies on the way."),
-        Order::Harvest { .. } => ("H", "Harvest", "Working a scrap node, hauling home."),
-        Order::Attack { .. } => ("A", "Attack", "Chasing one target until it is gone."),
-        Order::Build { .. } => ("B", "Build", "Standing up a construction site."),
+        Order::Move { .. } => (
+            VerbIcon::Move,
+            "Move",
+            "Walking; oblivious to enemies on the way.",
+        ),
+        Order::Harvest { .. } => (
+            VerbIcon::Harvest,
+            "Harvest",
+            "Working a scrap node, hauling home.",
+        ),
+        Order::Attack { .. } => (
+            VerbIcon::Attack,
+            "Attack",
+            "Chasing one target until it is gone.",
+        ),
+        Order::Build { .. } => (VerbIcon::Build, "Build", "Standing up a construction site."),
         Order::Repair { .. } => (
-            "R",
+            VerbIcon::Repair,
             "Repair",
             "Welding a damaged building; costs a trickle.",
         ),
-        Order::AttackMove { .. } => ("X", "Attack-move", "Marching; engages everything met."),
+        Order::AttackMove { .. } => (
+            VerbIcon::AttackMove,
+            "Attack-move",
+            "Marching; engages everything met.",
+        ),
         Order::Salvage { .. } => (
-            "S",
+            VerbIcon::Salvage,
             "Salvage",
             "Stripping a building down for a partial refund.",
         ),
     };
     Card {
-        icon: CardIcon::Glyph(glyph),
+        icon: CardIcon::Verb(icon),
         title: if active {
             format!("{title} (now)")
         } else {
@@ -205,7 +286,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             faction: game.state.player(owner).faction,
             cards: Vec::new(),
             queue: Vec::new(),
-            queue_label: "queue",
+            queue_label: "queue".to_string(),
         };
         if owner != game.human {
             // Foreign buildings inspect read-only: an ally's works say
@@ -220,7 +301,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             );
             if !hostile {
                 panel.cards.push(Card {
-                    icon: CardIcon::Glyph("·"),
+                    icon: CardIcon::Verb(VerbIcon::Idle),
                     title: "Ally works".into(),
                     cost: None,
                     hotkey: String::new(),
@@ -238,7 +319,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         if !building.built {
             panel.sub = format!("under construction · {}", panel.sub);
             panel.cards.push(Card {
-                icon: CardIcon::Glyph("X"),
+                icon: CardIcon::Verb(VerbIcon::Cancel),
                 title: "Scrap site".into(),
                 cost: None,
                 hotkey: chord(bindings, Action::StopOrScrap),
@@ -280,7 +361,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         }
         if building.rally.is_some() {
             panel.cards.push(Card {
-                icon: CardIcon::Glyph("R"),
+                icon: CardIcon::Verb(VerbIcon::Rally),
                 title: "Clear rally".into(),
                 cost: None,
                 hotkey: String::new(),
@@ -313,7 +394,8 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         .iter()
         .filter_map(|id| game.state.unit(*id))
         .collect();
-    let first = units.first()?;
+    let subject_id = subject_unit(game)?;
+    let first = units.iter().find(|u| u.id == subject_id)?;
     let owner = first.player;
     let has_builder = units.iter().any(|u| u.kind == UnitKind::Harvester);
     let mut desc = vec![unit_flavor(first.kind).to_string()];
@@ -327,21 +409,32 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         sub: if units.len() == 1 {
             format!("{}/{} hp", first.hp, first.kind.stats().max_hp)
         } else {
-            let kinds: Vec<&str> = {
+            let (kinds, extra) = {
                 let mut ks: Vec<UnitKind> = units.iter().map(|u| u.kind).collect();
                 // dedup only folds neighbors, and a mixed selection
                 // arrives in id order where equal kinds need not be.
                 ks.sort_by_key(|k| k.name());
                 ks.dedup();
-                ks.iter().map(|k| k.name()).take(4).collect()
+                let extra = ks.len().saturating_sub(4);
+                let named: Vec<&str> = ks.iter().map(|k| k.name()).take(4).collect();
+                (named, extra)
             };
-            kinds.join(", ")
+            if extra > 0 {
+                format!("{} +{extra} more", kinds.join(", "))
+            } else {
+                kinds.join(", ")
+            }
         },
         portrait: CardIcon::Unit(first.kind),
         faction: game.state.player(owner).faction,
         cards: Vec::new(),
         queue: Vec::new(),
-        queue_label: "orders",
+        queue_label: if units.len() == 1 {
+            "orders".to_string()
+        } else {
+            // The dock shows ONE unit's program; say whose.
+            format!("orders - {}", first.kind.name())
+        },
     };
     if owner != game.human {
         // Foreign units inspect read-only. An ally shows its orders —
@@ -362,8 +455,39 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         }
         return Some(panel);
     }
+    // The type strip: a mixed army offers one card per kind, counted.
+    // Click keeps only that kind; Ctrl-click drops it — the two cuts
+    // every RTS hand knows. Capped at six cards so the band's card
+    // budget holds; the sub line's "+N more" names the fold.
+    if units.len() > 1 {
+        let mut counts: Vec<(UnitKind, usize)> = Vec::new();
+        for u in &units {
+            match counts.iter_mut().find(|(k, _)| *k == u.kind) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((u.kind, 1)),
+            }
+        }
+        if counts.len() > 1 {
+            counts.sort_by_key(|(k, _)| k.name());
+            for (kind, n) in counts.into_iter().take(6) {
+                panel.cards.push(Card {
+                    icon: CardIcon::Unit(kind),
+                    title: format!("{} x{n}", kind.name()),
+                    cost: None,
+                    hotkey: String::new(),
+                    action: CardAction::FilterKind(kind),
+                    enabled: true,
+                    why: None,
+                    desc: vec![
+                        "Click: keep only this kind.".into(),
+                        "Ctrl-click: drop this kind instead.".into(),
+                    ],
+                });
+            }
+        }
+    }
     panel.cards.push(Card {
-        icon: CardIcon::Glyph("■"),
+        icon: CardIcon::Verb(VerbIcon::Stop),
         title: "Stop".into(),
         cost: None,
         hotkey: chord(bindings, Action::StopOrScrap),
@@ -373,7 +497,20 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         desc: vec!["Clear orders; stand and auto-engage.".into()],
     });
     panel.cards.push(Card {
-        icon: CardIcon::Glyph("P"),
+        icon: CardIcon::Verb(VerbIcon::Move),
+        title: "Run".into(),
+        cost: None,
+        hotkey: chord(bindings, Action::Run),
+        action: CardAction::Dispatch(Action::Run),
+        enabled: true,
+        why: None,
+        desc: vec![
+            "Arm, then click ground: walk there WITHOUT".into(),
+            "engaging. The recall when a fight must wait.".into(),
+        ],
+    });
+    panel.cards.push(Card {
+        icon: CardIcon::Verb(VerbIcon::Patrol),
         title: "Patrol".into(),
         cost: None,
         hotkey: chord(bindings, Action::Patrol),
@@ -387,7 +524,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
     });
     if has_builder {
         panel.cards.push(Card {
-            icon: CardIcon::Glyph("V"),
+            icon: CardIcon::Verb(VerbIcon::Salvage),
             title: "Salvage".into(),
             cost: None,
             hotkey: chord(bindings, Action::Salvage),
@@ -457,6 +594,44 @@ mod tests {
     fn nothing_selected_builds_no_panel() {
         let game = game();
         assert!(build(&game, &BindingMap::classic()).is_none());
+    }
+
+    #[test]
+    fn verb_cards_wear_their_atlas_icons() {
+        use chassis::grid::TilePos;
+        use oxide_sim::UnitKind;
+        let mut game = game();
+        let sentinel = game
+            .state
+            .units()
+            .iter()
+            .find(|u| u.player == game.human && u.kind == UnitKind::Sentinel)
+            .expect("skirmish authors a sentinel")
+            .id;
+        game.state.tick(&[PlayerCommand {
+            player: game.human,
+            command: Command::AttackMove {
+                units: vec![sentinel],
+                goal: TilePos::new(20, 12),
+                queue: false,
+            },
+        }]);
+        game.selection.units = vec![sentinel];
+        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        let patrol = panel
+            .cards
+            .iter()
+            .find(|c| c.title == "Patrol")
+            .expect("patrol card");
+        assert_eq!(patrol.icon, CardIcon::Verb(VerbIcon::Patrol));
+        assert_eq!(patrol.hotkey, "R", "the tooltip chord stays live");
+        let chip = &panel.queue[0];
+        assert!(chip.title.starts_with("Attack-move"), "{}", chip.title);
+        assert_eq!(
+            chip.icon,
+            CardIcon::Verb(VerbIcon::AttackMove),
+            "chips wear pictograms, not letters that shadow chords"
+        );
     }
 
     #[test]
@@ -542,7 +717,8 @@ mod tests {
         let panel = build(&game, &BindingMap::classic()).expect("panel");
         assert_eq!(panel.title, "HARVESTER");
         assert_eq!(panel.cards[0].title, "Stop");
-        assert_eq!(panel.cards[1].title, "Patrol");
+        assert_eq!(panel.cards[1].title, "Run");
+        assert_eq!(panel.cards[2].title, "Patrol");
         let builds: Vec<_> = panel
             .cards
             .iter()

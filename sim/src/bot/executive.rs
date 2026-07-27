@@ -569,6 +569,33 @@ impl Executive {
         out
     }
 
+    /// The harvesters [`Self::apply`] would spend lowering `intents` —
+    /// same chooser, same order, so a chore appended behind them can
+    /// keep off a machine the lowering has already bought. Takes
+    /// world-space intents, exactly like `apply`.
+    pub(super) fn labor_claims(&self, obs: &Observation, intents: &[Intent]) -> Vec<UnitId> {
+        let mut claimed: Vec<UnitId> = Vec::new();
+        for intent in intents {
+            // The three labor intents are the ones whose worker the
+            // policy never names; a new one belongs in this list too.
+            let anchor = match intent {
+                Intent::Build { anchor, .. } => Some(*anchor),
+                Intent::Repair { building } | Intent::Salvage { building } => obs
+                    .my_buildings
+                    .iter()
+                    .find(|b| b.id == *building)
+                    .map(|b| b.anchor),
+                _ => None,
+            };
+            if let Some(anchor) = anchor
+                && let Some(unit) = self.free_harvester(obs, anchor, &claimed)
+            {
+                claimed.push(unit);
+            }
+        }
+        claimed
+    }
+
     /// The nearest own harvester to `anchor` that isn't enlisted or
     /// already claimed this think, for construction. Working ones are
     /// fair game (the economy re-hires).

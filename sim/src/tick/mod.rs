@@ -51,8 +51,8 @@ impl State {
             commands::apply(self, commands, &mut events);
             production::run(self, &mut events);
             brain::run(self, &mut events);
-            movement::run(self);
-            movement::resolve_collisions(self);
+            let travel = movement::run(self);
+            movement::resolve_collisions(self, &travel);
             cleanup(self, &mut events);
             if self.tick.is_multiple_of(crate::stats::WRECK_DECAY_TICKS) {
                 self.map.decay_wrecks();

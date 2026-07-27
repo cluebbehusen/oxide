@@ -2,7 +2,7 @@
 //! resolver against a real (headless) sim.
 
 use super::*;
-use oxide_sim::UnitKind;
+use oxide_sim::{PlayerCommand, UnitKind};
 
 fn headless_game() -> Game {
     Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0))
@@ -128,24 +128,49 @@ fn a_misclick_keeps_placement_armed_and_a_shift_click_repeats() {
                 x: open.x,
                 y: open.y,
             },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: open.x,
+                y: open.y,
+            },
         ],
     );
     assert_eq!(game.pending.len(), 1, "legal ground stages the site");
     assert!(input.placing.is_some(), "shift keeps the wall going up");
 
-    // A plain click disarms after staging.
+    // A plain click (press AND release — the mode settles at the
+    // release, where the placement drag ends) disarms after staging.
+    // Skirmish's 150 scrap is spent after the shift stamp, and a
+    // BROKE click now refuses and keeps the mode armed — so the
+    // disarm half runs in a fresh, still-funded session.
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    game.selection.units = vec![
+        game.state
+            .units()
+            .iter()
+            .find(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+            .unwrap()
+            .id,
+    ];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
     apply_events(
         &mut game,
         &mut input,
         &[
-            RawEvent::KeyUp { key: Key::Shift },
             RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: open.x + 96.0,
+                y: open.y,
+            },
+            RawEvent::MouseUp {
                 button: MouseButton::Left,
                 x: open.x + 96.0,
                 y: open.y,
             },
         ],
     );
+    assert_eq!(game.pending.len(), 1, "the plain click stages its site");
     assert!(input.placing.is_none(), "a plain click finishes the job");
 }
 
@@ -571,6 +596,338 @@ fn the_armed_salvage_verb_strips_by_click_and_refuses_the_foundry() {
         game.pending
     );
     assert!(!input.salvaging, "a plain click finishes the job");
+}
+
+#[test]
+fn the_armed_run_verb_issues_an_oblivious_move() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let fighter = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Sentinel)
+        .expect("skirmish authors a sentinel")
+        .id;
+    game.selection.units = vec![fighter];
+    // Arm with the classic hotkey, exactly as a player would.
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::M },
+            RawEvent::KeyUp { key: Key::M },
+        ],
+    );
+    assert!(input.running, "M arms the recall");
+
+    // The click sends a plain Move — the OBLIVIOUS walk, not the
+    // fighting march the right-click issues — and stands down.
+    let home = game.state.unit(fighter).unwrap().tile();
+    let goal = TilePos::new(home.x + 3, home.y);
+    let p = game
+        .camera
+        .to_screen(vec2(goal.x as f32 + 0.5, goal.y as f32 + 0.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+        ],
+    );
+    assert!(
+        game.pending.iter().any(|c| matches!(
+            &c.command,
+            Command::Move { goal: g, queue: false, .. } if *g == goal
+        )),
+        "the armed click issues Command::Move: {:?}",
+        game.pending
+    );
+    assert!(!input.running, "a plain click finishes the recall");
+    assert!(
+        !game
+            .pending
+            .iter()
+            .any(|c| matches!(&c.command, Command::AttackMove { .. })),
+        "nothing about the run engages"
+    );
+}
+
+#[test]
+fn arming_run_stands_the_other_verbs_down() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let harvester = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.kind == UnitKind::Harvester && u.player == game.human)
+        .unwrap()
+        .id;
+    game.selection.units = vec![harvester];
+    // Placement armed, then M: exactly one verb may hold the cursor —
+    // armed_click resolves placement before run, so both live at once
+    // would stamp a building under a "run" toast.
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::M },
+            RawEvent::KeyUp { key: Key::M },
+        ],
+    );
+    assert!(input.running, "M arms the recall");
+    assert!(input.placing.is_none(), "and placement stood down");
+    let home = game.state.unit(harvester).unwrap().tile();
+    let p = game
+        .camera
+        .to_screen(vec2(home.x as f32 + 2.5, home.y as f32 + 0.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+        ],
+    );
+    assert!(
+        game.pending
+            .iter()
+            .all(|c| !matches!(&c.command, Command::Build { .. })),
+        "the click ran; it did not stamp the stale building: {:?}",
+        game.pending
+    );
+    assert!(
+        game.pending
+            .iter()
+            .any(|c| matches!(&c.command, Command::Move { .. })),
+        "the click issued the run"
+    );
+    // And the mirror direction: arming salvage stands run down.
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::M },
+            RawEvent::KeyUp { key: Key::M },
+            RawEvent::KeyDown { key: Key::V },
+            RawEvent::KeyUp { key: Key::V },
+        ],
+    );
+    assert!(input.salvaging, "V arms salvage");
+    assert!(!input.running, "and the run stood down");
+}
+
+#[test]
+fn a_paused_stroke_bills_each_kind_at_its_own_price() {
+    // Bank 360: one staged turret (100) plus an armed bastion (250)
+    // is affordable at the ACTUAL sum (350). The old count-times-
+    // current-kind math priced the staged turret as a second bastion
+    // (500) and refused a funded placement.
+    let mut game = drag_arena(360);
+    let mut input = InputState::new();
+    let builder = game.state.units()[0].id;
+    game.selection.units = vec![builder];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    let p = game.camera.to_screen(vec2(4.5, 2.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::Shift },
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+        ],
+    );
+    assert_eq!(staged_builds(&game), 1, "the turret staged");
+    // The clock never ran (paused shell): the turret is still pending
+    // when the palette switches kinds.
+    input.placing = Some(oxide_sim::BuildingKind::Bastion);
+    let p2 = game.camera.to_screen(vec2(9.5, 2.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: p2.x,
+                y: p2.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: p2.x,
+                y: p2.y,
+            },
+        ],
+    );
+    assert_eq!(
+        staged_builds(&game),
+        2,
+        "100 + 250 fits in 360 — the funded bastion must not be refused"
+    );
+}
+
+#[test]
+fn a_paused_stroke_refuses_ground_an_earlier_stroke_spoke_for() {
+    let mut game = drag_arena(50_000);
+    let mut input = InputState::new();
+    let builder = game.state.units()[0].id;
+    game.selection.units = vec![builder];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    // Stroke A stamps a turret; the clock never runs, so the site
+    // exists only in pending — live state still shows open ground.
+    let p = game.camera.to_screen(vec2(4.5, 2.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::Shift },
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+        ],
+    );
+    assert_eq!(staged_builds(&game), 1, "stroke A staged its site");
+    // Stroke B opens on the same tile: the ground is spoken for, and
+    // acknowledging the stamp would hand the sim a doomed command.
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+        ],
+    );
+    assert_eq!(
+        staged_builds(&game),
+        1,
+        "the overlapping opening refused instead of double-booking the footprint"
+    );
+    assert!(
+        input.placing.is_some(),
+        "and the refusal keeps the mode armed"
+    );
+}
+
+#[test]
+fn queued_orders_count_against_the_stroke_prediction() {
+    let mut game = drag_arena(50_000);
+    let mut input = InputState::new();
+    let builder = game.state.units()[0].id;
+    game.selection.units = vec![builder];
+    // Three queued walks staged while paused: the builder's program
+    // will hold them the moment the clock runs, so a build stroke
+    // must see three fewer free slots even though live state still
+    // reads an idle unit.
+    for x in [14, 15, 16] {
+        game.issue(Command::Move {
+            units: vec![builder],
+            goal: TilePos::new(x, 2),
+            queue: true,
+        });
+    }
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    let mut tiles = Vec::new();
+    for y in [2, 4, 6, 8] {
+        for x in 4..=13 {
+            if (x, y) != (7, 4) {
+                tiles.push((x, y));
+            }
+        }
+    }
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::KeyDown { key: Key::Shift }],
+    );
+    drag_over(&mut game, &mut input, &tiles);
+    assert_eq!(
+        staged_builds(&game),
+        oxide_sim::stats::ORDER_QUEUE_CAP - 2,
+        "three staged walks occupy three slots of the builder's program"
+    );
+}
+
+#[test]
+fn paused_strokes_share_one_queue_prediction() {
+    let mut game = drag_arena(50_000);
+    let mut input = InputState::new();
+    let builder = game.state.units()[0].id;
+    game.selection.units = vec![builder];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    // Two Shift strokes with NO tick between them (paused shell): the
+    // second must inherit the first's staged depth instead of
+    // re-reading the untouched live queue and blowing past the cap.
+    let mut tiles_a = Vec::new();
+    let mut tiles_b = Vec::new();
+    for y in [2, 4] {
+        for x in 4..=13 {
+            tiles_a.push((x, y));
+        }
+    }
+    for y in [6, 8] {
+        for x in 4..=13 {
+            if (x, y) != (7, 8) {
+                tiles_b.push((x, y));
+            }
+        }
+    }
+    let shift = [RawEvent::KeyDown { key: Key::Shift }];
+    apply_events(&mut game, &mut input, &shift);
+    drag_over(&mut game, &mut input, &tiles_a);
+    apply_events(&mut game, &mut input, &shift);
+    drag_over(&mut game, &mut input, &tiles_b);
+    assert!(
+        staged_builds(&game) <= oxide_sim::stats::ORDER_QUEUE_CAP + 1,
+        "two paused strokes staged {} builds — more than the builder's program can hold",
+        staged_builds(&game)
+    );
+    assert_eq!(
+        staged_builds(&game),
+        oxide_sim::stats::ORDER_QUEUE_CAP + 1,
+        "and the cap itself is still reachable"
+    );
 }
 
 /// A 2v1 team scenario: the human and a configured bot ally on one
@@ -1741,4 +2098,750 @@ fn a_slow_pinch_zooms_and_never_commits_a_box() {
         !game.selection.units.is_empty(),
         "the fresh pair's box landed"
     );
+}
+
+#[test]
+fn a_placement_drag_stamps_a_row_of_queued_builds() {
+    // A funded arena: one harvester, 1000 scrap — room for a wall.
+    let scenario = oxide_sim::Scenario::from_json(
+        &serde_json::json!({
+            "name": "Drag Range",
+            "seed": 3,
+            "players": [
+                {"name": "Mason", "faction": "ferrous", "scrap": 1000, "bot": false},
+                {"name": "Idle", "faction": "cupric", "scrap": 0, "bot": true}
+            ],
+            "map": [
+                "################",
+                "#1.............#",
+                "#..............#",
+                "#..............#",
+                "#............2.#",
+                "#..............#",
+                "################"
+            ],
+            "units": [
+                {"player": 0, "kind": "harvester", "x": 5, "y": 3}
+            ]
+        })
+        .to_string(),
+    )
+    .expect("drag arena parses");
+    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("builds");
+    let mut input = InputState::new();
+    let builder = game.state.units()[0].id;
+    game.selection.units = vec![builder];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+
+    // Screen points at the centers of three adjacent open tiles.
+    let at = |x: i32, y: i32| game.camera.to_screen(vec2(x as f32 + 0.5, y as f32 + 0.5));
+    let (a, b, c) = (at(7, 3), at(8, 3), at(9, 3));
+    let mut events = vec![RawEvent::MouseDown {
+        button: MouseButton::Left,
+        x: a.x,
+        y: a.y,
+    }];
+    events.push(RawEvent::MouseMove { x: b.x, y: b.y });
+    events.push(RawEvent::MouseMove { x: c.x, y: c.y });
+    events.push(RawEvent::MouseUp {
+        button: MouseButton::Left,
+        x: c.x,
+        y: c.y,
+    });
+    apply_events(&mut game, &mut input, &events);
+
+    let builds: Vec<_> = game
+        .pending
+        .iter()
+        .filter_map(|pc| match &pc.command {
+            Command::Build { anchor, queue, .. } => Some((*anchor, *queue)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(builds.len(), 3, "one stroke, three stamps: {builds:?}");
+    assert!(!builds[0].1, "the first stamp replaces (no Shift held)");
+    assert!(
+        builds[1].1 && builds[2].1,
+        "drag stamps queue behind the program"
+    );
+    let anchors: std::collections::BTreeSet<_> = builds.iter().map(|(a, _)| (a.x, a.y)).collect();
+    assert_eq!(anchors.len(), 3, "no overlapping footprints");
+    assert!(
+        input.placing.is_none() && input.placing_stroke.is_none(),
+        "release without Shift disarms the mode and closes the stroke"
+    );
+
+    // The sim accepts the whole row.
+    let commands = std::mem::take(&mut game.pending);
+    game.state.tick(&commands);
+    assert_eq!(
+        game.state
+            .buildings()
+            .iter()
+            .filter(|b| b.kind == oxide_sim::BuildingKind::Turret)
+            .count(),
+        3,
+        "all three sites claimed ground"
+    );
+}
+
+#[test]
+fn the_type_strip_cuts_a_mixed_selection_both_ways() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let mine: Vec<_> = game
+        .state
+        .units()
+        .iter()
+        .filter(|u| u.player == game.human)
+        .map(|u| u.id)
+        .collect();
+    game.selection.units = mine.clone();
+    let panel = crate::panel::build(&game, &input.bindings).expect("panel");
+    let strip: Vec<_> = panel
+        .cards
+        .iter()
+        .filter_map(|c| match c.action {
+            crate::panel::CardAction::FilterKind(k) => Some((k, c.title.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(strip.len(), 2, "two kinds, two counted cards: {strip:?}");
+    assert!(
+        strip
+            .iter()
+            .any(|(k, t)| *k == UnitKind::Harvester && t.contains("x3")),
+        "the strip counts its kind: {strip:?}"
+    );
+
+    // Ctrl-click drops the kind...
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::KeyDown { key: Key::Ctrl }],
+    );
+    activate_card(
+        &mut game,
+        &mut input,
+        crate::panel::CardAction::FilterKind(UnitKind::Harvester),
+    );
+    assert!(
+        !game.selection.units.is_empty()
+            && game
+                .selection
+                .units
+                .iter()
+                .all(|id| game.state.unit(*id).unwrap().kind != UnitKind::Harvester),
+        "Ctrl cuts the named kind out"
+    );
+    apply_events(&mut game, &mut input, &[RawEvent::KeyUp { key: Key::Ctrl }]);
+
+    // ...and the plain click keeps only the named kind.
+    game.selection.units = mine;
+    activate_card(
+        &mut game,
+        &mut input,
+        crate::panel::CardAction::FilterKind(UnitKind::Sentinel),
+    );
+    assert!(
+        !game.selection.units.is_empty()
+            && game
+                .selection
+                .units
+                .iter()
+                .all(|id| game.state.unit(*id).unwrap().kind == UnitKind::Sentinel),
+        "a plain click narrows to the kind"
+    );
+}
+
+/// A mouse already in flight when the button lands: the press must
+/// anchor the box where it LANDED, and the box must be drawable on the
+/// very frame of the press. The polled adapter could do neither — it
+/// stamped every button with the frame's LAST cursor position, so the
+/// anchor jumped forward by a frame of travel and `mouse ==
+/// drag_origin` made the rect zero-sized until the next frame.
+#[test]
+fn a_press_mid_flight_anchors_the_box_where_it_landed() {
+    use macroquad::miniquad::EventHandler;
+    // Retina: the platform speaks backing-store pixels, the shell logical ones.
+    let mut stream = PointerStream::new(2.0);
+    stream.mouse_motion_event(600.0, 400.0);
+    stream.mouse_motion_event(760.0, 400.0);
+    stream.mouse_button_down_event(macroquad::miniquad::MouseButton::Left, 768.0, 400.0);
+    stream.mouse_motion_event(900.0, 400.0);
+    stream.mouse_motion_event(1000.0, 400.0);
+    assert_eq!(
+        stream.events,
+        vec![
+            RawEvent::MouseMove { x: 300.0, y: 200.0 },
+            RawEvent::MouseMove { x: 380.0, y: 200.0 },
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: 384.0,
+                y: 200.0
+            },
+            RawEvent::MouseMove { x: 450.0, y: 200.0 },
+            RawEvent::MouseMove { x: 500.0, y: 200.0 },
+        ],
+        "every event keeps its own position, in arrival order"
+    );
+
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    input.ui = 1.0;
+    apply_events(&mut game, &mut input, &stream.events);
+    assert_eq!(
+        input.drag_origin,
+        Some(vec2(384.0, 200.0)),
+        "the box anchors at the press, not at the end of the frame"
+    );
+    assert!(
+        input.mouse.distance(input.drag_origin.expect("dragging")) > drag_threshold(input.ui),
+        "and the rect is already drawable on the press frame itself"
+    );
+}
+
+/// The selection consequence of the same frame: a unit sitting between
+/// the press point and where the pointer ended the frame belongs in the
+/// box. The old adapter threw that stretch away.
+#[test]
+fn the_stretch_between_press_and_frame_end_still_selects() {
+    use macroquad::miniquad::EventHandler;
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    input.ui = 1.0;
+    let mine: Vec<_> = game
+        .state
+        .units()
+        .iter()
+        .filter(|u| u.player == game.human)
+        .collect();
+    let (lo, hi) = (mine[0].pos, mine[mine.len() - 1].pos);
+    let a = game
+        .camera
+        .to_screen(vec2(lo.x.to_num::<f32>() - 1.0, lo.y.to_num::<f32>() - 1.0));
+    let b = game
+        .camera
+        .to_screen(vec2(hi.x.to_num::<f32>() + 1.0, hi.y.to_num::<f32>() + 1.0));
+    let want: Vec<_> = mine.iter().map(|u| u.id).collect();
+
+    // One frame: the pointer flies past `a`, the button lands there,
+    // and the pointer carries on to `b` before the frame ends.
+    let mut stream = PointerStream::new(1.0);
+    stream.mouse_motion_event(a.x - 40.0, a.y - 40.0);
+    stream.mouse_button_down_event(macroquad::miniquad::MouseButton::Left, a.x, a.y);
+    stream.mouse_motion_event(b.x, b.y);
+    stream.mouse_button_up_event(macroquad::miniquad::MouseButton::Left, b.x, b.y);
+    apply_events(&mut game, &mut input, &stream.events);
+    let mut got = game.selection.units.clone();
+    got.sort_unstable();
+    assert_eq!(got, want, "the whole sweep selects, press point included");
+
+    // The shape the polled adapter produced for that same frame: one
+    // MouseMove at the frame's END, and a press and release stamped
+    // there too. Origin == release, so the sweep read as a bare click.
+    let mut input = InputState::new();
+    input.ui = 1.0;
+    game.selection.units.clear();
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::MouseMove { x: b.x, y: b.y },
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: b.x,
+                y: b.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: b.x,
+                y: b.y,
+            },
+        ],
+    );
+    assert_ne!(
+        game.selection.units, want,
+        "premise: coalescing the frame into its last position loses the drag"
+    );
+}
+
+/// The drag arena, parameterized by bank: same shape as the funded
+/// test's fixture, one harvester, open ground.
+fn drag_arena(scrap: u32) -> Game {
+    let scenario = oxide_sim::Scenario::from_json(
+        &serde_json::json!({
+            "name": "Drag Bank",
+            "seed": 3,
+            "players": [
+                {"name": "Mason", "faction": "ferrous", "scrap": scrap, "bot": false},
+                {"name": "Idle", "faction": "cupric", "scrap": 0, "bot": true}
+            ],
+            "map": [
+                "######################",
+                "#1...................#",
+                "#....................#",
+                "#....................#",
+                "#....................#",
+                "#....................#",
+                "#....................#",
+                "#....................#",
+                "#..................2.#",
+                "#....................#",
+                "######################"
+            ],
+            "units": [
+                {"player": 0, "kind": "harvester", "x": 7, "y": 4}
+            ]
+        })
+        .to_string(),
+    )
+    .expect("drag bank parses");
+    Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("builds")
+}
+
+fn staged_builds(game: &Game) -> usize {
+    game.pending
+        .iter()
+        .filter(|pc| matches!(pc.command, Command::Build { .. }))
+        .count()
+}
+
+fn drag_over(game: &mut Game, input: &mut InputState, tiles: &[(i32, i32)]) {
+    let at =
+        |game: &Game, x: i32, y: i32| game.camera.to_screen(vec2(x as f32 + 0.5, y as f32 + 0.5));
+    let first = at(game, tiles[0].0, tiles[0].1);
+    let mut events = vec![RawEvent::MouseDown {
+        button: MouseButton::Left,
+        x: first.x,
+        y: first.y,
+    }];
+    apply_events(game, input, &events);
+    events.clear();
+    for &(x, y) in &tiles[1..] {
+        let p = at(game, x, y);
+        apply_events(game, input, &[RawEvent::MouseMove { x: p.x, y: p.y }]);
+    }
+    let last = at(game, tiles[tiles.len() - 1].0, tiles[tiles.len() - 1].1);
+    apply_events(
+        game,
+        input,
+        &[RawEvent::MouseUp {
+            button: MouseButton::Left,
+            x: last.x,
+            y: last.y,
+        }],
+    );
+}
+
+/// `drag_over` with the frame loop's heartbeat: pending drains into
+/// the sim between pointer events, the way real drags actually run.
+fn drag_over_ticking(game: &mut Game, input: &mut InputState, tiles: &[(i32, i32)]) -> usize {
+    let at =
+        |game: &Game, x: i32, y: i32| game.camera.to_screen(vec2(x as f32 + 0.5, y as f32 + 0.5));
+    let mut rejections = 0;
+    let mut drain = |game: &mut Game| {
+        let commands = std::mem::take(&mut game.pending);
+        let report = game.state.tick(&commands);
+        rejections += report
+            .events
+            .iter()
+            .filter(|e| matches!(e, oxide_sim::Event::CommandRejected { .. }))
+            .count();
+    };
+    let first = at(game, tiles[0].0, tiles[0].1);
+    apply_events(
+        game,
+        input,
+        &[RawEvent::MouseDown {
+            button: MouseButton::Left,
+            x: first.x,
+            y: first.y,
+        }],
+    );
+    drain(game);
+    for &(x, y) in &tiles[1..] {
+        let p = at(game, x, y);
+        apply_events(game, input, &[RawEvent::MouseMove { x: p.x, y: p.y }]);
+        drain(game);
+    }
+    let last = at(game, tiles[tiles.len() - 1].0, tiles[tiles.len() - 1].1);
+    apply_events(
+        game,
+        input,
+        &[RawEvent::MouseUp {
+            button: MouseButton::Left,
+            x: last.x,
+            y: last.y,
+        }],
+    );
+    drain(game);
+    rejections
+}
+
+#[test]
+fn a_ticking_drag_spends_the_whole_bank() {
+    // Ten turrets, exactly funded — and the tick charging earlier
+    // stamps mid-drag must not make the gate bill them twice (the
+    // double-count cut a funded wall to half its length).
+    let mut game = drag_arena(1000);
+    let mut input = InputState::new();
+    game.selection.units = vec![game.state.units()[0].id];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    // Two short rows bracketing the builder: every anchor stays inside
+    // someone's sight even as the builder walks to its first site —
+    // a wall drawn off into fog refuses honestly, which is a
+    // different test.
+    let tiles: Vec<_> = (4..=8)
+        .map(|x| (x, 2))
+        .chain((4..=8).map(|x| (x, 6)))
+        .collect();
+    let rejections = drag_over_ticking(&mut game, &mut input, &tiles);
+    assert_eq!(rejections, 0, "the gate stages nothing the sim refuses");
+    assert_eq!(
+        game.state
+            .buildings()
+            .iter()
+            .filter(|b| b.kind == oxide_sim::BuildingKind::Turret)
+            .count(),
+        10,
+        "a funded wall goes up whole"
+    );
+    assert_eq!(
+        game.state.player(game.human).scrap,
+        0,
+        "the bank spends to exactly zero"
+    );
+}
+
+#[test]
+fn a_broke_opening_click_toasts_instead_of_pinging() {
+    let mut game = drag_arena(50);
+    let mut input = InputState::new();
+    game.selection.units = vec![game.state.units()[0].id];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    drag_over(&mut game, &mut input, &[(9, 4)]);
+    assert_eq!(staged_builds(&game), 0, "a broke seat stages nothing");
+    assert!(
+        input.placing.is_some(),
+        "a refusal keeps the mode armed, like any misclick"
+    );
+}
+
+#[test]
+fn a_placement_drag_stops_at_the_bank() {
+    let mut game = drag_arena(250);
+    let mut input = InputState::new();
+    game.selection.units = vec![game.state.units()[0].id];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    drag_over(&mut game, &mut input, &[(9, 4), (10, 4), (11, 4)]);
+    assert_eq!(
+        staged_builds(&game),
+        2,
+        "250 scrap affords two 100-scrap turrets; the third stamp is \
+         refused at the gate, not by the sim"
+    );
+    let commands = std::mem::take(&mut game.pending);
+    let report = game.state.tick(&commands);
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|e| matches!(e, oxide_sim::Event::CommandRejected { .. })),
+        "the shell staged nothing the sim had to refuse"
+    );
+
+    // A single-turret bank stages exactly one: the first click's own
+    // cost is reserved through the stroke seed.
+    let mut game = drag_arena(150);
+    let mut input = InputState::new();
+    game.selection.units = vec![game.state.units()[0].id];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    drag_over(&mut game, &mut input, &[(9, 4), (10, 4), (11, 4)]);
+    assert_eq!(staged_builds(&game), 1, "150 scrap affords one turret");
+}
+
+#[test]
+fn a_shift_stroke_spends_only_the_builders_headroom() {
+    let mut game = drag_arena(50_000);
+    let mut input = InputState::new();
+    let builder = game.state.units()[0].id;
+    game.selection.units = vec![builder];
+    // Pre-load the program through the sim: one active move plus 30
+    // queued — headroom 2.
+    let mut fill = vec![PlayerCommand {
+        player: game.human,
+        command: Command::Move {
+            units: vec![builder],
+            goal: TilePos::new(3, 7),
+            queue: false,
+        },
+    }];
+    for _ in 0..30 {
+        fill.push(PlayerCommand {
+            player: game.human,
+            command: Command::Move {
+                units: vec![builder],
+                goal: TilePos::new(4, 7),
+                queue: true,
+            },
+        });
+    }
+    game.state.tick(&fill);
+    assert_eq!(game.state.unit(builder).unwrap().queue.len(), 30);
+
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::KeyDown { key: Key::Shift }],
+    );
+    drag_over(
+        &mut game,
+        &mut input,
+        &[
+            (4, 2),
+            (6, 2),
+            (8, 2),
+            (10, 2),
+            (12, 2),
+            (4, 6),
+            (6, 6),
+            (8, 6),
+            (10, 6),
+            (12, 6),
+        ],
+    );
+    assert_eq!(
+        staged_builds(&game),
+        2,
+        "an active order and thirty queued leave headroom for exactly two"
+    );
+    let commands = std::mem::take(&mut game.pending);
+    let report = game.state.tick(&commands);
+    assert!(
+        !report.events.iter().any(|e| matches!(
+            e,
+            oxide_sim::Event::CommandRejected {
+                reason: oxide_sim::command::RejectReason::QueueFull,
+                ..
+            }
+        )),
+        "the stroke never outruns the queue"
+    );
+    assert_eq!(
+        game.state.unit(builder).unwrap().queue.len(),
+        oxide_sim::stats::ORDER_QUEUE_CAP,
+        "the queue lands exactly full"
+    );
+}
+
+#[test]
+fn a_fresh_stroke_owns_the_cap_plus_the_active_slot() {
+    let mut game = drag_arena(50_000);
+    let mut input = InputState::new();
+    let builder = game.state.units()[0].id;
+    game.selection.units = vec![builder];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    // Rows 2, 4, 6, 8 with free rows between: every site keeps a
+    // doorstep, all inside the harvester's vision and clear of both
+    // foundry footprints.
+    let mut tiles = Vec::new();
+    for y in [2, 4, 6, 8] {
+        for x in 4..=13 {
+            if (x, y) != (7, 4) {
+                tiles.push((x, y));
+            }
+        }
+    }
+    drag_over(&mut game, &mut input, &tiles);
+    assert_eq!(
+        staged_builds(&game),
+        oxide_sim::stats::ORDER_QUEUE_CAP + 1,
+        "one active order plus a full queue is legal"
+    );
+}
+
+#[test]
+fn a_full_queue_refuses_the_opening_shift_stamp() {
+    let mut game = drag_arena(50_000);
+    let mut input = InputState::new();
+    let builder = game.state.units()[0].id;
+    game.selection.units = vec![builder];
+    // Fill the program to the brim in the SIM: one active order plus a
+    // full queue — zero headroom for the stamp the click would append.
+    game.state.tick(&[PlayerCommand {
+        player: game.human,
+        command: Command::Move {
+            units: vec![builder],
+            goal: TilePos::new(15, 2),
+            queue: false,
+        },
+    }]);
+    for _ in 0..oxide_sim::stats::ORDER_QUEUE_CAP {
+        game.state.tick(&[PlayerCommand {
+            player: game.human,
+            command: Command::Move {
+                units: vec![builder],
+                goal: TilePos::new(15, 2),
+                queue: true,
+            },
+        }]);
+    }
+    assert_eq!(
+        game.state.unit(builder).unwrap().queue.len(),
+        oxide_sim::stats::ORDER_QUEUE_CAP,
+        "the fixture actually filled the queue"
+    );
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    let p = game.camera.to_screen(vec2(4.5, 2.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::Shift },
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+        ],
+    );
+    assert!(
+        game.pending.is_empty(),
+        "zero headroom refuses the opening stamp instead of pinging a doomed build"
+    );
+    assert!(
+        game.sounds_pending
+            .iter()
+            .any(|(k, _)| matches!(k, crate::game::SoundKind::Denied)),
+        "the refusal is audible"
+    );
+    assert!(input.placing.is_some(), "and the mode stays armed");
+}
+
+#[test]
+fn a_fogged_leg_leaves_a_gap_in_the_waypoint_numbers() {
+    let mut game = headless_game();
+    let fighter = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Sentinel)
+        .expect("skirmish authors a sentinel")
+        .id;
+    game.selection.units = vec![fighter];
+    // First leg into unexplored ground (its goal draws nothing), then
+    // a leg back onto explored home turf.
+    let fogged = {
+        let map = game.state.map();
+        let mut found = None;
+        'scan: for y in (0..map.height()).rev() {
+            for x in (0..map.width()).rev() {
+                let t = TilePos::new(x, y);
+                if game.state.passable(t) && !game.my_vision().explored(t) {
+                    found = Some(t);
+                    break 'scan;
+                }
+            }
+        }
+        found.expect("skirmish keeps unexplored ground at boot")
+    };
+    let home = game.state.unit(fighter).unwrap().tile();
+    game.state.tick(&[
+        PlayerCommand {
+            player: game.human,
+            command: Command::AttackMove {
+                units: vec![fighter],
+                goal: fogged,
+                queue: false,
+            },
+        },
+        PlayerCommand {
+            player: game.human,
+            command: Command::AttackMove {
+                units: vec![fighter],
+                goal: home,
+                queue: true,
+            },
+        },
+    ]);
+    let unit = game.state.unit(fighter).unwrap();
+    assert_eq!(unit.queue.len(), 1, "two-leg program");
+    let points = crate::render::entities::breadcrumb_points(&game, unit);
+    assert_eq!(points.len(), 1, "the fogged leg draws nothing");
+    assert_eq!(
+        points[0].0, 1,
+        "the survivor wears its PROGRAM position — chip 2 is waypoint 2, \
+         never renumbered down into chip 1's seat"
+    );
+}
+
+#[test]
+fn the_docks_subject_always_draws_its_trail() {
+    // Twelve older harvesters ahead of thirteen newer sentinels: the
+    // majority-kind subject sits past the decor cap in raw selection
+    // order, and the cap must never drop it.
+    let mut units = Vec::new();
+    for i in 0..12 {
+        units.push(serde_json::json!({"player": 0, "kind": "harvester", "x": 2 + i, "y": 2}));
+    }
+    for i in 0..13 {
+        units.push(serde_json::json!({"player": 0, "kind": "sentinel", "x": 2 + i, "y": 4}));
+    }
+    let scenario = oxide_sim::Scenario::from_json(
+        &serde_json::json!({
+            "name": "Crowd",
+            "seed": 9,
+            "players": [
+                {"name": "Mass", "faction": "ferrous", "scrap": 0, "bot": false},
+                {"name": "Idle", "faction": "cupric", "scrap": 0, "bot": true}
+            ],
+            "map": [
+                "######################",
+                "#....................#",
+                "#....................#",
+                "#....................#",
+                "#....................#",
+                "#....................#",
+                "#1.................2.#",
+                "#....................#",
+                "######################"
+            ],
+            "units": units
+        })
+        .to_string(),
+    )
+    .expect("crowd parses");
+    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("builds");
+    game.selection.units = game
+        .state
+        .units()
+        .iter()
+        .filter(|u| u.player == game.human)
+        .map(|u| u.id)
+        .collect();
+    let subject = crate::panel::subject_unit(&game).expect("a subject");
+    assert_eq!(
+        game.selection.units.iter().position(|id| *id == subject),
+        Some(12),
+        "premise: the subject sits exactly past the old cap's cut"
+    );
+    let decor = crate::render::entities::decor_units(&game);
+    assert_eq!(decor.len(), 12, "the cap holds");
+    assert_eq!(decor[0], subject, "the subject draws first, never dropped");
+    assert!(
+        decor.iter().all(|id| game.selection.units.contains(id)),
+        "decor only draws selected machines"
+    );
+
+    // A lone selection degrades to itself.
+    let one = game.selection.units[0];
+    game.selection.units = vec![one];
+    assert_eq!(crate::render::entities::decor_units(&game), vec![one]);
 }

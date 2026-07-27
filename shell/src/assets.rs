@@ -13,6 +13,9 @@ use oxide_sim::{Faction, UnitKind};
 /// on nearly every tile and halved the framerate zoomed out.
 pub struct Sprites {
     texture: Texture2D,
+    /// Verb pictograms for cards and order chips, indexed by
+    /// [`crate::panel::VerbIcon`].
+    verb_icons: [Rect; 12],
     ground: [Rect; 6],
     rock: [Rect; 4],
     /// Skyline row of a range, indexed `w_conn * 4 + e_conn * 2 + variant`.
@@ -108,6 +111,20 @@ impl Sprites {
         };
         Ok(Self {
             texture,
+            verb_icons: [
+                rect("icon_stop")?,
+                rect("icon_move")?,
+                rect("icon_attack_move")?,
+                rect("icon_attack")?,
+                rect("icon_patrol")?,
+                rect("icon_harvest")?,
+                rect("icon_build")?,
+                rect("icon_repair")?,
+                rect("icon_salvage")?,
+                rect("icon_cancel")?,
+                rect("icon_rally")?,
+                rect("icon_idle")?,
+            ],
             ground: [
                 rect("ground_0")?,
                 rect("ground_1")?,
@@ -265,6 +282,11 @@ impl Sprites {
     /// The one texture every sprite lives in.
     pub fn texture(&self) -> &Texture2D {
         &self.texture
+    }
+
+    /// A verb pictogram's atlas region.
+    pub fn verb_icon(&self, icon: crate::panel::VerbIcon) -> Rect {
+        self.verb_icons[icon as usize]
     }
 
     /// A ground variant's atlas region.

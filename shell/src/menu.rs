@@ -587,6 +587,5 @@ mod header_tests {
                 menu.selected
             );
         }
-        crate::render::set_viewport(1280.0, 800.0);
     }
 }

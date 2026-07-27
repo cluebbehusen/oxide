@@ -132,6 +132,16 @@ fn accepted_units(state: &State, player: PlayerId, ids: &[UnitId]) -> Vec<UnitId
 /// order actually landed — a full queue drops the append, and the caller
 /// reports it instead of pretending.
 fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) -> bool {
+    // Any command is the player (or bot) speaking: whatever tether a
+    // self-acquired fight put on this machine, it ends here —
+    // UNCONDITIONALLY, before the no-op early return below. A player
+    // re-ordering the exact attack the unit already picked itself
+    // compares equal, returns early, and without this line would
+    // silently keep the leash on an explicit commitment. Station
+    // keeping restarts too: a commanded machine is on assignment,
+    // not standing a post.
+    unit.leash = None;
+    unit.settled = 0;
     if queue && !matches!(unit.order, Order::Idle) {
         if unit.queue.len() < ORDER_QUEUE_CAP {
             unit.queue.push_back(order);
@@ -429,6 +439,11 @@ fn apply_patrol(
             unit.looping = true;
             unit.path = None;
             unit.progress = 0;
+            // Patrol writes the program directly instead of through
+            // `assign`, so it must keep assign's side of the tether
+            // contract itself: a command ends station keeping.
+            unit.leash = None;
+            unit.settled = 0;
         }
     }
     if !routed {
@@ -505,13 +520,20 @@ fn apply_build(
             let site = state.place_site(player, kind, anchor);
             let from = state.unit(builder).expect("filtered above").tile();
             let size = kind.stats().size;
-            let reachable = super::rect_adjacent_tiles(anchor, size)
+            // The canonical doorstep: lowest-(y, x) reachable
+            // perimeter tile. One deterministic tile, because it
+            // doubles as where an under-feet builder steps when the
+            // foundation claims its ground. (A* tolerates a blocked
+            // start, so a builder standing inside the fresh footprint
+            // routes out of it like any unit on newly claimed ground.)
+            let doorstep = super::rect_adjacent_tiles(anchor, size)
                 .filter(|&t| state.passable(t))
-                .any(|t| from == t || super::astar_for(state, from, t).is_some());
-            if !reachable {
+                .filter(|&t| from == t || super::astar_for(state, from, t).is_some())
+                .min_by_key(|t| (t.y, t.x));
+            let Some(doorstep) = doorstep else {
                 state.retract_site(site);
                 return Err(RejectReason::UnreachableGoal);
-            }
+            };
             // Assign BEFORE paying: a builder whose order queue is
             // full must reject the whole command with the site
             // retracted and nothing spent — the old code discarded
@@ -530,6 +552,50 @@ fn apply_build(
                 for dx in 0..size.0 {
                     state.map.clear_wreck(anchor.offset(dx, dy));
                 }
+            }
+            // Friendly machines make way as the site claims the
+            // ground: no sim rule expects a resting unit on a claimed
+            // footprint. The builder steps to the doorstep (its work
+            // position); every other friendly inside — allies
+            // included — deals round-robin onto the passable perimeter
+            // ring in (y, x) order, id order among the displaced.
+            // Strictly after the last rejection path and the payment —
+            // a rejected command must not move the state hash
+            // (retract_site's contract). Hostiles can't be here:
+            // can_place refused them.
+            let ring: Vec<TilePos> = {
+                let mut ring: Vec<TilePos> = super::rect_adjacent_tiles(anchor, size)
+                    .filter(|&t| state.passable(t))
+                    .collect();
+                ring.sort_unstable_by_key(|t| (t.y, t.x));
+                ring
+            };
+            let inside = |t: TilePos| {
+                t.x >= anchor.x
+                    && t.x < anchor.x + size.0
+                    && t.y >= anchor.y
+                    && t.y < anchor.y + size.1
+            };
+            let mut dealt = 0usize;
+            for i in 0..state.units.len() {
+                let u = &state.units[i];
+                if u.hp == 0
+                    || u.kind.stats().domain != crate::stats::Domain::Ground
+                    || !inside(u.tile())
+                {
+                    continue;
+                }
+                let to = if u.id == builder {
+                    doorstep
+                } else if let Some(&t) = ring.get(dealt % ring.len().max(1)) {
+                    dealt += 1;
+                    t
+                } else {
+                    continue; // no perimeter at all: leave it; collision resolves
+                };
+                let unit = &mut state.units[i];
+                unit.pos = to.center();
+                unit.path = None;
             }
             site
         }
@@ -692,7 +758,11 @@ fn purge_opposing_verb(
 }
 
 fn apply_stop(state: &mut State, player: PlayerId, units: &[UnitId]) -> Result<(), RejectReason> {
-    let applied = for_owned_units(state, player, units, |u| u.clear_program());
+    let applied = for_owned_units(state, player, units, |u| {
+        u.leash = None;
+        u.settled = 0;
+        u.clear_program();
+    });
     (applied > 0)
         .then_some(())
         .ok_or(RejectReason::NoValidUnits)

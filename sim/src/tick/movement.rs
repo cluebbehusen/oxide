@@ -15,7 +15,8 @@ use chassis::fx::{Fx, Vec2Fx, sqrt};
 use chassis::grid::TilePos;
 
 use crate::stats::{
-    ANCHORED_PUSH_SHARE, COLLISION_ITERATIONS, COLLISION_MAX_STEP, WAYPOINT_ACCEPT,
+    ANCHORED_PUSH_SHARE, COLLISION_ITERATIONS, COLLISION_MAX_STEP, SLIDE_LATERAL_SHARE,
+    SLIDE_RADIAL_SHARE, WAYPOINT_ACCEPT,
 };
 
 /// Whether skipping from waypoint `cur` toward `nxt` early (from anywhere
@@ -39,11 +40,14 @@ fn early_advance_safe(
     open(cur.offset(dx, 0)) && open(cur.offset(0, dy))
 }
 
-/// Advances every unit along its path by its speed. Intermediate waypoints
-/// are accepted within [`WAYPOINT_ACCEPT`] (when geometry allows) so a
-/// unit shoved off the line flows forward instead of re-seeking each exact
-/// center; final waypoints are still landed exactly.
-pub(super) fn run(state: &mut State) {
+/// Advances every unit along its path by its speed, returning each
+/// unit's displacement this tick (indexed like `state.units`) — the
+/// collision resolver reads travel to slide movers around each other
+/// instead of grinding them head-on. Intermediate waypoints are
+/// accepted within [`WAYPOINT_ACCEPT`] (when geometry allows) so a
+/// unit shoved off the line flows forward instead of re-seeking each
+/// exact center; final waypoints are still landed exactly.
+pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
     // Disjoint field borrows: units move, terrain is read-only.
     let State {
         units,
@@ -51,10 +55,12 @@ pub(super) fn run(state: &mut State) {
         buildings,
         ..
     } = state;
-    for unit in units.iter_mut() {
+    let mut travel = vec![Vec2Fx::ZERO; units.len()];
+    for (slot, unit) in units.iter_mut().enumerate() {
         if unit.hp == 0 {
             continue;
         }
+        let before = unit.pos;
         let stats = unit.kind.stats();
         let airborne = stats.domain == crate::stats::Domain::Air;
         let mut budget = stats.speed;
@@ -107,7 +113,9 @@ pub(super) fn run(state: &mut State) {
                 break;
             }
         }
+        travel[slot] = unit.pos - before;
     }
+    travel
 }
 
 /// A unit that is standing still to work — extracting, welding, or
@@ -139,14 +147,54 @@ const STACKED_DIRS: [Vec2Fx; 8] = [
 /// push that would land in an impassable tile is discarded (rocks beat
 /// crowd pressure), and each pass caps per-unit displacement so packed
 /// crowds settle instead of exploding.
-pub(super) fn resolve_collisions(state: &mut State) {
+///
+/// `travel` is each unit's displacement from this tick's path
+/// following: a unit that actually TRAVELED into a contact takes its
+/// correction as a slide (see [`correction_dirs`]) instead of a pure
+/// radial push. Snapshotted once for all passes — corrections can
+/// stale it by at most one step, which only softens the slide.
+pub(super) fn resolve_collisions(state: &mut State, travel: &[Vec2Fx]) {
     // Direction alternates by tick parity — Gauss-Seidel's sequential
     // application must not always favor the same ids (see brain::run).
     let reversed = state.tick % 2 == 1;
     for _ in 0..COLLISION_ITERATIONS {
-        if !relaxation_pass(state, reversed) {
+        if !relaxation_pass(state, reversed, travel) {
             break;
         }
+    }
+}
+
+/// Correction candidates for one body of an overlapping pair, best
+/// first. `away` is its radial escape (unit length). A body that
+/// traveled INTO the contact slides: the correction blends a reduced
+/// radial share with a lateral share picked toward the body's own
+/// travel — a head-on pair provably picks opposite world sides, which
+/// converts the grind (radial pushback exactly cancelling path speed;
+/// the measured permanent freeze at exactly touching distance) into a
+/// pass-by. Parked and non-closing bodies keep the pure radial push.
+/// The side pick is geometric (the travel's sign against the
+/// perpendicular, ties to +perp), so the rule is 180-degree
+/// rotation-equivariant — mirror seats slide mirror ways.
+///
+/// A slide candidate the terrain rejects degrades in order: against a
+/// head-on partner the lateral is DROPPED, never reversed — the
+/// opposite side is the partner's side, and taking it walls a
+/// corridor pair back into the freeze as a wobble. Against anything
+/// else the opposite side gets one try before the radial fallback.
+fn correction_dirs(away: Vec2Fx, travel: Vec2Fx, partner_head_on: bool) -> [Option<Vec2Fx>; 3] {
+    let closing = travel.x * away.x + travel.y * away.y < Fx::ZERO;
+    if !closing {
+        return [Some(away), None, None];
+    }
+    let perp = Vec2Fx::new(-away.y, away.x);
+    let lat = travel.x * perp.x + travel.y * perp.y;
+    let side = if lat >= Fx::ZERO { perp } else { -perp };
+    let blended = away * SLIDE_RADIAL_SHARE + side * SLIDE_LATERAL_SHARE;
+    if partner_head_on {
+        [Some(blended), Some(away), None]
+    } else {
+        let flipped = away * SLIDE_RADIAL_SHARE - side * SLIDE_LATERAL_SHARE;
+        [Some(blended), Some(flipped), Some(away)]
     }
 }
 
@@ -160,7 +208,7 @@ pub(super) fn resolve_collisions(state: &mut State) {
 /// forever. Sequential application cannot cancel, so jams always evolve.
 /// Dead units are skipped: a corpse should not shove the living on its
 /// removal tick.
-fn relaxation_pass(state: &mut State, reversed: bool) -> bool {
+fn relaxation_pass(state: &mut State, reversed: bool, travel: &[Vec2Fx]) -> bool {
     let n = state.units.len();
     if n < 2 {
         return false;
@@ -224,11 +272,13 @@ fn relaxation_pass(state: &mut State, reversed: bool) -> bool {
                     }
                     any_overlap = true;
                     let dist = sqrt(dist_sq);
-                    let (dir, overlap) = if dist == Fx::ZERO {
+                    // Perfectly stacked pairs keep the fixed-direction
+                    // radial split — there is no geometry to slide on.
+                    let (dir, overlap, stacked) = if dist == Fx::ZERO {
                         let pick = ((id_i.0 ^ id_j.0) % 8) as usize;
-                        (STACKED_DIRS[pick], min_dist)
+                        (STACKED_DIRS[pick], min_dist, true)
                     } else {
-                        (delta / dist, min_dist - dist)
+                        (delta / dist, min_dist - dist, false)
                     };
                     // Anchored units (working in place) yield a sliver;
                     // movers absorb the correction and flow around them.
@@ -238,20 +288,39 @@ fn relaxation_pass(state: &mut State, reversed: bool) -> bool {
                             (false, true) => (Fx::ONE - ANCHORED_PUSH_SHARE, ANCHORED_PUSH_SHARE),
                             _ => (chassis::fx::HALF, chassis::fx::HALF),
                         };
+                    let (away_i, away_j) = (-dir, dir);
+                    let closing_i = travel[i].x * away_i.x + travel[i].y * away_i.y < Fx::ZERO;
+                    let closing_j = travel[j].x * away_j.x + travel[j].y * away_j.y < Fx::ZERO;
+                    let dirs_j = if stacked {
+                        [Some(away_j), None, None]
+                    } else {
+                        correction_dirs(away_j, travel[j], closing_i)
+                    };
+                    let dirs_i = if stacked {
+                        [Some(away_i), None, None]
+                    } else {
+                        correction_dirs(away_i, travel[i], closing_j)
+                    };
                     let step_j = (overlap * share_j).min(COLLISION_MAX_STEP - spent[j]);
                     if step_j > Fx::ZERO {
-                        let away_j = pos_j + dir * step_j;
-                        if state.passable_for(dom_j, TilePos::containing(away_j)) {
-                            state.units[j].pos = away_j;
-                            spent[j] += step_j;
+                        for cand in dirs_j.into_iter().flatten() {
+                            let to = pos_j + cand * step_j;
+                            if state.passable_for(dom_j, TilePos::containing(to)) {
+                                state.units[j].pos = to;
+                                spent[j] += step_j;
+                                break;
+                            }
                         }
                     }
                     let step_i = (overlap * share_i).min(COLLISION_MAX_STEP - spent[i]);
                     if step_i > Fx::ZERO {
-                        let away_i = pos_i - dir * step_i;
-                        if state.passable_for(dom_i, TilePos::containing(away_i)) {
-                            state.units[i].pos = away_i;
-                            spent[i] += step_i;
+                        for cand in dirs_i.into_iter().flatten() {
+                            let to = pos_i + cand * step_i;
+                            if state.passable_for(dom_i, TilePos::containing(to)) {
+                                state.units[i].pos = to;
+                                spent[i] += step_i;
+                                break;
+                            }
                         }
                     }
                 }

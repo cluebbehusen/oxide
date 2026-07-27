@@ -55,13 +55,16 @@ Paired Claims (large 2v2s), Continental Divide (a vast
 mountain wall where the doors decide it), and the team-war fields —
 Trident Plateau and Causeway Verdict (3v3), Compass Grand and
 Gatework Array (4v4), lane wars where the
-ridge doors carry the fight sideways — then asks three questions: how hard
-should the opponent think (**Easy, Medium, Hard, Expert**), who is it
-(**turtle, balanced, aggressive**, or let the map decide), and which
-faction you run (**Ferrous, Cupric**, or let the seed decide). Team
-maps open one setup screen instead: pick your chair from the
-team-grouped cards and tune every seat's difficulty, personality,
-and faction in place beside a who-is-where preview. Every
+ridge doors carry the fight sideways — then opens one setup screen
+for every map size: pick your chair from the seat cards (grouped
+under team headings when the map has teams) and tune every
+opponent's difficulty (**Easy, Medium, Hard, Expert**), personality
+(**turtle, balanced, aggressive**, or let the map decide), and
+faction in place beside a who-is-where preview. Start is
+preselected, so Enter-Enter from the map grid still launches the
+classic matchup — and the chips can now arrange what the old quick
+questions never could: a mirror match, or your seat on the other
+side of the map. Every
 opponent is the same trained neural commander with different dials: it
 sees only what its units see, plays by exactly your rules, and its
 mistakes at lower settings are misjudgments, not lobotomies. On the

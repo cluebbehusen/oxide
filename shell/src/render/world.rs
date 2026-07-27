@@ -30,6 +30,83 @@ pub(crate) fn draw_fog(game: &Game) {
     }
 }
 
+/// The crown sprite for a skyline/lone peak tile, or `None` for an
+/// interior wall tile. Connectivity picks the art, and the neighbor
+/// probe is fog-honest: an unexplored neighbor is unknown, not absent
+/// — reading its live terrain would let a known peak's edge art
+/// disclose whether the ridge continues under fog. Never flipped;
+/// a flip would break the chained edge profiles.
+fn peak_crown(game: &Game, sprites: &Sprites, x: i32, y: i32, h: usize) -> Option<Rect> {
+    let peaky = |dx: i32, dy: i32| {
+        let pos = TilePos::new(x + dx, y + dy);
+        (game.all_seeing() || game.my_vision().explored(pos))
+            && game
+                .state
+                .map()
+                .tile(pos)
+                .is_some_and(|t| t.terrain == oxide_sim::map::Terrain::Peak)
+    };
+    if peaky(0, -1) {
+        None
+    } else if !peaky(-1, 0) && !peaky(1, 0) && !peaky(0, 1) {
+        Some(sprites.peak_lone(h % 2))
+    } else {
+        Some(sprites.peak_sky(peaky(-1, 0), peaky(1, 0), h % 2))
+    }
+}
+
+/// The skyline pass: crown sprites are 1x1.5 tiles, anchored half a
+/// tile ABOVE their own — machines on the tile behind the ridge
+/// disappear behind the crests, which is the whole point of a wall
+/// that owns its column of sky. Fog-gated on the crown's OWN tile:
+/// an unexplored peak draws nothing at all, so its overhang can never
+/// leak into a visible neighbor (the fog rects only cover tiles, not
+/// sprite footprints).
+pub(crate) fn draw_peak_crowns(game: &Game, sprites: &Sprites) {
+    let zoom = game.camera.zoom;
+    let size = zoom.ceil() + 1.0;
+    let tint = theme_tint(
+        game.scenario
+            .meta
+            .as_ref()
+            .map(|m| m.theme.as_str())
+            .unwrap_or(""),
+    );
+    let (min, max) = visible_tiles(game);
+    // One row of slack above the window: a crown anchored just off
+    // the top edge still hangs into view.
+    for y in min.y..(max.y + 1) {
+        for x in min.x..max.x {
+            let pos = TilePos::new(x, y);
+            let Some(tile) = game.state.map().tile(pos) else {
+                continue;
+            };
+            if tile.terrain != oxide_sim::map::Terrain::Peak {
+                continue;
+            }
+            if !(game.all_seeing() || game.my_vision().explored(pos)) {
+                continue;
+            }
+            let h = (x.wrapping_mul(31).wrapping_add(y.wrapping_mul(17))) as usize;
+            let Some(source) = peak_crown(game, sprites, x, y, h) else {
+                continue;
+            };
+            let screen = game.camera.to_screen(vec2(x as f32, y as f32));
+            draw_texture_ex(
+                sprites.texture(),
+                screen.x.floor(),
+                (screen.y - zoom * 0.5).floor(),
+                tint,
+                DrawTextureParams {
+                    dest_size: Some(vec2(size, size * 1.5)),
+                    source: Some(source),
+                    ..Default::default()
+                },
+            );
+        }
+    }
+}
+
 pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
     let zoom = game.camera.zoom;
     let size = zoom.ceil() + 1.0; // slight overlap kills seam hairlines
@@ -150,32 +227,15 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
             let (overlay, flip) = match (tile.terrain, scrap) {
                 (oxide_sim::map::Terrain::Rock, _) => (Some(sprites.rock(h % 4)), h % 7 < 3),
                 (oxide_sim::map::Terrain::Peak, _) => {
-                    // Connectivity picks the art: interior wall tiles
-                    // read as solid rock, the skyline row carries the
-                    // crests, and connected edges share a fixed profile
-                    // so ridges join without seams. Never flipped —
-                    // a flip would break those joins.
-                    let peaky = |dx: i32, dy: i32| {
-                        let pos = TilePos::new(x + dx, y + dy);
-                        // An unexplored neighbor is unknown, not absent:
-                        // reading its live terrain would let a known
-                        // peak's edge art disclose whether the ridge
-                        // continues under fog.
-                        (game.all_seeing() || game.my_vision().explored(pos))
-                            && game
-                                .state
-                                .map()
-                                .tile(pos)
-                                .is_some_and(|t| t.terrain == oxide_sim::map::Terrain::Peak)
-                    };
-                    let source = if peaky(0, -1) {
-                        sprites.peak_body(h % 2)
-                    } else if !peaky(-1, 0) && !peaky(1, 0) && !peaky(0, 1) {
-                        sprites.peak_lone(h % 2)
+                    // Interior wall tiles draw here; the skyline rows
+                    // (crowns) draw in their own pass after units, so
+                    // their overhang can occlude what stands behind
+                    // the ridge. See draw_peak_crowns.
+                    if peak_crown(game, sprites, x, y, h).is_some() {
+                        (None, false)
                     } else {
-                        sprites.peak_sky(peaky(-1, 0), peaky(1, 0), h % 2)
-                    };
-                    (Some(source), false)
+                        (Some(sprites.peak_body(h % 2)), false)
+                    }
                 }
                 (_, 0) if wreck > 0 => (Some(sprites.wreck_pile()), h % 5 < 2),
                 (_, 0) => (None, false),

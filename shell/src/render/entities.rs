@@ -48,15 +48,17 @@ pub(crate) fn draw_placement_ghost(game: &Game, sprites: &Sprites, input: &Input
 /// node the player has never seen). Each verb speaks its own color:
 /// bone walks, danger fights, scrap-gold harvests, patina builds,
 /// welds, and strips.
-pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(Vec2, Color)> {
+pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usize, Vec2, Color)> {
     if unit.player != game.human {
         return Vec::new();
     }
     let verb_color = |order: &oxide_sim::Order| match order {
         oxide_sim::Order::Move { .. } => BONE_FAINT,
-        oxide_sim::Order::AttackMove { .. } | oxide_sim::Order::Attack { .. } => {
-            Color::new(0.85, 0.32, 0.29, 0.55)
-        }
+        // A chase and a march are different promises: the chase burns
+        // crimson at its victim, the fighting march runs ember toward
+        // ground.
+        oxide_sim::Order::Attack { .. } => Color::new(0.85, 0.32, 0.29, 0.55),
+        oxide_sim::Order::AttackMove { .. } => Color::new(0.88, 0.55, 0.26, 0.55),
         oxide_sim::Order::Harvest { .. } => Color::new(0.85, 0.64, 0.25, 0.55),
         oxide_sim::Order::Build { .. }
         | oxide_sim::Order::Repair { .. }
@@ -87,17 +89,18 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(Vec
         };
         (game.all_seeing() || game.my_vision().explored(goal)).then_some((goal, verb_color(order)))
     };
-    let mut points: Vec<(Vec2, Color)> = Vec::new();
-    if let Some((g, c)) = goal_of(&unit.order) {
-        points.push((
-            game.camera
-                .to_screen(vec2(g.x as f32 + 0.5, g.y as f32 + 0.5)),
-            c,
-        ));
-    }
-    for order in &unit.queue {
+    // Each point carries its PROGRAM position (0 = the active order,
+    // i = queue[i-1]) — the same order the dock pushes chips in, so a
+    // fogged leg leaves a numbering gap instead of renumbering the
+    // rest out of agreement with the chips.
+    let mut points: Vec<(usize, Vec2, Color)> = Vec::new();
+    for (i, order) in std::iter::once(&unit.order)
+        .chain(unit.queue.iter())
+        .enumerate()
+    {
         if let Some((g, c)) = goal_of(order) {
             points.push((
+                i,
                 game.camera
                     .to_screen(vec2(g.x as f32 + 0.5, g.y as f32 + 0.5)),
                 c,
@@ -105,6 +108,25 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(Vec
         }
     }
     points
+}
+
+/// The selected units that wear decor, SUBJECT FIRST. The dock, the
+/// portrait, and the full-strength trail tell ONE unit's story, so the
+/// subject can never be the entry the cap drops: a selection arrives
+/// in id order, and twelve older workers ahead of a newer majority
+/// would push it past `DECOR_CAP`.
+pub(crate) fn decor_units(game: &Game) -> Vec<oxide_sim::UnitId> {
+    let subject = crate::panel::subject_unit(game);
+    let mut ids: Vec<oxide_sim::UnitId> = subject.into_iter().collect();
+    ids.extend(
+        game.selection
+            .units
+            .iter()
+            .copied()
+            .filter(|id| Some(*id) != subject),
+    );
+    ids.truncate(DECOR_CAP);
+    ids
 }
 
 pub(crate) fn draw_breadcrumbs(game: &Game, input: &InputState) {
@@ -123,37 +145,54 @@ pub(crate) fn draw_breadcrumbs(game: &Game, input: &InputState) {
         }
         return;
     }
-    for id in game.selection.units.iter().take(DECOR_CAP) {
-        let Some(unit) = game.state.unit(*id) else {
+    // The dock tells ONE unit's story; the world agrees: the subject's
+    // trail draws full strength and numbered, the rest of the
+    // selection's trails dim to context.
+    let subject = crate::panel::subject_unit(game);
+    for id in decor_units(game) {
+        let Some(unit) = game.state.unit(id) else {
             continue;
         };
         let points = breadcrumb_points(game, unit);
         if points.is_empty() {
             continue;
         }
+        let is_subject = subject == Some(unit.id);
+        let fade = |c: Color| {
+            if is_subject {
+                c
+            } else {
+                Color::new(c.r, c.g, c.b, c.a * 0.35)
+            }
+        };
         let start = game
             .camera
             .to_screen(vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>()));
         let s = ui_scale();
+        // Numbered by PROGRAM position, not by how many survived the
+        // fog filter — a fogged leg leaves a gap, it never renumbers
+        // the rest away from the dock's chips.
+        let numbered = is_subject && !unit.queue.is_empty();
         let mut prev = start;
-        for (i, (p, color)) in points.iter().enumerate() {
-            draw_line(prev.x, prev.y, p.x, p.y, 1.0, *color);
-            dot(*p, *color);
-            // Numbered waypoints once a program has legs.
-            if points.len() > 1 {
+        for (idx, p, color) in &points {
+            let color = fade(*color);
+            draw_line(prev.x, prev.y, p.x, p.y, 1.0, color);
+            dot(*p, color);
+            if numbered {
                 draw_text(
-                    format!("{}", i + 1),
+                    format!("{}", idx + 1),
                     p.x + 6.0 * s,
                     p.y - 4.0 * s,
                     14.0 * s,
-                    *color,
+                    color,
                 );
             }
             prev = *p;
         }
         // A patrol is a circuit: close it.
         if unit.looping && points.len() > 1 {
-            let (first, color) = points[0];
+            let (_, first, color) = points[0];
+            let color = fade(color);
             draw_line(prev.x, prev.y, first.x, first.y, 1.0, color);
         }
     }

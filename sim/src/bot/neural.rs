@@ -22,6 +22,29 @@ use std::sync::OnceLock;
 /// The decision cadence the shipped ladder network trained at.
 pub const LADDER_CADENCE: u64 = 16;
 
+/// Floor of the seed-dealt personality range. An explicit `aggression`
+/// pick may use the full 0..=1000 conditioning the network trained
+/// under; the deal narrows it. Below this floor the trained style is a
+/// deep turtle — paid during training for its army NOT fighting — and
+/// a dealt one reads as a bot that never attacks (the 0.12 playtest
+/// complaint; the open deal measured 15/48 undecided on the skirmish
+/// sweep). The extremes stay reachable through explicit picks, on
+/// purpose.
+pub const DEALT_AGGRESSION_MIN: u32 = 250;
+/// Ceiling of the seed-dealt personality range — trims the mirror
+/// extreme of [`DEALT_AGGRESSION_MIN`]'s turtle.
+pub const DEALT_AGGRESSION_MAX: u32 = 900;
+
+/// Deals the personality a seat plays when its scenario config leaves
+/// `aggression` unset: uniform in the dealt range, deterministic from
+/// the scenario seed. The one definition — driver probes call this
+/// instead of replicating the stream.
+pub fn deal_aggression(scenario_seed: u64, player: PlayerId) -> u32 {
+    DEALT_AGGRESSION_MIN
+        + Pcg32::new(scenario_seed, 4000 + u64::from(player.0))
+            .next_below(DEALT_AGGRESSION_MAX - DEALT_AGGRESSION_MIN + 1)
+}
+
 /// The shipped difficulty ladder: one trained network, four skill-knob
 /// settings calibrated against the scripted tiers (Easy loses to even
 /// the gentlest scripted bot; Expert sweeps them all). Difficulty is a
@@ -62,15 +85,28 @@ impl Level {
 
     /// How often this level thinks, in ticks — the second difficulty
     /// dial: lower minds think slower. Calibrated against the scripted
-    /// yardsticks (51 < 72 < 76 < 80 wins of 80), because head-to-head
-    /// mirrors stopped ordering under the 0.10 balance: patience wins
-    /// there, so a slower thinker turtles into a tech advantage and
-    /// "handicaps" cancel out. Against aggression — scripted tiers,
-    /// human rushes — reaction lag costs what it should.
+    /// yardsticks, because head-to-head mirrors stopped ordering under
+    /// the 0.10 balance: patience wins there, so a slower thinker
+    /// turtles into a tech advantage and "handicaps" cancel out.
+    /// Against aggression — scripted tiers, human rushes — reaction
+    /// lag costs what it should. The in-tree ladder test is the
+    /// 24-match strict-ordering tripwire; `driver yardstick` is the
+    /// wide instrument (0.12 read: 34 < 42 < 46 < 48 of 48, and every
+    /// probed "stronger Medium" dial measured weaker — the skill knob
+    /// is trained conditioning, not a pure handicap, so these dials
+    /// sit at a measured local optimum; see the 0.12 experiments
+    /// note before moving them).
     pub fn cadence(self) -> u64 {
         match self {
             Level::Easy => 56,
-            Level::Medium => 36,
+            // 36 until 0.12: at 36, symmetric Medium mirrors stalled
+            // 14/48 on skirmish; at 26 that drops to 2/48 at par
+            // yardstick strength (81 vs 82 of 96) and decisions land
+            // ~15% sooner. The response is non-monotonic — 30
+            // measured WORSE on both instruments (32/48, and it
+            // resurrected the Standard-stall blemish) — so don't
+            // interpolate; re-measure.
+            Level::Medium => 26,
             Level::Hard => 24,
             Level::Expert => 16,
         }
@@ -319,9 +355,7 @@ impl NeuralBot {
         aggression: Option<u32>,
         faction: Faction,
     ) -> Self {
-        let aggression = aggression.unwrap_or_else(|| {
-            Pcg32::new(scenario_seed, 4000 + u64::from(player.0)).next_below(1001)
-        });
+        let aggression = aggression.unwrap_or_else(|| deal_aggression(scenario_seed, player));
         Self::with_profile(
             player,
             level.cadence(),

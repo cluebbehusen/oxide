@@ -140,6 +140,12 @@ pub struct UtilityPolicy {
     scout: Option<UnitId>,
     /// Which leg of the search sweep the scout is on.
     scout_leg: u32,
+    /// The starvation prospector (neural chore only): one harvester
+    /// walking the sweep legs because nothing harvestable is known.
+    /// Released the moment the economy channel can feed the line.
+    prospector: Option<UnitId>,
+    /// Which leg of the prospecting sweep is next.
+    prospect_leg: u32,
     /// Tick of the last intel refresh toward a known enemy base.
     scouted_at: u64,
     /// Whether enemy air has ever been sighted — the sky stays suspect
@@ -292,6 +298,100 @@ impl UtilityPolicy {
                 self.last_sent.push((u.id, node));
             }
         }
+    }
+
+    /// Starvation ladder — the neural bot's chore only; the scripted
+    /// tiers never climb it (they are the ladder's fixed yardstick and
+    /// must stay byte-identical). Runs after [`Self::economy`]: any
+    /// harvester still idle found no qualifying node. Rung 1 re-tries
+    /// with the enemy-side rule dropped — a dry home half makes
+    /// contested nodes acceptable. Rung 2, nothing known at all: one
+    /// machine (lowest id) walks the sweep legs so far scrap can enter
+    /// `known_scrap`. Deliberately disjoint from the scout machinery:
+    /// prospecting never stamps `scouted_at` (that feeds the trained
+    /// `intel_age` feature) and never claims `self.scout`.
+    pub(super) fn prospect(
+        &mut self,
+        obs: &Observation,
+        spoken_for: &[UnitId],
+        intents: &mut Vec<Intent>,
+    ) {
+        // Economy's assignments this think are still in the ledger
+        // (the audits drained it at the think's start).
+        let assigned: Vec<UnitId> = self.last_sent.iter().map(|(id, _)| *id).collect();
+        let starved: Vec<(UnitId, TilePos)> = obs
+            .my_units
+            .iter()
+            .filter(|u| {
+                u.kind == UnitKind::Harvester
+                    && u.idle
+                    && Some(u.id) != self.scout
+                    && !assigned.contains(&u.id)
+                    && !spoken_for.contains(&u.id)
+            })
+            .map(|u| (u.id, u.tile))
+            .collect();
+        if starved.is_empty() {
+            // The line is fed; the claim dissolves. A still-walking
+            // ex-prospector goes idle at its leg's end and the economy
+            // channel hires it back like any other harvester.
+            self.prospector = None;
+            return;
+        }
+
+        // Rung 1: any known node, enemy-side rule dropped.
+        let mut still_starved: Vec<UnitId> = Vec::new();
+        for &(id, tile) in &starved {
+            let node = obs
+                .known_scrap
+                .iter()
+                .chain(obs.known_wrecks.iter())
+                .filter(|(pos, amount)| *amount > 0 && !self.dead_nodes.contains(pos))
+                .map(|(pos, _)| (pos.manhattan(tile), pos.y, pos.x))
+                .min()
+                .map(|(_, y, x)| TilePos::new(x, y));
+            match node {
+                Some(node) => {
+                    intents.push(Intent::AssignHarvest { unit: id, node });
+                    self.last_sent.push((id, node));
+                }
+                None => still_starved.push(id),
+            }
+        }
+
+        // Rung 2: nothing known anywhere. One prospector is enough;
+        // the rest of the line waits for its news.
+        if let Some(id) = self.prospector
+            && !obs.my_units.iter().any(|u| u.id == id && u.hp > 0)
+        {
+            self.prospector = None; // died prospecting
+        }
+        if let Some(id) = self.prospector {
+            if !still_starved.contains(&id) {
+                return; // mid-leg, still walking
+            }
+        } else {
+            self.prospector = still_starved.iter().min().copied();
+        }
+        let Some(unit) = self.prospector else {
+            return;
+        };
+        // The sweep hunts scrap, not intel: the centre first, then the
+        // corners — never a deliberate walk into the enemy base.
+        let (w, h) = (obs.map_width, obs.map_height);
+        let legs = [
+            TilePos::new(w / 2, h / 2),
+            TilePos::new(3, 3),
+            TilePos::new(w - 4, 3),
+            TilePos::new(3, h - 4),
+            TilePos::new(w - 4, h - 4),
+        ];
+        let to = legs[self.prospect_leg as usize % legs.len()];
+        self.prospect_leg += 1;
+        intents.push(Intent::Scout {
+            unit,
+            to: self.passable_near(obs, to),
+        });
     }
 
     /// Production channel: harvesters to target, then a sentinel drip
