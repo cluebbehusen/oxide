@@ -83,6 +83,9 @@ pub struct InputState {
     /// Armed salvage: the next left-click on an own built building
     /// sends the selected harvesters to strip it.
     pub(crate) salvaging: bool,
+    /// Armed run: the next ground click sends the selection walking
+    /// obliviously — no engaging, no auto-acquire en route.
+    pub(crate) running: bool,
     /// Whether the build palette is open (`B`; digits pick a structure).
     pub(crate) build_menu: bool,
     /// This frame's chrome scale (dpi x user), injected by the frame
@@ -190,6 +193,7 @@ impl InputState {
             placing: None,
             placing_stroke: None,
             salvaging: false,
+            running: false,
             build_menu: false,
             ui: 1.0,
             now: 0.0,
@@ -224,6 +228,7 @@ impl InputState {
         self.placing = None;
         self.placing_stroke = None;
         self.salvaging = false;
+        self.running = false;
         self.build_menu = false;
         self.touches.clear();
         self.last_tap = None;
@@ -481,7 +486,7 @@ use select::{
 /// chrome, the arrow otherwise. Pure — the loop applies it.
 pub fn desired_cursor(game: &Game, input: &InputState) -> macroquad::miniquad::CursorIcon {
     use macroquad::miniquad::CursorIcon;
-    if input.placing.is_some() || input.patrol_route.is_some() || input.salvaging {
+    if input.placing.is_some() || input.patrol_route.is_some() || input.salvaging || input.running {
         return CursorIcon::Crosshair;
     }
     let layout = game.layout.get();
@@ -1018,6 +1023,28 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.ping(world, PingKind::Harvest);
             if !input.resolver.shift_held() {
                 input.salvaging = false;
+            }
+        }
+        return true;
+    }
+    if input.running {
+        // Same manners again: minimap jumps the camera, HUD swallows,
+        // Shift chains legs and keeps the verb armed.
+        if let Some(world) = crate::render::minimap_world_at(game, p) {
+            game.camera.center = world;
+            game.camera.pan(Vec2::ZERO); // re-clamp
+        } else if !click_on_hud(game, p) {
+            let world = game.camera.to_world(p);
+            let goal = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+            let units = game.selection.units.clone();
+            game.issue(Command::Move {
+                units,
+                goal,
+                queue: input.resolver.shift_held(),
+            });
+            game.ping(world, PingKind::Move);
+            if !input.resolver.shift_held() {
+                input.running = false;
             }
         }
         return true;

@@ -598,6 +598,70 @@ fn the_armed_salvage_verb_strips_by_click_and_refuses_the_foundry() {
     assert!(!input.salvaging, "a plain click finishes the job");
 }
 
+#[test]
+fn the_armed_run_verb_issues_an_oblivious_move() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let fighter = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Sentinel)
+        .expect("skirmish authors a sentinel")
+        .id;
+    game.selection.units = vec![fighter];
+    // Arm with the classic hotkey, exactly as a player would.
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::M },
+            RawEvent::KeyUp { key: Key::M },
+        ],
+    );
+    assert!(input.running, "M arms the recall");
+
+    // The click sends a plain Move — the OBLIVIOUS walk, not the
+    // fighting march the right-click issues — and stands down.
+    let home = game.state.unit(fighter).unwrap().tile();
+    let goal = TilePos::new(home.x + 3, home.y);
+    let p = game
+        .camera
+        .to_screen(vec2(goal.x as f32 + 0.5, goal.y as f32 + 0.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+        ],
+    );
+    assert!(
+        game.pending.iter().any(|c| matches!(
+            &c.command,
+            Command::Move { goal: g, queue: false, .. } if *g == goal
+        )),
+        "the armed click issues Command::Move: {:?}",
+        game.pending
+    );
+    assert!(!input.running, "a plain click finishes the recall");
+    assert!(
+        !game
+            .pending
+            .iter()
+            .any(|c| matches!(&c.command, Command::AttackMove { .. })),
+        "nothing about the run engages"
+    );
+}
+
 /// A 2v1 team scenario: the human and a configured bot ally on one
 /// team, a lone enemy on the other — the readability tests' stage.
 fn team_game() -> Game {

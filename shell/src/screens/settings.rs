@@ -48,7 +48,7 @@ pub struct Update {
 /// The remappable actions, in display order. Digits and structural keys
 /// (Back, Confirm, group slots) stay fixed — their meaning is
 /// positional, not preferential.
-const REMAPPABLE: [(Action, &str); 23] = [
+const REMAPPABLE: [(Action, &str); 24] = [
     (Action::StopOrScrap, "Stop / scrap site"),
     (Action::TrainSlot(0), "Train slot 1"),
     (Action::TrainSlot(1), "Train slot 2"),
@@ -64,6 +64,7 @@ const REMAPPABLE: [(Action, &str); 23] = [
     (Action::CycleIdleWorker, "Next idle harvester"),
     (Action::JumpToLastAlert, "Jump to last alert"),
     (Action::Salvage, "Salvage building"),
+    (Action::Run, "Run (move, no engaging)"),
     (Action::SetBookmark(0), "Set bookmark 1"),
     (Action::RecallBookmark(0), "Recall bookmark 1"),
     (Action::SetBookmark(1), "Set bookmark 2"),

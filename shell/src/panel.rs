@@ -497,6 +497,19 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         desc: vec!["Clear orders; stand and auto-engage.".into()],
     });
     panel.cards.push(Card {
+        icon: CardIcon::Verb(VerbIcon::Move),
+        title: "Run".into(),
+        cost: None,
+        hotkey: chord(bindings, Action::Run),
+        action: CardAction::Dispatch(Action::Run),
+        enabled: true,
+        why: None,
+        desc: vec![
+            "Arm, then click ground: walk there WITHOUT".into(),
+            "engaging. The recall when a fight must wait.".into(),
+        ],
+    });
+    panel.cards.push(Card {
         icon: CardIcon::Verb(VerbIcon::Patrol),
         title: "Patrol".into(),
         cost: None,
@@ -704,7 +717,8 @@ mod tests {
         let panel = build(&game, &BindingMap::classic()).expect("panel");
         assert_eq!(panel.title, "HARVESTER");
         assert_eq!(panel.cards[0].title, "Stop");
-        assert_eq!(panel.cards[1].title, "Patrol");
+        assert_eq!(panel.cards[1].title, "Run");
+        assert_eq!(panel.cards[2].title, "Patrol");
         let builds: Vec<_> = panel
             .cards
             .iter()

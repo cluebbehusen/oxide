@@ -60,6 +60,10 @@ pub enum Action {
     /// Arm salvage: the next click on an own built building sends the
     /// selected harvesters to strip it for a partial refund.
     Salvage,
+    /// Arm run: the next ground click sends the selection walking
+    /// WITHOUT engaging — the recall verb. Right-click stays the
+    /// fighting march; this is how machines disengage on command.
+    Run,
     /// Remember the camera position in slot 0-3.
     SetBookmark(u8),
     /// Return the camera to a remembered slot.
@@ -203,6 +207,10 @@ impl BindingMap {
                 chord: Chord::bare(Key::V),
                 action: Action::Salvage,
             },
+            Binding {
+                chord: Chord::bare(Key::M),
+                action: Action::Run,
+            },
         ];
         for (i, key) in [Key::F5, Key::F6, Key::F7, Key::F8].into_iter().enumerate() {
             bindings.push(Binding {
@@ -247,6 +255,9 @@ impl BindingMap {
             // Every gameplay verb crosses over — Salvage shipped after
             // this preset and once stayed marooned on classic's V.
             (Action::Salvage, Key::J),
+            // Classic's M belongs to StopOrScrap over here; Run takes
+            // the freed right-index H (TrainSlot 1 moved to K).
+            (Action::Run, Key::H),
         ] {
             // Order matters: unbind the target key's old meaning first
             // so the rebind never reports a conflict.
