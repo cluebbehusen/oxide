@@ -845,9 +845,12 @@ impl GymBot {
             }
         }
 
-        // Chores after the action: idle harvesters to work, orphaned
+        // Chores after the action: idle harvesters to work (with the
+        // starvation ladder behind the normal channel — neural bots
+        // prospect; the scripted yardstick tiers never do), orphaned
         // sites resumed (paid-for progress must not strand).
         self.policy.economy(&obs, home, &mut intents);
+        self.policy.prospect(&obs, &mut intents);
         if let Some(site) = obs
             .my_buildings
             .iter()
