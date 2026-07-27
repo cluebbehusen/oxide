@@ -128,18 +128,29 @@ fn a_misclick_keeps_placement_armed_and_a_shift_click_repeats() {
                 x: open.x,
                 y: open.y,
             },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: open.x,
+                y: open.y,
+            },
         ],
     );
     assert_eq!(game.pending.len(), 1, "legal ground stages the site");
     assert!(input.placing.is_some(), "shift keeps the wall going up");
 
-    // A plain click disarms after staging.
+    // A plain click (press AND release — the mode now settles at the
+    // release, where the placement drag ends) disarms after staging.
     apply_events(
         &mut game,
         &mut input,
         &[
             RawEvent::KeyUp { key: Key::Shift },
             RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: open.x + 96.0,
+                y: open.y,
+            },
+            RawEvent::MouseUp {
                 button: MouseButton::Left,
                 x: open.x + 96.0,
                 y: open.y,
@@ -1740,5 +1751,90 @@ fn a_slow_pinch_zooms_and_never_commits_a_box() {
     assert!(
         !game.selection.units.is_empty(),
         "the fresh pair's box landed"
+    );
+}
+
+#[test]
+fn a_placement_drag_stamps_a_row_of_queued_builds() {
+    // A funded arena: one harvester, 1000 scrap — room for a wall.
+    let scenario = oxide_sim::Scenario::from_json(
+        &serde_json::json!({
+            "name": "Drag Range",
+            "seed": 3,
+            "players": [
+                {"name": "Mason", "faction": "ferrous", "scrap": 1000, "bot": false},
+                {"name": "Idle", "faction": "cupric", "scrap": 0, "bot": true}
+            ],
+            "map": [
+                "################",
+                "#1.............#",
+                "#..............#",
+                "#..............#",
+                "#............2.#",
+                "#..............#",
+                "################"
+            ],
+            "units": [
+                {"player": 0, "kind": "harvester", "x": 5, "y": 3}
+            ]
+        })
+        .to_string(),
+    )
+    .expect("drag arena parses");
+    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("builds");
+    let mut input = InputState::new();
+    let builder = game.state.units()[0].id;
+    game.selection.units = vec![builder];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+
+    // Screen points at the centers of three adjacent open tiles.
+    let at = |x: i32, y: i32| game.camera.to_screen(vec2(x as f32 + 0.5, y as f32 + 0.5));
+    let (a, b, c) = (at(7, 3), at(8, 3), at(9, 3));
+    let mut events = vec![RawEvent::MouseDown {
+        button: MouseButton::Left,
+        x: a.x,
+        y: a.y,
+    }];
+    events.push(RawEvent::MouseMove { x: b.x, y: b.y });
+    events.push(RawEvent::MouseMove { x: c.x, y: c.y });
+    events.push(RawEvent::MouseUp {
+        button: MouseButton::Left,
+        x: c.x,
+        y: c.y,
+    });
+    apply_events(&mut game, &mut input, &events);
+
+    let builds: Vec<_> = game
+        .pending
+        .iter()
+        .filter_map(|pc| match &pc.command {
+            Command::Build { anchor, queue, .. } => Some((*anchor, *queue)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(builds.len(), 3, "one stroke, three stamps: {builds:?}");
+    assert!(!builds[0].1, "the first stamp replaces (no Shift held)");
+    assert!(
+        builds[1].1 && builds[2].1,
+        "drag stamps queue behind the program"
+    );
+    let anchors: std::collections::BTreeSet<_> = builds.iter().map(|(a, _)| (a.x, a.y)).collect();
+    assert_eq!(anchors.len(), 3, "no overlapping footprints");
+    assert!(
+        input.placing.is_none() && input.placing_stroke.is_none(),
+        "release without Shift disarms the mode and closes the stroke"
+    );
+
+    // The sim accepts the whole row.
+    let commands = std::mem::take(&mut game.pending);
+    game.state.tick(&commands);
+    assert_eq!(
+        game.state
+            .buildings()
+            .iter()
+            .filter(|b| b.kind == oxide_sim::BuildingKind::Turret)
+            .count(),
+        3,
+        "all three sites claimed ground"
     );
 }

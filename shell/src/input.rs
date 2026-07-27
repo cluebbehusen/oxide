@@ -100,6 +100,10 @@ pub struct InputState {
     pub(crate) patrol_route: Option<Vec<TilePos>>,
     /// Building kind armed for placement, if any.
     pub(crate) placing: Option<oxide_sim::BuildingKind>,
+    /// Anchors stamped by the current placement drag, while the button
+    /// stays down — a wall in one stroke. `None` when no stroke is
+    /// live.
+    pub(crate) placing_stroke: Option<Vec<TilePos>>,
     /// Armed salvage: the next left-click on an own built building
     /// sends the selected harvesters to strip it.
     pub(crate) salvaging: bool,
@@ -160,6 +164,7 @@ impl InputState {
             last_recall: None,
             patrol_route: None,
             placing: None,
+            placing_stroke: None,
             salvaging: false,
             build_menu: false,
             ui: 1.0,
@@ -193,6 +198,7 @@ impl InputState {
         self.mmb_anchor = None;
         self.patrol_route = None;
         self.placing = None;
+        self.placing_stroke = None;
         self.salvaging = false;
         self.build_menu = false;
         self.touches.clear();
@@ -433,6 +439,43 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     game.camera.pan(-delta / game.camera.zoom);
                     input.mmb_anchor = Some(vec2(x, y));
                 }
+                // Drag-to-place: while the button stays down in
+                // placement mode, every new valid, non-overlapping
+                // anchor stamps another build, queued behind the
+                // builder's program — a wall in one stroke. Invalid
+                // cells skip silently (the ghost tells that story),
+                // and the stroke stops stamping at the order-queue
+                // cap instead of firing doomed commands.
+                if let (Some(kind), Some(stroke)) = (input.placing, input.placing_stroke.as_mut())
+                    && !click_on_hud(game, vec2(x, y))
+                    && crate::render::minimap_world_at(game, vec2(x, y)).is_none()
+                {
+                    let world = game.camera.to_world(vec2(x, y));
+                    let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+                    let (w, h) = kind.stats().size;
+                    let overlaps = stroke
+                        .iter()
+                        .any(|a| (a.x - anchor.x).abs() < w && (a.y - anchor.y).abs() < h);
+                    let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
+                    let affordable = game.state.player(game.human).scrap >= cost;
+                    if !overlaps
+                        && affordable
+                        && stroke.len() < oxide_sim::stats::ORDER_QUEUE_CAP
+                        && game
+                            .state
+                            .can_place_by(game.human, kind, anchor, chosen_builder(game))
+                    {
+                        let units = game.selection.units.clone();
+                        game.issue(Command::Build {
+                            units,
+                            kind,
+                            anchor,
+                            queue: true,
+                        });
+                        game.ping(world, PingKind::Rally);
+                        stroke.push(anchor);
+                    }
+                }
             }
             RawEvent::Wheel { delta } => {
                 let delta = if input.camera_prefs.zoom_inverted {
@@ -487,6 +530,12 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
             } => {
                 input.mouse = vec2(x, y);
                 input.minimap_drag = false;
+                // The placement stroke ends at release; Shift decides
+                // whether the MODE stays armed, exactly as the old
+                // one-click-per-wall rule did.
+                if input.placing_stroke.take().is_some() && !input.resolver.shift_held() {
+                    input.placing = None;
+                }
                 if let Some(origin) = input.drag_origin.take() {
                     let release = vec2(x, y);
                     let additive = input.resolver.shift_held();
@@ -697,7 +746,15 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                             // mouse: the tap that follows an armed
                             // Build or Salvage card completes the
                             // command instead of selecting under it.
+                            // A tap is an atomic click — no drag can
+                            // follow, so the stroke closes here and
+                            // Shift decides the mode, like MouseUp.
                             if armed_click(game, input, p) {
+                                if input.placing_stroke.take().is_some()
+                                    && !input.resolver.shift_held()
+                                {
+                                    input.placing = None;
+                                }
                                 input.last_tap = None;
                                 continue;
                             }
@@ -803,11 +860,10 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                 queue: input.resolver.shift_held(),
             });
             game.ping(world, PingKind::Rally);
-            // Shift keeps placing: walls go up one click at a time,
-            // not one arming at a time.
-            if !input.resolver.shift_held() {
-                input.placing = None;
-            }
+            // The stroke opens: dragging stamps more of the same kind,
+            // queued. Whether the MODE survives the release is still
+            // Shift's call, decided at MouseUp.
+            input.placing_stroke = Some(vec![anchor]);
         }
         return true;
     }
