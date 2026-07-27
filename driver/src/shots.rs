@@ -182,14 +182,14 @@ fn walk(client: &mut Client, bless: bool, dir: &Path, threshold: f64) -> Result<
     auto::press_key(suite.client, Key::Enter)?;
     suite.shot("match-setup", "match_setup")?;
     auto::press_key(suite.client, Key::Escape)?;
-    // Back on the grid, return to the first 1v1 for the quick flow.
+    // Back on the grid, return to the first 1v1: the same setup
+    // screen, duel-shaped (seat cards without team headings).
     auto::press_key(suite.client, Key::Home)?;
     auto::press_key(suite.client, Key::Enter)?;
-    suite.shot("wizard-difficulty", "difficulty_menu")?;
+    suite.shot("wizard-duel-setup", "match_setup")?;
 
     // Into the game (paused clock: tick 0 forever, deterministic HUD).
-    auto::press_key(suite.client, Key::Enter)?;
-    auto::press_key(suite.client, Key::Enter)?;
+    // Start is preselected: one Enter launches.
     auto::press_key(suite.client, Key::Enter)?;
     wait_mode(suite.client, "playing", 15)?;
     suite.shot("game-hud", "playing")?;

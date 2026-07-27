@@ -54,7 +54,10 @@ pub struct Browser {
     pub selected: usize,
     /// First visible line of the grid.
     scroll_line: usize,
-    hover: Option<usize>,
+    /// The card under the pointer — exposed (read-only) through the
+    /// wizard's protocol surface so hover-driven row discovery in the
+    /// UX battery works on the grid like it does on row menus.
+    pub(crate) hover: Option<usize>,
     pressed: Option<usize>,
     /// Fractional wheel accumulation: trackpads deliver hundredths per
     /// event, and one grid line per nonzero event raced through the

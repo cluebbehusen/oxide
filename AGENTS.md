@@ -189,7 +189,8 @@ and test fixtures inside crate `tests/` directories.
   Cupric — the AUTHORED default. Since 0.11 any seat can retint at
   launch (`Scenario::retint_seat`: faction, faction-derived name,
   and starting units remapped through their roles) — the setup
-  screen's faction chips and the 1v1 quick flow both land there.
+  screen's faction chips land there (the retired 1v1 quick flow did
+  too).
   `Scenario::skirmish()` embeds `scenarios/skirmish.json` at compile
   time.
 - **Balance numbers** all live in `sim/src/stats.rs`; expect hash churn
@@ -589,11 +590,16 @@ never runs it.
   windows and are #[ignore]d — run them explicitly, never in CI).
   The front door is a thumbnail-grid map browser sectioned by format
   (shell/src/screens/browser.rs, themed preview cards, remembers the
-  pick by path); team maps then land on one inline setup screen —
-  team-grouped seat cards with difficulty/personality/faction chips
-  edited in place beside a who-is-where preview (no sub-screen; the
-  cell cursor moves with Left/Right and Enter takes a seat or cycles
-  a dial; the human's card keeps its faction chip). Small windows
+  pick by path); every map then lands on one inline setup screen —
+  seat cards with difficulty/personality/faction chips edited in
+  place beside a who-is-where preview (no sub-screen; the cell
+  cursor moves with Left/Right and Enter takes a seat or cycles a
+  dial; the human's card keeps its faction chip). Since 0.12 duels
+  land there too — the 1v1 quick-question flow is gone, Start stays
+  preselected so Enter-Enter still launches the classic matchup,
+  team headings draw only when a team actually groups seats, and
+  picking a DIFFERENT map resets the chair and dials while
+  re-entering the same map keeps them. Small windows
   compress margins, chrome, then cards — every control stays on
   screen at every supported size, keyboard and pointer alike.
   Allegiance reads as team color ON the art (the RTS convention,
