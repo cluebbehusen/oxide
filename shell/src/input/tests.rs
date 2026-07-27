@@ -2,7 +2,7 @@
 //! resolver against a real (headless) sim.
 
 use super::*;
-use oxide_sim::UnitKind;
+use oxide_sim::{PlayerCommand, UnitKind};
 
 fn headless_game() -> Game {
     Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0))
@@ -2017,5 +2017,207 @@ fn the_stretch_between_press_and_frame_end_still_selects() {
     assert_ne!(
         game.selection.units, want,
         "premise: coalescing the frame into its last position loses the drag"
+    );
+}
+
+/// The drag arena, parameterized by bank: same shape as the funded
+/// test's fixture, one harvester, open ground.
+fn drag_arena(scrap: u32) -> Game {
+    let scenario = oxide_sim::Scenario::from_json(
+        &serde_json::json!({
+            "name": "Drag Bank",
+            "seed": 3,
+            "players": [
+                {"name": "Mason", "faction": "ferrous", "scrap": scrap, "bot": false},
+                {"name": "Idle", "faction": "cupric", "scrap": 0, "bot": true}
+            ],
+            "map": [
+                "######################",
+                "#1...................#",
+                "#....................#",
+                "#....................#",
+                "#....................#",
+                "#....................#",
+                "#....................#",
+                "#....................#",
+                "#..................2.#",
+                "#....................#",
+                "######################"
+            ],
+            "units": [
+                {"player": 0, "kind": "harvester", "x": 7, "y": 4}
+            ]
+        })
+        .to_string(),
+    )
+    .expect("drag bank parses");
+    Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("builds")
+}
+
+fn staged_builds(game: &Game) -> usize {
+    game.pending
+        .iter()
+        .filter(|pc| matches!(pc.command, Command::Build { .. }))
+        .count()
+}
+
+fn drag_over(game: &mut Game, input: &mut InputState, tiles: &[(i32, i32)]) {
+    let at =
+        |game: &Game, x: i32, y: i32| game.camera.to_screen(vec2(x as f32 + 0.5, y as f32 + 0.5));
+    let first = at(game, tiles[0].0, tiles[0].1);
+    let mut events = vec![RawEvent::MouseDown {
+        button: MouseButton::Left,
+        x: first.x,
+        y: first.y,
+    }];
+    apply_events(game, input, &events);
+    events.clear();
+    for &(x, y) in &tiles[1..] {
+        let p = at(game, x, y);
+        apply_events(game, input, &[RawEvent::MouseMove { x: p.x, y: p.y }]);
+    }
+    let last = at(game, tiles[tiles.len() - 1].0, tiles[tiles.len() - 1].1);
+    apply_events(
+        game,
+        input,
+        &[RawEvent::MouseUp {
+            button: MouseButton::Left,
+            x: last.x,
+            y: last.y,
+        }],
+    );
+}
+
+#[test]
+fn a_placement_drag_stops_at_the_bank() {
+    let mut game = drag_arena(250);
+    let mut input = InputState::new();
+    game.selection.units = vec![game.state.units()[0].id];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    drag_over(&mut game, &mut input, &[(9, 4), (10, 4), (11, 4)]);
+    assert_eq!(
+        staged_builds(&game),
+        2,
+        "250 scrap affords two 100-scrap turrets; the third stamp is \
+         refused at the gate, not by the sim"
+    );
+    let commands = std::mem::take(&mut game.pending);
+    let report = game.state.tick(&commands);
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|e| matches!(e, oxide_sim::Event::CommandRejected { .. })),
+        "the shell staged nothing the sim had to refuse"
+    );
+
+    // A single-turret bank stages exactly one: the first click's own
+    // cost is reserved through the stroke seed.
+    let mut game = drag_arena(150);
+    let mut input = InputState::new();
+    game.selection.units = vec![game.state.units()[0].id];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    drag_over(&mut game, &mut input, &[(9, 4), (10, 4), (11, 4)]);
+    assert_eq!(staged_builds(&game), 1, "150 scrap affords one turret");
+}
+
+#[test]
+fn a_shift_stroke_spends_only_the_builders_headroom() {
+    let mut game = drag_arena(50_000);
+    let mut input = InputState::new();
+    let builder = game.state.units()[0].id;
+    game.selection.units = vec![builder];
+    // Pre-load the program through the sim: one active move plus 30
+    // queued — headroom 2.
+    let mut fill = vec![PlayerCommand {
+        player: game.human,
+        command: Command::Move {
+            units: vec![builder],
+            goal: TilePos::new(3, 7),
+            queue: false,
+        },
+    }];
+    for _ in 0..30 {
+        fill.push(PlayerCommand {
+            player: game.human,
+            command: Command::Move {
+                units: vec![builder],
+                goal: TilePos::new(4, 7),
+                queue: true,
+            },
+        });
+    }
+    game.state.tick(&fill);
+    assert_eq!(game.state.unit(builder).unwrap().queue.len(), 30);
+
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::KeyDown { key: Key::Shift }],
+    );
+    drag_over(
+        &mut game,
+        &mut input,
+        &[
+            (4, 2),
+            (6, 2),
+            (8, 2),
+            (10, 2),
+            (12, 2),
+            (4, 6),
+            (6, 6),
+            (8, 6),
+            (10, 6),
+            (12, 6),
+        ],
+    );
+    assert_eq!(
+        staged_builds(&game),
+        2,
+        "an active order and thirty queued leave headroom for exactly two"
+    );
+    let commands = std::mem::take(&mut game.pending);
+    let report = game.state.tick(&commands);
+    assert!(
+        !report.events.iter().any(|e| matches!(
+            e,
+            oxide_sim::Event::CommandRejected {
+                reason: oxide_sim::command::RejectReason::QueueFull,
+                ..
+            }
+        )),
+        "the stroke never outruns the queue"
+    );
+    assert_eq!(
+        game.state.unit(builder).unwrap().queue.len(),
+        oxide_sim::stats::ORDER_QUEUE_CAP,
+        "the queue lands exactly full"
+    );
+}
+
+#[test]
+fn a_fresh_stroke_owns_the_cap_plus_the_active_slot() {
+    let mut game = drag_arena(50_000);
+    let mut input = InputState::new();
+    let builder = game.state.units()[0].id;
+    game.selection.units = vec![builder];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    // Rows 2, 4, 6, 8 with free rows between: every site keeps a
+    // doorstep, all inside the harvester's vision and clear of both
+    // foundry footprints.
+    let mut tiles = Vec::new();
+    for y in [2, 4, 6, 8] {
+        for x in 4..=13 {
+            if (x, y) != (7, 4) {
+                tiles.push((x, y));
+            }
+        }
+    }
+    drag_over(&mut game, &mut input, &tiles);
+    assert_eq!(
+        staged_builds(&game),
+        oxide_sim::stats::ORDER_QUEUE_CAP + 1,
+        "one active order plus a full queue is legal"
     );
 }

@@ -77,10 +77,9 @@ pub struct InputState {
     pub(crate) patrol_route: Option<Vec<TilePos>>,
     /// Building kind armed for placement, if any.
     pub(crate) placing: Option<oxide_sim::BuildingKind>,
-    /// Anchors stamped by the current placement drag, while the button
-    /// stays down — a wall in one stroke. `None` when no stroke is
-    /// live.
-    pub(crate) placing_stroke: Option<Vec<TilePos>>,
+    /// The live drag-to-place stroke, while the button stays down.
+    /// `None` when no stroke is live.
+    pub(crate) placing_stroke: Option<PlacingStroke>,
     /// Armed salvage: the next left-click on an own built building
     /// sends the selected harvesters to strip it.
     pub(crate) salvaging: bool,
@@ -114,6 +113,46 @@ pub struct InputState {
     pub(crate) bindings: BindingMap,
     /// Chord state: modifier truth and held actions.
     pub(crate) resolver: ActionResolver,
+}
+
+/// A live drag-to-place stroke: the anchors stamped so far (the
+/// overlap guard) and the predicted `queue.len()` of the builder the
+/// sim will pick. `commands::assign` appends while
+/// `queue.len() < ORDER_QUEUE_CAP` and the ACTIVE order sits OUTSIDE
+/// the queue, so a replacing stroke owns the cap plus that slot while
+/// a Shift stroke inherits whatever the builder already carries.
+/// Predicted forward because staged stamps have not reached the unit
+/// yet — re-reading live state mid-stroke would count them twice.
+pub(crate) struct PlacingStroke {
+    anchors: Vec<TilePos>,
+    queued: usize,
+}
+
+/// The builder's queue depth once this stroke's FIRST stamp has
+/// landed — the sim gives a new site to the lowest-id own harvester in
+/// the selection (`accepted_units` sorts). Without Shift the stamp
+/// wipes the program; with Shift it appends, except onto an idle
+/// builder, where it takes the free active slot.
+fn stroke_queued(game: &Game, shift: bool) -> usize {
+    if !shift {
+        return 0;
+    }
+    let Some(builder) = game
+        .selection
+        .units
+        .iter()
+        .copied()
+        .filter(|id| {
+            game.state
+                .unit(*id)
+                .is_some_and(|u| u.player == game.human && u.kind.stats().harvest.is_some())
+        })
+        .min()
+        .and_then(|id| game.state.unit(id))
+    else {
+        return 0;
+    };
+    builder.queue.len() + usize::from(!matches!(builder.order, oxide_sim::Order::Idle))
 }
 
 /// Everything a harvester can put in the ground, in palette order — the
@@ -490,13 +529,25 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
                     let (w, h) = kind.stats().size;
                     let overlaps = stroke
+                        .anchors
                         .iter()
                         .any(|a| (a.x - anchor.x).abs() < w && (a.y - anchor.y).abs() < h);
                     let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
-                    let affordable = game.state.player(game.human).scrap >= cost;
+                    // The stroke's earlier stamps are still PENDING:
+                    // the tick hasn't charged them, so the bank still
+                    // shows their scrap. Reserve the stroke's own
+                    // bill, or a fast drag stages a wall the seat
+                    // can't pay for and every stamp past the first
+                    // pings acknowledgment and then eats a rejection.
+                    let reserved = cost.saturating_mul(stroke.anchors.len() as u32);
+                    let affordable =
+                        game.state.player(game.human).scrap >= cost.saturating_add(reserved);
+                    // The cap is the BUILDER's remaining headroom, not
+                    // a flat count: a Shift stroke inherits the queue
+                    // it appends behind.
                     if !overlaps
                         && affordable
-                        && stroke.len() < oxide_sim::stats::ORDER_QUEUE_CAP
+                        && stroke.queued < oxide_sim::stats::ORDER_QUEUE_CAP
                         && game.state.can_place(game.human, kind, anchor)
                     {
                         let units = game.selection.units.clone();
@@ -507,7 +558,8 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                             queue: true,
                         });
                         game.ping(world, PingKind::Rally);
-                        stroke.push(anchor);
+                        stroke.anchors.push(anchor);
+                        stroke.queued += 1;
                     }
                 }
             }
@@ -893,7 +945,10 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             // The stroke opens: dragging stamps more of the same kind,
             // queued. Whether the MODE survives the release is still
             // Shift's call, decided at MouseUp.
-            input.placing_stroke = Some(vec![anchor]);
+            input.placing_stroke = Some(PlacingStroke {
+                anchors: vec![anchor],
+                queued: stroke_queued(game, input.resolver.shift_held()),
+            });
         }
         return true;
     }
