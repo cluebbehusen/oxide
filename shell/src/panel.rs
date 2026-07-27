@@ -64,6 +64,9 @@ pub enum CardAction {
     CancelQueue(BuildingId, u8),
     /// Clear a producer's rally point.
     ClearRally(BuildingId),
+    /// Narrow the selection to one kind (Ctrl-click removes it
+    /// instead) — the mixed-army type strip.
+    FilterKind(UnitKind),
     /// Display only.
     None,
 }
@@ -406,15 +409,21 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         sub: if units.len() == 1 {
             format!("{}/{} hp", first.hp, first.kind.stats().max_hp)
         } else {
-            let kinds: Vec<&str> = {
+            let (kinds, extra) = {
                 let mut ks: Vec<UnitKind> = units.iter().map(|u| u.kind).collect();
                 // dedup only folds neighbors, and a mixed selection
                 // arrives in id order where equal kinds need not be.
                 ks.sort_by_key(|k| k.name());
                 ks.dedup();
-                ks.iter().map(|k| k.name()).take(4).collect()
+                let extra = ks.len().saturating_sub(4);
+                let named: Vec<&str> = ks.iter().map(|k| k.name()).take(4).collect();
+                (named, extra)
             };
-            kinds.join(", ")
+            if extra > 0 {
+                format!("{} +{extra} more", kinds.join(", "))
+            } else {
+                kinds.join(", ")
+            }
         },
         portrait: CardIcon::Unit(first.kind),
         faction: game.state.player(owner).faction,
@@ -445,6 +454,37 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             }
         }
         return Some(panel);
+    }
+    // The type strip: a mixed army offers one card per kind, counted.
+    // Click keeps only that kind; Ctrl-click drops it — the two cuts
+    // every RTS hand knows. Capped at six cards so the band's card
+    // budget holds; the sub line's "+N more" names the fold.
+    if units.len() > 1 {
+        let mut counts: Vec<(UnitKind, usize)> = Vec::new();
+        for u in &units {
+            match counts.iter_mut().find(|(k, _)| *k == u.kind) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((u.kind, 1)),
+            }
+        }
+        if counts.len() > 1 {
+            counts.sort_by_key(|(k, _)| k.name());
+            for (kind, n) in counts.into_iter().take(6) {
+                panel.cards.push(Card {
+                    icon: CardIcon::Unit(kind),
+                    title: format!("{} x{n}", kind.name()),
+                    cost: None,
+                    hotkey: String::new(),
+                    action: CardAction::FilterKind(kind),
+                    enabled: true,
+                    why: None,
+                    desc: vec![
+                        "Click: keep only this kind.".into(),
+                        "Ctrl-click: drop this kind instead.".into(),
+                    ],
+                });
+            }
+        }
     }
     panel.cards.push(Card {
         icon: CardIcon::Verb(VerbIcon::Stop),

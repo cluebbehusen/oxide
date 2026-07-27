@@ -929,6 +929,16 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
                 rally: None,
             });
         }
+        crate::panel::CardAction::FilterKind(kind) => {
+            // The cut is shell-side only: selections are presentation,
+            // no command leaves here.
+            let keep = !input.resolver.ctrl_held();
+            game.selection.units.retain(|id| {
+                game.state
+                    .unit(*id)
+                    .is_some_and(|u| (u.kind == kind) == keep)
+            });
+        }
         crate::panel::CardAction::None => {}
     }
 }

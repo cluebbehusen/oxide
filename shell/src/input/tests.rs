@@ -1838,3 +1838,72 @@ fn a_placement_drag_stamps_a_row_of_queued_builds() {
         "all three sites claimed ground"
     );
 }
+
+#[test]
+fn the_type_strip_cuts_a_mixed_selection_both_ways() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let mine: Vec<_> = game
+        .state
+        .units()
+        .iter()
+        .filter(|u| u.player == game.human)
+        .map(|u| u.id)
+        .collect();
+    game.selection.units = mine.clone();
+    let panel = crate::panel::build(&game, &input.bindings).expect("panel");
+    let strip: Vec<_> = panel
+        .cards
+        .iter()
+        .filter_map(|c| match c.action {
+            crate::panel::CardAction::FilterKind(k) => Some((k, c.title.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(strip.len(), 2, "two kinds, two counted cards: {strip:?}");
+    assert!(
+        strip
+            .iter()
+            .any(|(k, t)| *k == UnitKind::Harvester && t.contains("x3")),
+        "the strip counts its kind: {strip:?}"
+    );
+
+    // Ctrl-click drops the kind...
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::KeyDown { key: Key::Ctrl }],
+    );
+    activate_card(
+        &mut game,
+        &mut input,
+        crate::panel::CardAction::FilterKind(UnitKind::Harvester),
+    );
+    assert!(
+        !game.selection.units.is_empty()
+            && game
+                .selection
+                .units
+                .iter()
+                .all(|id| game.state.unit(*id).unwrap().kind != UnitKind::Harvester),
+        "Ctrl cuts the named kind out"
+    );
+    apply_events(&mut game, &mut input, &[RawEvent::KeyUp { key: Key::Ctrl }]);
+
+    // ...and the plain click keeps only the named kind.
+    game.selection.units = mine;
+    activate_card(
+        &mut game,
+        &mut input,
+        crate::panel::CardAction::FilterKind(UnitKind::Sentinel),
+    );
+    assert!(
+        !game.selection.units.is_empty()
+            && game
+                .selection
+                .units
+                .iter()
+                .all(|id| game.state.unit(*id).unwrap().kind == UnitKind::Sentinel),
+        "a plain click narrows to the kind"
+    );
+}

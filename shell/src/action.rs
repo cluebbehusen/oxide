@@ -416,6 +416,11 @@ impl ActionResolver {
         self.shift
     }
 
+    /// Whether Ctrl is held (the type strip's remove-this-kind click).
+    pub fn ctrl_held(&self) -> bool {
+        self.ctrl
+    }
+
     /// Drops all held state — mode transitions eat release events, and
     /// stale holds otherwise pan forever.
     pub fn clear(&mut self) {
