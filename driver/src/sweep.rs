@@ -10,9 +10,15 @@
 //! own blunder stream, which is a per-seat variable at any degraded
 //! level. A lean that shows up in both orientations is the map or the
 //! engine, not personality luck.
+//!
+//! `duel` is the sibling instrument: two named profiles (a ladder rung,
+//! optionally with candidate skill/cadence dial overrides) fight across
+//! N seeds with the sides exchanging seats — the head-to-head the
+//! Medium re-metering selects candidates on, since the in-tree ladder
+//! test is a tripwire, not a measuring stick.
 
 use anyhow::{Context, Result};
-use oxide_sim::bot::{Level, deal_aggression, seat_bots};
+use oxide_sim::bot::{Level, NeuralBot, QuantNet, deal_aggression, seat_bots};
 use oxide_sim::scenario::{BotConfig, Scenario};
 use oxide_sim::{GameResult, PlayerId, State};
 use serde::Serialize;
@@ -283,6 +289,440 @@ fn play(
     })
 }
 
+/// One side of a duel: a ladder rung, optionally with candidate
+/// skill/cadence overrides — the re-metering experiments probe points
+/// between the shipped rungs. Personality stays the shipped per-seat
+/// deal; blunder derives from skill, as shipped.
+#[derive(Debug, Clone, Serialize)]
+pub struct DuelSide {
+    /// The base rung.
+    pub level: Level,
+    /// Skill-knob override (None: the rung's own).
+    pub skill: Option<u32>,
+    /// Cadence override (None: the rung's own).
+    pub cadence: Option<u64>,
+}
+
+impl DuelSide {
+    /// The profile's display name, dials included.
+    pub fn label(&self) -> String {
+        let mut label = format!("{:?}", self.level).to_lowercase();
+        if let Some(skill) = self.skill {
+            label.push_str(&format!("/s{skill}"));
+        }
+        if let Some(cadence) = self.cadence {
+            label.push_str(&format!("/c{cadence}"));
+        }
+        label
+    }
+
+    fn bot(&self, player: PlayerId, seed: u64, faction: oxide_sim::Faction) -> NeuralBot {
+        self.bot_with_aggression(player, seed, faction, deal_aggression(seed, player))
+    }
+
+    fn bot_with_aggression(
+        &self,
+        player: PlayerId,
+        seed: u64,
+        faction: oxide_sim::Faction,
+        aggression: u32,
+    ) -> NeuralBot {
+        NeuralBot::with_profile(
+            player,
+            self.cadence.unwrap_or_else(|| self.level.cadence()),
+            QuantNet::ladder().clone(),
+            self.skill.unwrap_or_else(|| self.level.skill()),
+            aggression,
+            faction,
+            0,
+            seed,
+        )
+    }
+}
+
+/// The duel's aggregate verdict.
+#[derive(Debug, Clone, Serialize)]
+pub struct DuelReport {
+    /// Scenario name.
+    pub scenario: String,
+    /// Side A's profile label.
+    pub a: String,
+    /// Side B's profile label.
+    pub b: String,
+    /// Seeds fought (each from both seats).
+    pub seeds: u64,
+    /// Tick cap per match.
+    pub max_ticks: u64,
+    /// Side A's victories.
+    pub a_wins: u32,
+    /// Side B's victories.
+    pub b_wins: u32,
+    /// Mutual-death draws.
+    pub draws: u32,
+    /// Matches that hit the cap.
+    pub undecided: u32,
+    /// Side A's victories split by the seat it held: [seat0, seat1].
+    pub a_wins_by_seat: [u32; 2],
+    /// Median decision tick over decided matches.
+    pub median_decision_tick: Option<u64>,
+}
+
+/// One finished duel match: side A's seat, the final tick, the
+/// winning seat, and whether the decision was a mutual-death draw.
+type DuelEntry = (usize, u64, Option<u8>, bool);
+
+/// Fights `a` against `b` across `seeds`, each seed from both seats.
+/// Sides carry their profiles with them when they change chairs;
+/// personalities stay dealt per seat, so the exchange isolates the
+/// profile difference from both seat bias and personality luck.
+pub fn run_duel(
+    scenario: &str,
+    a: &DuelSide,
+    b: &DuelSide,
+    seeds: u64,
+    max_ticks: u64,
+    seed_base: u64,
+) -> Result<DuelReport> {
+    let base = crate::runner::load_scenario(scenario)?;
+    anyhow::ensure!(
+        base.players.len() == 2,
+        "the duel reads 1v1 head-to-heads; {} has {} seats",
+        base.name,
+        base.players.len()
+    );
+
+    // (offset, the seat side A holds)
+    let jobs: Vec<(u64, usize)> = (0..seeds)
+        .flat_map(|offset| [(offset, 0), (offset, 1)])
+        .collect();
+    let next = AtomicUsize::new(0);
+    let results: Mutex<Vec<DuelEntry>> = Mutex::new(Vec::with_capacity(jobs.len()));
+    let failure: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+    let workers = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .min(jobs.len());
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(&(offset, a_seat)) = jobs.get(i) else {
+                        break;
+                    };
+                    let seed = seed_base + offset;
+                    match play_duel(&base, a, b, seed, a_seat, max_ticks) {
+                        // (a_seat, decision tick, winning seat, drawn)
+                        Ok(entry) => results.lock().unwrap().push(entry),
+                        Err(err) => {
+                            *failure.lock().unwrap() = Some(err);
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+    });
+    if let Some(err) = failure.into_inner().unwrap() {
+        return Err(err);
+    }
+    let entries = results.into_inner().unwrap();
+
+    let mut report = DuelReport {
+        scenario: base.name.clone(),
+        a: a.label(),
+        b: b.label(),
+        seeds,
+        max_ticks,
+        a_wins: 0,
+        b_wins: 0,
+        draws: 0,
+        undecided: 0,
+        a_wins_by_seat: [0; 2],
+        median_decision_tick: None,
+    };
+    let mut decision_ticks: Vec<u64> = Vec::new();
+    for (a_seat, ticks, winner, drawn) in entries {
+        match winner {
+            Some(seat) => {
+                decision_ticks.push(ticks);
+                if usize::from(seat) == a_seat {
+                    report.a_wins += 1;
+                    report.a_wins_by_seat[a_seat] += 1;
+                } else {
+                    report.b_wins += 1;
+                }
+            }
+            None if drawn => {
+                decision_ticks.push(ticks);
+                report.draws += 1;
+            }
+            None => report.undecided += 1,
+        }
+    }
+    decision_ticks.sort_unstable();
+    report.median_decision_tick =
+        (!decision_ticks.is_empty()).then(|| decision_ticks[decision_ticks.len() / 2]);
+    Ok(report)
+}
+
+/// Runs the duel and prints the verdict — the CLI entry.
+pub fn duel_report(
+    scenario: &str,
+    a: &DuelSide,
+    b: &DuelSide,
+    seeds: u64,
+    max_ticks: u64,
+    seed_base: u64,
+    out: Option<&str>,
+) -> Result<()> {
+    let report = run_duel(scenario, a, b, seeds, max_ticks, seed_base)?;
+    println!(
+        "\nDUEL  ·  {}  ·  {} vs {}  ·  {} seeds x 2 seats  ·  cap {}",
+        report.scenario, report.a, report.b, report.seeds, report.max_ticks
+    );
+    println!(
+        "{} {} - {} {}  ·  draws {}  ·  undecided {}  ·  A by seat [{}, {}]",
+        report.a,
+        report.a_wins,
+        report.b_wins,
+        report.b,
+        report.draws,
+        report.undecided,
+        report.a_wins_by_seat[0],
+        report.a_wins_by_seat[1],
+    );
+    if let Some(median) = report.median_decision_tick {
+        println!("median decision tick: {median}");
+    }
+    if let Some(path) = out {
+        std::fs::write(path, serde_json::to_string_pretty(&report)?)?;
+        println!("raw record: {path}");
+    }
+    Ok(())
+}
+
+/// Plays one duel match with side A in `a_seat`; returns
+/// (a_seat, final tick, winning seat, drawn).
+fn play_duel(
+    base: &Scenario,
+    a: &DuelSide,
+    b: &DuelSide,
+    seed: u64,
+    a_seat: usize,
+    max_ticks: u64,
+) -> Result<DuelEntry> {
+    let mut sc = base.clone();
+    sc.seed = seed;
+    let mut state: State = sc.build().context("building scenario")?;
+    let mut bots: Vec<NeuralBot> = sc
+        .players
+        .iter()
+        .enumerate()
+        .map(|(seat, player)| {
+            let side = if seat == a_seat { a } else { b };
+            side.bot(PlayerId(seat as u8), seed, player.faction)
+        })
+        .collect();
+    for _ in 0..max_ticks {
+        let mut commands = Vec::new();
+        for bot in bots.iter_mut() {
+            commands.extend(bot.act(&state));
+        }
+        state.tick(&commands);
+        if state.result().is_some() {
+            break;
+        }
+    }
+    let (winner, drawn) = match state.result() {
+        Some(GameResult::Victory { .. }) => (
+            Some(
+                state
+                    .winners()
+                    .first()
+                    .expect("a 1v1 victory names its seat")
+                    .0,
+            ),
+            false,
+        ),
+        Some(GameResult::Draw) => (None, true),
+        None => (None, false),
+    };
+    eprintln!(
+        "  seed {seed} A@{a_seat} · {} ticks · {:?}",
+        state.current_tick(),
+        winner
+    );
+    Ok((a_seat, state.current_tick(), winner, drawn))
+}
+
+/// Per-tier record on the scripted yardstick.
+#[derive(Debug, Clone, Serialize)]
+pub struct TierRecord {
+    /// The scripted opponent tier.
+    pub tier: String,
+    /// Profile wins against it.
+    pub wins: u32,
+    /// Matches fought.
+    pub matches: u32,
+    /// Matches that drew or hit the cap.
+    pub unresolved: u32,
+}
+
+/// The widened scripted-yardstick verdict for one profile — the same
+/// methodology as the in-tree ladder gate (fixed 500 personality, the
+/// profile vs every scripted tier from both seats), over as many seeds
+/// as the recalibration wants instead of the gate's pinned 24.
+#[derive(Debug, Clone, Serialize)]
+pub struct YardstickReport {
+    /// The measured profile's label.
+    pub profile: String,
+    /// Scenario name.
+    pub scenario: String,
+    /// Seeds per tier (each fought from both seats).
+    pub seeds_per_tier: u64,
+    /// Tick cap per match.
+    pub max_ticks: u64,
+    /// Per-tier records, gentlest first.
+    pub per_tier: Vec<TierRecord>,
+    /// Total wins.
+    pub wins: u32,
+    /// Total matches.
+    pub matches: u32,
+}
+
+/// Measures `side` against the four scripted tiers. The profile plays
+/// the gate's fixed 500 personality so the skill dials are the only
+/// variable; scripted opponents are the fixed aggression yardstick the
+/// cadence calibration is doctrinally measured on (head-to-head
+/// neural mirrors reward patience instead).
+pub fn run_yardstick(
+    scenario: &str,
+    side: &DuelSide,
+    seeds_per_tier: u64,
+    max_ticks: u64,
+    seed_base: u64,
+) -> Result<YardstickReport> {
+    use oxide_sim::bot::{Brain, Difficulty};
+    let base = crate::runner::load_scenario(scenario)?;
+    anyhow::ensure!(
+        base.players.len() == 2,
+        "the yardstick reads 1v1; {} has {} seats",
+        base.name,
+        base.players.len()
+    );
+    const TIERS: [Difficulty; 4] = [
+        Difficulty::Scrapheap,
+        Difficulty::Standard,
+        Difficulty::Veteran,
+        Difficulty::Prime,
+    ];
+
+    // (tier index, seed, the profile's seat)
+    let jobs: Vec<(usize, u64, u8)> = (0..TIERS.len())
+        .flat_map(|t| (0..seeds_per_tier).flat_map(move |o| [(t, o, 0u8), (t, o, 1u8)]))
+        .collect();
+    let next = AtomicUsize::new(0);
+    // (tier index, won, resolved)
+    let results: Mutex<Vec<(usize, bool, bool)>> = Mutex::new(Vec::with_capacity(jobs.len()));
+    let failure: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+    let workers = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .min(jobs.len());
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(&(t, offset, seat)) = jobs.get(i) else {
+                        break;
+                    };
+                    let seed = seed_base + offset;
+                    let mut sc = base.clone();
+                    sc.seed = seed;
+                    let built = sc.build().context("building scenario");
+                    let mut state: State = match built {
+                        Ok(state) => state,
+                        Err(err) => {
+                            *failure.lock().unwrap() = Some(err);
+                            break;
+                        }
+                    };
+                    let faction = sc.players[usize::from(seat)].faction;
+                    let mut bot = side.bot_with_aggression(PlayerId(seat), seed, faction, 500);
+                    let mut opp = Brain::for_tier(PlayerId(1 - seat), seed, TIERS[t]);
+                    for _ in 0..max_ticks {
+                        let mut commands = bot.act(&state);
+                        commands.extend(opp.act(&state));
+                        state.tick(&commands);
+                        if state.result().is_some() {
+                            break;
+                        }
+                    }
+                    let won = matches!(state.result(), Some(GameResult::Victory { .. }))
+                        && state.winners().contains(&PlayerId(seat));
+                    let resolved = matches!(state.result(), Some(GameResult::Victory { .. }));
+                    results.lock().unwrap().push((t, won, resolved));
+                }
+            });
+        }
+    });
+    if let Some(err) = failure.into_inner().unwrap() {
+        return Err(err);
+    }
+
+    let mut per_tier: Vec<TierRecord> = TIERS
+        .iter()
+        .map(|t| TierRecord {
+            tier: format!("{t:?}"),
+            wins: 0,
+            matches: 0,
+            unresolved: 0,
+        })
+        .collect();
+    for (t, won, resolved) in results.into_inner().unwrap() {
+        per_tier[t].matches += 1;
+        per_tier[t].wins += u32::from(won);
+        per_tier[t].unresolved += u32::from(!resolved);
+    }
+    Ok(YardstickReport {
+        profile: side.label(),
+        scenario: base.name.clone(),
+        seeds_per_tier,
+        max_ticks,
+        wins: per_tier.iter().map(|t| t.wins).sum(),
+        matches: per_tier.iter().map(|t| t.matches).sum(),
+        per_tier,
+    })
+}
+
+/// Runs the yardstick and prints the verdict — the CLI entry.
+pub fn yardstick_report(
+    scenario: &str,
+    side: &DuelSide,
+    seeds_per_tier: u64,
+    max_ticks: u64,
+    seed_base: u64,
+    out: Option<&str>,
+) -> Result<()> {
+    let report = run_yardstick(scenario, side, seeds_per_tier, max_ticks, seed_base)?;
+    println!(
+        "\nYARDSTICK  ·  {}  ·  {}  ·  {} seeds/tier x 2 seats  ·  cap {}",
+        report.scenario, report.profile, report.seeds_per_tier, report.max_ticks
+    );
+    for tier in &report.per_tier {
+        println!(
+            "  vs {:<10} {:>2}/{:<2} ({} unresolved)",
+            tier.tier, tier.wins, tier.matches, tier.unresolved
+        );
+    }
+    println!("total {}/{}", report.wins, report.matches);
+    if let Some(path) = out {
+        std::fs::write(path, serde_json::to_string_pretty(&report)?)?;
+        println!("raw record: {path}");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,5 +741,28 @@ mod tests {
             assert_eq!(pair[0].aggression[0], pair[1].aggression[1]);
             assert_eq!(pair[0].aggression[1], pair[1].aggression[0]);
         }
+    }
+
+    /// The duel accounts for every job, and dial overrides show up in
+    /// the labels the report carries.
+    #[test]
+    fn duel_accounts_for_every_job_and_labels_dials() {
+        let a = DuelSide {
+            level: Level::Medium,
+            skill: Some(700),
+            cadence: Some(30),
+        };
+        let b = DuelSide {
+            level: Level::Easy,
+            skill: None,
+            cadence: None,
+        };
+        let report = run_duel("skirmish", &a, &b, 2, 40, 7_000).unwrap();
+        assert_eq!(report.a, "medium/s700/c30");
+        assert_eq!(report.b, "easy");
+        assert_eq!(
+            report.a_wins + report.b_wins + report.draws + report.undecided,
+            4
+        );
     }
 }

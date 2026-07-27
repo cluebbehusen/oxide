@@ -314,7 +314,13 @@ personality orientations (the dealt pair exchanged between the
 seats), reporting decided/undecided counts, seat bias that survives
 the exchange, and decision-tick medians — where balance-probe asks
 what armies were made of, sweep asks whether games END. The 0.12 bot
-phases gate on it.
+phases gate on it. Its siblings: `driver duel --a <level> --b <level>`
+fights two ladder profiles (candidate `--a-skill/--a-cadence` dials
+included) seat-swapped across seeds, and `driver yardstick --level
+<level> [--skill --cadence]` measures one profile against all four
+scripted tiers over as many seeds as recalibration wants — the
+doctrinal strength instrument, since neural head-to-heads reward
+patience and stopped ordering the ladder in 0.10.
 `driver bench` times a 500-unit mass battle locally
 (`--scenario scenarios/compass-grand.json` instead runs a shipped map
 with EVERY chair converted to a thinking Expert — the heaviest honest
