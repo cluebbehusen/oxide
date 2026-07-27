@@ -794,6 +794,102 @@ fn a_paused_stroke_bills_each_kind_at_its_own_price() {
 }
 
 #[test]
+fn a_paused_stroke_refuses_ground_an_earlier_stroke_spoke_for() {
+    let mut game = drag_arena(50_000);
+    let mut input = InputState::new();
+    let builder = game.state.units()[0].id;
+    game.selection.units = vec![builder];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    // Stroke A stamps a turret; the clock never runs, so the site
+    // exists only in pending — live state still shows open ground.
+    let p = game.camera.to_screen(vec2(4.5, 2.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::Shift },
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+        ],
+    );
+    assert_eq!(staged_builds(&game), 1, "stroke A staged its site");
+    // Stroke B opens on the same tile: the ground is spoken for, and
+    // acknowledging the stamp would hand the sim a doomed command.
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+        ],
+    );
+    assert_eq!(
+        staged_builds(&game),
+        1,
+        "the overlapping opening refused instead of double-booking the footprint"
+    );
+    assert!(
+        input.placing.is_some(),
+        "and the refusal keeps the mode armed"
+    );
+}
+
+#[test]
+fn queued_orders_count_against_the_stroke_prediction() {
+    let mut game = drag_arena(50_000);
+    let mut input = InputState::new();
+    let builder = game.state.units()[0].id;
+    game.selection.units = vec![builder];
+    // Three queued walks staged while paused: the builder's program
+    // will hold them the moment the clock runs, so a build stroke
+    // must see three fewer free slots even though live state still
+    // reads an idle unit.
+    for x in [14, 15, 16] {
+        game.issue(Command::Move {
+            units: vec![builder],
+            goal: TilePos::new(x, 2),
+            queue: true,
+        });
+    }
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    let mut tiles = Vec::new();
+    for y in [2, 4, 6, 8] {
+        for x in 4..=13 {
+            if (x, y) != (7, 4) {
+                tiles.push((x, y));
+            }
+        }
+    }
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::KeyDown { key: Key::Shift }],
+    );
+    drag_over(&mut game, &mut input, &tiles);
+    assert_eq!(
+        staged_builds(&game),
+        oxide_sim::stats::ORDER_QUEUE_CAP - 2,
+        "three staged walks occupy three slots of the builder's program"
+    );
+}
+
+#[test]
 fn paused_strokes_share_one_queue_prediction() {
     let mut game = drag_arena(50_000);
     let mut input = InputState::new();

@@ -525,16 +525,22 @@ pub(super) fn attack(
     fire_sidearms(state, id, pi, hits, events);
 
     // The tether binds here — the chase, not the trigger and not the
-    // firing stand above. Inside the radius the guard hunts freely
-    // (that ground is its zone); beyond it every chase tick spends
-    // the warm-blood window, and an empty window sends the guard
-    // walking home, leash kept so the homecoming arms the post
+    // firing stand above. It measures the GUARD's own distance from
+    // its anchor, never the target's: the promise is "a stationed
+    // machine travels at most the radius from its post (plus the
+    // warm window)", and a target-based measure made the effective
+    // pursuit depend on how far the chaser trails — weapon range and
+    // speed matchup — turning a zero-window guard home while still
+    // tiles inside its own zone. Inside the radius the guard hunts
+    // freely (that ground is its zone); beyond it every chase tick
+    // spends the warm-blood window, and an empty window sends the
+    // guard walking home, leash kept so the homecoming arms the post
     // cooldown.
     if resume.is_none()
         && let Some(leash) = state.unit(id).expect("caller checked").leash
     {
         let radius_sq = crate::stats::LEASH_RADIUS * crate::stats::LEASH_RADIUS;
-        if leash.anchor.center().dist_sq(aim_point) > radius_sq {
+        if leash.anchor.center().dist_sq(pos) > radius_sq {
             if leash.patience == 0 {
                 let unit = state.unit_mut(id).expect("caller checked");
                 unit.order = Order::Move { goal: leash.anchor };

@@ -156,15 +156,38 @@ fn pending_build_bill(game: &Game) -> u32 {
         .sum()
 }
 
+/// Whether a footprint of `kind` at `anchor` intersects any
+/// staged-but-undrained Build's footprint. Live state cannot see
+/// those sites while the shell is paused, so without this a stamp
+/// overlapping an earlier stroke's site would acknowledge with a
+/// ping and then die rejected when that site claims the ground.
+/// Footprints are compared kind-by-kind — paused strokes can stack
+/// different building sizes.
+fn overlaps_pending_site(game: &Game, kind: oxide_sim::BuildingKind, anchor: TilePos) -> bool {
+    let (w, h) = kind.stats().size;
+    game.pending.iter().any(|pc| match &pc.command {
+        Command::Build {
+            kind: staged,
+            anchor: a,
+            ..
+        } => {
+            let (sw, sh) = staged.stats().size;
+            anchor.x < a.x + sw && a.x < anchor.x + w && anchor.y < a.y + sh && a.y < anchor.y + h
+        }
+        _ => false,
+    })
+}
+
 /// The builder's queue depth once this stroke's FIRST stamp has
 /// landed — the sim gives a new site to the lowest-id own harvester in
 /// the selection (`accepted_units` sorts). Without Shift the stamp
 /// wipes the program; with Shift it appends, except onto an idle
 /// builder, where it takes the free active slot. Live state alone is
-/// not enough: a paused shell stacks whole strokes without the sim
-/// ever draining them, so the staged-but-undrained Builds that will
-/// land on this same builder are replayed on top — each new stroke
-/// inherits what the previous ones already spoke for.
+/// not enough: a paused shell stages whole strokes — and any other
+/// queued orders — without the sim ever draining them, so every
+/// pending command that will mutate this builder's program is
+/// replayed on top: appends deepen, replacements reset to the active
+/// slot, Stop clears, Patrol installs its whole circuit.
 fn stroke_queued(game: &Game, shift: bool) -> usize {
     if !shift {
         return 0;
@@ -187,13 +210,38 @@ fn stroke_queued(game: &Game, shift: bool) -> usize {
     let mut depth =
         builder.queue.len() + usize::from(!matches!(builder.order, oxide_sim::Order::Idle));
     for pc in &game.pending {
-        let Command::Build { units, queue, .. } = &pc.command else {
-            continue;
-        };
-        if chosen_builder(units) != Some(builder.id) {
-            continue;
+        // Build assigns only the sim's chosen builder; every other
+        // unit order lands on each listed unit (an Attack degrades to
+        // a walk for a pacifist harvester, but it still occupies the
+        // program). Appends saturate at the cap the way assign drops
+        // them.
+        let mine = |units: &[oxide_sim::UnitId]| units.contains(&builder.id);
+        match &pc.command {
+            Command::Build { units, queue, .. } if chosen_builder(units) == Some(builder.id) => {
+                depth = if *queue {
+                    (depth + 1).min(oxide_sim::stats::ORDER_QUEUE_CAP + 1)
+                } else {
+                    1
+                };
+            }
+            Command::Move { units, queue, .. }
+            | Command::AttackMove { units, queue, .. }
+            | Command::Attack { units, queue, .. }
+            | Command::Harvest { units, queue, .. }
+            | Command::Repair { units, queue, .. }
+            | Command::Salvage { units, queue, .. }
+                if mine(units) =>
+            {
+                depth = if *queue {
+                    (depth + 1).min(oxide_sim::stats::ORDER_QUEUE_CAP + 1)
+                } else {
+                    1
+                };
+            }
+            Command::Stop { units } if mine(units) => depth = 0,
+            Command::Patrol { units, waypoints } if mine(units) => depth = waypoints.len(),
+            _ => {}
         }
-        depth = if *queue { depth + 1 } else { 1 };
     }
     depth
 }
@@ -637,6 +685,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     // a flat count: a Shift stroke inherits the queue
                     // it appends behind.
                     if !overlaps
+                        && !overlaps_pending_site(game, kind, anchor)
                         && affordable
                         && stroke.queued < oxide_sim::stats::ORDER_QUEUE_CAP
                         && game.state.can_place(game.human, kind, anchor)
@@ -1018,6 +1067,16 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                     }
                     PlaceRefusal::NotConstructible => "that can't be built",
                 });
+                game.sounds_pending
+                    .push((crate::game::SoundKind::Denied, None));
+                return true;
+            }
+            // Ground already spoken for by a staged-but-undrained site
+            // refuses like any other blocker — live state can't see it
+            // while the shell is paused, and the sim would reject the
+            // stamp the moment the earlier site claims the footprint.
+            if overlaps_pending_site(game, kind, anchor) {
+                game.toast("can't build there: ground already spoken for");
                 game.sounds_pending
                     .push((crate::game::SoundKind::Denied, None));
                 return true;

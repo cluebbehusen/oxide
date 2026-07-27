@@ -70,8 +70,11 @@ fn a_guard_breaks_off_at_the_leash_and_walks_home() {
     let guard = state.units()[0].id;
     let bait = state.units()[1].id;
     // The guard stands its post long enough to be stationed, then the
-    // bait strolls past and keeps going — faster than every line
-    // fighter, the chase could never end by catching it.
+    // bait strolls past and KEEPS RUNNING — faster than every line
+    // fighter, the chase can never end by catching it, and the queued
+    // legs matter: a bait that parks at a reachable goal gets caught
+    // and killed, and a victory stands its ground instead of walking
+    // home (a different, also-correct story).
     settle(&mut state, 60);
     state.tick(&[cmd(
         1,
@@ -79,6 +82,22 @@ fn a_guard_breaks_off_at_the_leash_and_walks_home() {
             units: vec![bait],
             goal: TilePos::new(38, 8),
             queue: false,
+        },
+    )]);
+    state.tick(&[cmd(
+        1,
+        Command::Move {
+            units: vec![bait],
+            goal: TilePos::new(38, 18),
+            queue: true,
+        },
+    )]);
+    state.tick(&[cmd(
+        1,
+        Command::Move {
+            units: vec![bait],
+            goal: TilePos::new(3, 18),
+            queue: true,
         },
     )]);
     let mut max_drift = 0i64;
