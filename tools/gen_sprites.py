@@ -66,6 +66,15 @@ def canvas(px: int, color=(0, 0, 0, 0)) -> tuple[Image.Image, ImageDraw.ImageDra
     return img, ImageDraw.Draw(img)
 
 
+def finish_wh(img: Image.Image, w: int, h: int, name: str) -> None:
+    """`finish` for non-square sprites (the peak crowns overhang their
+    tile); no rim light — terrain never gets it."""
+    img = img.resize((w, h), Image.LANCZOS)
+    img.save(OUT / f"{name}.png")
+    REGISTRY[name] = img
+    print(f"  {name}.png")
+
+
 def finish(img: Image.Image, px: int, name: str) -> None:
     img = img.resize((px, px), Image.LANCZOS)
     if name.startswith(
@@ -253,21 +262,23 @@ def _mix(a, b, t):
 PEAK_EDGE_TOP = 40
 
 
-def _peak_mass(d, rng, sky, caps):
+def _peak_mass(d, rng, sky, caps, base_y=64, cap_below=16):
     """Fill and facet a mountain mass under a left-to-right piecewise
     skyline. `caps` are indices into `sky` marking crest apexes; only
-    the tallest earns the bright cap, and only when it stands high."""
+    the tallest earns the bright cap, and only when it stands high
+    (`cap_below`). `base_y` is the mass's floor — 96-tall crown
+    sprites root their bottom tile there."""
 
     def sky_y(x):
         for (x0, y0), (x1, y1) in zip(sky, sky[1:]):
             if x0 <= x <= x1:
                 t = 0.0 if x1 == x0 else (x - x0) / (x1 - x0)
                 return y0 + (y1 - y0) * t
-        return 64.0
+        return float(base_y)
 
     base = _mix(PEAK_DARK, PEAK, 0.4)
     poly = [(s(x), s(y)) for x, y in sky]
-    poly += [(s(sky[-1][0]), s(64)), (s(sky[0][0]), s(64))]
+    poly += [(s(sky[-1][0]), s(base_y)), (s(sky[0][0]), s(base_y))]
     d.polygon(poly, fill=(*base, 255))
     tallest = min(caps, key=lambda i: sky[i][1])
     for i in caps:
@@ -277,25 +288,41 @@ def _peak_mass(d, rng, sky, caps):
         left = max(sky[0][0] + 1, ax - 16)
         fall = left + (ax - left) * 0.45
         d.polygon(
-            [(s(left), s(64)), (s(ax), s(ay)), (s(fall), s(64))],
+            [(s(left), s(base_y)), (s(ax), s(ay)), (s(fall), s(base_y))],
             fill=(*_mix(base, PEAK_LIGHT, 0.5), 255),
         )
         d.line(
-            [(s(ax), s(ay)), (s(ax + 8), s(ay + (64 - ay) * 0.5))],
+            [(s(ax), s(ay)), (s(ax + 8), s(ay + (base_y - ay) * 0.5))],
             fill=(*_mix(base, PEAK_LIGHT, 0.7), 255),
             width=SS,
         )
-        if i == tallest and ay < 16:
+        if i == tallest and ay < cap_below:
             d.polygon(
                 [(s(ax - 2), s(ay + 5)), (s(ax), s(ay - 1)), (s(ax + 2), s(ay + 5))],
                 fill=(*_mix(PEAK_LIGHT, BONE, 0.45), 255),
             )
     # Scree inside the mass so the rock reads as rock, not paint.
     for _ in range(46):
-        x, y = rng.randrange(0, 64), rng.randrange(0, 64)
+        x, y = rng.randrange(0, 64), rng.randrange(0, base_y)
         if y > sky_y(x) + 2:
             tone = _mix(PEAK_DARK, PEAK, rng.random() * 0.5)
             d.rectangle([s(x), s(y), s(x + 1), s(y + 1)], fill=(*tone, 255))
+
+
+# The crown sprites are 1x1.5 tiles: the bottom 64 sprite-units are the
+# peak's own tile (edge/toe contract unchanged, shifted by CROWN_RISE),
+# the top 32 are overhang the shell draws into the tile above. Crests
+# lift toward the overhang; tile-edge and toe points keep their exact
+# contract heights so ridges chain seamlessly.
+CROWN_RISE = 32
+
+
+def _crown_lift(sky):
+    out = []
+    for x, y in sky:
+        lift = round((PEAK_EDGE_TOP - y) * 0.85) if y < PEAK_EDGE_TOP else 0
+        out.append((x, y + CROWN_RISE - lift))
+    return out
 
 
 def peak_sky(w_conn: int, e_conn: int, variant: int) -> None:
@@ -304,7 +331,9 @@ def peak_sky(w_conn: int, e_conn: int, variant: int) -> None:
     below joins cleanly). Connected sides meet the edge at
     PEAK_EDGE_TOP; open sides fall to a low toe at the corner."""
     px = 64
-    img, d = canvas(px)
+    img, _ = canvas(px)
+    tall = Image.new("RGBA", (64 * SS, 96 * SS), (0, 0, 0, 0))
+    d = ImageDraw.Draw(tall)
     rng = random.Random(509 + w_conn * 131 + e_conn * 47 + variant * 71)
     sky = []
     if w_conn:
@@ -329,15 +358,18 @@ def peak_sky(w_conn: int, e_conn: int, variant: int) -> None:
         sky += [(59, PEAK_EDGE_TOP - rng.randrange(0, 4)), (64, PEAK_EDGE_TOP)]
     else:
         sky += [(57, 48 + rng.randrange(0, 6)), (64, 59 + rng.randrange(0, 3))]
-    _peak_mass(d, rng, sky, caps)
-    finish(img, px, f"peak_sky_{w_conn}{e_conn}_{variant}")
+    _peak_mass(d, rng, _crown_lift(sky), caps, base_y=96, cap_below=34)
+    del img
+    finish_wh(tall, 64, 96, f"peak_sky_{w_conn}{e_conn}_{variant}")
 
 
 def peak_lone(variant: int) -> None:
     """A single standing peak, feet inset so the ground shows at the
     corners instead of a hard square cut."""
     px = 64
-    img, d = canvas(px)
+    img, _ = canvas(px)
+    tall = Image.new("RGBA", (64 * SS, 96 * SS), (0, 0, 0, 0))
+    d = ImageDraw.Draw(tall)
     rng = random.Random(823 + variant * 71)
     foot_l = 5 + rng.randrange(0, 4)
     foot_r = 57 + rng.randrange(0, 4)
@@ -357,8 +389,9 @@ def peak_lone(variant: int) -> None:
             (foot_r, 62),
         ]
         caps = [1]
-    _peak_mass(d, rng, sky, caps)
-    finish(img, px, f"peak_lone_{variant}")
+    _peak_mass(d, rng, _crown_lift(sky), caps, base_y=96, cap_below=34)
+    del img
+    finish_wh(tall, 64, 96, f"peak_lone_{variant}")
 
 
 def peak_body(variant: int) -> None:

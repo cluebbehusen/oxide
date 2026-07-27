@@ -241,6 +241,9 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     draw_scorches(game, sprites);
     draw_buildings(game, sprites);
     draw_units(game, sprites, alpha);
+    // The skyline pass: peak crowns overhang the tile above and
+    // occlude whatever stands behind the ridge.
+    draw_peak_crowns(game, sprites);
     draw_fx(game, sprites);
     // The debug overlay is deliberately omniscient; the spectator
     // stance (playback) skips the fog too but never the debug chrome.
