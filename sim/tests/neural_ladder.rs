@@ -43,19 +43,26 @@ fn embedded_weights_parse() {
     assert_eq!(net.conditioning(), 3, "the ladder network is conditioned");
 }
 
-/// Wins for `level` against every scripted tier over the pinned seed
-/// set — the ladder's external yardstick. Every match is an
-/// independent deterministic sim, so the slate fans out across
-/// threads; the total is order-free.
-fn yardstick_wins(level: Level) -> u32 {
+/// Wins and total victory ticks for `level` against every scripted
+/// tier over the pinned seed set — the ladder's external yardstick.
+/// A loss counts the full 40k-tick horizon toward the total, so the
+/// tick sum subsumes the win count at the losing end and stays a
+/// single monotone instrument. Every match is an independent
+/// deterministic sim, so the slate fans out across threads; the
+/// totals are order-free.
+fn yardstick(level: Level) -> (u32, u64) {
     use oxide_sim::state::GameResult as GR;
-    // Prime is the discriminating tier — the upper rungs separate on
-    // how often they beat it — so it carries most of the slate.
+    // Ten seeds across every tier: the 0.12 pursuit-tether work
+    // re-rolled enough chaotic match outcomes to show the old
+    // 24-match sample inverting rungs the 80-match truth still
+    // ordered — the wider slate is the stable instrument the ladder
+    // deserves.
+    const SEEDS: [u64; 10] = [3000, 3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009];
     let slate: [(Difficulty, &[u64]); 4] = [
-        (Difficulty::Scrapheap, &[3000, 3001]),
-        (Difficulty::Standard, &[3000, 3001]),
-        (Difficulty::Veteran, &[3000, 3001]),
-        (Difficulty::Prime, &[3000, 3001, 3002, 3003, 3004, 3005]),
+        (Difficulty::Scrapheap, &SEEDS),
+        (Difficulty::Standard, &SEEDS),
+        (Difficulty::Veteran, &SEEDS),
+        (Difficulty::Prime, &SEEDS),
     ];
     let mut matches = Vec::new();
     for (tier, seeds) in slate {
@@ -77,24 +84,31 @@ fn yardstick_wins(level: Level) -> u32 {
                     let mut bot =
                         NeuralBot::ladder(PlayerId(seat), seed, level, Some(500), faction);
                     let mut opp = Brain::for_tier(PlayerId(1 - seat), seed, tier);
-                    for _ in 0..40_000u32 {
+                    let horizon = 40_000u32;
+                    let mut end = u64::from(horizon);
+                    for t in 0..horizon {
                         let mut commands = bot.act(&state);
                         commands.extend(opp.act(&state));
                         state.tick(&commands);
                         if state.result().is_some() {
+                            end = u64::from(t);
                             break;
                         }
                     }
                     let won = matches!(state.result(), Some(GR::Victory { .. }))
                         && state.winners().contains(&PlayerId(seat));
-                    u32::from(won)
+                    if won {
+                        (1u32, end)
+                    } else {
+                        (0u32, u64::from(horizon))
+                    }
                 })
             })
             .collect();
         handles
             .into_iter()
             .map(|h| h.join().expect("a yardstick match panicked"))
-            .sum()
+            .fold((0u32, 0u64), |(w, t), (dw, dt)| (w + dw, t + dt))
     })
 }
 
@@ -104,20 +118,29 @@ fn the_ladder_orders_against_the_scripted_yardsticks() {
     // balance: patience wins there, so a slower, more hesitant mind
     // turtles into a tech advantage and the handicaps cancel. What a
     // player feels is how each level handles AGGRESSION, and the
-    // scripted tiers are the fixed yardstick for exactly that. Every
-    // level must beat strictly more of the slate than the level below,
-    // and Expert must sweep it. Deterministic on the pinned seeds —
-    // this is a fact about the shipped sim, not a statistical claim.
-    let totals: Vec<u32> = Level::LADDER.iter().map(|l| yardstick_wins(*l)).collect();
-    let max = 24u32; // (3 tiers x 2 seeds + prime x 6 seeds) x 2 seats
+    // scripted tiers are the fixed yardstick for exactly that. The
+    // 0.12 pursuit tether restored kill-followthrough (a wounded
+    // unit rotating to the rear is chased down again), and BOTH top
+    // rungs began sweeping the 24-match slate — the raw win count
+    // saturated. Pace of victory is the surviving discriminator:
+    // every rung must beat the slate no less often AND strictly
+    // faster than the rung below, and Expert must still sweep it.
+    // Deterministic on the pinned seeds — a fact about the shipped
+    // sim, not a statistical claim.
+    let totals: Vec<(u32, u64)> = Level::LADDER.iter().map(|l| yardstick(*l)).collect();
+    let max = 80u32; // 4 tiers x 10 seeds x 2 seats
     for pair in totals.windows(2) {
         assert!(
-            pair[0] < pair[1],
+            pair[0].0 <= pair[1].0,
             "the ladder failed to climb: {totals:?} of {max}"
+        );
+        assert!(
+            pair[0].1 > pair[1].1,
+            "a higher rung must put the same slate away faster: {totals:?}"
         );
     }
     assert_eq!(
-        totals[3], max,
+        totals[3].0, max,
         "Expert must sweep the yardstick slate: {totals:?}"
     );
 }

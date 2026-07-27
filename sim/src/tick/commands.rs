@@ -132,6 +132,16 @@ fn accepted_units(state: &State, player: PlayerId, ids: &[UnitId]) -> Vec<UnitId
 /// order actually landed — a full queue drops the append, and the caller
 /// reports it instead of pretending.
 fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) -> bool {
+    // Any command is the player (or bot) speaking: whatever tether a
+    // self-acquired fight put on this machine, it ends here —
+    // UNCONDITIONALLY, before the no-op early return below. A player
+    // re-ordering the exact attack the unit already picked itself
+    // compares equal, returns early, and without this line would
+    // silently keep the leash on an explicit commitment. Station
+    // keeping restarts too: a commanded machine is on assignment,
+    // not standing a post.
+    unit.leash = None;
+    unit.settled = 0;
     if queue && !matches!(unit.order, Order::Idle) {
         if unit.queue.len() < ORDER_QUEUE_CAP {
             unit.queue.push_back(order);
@@ -743,7 +753,11 @@ fn purge_opposing_verb(
 }
 
 fn apply_stop(state: &mut State, player: PlayerId, units: &[UnitId]) -> Result<(), RejectReason> {
-    let applied = for_owned_units(state, player, units, |u| u.clear_program());
+    let applied = for_owned_units(state, player, units, |u| {
+        u.leash = None;
+        u.settled = 0;
+        u.clear_program();
+    });
     (applied > 0)
         .then_some(())
         .ok_or(RejectReason::NoValidUnits)

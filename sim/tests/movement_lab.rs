@@ -11,59 +11,8 @@ mod common;
 
 use chassis::fx::Fx;
 use chassis::grid::TilePos;
-use common::cmd;
-use oxide_sim::scenario::{PlayerSpec, UnitSpec};
-use oxide_sim::{Command, Event, Faction, Order, Scenario, State, UnitKind};
-
-/// An open arena with the two Foundries tucked into opposite corners,
-/// out of every lane the lab drives through. `carve` gets the char
-/// grid after the open fill — walls, doors, extra terrain.
-fn lane_arena_with(
-    width: usize,
-    height: usize,
-    units: Vec<UnitSpec>,
-    carve: impl Fn(&mut Vec<Vec<char>>),
-) -> Scenario {
-    let mut rows = vec![vec!['#'; width]; height];
-    for row in rows.iter_mut().take(height - 1).skip(1) {
-        for cell in row.iter_mut().take(width - 1).skip(1) {
-            *cell = '.';
-        }
-    }
-    carve(&mut rows);
-    rows[1][1] = '1';
-    rows[height - 3][width - 3] = '2';
-    Scenario {
-        name: "movement-lab".into(),
-        seed: 42,
-        map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),
-        players: vec![
-            PlayerSpec {
-                name: "West".into(),
-                faction: Faction::Ferrous,
-                team: None,
-                scrap: 0,
-                bot: false,
-                bot_config: None,
-            },
-            PlayerSpec {
-                name: "East".into(),
-                faction: Faction::Cupric,
-                team: None,
-                scrap: 0,
-                bot: false,
-                bot_config: None,
-            },
-        ],
-        units,
-        buildings: Vec::new(),
-        meta: None,
-    }
-}
-
-fn lane_arena(width: usize, height: usize, units: Vec<UnitSpec>) -> Scenario {
-    lane_arena_with(width, height, units, |_| {})
-}
+use common::{cmd, open_arena as lane_arena, open_arena_with as lane_arena_with};
+use oxide_sim::{Command, Event, Order, State, UnitKind};
 
 /// Fx to integer millitiles, for printing without float math.
 fn milli(v: Fx) -> i64 {
@@ -322,7 +271,12 @@ fn lab_parked_line() {
     }
     let mut state = lane_arena(w, h, units).build().expect("builds");
     let mover = state.units()[0].id;
-    let parked: Vec<_> = state.units().iter().skip(1).map(|u| (u.id, u.pos)).collect();
+    let parked: Vec<_> = state
+        .units()
+        .iter()
+        .skip(1)
+        .map(|u| (u.id, u.pos))
+        .collect();
     state.tick(&[cmd(
         0,
         Command::Move {
@@ -367,18 +321,24 @@ fn lab_picket_kite() {
         h,
         vec![
             common::unit(0, UnitKind::Sentinel, station.x, station.y),
-            common::unit(1, UnitKind::Harvester, 24, 7),
+            common::unit(1, UnitKind::Harvester, 32, 7),
         ],
     )
     .build()
     .expect("builds");
     let guard = state.units()[0].id;
     let bait = state.units()[1].id;
+    // The guard stands its post first (a real picket forms by
+    // standing, and station keeping is what arms the tether), then
+    // the bait starts its dance.
+    for _ in 0..60 {
+        state.tick(&[]);
+    }
     state.tick(&[cmd(
         1,
         Command::Patrol {
             units: vec![bait],
-            waypoints: vec![TilePos::new(30, 7), TilePos::new(10, 7)],
+            waypoints: vec![TilePos::new(10, 7), TilePos::new(30, 7)],
         },
     )]);
     let mut max_drift = 0i64;
@@ -405,7 +365,12 @@ fn lab_bulk_attack() {
     let (w, h) = (45, 27);
     let mut units = Vec::new();
     for i in 0..20 {
-        units.push(common::unit(0, UnitKind::Scuttler, 3 + (i % 2), 8 + (i / 2)));
+        units.push(common::unit(
+            0,
+            UnitKind::Scuttler,
+            3 + (i % 2),
+            8 + (i / 2),
+        ));
     }
     let mut state = lane_arena(w, h, units).build().expect("builds");
     // The lab's target is the EAST foundry (2x2 at (w-3, h-3)); attack-move
@@ -463,11 +428,7 @@ fn lab_bulk_attack() {
             break;
         }
     }
-    let mean_contact_milli = if contact_ticks > 0 {
-        contact_sum * 1000 / contact_ticks
-    } else {
-        0
-    };
+    let mean_contact_milli = (contact_sum * 1000).checked_div(contact_ticks).unwrap_or(0);
     println!(
         "LAB bulk_attack: distinct_hitters={}/20 first_hit={first_hit} peak_contact={peak_contact} mean_contact_milli={mean_contact_milli} killed_at={killed_at} (0=alive at 8000)",
         hitters.len(),
@@ -480,19 +441,24 @@ fn lab_bulk_attack_pocket() {
     let (w, h) = (45, 27);
     let mut units = Vec::new();
     for i in 0..20 {
-        units.push(common::unit(0, UnitKind::Scuttler, 3 + (i % 2), 8 + (i / 2)));
+        units.push(common::unit(
+            0,
+            UnitKind::Scuttler,
+            3 + (i % 2),
+            8 + (i / 2),
+        ));
     }
     // A rock pocket around the east foundry with a two-tile door: the
     // player-reported shape — an army funnels in and must fan out
     // INSIDE to ring the target.
     let mut state = lane_arena_with(w, h, units, |rows| {
-        for y in (h - 9)..(h - 1) {
+        for (y, row) in rows.iter_mut().enumerate().take(h - 1).skip(h - 9) {
             if !(h - 6..=h - 5).contains(&y) {
-                rows[y][w - 9] = '#';
+                row[w - 9] = '#';
             }
         }
-        for x in (w - 9)..(w - 1) {
-            rows[h - 9][x] = '#';
+        for cell in rows[h - 9].iter_mut().take(w - 1).skip(w - 9) {
+            *cell = '#';
         }
     })
     .build()
@@ -548,11 +514,7 @@ fn lab_bulk_attack_pocket() {
             break;
         }
     }
-    let mean_contact_milli = if contact_ticks > 0 {
-        contact_sum * 1000 / contact_ticks
-    } else {
-        0
-    };
+    let mean_contact_milli = (contact_sum * 1000).checked_div(contact_ticks).unwrap_or(0);
     println!(
         "LAB bulk_attack_pocket: distinct_hitters={}/20 first_hit={first_hit} peak_contact={peak_contact} mean_contact_milli={mean_contact_milli} killed_at={killed_at} (0=alive at 8000)",
         hitters.len(),

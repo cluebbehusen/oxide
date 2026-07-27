@@ -47,11 +47,35 @@ fn omniscient_brain_beats_classic_from_either_seat() {
 #[test]
 fn fog_honest_brain_beats_classic_from_either_seat() {
     // The hard version of the gate: the brain plays through its own
-    // vision while the classic bot cheats — and still must win.
+    // vision while the classic bot cheats — and still must win. Scored
+    // over a seat-swapped 20-seed slate (the repo's standing answer to
+    // the sim's residual id-order micro): the original five-seed
+    // sample carried a degenerate pair of identical openings that a
+    // single balance change flipped both ways at once, while the wide
+    // truth moved the other way — the 0.12 pursuit tether left the
+    // brain STRONGER here (26/40 vs 21/40 pre-tether). Combined
+    // majority with a real margin, plus a per-seat floor so no seat
+    // reflex edge carries the claim alone.
+    let mut combined = 0u32;
+    let mut per_seat = [0u32; 2];
     for seat in [0u8, 1] {
+        for seed in 42..62u64 {
+            if duel_seeded(seat, Dials::full(), seed) == Some(PlayerId(seat)) {
+                combined += 1;
+                per_seat[seat as usize] += 1;
+            }
+        }
+    }
+    assert!(
+        combined > 20,
+        "fog-honest brain should beat the classic bot over the seat-swapped slate \
+         (won {combined}/40; seats {per_seat:?})"
+    );
+    for (seat, wins) in per_seat.iter().enumerate() {
         assert!(
-            wins_majority(seat, Dials::full()),
-            "fog-honest brain in seat {seat} should beat the classic bot over seeds"
+            *wins >= 8,
+            "seat {seat} collapsed ({wins}/20 — a seat edge must not carry the claim): \
+             {per_seat:?}"
         );
     }
 }

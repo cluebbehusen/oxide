@@ -187,11 +187,11 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 game.toast("run cancelled");
                 return;
             }
-            let has_own_unit = game.selection.units.iter().any(|id| {
-                game.state
-                    .unit(*id)
-                    .is_some_and(|u| u.player == game.human)
-            });
+            let has_own_unit = game
+                .selection
+                .units
+                .iter()
+                .any(|id| game.state.unit(*id).is_some_and(|u| u.player == game.human));
             if has_own_unit {
                 input.running = true;
                 game.toast("run: click ground to move without engaging, Esc to cancel");

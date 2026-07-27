@@ -8,15 +8,58 @@ use crate::ids::UnitId;
 use crate::state::{Order, PathFollow, State};
 use chassis::grid::TilePos;
 
-/// Idle combat units pick fights on their own.
+/// Idle combat units pick fights on their own — on a tether. The
+/// leash is set here (and refreshed by retaliation), never by player
+/// commands: an explicit attack is a commitment, and `assign` clears
+/// any tether the moment a command lands.
 pub(super) fn idle(state: &mut State, id: UnitId) {
+    // A guard back at its post cools down before it looks for the next
+    // fight; the leash clears when the cooldown drains — and the guard
+    // is instantly STATIONED again (it verifiably stood the whole
+    // cooldown), so the dancer finds no untethered window to bait.
+    // Idle with a spent tether and no cooldown means the homecoming
+    // just finished (walk's arrival advanced the queue) — arm the
+    // post stand.
+    if let Some(leash) = state.unit(id).expect("caller checked").leash {
+        let unit = state.unit_mut(id).expect("caller checked");
+        match leash.cooldown {
+            0 => {
+                unit.leash.as_mut().expect("just seen").cooldown =
+                    crate::stats::LEASH_REACQUIRE_COOLDOWN
+            }
+            1 => {
+                unit.leash = None;
+                unit.settled = crate::stats::LEASH_STATION_TICKS;
+            }
+            _ => unit.leash.as_mut().expect("just seen").cooldown -= 1,
+        }
+        return;
+    }
     if let Some(target) = acquire_target(state, id) {
         let unit = state.unit_mut(id).expect("caller checked");
+        let anchor = unit.tile();
+        let stationed = unit.settled >= crate::stats::LEASH_STATION_TICKS;
         unit.order = Order::Attack {
             target,
             resume: None,
         };
         unit.path = None;
+        unit.settled = 0;
+        // Only a stationed guard's fight tethers — a unit cycling
+        // through idle mid-battle hunts unleashed, like it always
+        // did. No blood yet either way: the warm window starts
+        // empty, so a bait that never comes in reach is dropped at
+        // the radius line exactly.
+        if stationed {
+            unit.leash = Some(crate::state::Leash {
+                anchor,
+                patience: 0,
+                cooldown: 0,
+            });
+        }
+    } else {
+        let unit = state.unit_mut(id).expect("caller checked");
+        unit.settled = unit.settled.saturating_add(1);
     }
 }
 

@@ -49,6 +49,58 @@ pub fn unit(player: u8, kind: UnitKind, x: i32, y: i32) -> UnitSpec {
     UnitSpec { player, kind, x, y }
 }
 
+/// A wide open arena — Foundries tucked into opposite corners, out of
+/// every lane — for movement and pursuit scenarios that need real
+/// distances. `carve` edits the char grid (walls, doors) after the
+/// open fill, before the anchors land.
+pub fn open_arena_with(
+    width: usize,
+    height: usize,
+    units: Vec<UnitSpec>,
+    carve: impl Fn(&mut Vec<Vec<char>>),
+) -> Scenario {
+    let mut rows = vec![vec!['#'; width]; height];
+    for row in rows.iter_mut().take(height - 1).skip(1) {
+        for cell in row.iter_mut().take(width - 1).skip(1) {
+            *cell = '.';
+        }
+    }
+    carve(&mut rows);
+    rows[1][1] = '1';
+    rows[height - 3][width - 3] = '2';
+    Scenario {
+        name: "open-arena".into(),
+        seed: 42,
+        map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),
+        players: vec![
+            PlayerSpec {
+                name: "West".into(),
+                faction: Faction::Ferrous,
+                team: None,
+                scrap: 0,
+                bot: false,
+                bot_config: None,
+            },
+            PlayerSpec {
+                name: "East".into(),
+                faction: Faction::Cupric,
+                team: None,
+                scrap: 0,
+                bot: false,
+                bot_config: None,
+            },
+        ],
+        units,
+        buildings: Vec::new(),
+        meta: None,
+    }
+}
+
+/// [`open_arena_with`] without terrain edits.
+pub fn open_arena(width: usize, height: usize, units: Vec<UnitSpec>) -> Scenario {
+    open_arena_with(width, height, units, |_| {})
+}
+
 pub fn cmd(player: u8, command: Command) -> PlayerCommand {
     PlayerCommand {
         player: PlayerId(player),
