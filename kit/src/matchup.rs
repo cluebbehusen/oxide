@@ -2,14 +2,22 @@
 //! economy, attack-moved into each other — the controlled experiment
 //! that separates "the learner never found the counter" from "no
 //! counter exists". Surviving army value is the verdict.
+//!
+//! Defense mode stands pre-built structures in front of side B: the
+//! swarm-vs-fortification experiment. Deliberately asymmetric — the
+//! mirror-fairness rule applies to duels, not sieges, and the garrison
+//! value counts toward B's verdict like any purchase.
 
 use anyhow::{Context, Result, bail};
 use chassis::grid::TilePos;
-use oxide_sim::scenario::{PlayerSpec, UnitSpec};
-use oxide_sim::{Command, Faction, PlayerCommand, PlayerId, Scenario, UnitKind};
+use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::{BuildingKind, Command, Faction, PlayerCommand, PlayerId, Scenario, UnitKind};
 
 /// One side's shopping list.
 pub type Army = Vec<(UnitKind, u32)>;
+
+/// A defending side's structure list.
+pub type Garrison = Vec<(BuildingKind, u32)>;
 
 /// Parses "sentinel:10,lancer:4" into an army.
 pub fn parse_army(spec: &str) -> Result<Army> {
@@ -26,6 +34,51 @@ pub fn parse_army(spec: &str) -> Result<Army> {
         army.push((kind, count.trim().parse()?));
     }
     Ok(army)
+}
+
+/// Parses "turret:3,bastion:1" into a garrison. Foundries are refused:
+/// the arena's own anchors are the victory tokens, and the verdict
+/// deliberately never counts them.
+pub fn parse_garrison(spec: &str) -> Result<Garrison> {
+    const KINDS: [BuildingKind; 6] = [
+        BuildingKind::Turret,
+        BuildingKind::Fabricator,
+        BuildingKind::FlakTurret,
+        BuildingKind::Bastion,
+        BuildingKind::Array,
+        BuildingKind::Reclaimer,
+    ];
+    let squash = |s: &str| {
+        s.chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .map(|c| c.to_ascii_lowercase())
+            .collect::<String>()
+    };
+    let mut garrison = Vec::new();
+    for part in spec.split(',') {
+        let (name, count) = part
+            .split_once(':')
+            .with_context(|| format!("'{part}' wants kind:count"))?;
+        let kind = KINDS
+            .iter()
+            .copied()
+            .find(|k| squash(k.name()) == squash(name))
+            .with_context(|| format!("unknown building kind '{name}'"))?;
+        garrison.push((kind, count.trim().parse()?));
+    }
+    Ok(garrison)
+}
+
+/// Total scrap a garrison costs.
+pub fn garrison_cost(garrison: &Garrison) -> u32 {
+    garrison
+        .iter()
+        .map(|(kind, n)| structure_cost(*kind) * n)
+        .sum()
+}
+
+fn structure_cost(kind: BuildingKind) -> u32 {
+    kind.stats().construction.map(|c| c.cost).unwrap_or(0)
 }
 
 const ALL_KINDS: [UnitKind; 11] = [
@@ -62,6 +115,20 @@ pub struct DuelOutcome {
 /// Runs one duel on an open arena: armies deploy in mirrored lines and
 /// attack-move through each other's positions.
 pub fn duel(a: &Army, b: &Army, seed: u64, max_ticks: u64) -> Result<DuelOutcome> {
+    siege(a, b, &[], seed, max_ticks)
+}
+
+/// A duel where side B also holds ground with pre-built structures.
+/// The garrison stands in a pitch-3 grid ahead of B's deployment, its
+/// purchase value counts toward B, and B may field no units at all —
+/// pure fortification is a legitimate experiment.
+pub fn siege(
+    a: &[(UnitKind, u32)],
+    b: &[(UnitKind, u32)],
+    garrison: &[(BuildingKind, u32)],
+    seed: u64,
+    max_ticks: u64,
+) -> Result<DuelOutcome> {
     let width = 40;
     let height = 24;
     let mut map = Vec::new();
@@ -87,7 +154,7 @@ pub fn duel(a: &Army, b: &Army, seed: u64, max_ticks: u64) -> Result<DuelOutcome
     // Side B's k-th unit is the exact 180-degree image of side A's
     // k-th, entry by entry — the repo's seat-fairness rule. Anything
     // less contaminates a controlled duel with seat geometry.
-    let mut place = |army: &Army, player: u8, mirrored: bool| {
+    let mut place = |army: &[(UnitKind, u32)], player: u8, mirrored: bool| {
         let mut i = 0i32;
         for (kind, n) in army {
             for _ in 0..*n {
@@ -109,12 +176,32 @@ pub fn duel(a: &Army, b: &Army, seed: u64, max_ticks: u64) -> Result<DuelOutcome
     };
     place(a, 0, false);
     place(b, 1, true);
+    // The garrison's pitch-3 grid (2x2 kinds fit) walks toward side A
+    // one column at a time, clear of B's unit columns at x 30-31 and
+    // its foundry at (36,20).
+    let mut buildings = Vec::new();
+    let mut g = 0i32;
+    for (kind, n) in garrison {
+        for _ in 0..*n {
+            if g >= 18 {
+                bail!("garrison caps at 18 structures");
+            }
+            buildings.push(BuildingSpec {
+                player: 1,
+                kind: *kind,
+                x: 27 - 3 * (g / 6),
+                y: 4 + 3 * (g % 6),
+            });
+            g += 1;
+        }
+    }
     let scenario = Scenario {
         name: "arena-duel".into(),
         seed,
         map,
         players: vec![seat("A", Faction::Ferrous), seat("B", Faction::Cupric)],
         units,
+        buildings,
         meta: None,
     };
     let mut state = scenario.build().context("arena builds")?;
@@ -133,19 +220,19 @@ pub fn duel(a: &Army, b: &Army, seed: u64, max_ticks: u64) -> Result<DuelOutcome
                 .collect(),
         )
     };
-    if a_ids.is_empty() || b_ids.is_empty() {
-        bail!("both sides need units");
+    if a_ids.is_empty() || (b_ids.is_empty() && state.buildings().len() <= 2) {
+        bail!("side A needs units; side B needs units or a garrison");
     }
-    state.tick(&[
-        PlayerCommand {
-            player: PlayerId(0),
-            command: Command::AttackMove {
-                units: a_ids,
-                goal: TilePos::new(33, 12),
-                queue: false,
-            },
+    let mut opening = vec![PlayerCommand {
+        player: PlayerId(0),
+        command: Command::AttackMove {
+            units: a_ids,
+            goal: TilePos::new(33, 12),
+            queue: false,
         },
-        PlayerCommand {
+    }];
+    if !b_ids.is_empty() {
+        opening.push(PlayerCommand {
             player: PlayerId(1),
             command: Command::AttackMove {
                 units: b_ids,
@@ -153,26 +240,43 @@ pub fn duel(a: &Army, b: &Army, seed: u64, max_ticks: u64) -> Result<DuelOutcome
                 goal: TilePos::new(40 - 1 - 33, 24 - 1 - 12),
                 queue: false,
             },
-        },
-    ]);
+        });
+    }
+    state.tick(&opening);
     // Every accepted unit carries its purchase value — a harvester
     // screen is a legitimate experiment, and valuing it at zero once
-    // declared a live side wiped after two ticks.
+    // declared a live side wiped after two ticks. Garrison structures
+    // count the same way; the arena Foundries never do (they are the
+    // victory tokens, not purchases).
     let value = |state: &oxide_sim::State, player: u8| -> u32 {
-        state
+        let units: u32 = state
             .units()
             .iter()
             .filter(|u| u.player == PlayerId(player))
             .map(|u| u.kind.stats().cost)
-            .sum()
+            .sum();
+        let structures: u32 = state
+            .buildings()
+            .iter()
+            .filter(|b| b.player == PlayerId(player) && b.kind != BuildingKind::Foundry)
+            .map(|b| structure_cost(b.kind))
+            .sum();
+        units + structures
     };
     let hp_sum = |state: &oxide_sim::State, player: u8| -> u64 {
-        state
+        let units: u64 = state
             .units()
             .iter()
             .filter(|u| u.player == PlayerId(player))
             .map(|u| u64::from(u.hp))
-            .sum()
+            .sum();
+        let structures: u64 = state
+            .buildings()
+            .iter()
+            .filter(|b| b.player == PlayerId(player) && b.kind != BuildingKind::Foundry)
+            .map(|b| u64::from(b.hp))
+            .sum();
+        units + structures
     };
     let mut last = (value(&state, 0), value(&state, 1));
     let mut last_hp = (hp_sum(&state, 0), hp_sum(&state, 1));
@@ -262,6 +366,35 @@ mod tests {
             "the duel neither resolved nor ran honestly to the cap: {out:?}"
         );
         assert!(out.ticks > 302, "ended during the approach: {out:?}");
+    }
+
+    #[test]
+    fn the_garrison_parser_speaks_building_names() {
+        let garrison = parse_garrison("turret:2, FlakTurret:1").unwrap();
+        assert_eq!(garrison.len(), 2);
+        assert_eq!(
+            garrison_cost(&garrison),
+            2 * structure_cost(BuildingKind::Turret) + structure_cost(BuildingKind::FlakTurret)
+        );
+        assert!(
+            parse_garrison("foundry:1").is_err(),
+            "victory tokens refused"
+        );
+        assert!(parse_garrison("keep:1").is_err());
+    }
+
+    #[test]
+    fn a_lone_raider_breaks_on_a_fortified_line() {
+        // Defense mode's floor: one scuttler cannot crack two turrets,
+        // and a unit-less defending side must not read as pre-wiped.
+        let raiders = parse_army("scuttler:1").unwrap();
+        let garrison = parse_garrison("turret:2").unwrap();
+        let out = siege(&raiders, &[], &garrison, 42, 8_000).unwrap();
+        assert_eq!(out.a_value, 0, "the raider dies on the wall: {out:?}");
+        assert!(
+            out.b_value >= garrison_cost(&garrison),
+            "the standing wall keeps its purchase value: {out:?}"
+        );
     }
 
     #[test]

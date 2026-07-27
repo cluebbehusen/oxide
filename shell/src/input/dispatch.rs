@@ -18,15 +18,31 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
         Action::Slot(n) => digit_action(game, input, (n - 1) as usize),
         Action::AssignGroup(n) => {
             // Groups 1-5, like the recall side; the classic layout never
-            // had more.
+            // had more. Only own units enter a group — an inspected
+            // ally in a control group would dead-lock recalls under
+            // own-gating, so foreign picks drop at ASSIGN time.
             let slot = (n - 1) as usize;
             if slot < input.groups.len() {
-                input.groups[slot] = game.selection.units.clone();
+                let own: Vec<_> = game
+                    .selection
+                    .units
+                    .iter()
+                    .copied()
+                    .filter(|id| game.state.unit(*id).is_some_and(|u| u.player == game.human))
+                    .collect();
+                if own.len() < game.selection.units.len() {
+                    game.toast("only your own units join a control group");
+                }
+                input.groups[slot] = own;
             }
         }
         Action::StopOrScrap => {
             // Contextual: units selected halt in place; a selected own
             // unfinished site is scrapped for its refund.
+            if !game.selection.units.is_empty() && !game.selection_commandable() {
+                game.toast("ally units are read-only");
+                return;
+            }
             if !game.selection.units.is_empty() {
                 let units = game.selection.units.clone();
                 game.issue(Command::Stop { units });
@@ -50,7 +66,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             let has_builder = game.selection.units.iter().any(|id| {
                 game.state
                     .unit(*id)
-                    .is_some_and(|u| u.kind == UnitKind::Harvester)
+                    .is_some_and(|u| u.kind == UnitKind::Harvester && u.player == game.human)
             });
             if has_builder {
                 input.build_menu = true;
@@ -87,6 +103,10 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             }
         }
         Action::Patrol => {
+            if !game.selection_commandable() {
+                game.toast("ally units are read-only");
+                return;
+            }
             // First press arms a route; the second sends the circuit.
             match input.patrol_route.take() {
                 None if !game.selection.units.is_empty() => {
@@ -114,6 +134,11 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 game.toast("placement cancelled");
                 return;
             }
+            if input.salvaging {
+                input.salvaging = false;
+                game.toast("salvage cancelled");
+                return;
+            }
             if input.patrol_route.take().is_some() {
                 game.toast("patrol cancelled");
                 return;
@@ -129,6 +154,25 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             if let Some(center) = input.bookmarks[slot as usize] {
                 game.camera.center = center;
                 game.camera.pan(Vec2::ZERO); // re-clamp
+            }
+        }
+        Action::Salvage => {
+            // A toggle, like the palette: pressing again stands down.
+            if input.salvaging {
+                input.salvaging = false;
+                game.toast("salvage cancelled");
+                return;
+            }
+            let has_harvester = game.selection.units.iter().any(|id| {
+                game.state
+                    .unit(*id)
+                    .is_some_and(|u| u.kind == UnitKind::Harvester && u.player == game.human)
+            });
+            if has_harvester {
+                input.salvaging = true;
+                game.toast("salvage: click an own building to strip it, Esc to cancel");
+            } else {
+                game.toast("no harvester to salvage with");
             }
         }
         Action::CycleIdleWorker => cycle_idle_worker(game),

@@ -41,7 +41,9 @@ impl PlaybackSession {
     pub fn from_replay(replay: GameReplay) -> Result<Self> {
         let scenario = replay.setup.clone();
         let engine = oxide_kit::playback::Playback::load(replay)?;
-        let mut game = Game::new(scenario)?;
+        // The spectator door: an all-bot record (driver benchmark,
+        // bot-vs-bot spectacle) is a perfectly watchable replay.
+        let mut game = Game::spectator(scenario)?;
         // Spectator truth: fog-free, but NOT the developer overlay —
         // playback must look like the game, not the debugger.
         game.spectate = true;
@@ -365,6 +367,25 @@ mod tests {
             assert!(frames < 1_000, "a pending seek must finish");
         }
         leave
+    }
+
+    #[test]
+    fn an_all_bot_record_opens_for_watching() {
+        // Driver benchmarks and bot-vs-bot spectacles record replays
+        // with no human seat; the viewer must not demand one.
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        for p in &mut scenario.players {
+            p.bot = true;
+            p.bot_config = Some(oxide_sim::scenario::BotConfig {
+                level: oxide_sim::bot::Level::Medium,
+                aggression: None,
+            });
+        }
+        let outcome = oxide_kit::runner::run_scenario(&scenario, 60, true, true).expect("run");
+        let mut replay = outcome.replay.expect("recorded");
+        replay.meta.ticks = Some(60);
+        let pb = PlaybackSession::from_replay(replay).expect("a spectator needs no command seat");
+        assert!(pb.game.spectate, "the viewer stays fog-free");
     }
 
     #[test]

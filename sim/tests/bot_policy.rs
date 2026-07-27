@@ -42,3 +42,80 @@ fn a_think_never_plans_past_the_bank() {
         );
     }
 }
+
+#[test]
+fn a_starved_tier_liquidates_its_walls_for_one_more_wave() {
+    // The scripted salvage doctrine: bank starved, nothing known left
+    // to mine or strip, a standing defense — the policy sells
+    // cheapest-first. The learner meets the mechanic from the
+    // receiving side of exactly this intent.
+    use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+    use oxide_sim::stats::BuildingKind;
+    let scenario = Scenario {
+        name: "starved".into(),
+        seed: 5,
+        map: vec![
+            "################".into(),
+            "#..............#".into(),
+            "#..1...........#".into(),
+            "#............2.#".into(),
+            "#..............#".into(),
+            "################".into(),
+        ],
+        players: vec![
+            PlayerSpec {
+                name: "F".into(),
+                faction: oxide_sim::Faction::Ferrous,
+                team: None,
+                scrap: 3,
+                bot: false,
+                bot_config: None,
+            },
+            PlayerSpec {
+                name: "C".into(),
+                faction: oxide_sim::Faction::Cupric,
+                team: None,
+                scrap: 3,
+                bot: false,
+                bot_config: None,
+            },
+        ],
+        units: vec![UnitSpec {
+            player: 0,
+            kind: oxide_sim::UnitKind::Harvester,
+            x: 6,
+            y: 2,
+        }],
+        buildings: vec![
+            BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Turret,
+                x: 8,
+                y: 2,
+            },
+            BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Bastion,
+                x: 10,
+                y: 2,
+            },
+        ],
+        meta: None,
+    };
+    let state = scenario.build().unwrap();
+    let obs = Observation::fog_honest(&state, PlayerId(0));
+    let mut policy = UtilityPolicy::new();
+    let intents = policy.think(&Dials::full(), &obs, &[], &[]);
+    let turret = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == BuildingKind::Turret)
+        .unwrap()
+        .id;
+    assert!(
+        intents
+            .iter()
+            .any(|i| matches!(i, Intent::Salvage { building } if *building == turret)),
+        "starved with dry ground: the cheapest wall goes first, got {intents:?}"
+    );
+}

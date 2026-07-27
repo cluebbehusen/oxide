@@ -24,7 +24,10 @@ use serde::{Deserialize, Serialize};
 
 /// Observation schema version — bump when the shape changes so recorded
 /// training data and shipped policies can refuse mismatched worlds.
-pub const OBSERVATION_VERSION: u32 = 4;
+/// v5: `UnitObs` gained the required `salvaging` field (0.11) — v4
+/// recordings no longer deserialize, and claiming their version would
+/// have made the mismatch fail confusingly instead of cleanly.
+pub const OBSERVATION_VERSION: u32 = 5;
 
 /// One unit as a bot sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +52,10 @@ pub struct UnitObs {
     /// The construction site this unit is building, if any (own units
     /// only; always `None` for enemy observations).
     pub site: Option<BuildingId>,
+    /// The building this unit is stripping, if any (own units only —
+    /// the repair channel reads it to keep the two verbs off one
+    /// target; enemy work orders stay opaque).
+    pub salvaging: Option<BuildingId>,
 }
 
 /// One building as a bot sees it. Enemy entries may be memories: `seen`
@@ -344,6 +351,10 @@ fn own_unit(u: &crate::state::Unit) -> UnitObs {
             Order::Build { site } => Some(site),
             _ => None,
         },
+        salvaging: match u.order {
+            Order::Salvage { building } => Some(building),
+            _ => None,
+        },
     }
 }
 
@@ -354,9 +365,10 @@ fn enemy_unit(u: &crate::state::Unit) -> UnitObs {
         kind: u.kind,
         tile: u.tile(),
         hp: u.hp,
-        idle: false, // enemy intent is not observable
-        carrying: 0, // nor their cargo manifests
-        site: None,  // nor their work orders
+        idle: false,     // enemy intent is not observable
+        carrying: 0,     // nor their cargo manifests
+        site: None,      // nor their work orders
+        salvaging: None, // ditto
     }
 }
 

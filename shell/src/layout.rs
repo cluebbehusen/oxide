@@ -58,6 +58,31 @@ impl Default for LayoutModel {
     }
 }
 
+/// Top-bar height in logical px at 1x scale — the ONE source both the
+/// layout's hit-testing and the chrome's drawing read (the duplicated-
+/// geometry class stays structurally extinct only while it isn't
+/// duplicated).
+pub const TOP_BAR_H: f32 = 32.0;
+
+/// Minimum touch target edge in logical px (platform guidance says a
+/// fingertip needs ~44).
+pub const MIN_TOUCH_TARGET: f32 = 44.0;
+
+/// Pads a hit rect out to the minimum touch target, centered — the
+/// TOUCH paths hit-test through this so small chrome stays tappable;
+/// mouse paths keep the exact drawn rect.
+pub fn touch_pad(rect: Rect, ui: f32) -> Rect {
+    let min = MIN_TOUCH_TARGET * ui;
+    let grow_w = (min - rect.w).max(0.0);
+    let grow_h = (min - rect.h).max(0.0);
+    Rect::new(
+        rect.x - grow_w * 0.5,
+        rect.y - grow_h * 0.5,
+        rect.w + grow_w,
+        rect.h + grow_h,
+    )
+}
+
 impl LayoutModel {
     /// Computes the frame's chrome geometry. `panel_top` is the band's
     /// top edge (`f32::INFINITY` when no panel is shown).
@@ -76,7 +101,7 @@ impl LayoutModel {
         queue_count: usize,
     ) -> Self {
         Self {
-            top_bar_h: 32.0 * ui,
+            top_bar_h: TOP_BAR_H * ui,
             panel_top,
             panel_right,
             orders,

@@ -48,6 +48,9 @@ pub struct Menu {
     /// Row armed by a press; activation happens on release inside the
     /// same row, so dragging away cancels.
     pressed: Option<usize>,
+    /// Section-label rows: drawn dimmer, skipped by the cursor, never
+    /// activated — the map browser's format headings.
+    headers: Vec<usize>,
 }
 
 fn view_w() -> f32 {
@@ -61,7 +64,13 @@ fn view_h() -> f32 {
 impl Menu {
     /// Builds a menu with the first row highlighted.
     pub fn new(title: impl Into<String>, items: Vec<String>) -> Self {
-        Self {
+        Self::with_headers(title, items, Vec::new())
+    }
+
+    /// A menu whose `headers` rows are section labels: skipped by the
+    /// cursor, inert to clicks, drawn as headings.
+    pub fn with_headers(title: impl Into<String>, items: Vec<String>, headers: Vec<usize>) -> Self {
+        let mut menu = Self {
             title: title.into(),
             items,
             selected: 0,
@@ -69,13 +78,68 @@ impl Menu {
             hover: None,
             wheel_accum: 0.0,
             pressed: None,
+            headers,
+        };
+        menu.selected = menu.snap_clamped(0, 1);
+        menu
+    }
+
+    /// Whether a row is a section label.
+    pub fn is_header(&self, index: usize) -> bool {
+        self.headers.contains(&index)
+    }
+
+    /// The nearest non-header row from `index`, walking in `dir` and
+    /// WRAPPING — the arrow keys' semantics (Up from the first real row
+    /// lands on the last). Falls back to `index` on an all-header list.
+    fn snap(&self, index: usize, dir: i64) -> usize {
+        let n = self.items.len();
+        if n == 0 {
+            return 0;
         }
+        let mut i = index.min(n - 1);
+        for _ in 0..n {
+            if !self.is_header(i) {
+                return i;
+            }
+            i = (i as i64 + dir).rem_euclid(n as i64) as usize;
+        }
+        index.min(n - 1)
+    }
+
+    /// The nearest non-header row from `index` WITHOUT wrapping: walk
+    /// `dir` to the list's edge, then fall back the other way — jump
+    /// keys (Home, End, paging) and programmatic selects must land
+    /// NEAR their target, never teleport across the list because a
+    /// section label sat in the way (PageUp once snapped to the bottom
+    /// Back row through the browser's leading header).
+    fn snap_clamped(&self, index: usize, dir: i64) -> usize {
+        let n = self.items.len() as i64;
+        if n == 0 {
+            return 0;
+        }
+        let start = (index as i64).min(n - 1);
+        let mut i = start;
+        while (0..n).contains(&i) {
+            if !self.is_header(i as usize) {
+                return i as usize;
+            }
+            i += dir;
+        }
+        let mut i = start - dir;
+        while (0..n).contains(&i) {
+            if !self.is_header(i as usize) {
+                return i as usize;
+            }
+            i -= dir;
+        }
+        start as usize
     }
 
     /// Moves the keyboard cursor and scrolls just enough to show it —
     /// the only coupling between selection and the scroll window.
     pub fn select(&mut self, index: usize) {
-        self.selected = index.min(self.items.len().saturating_sub(1));
+        self.selected = self.snap_clamped(index.min(self.items.len().saturating_sub(1)), 1);
         self.ensure_visible();
     }
 
@@ -94,10 +158,13 @@ impl Menu {
         self.scroll = (self.scroll as i64 + delta).clamp(0, max as i64) as usize;
         // The selection rides inside the window: Enter must never
         // activate a row the wheel has scrolled out of sight (a hidden
-        // Quit would be a nasty surprise).
-        self.selected = self
+        // Quit would be a nasty surprise) — and never lands on a
+        // header while riding (Enter on a "section label" activated
+        // whatever the caller mapped to nothing).
+        let clamped = self
             .selected
             .clamp(self.scroll, self.scroll + visible.saturating_sub(1));
+        self.selected = self.snap_clamped(clamped, if clamped < self.selected { -1 } else { 1 });
     }
 
     fn row_at(&self, point: Vec2) -> Option<usize> {
@@ -143,14 +210,6 @@ impl Menu {
         self.hover
     }
 
-    /// Right edge of the row boxes — side panels place themselves
-    /// strictly beyond it, using the same rect the rows draw with, so
-    /// overlap is impossible by construction.
-    pub fn rows_right_edge(&self) -> f32 {
-        let (_, _, first, _) = self.layout();
-        self.item_rect(first).map_or(0.0, |r| r.x + r.w)
-    }
-
     /// Half-open range of rows currently drawn by the scroll window.
     pub fn visible_range(&self) -> [usize; 2] {
         let (_, _, first, visible) = self.layout();
@@ -170,7 +229,7 @@ impl Menu {
             match *event {
                 RawEvent::MouseMove { x, y } => {
                     *mouse = vec2(x, y);
-                    self.hover = self.row_at(*mouse);
+                    self.hover = self.row_at(*mouse).filter(|r| !self.is_header(*r));
                 }
                 RawEvent::Wheel { delta } => {
                     // Wheel up shows earlier rows; the pointer stays put
@@ -183,14 +242,14 @@ impl Menu {
                     }
                     self.wheel_accum -= steps;
                     self.scroll_by(if steps > 0.0 { -1 } else { 1 });
-                    self.hover = self.row_at(*mouse);
+                    self.hover = self.row_at(*mouse).filter(|r| !self.is_header(*r));
                 }
                 RawEvent::MouseDown {
                     button: MouseButton::Left,
                     x,
                     y,
                 } => {
-                    self.pressed = self.row_at(vec2(x, y));
+                    self.pressed = self.row_at(vec2(x, y)).filter(|r| !self.is_header(*r));
                 }
                 RawEvent::MouseUp {
                     button: MouseButton::Left,
@@ -210,35 +269,38 @@ impl Menu {
                 }
                 RawEvent::KeyDown { key: Key::Up } => {
                     self.hover = None;
-                    self.selected = self.selected.checked_sub(1).unwrap_or(self.items.len() - 1);
+                    let up = self.selected.checked_sub(1).unwrap_or(self.items.len() - 1);
+                    self.selected = self.snap(up, -1);
                     self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::Down } => {
                     self.hover = None;
-                    self.selected = (self.selected + 1) % self.items.len();
+                    self.selected = self.snap((self.selected + 1) % self.items.len(), 1);
                     self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::PageUp } => {
                     self.hover = None;
                     let (_, _, _, visible) = self.layout();
-                    self.selected = self.selected.saturating_sub(visible);
+                    self.selected = self.snap_clamped(self.selected.saturating_sub(visible), -1);
                     self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::PageDown } => {
                     self.hover = None;
                     let (_, _, _, visible) = self.layout();
-                    self.selected =
-                        (self.selected + visible).min(self.items.len().saturating_sub(1));
+                    self.selected = self.snap_clamped(
+                        (self.selected + visible).min(self.items.len().saturating_sub(1)),
+                        1,
+                    );
                     self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::Home } => {
                     self.hover = None;
-                    self.selected = 0;
+                    self.selected = self.snap_clamped(0, 1);
                     self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::End } => {
                     self.hover = None;
-                    self.selected = self.items.len().saturating_sub(1);
+                    self.selected = self.snap_clamped(self.items.len().saturating_sub(1), -1);
                     self.ensure_visible();
                 }
                 RawEvent::KeyDown { key: Key::Enter } => return Some(self.selected),
@@ -283,6 +345,18 @@ impl Menu {
             let Some(rect) = self.item_rect(index) else {
                 continue;
             };
+            if self.is_header(index) {
+                let size = (20.0 * s).min(text_size);
+                let dims = measure_text(label, None, size as u16, 1.0);
+                draw_text(
+                    label,
+                    rect.x + (rect.w - dims.width) * 0.5,
+                    rect.y + rect.h * 0.68,
+                    size,
+                    DIM,
+                );
+                continue;
+            }
             let selected = index == self.selected;
             let hovered = self.hover == Some(index);
             if selected {
@@ -362,6 +436,8 @@ impl PreviewCache {
 pub struct ScenarioEntry {
     /// Display name (from the file's own `name` field).
     pub label: String,
+    /// Seats on the map — the browser's section key (1v1 first).
+    pub seats: usize,
     /// One-line browser blurb from the authored metadata, when present:
     /// hook plus pace/mode/richness badges.
     pub blurb: Option<String>,
@@ -402,6 +478,7 @@ pub fn discover_scenarios() -> Vec<ScenarioEntry> {
                     .map(|m| m.theme.clone())
                     .unwrap_or_default();
                 entries.push(ScenarioEntry {
+                    seats: scenario.players.len(),
                     label: scenario.name,
                     blurb,
                     path: Some(path),
@@ -412,12 +489,17 @@ pub fn discover_scenarios() -> Vec<ScenarioEntry> {
     }
     if entries.is_empty() {
         entries.push(ScenarioEntry {
+            seats: 2,
             label: Scenario::skirmish().name,
             blurb: None,
             path: None,
             theme: String::new(),
         });
     }
+    // Sections: 1v1 first (a first Play+Enter must never launch a team
+    // match), bigger formats after, alphabetical within each. Callers
+    // key the remembered pick by PATH, so re-sorting can't move it.
+    entries.sort_by_key(|e| (e.seats, e.label.to_lowercase()));
     entries
 }
 
@@ -437,5 +519,74 @@ mod empty_tests {
             let events = [RawEvent::KeyDown { key }];
             assert_eq!(menu.handle(&events, &mut mouse), None);
         }
+    }
+}
+
+#[cfg(test)]
+mod header_tests {
+    use super::*;
+    use macroquad::prelude::vec2;
+    use oxide_protocol::{Key, RawEvent};
+
+    fn sectioned() -> Menu {
+        // rows: [H] a b [H] c d
+        Menu::with_headers(
+            "T",
+            ["- one -", "a", "b", "- two -", "c", "d"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            vec![0, 3],
+        )
+    }
+
+    fn press(menu: &mut Menu, key: Key) -> Option<usize> {
+        let mut mouse = vec2(0.0, 0.0);
+        menu.handle(&[RawEvent::KeyDown { key }], &mut mouse)
+    }
+
+    #[test]
+    fn the_cursor_never_rests_on_a_header() {
+        let mut menu = sectioned();
+        assert_eq!(menu.selected, 1, "construction snaps off the header");
+        press(&mut menu, Key::Down);
+        assert_eq!(menu.selected, 2);
+        press(&mut menu, Key::Down);
+        assert_eq!(menu.selected, 4, "down hops the section label");
+        press(&mut menu, Key::Up);
+        assert_eq!(menu.selected, 2, "up hops it too");
+        press(&mut menu, Key::Home);
+        assert_eq!(menu.selected, 1, "Home lands on the first real row");
+        press(&mut menu, Key::End);
+        assert_eq!(menu.selected, 5, "End on the last real row");
+    }
+
+    #[test]
+    fn a_header_never_activates() {
+        let mut menu = sectioned();
+        menu.select(0);
+        assert_eq!(menu.selected, 1, "select snaps forward off the header");
+        // Enter activates the snapped row, never the header.
+        assert_eq!(press(&mut menu, Key::Enter), Some(1));
+    }
+
+    #[test]
+    fn wheel_scroll_cannot_pin_the_cursor_onto_a_header() {
+        // A short window forces the riding clamp; the ride must snap
+        // off headers or Enter activates a section label (the wizard
+        // maps unmapped rows to Back — a scroll would quit the list).
+        let mut menu = sectioned();
+        crate::render::set_viewport(1280.0, 400.0);
+        menu.select(5);
+        let mut mouse = vec2(0.0, 0.0);
+        for _ in 0..6 {
+            menu.handle(&[RawEvent::Wheel { delta: 1.0 }], &mut mouse);
+            assert!(
+                !menu.is_header(menu.selected),
+                "the riding cursor rests on header row {}",
+                menu.selected
+            );
+        }
+        crate::render::set_viewport(1280.0, 800.0);
     }
 }

@@ -61,11 +61,17 @@ in the commit message.
 ## Build, test, bless
 
 ```sh
-cargo test --workspace               # all tests, headless, ~seconds
+cargo test --workspace               # all tests, headless, ~20s
 cargo clippy --workspace --all-targets
 cargo fmt --all
 BLESS=1 cargo test -p oxide-driver   # regenerate goldens after intended change
 ```
+
+The three map-sweep suites (every-shipped-map bot play-through, the
+neural ladder yardstick, the hash fixtures) fan their independent
+deterministic sims across threads — grown-shelf sweeps stay a
+dozen-seconds affair, and a new sweep over per-map runs should spawn
+the same way.
 
 Before committing: fmt + clippy clean, tests green. Golden files live in
 `driver/tests/goldens/`: byte-exact PNGs (a mismatch writes the actual
@@ -171,12 +177,19 @@ and test fixtures inside crate `tests/` directories.
   it picked — and every-seat-one-team is a build error. Shipped maps are
   180°-symmetric — author edits in mirrored pairs, and on 4-player maps
   every seat's unit list must be the exact image-transform of seat 0's,
-  entry by entry (the 0.7 seat-fairness rule generalized). The 0.10
-  3v3/4v4 maps (Trident Plateau, Compass Grand) generalize further:
+  entry by entry (the 0.7 seat-fairness rule generalized). The
+  3v3/4v4 maps (Trident Plateau and Causeway Verdict; Compass Grand
+  and Gatework Array) generalize further:
   stacks of identical 180°-self-symmetric lanes, east unit lists the
   exact entry-by-entry images of their paired west seats, and the
   map-gates fairness test holds all six/eight seats to strict scrap
-  equality. Faction convention: even seats Ferrous, odd seats Cupric.
+  equality (team seats also need unique names — a headless sweep
+  gates every shipped map, and launch gives colliding labels
+  ordinals). Faction convention: even seats Ferrous, odd seats
+  Cupric — the AUTHORED default. Since 0.11 any seat can retint at
+  launch (`Scenario::retint_seat`: faction, faction-derived name,
+  and starting units remapped through their roles) — the setup
+  screen's faction chips and the 1v1 quick flow both land there.
   `Scenario::skirmish()` embeds `scenarios/skirmish.json` at compile
   time.
 - **Balance numbers** all live in `sim/src/stats.rs`; expect hash churn
@@ -192,15 +205,21 @@ hash fixtures pin the weights like any other rule). Difficulty is a
 dial into one mind: `bot::Level` (Easy/Medium/Hard/Expert) sets a
 skill knob whose degradation the network *trained under*; a second
 knob picks the personality (turtle → aggressive), dealt from the
-scenario seed when unset; a third carries the seat's faction (by map
-convention, even seats run Ferrous — every shipped and generated map
-follows it, and the knob is honest, never sampled). Scenario seats opt
+scenario seed when unset; a third carries the seat's faction, honest
+and never sampled (authored maps deal even seats Ferrous; launch-time
+retints feed the knob the seat's ACTUAL faction, and the 0.11
+flipped-seat probe measured the policy at full strength from
+orientations it never trained). Scenario seats opt
 in via `PlayerSpec.bot_config`; a seat without one gets the legacy
 rule-cascade bot, which is what keeps pre-0.7 replays reproducing
 (that bot is team-blind by design — team seats must set a config).
 
-The gym contract (v4) is 63 named integer features and 21 masked
-macro actions; training slots are role-indexed where the factions
+The gym contract (v5) is 64 named integer features and 22 masked
+macro actions (Salvage appended in 0.11 — the reclaim-parity rule:
+human verbs and bot verbs stay in lockstep — with a fixed
+cheapest-first lowering that never touches the Fabricator or
+Foundry, and my_building_value joining the features so the potential
+can price liquidation instead of scoring it as free reward); training slots are role-indexed where the factions
 differ, so one action space serves both rosters. Since v4 every
 positional feature rides as relative 0-1000 against the actual map
 dimensions (fixed scales broke on the large map classes), map dims
@@ -250,7 +269,20 @@ draws the 1v1 lanes from the large/vast classes only — the decisive
 lever, because on mostly-small maps games end before a Fabricator
 amortizes and PPO grinds imitation-taught tech back out the moment
 the bonus fades; on the grand distribution the true objective
-sustains it unaided.
+sustains it unaided. The 0.11 campaign added the general forms:
+`widen.py` bridges an old artifact to a new contract twice over (the
+shipped json gets zero feature columns and an UNREACHABLE new-action
+floor so every fixture stays green; the float resume gets a
+reachable zero bias, because a verb PPO can never sample is a verb
+it never learns), `--salvage-bonus` seeds a new verb on the
+tech-bonus schedule, and the decisive lesson: a long fresh league
+from a converged parent only dilutes it — the working shape is a
+SHORT consolidation resumed from and anchored to the intact parent
+(coef 0.1 held flat), picked by tournament inside the anneal's
+shadow before the rusher canary collapses. A seeded verb the true
+objective still prices as lossy ships as trained runner-up logits,
+not a usage quota — forcing usage past the game's own economics is
+the "weird ML" line the campaign doctrine refuses to cross.
 Team training runs two flavors — self-team (`team`: the learner holds
 both chairs) and mixed-ally (`team2`: a scripted Brain drives the
 teammate) — and per-seat episode truncation pads a dead learner's
@@ -268,16 +300,26 @@ Hard < Expert forever).
 mechanical form) and reports cost-weighted composition with a
 spam-detecting entropy. `driver matchup --a kind:n --b kind:n` fights
 par-cost armies on a clean arena — the experiment that separates "the
-learner never found the counter" from "no counter exists".
-`driver bench` times a 500-unit mass battle locally; CI asserts only
+learner never found the counter" from "no counter exists"
+(`--b-structures turret:n` is defense mode: pre-built structures
+stand in front of side B, priced into its verdict — scenarios grew a
+serde-default `buildings` list of pre-built structures for exactly
+this kind of harness work).
+`driver bench` times a 500-unit mass battle locally
+(`--scenario scenarios/compass-grand.json` instead runs a shipped map
+with EVERY chair converted to a thinking Expert — the heaviest honest
+shape; the earlier 3,073 ticks/s figure benched seven minds around an
+idle authored human seat, and the corrected eight-mind deep-game
+number is 5,044 ticks/s — no perf window is open); CI asserts only
 hash-identity at scale. The 0.10 pacing findings and levers live in
-EXPERIMENTS.md; matches target tens of minutes (the `vast` map class
+`experiments/` (the per-era lab notebook — its README indexes the
+campaigns); matches target tens of minutes (the `vast` map class
 and the foundry-durability bless exist for this; the lancer's
 damage bless is what made the tech tree worth climbing — the matchup
 instrument condemned the old rail at true par cost).
 
-`driver shots` is the perceptual-diff screenshot suite: ten canonical
-screens from a spawned automation shell (throwaway HOME, reduced
+`driver shots` is the perceptual-diff screenshot suite: eleven
+canonical screens from a spawned automation shell (throwaway HOME, reduced
 motion pinned so the Home backdrop can't drift), compared against
 per-machine references in the gitignored `shots/` directory on a mean
 per-channel metric. The default threshold is calibrated between font
@@ -426,8 +468,10 @@ never runs it.
 - **Factions are one roster deal, not two stat tables.** Variant kinds
   are separate `UnitKind`s sharing kind-keyed static stats;
   `Role::unit_for(faction)` maps the varied slots and `apply_train`
-  rejects cross-faction kinds. Even seats run Ferrous on every shipped
-  and generated map — the training stack's faction knob depends on it.
+  rejects cross-faction kinds. Even seats run Ferrous on every
+  AUTHORED and generated map — the training curriculum's default —
+  but faction is fully choosable at launch (`Scenario::retint_seat`),
+  and the flipped-seat probe cleared the policy for it.
 - **Wrecks are a second salvage layer, not nodes.** Deaths leave a
   fraction of cost as `Tile.wreck`: never blocks movement, stripped
   standing ON the tile, decays on a global cadence, buried by accepted
@@ -436,9 +480,30 @@ never runs it.
   walking and discovering.
 - **Repair reuses construction's machinery.** Welding feeds buffered
   hp gains through the same resolve path as building (fire wins ties),
-  costs a scrap trickle billed at each interval's *start* (chip
-  repairs pay their coin; free healing was an exploit), stalls broke,
-  and stacks across welders.
+  stalls broke, and stacks across welders. Since 0.11 the three
+  economy verbs price per hp against building cost, strictly build
+  (1000‰) > repair (850‰) > salvage (800‰): repair bills through a
+  ceiling-prepaid milli-scrap meter derived from the welder's own
+  tick counter (chip repairs pay their coin up front; free healing
+  was an exploit), so welding back what salvage banked always loses.
+  Stacked welders bill against the same start-of-tick reading, so
+  resolution refunds a welder whose whole step the hp ceiling
+  rejected — the crew bills the job, not the crew size.
+- **Salvage is labor, not a button** (0.11): `Command::Salvage` sends
+  harvesters to strip an own BUILT non-Foundry building down the
+  construction ramp backward. Drains buffer beside the gains
+  (`PendingHpDrain`) and resolve after damage as one signed
+  per-building delta clamped once — fire zeroing the target wins the
+  tick and forfeits everything undrained. Refunds credit in
+  resolution from hp *actually* removed through a cumulative
+  per-building ledger (a full-health salvage totals exactly
+  cost·800‰; a truncation never drifts), the deliberate end is
+  `Event::BuildingSalvaged` (no wreck, no scorch, stat screens must
+  not count it a loss), and a salvaged producer refunds its prepaid
+  queue in full via the CancelTrain rule. Repair and salvage evict
+  each other from a target — the two never coexist, or the bot's
+  deepest-wound repair pick would re-crew every salvage. Unbuilt
+  sites keep Cancel; Foundries refuse outright.
 - **Radar blips detect without identifying.** The Array's outer ring
   surfaces hostile units as bare tiles in `Vision::contacts` — no kind,
   no owner, no memory, no license for a targeted attack. Team sight is
@@ -458,7 +523,10 @@ never runs it.
   never vanish — they stop pretending to be news.
 - **Replays are an end-of-match affair**: Watch Replay appears once
   the match is decided; `autosave-` records are Continue-only.
-  Mid-match playback was a fog-free scout of the enemy.
+  Mid-match playback was a fog-free scout of the enemy. The viewer
+  opens through `Game::spectator` — no command seat required, so
+  all-bot records (driver benchmarks, bot-vs-bot spectacles) play
+  back like any save.
 - **The command panel is one grammar** (shell/src/panel.rs): a pure
   model (portrait, sprite cards carrying the exact Action their
   hotkey dispatches, queue thumbnails carrying CancelQueue) built
@@ -480,9 +548,9 @@ never runs it.
   (shell/src/action.rs) into Actions — "Oxide Classic" is the default
   profile, the Controls screen rebinds with conflict refusal, and
   chord matching grades exact → same-Ctrl → bare. The frame loop
-  injects ui scale, wall clock, and camera prefs into `InputState`,
-  so the whole event path runs headless (input.rs has real
-  integration tests against the sim).
+  injects ui scale, wall clock, and camera + touch prefs into
+  `InputState`, so the whole event path runs headless (input.rs has
+  real integration tests against the sim).
 - **Chrome geometry has one source.** The renderer computes a
   `LayoutModel` (top bar, panel band + clickable slots, minimap, idle
   badge) as it draws and publishes it on `Game`; hit-testing and
@@ -491,16 +559,37 @@ never runs it.
   is structurally extinct only while this holds. ui_scale() is the
   USER factor only: macroquad's coordinate space is logical, and
   multiplying dpi in is the double-scaling disease (fixed 0.9).
-- **Presentation config persists** (shell/src/config.rs): bindings,
-  volumes, ui scale, camera feel, window size, reduced motion —
-  platform config dir, versioned separately from replays, silent
-  defaults on any trouble (and replace-not-rename on save, for
-  Windows).
+- **Presentation config persists** (shell/src/config.rs): bindings
+  (explicit unbindings survive via a tombstone list — a missing row
+  alone reads as "verb newer than this config" and would re-adopt
+  its classic chord), volumes, ui scale, camera feel, touch timing,
+  window size, reduced motion, colorblind — platform config dir,
+  versioned separately from replays, silent defaults on any trouble
+  (and replace-not-rename on save, for Windows).
 - **Screens are draft-driven.** The New Match wizard's choices live in
   a NewMatchDraft that survives Back; destructive pause choices
   confirm with Cancel preselected; menus scroll independently of
   selection and activate on release-inside (menu_ux tests spawn real
   windows and are #[ignore]d — run them explicitly, never in CI).
+  The front door is a thumbnail-grid map browser sectioned by format
+  (shell/src/screens/browser.rs, themed preview cards, remembers the
+  pick by path); team maps then land on one inline setup screen —
+  team-grouped seat cards with difficulty/personality/faction chips
+  edited in place beside a who-is-where preview (no sub-screen; the
+  cell cursor moves with Left/Right and Enter takes a seat or cycles
+  a dial; the human's card keeps its faction chip). Small windows
+  compress margins, chrome, then cards — every control stays on
+  screen at every supported size, keyboard and pointer alike.
+  Allegiance reads as team color ON the art (the RTS convention,
+  semantic flavor): every faction-varied sprite carries a derived
+  accent mask in the atlas — gen_sprites.py diffs the two faction
+  variants; where they differ IS the faction-colored region — and the
+  shell overlays it tinted per `allegiance_tint`: own machines pure,
+  allies blue, every hostile crimson (colorblind mode swaps ally to
+  bone for a luminance split). Minimap dots speak the same hues.
+  Never a badge, bar, or ring around the silhouette — bars read as
+  health. The menu font is Latin-1 only: an em dash renders as
+  tofu, so UI strings stick to ASCII plus '·'.
 - **Stalls carry reasons** (`StallReason`): own-state facts only —
   routes, banks, footing. A reason must never derive from what fog
   hides; the enum doc enforces the principle on future variants.
@@ -539,9 +628,17 @@ never runs it.
   iterates in fixed id order) compounds without blunder noise. At the
   shipped Medium default both effects vanish (12/12 decisive, no
   consistent lean), and a human in the match breaks symmetry at any
-  level — bounded to bot-vs-bot spectacles. Candidate engine
-  experiment for 0.9: parity-alternate `movement::run` like the brain
+  level — bounded to bot-vs-bot spectacles. Standing candidate engine
+  experiment: parity-alternate `movement::run` like the brain
   loop (hash-moving; needs a bless and a re-measure).
+- **The 0.11 artifact leans Cupric on skirmish** (34-6 at Expert
+  across seat-swapped pairs, dealt personalities — present in the
+  shipped convention configuration, same artifact-specific class as
+  the Parallel Works lean above). Same-faction mirror duels, newly
+  player-reachable through the faction chips, decide at human
+  timescales (Cupric mirror 12/12 by 120k ticks, Ferrous 10/12 with
+  a two-game grind tail) — the near-deterministic mirror residual,
+  broken by any human in the match.
 - **The learned policy is a middling teammate beside a scripted ally**
   (25-31% on the mixed-ally 2v2 bracket vs scripted pairs, up 5x from
   pre-team-training). Shipped 2v2 seats are all-neural, which is the

@@ -1,5 +1,5 @@
 {
- "name": "Compass Grand (4v4)",
+ "name": "Compass Grand",
  "seed": 9920,
  "map": [
   "##########################################################################################################",
@@ -69,14 +69,14 @@
  ],
  "players": [
   {
-   "name": "West Ferrous",
+   "name": "North West Ferrous",
    "faction": "ferrous",
    "team": 0,
    "scrap": 150,
    "bot": false
   },
   {
-   "name": "West Cupric",
+   "name": "North West Cupric",
    "faction": "cupric",
    "team": 0,
    "scrap": 150,
@@ -86,7 +86,7 @@
    }
   },
   {
-   "name": "West Ferrous",
+   "name": "South West Ferrous",
    "faction": "ferrous",
    "team": 0,
    "scrap": 150,
@@ -96,7 +96,7 @@
    }
   },
   {
-   "name": "West Cupric",
+   "name": "South West Cupric",
    "faction": "cupric",
    "team": 0,
    "scrap": 150,
@@ -106,7 +106,7 @@
    }
   },
   {
-   "name": "East Ferrous",
+   "name": "North East Ferrous",
    "faction": "ferrous",
    "team": 1,
    "scrap": 150,
@@ -116,7 +116,7 @@
    }
   },
   {
-   "name": "East Cupric",
+   "name": "North East Cupric",
    "faction": "cupric",
    "team": 1,
    "scrap": 150,
@@ -126,7 +126,7 @@
    }
   },
   {
-   "name": "East Ferrous",
+   "name": "South East Ferrous",
    "faction": "ferrous",
    "team": 1,
    "scrap": 150,
@@ -136,7 +136,7 @@
    }
   },
   {
-   "name": "East Cupric",
+   "name": "South East Cupric",
    "faction": "cupric",
    "team": 1,
    "scrap": 150,

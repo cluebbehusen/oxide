@@ -148,6 +148,38 @@ def pack_atlas() -> None:
     print(f"  atlas.png ({atlas_w}x{atlas_h}, {len(placements)} sprites) + atlas.json")
 
 
+def accent_masks() -> None:
+    """Derives one allegiance-accent mask per faction-varied sprite.
+
+    Factions share silhouettes and differ only in accent color, so the
+    pixels where a sprite's two faction variants differ ARE the
+    faction-colored regions — exactly the region an owner tint should
+    cover (the RTS team-color mask, derived instead of hand-painted).
+    The mask is luminance-preserving grayscale: the shell multiplies it
+    by an allegiance hue, keeping the original shading. Rim light and
+    chassis grays cancel in the diff and stay untinted.
+    """
+    from PIL import ImageChops
+
+    for name in [n for n in sorted(REGISTRY) if "_ferrous" in n]:
+        fer = REGISTRY[name]
+        cup = REGISTRY[name.replace("_ferrous", "_cupric")]
+        diff = ImageChops.difference(fer.convert("RGB"), cup.convert("RGB"))
+        r, g, b = diff.split()
+        weight = ImageChops.lighter(ImageChops.lighter(r, g), b).point(
+            lambda v: min(255, v * 3)
+        )
+        alpha = ImageChops.multiply(fer.split()[3], weight)
+        # Ferrous base luminance is ~116/255; x1.7 restores full-tint
+        # brightness to the palette midpoint without clipping "light".
+        lum = fer.convert("L").point(lambda v: min(255, round(v * 1.7)))
+        mask = Image.merge("RGBA", (lum, lum, lum, alpha))
+        out_name = name.replace("_ferrous", "_accent")
+        mask.save(OUT / f"{out_name}.png")
+        REGISTRY[out_name] = mask
+        print(f"  {out_name}.png")
+
+
 def s(v: float) -> int:
     """Scale a sprite-space coordinate by the supersample factor."""
     return round(v * SS)
@@ -1109,6 +1141,7 @@ def main() -> None:
         bastion(faction)
         array(faction)
         reclaimer(faction)
+    accent_masks()
     pack_atlas()
     print("done")
 

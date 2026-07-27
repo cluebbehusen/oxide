@@ -48,7 +48,7 @@ pub struct Update {
 /// The remappable actions, in display order. Digits and structural keys
 /// (Back, Confirm, group slots) stay fixed — their meaning is
 /// positional, not preferential.
-const REMAPPABLE: [(Action, &str); 22] = [
+const REMAPPABLE: [(Action, &str); 23] = [
     (Action::StopOrScrap, "Stop / scrap site"),
     (Action::TrainSlot(0), "Train slot 1"),
     (Action::TrainSlot(1), "Train slot 2"),
@@ -63,6 +63,7 @@ const REMAPPABLE: [(Action, &str); 22] = [
     (Action::PanDown, "Pan down"),
     (Action::CycleIdleWorker, "Next idle harvester"),
     (Action::JumpToLastAlert, "Jump to last alert"),
+    (Action::Salvage, "Salvage building"),
     (Action::SetBookmark(0), "Set bookmark 1"),
     (Action::RecallBookmark(0), "Recall bookmark 1"),
     (Action::SetBookmark(1), "Set bookmark 2"),
@@ -283,6 +284,8 @@ impl SettingsScreen {
                         let (target, _) = REMAPPABLE[row];
                         let chord = Chord { key, ctrl, shift };
                         if config.bindings.rebind(target, chord) {
+                            // Bound again: the unbind tombstone lifts.
+                            config.unbound.retain(|a| *a != target);
                             update.dirty = true;
                             *live = config.bindings.clone();
                             self.goto_controls(config, row);
@@ -305,9 +308,15 @@ impl SettingsScreen {
                     self.menu.select(CONTROLS_ROW);
                 } else if x_pressed && self.menu.selected < REMAPPABLE.len() {
                     // X on a row unbinds it — outside capture mode, so
-                    // the key is free to mean this.
+                    // the key is free to mean this. The tombstone
+                    // records the CHOICE: without it, the next load's
+                    // new-verb migration would read the missing row as
+                    // an old config and restore the classic chord.
                     let (target, _) = REMAPPABLE[self.menu.selected];
                     config.bindings.unbind(target);
+                    if !config.unbound.contains(&target) {
+                        config.unbound.push(target);
+                    }
                     update.dirty = true;
                     *live = config.bindings.clone();
                     let row = self.menu.selected;
@@ -319,8 +328,9 @@ impl SettingsScreen {
                             rebinding: Some(row),
                         };
                     } else if row == REMAPPABLE.len() {
-                        // Reset to defaults.
+                        // Reset to defaults — tombstones included.
                         config.bindings = BindingMap::classic();
+                        config.unbound.clear();
                         update.dirty = true;
                         *live = config.bindings.clone();
                         self.goto_controls(config, row);

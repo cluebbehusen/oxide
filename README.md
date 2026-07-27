@@ -20,12 +20,15 @@ replay that re-executes headless to a bit-identical state hash.
 
 ## Playing
 
-The front door offers Play, Replays, Settings, and Quit (plus
-Continue when an autosave waits). Settings holds live volume buses,
-UI scale, camera feel, and full key remapping — every change applies
-immediately and persists. The map list shows each map's hook and pace
-badges with a fog-free, theme-graded preview, and every choice you
-make on the way to a match survives backing up a screen. Selected
+The front door offers Play, Tutorial, Replays, Settings, and Quit
+(plus Continue when an autosave waits). Settings holds live volume
+buses, UI scale, camera feel, accessibility switches (reduced motion,
+colorblind-safe accents, a left-handed preset), and full key
+remapping — every change applies immediately and persists, explicit
+unbindings included. Play opens a thumbnail grid of every map,
+sectioned by format, each card carrying a fog-free, theme-graded
+preview and pace badge — and every choice you make on the way to a
+match survives backing up a screen. Selected
 machines draw their weapon ranges (and radar rings); stalls and
 rejections say why in words. Clicking anything opens its command
 panel: portrait, sprite cards for everything it can do (costs,
@@ -47,14 +50,18 @@ cargo run -p oxide-shell
 A menu lists the shipped maps — the classic duels, the quick 2v2s
 Twin Forges and Open Quarry, the big fields: Basalt Spine
 (a peak ridge splits the map; two ground passes, one air-only door),
-Ferric Reach (three lanes, long logistics), Parallel Works (a
-large 2v2 built on quadrant symmetry), Continental Divide (a vast
-mountain wall where the doors decide it), and the team-war fields
-Trident Plateau (3v3) and Compass Grand (4v4), lane wars where the
+Ferric Reach (three lanes, long logistics), Parallel Works and
+Paired Claims (large 2v2s), Continental Divide (a vast
+mountain wall where the doors decide it), and the team-war fields —
+Trident Plateau and Causeway Verdict (3v3), Compass Grand and
+Gatework Array (4v4), lane wars where the
 ridge doors carry the fight sideways — then asks three questions: how hard
 should the opponent think (**Easy, Medium, Hard, Expert**), who is it
 (**turtle, balanced, aggressive**, or let the map decide), and which
-faction you run (**Ferrous, Cupric**, or let the seed decide). Every
+faction you run (**Ferrous, Cupric**, or let the seed decide). Team
+maps open one setup screen instead: pick your chair from the
+team-grouped cards and tune every seat's difficulty, personality,
+and faction in place beside a who-is-where preview. Every
 opponent is the same trained neural commander with different dials: it
 sees only what its units see, plays by exactly your rules, and its
 mistakes at lower settings are misjudgments, not lobotomies. On the
@@ -101,7 +108,9 @@ only what's still standing — damage burns salvage.
 | Shift + right click                | Queue the order behind the current one                                                                                                                                       |
 | `R`                                | Arm a patrol: right-click waypoints, `R` again to start the loop — patrollers engage everything met and never settle                                                         |
 | `B`                                | With a harvester selected: open the build palette — digits pick the structure, the ghost shows validity on ground you can currently see, click commits, Esc cancels          |
-| Right click a damaged own building | With harvesters selected: weld it (costs a scrap trickle)                                                                                                                    |
+| Right click a damaged own building | With harvesters selected: weld it (billed per hp — pricier than building, cheaper than losing it)                                                                            |
+| Right click an own unfinished site | With harvesters selected: resume construction — several builders stack                                                                                                       |
+| `V`                                | With harvesters selected: arm salvage — click an own built building to strip it for a partial refund (Foundries refuse; Shift chains teardowns)                              |
 | `X`                                | Units selected: stop in place. Construction site selected: scrap it for a partial refund                                                                                     |
 | Right click on minimap             | Send the selection there, fighting through                                                                                                                                   |
 | Right click (Foundry selected)     | Set the rally point — rally a scrap node and fresh harvesters mine it; fresh Sentinels attack-move to it                                                                     |
@@ -230,18 +239,28 @@ Working today: the full loop (harvest → train → fight → win) with fog of
 war and ghost memory, the two-faction eleven-unit roster (ground, air,
 artillery) behind a build-your-tech gate, the harvester-built structure
 palette from turrets to radar to Reclaimers, wreck salvage and repair
-welding, 2v2 teams with shared sight, order queues and patrols, solid
+welding, team games from 2v2 to 4v4 with shared sight, order queues
+and patrols, solid
 units that crowd without gridlocking, attack-move with line-of-sight
 fire, damage retaliation, rally points, control groups, shift-select,
-order feedback, a fog-aware minimap, sound, ten maps, menus, a trained
-neural opponent with four difficulty levels and selectable personalities,
-save/resume via replays, and the agent tooling described above.
+order feedback, a fog-aware minimap, sound, twenty-five maps in a
+thumbnail-grid browser sectioned by format (sixteen duels, five 2v2s,
+two 3v3s, two 4v4s), per-seat match setup on
+team maps (team-grouped seat cards with inline difficulty,
+personality, and faction dials beside a who-is-where map — every
+seat's faction is free, yours included), building salvage as harvester labor, ally
+inspection with visible orders and team-color accents on the machines
+themselves (allies wear blue, every enemy wears crimson, your own
+keep pure faction paint), touch gestures (pan, tap, long-press,
+pinch, two-finger box), menus, a trained neural opponent with four
+difficulty levels and selectable personalities, save/resume via
+replays, and the agent tooling described above.
 
 Not yet: expansions (Foundries aren't buildable), formations,
 free-for-all (the sim seats up to eight players and the menu lists any
 scenario it can parse, but no shipped map plays FFA), and the mobile
-ports — macroquad makes iOS/Android plausible, and `RawEvent` already
-carries touch variants, but nothing is wired. The sim freezes at game
+ports — macroquad makes iOS/Android plausible, and the desktop shell
+already resolves touch gestures, but no mobile build exists. The sim freezes at game
 end; the pause menu's Restart is the rematch.
 
 Built with [macroquad](https://macroquad.rs/); simulation math on the

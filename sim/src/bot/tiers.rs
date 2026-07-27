@@ -60,6 +60,7 @@ impl Difficulty {
                 reclaimers: false,
                 repair: false,
                 air_harass: false,
+                salvage: false,
                 ..Dials::full()
             },
             Difficulty::Standard => Dials {
@@ -72,6 +73,7 @@ impl Difficulty {
                 radar: false,
                 repair: false,
                 air_harass: false,
+                salvage: false,
                 ..Dials::full()
             },
             Difficulty::Veteran => Dials::full(),

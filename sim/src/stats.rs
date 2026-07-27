@@ -777,14 +777,28 @@ pub const SHELL_SPEED: Fx = Fx::lit("0.30");
 /// a stalemate valve, never an opening.
 pub const RECLAIMER_PERIOD: u64 = 30;
 
-/// Ticks of builder attention per scrap charged while repairing. A full
-/// re-ramp of a building costs roughly a third of its price — cheaper
-/// than replacing it, never free.
-pub const REPAIR_TICKS_PER_SCRAP: u32 = 10;
+/// Per-mille of a building's cost billed per hp welded (against max_hp).
+/// The three economy verbs price strictly build > repair > salvage:
+/// welding always costs more than salvage refunds, so repair-then-salvage
+/// strictly loses scrap, and a full re-ramp costs ~68% of the price —
+/// cheaper than replacing it, never free, and a real sustain tax under
+/// fire (the 0.11 repricing; the old flat tick-trickle accidentally
+/// charged 25-47% and would have made salvage refunds a printer).
+pub const REPAIR_COST_PERMILLE: u64 = 850;
+
+/// Per-mille of a building's cost refunded per hp drained by salvage
+/// (against max_hp). A full-health salvage banks exactly cost*800/1000.
+pub const SALVAGE_REFUND_PERMILLE: u64 = 800;
 
 /// Welding ramp for the Foundry, which has no construction stats to
 /// borrow one from.
 pub const FOUNDRY_REPAIR_TICKS: u32 = 400;
+
+/// Billing basis for Foundry repair, which has no purchase cost to
+/// price against. Chosen so a full re-ramp runs ~68 scrap — pricier
+/// than the pre-0.11 flat trickle's 40 (the sustain tax is intended)
+/// without making the victory token unhealable in a siege.
+pub const FOUNDRY_REPAIR_PRICE: u32 = 100;
 
 /// Scrap in a rich node (the `S` map legend) — a fought-over prize.
 pub const RICH_SCRAP_NODE_AMOUNT: u32 = 800;

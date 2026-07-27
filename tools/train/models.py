@@ -10,7 +10,7 @@ from torch import nn
 if TYPE_CHECKING:
     from pathlib import Path
 
-from oxide_gym import ACTIONS, NET_FEATURES
+from oxide_gym import ACTIONS, GYM_VERSION, NET_FEATURES
 
 
 class Mlp(nn.Module):
@@ -50,9 +50,16 @@ def make_policy(arch: str) -> Mlp:
 
 
 def load_policy(path: str, device: str = "cpu") -> tuple[Mlp, dict]:
-    """Loads a checkpoint saved by save_policy."""
+    """Loads a checkpoint saved by save_policy, refusing one recorded
+    under a different gym contract — a stale pool checkpoint drawn by
+    a past-lane must fail here, not shape-error mid-rollout."""
     blob = torch.load(path, map_location=device, weights_only=True)
     if isinstance(blob, dict) and "arch" in blob:
+        recorded = blob.get("gym_version")
+        if recorded is not None and recorded != GYM_VERSION:
+            raise RuntimeError(
+                f"{path} speaks gym v{recorded}, trainer speaks v{GYM_VERSION}"
+            )
         policy = make_policy(blob["arch"])
         policy.load_state_dict(blob["state"])
         return policy, blob

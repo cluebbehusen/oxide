@@ -40,6 +40,73 @@ pub(crate) fn draw_placement_ghost(game: &Game, sprites: &Sprites, input: &Input
 /// Queued waypoints of the selection, drawn as a faint chain; a patrol
 /// closes the loop. While arming a patrol (`R`), the collected route
 /// draws in scrap-amber instead.
+/// The screen-space waypoints one selected unit's program draws — pure,
+/// so the fog rules are testable: a FOREIGN unit yields no points at
+/// all (an ally's or enemy's order chain is intent the viewer has no
+/// license to read — fog holds positions, never plans), and own goals
+/// draw only on explored ground (the harvest brain can retarget to a
+/// node the player has never seen). Each verb speaks its own color:
+/// bone walks, danger fights, scrap-gold harvests, patina builds,
+/// welds, and strips.
+pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(Vec2, Color)> {
+    if unit.player != game.human {
+        return Vec::new();
+    }
+    let verb_color = |order: &oxide_sim::Order| match order {
+        oxide_sim::Order::Move { .. } => BONE_FAINT,
+        oxide_sim::Order::AttackMove { .. } | oxide_sim::Order::Attack { .. } => {
+            Color::new(0.85, 0.32, 0.29, 0.55)
+        }
+        oxide_sim::Order::Harvest { .. } => Color::new(0.85, 0.64, 0.25, 0.55),
+        oxide_sim::Order::Build { .. }
+        | oxide_sim::Order::Repair { .. }
+        | oxide_sim::Order::Salvage { .. } => Color::new(0.25, 0.58, 0.51, 0.55),
+        oxide_sim::Order::Idle => BONE_FAINT,
+    };
+    let goal_of = |order: &oxide_sim::Order| {
+        let goal = match order {
+            oxide_sim::Order::Move { goal } | oxide_sim::Order::AttackMove { goal } => *goal,
+            oxide_sim::Order::Harvest { node } => *node,
+            oxide_sim::Order::Build { site } => game.state.building(*site)?.anchor,
+            oxide_sim::Order::Repair { building } | oxide_sim::Order::Salvage { building } => {
+                game.state.building(*building)?.anchor
+            }
+            oxide_sim::Order::Attack { target, .. } => {
+                // A chase target draws only while its ground is
+                // seen — the victim may have slipped back into fog.
+                let tile = match target {
+                    oxide_sim::Target::Unit(uid) => game.state.unit(*uid)?.tile(),
+                    oxide_sim::Target::Building(bid) => game.state.building(*bid)?.anchor,
+                };
+                if game.all_seeing() || game.my_vision().visible(tile) {
+                    return Some((tile, verb_color(order)));
+                }
+                return None;
+            }
+            oxide_sim::Order::Idle => return None,
+        };
+        (game.all_seeing() || game.my_vision().explored(goal)).then_some((goal, verb_color(order)))
+    };
+    let mut points: Vec<(Vec2, Color)> = Vec::new();
+    if let Some((g, c)) = goal_of(&unit.order) {
+        points.push((
+            game.camera
+                .to_screen(vec2(g.x as f32 + 0.5, g.y as f32 + 0.5)),
+            c,
+        ));
+    }
+    for order in &unit.queue {
+        if let Some((g, c)) = goal_of(order) {
+            points.push((
+                game.camera
+                    .to_screen(vec2(g.x as f32 + 0.5, g.y as f32 + 0.5)),
+                c,
+            ));
+        }
+    }
+    points
+}
+
 pub(crate) fn draw_breadcrumbs(game: &Game, input: &InputState) {
     let dot = |p: Vec2, color: Color| draw_circle(p.x, p.y, 3.0, color);
     if let Some(route) = &input.patrol_route {
@@ -60,63 +127,7 @@ pub(crate) fn draw_breadcrumbs(game: &Game, input: &InputState) {
         let Some(unit) = game.state.unit(*id) else {
             continue;
         };
-        // Only explored targets draw: the harvest brain can retarget to a
-        // node the player has never seen, and a breadcrumb there would
-        // leak it through the fog. Each verb speaks its own color: bone
-        // walks, danger fights, scrap-gold harvests, patina builds and
-        // welds — the program reads at a glance instead of as one gray
-        // chain.
-        let verb_color = |order: &oxide_sim::Order| match order {
-            oxide_sim::Order::Move { .. } => BONE_FAINT,
-            oxide_sim::Order::AttackMove { .. } | oxide_sim::Order::Attack { .. } => {
-                Color::new(0.85, 0.32, 0.29, 0.55)
-            }
-            oxide_sim::Order::Harvest { .. } => Color::new(0.85, 0.64, 0.25, 0.55),
-            oxide_sim::Order::Build { .. } | oxide_sim::Order::Repair { .. } => {
-                Color::new(0.25, 0.58, 0.51, 0.55)
-            }
-            oxide_sim::Order::Idle => BONE_FAINT,
-        };
-        let goal_of = |order: &oxide_sim::Order| {
-            let goal = match order {
-                oxide_sim::Order::Move { goal } | oxide_sim::Order::AttackMove { goal } => *goal,
-                oxide_sim::Order::Harvest { node } => *node,
-                oxide_sim::Order::Build { site } => game.state.building(*site)?.anchor,
-                oxide_sim::Order::Repair { building } => game.state.building(*building)?.anchor,
-                oxide_sim::Order::Attack { target, .. } => {
-                    // A chase target draws only while its ground is
-                    // seen — the victim may have slipped back into fog.
-                    let tile = match target {
-                        oxide_sim::Target::Unit(uid) => game.state.unit(*uid)?.tile(),
-                        oxide_sim::Target::Building(bid) => game.state.building(*bid)?.anchor,
-                    };
-                    if game.all_seeing() || game.my_vision().visible(tile) {
-                        return Some((tile, verb_color(order)));
-                    }
-                    return None;
-                }
-                oxide_sim::Order::Idle => return None,
-            };
-            (game.all_seeing() || game.my_vision().explored(goal))
-                .then_some((goal, verb_color(order)))
-        };
-        let mut points: Vec<(Vec2, Color)> = Vec::new();
-        if let Some((g, c)) = goal_of(&unit.order) {
-            points.push((
-                game.camera
-                    .to_screen(vec2(g.x as f32 + 0.5, g.y as f32 + 0.5)),
-                c,
-            ));
-        }
-        for order in &unit.queue {
-            if let Some((g, c)) = goal_of(order) {
-                points.push((
-                    game.camera
-                        .to_screen(vec2(g.x as f32 + 0.5, g.y as f32 + 0.5)),
-                    c,
-                ));
-            }
-        }
+        let points = breadcrumb_points(game, unit);
         if points.is_empty() {
             continue;
         }
@@ -150,6 +161,18 @@ pub(crate) fn draw_breadcrumbs(game: &Game, input: &InputState) {
 
 pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
     let zoom = game.camera.zoom;
+    // Buildings an own crew is actively stripping (the salvage
+    // read-back's fog-safe evidence).
+    let salvaging: Vec<oxide_sim::BuildingId> = game
+        .state
+        .units()
+        .iter()
+        .filter(|u| u.player == game.human)
+        .filter_map(|u| match u.order {
+            oxide_sim::Order::Salvage { building } => Some(building),
+            _ => None,
+        })
+        .collect();
     // Live enemy buildings only where we have sight; remembered ghosts
     // cover explored-but-unseen ground (skipped in the omniscient overlay).
     if !game.all_seeing() {
@@ -176,11 +199,6 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
             let screen = game
                 .camera
                 .to_screen(vec2(ghost.anchor.x as f32, ghost.anchor.y as f32));
-            // A remembered hostile twin keeps its dark border (scaled
-            // with the memory's fade): a translucent own-faction sprite
-            // is also how the player's own construction sites draw, and
-            // a memory must never masquerade as one of those.
-            let twin_border = allegiance_cue(game, ghost.owner) == AllegianceCue::HostileTwin;
             // A remembered site stays translucent scaffolding until its
             // completion has actually been observed.
             let tint = if ghost.built {
@@ -198,39 +216,35 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                     GHOST_TINT.a * 0.5 * fade,
                 )
             };
-            draw_texture_ex(
-                sprites.texture(),
-                screen.x,
-                screen.y,
-                tint,
-                DrawTextureParams {
-                    dest_size: Some(vec2(w as f32 * zoom, h as f32 * zoom)),
-                    source: Some(sprites.building(ghost.kind, faction)),
-                    ..Default::default()
-                },
-            );
+            // The memory keeps its allegiance accent at the memory's
+            // own alpha: a translucent own-faction sprite is also how
+            // the player's own construction sites draw, and a memory
+            // must never masquerade as one of those.
+            let accent_tint = allegiance_tint(allegiance_cue(game, ghost.owner))
+                .map(|c| Color::new(c.r, c.g, c.b, tint.a));
+            let dest = vec2(w as f32 * zoom, h as f32 * zoom);
+            let mut layers = vec![(sprites.building(ghost.kind, faction), tint)];
+            if let Some(accent) = accent_tint {
+                layers.push((sprites.building_accent(ghost.kind), accent));
+            }
             if ghost.kind == oxide_sim::BuildingKind::Turret {
                 // The base ships bare; the remembered gun points up.
+                layers.push((sprites.turret_barrel(faction), tint));
+                if let Some(accent) = accent_tint {
+                    layers.push((sprites.turret_barrel_accent(), accent));
+                }
+            }
+            for (source, color) in layers {
                 draw_texture_ex(
                     sprites.texture(),
                     screen.x,
                     screen.y,
-                    tint,
+                    color,
                     DrawTextureParams {
-                        dest_size: Some(vec2(w as f32 * zoom, h as f32 * zoom)),
-                        source: Some(sprites.turret_barrel(faction)),
+                        dest_size: Some(dest),
+                        source: Some(source),
                         ..Default::default()
                     },
-                );
-            }
-            if twin_border {
-                draw_rectangle_lines(
-                    screen.x,
-                    screen.y,
-                    w as f32 * zoom,
-                    h as f32 * zoom,
-                    3.0,
-                    Color::new(0.05, 0.05, 0.07, 0.7 * fade),
                 );
             }
         }
@@ -273,17 +287,21 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 ..Default::default()
             },
         );
-        // A hostile building wearing the player's own colors (team maps
-        // pit same-faction seats against each other) gets a dark border
-        // — the buildings' face of the unit ring's luminance cue.
-        if allegiance_cue(game, building.player) == AllegianceCue::HostileTwin {
-            draw_rectangle_lines(
+        // The allegiance accent, at the hull's own alpha so a rising
+        // hostile site solidifies accent and all.
+        let accent_tint = allegiance_tint(allegiance_cue(game, building.player))
+            .map(|c| Color::new(c.r, c.g, c.b, tint.a));
+        if let Some(accent) = accent_tint {
+            draw_texture_ex(
+                sprites.texture(),
                 screen.x,
                 screen.y,
-                dest.x,
-                dest.y,
-                3.0,
-                Color::new(0.05, 0.05, 0.07, 0.7),
+                accent,
+                DrawTextureParams {
+                    dest_size: Some(dest),
+                    source: Some(sprites.building_accent(building.kind)),
+                    ..Default::default()
+                },
             );
         }
         // A rising site wears its scaffold: dense lattice early, sparse
@@ -365,6 +383,20 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                             ..Default::default()
                         },
                     );
+                    if let Some(accent) = accent_tint {
+                        draw_texture_ex(
+                            sprites.texture(),
+                            at.x,
+                            at.y,
+                            accent,
+                            DrawTextureParams {
+                                dest_size: Some(vec2(size, size)),
+                                source: Some(sprites.turret_barrel_accent()),
+                                rotation: angle,
+                                ..Default::default()
+                            },
+                        );
+                    }
                 }
                 oxide_sim::BuildingKind::FlakTurret => {
                     if let Some((_, at)) = game.aim_buildings.get(&building.id.0) {
@@ -471,13 +503,53 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 BONE,
             );
         }
+        // One bar per story: a site's partial hp is what the ramp
+        // GRANTS, so the progress bar tells it alone — the hp bar
+        // joins only when fire has taken hp construction already gave.
+        // The check mirrors the sim's integer ramp exactly (a float
+        // restatement flickers), and gates on !built because progress
+        // doubles as the train counter on finished producers.
         let max_hp = building.kind.stats().max_hp;
-        if building.hp < max_hp {
+        let under_own_salvage = building.built && salvaging.contains(&building.id);
+        let wounded = if under_own_salvage {
+            // The gold teardown bar below carries the fraction; a
+            // second bar restating it in hp colors is the double-bar
+            // disease this pass exists to cure.
+            false
+        } else if building.built {
+            building.hp < max_hp
+        } else {
+            let ticks = building
+                .kind
+                .stats()
+                .construction
+                .map(|c| c.build_ticks)
+                .unwrap_or(1);
+            let start = max_hp / 5;
+            let expected = start + (max_hp - start) * building.progress.min(ticks) / ticks;
+            building.hp < expected
+        };
+        if wounded {
             hp_bar(screen.x, screen.y - 8.0, dest.x, building.hp, max_hp);
         }
         // Production progress, drawn under the works.
         if let Some(kind) = building.queue.front() {
             let fraction = building.progress as f32 / kind.stats().train_ticks as f32;
+            draw_rectangle(screen.x, screen.y + dest.y + 3.0, dest.x, 4.0, HP_BACK);
+            draw_rectangle(
+                screen.x,
+                screen.y + dest.y + 3.0,
+                dest.x * fraction,
+                4.0,
+                SCRAP_COLOR,
+            );
+        }
+        // A teardown in progress: gold — the scrap coming back — over
+        // remaining substance. Keyed on an OWN crew's Order::Salvage,
+        // never on hp shape (shelling looks identical), so enemy
+        // salvage shows nothing through the fog.
+        if under_own_salvage {
+            let fraction = building.hp as f32 / max_hp as f32;
             draw_rectangle(screen.x, screen.y + dest.y + 3.0, dest.x, 4.0, HP_BACK);
             draw_rectangle(
                 screen.x,
@@ -820,7 +892,9 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
     };
 
     for id in game.selection.units.iter().take(DECOR_CAP) {
-        if let Some(unit) = game.state.unit(*id) {
+        if let Some(unit) = game.state.unit(*id)
+            && unit.player == game.human
+        {
             let world = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
             unit_rings(world, unit.kind.stats());
         }
@@ -875,8 +949,12 @@ pub(crate) fn draw_pings(game: &Game) {
 pub(crate) fn draw_rally_marker(game: &Game) {
     // A selected producer draws the line to its rally, not just the
     // flag — where fresh machines will walk should read at a glance.
+    // OWN producers only, like the flag below: the foreign panel hides
+    // rally and orders on purpose, and an inspected enemy building
+    // must not leak its intent through this line either.
     if let Some(id) = game.selection.building
         && let Some(building) = game.state.building(id)
+        && building.player == game.human
         && let Some(rally) = building.rally
     {
         let a = game.camera.to_screen(vec2(

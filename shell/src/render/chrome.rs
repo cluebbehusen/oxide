@@ -97,7 +97,13 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
     let mut idle_badge = Rect::new(0.0, 0.0, 0.0, 0.0);
     if !game.spectate {
         // Top bar.
-        draw_rectangle(0.0, 0.0, screen_width(), 32.0 * s, PANEL);
+        draw_rectangle(
+            0.0,
+            0.0,
+            screen_width(),
+            crate::layout::TOP_BAR_H * s,
+            PANEL,
+        );
         let me = game.state.player(game.human);
         let my_units = game
             .state

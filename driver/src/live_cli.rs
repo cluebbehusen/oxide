@@ -158,6 +158,9 @@ pub(crate) enum LiveCmd {
         /// Anchor tile as "x,y" (top-left of the footprint).
         #[arg(long)]
         at: String,
+        /// Append behind current orders instead of replacing them.
+        #[arg(long)]
+        queue: bool,
     },
     /// Send harvesters to weld a damaged own built building.
     Repair {
@@ -169,6 +172,24 @@ pub(crate) enum LiveCmd {
         /// The building to weld.
         #[arg(long)]
         building: u32,
+        /// Append behind current orders instead of replacing them.
+        #[arg(long)]
+        queue: bool,
+    },
+    /// Send harvesters to strip an own built building for a partial
+    /// refund (Foundries refuse; sites keep Cancel).
+    Salvage {
+        /// Acting player index.
+        player: u8,
+        /// Stripper unit ids, comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        units: Vec<u32>,
+        /// The building coming down.
+        #[arg(long)]
+        building: u32,
+        /// Append behind current orders instead of replacing them.
+        #[arg(long)]
+        queue: bool,
     },
     /// Scrap an own unfinished site for a partial refund.
     Cancel {
@@ -434,23 +455,40 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
             units: ids,
             kind,
             at,
+            queue,
         } => Request::SendCommand {
             player: PlayerId(player),
             command: Command::Build {
                 units: units(ids),
                 kind: kind.into(),
                 anchor: parse_tile(&at)?,
+                queue,
             },
         },
         LiveCmd::Repair {
             player,
             units: ids,
             building,
+            queue,
         } => Request::SendCommand {
             player: PlayerId(player),
             command: Command::Repair {
                 units: units(ids),
                 building: BuildingId(building),
+                queue,
+            },
+        },
+        LiveCmd::Salvage {
+            player,
+            units: ids,
+            building,
+            queue,
+        } => Request::SendCommand {
+            player: PlayerId(player),
+            command: Command::Salvage {
+                units: units(ids),
+                building: BuildingId(building),
+                queue,
             },
         },
         LiveCmd::Cancel { player, building } => Request::SendCommand {

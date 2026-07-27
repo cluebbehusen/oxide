@@ -44,6 +44,7 @@ fn open_arena(units: Vec<UnitSpec>) -> Scenario {
             },
         ],
         units,
+        buildings: Vec::new(),
         meta: None,
     }
 }
@@ -279,6 +280,7 @@ fn wounded_members_rotate_to_the_rear_permanently() {
         idle: true,
         carrying: 0,
         site: None,
+        salvaging: None,
     };
 
     let mut exec = Executive::new();

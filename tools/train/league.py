@@ -101,18 +101,30 @@ SHAPE_K = 0.05
 STYLE_K = 0.0025
 
 
+F = {name: i for i, name in enumerate(FEATURE_NAMES)}
+
+
 def potential(raw: list[int]) -> float:
-    my_strength, harvesters = raw[20], raw[2]
-    return (my_strength + 25 * harvesters) / 500.0
+    # Standing buildings enter the potential at a third of their scrap
+    # cost (roughly the strength their price buys in units), so
+    # Salvage moves value between forms instead of climbing a
+    # unit-only potential for free — sell-Bastion-train-scuttlers was
+    # monotone positive before this term existed.
+    my_strength = raw[F["my_strength"]]
+    harvesters = raw[F["my_harvesters"]]
+    buildings = raw[F["my_building_value"]] / 3.0
+    return (my_strength + 25 * harvesters + buildings) / 500.0
 
 
 def style_reward(raw: list[int], aggression: int) -> float:
     lean = (aggression - 500) / 500.0
-    out_fighting = 1.0 if raw[12] in (2, 3) else -1.0
+    out_fighting = 1.0 if raw[F["army_state"]] in (2, 3) else -1.0
     return STYLE_K * lean * out_fighting
 
 
 FAB_BUILT = FEATURE_NAMES.index("fab_built")
+# Action index the gym assigns Salvage (v5's appended verb).
+SALVAGE_ACTION = 21
 
 # The agent's own army-count features with rough unit costs (varied
 # roles use the midpoint of their two faction kinds) — the same
@@ -207,7 +219,6 @@ def maybe_blunder(
 
 # Rush teacher — the v3 action menu; feature indices resolved by name.
 IDLE, TRAIN_H, TRAIN_S, FORM, PUSH, SCOUT = 0, 1, 2, 17, 18, 20
-F = {name: i for i, name in enumerate(FEATURE_NAMES)}
 
 
 def rusher(raw: list[int], mask: np.ndarray, tick: int) -> int:
@@ -277,7 +288,7 @@ class Job:
         # Learner seats that stood a Fabricator at any point this
         # episode. Lives on the Job, not the Lane, because episodes span
         # rollout windows and Lanes are recreated per window.
-        self.teched: set[int] = set()
+        self.salvaged: set[int] = set()
         if kind == "self":
             self.learner_seats = [0, 1]
             self.opp_seat = None
@@ -324,7 +335,7 @@ class Job:
     def _reset(self, seed: int) -> None:
         self.dead = set()
         self.last_views = {}
-        self.teched = set()
+        self.salvaged = set()
         self.conditions = {s: sample_condition(self.rng, s) for s in self.learner_seats}
         scenario = None
         if self.maps == "random":
@@ -454,6 +465,7 @@ def rollout(
     device: str,
     tech_bonus: float = 0.0,
     mix_bonus: float = 0.0,
+    salvage_bonus: float = 0.0,
 ) -> tuple[tuple[np.ndarray, ...], np.ndarray, list[float]]:
     lanes = {(id(j), s): Lane(j.worker, s) for j in jobs for s in j.learner_seats}
     finished_rewards = []
@@ -519,6 +531,8 @@ def rollout(
                     j.conditions[s][0],
                     j.rng,
                 )
+                if acts[s] == SALVAGE_ACTION:
+                    j.salvaged.add(s)
             acts.update(j.opponent_action(device))
             all_acts.append(acts)
         with timed("env_sec"):
@@ -528,14 +542,31 @@ def rollout(
             with timed("env_sec"):
                 frame = j.worker.recv()
             if frame.done:
+                # v5: the terminal frame carries observations for
+                # living seats. Install it as the live frame BEFORE any
+                # bonus reads a view, so tech and mix pay off the true
+                # final position — a dead seat, absent from the
+                # terminal seats, keeps its frozen last view.
+                j.frame = frame
                 for s in j.learner_seats:
                     lane = lanes[(id(j), s)]
                     # The shaping rides only the training reward;
                     # finished_rewards stays the pure game outcome so
-                    # avg_final telemetry compares across runs.
-                    mut_bonus = tech_bonus if s in j.teched else 0.0
-                    if s in j.teched:
+                    # avg_final telemetry compares across runs. The
+                    # tech bonus pays the TERMINAL frame's fab_built —
+                    # a Fabricator lost (or sold) by the end earns
+                    # nothing, unlike the old sticky flag.
+                    teched = j.seat_view(s).raw[FAB_BUILT] > 0
+                    mut_bonus = tech_bonus if teched else 0.0
+                    if teched:
                         TEL["ep_teched"] += 1
+                    if s in j.salvaged:
+                        TEL["ep_salvage"] += 1
+                        # Same instrument as the tech bonus, same
+                        # rules: own-state evidence (the seat's own
+                        # picked action), annealed to zero so the true
+                        # objective decides whether the verb survives.
+                        mut_bonus += salvage_bonus
                     if mix_bonus > 0.0:
                         # The seat's frozen last view carries its final
                         # army; two bits (a real three-way mix) earns
@@ -543,7 +574,16 @@ def rollout(
                         h = comp_entropy(j.seat_view(s).raw)
                         TEL["mix_ent"] += h
                         mut_bonus += mix_bonus * min(h, 2.0) / 2.0
-                    lane.rew.append(frame.reward(s) + mut_bonus)
+                    # Close the potential on the true final position:
+                    # without this delta, a salvage (or an army loss)
+                    # landing on the terminal cadence escaped the
+                    # shaping entirely — the anti-salvage
+                    # building-value term never priced the final step.
+                    # A dead lane's frozen view prices a zero delta by
+                    # construction (last_pot froze with it).
+                    final_pot = potential(j.seat_view(s).raw)
+                    shape = SHAPE_K * (final_pot - lane.last_pot)
+                    lane.rew.append(frame.reward(s) + mut_bonus + shape)
                     lane.done.append(True)
                     finished_rewards.append(frame.reward(s))
                 j.reset(next(seeds))
@@ -560,8 +600,6 @@ def rollout(
                         lane.done.append(False)
                         continue
                     raw = frame.seats[s].raw
-                    if raw[FAB_BUILT] > 0:
-                        j.teched.add(s)
                     pot = potential(raw)
                     lane.rew.append(
                         -1e-4
@@ -700,6 +738,14 @@ def main() -> None:
         "zero (0 = the full --updates span)",
     )
     ap.add_argument(
+        "--salvage-bonus",
+        type=float,
+        default=0.0,
+        help="terminal bonus paid when the seat picked Salvage this "
+        "episode (own-state only, fog-safe); annealed on the "
+        "--tech-anneal schedule. 0 disables.",
+    )
+    ap.add_argument(
         "--mix-bonus",
         type=float,
         default=0.0,
@@ -814,8 +860,20 @@ def main() -> None:
                 update - start_update - 1,
                 args.tech_anneal or args.updates,
             )
+            sb = tech_bonus_at(
+                args.salvage_bonus,
+                update - start_update - 1,
+                args.tech_anneal or args.updates,
+            )
             batch, last_val, finals = rollout(
-                policy, jobs, seeds, args.steps, device, tech_bonus=tb, mix_bonus=mb
+                policy,
+                jobs,
+                seeds,
+                args.steps,
+                device,
+                tech_bonus=tb,
+                mix_bonus=mb,
+                salvage_bonus=sb,
             )
             rollout_sec = time.time() - t0
             obs_b, mask_b, act_b, logp_b, val_b, rew_b, done_b, valid_b = batch
@@ -861,12 +919,18 @@ def main() -> None:
                 "update_sec": round(time.time() - t_update, 2),
                 "decisions_s": round(decisions / max(rollout_sec, 1e-9)),
                 **{
-                    k: (int(v) if k in ("resets", "ep_teched") else round(v, 2))
+                    k: (
+                        int(v)
+                        if k in ("resets", "ep_teched", "ep_salvage")
+                        else round(v, 2)
+                    )
                     for k, v in sorted(TEL.items())
                 },
             }
             if args.tech_bonus:
                 entry["tech_bonus"] = round(tb, 4)
+            if args.salvage_bonus:
+                entry["salvage_bonus"] = round(sb, 4)
             if update % args.pool_every == 0:
                 save_policy(
                     policy,

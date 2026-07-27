@@ -1,6 +1,10 @@
 //! Picking and selection: click, box, double-click-kind, and the idle
-//! harvester cycle. All read the human seat only — fog and ownership
-//! rules for *orders* live in `orders`.
+//! harvester cycle. Since 0.11 any owner's VISIBLE units are
+//! selectable — allies for reading, enemies for inspection — but a
+//! selection is single-allegiance by construction: picks and merges of
+//! a different owner REPLACE it (a mixed own+ally box would dead-lock
+//! every command under own-gating). Fog and ownership rules for
+//! *orders* live in `orders`.
 
 use crate::game::Game;
 use chassis::grid::TilePos;
@@ -60,33 +64,52 @@ pub(super) fn click_on_hud(game: &mut Game, screen: Vec2) -> bool {
     game.layout.get().chrome_owns(screen)
 }
 
+/// Whether the human may SEE this unit at all — own and allies always
+/// (team sight), enemies only on currently visible ground. Selection
+/// must never reach through fog.
+fn selectable(game: &Game, unit: &oxide_sim::Unit) -> bool {
+    !game.state.hostile(game.human, unit.player)
+        || game.all_seeing()
+        || game.my_vision().visible(unit.tile())
+}
+
 pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f32) {
     let world = game.camera.to_world(screen);
     if !additive {
         game.selection.building = None;
     }
-    // Nearest own unit within pick range wins…
+    // Nearest visible unit of any owner within pick range wins; own
+    // units outrank foreign ones inside the radius so a scrum never
+    // steals the click from the machine you can actually command.
     let radius = pick_radius(game, ui);
     let picked = game
         .state
         .units()
         .iter()
-        .filter(|u| u.player == game.human)
+        .filter(|u| selectable(game, u))
         .map(|u| {
             let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
-            (p.distance(world), u.id)
+            (u.player != game.human, p.distance(world), u.id, u.player)
         })
-        .filter(|(d, _)| *d <= radius)
-        .min_by(|a, b| a.0.total_cmp(&b.0));
-    if let Some((_, id)) = picked {
-        if additive {
-            // Shift-click toggles membership.
+        .filter(|(_, d, ..)| *d <= radius)
+        .min_by(|a, b| (a.0, a.1).partial_cmp(&(b.0, b.1)).expect("finite"));
+    if let Some((_, _, id, owner)) = picked {
+        let current_owner = game
+            .selection
+            .units
+            .first()
+            .and_then(|u| game.state.unit(*u))
+            .map(|u| u.player);
+        if additive && current_owner == Some(owner) {
+            // Shift-click toggles membership within one allegiance.
             if let Some(index) = game.selection.units.iter().position(|u| *u == id) {
                 game.selection.units.remove(index);
             } else {
                 game.selection.units.push(id);
             }
         } else {
+            // A different owner REPLACES: single-allegiance by
+            // construction.
             game.selection.units = vec![id];
         }
         return;
@@ -94,10 +117,16 @@ pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f3
     if additive {
         return; // shift-miss leaves the selection alone
     }
-    // …then an own building under the cursor…
+    // …then a building under the cursor (any owner whose ground shows).
+    // Only the HUMAN'S OWN buildings skip the sight check: built ally
+    // buildings are always inside shared team sight anyway, but ally
+    // SITES are blind until built, and a blind-click selecting one
+    // through fog would leak its live kind and hp through the panel.
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     if let Some(building) = game.state.building_at(tile)
-        && building.player == game.human
+        && (building.player == game.human
+            || game.all_seeing()
+            || building.tiles().any(|t| game.my_vision().visible(t)))
     {
         game.selection.units.clear();
         game.selection.building = Some(building.id);
@@ -112,19 +141,56 @@ pub(super) fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2, additi
     let b = game.camera.to_world(b_screen);
     let (lo, hi) = (a.min(b), a.max(b));
     game.selection.building = None;
+    let inside = |u: &&oxide_sim::Unit| {
+        let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
+        p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y
+    };
+    // Own units in the box always win; a box holding none falls to a
+    // single foreign owner (lowest seat first) for inspection — never
+    // a mixed bag.
     let mut boxed: Vec<UnitId> = game
         .state
         .units()
         .iter()
         .filter(|u| u.player == game.human)
-        .filter(|u| {
-            let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
-            p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y
-        })
+        .filter(inside)
         .map(|u| u.id)
         .collect();
+    if boxed.is_empty() {
+        let foreign_owner = game
+            .state
+            .units()
+            .iter()
+            .filter(|u| selectable(game, u))
+            .filter(inside)
+            .map(|u| u.player)
+            .min();
+        if let Some(owner) = foreign_owner {
+            // Re-apply visibility: the box may span a fog boundary,
+            // and this owner's HIDDEN units inside it are exactly what
+            // the fog is for — one visible scout must not drag its
+            // unseen army into an inspectable selection.
+            game.selection.units = game
+                .state
+                .units()
+                .iter()
+                .filter(|u| u.player == owner && selectable(game, u))
+                .filter(inside)
+                .map(|u| u.id)
+                .collect();
+            return;
+        }
+    }
     if additive {
-        boxed.extend(game.selection.units.iter().copied());
+        // Merging keeps one allegiance: a foreign remainder in the
+        // selection is dropped the moment own units join.
+        boxed.extend(
+            game.selection
+                .units
+                .iter()
+                .copied()
+                .filter(|id| game.state.unit(*id).is_some_and(|u| u.player == game.human)),
+        );
         boxed.sort_unstable();
         boxed.dedup();
     }
@@ -135,19 +201,22 @@ pub(super) fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2, additi
 pub(super) fn select_all_of_kind_on_screen(game: &mut Game, screen: Vec2, ui: f32) {
     let world = game.camera.to_world(screen);
     let radius = pick_radius(game, ui);
-    let kind = game
+    // The sweep stays within the PICKED unit's owner: double-clicking
+    // an ally harvester gathers that ally's harvesters on screen, never
+    // a cross-allegiance soup. Own units outrank foreign at the pick,
+    // like plain clicks.
+    let picked = game
         .state
         .units()
         .iter()
-        .filter(|u| u.player == game.human)
+        .filter(|u| selectable(game, u))
         .map(|u| {
             let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
-            (p.distance(world), u.kind)
+            (u.player != game.human, p.distance(world), u.kind, u.player)
         })
-        .filter(|(d, _)| *d <= radius)
-        .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, k)| k);
-    let Some(kind) = kind else {
+        .filter(|(_, d, ..)| *d <= radius)
+        .min_by(|a, b| (a.0, a.1).partial_cmp(&(b.0, b.1)).expect("finite"));
+    let Some((_, _, kind, owner)) = picked else {
         return;
     };
     let (lo, hi) = game.camera.world_rect();
@@ -156,7 +225,7 @@ pub(super) fn select_all_of_kind_on_screen(game: &mut Game, screen: Vec2, ui: f3
         .state
         .units()
         .iter()
-        .filter(|u| u.player == game.human && u.kind == kind)
+        .filter(|u| u.player == owner && u.kind == kind && selectable(game, u))
         .filter(|u| {
             let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
             p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y

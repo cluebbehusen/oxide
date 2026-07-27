@@ -52,6 +52,16 @@ def main() -> None:
     recips = [round((1 << (2 * Q)) / float(s)) for s in SCALES]
     recips += [round((1 << (2 * Q)) / 1000.0)] * CONDITION_DIMS
 
+    # Shape tripwires: a checkpoint from another contract must fail
+    # here, not produce an artifact Rust rejects (or worse, accepts).
+    net_inputs = FEATURES + CONDITION_DIMS
+    if layers[0]["w"] and len(layers[0]["w"][0]) != net_inputs:
+        got = len(layers[0]["w"][0])
+        raise SystemExit(f"first layer reads {got} inputs, contract wants {net_inputs}")
+    if len(head["w"]) != ACTIONS:
+        got = len(head["w"])
+        raise SystemExit(f"head emits {got} logits, contract wants {ACTIONS}")
+
     artifact = {
         "gym_version": GYM_VERSION,
         "arch": blob.get("arch"),

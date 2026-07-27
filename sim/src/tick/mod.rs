@@ -84,7 +84,25 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
     }
     state.units.retain(|u| u.hp > 0);
 
+    let mut queue_refunds: Vec<(crate::ids::PlayerId, u32)> = Vec::new();
     for building in state.buildings.iter().filter(|b| b.hp == 0) {
+        // A salvaged building came apart on purpose: no wreck, no
+        // destruction event, and its prepaid production queue refunds
+        // in full (training spends only time — the CancelTrain rule,
+        // applied to the whole line at once).
+        if building.salvaged {
+            events.push(Event::BuildingSalvaged {
+                building: building.id,
+                player: building.player,
+                pos: building.center(),
+                refund: building.salvage_credited,
+            });
+            let prepaid: u32 = building.queue.iter().map(|k| k.stats().cost).sum();
+            if prepaid > 0 {
+                queue_refunds.push((building.player, prepaid));
+            }
+            continue;
+        }
         events.push(Event::BuildingDestroyed {
             building: building.id,
             player: building.player,
@@ -101,6 +119,10 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
         }
     }
     state.buildings.retain(|b| b.hp > 0);
+    for (player, prepaid) in queue_refunds {
+        let bank = &mut state.player_mut(player).scrap;
+        *bank = bank.saturating_add(prepaid);
+    }
 
     for (tile, value) in deposits {
         // A tile under a surviving building swallows its deposit — a

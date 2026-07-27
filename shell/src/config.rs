@@ -61,6 +61,39 @@ impl Default for CameraPrefs {
     }
 }
 
+/// Touch gesture timing windows, in milliseconds.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TouchPrefs {
+    /// Two taps inside this window read as a double-tap.
+    pub double_tap_ms: u32,
+    /// A still finger held this long fires the context gesture.
+    pub long_press_ms: u32,
+}
+
+impl Default for TouchPrefs {
+    fn default() -> Self {
+        Self {
+            double_tap_ms: 350,
+            long_press_ms: 400,
+        }
+    }
+}
+
+impl TouchPrefs {
+    /// The invariant a hand-edited config cannot break: a lazy
+    /// double-tap must never read as a long-press, so the press window
+    /// always sits strictly above the tap window.
+    pub fn clamped(self) -> Self {
+        Self {
+            double_tap_ms: self.double_tap_ms.clamp(50, 1000),
+            long_press_ms: self
+                .long_press_ms
+                .clamp(50, 2000)
+                .max(self.double_tap_ms.clamp(50, 1000) + 50),
+        }
+    }
+}
+
 /// The whole persisted surface.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
@@ -86,6 +119,16 @@ pub struct Config {
     /// colors only; sprite art is untouched).
     #[serde(default)]
     pub colorblind: bool,
+    /// Touch gesture timing (absent in configs saved before touch).
+    #[serde(default)]
+    pub touch: TouchPrefs,
+    /// Actions the player EXPLICITLY unbound (Controls > X). A missing
+    /// binding row alone is ambiguous — it also means "verb added
+    /// after this config was saved" — and the migration that adopts
+    /// classic chords for new verbs must not resurrect a deliberate
+    /// unbinding on every restart.
+    #[serde(default)]
+    pub unbound: Vec<crate::action::Action>,
 }
 
 impl Default for Config {
@@ -99,6 +142,8 @@ impl Default for Config {
             window: (1280, 800),
             reduced_motion: false,
             colorblind: false,
+            touch: TouchPrefs::default(),
+            unbound: Vec::new(),
         }
     }
 }
@@ -183,7 +228,25 @@ impl Config {
                         .bindings
                         .unbind(crate::action::Action::AssignGroup(n));
                 }
+                // A verb added after this config was saved has no row
+                // at all: adopt its classic chord so new features
+                // arrive keyboard-reachable. Refusal (the player
+                // claimed that chord for something else) leaves the
+                // verb unbound — panels still reach it by click. A row
+                // the player EXPLICITLY unbound is not a new verb:
+                // the tombstone list keeps it unbound across restarts.
+                for default in BindingMap::classic().bindings().to_vec() {
+                    let known = config
+                        .bindings
+                        .bindings()
+                        .iter()
+                        .any(|b| b.action == default.action);
+                    if !known && !config.unbound.contains(&default.action) {
+                        let _ = config.bindings.rebind(default.action, default.chord);
+                    }
+                }
                 config.window = Self::sane_window(config.window);
+                config.touch = config.touch.clamped();
                 config
             }
             _ => Self::default(),
@@ -248,6 +311,65 @@ mod tests {
             loaded.bindings.chord_for(crate::action::Action::Patrol),
             Some(crate::action::Chord::bare(oxide_protocol::Key::J)),
             "the customization survived validation"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_explicit_unbinding_survives_the_restart() {
+        // Controls > X removes the row AND records the choice; without
+        // the tombstone the new-verb migration read the missing row as
+        // an old config and resurrected the classic chord every load.
+        let dir = std::env::temp_dir().join(format!("oxide-config-unbind-{}", std::process::id()));
+        let path = dir.join("config.json");
+        let mut config = Config::default();
+        config.bindings.unbind(crate::action::Action::Patrol);
+        config.unbound.push(crate::action::Action::Patrol);
+        config.save_to(&path).expect("save");
+        let loaded = Config::load_from(Some(path.clone()));
+        assert_eq!(
+            loaded.bindings.chord_for(crate::action::Action::Patrol),
+            None,
+            "the deliberate unbinding persisted"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_config_saved_before_a_new_verb_adopts_its_classic_chord() {
+        // Salvage arrived in 0.11; a config saved before it has no row
+        // for the action at all. Loading must graft the classic chord
+        // in (when free) instead of shipping the verb keyboardless --
+        // and must NOT graft it over a chord the player claimed.
+        let dir = std::env::temp_dir().join(format!("oxide-config-newverb-{}", std::process::id()));
+        let path = dir.join("config.json");
+        let mut config = Config::default();
+        config.bindings.unbind(crate::action::Action::Salvage);
+        config.save_to(&path).expect("save");
+        let loaded = Config::load_from(Some(path.clone()));
+        assert_eq!(
+            loaded.bindings.chord_for(crate::action::Action::Salvage),
+            Some(crate::action::Chord::bare(oxide_protocol::Key::V)),
+            "the missing verb adopted its classic chord"
+        );
+
+        // Same again, but the player owns V: the verb stays unbound.
+        let mut config = Config::default();
+        config.bindings.unbind(crate::action::Action::Salvage);
+        assert!(config.bindings.rebind(
+            crate::action::Action::Patrol,
+            crate::action::Chord::bare(oxide_protocol::Key::V)
+        ));
+        config.save_to(&path).expect("save");
+        let loaded = Config::load_from(Some(path.clone()));
+        assert_eq!(
+            loaded.bindings.chord_for(crate::action::Action::Salvage),
+            None,
+            "a claimed chord is never stolen back"
+        );
+        assert_eq!(
+            loaded.bindings.chord_for(crate::action::Action::Patrol),
+            Some(crate::action::Chord::bare(oxide_protocol::Key::V)),
         );
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -111,6 +111,7 @@ fn ghost_memory_survives_unseen_demolition_until_revisited() {
             unit(2, UnitKind::Sentinel, 7, 10),
             unit(2, UnitKind::Sentinel, 7, 11),
         ],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
@@ -327,6 +328,7 @@ fn eliminated_players_cannot_command_survivors() {
             unit(2, UnitKind::Sentinel, 7, 3),
             unit(2, UnitKind::Sentinel, 7, 4),
         ],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
@@ -569,6 +571,7 @@ fn losing_the_last_foundry_ends_the_match_despite_other_buildings() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor,
+            queue: false,
         },
     )]);
     run_until(&mut state, 700, |s, _| {

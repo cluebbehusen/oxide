@@ -29,42 +29,73 @@ fn recorded_scenario_run_reproduces_from_its_replay() {
 #[test]
 fn every_shipped_scenario_builds_and_plays() {
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scenarios");
-    let mut checked = 0;
-    for entry in std::fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
+    let paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
+        .collect();
+    assert!(
+        paths.len() >= 4,
+        "expected the shipped maps, found {}",
+        paths.len()
+    );
+    // Every map is an independent deterministic sim — the sweep fans
+    // out across a worker pool, or 25 maps at 12k bot-vs-bot ticks
+    // dominate the whole workspace suite's wall clock. Workers pull
+    // from a shared queue (no waves waiting on a chunk's slowest),
+    // capped at the core count so the sweep never oversubscribes the
+    // binary's other concurrently-running sim tests; biggest files
+    // first, because the 4v4 maps ARE the critical path and a
+    // last-scheduled Compass Grand would add its whole runtime to the
+    // tail.
+    let mut paths = paths;
+    paths.sort_by_key(|p| std::cmp::Reverse(std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)));
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers.min(paths.len()))
+            .map(|_| {
+                scope.spawn(|| {
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(path) = paths.get(i) else { break };
+                        let mut scenario = Scenario::load(path)
+                            .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+                        for player in &mut scenario.players {
+                            player.bot = true;
+                            // The shipped default opponent; a configless
+                            // flip would field the team-blind classic
+                            // bot, which team maps now reject.
+                            player
+                                .bot_config
+                                .get_or_insert(oxide_sim::scenario::BotConfig {
+                                    level: oxide_sim::bot::Level::Medium,
+                                    aggression: None,
+                                });
+                        }
+                        // Playable means *alive*, not merely parseable:
+                        // after 12k ticks of bot-vs-bot the match must
+                        // either be decided or still producing — unit ids
+                        // are monotonic, so a high id proves Foundries
+                        // kept working. (Reaching the tick count alone
+                        // once masked a total economy freeze.)
+                        let outcome = runner::run_scenario(&scenario, 12_000, true, false)
+                            .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+                        assert_eq!(outcome.state.current_tick(), 12_000, "{}", path.display());
+                        let produced = outcome.state.units().iter().any(|u| u.id.0 >= 16);
+                        assert!(
+                            outcome.state.result().is_some() || produced,
+                            "{}: no victory and no production after 12k ticks — the map stalled",
+                            path.display()
+                        );
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("a map sweep thread panicked");
         }
-        checked += 1;
-        let mut scenario =
-            Scenario::load(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-        for player in &mut scenario.players {
-            player.bot = true;
-            // The shipped default opponent; a configless flip would field
-            // the team-blind classic bot, which team maps now reject.
-            player
-                .bot_config
-                .get_or_insert(oxide_sim::scenario::BotConfig {
-                    level: oxide_sim::bot::Level::Medium,
-                    aggression: None,
-                });
-        }
-        // Playable means *alive*, not merely parseable: after 12k ticks of
-        // bot-vs-bot the match must either be decided or still producing —
-        // unit ids are monotonic, so a high id proves Foundries kept
-        // working. (Reaching the tick count alone once masked a total
-        // economy freeze.)
-        let outcome = runner::run_scenario(&scenario, 12_000, true, false)
-            .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-        assert_eq!(outcome.state.current_tick(), 12_000, "{}", path.display());
-        let produced = outcome.state.units().iter().any(|u| u.id.0 >= 16);
-        assert!(
-            outcome.state.result().is_some() || produced,
-            "{}: no victory and no production after 12k ticks — the map stalled",
-            path.display()
-        );
-    }
-    assert!(checked >= 4, "expected the shipped maps, found {checked}");
+    });
 }
 
 #[test]
@@ -192,6 +223,7 @@ fn a_decided_match_latches_its_result_and_keeps_ticking() {
             },
         ],
         units,
+        buildings: Vec::new(),
         meta: None,
     };
 
@@ -253,4 +285,31 @@ fn overriding_the_tick_count_below_the_commands_is_rejected() {
     // silent drop would desync a "resumed" session, so it must be an error.
     let err = runner::run_replay(&replay, Some(50), false).unwrap_err();
     assert!(err.to_string().contains("unconsumed"), "{err}");
+}
+
+#[test]
+fn every_shipped_scenario_names_its_seats_uniquely() {
+    // The banner, panel, and stats all address seats by name, and the
+    // shell's launch refuses collisions — a duplicate authored name
+    // crashed match setup in 0.11 (Trident and Compass shipped two
+    // "West Ferrous" seats each).
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scenarios");
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let scenario =
+            Scenario::load(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+        let mut names: Vec<&str> = scenario.players.iter().map(|p| p.name.as_str()).collect();
+        names.sort_unstable();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            before,
+            "{}: seat names collide",
+            path.display()
+        );
+    }
 }

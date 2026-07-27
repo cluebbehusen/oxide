@@ -81,6 +81,7 @@ fn arena(units: Vec<UnitSpec>) -> Scenario {
         ],
         players: players(),
         units,
+        buildings: Vec::new(),
         meta: None,
     }
 }
@@ -124,6 +125,7 @@ fn a_ground_chaser_stalls_when_no_standing_room_reaches_a_flyer_deep_in_rock() {
             unit(0, UnitKind::Flakhound, 4, 8),
             unit(1, UnitKind::Wisp, 10, 1),
         ],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
@@ -222,6 +224,7 @@ fn a_fogged_flyer_footing_never_leaks_through_the_stall_reason() {
             unit(0, UnitKind::Flakhound, 4, 2),
             unit(1, UnitKind::Wisp, 10, 2),
         ],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
@@ -444,6 +447,7 @@ fn a_dead_attacker_draws_no_answer() {
             unit(0, UnitKind::Lancer, 4, 9),    // executioner
             unit(0, UnitKind::Lancer, 4, 10),   // executioner
         ],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
@@ -530,6 +534,7 @@ fn a_surviving_shooter_is_answered_when_the_victims_own_target_falls() {
             // the scuttler's aggro (5), so the prey keeps standing.
             unit(0, UnitKind::Harvester, 14, 14),
         ],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
@@ -625,6 +630,7 @@ fn building_a_footprint_over_rock_is_rejected_as_a_bad_site() {
             units: vec![harvester],
             kind: BuildingKind::Turret,
             anchor: rock,
+            queue: false,
         },
     )]);
     assert!(
@@ -675,6 +681,7 @@ fn radar_detects_at_the_ring_and_goes_quiet_one_tile_beyond() {
             unit(1, UnitKind::Harvester, 20, 4), // on the ring: dx16 dy0
             unit(1, UnitKind::Harvester, 20, 5), // one deeper: dx16 dy1
         ],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
@@ -689,6 +696,7 @@ fn radar_detects_at_the_ring_and_goes_quiet_one_tile_beyond() {
             units: vec![builder],
             kind: BuildingKind::Array,
             anchor: TilePos::new(4, 4),
+            queue: false,
         },
     )]);
     run_until(&mut state, 500, |_, events| {
@@ -749,6 +757,7 @@ fn a_ground_chaser_flanks_to_a_firing_position_it_can_actually_shoot_from() {
             unit(0, UnitKind::Flakhound, 1, 6),
             unit(1, UnitKind::Wisp, 7, 1),
         ],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();

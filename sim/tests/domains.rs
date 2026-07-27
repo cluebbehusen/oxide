@@ -46,6 +46,7 @@ fn arena(units: Vec<UnitSpec>) -> Scenario {
             },
         ],
         units,
+        buildings: Vec::new(),
         meta: None,
     }
 }
@@ -419,6 +420,7 @@ fn long_guns_fire_on_a_spotters_eyes_and_go_quiet_without_them() {
             unit(0, UnitKind::Scuttler, 10, 3),
             unit(1, UnitKind::Harvester, 12, 4),
         ],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
@@ -525,6 +527,7 @@ fn hovering_machines_do_not_block_foundations() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor: TilePos::new(5, 5),
+            queue: false,
         },
     )]);
     assert!(
@@ -548,6 +551,7 @@ fn training_is_gated_to_the_seats_faction() {
             units: vec![builder],
             kind: BuildingKind::Fabricator,
             anchor: TilePos::new(5, 1),
+            queue: false,
         },
     )]);
     run_until(&mut state, 500, |_, events| {
@@ -678,6 +682,7 @@ fn radar_blips_detect_without_identifying_or_authorizing() {
             units: vec![builder],
             kind: BuildingKind::Array,
             anchor: TilePos::new(4, 2),
+            queue: false,
         },
     )]);
     run_until(&mut state, 500, |_, events| {

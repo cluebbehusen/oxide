@@ -67,6 +67,10 @@ pub struct Panel {
     pub sub: String,
     /// Portrait icon.
     pub portrait: CardIcon,
+    /// Whose colors the portrait and queue sprites wear — the SELECTED
+    /// entity's owner, not the viewer (an inspected Cupric ally must
+    /// not draw in Ferrous rust).
+    pub faction: oxide_sim::Faction,
     /// Command cards.
     pub cards: Vec<Card>,
     /// Queue thumbnails (production or orders).
@@ -157,6 +161,11 @@ fn order_card(order: &Order, active: bool) -> Card {
             "Welding a damaged building; costs a trickle.",
         ),
         Order::AttackMove { .. } => ("X", "Attack-move", "Marching; engages everything met."),
+        Order::Salvage { .. } => (
+            "S",
+            "Salvage",
+            "Stripping a building down for a partial refund.",
+        ),
     };
     Card {
         icon: CardIcon::Glyph(glyph),
@@ -188,14 +197,44 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
     if let Some(id) = game.selection.building {
         let building = game.state.building(id)?;
         let stats = building.kind.stats();
+        let owner = building.player;
         let mut panel = Panel {
             title: building.kind.name().to_uppercase(),
             sub: format!("{}/{} hp", building.hp, stats.max_hp),
             portrait: CardIcon::Building(building.kind),
+            faction: game.state.player(owner).faction,
             cards: Vec::new(),
             queue: Vec::new(),
             queue_label: "queue",
         };
+        if owner != game.human {
+            // Foreign buildings inspect read-only: an ally's works say
+            // whose they are; a hostile shows hp and kind, nothing
+            // more — no queue chips, no cards, no rally, no reach
+            // into anyone's production.
+            let hostile = game.state.hostile(game.human, owner);
+            panel.sub = format!(
+                "{} · {}",
+                if hostile { "hostile" } else { "ally" },
+                panel.sub
+            );
+            if !hostile {
+                panel.cards.push(Card {
+                    icon: CardIcon::Glyph("·"),
+                    title: "Ally works".into(),
+                    cost: None,
+                    hotkey: String::new(),
+                    action: CardAction::None,
+                    enabled: true,
+                    why: None,
+                    desc: vec![
+                        "Read-only: allies coordinate by position,".into(),
+                        "not by each other's controls.".into(),
+                    ],
+                });
+            }
+            return Some(panel);
+        }
         if !building.built {
             panel.sub = format!("under construction · {}", panel.sub);
             panel.cards.push(Card {
@@ -275,6 +314,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         .filter_map(|id| game.state.unit(*id))
         .collect();
     let first = units.first()?;
+    let owner = first.player;
     let has_builder = units.iter().any(|u| u.kind == UnitKind::Harvester);
     let mut desc = vec![unit_flavor(first.kind).to_string()];
     desc.extend(weapon_lines(first.kind));
@@ -298,10 +338,30 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             kinds.join(", ")
         },
         portrait: CardIcon::Unit(first.kind),
+        faction: game.state.player(owner).faction,
         cards: Vec::new(),
         queue: Vec::new(),
         queue_label: "orders",
     };
+    if owner != game.human {
+        // Foreign units inspect read-only. An ally shows its orders —
+        // that was the ask: see what your teammate is doing — while a
+        // hostile shows hp and kind only: its order state is intent the
+        // fog never licensed (zero chips, a test pins it).
+        let hostile = game.state.hostile(game.human, owner);
+        panel.sub = format!(
+            "{} · {}",
+            if hostile { "hostile" } else { "ally" },
+            panel.sub
+        );
+        if !hostile && units.len() == 1 {
+            panel.queue.push(order_card(&first.order, true));
+            for order in &first.queue {
+                panel.queue.push(order_card(order, false));
+            }
+        }
+        return Some(panel);
+    }
     panel.cards.push(Card {
         icon: CardIcon::Glyph("■"),
         title: "Stop".into(),
@@ -325,6 +385,21 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             "Machines engage whatever they meet along the way.".into(),
         ],
     });
+    if has_builder {
+        panel.cards.push(Card {
+            icon: CardIcon::Glyph("V"),
+            title: "Salvage".into(),
+            cost: None,
+            hotkey: chord(bindings, Action::Salvage),
+            action: CardAction::Dispatch(Action::Salvage),
+            enabled: true,
+            why: None,
+            desc: vec![
+                "Arm, then click an own built building to strip it".into(),
+                "for a partial refund. Foundries refuse.".into(),
+            ],
+        });
+    }
     if has_builder {
         let scrap = game.state.player(game.human).scrap;
         let palette_key = chord(bindings, Action::ToggleBuildPalette);

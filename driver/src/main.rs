@@ -119,6 +119,11 @@ enum Cmd {
         /// Ticks to run.
         #[arg(long, default_value_t = 2_000)]
         ticks: u32,
+        /// Bench a shipped scenario with its bots thinking instead of
+        /// the synthetic mass battle (e.g. "scenarios/compass-grand.json"
+        /// — eight neural minds, the heaviest honest shape).
+        #[arg(long)]
+        scenario: Option<String>,
     },
     /// Par-cost arena duel between two hand-picked armies (no
     /// economy): the balance review's controlled experiment.
@@ -129,6 +134,10 @@ enum Cmd {
         /// Side B, same shape.
         #[arg(long)]
         b: String,
+        /// Pre-built structures for side B, as "kind:count" (defense
+        /// mode: the swarm-vs-fortification experiment).
+        #[arg(long)]
+        b_structures: Option<String>,
         /// Seeds to run (deterministic each).
         #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u64).range(1..))]
         seeds: u64,
@@ -315,7 +324,40 @@ fn main() -> Result<()> {
                 out.as_deref(),
             )?;
         }
-        Cmd::Bench { units, ticks } => {
+        Cmd::Bench {
+            units,
+            ticks,
+            scenario,
+        } => {
+            if let Some(path) = scenario {
+                // Full-session bench: every seat thinks — the heaviest
+                // honest shape (eight neural minds on the 4v4 map),
+                // deciding whether a perf window is needed. Shipped
+                // playable maps author a human seat, so every chair is
+                // converted first; benching around an idle seat 0
+                // under-measured the claim.
+                let mut sc = runner::load_scenario(&path)?;
+                oxide_kit::bench::all_bots(&mut sc);
+                let mut state = sc.build()?;
+                let mut bots = oxide_sim::bot::seat_bots(&sc);
+                let start = std::time::Instant::now();
+                for _ in 0..ticks {
+                    let mut commands = Vec::new();
+                    for bot in &mut bots {
+                        commands.extend(bot.act(&state));
+                    }
+                    state.tick(&commands);
+                }
+                let secs = start.elapsed().as_secs_f64();
+                println!(
+                    "bench: {} ({} bot seats) x {ticks} ticks in {secs:.2}s = {:.0} ticks/s (hash {:#x})",
+                    sc.name,
+                    bots.len(),
+                    f64::from(ticks) / secs,
+                    state.hash()
+                );
+                return Ok(());
+            }
             let scenario = oxide_kit::bench::mass_battle(units, 9);
             let mut state = scenario.build()?;
             oxide_kit::bench::engage(&mut state);
@@ -331,17 +373,37 @@ fn main() -> Result<()> {
                 state.hash(),
             );
         }
-        Cmd::Matchup { a, b, seeds } => {
+        Cmd::Matchup {
+            a,
+            b,
+            b_structures,
+            seeds,
+        } => {
             let army_a = oxide_kit::matchup::parse_army(&a)?;
-            let army_b = oxide_kit::matchup::parse_army(&b)?;
-            println!(
+            let army_b = if b.trim().is_empty() {
+                Vec::new()
+            } else {
+                oxide_kit::matchup::parse_army(&b)?
+            };
+            let garrison = match &b_structures {
+                Some(spec) => oxide_kit::matchup::parse_garrison(spec)?,
+                None => Vec::new(),
+            };
+            print!(
                 "A = {a} ({} scrap)   B = {b} ({} scrap)",
                 oxide_kit::matchup::army_cost(&army_a),
                 oxide_kit::matchup::army_cost(&army_b),
             );
+            if let Some(spec) = &b_structures {
+                print!(
+                    "  + garrison {spec} ({} scrap)",
+                    oxide_kit::matchup::garrison_cost(&garrison)
+                );
+            }
+            println!();
             let (mut a_total, mut b_total) = (0u64, 0u64);
             for seed in 0..seeds {
-                let out = oxide_kit::matchup::duel(&army_a, &army_b, 42 + seed, 8_000)?;
+                let out = oxide_kit::matchup::siege(&army_a, &army_b, &garrison, 42 + seed, 8_000)?;
                 a_total += u64::from(out.a_value);
                 b_total += u64::from(out.b_value);
                 println!(

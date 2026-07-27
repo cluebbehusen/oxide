@@ -62,9 +62,19 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
                 units,
                 kind,
                 anchor,
-            } => apply_build(state, pc.player, units, *kind, *anchor),
+                queue,
+            } => apply_build(state, pc.player, units, *kind, *anchor, *queue),
             Command::Cancel { building } => apply_cancel(state, pc.player, *building, events),
-            Command::Repair { units, building } => apply_repair(state, pc.player, units, *building),
+            Command::Repair {
+                units,
+                building,
+                queue,
+            } => apply_repair(state, pc.player, units, *building, *queue),
+            Command::Salvage {
+                units,
+                building,
+                queue,
+            } => apply_salvage(state, pc.player, units, *building, *queue),
             Command::Stop { units } => apply_stop(state, pc.player, units),
             Command::Train { building, kind } => apply_train(state, pc.player, *building, *kind),
             Command::CancelTrain { building, index } => {
@@ -437,6 +447,7 @@ fn apply_build(
     units: &[UnitId],
     kind: crate::stats::BuildingKind,
     anchor: TilePos,
+    queue: bool,
 ) -> Result<(), RejectReason> {
     if !in_envelope(state, anchor) {
         return Err(RejectReason::OutOfBounds);
@@ -450,12 +461,33 @@ fn apply_build(
         })
         .ok_or(RejectReason::NoValidUnits)?;
 
-    // Resume an existing site of ours at this anchor?
+    // Resume an existing site of ours at this anchor? Every accepted
+    // harvester joins — builders stack, and a dead builder's work is
+    // picked back up by however many hands the player sends.
     let existing = state
         .buildings
         .iter()
         .find(|b| b.anchor == anchor && b.kind == kind && b.player == player && !b.built)
         .map(|b| b.id);
+    if let Some(site) = existing {
+        let crew: Vec<UnitId> = accepted_units(state, player, units)
+            .into_iter()
+            .filter(|id| {
+                state
+                    .unit(*id)
+                    .is_some_and(|u| u.kind.stats().harvest.is_some())
+            })
+            .collect();
+        let mut landed = 0;
+        for id in crew {
+            if let Some(unit) = state.unit_mut(id)
+                && assign(unit, Order::Build { site }, queue)
+            {
+                landed += 1;
+            }
+        }
+        return (landed > 0).then_some(()).ok_or(RejectReason::QueueFull);
+    }
     let site = match existing {
         Some(site) => site,
         None => {
@@ -480,6 +512,16 @@ fn apply_build(
                 state.retract_site(site);
                 return Err(RejectReason::UnreachableGoal);
             }
+            // Assign BEFORE paying: a builder whose order queue is
+            // full must reject the whole command with the site
+            // retracted and nothing spent — the old code discarded
+            // this result and could charge for a site nobody was
+            // ordered to build.
+            let unit = state.unit_mut(builder).expect("filtered above");
+            if !assign(unit, Order::Build { site }, queue) {
+                state.retract_site(site);
+                return Err(RejectReason::QueueFull);
+            }
             state.player_mut(player).scrap -= cost;
             // The accepted foundation buries whatever wreck salvage lay
             // there (only now — a rejected site must leave no trace).
@@ -492,8 +534,7 @@ fn apply_build(
             site
         }
     };
-    let unit = state.unit_mut(builder).expect("filtered above");
-    assign(unit, Order::Build { site }, false);
+    let _ = site;
     Ok(())
 }
 
@@ -535,6 +576,7 @@ fn apply_repair(
     player: PlayerId,
     units: &[UnitId],
     building: crate::ids::BuildingId,
+    queue: bool,
 ) -> Result<(), RejectReason> {
     let b = state
         .building(building)
@@ -552,7 +594,7 @@ fn apply_repair(
             && unit.player == player
             && unit.kind.stats().harvest.is_some()
         {
-            if assign(unit, Order::Repair { building }, false) {
+            if assign(unit, Order::Repair { building }, queue) {
                 landed += 1;
             }
             applied += 1;
@@ -561,7 +603,92 @@ fn apply_repair(
     if applied == 0 {
         return Err(RejectReason::NoValidUnits);
     }
-    (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
+    if landed == 0 {
+        return Err(RejectReason::QueueFull);
+    }
+    // Eviction only on a command that actually landed: a REJECTED
+    // command must leave the world untouched (a misfiring client once
+    // cancelled its own welders with an invalid salvage), and running
+    // it after the assignment is safe because the purge only matches
+    // the OPPOSING verb.
+    purge_opposing_verb(state, player, building, Verb::Salvage);
+    Ok(())
+}
+
+/// Stripping is for standing, built, own, non-Foundry buildings —
+/// unbuilt sites keep [`Command::Cancel`]'s instant refund, and the
+/// victory token never comes apart by its own crew's hands.
+fn apply_salvage(
+    state: &mut State,
+    player: PlayerId,
+    units: &[UnitId],
+    building: crate::ids::BuildingId,
+    queue: bool,
+) -> Result<(), RejectReason> {
+    let b = state
+        .building(building)
+        .ok_or(RejectReason::NotYourBuilding)?;
+    if b.player != player {
+        return Err(RejectReason::NotYourBuilding);
+    }
+    if !b.built || b.kind == crate::stats::BuildingKind::Foundry {
+        return Err(RejectReason::InvalidTarget);
+    }
+    let mut landed = 0;
+    let mut applied = 0;
+    for &id in units {
+        if let Some(unit) = state.unit_mut(id)
+            && unit.player == player
+            && unit.kind.stats().harvest.is_some()
+        {
+            if assign(unit, Order::Salvage { building }, queue) {
+                landed += 1;
+            }
+            applied += 1;
+        }
+    }
+    if applied == 0 {
+        return Err(RejectReason::NoValidUnits);
+    }
+    if landed == 0 {
+        return Err(RejectReason::QueueFull);
+    }
+    purge_opposing_verb(state, player, building, Verb::Repair);
+    Ok(())
+}
+
+/// The verb a repair/salvage command evicts from its target: the two
+/// never share a building, or a welder and a stripper would feed the
+/// resolver an oscillator (and the bot's deepest-wound repair pick
+/// would re-crew every salvage it sees).
+enum Verb {
+    Repair,
+    Salvage,
+}
+
+/// Clears every own unit's orders of the opposing verb on `building` —
+/// queued legs are dropped, a matching active order advances to its
+/// next leg (the program survives; only the conflicting job dies).
+fn purge_opposing_verb(
+    state: &mut State,
+    player: PlayerId,
+    building: crate::ids::BuildingId,
+    verb: Verb,
+) {
+    let conflicts = |o: &Order| match verb {
+        Verb::Repair => matches!(o, Order::Repair { building: b } if *b == building),
+        Verb::Salvage => matches!(o, Order::Salvage { building: b } if *b == building),
+    };
+    for unit in state.units.iter_mut().filter(|u| u.player == player) {
+        unit.queue.retain(|o| !conflicts(o));
+        if conflicts(&unit.order) {
+            // A looping program ROTATES the finished order to the back
+            // of the queue we just cleaned — strip it again, or a
+            // patrolling welder brings the evicted job around forever.
+            unit.advance_queue();
+            unit.queue.retain(|o| !conflicts(o));
+        }
+    }
 }
 
 fn apply_stop(state: &mut State, player: PlayerId, units: &[UnitId]) -> Result<(), RejectReason> {

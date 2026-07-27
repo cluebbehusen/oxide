@@ -44,6 +44,7 @@ fn unit_obs(id: u32, player: u8, kind: UnitKind, x: i32, y: i32) -> UnitObs {
         idle: true,
         carrying: 0,
         site: None,
+        salvaging: None,
     }
 }
 
@@ -211,6 +212,40 @@ fn wounded_buildings_draw_a_weld_order_when_funded() {
     let mut policy = UtilityPolicy::new();
     let intents = think(&mut policy, &obs);
     assert!(!intents.iter().any(|i| matches!(i, Intent::Repair { .. })));
+}
+
+#[test]
+fn repairs_never_recrew_an_active_salvage() {
+    // Repair and salvage evict each other in the sim, so a repair
+    // intent on a building an own crew is stripping would reverse the
+    // liquidation the bot itself ordered. The gym's lowering filters
+    // these; the scripted channel must too.
+    let mut obs = obs_with_home();
+    obs.my_buildings
+        .push(building_obs(1, 0, BuildingKind::Turret, 5, 2));
+    obs.my_queues.push(Vec::new());
+    obs.my_buildings
+        .push(building_obs(2, 0, BuildingKind::Turret, 8, 2));
+    obs.my_queues.push(Vec::new());
+    obs.my_buildings[1].hp = 100; // both wounded below the weld line
+    obs.my_buildings[2].hp = 100;
+    let mut stripper = unit_obs(0, 0, UnitKind::Harvester, 5, 3);
+    stripper.salvaging = Some(BuildingId(1));
+    obs.my_units = vec![stripper];
+    let mut policy = UtilityPolicy::new();
+    let intents = think(&mut policy, &obs);
+    assert!(
+        !intents
+            .iter()
+            .any(|i| matches!(i, Intent::Repair { building } if *building == BuildingId(1))),
+        "a building being liquidated draws no weld: {intents:?}"
+    );
+    assert!(
+        intents
+            .iter()
+            .any(|i| matches!(i, Intent::Repair { building } if *building == BuildingId(2))),
+        "the untouched wound still welds: {intents:?}"
+    );
 }
 
 #[test]

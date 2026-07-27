@@ -70,6 +70,7 @@ fn attack_move_engages_on_the_way_then_resumes() {
             unit(0, UnitKind::Sentinel, 2, 4),
             unit(1, UnitKind::Harvester, 8, 6),
         ],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
@@ -141,6 +142,7 @@ fn rock_is_cover_until_the_attacker_repositions() {
             unit(0, UnitKind::Sentinel, 4, 3),
             unit(1, UnitKind::Harvester, 6, 3),
         ],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
@@ -278,6 +280,7 @@ fn a_flank_pick_is_lethal_and_the_march_still_arrives() {
             unit(0, UnitKind::Sentinel, 4, 1),
             unit(1, UnitKind::Lancer, 9, 7),
         ],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
@@ -406,6 +409,7 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
             unit(0, UnitKind::Harvester, 3, 2),
             unit(1, UnitKind::Scuttler, 16, 5),
         ],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
@@ -417,6 +421,7 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor,
+            queue: false,
         },
     )]);
     let turret = state
@@ -480,6 +485,7 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
             unit(0, UnitKind::Harvester, 3, 2),
             unit(1, UnitKind::Lancer, 16, 5),
         ],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
@@ -490,6 +496,7 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor,
+            queue: false,
         },
     )]);
     let turret = state
@@ -546,6 +553,7 @@ fn turret_fires_at_its_stated_cadence() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor,
+            queue: false,
         },
     )]);
     run_until(&mut state, 700, |s, _| {

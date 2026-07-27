@@ -77,6 +77,8 @@ pub struct Dials {
     pub repair: bool,
     /// Fly ground-attack wings at the enemy economy.
     pub air_harass: bool,
+    /// Liquidate static defense when the war outlives the economy.
+    pub salvage: bool,
 }
 
 impl Dials {
@@ -95,6 +97,7 @@ impl Dials {
             reclaimers: true,
             repair: true,
             air_harass: true,
+            salvage: true,
         }
     }
 
@@ -190,6 +193,7 @@ impl UtilityPolicy {
         self.production(dials, obs, &mut budget, &mut intents);
         self.construction(dials, obs, home_tile, &mut budget, &mut intents);
         self.repairs(dials, obs, &mut budget, &mut intents);
+        self.salvage(dials, obs, &mut intents);
         // No scouting while the economy is short-handed: pulling one of
         // three starting harvesters off the line buys intel with the
         // opening — the most expensive scrap there is.
@@ -614,6 +618,12 @@ impl UtilityPolicy {
             .my_buildings
             .iter()
             .filter(|b| b.built && b.hp * 10 < b.kind.stats().max_hp * 8)
+            // A building an own crew is stripping is being LIQUIDATED
+            // on purpose — repair and salvage evict each other in the
+            // sim, so a repair intent here would re-crew the teardown
+            // and reverse it (the gym's lowering applies this same
+            // filter).
+            .filter(|b| !obs.my_units.iter().any(|u| u.salvaging == Some(b.id)))
             .map(|b| {
                 let deficit = b.kind.stats().max_hp - b.hp;
                 (std::cmp::Reverse(deficit), b.anchor.y, b.anchor.x, b.id)
@@ -622,6 +632,42 @@ impl UtilityPolicy {
             .map(|(.., id)| id);
         if let Some(building) = patient {
             intents.push(Intent::Repair { building });
+        }
+    }
+
+    /// Salvage channel: when the war has outlived the economy — bank
+    /// starved, nothing known left to mine or strip off the ground —
+    /// liquidate static defense cheapest-first and spend the ground on
+    /// one more wave. Deliberately narrow: a scripted tier that sells
+    /// its walls mid-siege teaches the learner the wrong lesson; one
+    /// that converts dead weight into a late push teaches the right
+    /// one, from the receiving side.
+    fn salvage(&mut self, dials: &Dials, obs: &Observation, intents: &mut Vec<Intent>) {
+        if !dials.salvage {
+            return;
+        }
+        if obs.scrap >= UnitKind::Harvester.stats().cost {
+            return;
+        }
+        let sources_left = obs.known_scrap.iter().any(|(_, amount)| *amount > 0)
+            || obs.known_wrecks.iter().any(|(_, amount)| *amount > 0);
+        if sources_left {
+            return;
+        }
+        let target = obs
+            .my_buildings
+            .iter()
+            .filter(|b| b.built)
+            .filter_map(|b| {
+                super::gym::SALVAGE_PRIORITY
+                    .iter()
+                    .position(|k| *k == b.kind)
+                    .map(|rank| (rank, b.anchor.y, b.anchor.x, b.id))
+            })
+            .min()
+            .map(|(.., id)| id);
+        if let Some(building) = target {
+            intents.push(Intent::Salvage { building });
         }
     }
 

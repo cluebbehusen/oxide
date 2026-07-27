@@ -222,12 +222,44 @@ impl Episode {
                 _ => None,
             };
             let winners: Vec<u8> = self.state.winners().into_iter().map(|p| p.0).collect();
+            // v5: the terminal frame carries observations for LIVING
+            // controlled seats, matching the nonterminal contract — a
+            // post-mortem row for a dead seat would zero the frozen
+            // last view its padding exists to preserve. The trainer
+            // prices terminal potential and the tech bonus off this
+            // frame instead of the previous decision's stale one.
+            let state = &self.state;
+            let live_seats: Vec<PlayerId> = self
+                .gyms
+                .iter()
+                .map(|g| g.player())
+                .filter(|p| {
+                    state
+                        .buildings()
+                        .iter()
+                        .any(|b| b.player == *p && b.kind == oxide_sim::BuildingKind::Foundry)
+                })
+                .collect();
+            let seats: Vec<_> = self
+                .gyms
+                .iter_mut()
+                .filter(|g| live_seats.contains(&g.player()))
+                .map(|gym| {
+                    let d = gym.decision(state);
+                    serde_json::json!({
+                        "seat": gym.player().0,
+                        "features": d.features.to_vec(),
+                        "mask": d.mask.to_vec(),
+                    })
+                })
+                .collect();
             serde_json::json!({
                 "done": true,
                 "tick": self.state.current_tick(),
                 "winner": winner,
                 "winners": winners,
                 "alive": alive,
+                "seats": seats,
             })
         }
     }

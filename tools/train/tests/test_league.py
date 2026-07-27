@@ -18,7 +18,9 @@ import torch
 
 from league import (
     FAB_BUILT,
+    SHAPE_K,
     TEL,
+    F,
     Job,
     comp_entropy,
     faction_knob,
@@ -407,3 +409,81 @@ class TestMixBonus:
         assert rew[1][0] == pytest.approx(1.0 + 0.05), "1 bit earns half of 0.1"
         assert rew[1][1] == pytest.approx(-1.0), "a monoculture earns nothing"
         assert sorted(finals) == [-1.0, 1.0], "telemetry finals stay pure"
+
+
+class TestTerminalObservations:
+    """v5: done frames carry observations for living seats, and the
+    tech bonus pays the TERMINAL frame's fab_built — a Fabricator lost
+    (or sold) before the end earns nothing, however long it stood."""
+
+    def _run(self, frames: list[Frame], seats: int = 2, steps: int = 2) -> np.ndarray:
+        fresh = Frame(False, 99, seats={s: _tech_view(0) for s in range(seats)})
+        worker = cast("Worker", _ResettingWorker(frames, fresh))
+        job = Job(worker, "self", 0, pathlib.Path("."), np.random.default_rng(0), "cpu")
+        job.frame = Frame(False, 0, seats={s: _tech_view(0) for s in range(seats)})
+        job.conditions = {s: (1000, 500, faction_knob(s)) for s in range(seats)}
+        torch.manual_seed(0)
+        policy = make_policy("mlp")
+        policy.eval()
+        TEL.clear()
+        batch, _last_val, _finals = rollout(
+            policy, [job], itertools.repeat(0), steps, "cpu", tech_bonus=0.05
+        )
+        return batch[5]
+
+    def test_terminal_evidence_outranks_the_run_of_play(self) -> None:
+        # Seat 0 stood a fab mid-episode but the TERMINAL frame says
+        # it's gone (killed or salvaged): no bonus. Seat 1 shows the
+        # reverse: no fab all game, one standing at the end: bonus.
+        frames = [
+            Frame(False, 16, seats={0: _tech_view(1), 1: _tech_view(0)}),
+            Frame(
+                True,
+                32,
+                winners=[1],
+                seats={0: _tech_view(0), 1: _tech_view(1)},
+            ),
+        ]
+        rew = self._run(frames)
+        assert rew[1][0] == pytest.approx(-1.0), "a lost fab earns nothing"
+        assert rew[1][1] == pytest.approx(1.0 + 0.05), "a standing fab pays"
+
+    def test_the_terminal_step_still_prices_the_potential(self) -> None:
+        # A salvage (or an army loss) landing on the terminal cadence
+        # must not escape the building-value shaping: seat 0 carries
+        # standing value mid-episode that is GONE on the final frame,
+        # and the terminal reward carries the negative delta the
+        # nonterminal branch would have priced.
+        rich = _tech_view(0)
+        rich.raw[F["my_building_value"]] = 300
+        frames = [
+            Frame(False, 16, seats={0: rich, 1: _tech_view(0)}),
+            Frame(
+                True,
+                32,
+                winners=[1],
+                seats={0: _tech_view(0), 1: _tech_view(0)},
+            ),
+        ]
+        rew = self._run(frames)
+        drop = SHAPE_K * (0.0 - (300 / 3.0) / 500.0)
+        assert rew[1][0] == pytest.approx(-1.0 + drop), (
+            "the final step's lost value is priced into the terminal reward"
+        )
+        assert rew[1][1] == pytest.approx(1.0), "a flat seat sees no delta"
+
+    def test_a_dead_seat_settles_on_its_frozen_last_view(self) -> None:
+        # Seat 1 dies mid-episode (drops from the frame) after standing
+        # a fab; the terminal frame only carries the living seat 0. The
+        # dead seat's bonus reads its frozen last view — fab standing
+        # when it died — and nothing crashes on the missing terminal row.
+        frames = [
+            Frame(False, 16, seats={0: _tech_view(0), 1: _tech_view(1)}),
+            Frame(False, 32, seats={0: _tech_view(0)}),  # seat 1 died
+            Frame(True, 48, winners=[0], seats={0: _tech_view(0)}),
+        ]
+        rew = self._run(frames, steps=3)
+        assert rew[2][0] == pytest.approx(1.0), "living seat: terminal says no fab"
+        assert rew[2][1] == pytest.approx(-1.0 + 0.05), (
+            "dead seat: the frozen last view carried its fab"
+        )

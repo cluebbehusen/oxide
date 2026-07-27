@@ -196,54 +196,89 @@ use screens::wizard::{NewMatchDraft, Out as WizardOut, Step as WizardStep, Wizar
 
 fn launch(draft: &NewMatchDraft) -> Result<Game> {
     let mut scenario = (**draft.scenario.as_ref().context("draft has a map")?).clone();
-    let level = oxide_sim::bot::Level::LADDER[draft.level_choice.min(3)];
-    let aggression = screens::wizard::personality_knob(draft.personality_choice);
-    let config = oxide_sim::scenario::BotConfig { level, aggression };
-    for player in scenario.players.iter_mut().filter(|p| p.bot) {
-        player.bot_config = Some(config);
+    // ONE consumer, one source: the per-seat vector. Whatever flow
+    // filled the draft — the 1v1 quick screens or the team setup —
+    // every AI seat gets its own config here, and the vacated human
+    // seat can never fall to the team-blind classic bot.
+    anyhow::ensure!(
+        draft.seats.len() == scenario.players.len(),
+        "draft seats out of step with the map"
+    );
+    // Discovery lists every parseable JSON without building it, so a
+    // zero-seat file can reach here — refuse it as a launch error
+    // instead of underflowing the seat clamp below.
+    anyhow::ensure!(!scenario.players.is_empty(), "the map has no player seats");
+    let seat_choice = draft.seat_choice.min(scenario.players.len() - 1);
+    for (i, player) in scenario.players.iter_mut().enumerate() {
+        player.bot = i != seat_choice;
+        player.bot_config = if player.bot {
+            let plan = draft.seats[i];
+            Some(oxide_sim::scenario::BotConfig {
+                level: oxide_sim::bot::Level::LADDER[plan.level_choice.min(3)],
+                aggression: screens::wizard::personality_knob(plan.personality_choice),
+            })
+        } else {
+            None
+        };
     }
-    // The human seat plays the chosen roster; "surprise" lets the
-    // scenario seed pick.
-    let faction = match draft.faction_choice {
-        0 => oxide_sim::Faction::Ferrous,
-        1 => oxide_sim::Faction::Cupric,
-        _ => match scenario.seed % 2 {
+    // Per-seat faction chips (the setup screen's): Auto keeps the
+    // authored roster; an override retints the seat, starting units
+    // remapped through their roles. Same-faction opponents are
+    // readable now — the allegiance accents carry friend-or-foe, so
+    // faction is a free choice, not a fairness rule.
+    for (i, plan) in draft.seats.iter().enumerate() {
+        if let Some(faction) = screens::wizard::faction_override(plan.faction_choice) {
+            scenario.retint_seat(i, faction);
+        }
+    }
+    // The 1v1 quick flow keeps its faction question (the duel screens
+    // never show the per-seat chips).
+    if scenario.players.len() == 2 {
+        let faction = match draft.faction_choice {
             0 => oxide_sim::Faction::Ferrous,
-            _ => oxide_sim::Faction::Cupric,
-        },
-    };
-    let complement = match faction {
-        oxide_sim::Faction::Ferrous => oxide_sim::Faction::Cupric,
-        oxide_sim::Faction::Cupric => oxide_sim::Faction::Ferrous,
-    };
-    if let Some(human) = scenario.players.iter_mut().find(|p| !p.bot) {
-        retint_seat(human, faction);
+            1 => oxide_sim::Faction::Cupric,
+            _ => match scenario.seed % 2 {
+                0 => oxide_sim::Faction::Ferrous,
+                _ => oxide_sim::Faction::Cupric,
+            },
+        };
+        let complement = match faction {
+            oxide_sim::Faction::Ferrous => oxide_sim::Faction::Cupric,
+            oxide_sim::Faction::Cupric => oxide_sim::Faction::Ferrous,
+        };
+        if let Some(i) = scenario.players.iter().position(|p| !p.bot) {
+            scenario.retint_seat(i, faction);
+        }
+        // In a duel the quick flow deals the opponent the other
+        // roster — the classic matchup. (The setup screen's per-seat
+        // chips are where same-faction wars get arranged.)
+        if let Some(i) = scenario.players.iter().position(|p| p.bot) {
+            scenario.retint_seat(i, complement);
+        }
     }
-    // In a duel, faction is also the only allegiance cue on screen —
-    // the opponent takes the other roster, or two same-color armies
-    // would fight an unreadable war. Team maps author their own mixed
-    // factions and carry an explicit ally marker instead.
-    if scenario.players.len() == 2
-        && let Some(bot) = scenario.players.iter_mut().find(|p| p.bot)
-    {
-        retint_seat(bot, complement);
+    // Seat names must stay unique: the victory banner, the panel, and
+    // the stats screen all address seats by name. Retints can land two
+    // seats on one faction-derived label ("North West Ferrous" twice),
+    // so duplicates take an ordinal instead of refusing to launch.
+    let mut seen: Vec<String> = Vec::new();
+    for player in scenario.players.iter_mut() {
+        if seen.contains(&player.name) {
+            let mut n = 2;
+            while seen.contains(&format!("{} {n}", player.name)) {
+                n += 1;
+            }
+            player.name = format!("{} {n}", player.name);
+        }
+        seen.push(player.name.clone());
     }
+    let mut names: Vec<&str> = scenario.players.iter().map(|p| p.name.as_str()).collect();
+    names.sort_unstable();
+    names.dedup();
+    anyhow::ensure!(
+        names.len() == scenario.players.len(),
+        "seat names collide after setup"
+    );
     Game::new(scenario)
-}
-
-/// Moves a seat onto a roster, keeping any faction-derived name honest:
-/// the shipped maps name seats after their faction ("Cupric", "West
-/// Ferrous"), and a stale name makes the victory banner announce the
-/// wrong side.
-fn retint_seat(seat: &mut oxide_sim::scenario::PlayerSpec, faction: oxide_sim::Faction) {
-    let label = |f: oxide_sim::Faction| match f {
-        oxide_sim::Faction::Ferrous => "Ferrous",
-        oxide_sim::Faction::Cupric => "Cupric",
-    };
-    if seat.faction != faction {
-        seat.name = seat.name.replace(label(seat.faction), label(faction));
-        seat.faction = faction;
-    }
 }
 
 /// A screenshot request parked until after this frame renders.
@@ -394,6 +429,10 @@ async fn run() -> Result<()> {
         Mode::Home
     };
     let mut draft = NewMatchDraft::default();
+    // A menu-context error line (message, wall-clock deadline): map
+    // and launch failures report here and the menus stay up — the
+    // in-game toast strip only draws with the HUD.
+    let mut menu_notice: Option<(String, f64)> = None;
     let mut previews = PreviewCache::default();
     let mut wizard: Option<Wizard> = None;
     let mut pause: Option<screens::pause::PauseScreen> = None;
@@ -411,7 +450,9 @@ async fn run() -> Result<()> {
     let mut input = input::InputState::new();
     let mut injected: Vec<RawEvent> = Vec::new();
     let mut pending_shots: Vec<PendingScreenshot> = Vec::new();
-    let mut ui_view = capture_ui(&mode, &home, &wizard, &shelf, &pause, &settings, &game);
+    let mut ui_view = capture_ui(
+        &mode, &home, &wizard, &draft, &shelf, &pause, &settings, &game,
+    );
 
     loop {
         let dt = get_frame_time();
@@ -574,12 +615,23 @@ async fn run() -> Result<()> {
                     mode = Mode::Home;
                     continue;
                 };
-                match w.update(
+                // Wizard trouble — an unreadable map file, a scenario
+                // that fails validation — is a dialog problem, never a
+                // process abort: report and stay on the menu.
+                let out = match w.update(
                     &events,
                     &mut input.mouse,
                     &mut draft,
                     &mut game.sounds_pending,
-                )? {
+                ) {
+                    Ok(out) => out,
+                    Err(err) => {
+                        menu_notice =
+                            Some((format!("can't open that map: {err:#}"), get_time() + 5.0));
+                        WizardOut::Stay
+                    }
+                };
+                match out {
                     WizardOut::Home => {
                         wizard = None;
                         mode = Mode::Home;
@@ -588,72 +640,54 @@ async fn run() -> Result<()> {
                         home.menu.draw(home.subtitle());
                         continue;
                     }
-                    WizardOut::Launch => {
-                        let fresh = launch(&draft)?;
-                        tutorial = None;
-                        game = keep_flags(fresh, &game);
-                        game.paused = false;
-                        input.reset_session();
-                        wizard = None;
-                        mode = Mode::Playing;
-                        render::draw(&game, &sprites, &input);
-                        continue;
-                    }
+                    WizardOut::Launch => match launch(&draft) {
+                        Ok(fresh) => {
+                            tutorial = None;
+                            game = keep_flags(fresh, &game);
+                            game.paused = false;
+                            input.reset_session();
+                            wizard = None;
+                            mode = Mode::Playing;
+                            render::draw(&game, &sprites, &input);
+                            continue;
+                        }
+                        Err(err) => {
+                            menu_notice = Some((
+                                format!("can't start that match: {err:#}"),
+                                get_time() + 5.0,
+                            ));
+                        }
+                    },
                     WizardOut::Stay => {}
                 }
                 render::draw(&game, &sprites, &input);
                 veil();
                 let w = wizard.as_ref().expect("still open on Stay");
-                if w.step == WizardStep::Map {
-                    // The subtitle browses with the player: the
-                    // highlighted map's hook and badges, the pointer's
-                    // row winning over the keyboard cursor.
-                    let focus = w.menu.hover().unwrap_or(w.menu.selected);
-                    let subtitle = w
-                        .entries
-                        .get(focus)
-                        .and_then(|e| e.blurb.as_deref())
-                        .unwrap_or("machines eating a dead world");
-                    w.menu.draw(subtitle);
-                    // Fog-free preview of the highlighted map, softly
-                    // panelled on the right.
-                    if let Some(entry) = w.entries.get(focus)
-                        && let Some(tex) = previews.get(focus, entry)
-                    {
-                        let s = render::ui_scale();
-                        // Strictly right of the menu's own row rects —
-                        // shared geometry, no independent arithmetic to
-                        // drift out of sync. Too narrow? No panel.
-                        let left_bound = w.menu.rows_right_edge() + 24.0 * s;
-                        let avail = screen_width() - left_bound - 24.0 * s;
-                        let max_w = avail.min(screen_width() * 0.26);
-                        let max_h = screen_height() * 0.34;
-                        if max_w >= 96.0 * s {
-                            let scale = (max_w / tex.width()).min(max_h / tex.height());
-                            let (pw, ph) = (tex.width() * scale, tex.height() * scale);
-                            let x = screen_width() - pw - 24.0 * s;
-                            let y = screen_height() * 0.5 - ph * 0.5;
-                            draw_rectangle(
-                                x - 8.0 * s,
-                                y - 8.0 * s,
-                                pw + 16.0 * s,
-                                ph + 16.0 * s,
-                                Color::from_rgba(20, 20, 24, 230),
-                            );
-                            draw_texture_ex(
-                                tex,
-                                x,
-                                y,
-                                render::theme_tint(&entry.theme),
-                                DrawTextureParams {
-                                    dest_size: Some(vec2(pw, ph)),
-                                    ..Default::default()
-                                },
-                            );
-                        }
+                match w.step {
+                    WizardStep::Map => {
+                        w.browser.draw(&w.entries, &mut previews);
                     }
-                } else {
-                    w.menu.draw(w.subtitle(&draft));
+                    WizardStep::Setup => {
+                        w.draw_setup(&draft, &mut previews);
+                    }
+                    _ => {
+                        w.menu.draw(w.subtitle(&draft));
+                    }
+                }
+                if let Some((msg, until)) = &menu_notice {
+                    if get_time() < *until {
+                        let s = render::ui_scale();
+                        let width = measure_text(msg, None, (16.0 * s) as u16, 1.0).width;
+                        draw_text(
+                            msg,
+                            (screen_width() - width) * 0.5,
+                            screen_height() - 48.0 * s,
+                            16.0 * s,
+                            Color::from_rgba(217, 82, 74, 255),
+                        );
+                    } else {
+                        menu_notice = None;
+                    }
                 }
             }
             Mode::Playing => {
@@ -696,8 +730,10 @@ async fn run() -> Result<()> {
                 input.ui = render::ui_scale();
                 input.now = get_time();
                 input.camera_prefs = config.camera;
+                input.touch_prefs = config.touch;
                 input::apply_events(&mut game, &mut input, &events);
                 input::update_held(&mut game, &input, dt);
+                input::update_touch(&mut game, &mut input);
                 // The cursor telegraphs the verb: crosshair while
                 // placing or plotting, pointer over chrome.
                 macroquad::miniquad::window::set_mouse_cursor(input::desired_cursor(&game, &input));
@@ -877,7 +913,9 @@ async fn run() -> Result<()> {
         if std::mem::discriminant(&mode) != mode_before {
             input.reset_transient();
         }
-        ui_view = capture_ui(&mode, &home, &wizard, &shelf, &pause, &settings, &game);
+        ui_view = capture_ui(
+            &mode, &home, &wizard, &draft, &shelf, &pause, &settings, &game,
+        );
 
         // The mixer serves whichever session is on screen: a playback
         // viewer queues its own sounds on its own game, and draining the
@@ -969,10 +1007,12 @@ fn keep_flags(mut fresh: Game, old: &Game) -> Game {
     fresh
 }
 
+#[allow(clippy::too_many_arguments)]
 fn capture_ui(
     mode: &Mode,
     home: &screens::home::HomeScreen,
     wizard: &Option<Wizard>,
+    draft: &NewMatchDraft,
     shelf: &Option<screens::shelf::Shelf>,
     pause: &Option<screens::pause::PauseScreen>,
     settings: &Option<screens::settings::SettingsScreen>,
@@ -1000,6 +1040,24 @@ fn capture_ui(
             pause.as_ref().map(|p| &p.menu),
         ),
     };
+    // The wizard's custom screens (grid, setup) speak the same
+    // protocol surface the row menus do — automation keeps its
+    // footing across redesigns.
+    if let (Mode::Wizard, Some(w)) = (mode, wizard.as_ref())
+        && matches!(w.step, WizardStep::Map | WizardStep::Setup)
+    {
+        let (title, items, selected) = w.ui_surface(draft);
+        let len = items.len();
+        return UiView {
+            mode: w.mode_name().to_string(),
+            title: Some(title),
+            selected: Some(selected),
+            items,
+            visible_range: Some([0, len]),
+            hover: None,
+            chrome: None,
+        };
+    }
     UiView {
         mode: mode_name.to_string(),
         title: menu.map(|menu| menu.title.clone()),
@@ -1342,6 +1400,98 @@ fn status_view(game: &Game) -> StatusView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn team_draft() -> NewMatchDraft {
+        let mut draft = NewMatchDraft::default();
+        let scenario = Scenario::load("../scenarios/trident-plateau.json").expect("shipped map");
+        draft.set_scenario(scenario, None);
+        draft
+    }
+
+    #[test]
+    fn launch_reads_only_the_per_seat_vector() {
+        let mut draft = team_draft();
+        draft.seat_choice = 2;
+        draft.seats[0].level_choice = 3; // Expert
+        draft.seats[0].personality_choice = 1; // Turtle
+        let game = launch(&draft).expect("launches");
+        let players = &game.scenario.players;
+        assert!(!players[2].bot, "the chosen chair is the human's");
+        assert_eq!(game.human, oxide_sim::PlayerId(2));
+        for (i, p) in players.iter().enumerate() {
+            if i == 2 {
+                assert!(p.bot_config.is_none());
+                continue;
+            }
+            assert!(p.bot, "every other seat is a bot");
+            let config = p.bot_config.expect("every bot seat has a config");
+            if i == 0 {
+                assert_eq!(config.level, oxide_sim::bot::Level::Expert);
+                assert_eq!(config.aggression, Some(100), "the seat's OWN dials");
+            } else {
+                assert_eq!(config.level, oxide_sim::bot::Level::Medium);
+            }
+        }
+        // Auto chips keep the seat's authored faction.
+        assert_eq!(players[2].faction, oxide_sim::Faction::Ferrous);
+    }
+
+    #[test]
+    fn a_zero_seat_map_refuses_to_launch_instead_of_panicking() {
+        // Discovery lists any parseable JSON; a players: [] file used
+        // to underflow the seat clamp.
+        let mut scenario = Scenario::skirmish();
+        scenario.players.clear();
+        scenario.units.clear();
+        let mut draft = NewMatchDraft::default();
+        draft.set_scenario(scenario, None);
+        assert!(
+            launch(&draft).is_err(),
+            "an empty seat list is a launch error, not a crash"
+        );
+    }
+
+    #[test]
+    fn a_faction_chip_retints_the_seat_and_collided_names_take_ordinals() {
+        let mut draft = NewMatchDraft::default();
+        let scenario = Scenario::load("../scenarios/gatework-array.json").expect("shipped map");
+        draft.set_scenario(scenario, None);
+        // "North West Cupric" flips Ferrous — its retinted label
+        // collides with seat 0's "North West Ferrous".
+        draft.seats[1].faction_choice = 1;
+        let game = launch(&draft).expect("a legitimate faction choice never refuses to launch");
+        let players = &game.scenario.players;
+        assert_eq!(players[1].faction, oxide_sim::Faction::Ferrous);
+        assert_eq!(
+            players[1].name, "North West Ferrous 2",
+            "the duplicate label took an ordinal"
+        );
+        let mut names: Vec<&str> = players.iter().map(|p| p.name.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), players.len(), "every banner name stays unique");
+    }
+
+    #[test]
+    fn a_1v1_launch_retints_both_seats_around_the_faction_choice() {
+        let mut draft = NewMatchDraft::default();
+        draft.set_scenario(Scenario::skirmish(), None);
+        draft.faction_choice = 1; // Cupric
+        let game = launch(&draft).expect("launches");
+        let players = &game.scenario.players;
+        assert_eq!(players[0].faction, oxide_sim::Faction::Cupric);
+        assert_eq!(players[1].faction, oxide_sim::Faction::Ferrous);
+        assert_ne!(players[0].name, players[1].name, "names follow factions");
+    }
+
+    #[test]
+    fn a_stale_draft_fails_the_launch_instead_of_the_process() {
+        // The caller shows launch errors on a menu notice; the fn's
+        // contract is Err, never panic, on a draft out of step.
+        let mut draft = team_draft();
+        draft.seats.truncate(2);
+        assert!(launch(&draft).is_err());
+    }
 
     #[test]
     fn automation_requires_debug_server() {

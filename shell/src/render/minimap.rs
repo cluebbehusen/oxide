@@ -11,27 +11,15 @@ const MINI_GROUND: Color = color_u8!(44, 44, 52, 255);
 const MINI_ROCK: Color = color_u8!(84, 84, 96, 255);
 const MINI_PEAK: Color = color_u8!(108, 104, 126, 255);
 
-/// Minimap allegiance color: faction color, lifted toward white for
-/// teammates and pressed toward black for hostiles that share the
-/// human's own faction — "friendly, not yours" and "yours-colored,
-/// not yours" at a glance. Team maps field the same faction on both
-/// sides (Compass Grand pits seat 0 against a Ferrous seat 4), so
-/// tint alone can't say friend or foe; luminance can, for every kind
-/// of color vision.
+/// Minimap allegiance color: the same semantic hues the world's
+/// accent masks wear — your dots keep faction color, allies read
+/// blue, every hostile reads crimson. One vocabulary on both
+/// surfaces; which faction an enemy runs is the battlefield's story,
+/// not the minimap's.
 fn mini_entity_color(game: &Game, owner: oxide_sim::PlayerId) -> Color {
-    let base = mini_faction_color(game.state.player(owner).faction);
-    match super::allegiance_cue(game, owner) {
-        super::AllegianceCue::Mine | super::AllegianceCue::Hostile => base,
-        super::AllegianceCue::Ally => Color::new(
-            base.r * 0.45 + 0.55,
-            base.g * 0.45 + 0.55,
-            base.b * 0.45 + 0.55,
-            base.a,
-        ),
-        super::AllegianceCue::HostileTwin => {
-            Color::new(base.r * 0.45, base.g * 0.45, base.b * 0.45, base.a)
-        }
-    }
+    let cue = super::allegiance_cue(game, owner);
+    super::allegiance_tint(cue)
+        .unwrap_or_else(|| mini_faction_color(game.state.player(owner).faction))
 }
 
 fn dim(color: Color) -> Color {

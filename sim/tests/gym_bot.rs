@@ -95,3 +95,113 @@ fn the_mask_supports_playing_an_actual_game() {
     }
     panic!("no decision against Scrapheap within the cap");
 }
+
+#[test]
+fn salvage_masks_honestly_and_lowers_cheapest_first() {
+    // v5's new verb: masked off with nothing eligible, on when an
+    // eligible defense stands, lowering to the cheapest-and-least-
+    // useful pick — and never the Fabricator or Foundry.
+    use oxide_sim::scenario::BuildingSpec;
+    use oxide_sim::stats::BuildingKind;
+    let mut scenario = Scenario::skirmish();
+    let mut gym = GymBot::new(PlayerId(0));
+    let state = scenario.build().unwrap();
+    let d = gym.decision(&state);
+    assert!(
+        !d.mask[Action::Salvage as usize],
+        "nothing to strip at match start (a Foundry never counts)"
+    );
+
+    // Stand a turret and a bastion; the pick must be the turret.
+    for (kind, x) in [(BuildingKind::Bastion, 9), (BuildingKind::Turret, 16)] {
+        scenario.buildings.push(BuildingSpec {
+            player: 0,
+            kind,
+            x,
+            y: 3,
+        });
+    }
+    let mut state = scenario.build().unwrap();
+    let mut gym = GymBot::new(PlayerId(0));
+    let d = gym.decision(&state);
+    assert!(
+        d.mask[Action::Salvage as usize],
+        "a standing defense arms it"
+    );
+    let my_building_value = d.features[63];
+    let expected = BuildingKind::Turret.stats().construction.unwrap().cost
+        + BuildingKind::Bastion.stats().construction.unwrap().cost;
+    assert_eq!(
+        my_building_value,
+        i64::from(expected),
+        "the v5 feature prices the standing stock"
+    );
+    let commands = gym.step(&state, Action::Salvage);
+    let turret = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == BuildingKind::Turret)
+        .unwrap()
+        .id;
+    assert!(
+        commands.iter().any(|c| matches!(
+            &c.command,
+            oxide_sim::Command::Salvage { building, .. } if *building == turret
+        )),
+        "cheapest-first: the turret goes before the bastion: {commands:?}"
+    );
+    // And the sim accepts what the lowering emitted.
+    let report = state.tick(&commands);
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|e| matches!(e, oxide_sim::Event::CommandRejected { .. })),
+        "the lowered command validates: {:?}",
+        report.events
+    );
+}
+
+#[test]
+fn the_repair_channel_leaves_salvage_targets_alone() {
+    // The two verbs must never share a target: with the only wounded
+    // building under an own crew's salvage, Repair masks off.
+    use oxide_sim::scenario::BuildingSpec;
+    use oxide_sim::stats::BuildingKind;
+    let mut scenario = Scenario::skirmish();
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Turret,
+        x: 9,
+        y: 6,
+    });
+    let mut state = scenario.build().unwrap();
+    let mut gym = GymBot::new(PlayerId(0));
+    let commands = gym.step(&state, Action::Salvage);
+    state.tick(&commands);
+    // Let the crew walk over and leave first scars.
+    for _ in 0..300 {
+        state.tick(&[]);
+        let turret = state
+            .buildings()
+            .iter()
+            .find(|b| b.kind == BuildingKind::Turret);
+        if turret.is_some_and(|b| b.hp < b.kind.stats().max_hp) {
+            break;
+        }
+    }
+    let turret = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == BuildingKind::Turret)
+        .expect("still standing");
+    assert!(
+        turret.hp < turret.kind.stats().max_hp,
+        "test premise: the strip left a wound repair would otherwise take"
+    );
+    let d = gym.decision(&state);
+    assert!(
+        !d.mask[Action::Repair as usize],
+        "a building under own salvage is not a patient"
+    );
+}

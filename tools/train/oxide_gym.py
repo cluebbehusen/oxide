@@ -15,9 +15,9 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-FEATURES = 63
-ACTIONS = 21
-GYM_VERSION = 4
+FEATURES = 64
+ACTIONS = 22
+GYM_VERSION = 5
 # Conditioning dims appended to the gym features as network input:
 # skill (0-1000; 1000 = full strength), aggression (0-1000; 500 =
 # balanced), and faction (0 = ferrous, 1000 = cupric). The world
@@ -102,6 +102,10 @@ SCALE_BY_NAME: dict[str, float] = {
     "map_h": 100,
     "incoming_shells": 6,
     "my_shells_in_flight": 8,
+    # v5: own cost-weighted standing buildings — what Salvage can
+    # liquidate, and the potential term that stops selling a Bastion
+    # from reading as free dense reward.
+    "my_building_value": 500,
 }
 FEATURE_NAMES = list(SCALE_BY_NAME.keys())
 SCALES = np.array([SCALE_BY_NAME[n] for n in FEATURE_NAMES], dtype=np.float32)
@@ -173,6 +177,9 @@ class Worker:
             raise RuntimeError(f"gym server failed to start: {hello}")
         if hello["version"] != GYM_VERSION or hello["features"] != FEATURES:
             raise RuntimeError(f"gym contract mismatch: {hello}")
+        if hello.get("actions") != ACTIONS:
+            got = hello.get("actions")
+            raise RuntimeError(f"action-count mismatch: rust {got} vs python {ACTIONS}")
         if hello.get("names") != FEATURE_NAMES:
             raise RuntimeError(
                 "feature-name mismatch between Rust and Python — "
@@ -198,13 +205,29 @@ class Worker:
         if "error" in reply:
             raise RuntimeError(reply["error"])
         if reply["done"]:
-            return Frame(
+            frame = Frame(
                 True,
                 reply["tick"],
                 reply["winner"],
                 reply.get("winners"),
                 reply.get("alive"),
             )
+            # v5: terminal frames carry observations for living
+            # controlled seats — evidence for terminal shaping (the
+            # tech bonus pays the LAST view's fab_built, and the
+            # potential difference closes on the true final position).
+            for s in reply.get("seats", []):
+                seat = s["seat"]
+                obs = normalize(s["features"])
+                cond = self.conditions.get(seat)
+                if cond is not None:
+                    obs = with_condition(obs, cond)
+                frame.seats[seat] = SeatView(
+                    obs,
+                    np.asarray(s["mask"], dtype=bool),
+                    s["features"],
+                )
+            return frame
         frame = Frame(False, reply["tick"])
         for s in reply["seats"]:
             seat = s["seat"]

@@ -24,6 +24,7 @@ fn construction_ramps_and_completes() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor,
+            queue: false,
         },
     )]);
     // Site claimed instantly: paid in full, blocking, unfinished, partial hp.
@@ -80,6 +81,7 @@ fn a_second_builder_resumes_a_dead_builders_site() {
             units: vec![first],
             kind: BuildingKind::Turret,
             anchor,
+            queue: false,
         },
     )]);
     // Let some progress land, then eat the builder.
@@ -127,6 +129,7 @@ fn a_second_builder_resumes_a_dead_builders_site() {
             units: vec![second],
             kind: BuildingKind::Turret,
             anchor,
+            queue: false,
         },
     )]);
     assert_eq!(state.player(PlayerId(0)).scrap, scrap_before);
@@ -152,6 +155,7 @@ fn cancel_refunds_by_health_and_damage_burns_it() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor,
+            queue: false,
         },
     )]);
     let site = state
@@ -215,6 +219,7 @@ fn sealed_apart_scenarios_refuse_to_build() {
         ],
         players: arena(vec![]).players,
         units: vec![],
+        buildings: Vec::new(),
         meta: None,
     };
     assert!(matches!(
@@ -263,6 +268,7 @@ fn scouted_sites_are_remembered_as_sites() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor,
+            queue: false,
         },
     )]);
     for _ in 0..30 {
@@ -316,6 +322,7 @@ fn bot_sends_a_relief_builder_to_an_orphaned_site() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor,
+            queue: false,
         },
     )]);
     state.tick(&[cmd(
@@ -375,6 +382,7 @@ fn a_fresh_site_blocks_units_already_walking_through_it() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor,
+            queue: false,
         },
     )]);
     for _ in 0..400 {
@@ -413,6 +421,7 @@ fn a_zeroed_site_cannot_be_revived_by_its_builder() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor,
+            queue: false,
         },
     )]);
     let site = state
@@ -502,6 +511,7 @@ fn unreachable_sites_are_rejected_before_charging() {
         ],
         players: arena(vec![]).players,
         units: vec![unit(0, UnitKind::Harvester, 4, 6)],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
@@ -513,6 +523,7 @@ fn unreachable_sites_are_rejected_before_charging() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor: TilePos::new(6, 3),
+            queue: false,
         },
     )]);
     assert!(report.events.iter().any(|e| matches!(
@@ -580,6 +591,7 @@ fn extra_builders_accelerate_construction() {
                 units: vec![ids[0]],
                 kind: BuildingKind::Turret,
                 anchor,
+                queue: false,
             },
         )]);
         if extra_builder {
@@ -589,6 +601,7 @@ fn extra_builders_accelerate_construction() {
                     units: vec![ids[1]],
                     kind: BuildingKind::Turret,
                     anchor,
+                    queue: false,
                 },
             )]);
         }
@@ -653,6 +666,7 @@ fn a_fresh_site_cannot_be_corner_cut_diagonally() {
             unit(0, UnitKind::Harvester, 3, 2),
             unit(0, UnitKind::Harvester, 6, 2),
         ],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
@@ -690,6 +704,7 @@ fn a_fresh_site_cannot_be_corner_cut_diagonally() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor,
+            queue: false,
         },
     )]);
     // Every step from here obeys the no-corner-cut rule around the site.
@@ -732,6 +747,7 @@ fn a_rejected_build_leaves_no_trace_on_the_hash() {
         ],
         players: arena(vec![]).players,
         units: vec![unit(0, UnitKind::Harvester, 4, 6)],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut with_reject = scenario.build().unwrap();
@@ -743,6 +759,7 @@ fn a_rejected_build_leaves_no_trace_on_the_hash() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor: TilePos::new(6, 3),
+            queue: false,
         },
     )]);
     assert!(report.events.iter().any(|e| matches!(
@@ -765,6 +782,7 @@ fn a_rejected_build_leaves_no_trace_on_the_hash() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor: TilePos::new(3, 4),
+            queue: false,
         },
     )]);
     let _ = a;
@@ -774,6 +792,7 @@ fn a_rejected_build_leaves_no_trace_on_the_hash() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor: TilePos::new(3, 4),
+            queue: false,
         },
     )]);
     let _ = b;
@@ -805,6 +824,7 @@ fn same_tick_construction_cannot_absorb_a_lethal_hit() {
             units: vec![builder],
             kind: BuildingKind::Turret,
             anchor,
+            queue: false,
         },
     )]);
     let site = state
@@ -851,6 +871,7 @@ fn same_tick_construction_cannot_absorb_a_lethal_hit() {
                     units: vec![builder],
                     kind: BuildingKind::Turret,
                     anchor,
+                    queue: false,
                 },
             ),
             cmd(
@@ -908,6 +929,7 @@ fn a_doomed_site_never_comes_online() {
             unit(1, UnitKind::Lancer, 15, 6),
             unit(1, UnitKind::Lancer, 14, 2),
         ],
+        buildings: Vec::new(),
         meta: None,
     };
     let mut state = scenario.build().unwrap();
@@ -929,6 +951,7 @@ fn a_doomed_site_never_comes_online() {
                     units: vec![builder],
                     kind: BuildingKind::Turret,
                     anchor,
+                    queue: false,
                 },
             )])
             .events,
@@ -995,4 +1018,210 @@ fn a_doomed_site_never_comes_online() {
         "the volley killed it"
     );
     assert!(state.building(site).is_none());
+}
+
+#[test]
+fn queued_builds_chain_one_builder_through_two_sites() {
+    // Shift-placement's promise: pay and claim both sites NOW, walk
+    // and build them in order. One builder, two turrets, one gesture.
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 3, 2)])
+        .build()
+        .unwrap();
+    let builder = state.units()[0].id;
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: oxide_sim::stats::BuildingKind::Turret,
+            anchor: TilePos::new(3, 4),
+            queue: false,
+        },
+    )]);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: oxide_sim::stats::BuildingKind::FlakTurret,
+            anchor: TilePos::new(9, 2),
+            queue: true,
+        },
+    )]);
+    // Both sites exist immediately (pay-and-claim at command time) and
+    // both prices are gone from the bank.
+    assert_eq!(state.buildings().len(), 4, "two foundries + two sites");
+    assert_eq!(state.player(PlayerId(0)).scrap, 200 - 100 - 90);
+    assert!(matches!(
+        state.unit(builder).unwrap().order,
+        Order::Build { .. }
+    ));
+    run_until(&mut state, 2_000, |s, _| {
+        s.buildings()
+            .iter()
+            .filter(|b| b.player == PlayerId(0) && b.built)
+            .count()
+            == 3 // foundry + both towers
+    });
+}
+
+#[test]
+fn a_queued_build_whose_site_died_pops_silently_and_the_program_survives() {
+    // A queued leg whose site vanished is a finished job, not a stall:
+    // the rest of the program must survive (OrderStalled clears whole
+    // programs, which is exactly wrong here).
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 3, 2)])
+        .build()
+        .unwrap();
+    let builder = state.units()[0].id;
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: oxide_sim::stats::BuildingKind::Turret,
+            anchor: TilePos::new(3, 4),
+            queue: false,
+        },
+    )]);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: oxide_sim::stats::BuildingKind::FlakTurret,
+            anchor: TilePos::new(9, 2),
+            queue: true,
+        },
+    )]);
+    let walk_home = TilePos::new(8, 6);
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![builder],
+            goal: walk_home,
+            queue: true,
+        },
+    )]);
+    // Cancel the queued flak site while the turret is still going up.
+    let flak = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == oxide_sim::stats::BuildingKind::FlakTurret)
+        .unwrap()
+        .id;
+    state.tick(&[cmd(0, Command::Cancel { building: flak })]);
+    let events = run_until(&mut state, 2_000, |s, _| {
+        let u = s.unit(builder).unwrap();
+        u.tile() == walk_home && u.order == Order::Idle
+    });
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::OrderStalled { unit, .. } if *unit == builder)),
+        "a vanished queued site must pop silently, never stall the program"
+    );
+    assert!(
+        state
+            .buildings()
+            .iter()
+            .any(|b| b.kind == oxide_sim::stats::BuildingKind::Turret && b.built),
+        "the first leg still finished"
+    );
+}
+
+#[test]
+fn a_full_order_queue_refuses_placement_with_nothing_spent() {
+    // The old code paid for the site and discarded the assignment
+    // result; a builder whose program is full must reject the whole
+    // command with the site retracted and the bank untouched.
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 3, 2)])
+        .build()
+        .unwrap();
+    let builder = state.units()[0].id;
+    // Fill the program in ONE tick — commands executed across ticks
+    // would drain as fast as they queue (short legs complete). The
+    // current order is a long march so nothing pops before the probe.
+    let mut fill = vec![cmd(
+        0,
+        Command::Move {
+            units: vec![builder],
+            goal: TilePos::new(13, 6),
+            queue: false,
+        },
+    )];
+    for i in 0..oxide_sim::stats::ORDER_QUEUE_CAP {
+        fill.push(cmd(
+            0,
+            Command::Move {
+                units: vec![builder],
+                goal: TilePos::new(12 + (i % 2) as i32, 6),
+                queue: true,
+            },
+        ));
+    }
+    state.tick(&fill);
+    let bank = state.player(PlayerId(0)).scrap;
+    let sites_before = state.buildings().len();
+    let report = state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: oxide_sim::stats::BuildingKind::Turret,
+            anchor: TilePos::new(3, 4),
+            queue: true,
+        },
+    )]);
+    assert!(
+        report.events.iter().any(|e| matches!(
+            e,
+            Event::CommandRejected {
+                reason: RejectReason::QueueFull,
+                ..
+            }
+        )),
+        "a full program refuses the build"
+    );
+    assert_eq!(state.player(PlayerId(0)).scrap, bank, "nothing spent");
+    assert_eq!(state.buildings().len(), sites_before, "no orphan site");
+}
+
+#[test]
+fn resuming_a_site_sends_every_hand() {
+    // Builders stack; a resume command commits the whole crew, and the
+    // site rises roughly three times as fast under three welders.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 3, 2),
+        unit(0, UnitKind::Harvester, 4, 2),
+        unit(0, UnitKind::Harvester, 5, 2),
+    ])
+    .build()
+    .unwrap();
+    let crew: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![crew[0]],
+            kind: oxide_sim::stats::BuildingKind::Turret,
+            anchor: TilePos::new(3, 4),
+            queue: false,
+        },
+    )]);
+    // Resume at the existing site with the full crew: everyone joins.
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: crew.clone(),
+            kind: oxide_sim::stats::BuildingKind::Turret,
+            anchor: TilePos::new(3, 4),
+            queue: false,
+        },
+    )]);
+    for id in &crew {
+        assert!(
+            matches!(state.unit(*id).unwrap().order, Order::Build { .. }),
+            "every hand took the order"
+        );
+    }
+    run_until(&mut state, 600, |s, _| {
+        s.buildings()
+            .iter()
+            .any(|b| b.kind == oxide_sim::stats::BuildingKind::Turret && b.built)
+    });
 }
