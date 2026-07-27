@@ -168,16 +168,37 @@ pub fn ui_scale() -> f32 {
     user.min(cap)
 }
 
+#[cfg(not(test))]
 static VIEW_WIDTH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+#[cfg(not(test))]
 static VIEW_HEIGHT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+// Under cfg(test) the storage is thread-local: libtest runs each test
+// on its own thread, so a test that injects a small window can't turn
+// a concurrently running layout test red — nor, by panicking
+// mid-test, leave the pollution behind for whoever runs next. Tests
+// therefore need no restore call; every test thread starts at the
+// 1280x800 headless default.
+#[cfg(test)]
+thread_local! {
+    static VIEW: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((0, 0)) };
+}
 
 /// The frame loop hands the window size in once per frame; chrome
 /// scale math, menus, and session construction never query the window
 /// themselves — which is what lets all of them run headless (the
 /// default is the 1280x800 window).
+#[cfg(not(test))]
 pub fn set_viewport(w: f32, h: f32) {
     VIEW_WIDTH.store(w.to_bits(), std::sync::atomic::Ordering::Relaxed);
     VIEW_HEIGHT.store(h.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Test flavor of [`set_viewport`]: same contract, but the size is
+/// this test thread's alone.
+#[cfg(test)]
+pub fn set_viewport(w: f32, h: f32) {
+    VIEW.set((w.to_bits(), h.to_bits()));
 }
 
 /// The injected window size.
@@ -185,15 +206,28 @@ pub fn viewport() -> macroquad::prelude::Vec2 {
     macroquad::prelude::vec2(view_width(), view_height())
 }
 
+#[cfg(not(test))]
+fn view_bits() -> (u32, u32) {
+    (
+        VIEW_WIDTH.load(std::sync::atomic::Ordering::Relaxed),
+        VIEW_HEIGHT.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+#[cfg(test)]
+fn view_bits() -> (u32, u32) {
+    VIEW.with(std::cell::Cell::get)
+}
+
 fn view_width() -> f32 {
-    match VIEW_WIDTH.load(std::sync::atomic::Ordering::Relaxed) {
+    match view_bits().0 {
         0 => 1280.0,
         bits => f32::from_bits(bits),
     }
 }
 
 fn view_height() -> f32 {
-    match VIEW_HEIGHT.load(std::sync::atomic::Ordering::Relaxed) {
+    match view_bits().1 {
         0 => 800.0,
         bits => f32::from_bits(bits),
     }

@@ -615,7 +615,6 @@ mod tests {
             .iter()
             .map(|(e, _)| *e)
             .collect();
-        crate::render::set_viewport(1280.0, 800.0);
         assert!(
             visible.contains(&b.selected),
             "the selection is back on screen (visible {visible:?}, selected {})",
