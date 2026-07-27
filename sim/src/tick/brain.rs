@@ -143,9 +143,6 @@ fn resolve_hits(
     {
         let mut rooms: Vec<(crate::ids::BuildingId, i64)> = Vec::new();
         for gain in &builds {
-            if gain.paid == 0 {
-                continue;
-            }
             let Some(b) = state.building(gain.site).filter(|b| b.hp > 0) else {
                 continue;
             };
@@ -158,8 +155,15 @@ fn resolve_hits(
                 }
             };
             if rooms[i].1 <= 0 {
-                let bank = &mut state.player_mut(gain.player).scrap;
-                *bank = bank.saturating_add(gain.paid);
+                // Only the refund cares what was paid; EVERY gain
+                // consumes room. A mid-meter welder frequently steps a
+                // free hp (its coins land every few hp), and skipping
+                // that gain here once let it eat the last room while a
+                // prepaid neighbor took the clamp uncompensated.
+                if gain.paid > 0 {
+                    let bank = &mut state.player_mut(gain.player).scrap;
+                    *bank = bank.saturating_add(gain.paid);
+                }
             } else {
                 rooms[i].1 -= i64::from(gain.step);
             }

@@ -117,10 +117,14 @@ pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f3
     if additive {
         return; // shift-miss leaves the selection alone
     }
-    // …then a building under the cursor (any owner whose ground shows)…
+    // …then a building under the cursor (any owner whose ground shows).
+    // Only the HUMAN'S OWN buildings skip the sight check: built ally
+    // buildings are always inside shared team sight anyway, but ally
+    // SITES are blind until built, and a blind-click selecting one
+    // through fog would leak its live kind and hp through the panel.
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     if let Some(building) = game.state.building_at(tile)
-        && (!game.state.hostile(game.human, building.player)
+        && (building.player == game.human
             || game.all_seeing()
             || building.tiles().any(|t| game.my_vision().visible(t)))
     {

@@ -244,8 +244,36 @@ const KEY_MAP: [(Key, mq::KeyCode); 42] = [
 
 /// Converts this frame's hardware input into events. Purely a poll→event
 /// adapter; interpretation happens in [`apply_events`].
+/// Translates one hardware touch phase into the raw event the funnel
+/// speaks — the same vocabulary the debug harness injects, so a real
+/// fingertip and an injected one walk identical code. `Stationary`
+/// maps to nothing: a resting finger emits no event (the long-press
+/// timer rides the frame loop, not the event stream).
+fn touch_event(phase: mq::TouchPhase, id: u64, x: f32, y: f32) -> Option<RawEvent> {
+    match phase {
+        mq::TouchPhase::Started => Some(RawEvent::TouchDown { id, x, y }),
+        mq::TouchPhase::Moved => Some(RawEvent::TouchMove { id, x, y }),
+        // A cancelled touch (palm rejection, app switch) lifts like any
+        // other: the gesture state must not wait for a finger the OS
+        // already took away.
+        mq::TouchPhase::Ended | mq::TouchPhase::Cancelled => Some(RawEvent::TouchUp { id, x, y }),
+        mq::TouchPhase::Stationary => None,
+    }
+}
+
 pub fn poll_events(input: &mut InputState) -> Vec<RawEvent> {
+    // A fingertip must arrive ONCE, as a touch — macroquad otherwise
+    // mirrors every touch into synthetic mouse events and the same
+    // finger would both pan the camera and drag a box.
+    static TOUCH_SETUP: std::sync::Once = std::sync::Once::new();
+    TOUCH_SETUP.call_once(|| mq::simulate_mouse_with_touch(false));
     let mut events = Vec::new();
+    for touch in mq::touches() {
+        if let Some(event) = touch_event(touch.phase, touch.id, touch.position.x, touch.position.y)
+        {
+            events.push(event);
+        }
+    }
     let (mx, my) = mq::mouse_position();
     if vec2(mx, my) != input.hw_mouse {
         input.hw_mouse = vec2(mx, my);

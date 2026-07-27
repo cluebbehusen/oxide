@@ -1020,6 +1020,160 @@ fn touch_windows_keep_their_ordering_invariant() {
 }
 
 #[test]
+fn an_allied_site_under_fog_refuses_selection() {
+    // Ally SITES are blind until built, so one beyond own sight is
+    // fogged on screen — and must not be blind-clickable, or the
+    // panel leaks its live kind and hp through the fog. The ally's
+    // BUILT foundry stays selectable: it sees its own ground, and
+    // team sight is shared.
+    use oxide_sim::scenario::{BotConfig, PlayerSpec, UnitSpec};
+    let seat = |name: &str, faction, team| PlayerSpec {
+        name: name.into(),
+        faction,
+        team: Some(team),
+        scrap: 300,
+        bot: false,
+        bot_config: None,
+    };
+    let mut scenario = oxide_sim::Scenario {
+        name: "ally-site-arena".into(),
+        seed: 7,
+        map: vec![
+            "################################".into(),
+            "#1.............................#".into(),
+            "#..............................#".into(),
+            "#..............................#".into(),
+            "#..............................#".into(),
+            "#3.........................2...#".into(),
+            "#..............................#".into(),
+            "################################".into(),
+        ],
+        players: vec![
+            seat("West", oxide_sim::Faction::Ferrous, 0),
+            seat("East Ally", oxide_sim::Faction::Cupric, 0),
+            seat("Foe", oxide_sim::Faction::Ferrous, 1),
+        ],
+        units: vec![UnitSpec {
+            player: 1,
+            kind: UnitKind::Harvester,
+            x: 25,
+            y: 4,
+        }],
+        buildings: Vec::new(),
+        meta: None,
+    };
+    for p in scenario.players.iter_mut().skip(1) {
+        p.bot = true;
+        p.bot_config = Some(BotConfig {
+            level: oxide_sim::bot::Level::Medium,
+            aggression: None,
+        });
+    }
+    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("ally arena builds");
+    let mut input = InputState::new();
+    // The ally's harvester claims a site well outside seat 0's sight.
+    let ally_worker = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == oxide_sim::PlayerId(1))
+        .unwrap()
+        .id;
+    // Placement wants the footprint visible to the PLACER, so the
+    // worker walks into sight of the ground first, claims, and then
+    // goes home: a site is blind, and once every friendly eye leaves,
+    // its ground goes dark.
+    game.state.tick(&[oxide_sim::PlayerCommand {
+        player: oxide_sim::PlayerId(1),
+        command: Command::Move {
+            units: vec![ally_worker],
+            goal: TilePos::new(16, 2),
+            queue: false,
+        },
+    }]);
+    for _ in 0..400 {
+        game.state.tick(&[]);
+        if game.state.unit(ally_worker).unwrap().tile() == TilePos::new(16, 2) {
+            break;
+        }
+    }
+    game.state.tick(&[oxide_sim::PlayerCommand {
+        player: oxide_sim::PlayerId(1),
+        command: Command::Build {
+            units: vec![ally_worker],
+            kind: oxide_sim::BuildingKind::Turret,
+            anchor: TilePos::new(15, 1),
+            queue: false,
+        },
+    }]);
+    assert!(
+        game.state
+            .buildings()
+            .iter()
+            .any(|b| b.kind == oxide_sim::BuildingKind::Turret),
+        "test premise: the claim landed instantly"
+    );
+    game.state.tick(&[oxide_sim::PlayerCommand {
+        player: oxide_sim::PlayerId(1),
+        command: Command::Move {
+            units: vec![ally_worker],
+            goal: TilePos::new(25, 4),
+            queue: false,
+        },
+    }]);
+    for _ in 0..400 {
+        game.state.tick(&[]);
+        if game.state.unit(ally_worker).unwrap().tile() == TilePos::new(25, 4) {
+            break;
+        }
+    }
+    let site_center = {
+        let site = game
+            .state
+            .buildings()
+            .iter()
+            .find(|b| b.kind == oxide_sim::BuildingKind::Turret)
+            .expect("the ally claimed the site");
+        assert!(!site.built, "test premise: unfinished");
+        assert!(
+            !site.tiles().any(|t| game.my_vision().visible(t)),
+            "test premise: the site sits under fog"
+        );
+        vec2(site.anchor.x as f32 + 0.5, site.anchor.y as f32 + 0.5)
+    };
+    game.camera.center = site_center;
+    let screen = game.camera.to_screen(site_center);
+    input.now = 5.0; // clicks land at the viewport center; keep them
+    apply_events(&mut game, &mut input, &click(screen.x, screen.y)); // out of double-click range
+    assert!(
+        game.selection.building.is_none(),
+        "a fogged ally site must refuse the blind click"
+    );
+    // The built ally foundry selects through shared team sight.
+    let (ally_foundry, center) = {
+        let foundry = game
+            .state
+            .buildings()
+            .iter()
+            .find(|b| b.player == oxide_sim::PlayerId(1) && b.built)
+            .unwrap();
+        (
+            foundry.id,
+            vec2(foundry.anchor.x as f32 + 1.0, foundry.anchor.y as f32 + 1.0),
+        )
+    };
+    game.camera.center = center;
+    let screen = game.camera.to_screen(center);
+    input.now = 10.0;
+    apply_events(&mut game, &mut input, &click(screen.x, screen.y));
+    assert_eq!(
+        game.selection.building,
+        Some(ally_foundry),
+        "the built ally building stays inspectable"
+    );
+}
+
+#[test]
 fn a_foreign_box_never_reaches_through_fog() {
     // One visible enemy scout at the fog's edge must not drag its
     // owner's HIDDEN units into an inspectable selection.
@@ -1179,6 +1333,37 @@ fn publish_minimap(game: &Game) -> macroquad::math::Rect {
         0,
     ));
     minimap
+}
+
+#[test]
+fn hardware_touch_phases_speak_the_funnel_vocabulary() {
+    // The polling adapter translates macroquad's touch phases into the
+    // exact events the harness injects — one vocabulary, so a real
+    // fingertip and an injected one walk identical code.
+    use macroquad::prelude::TouchPhase;
+    assert!(matches!(
+        touch_event(TouchPhase::Started, 3, 1.0, 2.0),
+        Some(RawEvent::TouchDown { id: 3, .. })
+    ));
+    assert!(matches!(
+        touch_event(TouchPhase::Moved, 3, 1.0, 2.0),
+        Some(RawEvent::TouchMove { id: 3, .. })
+    ));
+    assert!(matches!(
+        touch_event(TouchPhase::Ended, 3, 1.0, 2.0),
+        Some(RawEvent::TouchUp { id: 3, .. })
+    ));
+    assert!(
+        matches!(
+            touch_event(TouchPhase::Cancelled, 3, 1.0, 2.0),
+            Some(RawEvent::TouchUp { id: 3, .. })
+        ),
+        "a cancelled finger lifts — gesture state must not wait for it"
+    );
+    assert!(
+        touch_event(TouchPhase::Stationary, 3, 1.0, 2.0).is_none(),
+        "a resting finger emits nothing; the long-press timer rides the frame loop"
+    );
 }
 
 #[test]

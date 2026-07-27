@@ -79,41 +79,6 @@ jobs:
       - name: Test on MSRV
         run: cargo test --workspace
 
-  # Playable zips per OS beside the macOS bundle: the release binary
-  # with the assets and scenarios it resolves from its working
-  # directory. Not a release pipeline — a smoke-testable artifact per
-  # push, short retention.
-  package:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master 2026-07-16
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
-      - name: Install Linux system libraries
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
-      - name: Build release shell
-        run: cargo build --release -p oxide-shell
-      - name: Stage the playable folder
-        shell: bash
-        run: |
-          mkdir -p dist/oxide
-          cp target/release/Oxide* dist/oxide/ 2>/dev/null || cp target/release/Oxide dist/oxide/
-          cp -R assets scenarios README.md dist/oxide/
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: oxide-${{ runner.os }}
-          path: dist/oxide
-          retention-days: 7
-
   # The training tools are shipped source too: lint, formatting, and
   # types hold to the same standard as the Rust side.
   python:
