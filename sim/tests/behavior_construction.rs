@@ -1225,3 +1225,33 @@ fn resuming_a_site_sends_every_hand() {
             .any(|b| b.kind == oxide_sim::stats::BuildingKind::Turret && b.built)
     });
 }
+
+#[test]
+fn place_refusal_names_the_actual_blocker() {
+    use oxide_sim::PlaceRefusal;
+    use oxide_sim::stats::BuildingKind;
+    let state = arena(vec![unit(0, UnitKind::Harvester, 4, 6)])
+        .build()
+        .unwrap();
+    let p = PlayerId(0);
+    let k = BuildingKind::Turret;
+    let refusal = |x, y| state.place_refusal(p, k, TilePos::new(x, y));
+    // The harvester's own tile: a standing machine, named as such.
+    assert_eq!(refusal(4, 6), Some(PlaceRefusal::Unit));
+    // Open visible ground: allowed, and the predicate is literally the
+    // same answer with the reason thrown away.
+    assert_eq!(refusal(5, 6), None);
+    assert!(state.can_place(p, k, TilePos::new(5, 6)));
+    // Visible rock.
+    assert_eq!(refusal(6, 3), Some(PlaceRefusal::Terrain));
+    // Own Foundry footprint.
+    assert_eq!(refusal(1, 1), Some(PlaceRefusal::Building));
+    // The enemy Foundry's ground is fogged — and fog must win before
+    // the building underneath can leak through the reason.
+    assert_eq!(refusal(13, 6), Some(PlaceRefusal::Fog));
+    // Scenario-only kinds are never placeable.
+    assert_eq!(
+        state.place_refusal(p, BuildingKind::Foundry, TilePos::new(5, 6)),
+        Some(PlaceRefusal::NotConstructible)
+    );
+}

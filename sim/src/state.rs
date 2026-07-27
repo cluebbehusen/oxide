@@ -625,36 +625,71 @@ impl State {
     /// Whether `player` may start `kind` at `anchor` right now: every
     /// footprint tile *currently visible* to them, open ground, and free
     /// of buildings and standing units. Visibility (not mere exploration)
-    /// is the fog-honest rule — the occupancy checks below read live
-    /// state, and a red ghost over explored-but-unseen ground would
-    /// otherwise leak hidden enemies. One predicate serves command
-    /// validation and the shell's placement preview — they must never
-    /// disagree.
+    /// is the fog-honest rule — the occupancy checks read live state,
+    /// and a red ghost over explored-but-unseen ground would otherwise
+    /// leak hidden enemies. One predicate serves command validation and
+    /// the shell's placement preview — they must never disagree, which
+    /// is why this is literally [`State::place_refusal`] with the
+    /// reason thrown away.
     pub fn can_place(&self, player: PlayerId, kind: BuildingKind, anchor: TilePos) -> bool {
+        self.place_refusal(player, kind, anchor).is_none()
+    }
+
+    /// Why a placement is refused, or `None` when it is allowed — the
+    /// toast's vocabulary. The first blocking reason in footprint scan
+    /// order wins; every check is fog-safe by construction (it reads
+    /// only what `player` currently sees, exactly like the predicate).
+    pub fn place_refusal(
+        &self,
+        player: PlayerId,
+        kind: BuildingKind,
+        anchor: TilePos,
+    ) -> Option<PlaceRefusal> {
         if kind.stats().construction.is_none() {
-            return false; // scenario-only kinds are never placeable
+            return Some(PlaceRefusal::NotConstructible);
         }
         let (w, h) = kind.stats().size;
         for dy in 0..h {
             for dx in 0..w {
                 let t = anchor.offset(dx, dy);
-                if !self.vision(player).visible(t)
-                    || !self.map.terrain_passable(t)
-                    || self.building_at(t).is_some()
-                {
-                    return false;
+                if !self.vision(player).visible(t) {
+                    return Some(PlaceRefusal::Fog);
+                }
+                if !self.map.terrain_passable(t) {
+                    return Some(PlaceRefusal::Terrain);
+                }
+                if self.building_at(t).is_some() {
+                    return Some(PlaceRefusal::Building);
                 }
             }
         }
         // Standing machines hold their ground — no foundations under feet.
         // A flyer passing overhead blocks nothing.
-        !self.units.iter().any(|u| {
+        let unit_in_footprint = self.units.iter().any(|u| {
             u.hp > 0 && u.kind.stats().domain == crate::stats::Domain::Ground && {
                 let t = u.tile();
                 t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h
             }
-        })
+        });
+        unit_in_footprint.then_some(PlaceRefusal::Unit)
     }
+}
+
+/// Why [`State::place_refusal`] said no. Own-state facts only — no
+/// variant may ever derive from what fog hides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaceRefusal {
+    /// The kind is scenario-authored, never player-buildable.
+    NotConstructible,
+    /// A footprint tile is not currently visible.
+    Fog,
+    /// A footprint tile is impassable ground.
+    Terrain,
+    /// A building already holds a footprint tile.
+    Building,
+    /// A standing ground machine holds a footprint tile.
+    Unit,
 }
 
 #[cfg(test)]

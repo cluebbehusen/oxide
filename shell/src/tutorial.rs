@@ -52,6 +52,7 @@ pub const STEPS: [Step; 6] = [
         body: &[
             "Select a harvester, click a structure card (or B, then a digit),",
             "then click open ground. Red tint means you can't build there.",
+            "Hold Shift to chain: keep placing, and each build queues up.",
         ],
     },
     Step {

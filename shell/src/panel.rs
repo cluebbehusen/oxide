@@ -103,7 +103,9 @@ pub fn building_flavor(kind: BuildingKind) -> &'static str {
     match kind {
         BuildingKind::Foundry => "Trains the basics. Lose every Foundry and the seat falls.",
         BuildingKind::Fabricator => "Unlocks the advanced roster and the air wing.",
-        BuildingKind::Turret => "Static ground defense. Holds a line by standing on it.",
+        BuildingKind::Turret => {
+            "Static ground defense. Holds a line by standing on it - the answer to a swarm."
+        }
         BuildingKind::FlakTurret => "Static anti-air. The roof over your harvest line.",
         BuildingKind::Bastion => "Siege gun emplacement. Arcs shells beyond its sight.",
         BuildingKind::Array => "Radar mast. True sight close, nameless contacts far.",

@@ -752,9 +752,20 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             let world = game.camera.to_world(p);
             let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
             // The ghost already showed red; a misclick must not throw
-            // away the armed mode on top of it.
-            if !game.state.can_place(game.human, kind, anchor) {
-                game.toast("can't build there: needs open, visible ground");
+            // away the armed mode on top of it. The toast names the
+            // actual blocker — "needs open ground" while your own
+            // harvester stands on the tile taught nobody anything.
+            if let Some(refusal) = game.state.place_refusal(game.human, kind, anchor) {
+                use oxide_sim::PlaceRefusal;
+                game.toast(match refusal {
+                    PlaceRefusal::Fog => "can't build there: ground not in sight",
+                    PlaceRefusal::Terrain => "can't build there: impassable ground",
+                    PlaceRefusal::Building => "can't build there: something already stands there",
+                    PlaceRefusal::Unit => {
+                        "can't build there: a machine is standing on it - move it aside"
+                    }
+                    PlaceRefusal::NotConstructible => "that can't be built",
+                });
                 game.sounds_pending
                     .push((crate::game::SoundKind::Denied, None));
                 return true;
@@ -826,7 +837,7 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
             input.placing = Some(kind);
             let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
             game.toast(format!(
-                "placing {} ({} scrap): click to build, Esc to cancel",
+                "placing {} ({} scrap): click to build, Shift chains, Esc to cancel",
                 kind.name(),
                 cost
             ));
