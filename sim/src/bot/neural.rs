@@ -85,15 +85,28 @@ impl Level {
 
     /// How often this level thinks, in ticks — the second difficulty
     /// dial: lower minds think slower. Calibrated against the scripted
-    /// yardsticks (51 < 72 < 76 < 80 wins of 80), because head-to-head
-    /// mirrors stopped ordering under the 0.10 balance: patience wins
-    /// there, so a slower thinker turtles into a tech advantage and
-    /// "handicaps" cancel out. Against aggression — scripted tiers,
-    /// human rushes — reaction lag costs what it should.
+    /// yardsticks, because head-to-head mirrors stopped ordering under
+    /// the 0.10 balance: patience wins there, so a slower thinker
+    /// turtles into a tech advantage and "handicaps" cancel out.
+    /// Against aggression — scripted tiers, human rushes — reaction
+    /// lag costs what it should. The in-tree ladder test is the
+    /// 24-match strict-ordering tripwire; `driver yardstick` is the
+    /// wide instrument (0.12 read: 34 < 42 < 46 < 48 of 48, and every
+    /// probed "stronger Medium" dial measured weaker — the skill knob
+    /// is trained conditioning, not a pure handicap, so these dials
+    /// sit at a measured local optimum; see the 0.12 experiments
+    /// note before moving them).
     pub fn cadence(self) -> u64 {
         match self {
             Level::Easy => 56,
-            Level::Medium => 36,
+            // 36 until 0.12: at 36, symmetric Medium mirrors stalled
+            // 14/48 on skirmish; at 26 that drops to 2/48 at par
+            // yardstick strength (81 vs 82 of 96) and decisions land
+            // ~15% sooner. The response is non-monotonic — 30
+            // measured WORSE on both instruments (32/48, and it
+            // resurrected the Standard-stall blemish) — so don't
+            // interpolate; re-measure.
+            Level::Medium => 26,
             Level::Hard => 24,
             Level::Expert => 16,
         }
