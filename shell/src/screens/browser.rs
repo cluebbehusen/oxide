@@ -46,6 +46,10 @@ pub struct Layout {
     pub more_above: bool,
     /// See `more_above`.
     pub more_below: bool,
+    /// How many grid lines the window is showing (scrollbar math).
+    pub lines_shown: usize,
+    /// How many grid lines the shelf has in total.
+    pub lines_total: usize,
 }
 
 /// Grid state: the selected entry, scroll, and pointer bookkeeping.
@@ -63,6 +67,9 @@ pub struct Browser {
     /// event, and one grid line per nonzero event raced through the
     /// shelf. Whole notches only, like the row menus.
     wheel_accum: f32,
+    /// The viewport the last frame handled — resize detection for the
+    /// snap-back guard, which must fire on resize and NEVER per frame.
+    last_view: Vec2,
 }
 
 /// The section heading for a seat count.
@@ -118,7 +125,12 @@ fn metrics(view: Vec2, ui: f32) -> (f32, f32, f32, f32, f32, f32, f32) {
     // At least one heading + card row must ALWAYS fit the window, or
     // the grid draws nothing while Enter still activates the hidden
     // selection. The 16ui row gap below matches layout().
-    let card_h = (card_w * 0.5 + 26.0 * ui).min(bottom - top - heading_h - 16.0 * ui);
+    // The floor is PHYSICAL: when even compressed chrome can't afford
+    // it, cards run small but never to zero — a zero-height card is
+    // unclickable while Enter still fires the hidden selection.
+    let card_h = (card_w * 0.5 + 26.0 * ui)
+        .min(bottom - top - heading_h - 16.0 * ui)
+        .max(40.0);
     (band_x, band_w, card_w, card_h, heading_h, top, bottom)
 }
 
@@ -137,6 +149,7 @@ impl Browser {
             hover: None,
             pressed: None,
             wheel_accum: 0.0,
+            last_view: vec2(0.0, 0.0),
         }
     }
 
@@ -160,6 +173,7 @@ impl Browser {
         let mut headings = Vec::new();
         let mut cards = Vec::new();
         let mut more_below = false;
+        let mut lines_shown = 0usize;
         for (li, line) in all.iter().enumerate() {
             if li < self.scroll_line {
                 continue;
@@ -183,6 +197,7 @@ impl Browser {
                     }
                 }
             }
+            lines_shown += 1;
             y += h;
         }
         Layout {
@@ -190,6 +205,8 @@ impl Browser {
             cards,
             more_above: self.scroll_line > 0,
             more_below,
+            lines_shown,
+            lines_total: all.len(),
         }
     }
 
@@ -245,10 +262,14 @@ impl Browser {
         let ui = crate::render::ui_scale();
         let cols = columns(view.x, ui);
         // A resize can shrink the window out from under the selection —
-        // layout() recomputes each frame but scroll state does not, and
-        // Enter would fire a card no longer on screen. Scroll the
-        // window back to the selection before acting on anything.
-        {
+        // layout() recomputes each frame but scroll state does not.
+        // The guard fires on RESIZE ONLY: run per frame it would snap
+        // every wheel scroll straight back to the selection, and the
+        // shelf's lower half could never be reached by trackpad.
+        if self.last_view != view {
+            self.last_view = view;
+            let max = lines(entries, cols).len().saturating_sub(1);
+            self.scroll_line = self.scroll_line.min(max);
             let shown: Vec<usize> = self
                 .layout(entries, view, ui)
                 .cards
@@ -271,7 +292,21 @@ impl Browser {
         for event in events {
             match *event {
                 RawEvent::KeyDown { key: Key::Escape } => return Out::Back,
-                RawEvent::KeyDown { key: Key::Enter } => return Out::Pick(self.selected),
+                RawEvent::KeyDown { key: Key::Enter } => {
+                    // Enter never fires a card the player can't see:
+                    // an off-screen selection scrolls into view first,
+                    // and the SECOND Enter commits.
+                    let shown: Vec<usize> = self
+                        .layout(entries, view, ui)
+                        .cards
+                        .iter()
+                        .map(|(e, _)| *e)
+                        .collect();
+                    if shown.contains(&self.selected) {
+                        return Out::Pick(self.selected);
+                    }
+                    self.ensure_visible(entries);
+                }
                 RawEvent::KeyDown { key: Key::Left } => {
                     self.selected = self.selected.saturating_sub(1);
                     self.ensure_visible(entries);
@@ -322,25 +357,11 @@ impl Browser {
                         self.scroll_line = (self.scroll_line + (-steps) as usize).min(max);
                     }
                     self.hover = card_at(self, *mouse);
-                    // The row-menu rule: scrolling drags the selection
-                    // along, so Enter always fires a card the player
-                    // can see — never one hidden past the window edge.
-                    let visible: Vec<usize> = self
-                        .layout(entries, view, ui)
-                        .cards
-                        .iter()
-                        .map(|(e, _)| *e)
-                        .collect();
-                    if let (Some(&first), Some(&last_vis)) = (visible.first(), visible.last())
-                        && !visible.contains(&self.selected)
-                    {
-                        let (li, _) = Self::locate(entries, cols, self.selected);
-                        self.selected = if li < self.scroll_line {
-                            first
-                        } else {
-                            last_vis
-                        };
-                    }
+                    // Browsing is not choosing: the wheel moves the
+                    // window and ONLY the window. (The old drag-along
+                    // rule silently retargeted Enter while the player
+                    // was just looking; Enter now scrolls an
+                    // off-screen selection back instead.)
                 }
                 RawEvent::MouseMove { x, y } => {
                     *mouse = vec2(x, y);
@@ -363,10 +384,14 @@ impl Browser {
                     if let (Some(a), Some(r)) = (armed, released)
                         && a == r
                     {
-                        // Release inside the pressed card commits, like
-                        // every menu row.
+                        // First click selects; a click on the already-
+                        // selected card commits. Browsing by pointer
+                        // can't misfire a launch, and the double-click
+                        // reflex reads as select-then-play.
+                        if a == self.selected {
+                            return Out::Pick(a);
+                        }
                         self.selected = a;
-                        return Out::Pick(a);
                     }
                 }
                 _ => {}
@@ -459,7 +484,7 @@ impl Browser {
             );
         }
         // Scroll cues.
-        let (band_x, band_w, ..) = metrics(view, ui);
+        let (band_x, band_w, _, _, _, top, bottom) = metrics(view, ui);
         if layout.more_above {
             draw_text("^", band_x + band_w * 0.5, 110.0 * ui, 22.0 * ui, DIM);
         }
@@ -471,6 +496,18 @@ impl Browser {
                 22.0 * ui,
                 DIM,
             );
+        }
+        // A draw-only scrollbar thumb: where the window sits in the
+        // shelf, at a glance. The wheel is the drag; this just tells
+        // the truth about how much shelf is off screen.
+        if layout.more_above || layout.more_below {
+            let track_h = bottom - top;
+            let frac = |n: usize| n as f32 / layout.lines_total.max(1) as f32;
+            let thumb_top = top + frac(self.scroll_line) * track_h;
+            let thumb_h = (frac(layout.lines_shown) * track_h).max(24.0 * ui);
+            let x = (band_x + band_w + 10.0 * ui).min(view.x - 8.0 * ui);
+            draw_rectangle(x, top, 3.0 * ui, track_h, PANEL);
+            draw_rectangle(x, thumb_top.min(bottom - thumb_h), 3.0 * ui, thumb_h, DIM);
         }
         // The selected map's story, above the hint line.
         if let Some(entry) = entries.get(self.selected) {
@@ -493,7 +530,7 @@ impl Browser {
                 ITEM_COLOR,
             );
         }
-        let hint = "Arrows select - Enter play - Esc back - or click";
+        let hint = "Arrows/click select - Enter or click again plays - Esc back";
         let dims = measure_text(hint, None, (16.0 * ui) as u16, 1.0);
         draw_text(
             hint,
@@ -553,31 +590,51 @@ mod tests {
     }
 
     #[test]
-    fn wheel_scroll_drags_the_selection_into_view() {
+    fn wheel_scroll_moves_the_window_and_only_the_window() {
         let entries = shelf();
         let mut b = Browser::new();
         let mut mouse = vec2(0.0, 0.0);
-        // Scroll far past the first section: the selection must ride
-        // along, or Enter fires a card the player cannot see.
+        // Scroll far past the first section ACROSS SEPARATE FRAMES —
+        // the frame-start guard once snapped the window back to the
+        // selection between events, so a single-call test proved
+        // nothing. Browsing must not retarget Enter.
         for _ in 0..8 {
             b.handle(&entries, &[RawEvent::Wheel { delta: -1.0 }], &mut mouse);
-            let view = crate::render::viewport();
-            let ui = crate::render::ui_scale();
-            let visible: Vec<usize> = b
-                .layout(&entries, view, ui)
+            b.handle(&entries, &[], &mut mouse);
+            assert_eq!(b.selected, 0, "the wheel chose a map");
+        }
+        assert!(b.scroll_line >= 4, "the window actually moved");
+
+        // Enter with the selection off screen scrolls it back first;
+        // only the second Enter commits — it never fires blind.
+        let view = crate::render::viewport();
+        let ui = crate::render::ui_scale();
+        assert!(
+            !b.layout(&entries, view, ui)
                 .cards
                 .iter()
-                .map(|(e, _)| *e)
-                .collect();
-            if !visible.is_empty() {
-                assert!(
-                    visible.contains(&b.selected),
-                    "selection {} hidden by scroll (visible {:?})",
-                    b.selected,
-                    visible
-                );
-            }
-        }
+                .any(|(e, _)| *e == b.selected),
+            "precondition: the selection is off screen"
+        );
+        let out = b.handle(
+            &entries,
+            &[RawEvent::KeyDown { key: Key::Enter }],
+            &mut mouse,
+        );
+        assert_eq!(out, Out::Stay, "the first Enter only scrolls back");
+        assert!(
+            b.layout(&entries, view, ui)
+                .cards
+                .iter()
+                .any(|(e, _)| *e == b.selected),
+            "the selection is back on screen"
+        );
+        let out = b.handle(
+            &entries,
+            &[RawEvent::KeyDown { key: Key::Enter }],
+            &mut mouse,
+        );
+        assert_eq!(out, Out::Pick(0), "the second Enter commits");
     }
 
     #[test]
@@ -661,22 +718,25 @@ mod tests {
         let (target, rect) = layout.cards[2];
         let (cx, cy) = (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
         let mut mouse = vec2(0.0, 0.0);
-        let out = b.handle(
-            &entries,
-            &[
-                RawEvent::MouseDown {
-                    button: MouseButton::Left,
-                    x: cx,
-                    y: cy,
-                },
-                RawEvent::MouseUp {
-                    button: MouseButton::Left,
-                    x: cx,
-                    y: cy,
-                },
-            ],
-            &mut mouse,
-        );
+        let click = [
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: cx,
+                y: cy,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: cx,
+                y: cy,
+            },
+        ];
+        // The first click on a non-selected card SELECTS it — browsing
+        // by pointer must not misfire a launch.
+        let out = b.handle(&entries, &click, &mut mouse);
+        assert_eq!(out, Out::Stay, "the first click only selects");
+        assert_eq!(b.selected, target);
+        // The second click on the now-selected card commits.
+        let out = b.handle(&entries, &click, &mut mouse);
         assert_eq!(out, Out::Pick(target));
         // Dragging away cancels.
         let out = b.handle(

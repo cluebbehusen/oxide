@@ -141,32 +141,34 @@ fn menu_rows_activate_on_release_not_on_press() -> Result<()> {
     let released = ui(&mut client)?.mode;
     assert_eq!(released, before, "a drag-away release still activated");
 
-    // And the honest path works: press and release inside the same row
-    // advances to the match setup screen.
+    // And the honest path works: a click inside the card selects it,
+    // and a second click on the selected card advances to match setup.
     client.call(Request::InjectEvent {
         event: RawEvent::MouseMove {
             x: GRID_X,
             y: row_y,
         },
     })?;
-    client.call(Request::InjectEvent {
-        event: RawEvent::MouseDown {
-            button: MouseButton::Left,
-            x: GRID_X,
-            y: row_y,
-        },
-    })?;
-    client.call(Request::InjectEvent {
-        event: RawEvent::MouseUp {
-            button: MouseButton::Left,
-            x: GRID_X,
-            y: row_y,
-        },
-    })?;
+    for _ in 0..2 {
+        client.call(Request::InjectEvent {
+            event: RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: GRID_X,
+                y: row_y,
+            },
+        })?;
+        client.call(Request::InjectEvent {
+            event: RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: GRID_X,
+                y: row_y,
+            },
+        })?;
+    }
     assert_eq!(
         ui(&mut client)?.mode,
         "match_setup",
-        "release inside the row activates"
+        "click selects, click again activates"
     );
     press_key(&mut client, Key::Escape)?;
     Ok(())
