@@ -56,7 +56,10 @@ assert this.
 
 If a change legitimately alters sim behavior, hashes and goldens move.
 Re-bless (below), *look at* the regenerated goldens, and explain the change
-in the commit message.
+in the commit message. A branch that blesses `state-hashes.json` must
+already carry its cycle's workspace version: SIM_VERSION stamps every
+replay and autosave, and a behavior change wearing last release's
+number lets an old binary silently reconstruct a different world.
 
 ## Build, test, bless
 
