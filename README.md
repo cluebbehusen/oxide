@@ -239,7 +239,8 @@ Working today: the full loop (harvest → train → fight → win) with fog of
 war and ghost memory, the two-faction eleven-unit roster (ground, air,
 artillery) behind a build-your-tech gate, the harvester-built structure
 palette from turrets to radar to Reclaimers, wreck salvage and repair
-welding, 2v2 teams with shared sight, order queues and patrols, solid
+welding, team games from 2v2 to 4v4 with shared sight, order queues
+and patrols, solid
 units that crowd without gridlocking, attack-move with line-of-sight
 fire, damage retaliation, rally points, control groups, shift-select,
 order feedback, a fog-aware minimap, sound, twenty-five maps in a
