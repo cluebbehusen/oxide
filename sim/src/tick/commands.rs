@@ -492,7 +492,7 @@ fn apply_build(
         Some(site) => site,
         None => {
             let cost = kind.stats().construction.ok_or(RejectReason::BadSite)?.cost;
-            if !state.can_place(player, kind, anchor) {
+            if !state.can_place_by(player, kind, anchor, Some(builder)) {
                 return Err(RejectReason::BadSite);
             }
             if state.player(player).scrap < cost {
@@ -505,13 +505,20 @@ fn apply_build(
             let site = state.place_site(player, kind, anchor);
             let from = state.unit(builder).expect("filtered above").tile();
             let size = kind.stats().size;
-            let reachable = super::rect_adjacent_tiles(anchor, size)
+            // The canonical doorstep: lowest-(y, x) reachable
+            // perimeter tile. One deterministic tile, because it
+            // doubles as where an under-feet builder steps when the
+            // foundation claims its ground. (A* tolerates a blocked
+            // start, so a builder standing inside the fresh footprint
+            // routes out of it like any unit on newly claimed ground.)
+            let doorstep = super::rect_adjacent_tiles(anchor, size)
                 .filter(|&t| state.passable(t))
-                .any(|t| from == t || super::astar_for(state, from, t).is_some());
-            if !reachable {
+                .filter(|&t| from == t || super::astar_for(state, from, t).is_some())
+                .min_by_key(|t| (t.y, t.x));
+            let Some(doorstep) = doorstep else {
                 state.retract_site(site);
                 return Err(RejectReason::UnreachableGoal);
-            }
+            };
             // Assign BEFORE paying: a builder whose order queue is
             // full must reject the whole command with the site
             // retracted and nothing spent — the old code discarded
@@ -530,6 +537,21 @@ fn apply_build(
                 for dx in 0..size.0 {
                     state.map.clear_wreck(anchor.offset(dx, dy));
                 }
+            }
+            // An under-feet builder steps to the doorstep as the site
+            // claims the ground: no sim rule expects a resting unit on
+            // a claimed footprint. Strictly after the last rejection
+            // path and the payment — a rejected command must not move
+            // the state hash (retract_site's contract).
+            let unit = state.unit_mut(builder).expect("filtered above");
+            let t = unit.tile();
+            let inside = t.x >= anchor.x
+                && t.x < anchor.x + size.0
+                && t.y >= anchor.y
+                && t.y < anchor.y + size.1;
+            if inside {
+                unit.pos = doorstep.center();
+                unit.path = None;
             }
             site
         }

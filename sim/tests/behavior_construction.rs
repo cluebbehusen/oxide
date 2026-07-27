@@ -1255,3 +1255,119 @@ fn place_refusal_names_the_actual_blocker() {
         Some(PlaceRefusal::NotConstructible)
     );
 }
+
+#[test]
+fn a_builder_founds_a_building_under_its_own_feet() {
+    use oxide_sim::stats::BuildingKind;
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 5, 6)])
+        .build()
+        .unwrap();
+    let builder = state.units()[0].id;
+    let anchor = TilePos::new(5, 6); // the builder's own tile
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor,
+            queue: false,
+        },
+    )]);
+    assert!(
+        state.buildings().iter().any(|b| b.anchor == anchor),
+        "the site claims the builder's own ground"
+    );
+    // The builder stepped to the canonical doorstep — lowest (y, x)
+    // reachable perimeter tile — as the foundation landed.
+    let u = state.unit(builder).unwrap();
+    assert_eq!(u.tile(), TilePos::new(4, 5), "the canonical doorstep");
+    assert!(matches!(u.order, Order::Build { .. }));
+    // And the build completes from there.
+    let events = run_until(&mut state, 600, |_, events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::BuildingCompleted { .. }))
+    });
+    assert!(!events.is_empty(), "the under-feet site stands up");
+}
+
+#[test]
+fn only_the_builder_is_exempt_from_the_standing_rule() {
+    use oxide_sim::stats::BuildingKind;
+    // A 2x2 Fabricator with the builder on one footprint tile and a
+    // second friendly machine on another: the builder is exempt, the
+    // sentinel still blocks — denial-by-standing stays a real rule.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 5, 6),
+        unit(0, UnitKind::Sentinel, 6, 7),
+    ])
+    .build()
+    .unwrap();
+    let builder = state.units()[0].id;
+    let anchor = TilePos::new(5, 6);
+    let scrap = state.player(PlayerId(0)).scrap;
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Fabricator,
+            anchor,
+            queue: false,
+        },
+    )]);
+    assert!(
+        state.buildings().iter().all(|b| b.anchor != anchor),
+        "a non-builder on the footprint still refuses the site"
+    );
+    assert_eq!(state.player(PlayerId(0)).scrap, scrap, "nothing spent");
+}
+
+#[test]
+fn a_rejected_under_feet_build_leaves_no_trace_on_the_hash() {
+    use oxide_sim::stats::BuildingKind;
+    // QueueFull is the one rejection that fires after place_site: fill
+    // the builder's program to the cap, then order a queued build
+    // under its feet. The whole tick must leave the state exactly
+    // where an empty tick would - the builder relocation runs only
+    // after the last rejection path, or a refused command would
+    // teleport a unit into the hash.
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 5, 6)])
+        .build()
+        .unwrap();
+    let builder = state.units()[0].id;
+    let mut fill = vec![cmd(
+        0,
+        Command::Move {
+            units: vec![builder],
+            goal: TilePos::new(6, 6),
+            queue: false,
+        },
+    )];
+    for _ in 0..32 {
+        fill.push(cmd(
+            0,
+            Command::Move {
+                units: vec![builder],
+                goal: TilePos::new(7, 6),
+                queue: true,
+            },
+        ));
+    }
+    state.tick(&fill);
+    let mut twin = state.clone();
+    twin.tick(&[]);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor: TilePos::new(5, 6),
+            queue: true,
+        },
+    )]);
+    assert_eq!(
+        state.hash(),
+        twin.hash(),
+        "a rejected build moved the state hash"
+    );
+}

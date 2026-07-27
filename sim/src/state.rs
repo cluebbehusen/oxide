@@ -635,6 +635,21 @@ impl State {
         self.place_refusal(player, kind, anchor).is_none()
     }
 
+    /// [`State::can_place`] with the ordered builder exempted from the
+    /// standing-machine rule: a harvester may found a building under
+    /// its own feet — it steps to the doorstep as the site claims the
+    /// ground. Enemy machines and every OTHER friendly still block.
+    pub fn can_place_by(
+        &self,
+        player: PlayerId,
+        kind: BuildingKind,
+        anchor: TilePos,
+        builder: Option<UnitId>,
+    ) -> bool {
+        self.place_refusal_by(player, kind, anchor, builder)
+            .is_none()
+    }
+
     /// Why a placement is refused, or `None` when it is allowed — the
     /// toast's vocabulary. The first blocking reason in footprint scan
     /// order wins; every check is fog-safe by construction (it reads
@@ -644,6 +659,18 @@ impl State {
         player: PlayerId,
         kind: BuildingKind,
         anchor: TilePos,
+    ) -> Option<PlaceRefusal> {
+        self.place_refusal_by(player, kind, anchor, None)
+    }
+
+    /// [`State::place_refusal`] with the builder exemption of
+    /// [`State::can_place_by`].
+    pub fn place_refusal_by(
+        &self,
+        player: PlayerId,
+        kind: BuildingKind,
+        anchor: TilePos,
+        builder: Option<UnitId>,
     ) -> Option<PlaceRefusal> {
         if kind.stats().construction.is_none() {
             return Some(PlaceRefusal::NotConstructible);
@@ -666,10 +693,13 @@ impl State {
         // Standing machines hold their ground — no foundations under feet.
         // A flyer passing overhead blocks nothing.
         let unit_in_footprint = self.units.iter().any(|u| {
-            u.hp > 0 && u.kind.stats().domain == crate::stats::Domain::Ground && {
-                let t = u.tile();
-                t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h
-            }
+            u.hp > 0
+                && Some(u.id) != builder
+                && u.kind.stats().domain == crate::stats::Domain::Ground
+                && {
+                    let t = u.tile();
+                    t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h
+                }
         });
         unit_in_footprint.then_some(PlaceRefusal::Unit)
     }

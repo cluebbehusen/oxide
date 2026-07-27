@@ -13,7 +13,10 @@ pub(crate) fn draw_placement_ghost(game: &Game, sprites: &Sprites, input: &Input
     let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     let zoom = game.camera.zoom;
     let (w, h) = kind.stats().size;
-    let ok = game.state.can_place(game.human, kind, anchor);
+    // The sim's builder is the lowest-id accepted harvester in the
+    // command; the ghost exempts the same machine or the tint lies.
+    let builder = crate::input::chosen_builder(game);
+    let ok = game.state.can_place_by(game.human, kind, anchor, builder);
     let screen = game
         .camera
         .to_screen(vec2(anchor.x as f32, anchor.y as f32));
