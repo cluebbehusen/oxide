@@ -109,6 +109,31 @@ fn lines(entries: &[ScenarioEntry], cols: usize) -> Vec<Line> {
     out
 }
 
+/// The furthest first-line that still FILLS the window: walk the line
+/// heights backward from the end until one more would overflow. Past
+/// this point the tail row would sit alone under an empty screen, which
+/// is what an unclamped wheel used to allow. `ensure_visible` and End
+/// reach the tail from below and so never pass it.
+fn max_scroll(all: &[Line], view: Vec2, ui: f32) -> usize {
+    let (_, _, _, card_h, heading_h, top, bottom) = metrics(view, ui);
+    let gap = 16.0 * ui; // matches layout()
+    let mut used = 0.0;
+    let mut first = all.len();
+    for (i, line) in all.iter().enumerate().rev() {
+        let h = match line {
+            Line::Heading(_) => heading_h,
+            Line::Cards(_) => card_h + gap,
+        };
+        if used + h > bottom - top {
+            break;
+        }
+        used += h;
+        first = i;
+    }
+    // A window too small for even one line still scrolls line by line.
+    first.min(all.len().saturating_sub(1))
+}
+
 /// Card and band sizes at this viewport. Returns
 /// (band_x, band_w, card_w, card_h, heading_h, top, bottom).
 fn metrics(view: Vec2, ui: f32) -> (f32, f32, f32, f32, f32, f32, f32) {
@@ -268,7 +293,7 @@ impl Browser {
         // shelf's lower half could never be reached by trackpad.
         if self.last_view != view {
             self.last_view = view;
-            let max = lines(entries, cols).len().saturating_sub(1);
+            let max = max_scroll(&lines(entries, cols), view, ui);
             self.scroll_line = self.scroll_line.min(max);
             let shown: Vec<usize> = self
                 .layout(entries, view, ui)
@@ -350,7 +375,9 @@ impl Browser {
                         continue;
                     }
                     self.wheel_accum -= steps;
-                    let max = lines(entries, cols).len().saturating_sub(1);
+                    // The window stops when it is still FULL: the last
+                    // line as the TOP line left a nearly empty screen.
+                    let max = max_scroll(&lines(entries, cols), view, ui);
                     if steps > 0.0 {
                         self.scroll_line = self.scroll_line.saturating_sub(steps as usize);
                     } else {
@@ -603,7 +630,9 @@ mod tests {
             b.handle(&entries, &[], &mut mouse);
             assert_eq!(b.selected, 0, "the wheel chose a map");
         }
-        assert!(b.scroll_line >= 4, "the window actually moved");
+        // The window moved (and stopped at the last full screenful —
+        // see `the_wheel_stops_at_the_last_full_screenful`).
+        assert!(b.scroll_line > 0, "the window actually moved");
 
         // Enter with the selection off screen scrolls it back first;
         // only the second Enter commits — it never fires blind.
@@ -635,6 +664,47 @@ mod tests {
             &mut mouse,
         );
         assert_eq!(out, Out::Pick(0), "the second Enter commits");
+    }
+
+    #[test]
+    fn the_wheel_stops_at_the_last_full_screenful() {
+        let entries = shelf();
+        let mut b = Browser::new();
+        let mut mouse = vec2(0.0, 0.0);
+        let view = crate::render::viewport();
+        let ui = crate::render::ui_scale();
+        let full = b.layout(&entries, view, ui).lines_shown;
+        assert!(full >= 3, "precondition: the window shows several lines");
+        // Scroll far past the end: the wheel once clamped to the LAST
+        // line, parking the tail row alone at the top of empty screen.
+        for _ in 0..60 {
+            b.handle(&entries, &[RawEvent::Wheel { delta: -1.0 }], &mut mouse);
+        }
+        let end = b.layout(&entries, view, ui);
+        assert!(!end.more_below, "the shelf's tail is on screen");
+        assert!(
+            end.lines_shown > 1,
+            "the tail row is not parked alone above empty screen (showing {} of {})",
+            end.lines_shown,
+            end.lines_total
+        );
+        // And the clamp is EXACTLY the last full screenful: one line
+        // back and the tail no longer fits.
+        b.handle(&entries, &[RawEvent::Wheel { delta: 1.0 }], &mut mouse);
+        assert!(
+            b.layout(&entries, view, ui).more_below,
+            "one line above the clamp, the tail is off screen"
+        );
+        // The keyboard still reaches the last row.
+        b.handle(&entries, &[RawEvent::KeyDown { key: Key::End }], &mut mouse);
+        assert_eq!(b.selected, entries.len() - 1);
+        assert!(
+            b.layout(&entries, view, ui)
+                .cards
+                .iter()
+                .any(|(e, _)| *e == b.selected),
+            "End shows the last card"
+        );
     }
 
     #[test]
