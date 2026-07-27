@@ -418,6 +418,46 @@ fn reissuing_the_selfsame_attack_clears_the_tether() {
 }
 
 #[test]
+fn patrol_drops_the_tether_like_any_command() {
+    // Patrol writes the unit's program directly instead of through
+    // assign — it must still keep the command contract: station
+    // keeping ends the moment the player speaks.
+    let mut state = open_arena(
+        41,
+        21,
+        vec![
+            unit(0, UnitKind::Sentinel, 20, 10),
+            unit(1, UnitKind::Harvester, 28, 10),
+        ],
+    )
+    .build()
+    .expect("builds");
+    let guard = state.units()[0].id;
+    let prey = state.units()[1].id;
+    settle(&mut state, 60);
+    state.tick(&[cmd(
+        1,
+        Command::Move {
+            units: vec![prey],
+            goal: TilePos::new(22, 10),
+            queue: false,
+        },
+    )]);
+    tick_until_tethered(&mut state, guard);
+    state.tick(&[cmd(
+        0,
+        Command::Patrol {
+            units: vec![guard],
+            waypoints: vec![TilePos::new(5, 5), TilePos::new(35, 15)],
+        },
+    )]);
+    let u = state.units().iter().find(|u| u.id == guard).unwrap();
+    assert!(u.leash.is_none(), "the patrol order cleared the tether");
+    assert_eq!(u.settled, 0, "and the station keeping restarted");
+    assert!(u.looping, "while the circuit itself armed normally");
+}
+
+#[test]
 fn stop_drops_the_tether() {
     let mut state = open_arena(
         41,

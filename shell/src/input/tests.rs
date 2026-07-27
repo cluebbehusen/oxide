@@ -662,6 +662,178 @@ fn the_armed_run_verb_issues_an_oblivious_move() {
     );
 }
 
+#[test]
+fn arming_run_stands_the_other_verbs_down() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let harvester = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.kind == UnitKind::Harvester && u.player == game.human)
+        .unwrap()
+        .id;
+    game.selection.units = vec![harvester];
+    // Placement armed, then M: exactly one verb may hold the cursor —
+    // armed_click resolves placement before run, so both live at once
+    // would stamp a building under a "run" toast.
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::M },
+            RawEvent::KeyUp { key: Key::M },
+        ],
+    );
+    assert!(input.running, "M arms the recall");
+    assert!(input.placing.is_none(), "and placement stood down");
+    let home = game.state.unit(harvester).unwrap().tile();
+    let p = game
+        .camera
+        .to_screen(vec2(home.x as f32 + 2.5, home.y as f32 + 0.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+        ],
+    );
+    assert!(
+        game.pending
+            .iter()
+            .all(|c| !matches!(&c.command, Command::Build { .. })),
+        "the click ran; it did not stamp the stale building: {:?}",
+        game.pending
+    );
+    assert!(
+        game.pending
+            .iter()
+            .any(|c| matches!(&c.command, Command::Move { .. })),
+        "the click issued the run"
+    );
+    // And the mirror direction: arming salvage stands run down.
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::M },
+            RawEvent::KeyUp { key: Key::M },
+            RawEvent::KeyDown { key: Key::V },
+            RawEvent::KeyUp { key: Key::V },
+        ],
+    );
+    assert!(input.salvaging, "V arms salvage");
+    assert!(!input.running, "and the run stood down");
+}
+
+#[test]
+fn a_paused_stroke_bills_each_kind_at_its_own_price() {
+    // Bank 360: one staged turret (100) plus an armed bastion (250)
+    // is affordable at the ACTUAL sum (350). The old count-times-
+    // current-kind math priced the staged turret as a second bastion
+    // (500) and refused a funded placement.
+    let mut game = drag_arena(360);
+    let mut input = InputState::new();
+    let builder = game.state.units()[0].id;
+    game.selection.units = vec![builder];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    let p = game.camera.to_screen(vec2(4.5, 2.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::Shift },
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+        ],
+    );
+    assert_eq!(staged_builds(&game), 1, "the turret staged");
+    // The clock never ran (paused shell): the turret is still pending
+    // when the palette switches kinds.
+    input.placing = Some(oxide_sim::BuildingKind::Bastion);
+    let p2 = game.camera.to_screen(vec2(9.5, 2.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: p2.x,
+                y: p2.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: p2.x,
+                y: p2.y,
+            },
+        ],
+    );
+    assert_eq!(
+        staged_builds(&game),
+        2,
+        "100 + 250 fits in 360 — the funded bastion must not be refused"
+    );
+}
+
+#[test]
+fn paused_strokes_share_one_queue_prediction() {
+    let mut game = drag_arena(50_000);
+    let mut input = InputState::new();
+    let builder = game.state.units()[0].id;
+    game.selection.units = vec![builder];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    // Two Shift strokes with NO tick between them (paused shell): the
+    // second must inherit the first's staged depth instead of
+    // re-reading the untouched live queue and blowing past the cap.
+    let mut tiles_a = Vec::new();
+    let mut tiles_b = Vec::new();
+    for y in [2, 4] {
+        for x in 4..=13 {
+            tiles_a.push((x, y));
+        }
+    }
+    for y in [6, 8] {
+        for x in 4..=13 {
+            if (x, y) != (7, 8) {
+                tiles_b.push((x, y));
+            }
+        }
+    }
+    let shift = [RawEvent::KeyDown { key: Key::Shift }];
+    apply_events(&mut game, &mut input, &shift);
+    drag_over(&mut game, &mut input, &tiles_a);
+    apply_events(&mut game, &mut input, &shift);
+    drag_over(&mut game, &mut input, &tiles_b);
+    assert!(
+        staged_builds(&game) <= oxide_sim::stats::ORDER_QUEUE_CAP + 1,
+        "two paused strokes staged {} builds — more than the builder's program can hold",
+        staged_builds(&game)
+    );
+    assert_eq!(
+        staged_builds(&game),
+        oxide_sim::stats::ORDER_QUEUE_CAP + 1,
+        "and the cap itself is still reachable"
+    );
+}
+
 /// A 2v1 team scenario: the human and a configured bot ally on one
 /// team, a lone enemy on the other — the readability tests' stage.
 fn team_game() -> Game {

@@ -439,6 +439,11 @@ fn apply_patrol(
             unit.looping = true;
             unit.path = None;
             unit.progress = 0;
+            // Patrol writes the program directly instead of through
+            // `assign`, so it must keep assign's side of the tether
+            // contract itself: a command ends station keeping.
+            unit.leash = None;
+            unit.settled = 0;
         }
     }
     if !routed {

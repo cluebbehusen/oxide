@@ -16,6 +16,7 @@ pub(super) fn digit_action(game: &mut Game, input: &mut InputState, slot: usize)
     if input.build_menu {
         if let Some(&kind) = BUILD_PALETTE.get(slot) {
             input.build_menu = false;
+            input.disarm_click_verbs();
             input.placing = Some(kind);
             let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
             game.toast(format!(

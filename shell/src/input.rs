@@ -131,40 +131,71 @@ pub(crate) struct PlacingStroke {
     queued: usize,
 }
 
-/// Build commands staged but not yet charged — the tick drains them
-/// once per frame, and the bank only reflects what drained.
+/// Scrap the staged-but-undrained Build commands will actually charge
+/// when the tick takes them — summed per command, never count-times-
+/// current-kind: a paused shell accumulates strokes of DIFFERENT
+/// kinds across frames, and a Build aimed at an own unfinished site
+/// is a free resume, not a purchase.
 fn pending_build_bill(game: &Game) -> u32 {
     game.pending
         .iter()
-        .filter(|pc| matches!(pc.command, Command::Build { .. }))
-        .count() as u32
+        .filter_map(|pc| match &pc.command {
+            Command::Build { kind, anchor, .. } => {
+                let resume = game
+                    .state
+                    .building_at(*anchor)
+                    .is_some_and(|b| b.player == game.human && !b.built);
+                if resume {
+                    None
+                } else {
+                    kind.stats().construction.map(|c| c.cost)
+                }
+            }
+            _ => None,
+        })
+        .sum()
 }
 
 /// The builder's queue depth once this stroke's FIRST stamp has
 /// landed — the sim gives a new site to the lowest-id own harvester in
 /// the selection (`accepted_units` sorts). Without Shift the stamp
 /// wipes the program; with Shift it appends, except onto an idle
-/// builder, where it takes the free active slot.
+/// builder, where it takes the free active slot. Live state alone is
+/// not enough: a paused shell stacks whole strokes without the sim
+/// ever draining them, so the staged-but-undrained Builds that will
+/// land on this same builder are replayed on top — each new stroke
+/// inherits what the previous ones already spoke for.
 fn stroke_queued(game: &Game, shift: bool) -> usize {
     if !shift {
         return 0;
     }
-    let Some(builder) = game
-        .selection
-        .units
-        .iter()
-        .copied()
-        .filter(|id| {
-            game.state
-                .unit(*id)
-                .is_some_and(|u| u.player == game.human && u.kind.stats().harvest.is_some())
-        })
-        .min()
-        .and_then(|id| game.state.unit(id))
+    let chosen_builder = |units: &[oxide_sim::UnitId]| {
+        units
+            .iter()
+            .copied()
+            .filter(|id| {
+                game.state
+                    .unit(*id)
+                    .is_some_and(|u| u.player == game.human && u.kind.stats().harvest.is_some())
+            })
+            .min()
+    };
+    let Some(builder) = chosen_builder(&game.selection.units).and_then(|id| game.state.unit(id))
     else {
         return 0;
     };
-    builder.queue.len() + usize::from(!matches!(builder.order, oxide_sim::Order::Idle))
+    let mut depth =
+        builder.queue.len() + usize::from(!matches!(builder.order, oxide_sim::Order::Idle));
+    for pc in &game.pending {
+        let Command::Build { units, queue, .. } = &pc.command else {
+            continue;
+        };
+        if chosen_builder(units) != Some(builder.id) {
+            continue;
+        }
+        depth = if *queue { depth + 1 } else { 1 };
+    }
+    depth
 }
 
 /// Everything a harvester can put in the ground, in palette order — the
@@ -219,6 +250,18 @@ impl InputState {
     /// transition: a menu eats the matching release events, and stale
     /// held-state otherwise pans the camera forever (or fires a phantom
     /// box-select) after resuming.
+    /// One armed left-click verb at a time: arming placement, salvage,
+    /// or run stands the others down. `armed_click` resolves modes in
+    /// a fixed priority order, so two live at once would make the next
+    /// click do something other than what the toast promised — press M
+    /// while placing and the click would still stamp a building.
+    pub(crate) fn disarm_click_verbs(&mut self) {
+        self.placing = None;
+        self.placing_stroke = None;
+        self.salvaging = false;
+        self.running = false;
+    }
+
     pub fn reset_transient(&mut self) {
         self.resolver.clear();
         self.drag_origin = None;
@@ -408,10 +451,42 @@ pub fn poll_events() -> Vec<RawEvent> {
     // Registration is lazy so an automation shell — which never polls
     // hardware — never accumulates a subscriber queue it won't drain.
     static POINTER_SUB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let first_poll = POINTER_SUB.get().is_none();
     let sub = *POINTER_SUB.get_or_init(mq::utils::register_input_subscriber);
+    if first_poll {
+        // The fresh subscriber queue is empty and a stationary cursor
+        // will never fill it: seed the stream with the position the
+        // pointer already holds, or edge pan and wheel zoom anchor at
+        // (0, 0) until the first real motion. mouse_position() is
+        // already logical (macroquad divides its dpi out).
+        let (x, y) = mq::mouse_position();
+        events.push(RawEvent::MouseMove { x, y });
+    }
     let mut stream = PointerStream::new(macroquad::miniquad::window::dpi_scale());
     mq::utils::repeat_all_miniquad_input(&mut stream, sub);
     events.append(&mut stream.events);
+    // macroquad's mouse_leave_event marks held buttons released in the
+    // POLLED state without queuing any subscriber event — a button let
+    // go outside the window would never reach the stream, leaving
+    // drags, pans, and placement strokes latched (a stroke would even
+    // resume stamping when the pointer wandered back). Synthesize the
+    // missing MouseUp at the last known logical position; releases the
+    // stream DID carry are left alone, and a rare duplicate MouseUp is
+    // harmless — every release handler tolerates an idle repeat.
+    for (mq_btn, btn) in [
+        (mq::MouseButton::Left, MouseButton::Left),
+        (mq::MouseButton::Middle, MouseButton::Middle),
+        (mq::MouseButton::Right, MouseButton::Right),
+    ] {
+        if mq::is_mouse_button_released(mq_btn)
+            && !events
+                .iter()
+                .any(|e| matches!(e, RawEvent::MouseUp { button, .. } if *button == btn))
+        {
+            let (x, y) = mq::mouse_position();
+            events.push(RawEvent::MouseUp { button: btn, x, y });
+        }
+    }
     let wheel = mq::mouse_wheel().1;
     if wheel != 0.0 {
         events.push(RawEvent::Wheel {
@@ -554,10 +629,8 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     // billed those stamps twice and cut a funded wall
                     // to half its length (the re-review's measured
                     // catch); reserving nothing let a fast drag stage
-                    // a wall the seat can't pay for. Pending Builds
-                    // within one frame share the stroke's kind — the
-                    // palette can't interleave mid-drag.
-                    let reserved = cost.saturating_mul(pending_build_bill(game));
+                    // a wall the seat can't pay for.
+                    let reserved = pending_build_bill(game);
                     let affordable =
                         game.state.player(game.human).scrap >= cost.saturating_add(reserved);
                     // The cap is the BUILDER's remaining headroom, not
@@ -949,12 +1022,12 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                     .push((crate::game::SoundKind::Denied, None));
                 return true;
             }
-            // The opening stamp affords itself (plus any builds from
-            // this same frame the tick hasn't charged) before it
-            // fires — a broke click gets the honest toast, not an
+            // The opening stamp affords itself (plus whatever staged
+            // builds the tick hasn't charged) before it fires — a
+            // broke click gets the honest toast, not an
             // acknowledgment ping followed by a sim rejection.
             let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
-            let bill = cost.saturating_mul(pending_build_bill(game));
+            let bill = pending_build_bill(game);
             if game.state.player(game.human).scrap < cost.saturating_add(bill) {
                 game.toast(format!("not enough scrap for a {}", kind.name()));
                 game.sounds_pending
@@ -1062,6 +1135,7 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
         }
         crate::panel::CardAction::ArmBuild(kind) => {
             input.build_menu = false;
+            input.disarm_click_verbs();
             input.placing = Some(kind);
             let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
             game.toast(format!(

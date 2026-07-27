@@ -174,6 +174,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                     .is_some_and(|u| u.kind == UnitKind::Harvester && u.player == game.human)
             });
             if has_harvester {
+                input.disarm_click_verbs();
                 input.salvaging = true;
                 game.toast("salvage: click an own building to strip it, Esc to cancel");
             } else {
@@ -193,6 +194,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 .iter()
                 .any(|id| game.state.unit(*id).is_some_and(|u| u.player == game.human));
             if has_own_unit {
+                input.disarm_click_verbs();
                 input.running = true;
                 game.toast("run: click ground to move without engaging, Esc to cancel");
             } else {
