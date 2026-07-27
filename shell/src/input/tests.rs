@@ -138,13 +138,26 @@ fn a_misclick_keeps_placement_armed_and_a_shift_click_repeats() {
     assert_eq!(game.pending.len(), 1, "legal ground stages the site");
     assert!(input.placing.is_some(), "shift keeps the wall going up");
 
-    // A plain click (press AND release — the mode now settles at the
+    // A plain click (press AND release — the mode settles at the
     // release, where the placement drag ends) disarms after staging.
+    // Skirmish's 150 scrap is spent after the shift stamp, and a
+    // BROKE click now refuses and keeps the mode armed — so the
+    // disarm half runs in a fresh, still-funded session.
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    game.selection.units = vec![
+        game.state
+            .units()
+            .iter()
+            .find(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+            .unwrap()
+            .id,
+    ];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
     apply_events(
         &mut game,
         &mut input,
         &[
-            RawEvent::KeyUp { key: Key::Shift },
             RawEvent::MouseDown {
                 button: MouseButton::Left,
                 x: open.x + 96.0,
@@ -157,6 +170,7 @@ fn a_misclick_keeps_placement_armed_and_a_shift_click_repeats() {
             },
         ],
     );
+    assert_eq!(game.pending.len(), 1, "the plain click stages its site");
     assert!(input.placing.is_none(), "a plain click finishes the job");
 }
 
@@ -2085,6 +2099,100 @@ fn drag_over(game: &mut Game, input: &mut InputState, tiles: &[(i32, i32)]) {
             x: last.x,
             y: last.y,
         }],
+    );
+}
+
+/// `drag_over` with the frame loop's heartbeat: pending drains into
+/// the sim between pointer events, the way real drags actually run.
+fn drag_over_ticking(game: &mut Game, input: &mut InputState, tiles: &[(i32, i32)]) -> usize {
+    let at =
+        |game: &Game, x: i32, y: i32| game.camera.to_screen(vec2(x as f32 + 0.5, y as f32 + 0.5));
+    let mut rejections = 0;
+    let mut drain = |game: &mut Game| {
+        let commands = std::mem::take(&mut game.pending);
+        let report = game.state.tick(&commands);
+        rejections += report
+            .events
+            .iter()
+            .filter(|e| matches!(e, oxide_sim::Event::CommandRejected { .. }))
+            .count();
+    };
+    let first = at(game, tiles[0].0, tiles[0].1);
+    apply_events(
+        game,
+        input,
+        &[RawEvent::MouseDown {
+            button: MouseButton::Left,
+            x: first.x,
+            y: first.y,
+        }],
+    );
+    drain(game);
+    for &(x, y) in &tiles[1..] {
+        let p = at(game, x, y);
+        apply_events(game, input, &[RawEvent::MouseMove { x: p.x, y: p.y }]);
+        drain(game);
+    }
+    let last = at(game, tiles[tiles.len() - 1].0, tiles[tiles.len() - 1].1);
+    apply_events(
+        game,
+        input,
+        &[RawEvent::MouseUp {
+            button: MouseButton::Left,
+            x: last.x,
+            y: last.y,
+        }],
+    );
+    drain(game);
+    rejections
+}
+
+#[test]
+fn a_ticking_drag_spends_the_whole_bank() {
+    // Ten turrets, exactly funded — and the tick charging earlier
+    // stamps mid-drag must not make the gate bill them twice (the
+    // double-count cut a funded wall to half its length).
+    let mut game = drag_arena(1000);
+    let mut input = InputState::new();
+    game.selection.units = vec![game.state.units()[0].id];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    // Two short rows bracketing the builder: every anchor stays inside
+    // someone's sight even as the builder walks to its first site —
+    // a wall drawn off into fog refuses honestly, which is a
+    // different test.
+    let tiles: Vec<_> = (4..=8)
+        .map(|x| (x, 2))
+        .chain((4..=8).map(|x| (x, 6)))
+        .collect();
+    let rejections = drag_over_ticking(&mut game, &mut input, &tiles);
+    assert_eq!(rejections, 0, "the gate stages nothing the sim refuses");
+    assert_eq!(
+        game.state
+            .buildings()
+            .iter()
+            .filter(|b| b.kind == oxide_sim::BuildingKind::Turret)
+            .count(),
+        10,
+        "a funded wall goes up whole"
+    );
+    assert_eq!(
+        game.state.player(game.human).scrap,
+        0,
+        "the bank spends to exactly zero"
+    );
+}
+
+#[test]
+fn a_broke_opening_click_toasts_instead_of_pinging() {
+    let mut game = drag_arena(50);
+    let mut input = InputState::new();
+    game.selection.units = vec![game.state.units()[0].id];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    drag_over(&mut game, &mut input, &[(9, 4)]);
+    assert_eq!(staged_builds(&game), 0, "a broke seat stages nothing");
+    assert!(
+        input.placing.is_some(),
+        "a refusal keeps the mode armed, like any misclick"
     );
 }
 

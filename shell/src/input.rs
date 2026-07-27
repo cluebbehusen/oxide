@@ -128,6 +128,15 @@ pub(crate) struct PlacingStroke {
     queued: usize,
 }
 
+/// Build commands staged but not yet charged — the tick drains them
+/// once per frame, and the bank only reflects what drained.
+fn pending_build_bill(game: &Game) -> u32 {
+    game.pending
+        .iter()
+        .filter(|pc| matches!(pc.command, Command::Build { .. }))
+        .count() as u32
+}
+
 /// The builder's queue depth once this stroke's FIRST stamp has
 /// landed — the sim gives a new site to the lowest-id own harvester in
 /// the selection (`accepted_units` sorts). Without Shift the stamp
@@ -533,13 +542,17 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         .iter()
                         .any(|a| (a.x - anchor.x).abs() < w && (a.y - anchor.y).abs() < h);
                     let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
-                    // The stroke's earlier stamps are still PENDING:
-                    // the tick hasn't charged them, so the bank still
-                    // shows their scrap. Reserve the stroke's own
-                    // bill, or a fast drag stages a wall the seat
-                    // can't pay for and every stamp past the first
-                    // pings acknowledgment and then eats a rejection.
-                    let reserved = cost.saturating_mul(stroke.anchors.len() as u32);
+                    // Reserve only the stamps the tick hasn't CHARGED
+                    // yet: the frame loop drains pending into the sim
+                    // mid-drag, and the bank already reflects
+                    // everything drained. Reserving the whole stroke
+                    // billed those stamps twice and cut a funded wall
+                    // to half its length (the re-review's measured
+                    // catch); reserving nothing let a fast drag stage
+                    // a wall the seat can't pay for. Pending Builds
+                    // within one frame share the stroke's kind — the
+                    // palette can't interleave mid-drag.
+                    let reserved = cost.saturating_mul(pending_build_bill(game));
                     let affordable =
                         game.state.player(game.human).scrap >= cost.saturating_add(reserved);
                     // The cap is the BUILDER's remaining headroom, not
@@ -927,6 +940,18 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                     }
                     PlaceRefusal::NotConstructible => "that can't be built",
                 });
+                game.sounds_pending
+                    .push((crate::game::SoundKind::Denied, None));
+                return true;
+            }
+            // The opening stamp affords itself (plus any builds from
+            // this same frame the tick hasn't charged) before it
+            // fires — a broke click gets the honest toast, not an
+            // acknowledgment ping followed by a sim rejection.
+            let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
+            let bill = cost.saturating_mul(pending_build_bill(game));
+            if game.state.player(game.human).scrap < cost.saturating_add(bill) {
+                game.toast(format!("not enough scrap for a {}", kind.name()));
                 game.sounds_pending
                     .push((crate::game::SoundKind::Denied, None));
                 return true;
