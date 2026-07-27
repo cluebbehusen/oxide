@@ -389,11 +389,12 @@ fn a_free_stepping_welder_still_consumes_the_room() {
             units: vec![opener],
         },
     )]);
-    // The warmed welder takes the HIGHER id: the collision tick runs
-    // in reversed id order (tick parity), so the free step resolves
+    // The warmed welder takes the LOWER id: the collision tick runs
+    // in forward id order (tick parity — the 0.12 collision slide
+    // shifted every arrival by a tick), so the free step resolves
     // first and the prepaid joiner takes the clamp.
-    let midmeter = fresh[1];
-    let joiner = fresh[0];
+    let midmeter = fresh[0];
+    let joiner = fresh[1];
     state.tick(&[cmd(
         0,
         Command::Repair {

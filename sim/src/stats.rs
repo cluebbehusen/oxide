@@ -843,6 +843,22 @@ pub const ANCHORED_PUSH_SHARE: Fx = Fx::lit("0.1");
 /// packed crowds settling smoothly instead of popping apart.
 pub const COLLISION_MAX_STEP: Fx = Fx::lit("0.12");
 
+/// The slide blend for a MOVING unit's collision correction: instead
+/// of a pure push along the contact normal (which a head-on pair's
+/// path following exactly undoes — the measured permanent freeze at
+/// 0.700 separation), a mover's correction is
+/// `RADIAL_SHARE * away + LATERAL_SHARE * sideways`, the sideways
+/// half picked toward the mover's own travel. Both constants are
+/// exactly representable in Q32.32 and their squares sum to
+/// 0.98828125 < 1, so the blended direction never exceeds unit
+/// length and [`COLLISION_MAX_STEP`] keeps meaning what it says.
+/// The radial share must stay well below the closing rate's half or
+/// the freeze returns; the lateral share is what converts a grind
+/// into a pass-by.
+pub const SLIDE_RADIAL_SHARE: Fx = Fx::lit("0.5");
+/// See [`SLIDE_RADIAL_SHARE`].
+pub const SLIDE_LATERAL_SHARE: Fx = Fx::lit("0.859375");
+
 /// How far from its anchor a self-acquired chase may reach before the
 /// guard breaks off and walks home, in tiles. MUST stay >= the
 /// Bombard's 9.5 weapon range: a shorter tether would let siege

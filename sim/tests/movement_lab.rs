@@ -520,3 +520,77 @@ fn lab_bulk_attack_pocket() {
         hitters.len(),
     );
 }
+
+#[test]
+#[ignore = "diagnostic: twenty RANGED units thrown at a foundry — layer utilization"]
+fn lab_bulk_attack_ranged() {
+    let (w, h) = (45, 27);
+    let mut units = Vec::new();
+    for i in 0..20 {
+        units.push(common::unit(
+            0,
+            UnitKind::Sentinel,
+            3 + (i % 2),
+            8 + (i / 2),
+        ));
+    }
+    let mut state = lane_arena(w, h, units).build().expect("builds");
+    let foundry = TilePos::new(w as i32 - 3, h as i32 - 3);
+    let target_id = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == foundry)
+        .expect("the east foundry stands at (w-3, h-3)")
+        .id;
+    let ids: Vec<_> = state.units().iter().map(|u| u.id).collect();
+    state.tick(&[cmd(
+        0,
+        Command::AttackMove {
+            units: ids.clone(),
+            goal: foundry,
+            queue: false,
+        },
+    )]);
+    let mut hitters = std::collections::BTreeSet::new();
+    let mut first_hit = 0u64;
+    let mut contact_sum = 0u64;
+    let mut contact_ticks = 0u64;
+    let mut peak_contact = 0usize;
+    let mut killed_at = 0u64;
+    for t in 1..8_000u64 {
+        let report = state.tick(&[]);
+        for e in &report.events {
+            if let Event::AttackHit { attacker, .. } = e {
+                hitters.insert(*attacker);
+                if first_hit == 0 {
+                    first_hit = t;
+                }
+            }
+        }
+        if first_hit > 0 {
+            // The sentinel fires from 2.5 tiles out: the census band is
+            // its weapon reach, not the melee ring.
+            let reach = Fx::lit("2.5");
+            let in_contact = match state.building(target_id).filter(|b| b.hp > 0) {
+                Some(b) => state
+                    .units()
+                    .iter()
+                    .filter(|u| u.hp > 0 && b.closest_point_to(u.pos).dist(u.pos) <= reach)
+                    .count(),
+                None => 0,
+            };
+            contact_sum += in_contact as u64;
+            contact_ticks += 1;
+            peak_contact = peak_contact.max(in_contact);
+        }
+        if state.building(target_id).is_none_or(|b| b.hp == 0) {
+            killed_at = t;
+            break;
+        }
+    }
+    let mean_contact_milli = (contact_sum * 1000).checked_div(contact_ticks).unwrap_or(0);
+    println!(
+        "LAB bulk_attack_ranged: distinct_hitters={}/20 first_hit={first_hit} peak_contact={peak_contact} mean_contact_milli={mean_contact_milli} killed_at={killed_at} (0=alive at 8000)",
+        hitters.len(),
+    );
+}
