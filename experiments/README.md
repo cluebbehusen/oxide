@@ -20,3 +20,4 @@ native Rust tournament of the quantized artifact
 | 0.10 (2026-07-23/24) | [the pacing campaign](2026-07-23-the-0.10-pacing-campaign.md) | balance instruments, ten rounds against the spam equilibrium, the fun gate opens |
 | 0.11 (2026-07-25/26) | [the salvage campaign](2026-07-25-the-0.11-salvage-campaign.md) | gym v5, the salvage verb's consolidation lineage, the flipped-faction probe |
 | 0.12 (2026-07-27) | [the decisiveness campaign](2026-07-27-the-0.12-decisiveness-campaign.md) | the sweep/duel/yardstick instruments, the personality clamp, Medium's cadence re-meter |
+| 0.12 (2026-07-27) | [the movement overhaul](2026-07-27-the-0.12-movement-overhaul.md) | the head-on freeze, the pursuit tether carved by four failing gates, the lateral slide, the fan-out for free |

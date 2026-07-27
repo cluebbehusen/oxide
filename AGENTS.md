@@ -371,6 +371,21 @@ never runs it.
   workers take `ANCHORED_PUSH_SHARE` of pair separation so crowds flow
   around them, and collision applies pairs Gauss-Seidel-style in id order —
   symmetric cancellation once froze the whole economy.
+- **Moving bodies slide, parked bodies push (0.12).** `movement::run`
+  hands its per-tick displacement to the collision resolver; a body
+  that traveled INTO a contact takes its correction as
+  `SLIDE_RADIAL_SHARE · away + SLIDE_LATERAL_SHARE · sideways`, the
+  side picked toward its own travel (geometric, 180°-equivariant;
+  head-on pairs provably pick opposite world sides). Pure radial push
+  survives for parked, non-closing, and perfectly stacked bodies, so
+  the settle probe holds by construction. A slide the terrain rejects
+  drops the lateral against a head-on partner — never reverses into
+  the partner's side, which would wall a corridor pair back into the
+  freeze. Before the slide, a collinear head-on pair froze PERMANENTLY
+  (radial pushback exactly cancels path speed) and army movement
+  averaged 82% of nominal; after, the lab's head-on pair passes at
+  exactly solo time and a 20-unit assault reaches 20/20 concurrent
+  contact. `sim/tests/movement_lab.rs` is the instrument.
 - **Orders are programs since 0.5**: every unit carries a bounded queue
   plus a looping flag; completion pops (or rotates — that's patrol),
   stalls drop the whole program with `OrderStalled`, plain orders replace
@@ -420,14 +435,27 @@ never runs it.
 - **Units are solid but never block tiles.** Collision is iterative pair
   relaxation after movement; pathfinding ignores units entirely, so crowds
   jostle but can't deadlock a corridor the way tile-reservation schemes do.
-- **Fire at will is the only stance.** The shell's right-click issues
-  `AttackMove` for ground orders: units engage in aggro range, fight via
-  `Order::Attack { resume: Some(goal) }`, and pick the march back up. Idle
-  units auto-acquire (attackers must close inside aggro to shoot, so
-  standing units always retaliate). Plain `Move` stays oblivious and
-  remains protocol/bot-only — it becomes a player verb again if stealth
-  or hold-fire ever exist. If a future unit outranges aggro, add
-  damage-triggered retaliation; today nothing does.
+- **Fire at will is the only stance — but stationed guards fight on a
+  tether (0.12).** The shell's right-click issues `AttackMove` for
+  ground orders: units engage in aggro range, fight via
+  `Order::Attack { resume: Some(goal) }`, and pick the march back up.
+  Idle units auto-acquire, and a machine that stood
+  `LEASH_STATION_TICKS` first acquires on a leash: free hunting
+  inside `LEASH_RADIUS` of its anchor (kept ≥ the Bombard's reach so
+  siege stays answerable — pinned by test), a `LEASH_PATIENCE`
+  warm-blood window beyond it that only a joined fight refreshes (a
+  bait never in reach grants none — the kited picket breaks at the
+  radius line), then the walk home and a re-acquire cooldown at the
+  post. Victories stand their ground still stationed; only break-offs
+  walk home (walking home mid-battle measurably lost rush defenses).
+  A unit cycling through idle mid-battle hunts unleashed exactly as
+  before — tethering those collapsed the scripted tier ladder to a
+  seat-parity coin. Player commands are commitments: an explicit
+  attack never tethers, and `assign` clears any leash unconditionally,
+  no-op reissues included. Plain `Move` stays oblivious and since 0.12
+  is the player's **Run** verb (`M`, panel card between Stop and
+  Patrol) — the recall that works while standing next to an enemy.
+  `sim/tests/behavior_leash.rs` pins the contract.
 - **Ghost memory lives in `Vision`**: enemy-building records refresh while
   their ground is visible and freeze when sight is lost; seeing the ground
   empty erases them. Scrap amounts get the same treatment via a per-player
@@ -677,6 +705,20 @@ never runs it.
   configuration it trained; deeper mixed-ally training is the known
   lever and costs duel sharpness — revisit when 2v2 becomes a
   headline mode.
+- **Expert's outright yardstick sweep is on loan to the movement era.**
+  The 0.12 overhaul (pursuit tether + collision slide) re-rolled every
+  bot-vs-bot match: un-ground movement helps massed scripted pushes
+  most and the shipped policy trained under the old physics, so Expert
+  reads 60/80 on the widened slate instead of sweeping. The ladder
+  still orders — strictly by pace of victory, Expert holding the top
+  win count outright, which is exactly what `neural_ladder.rs` now
+  asserts — and decisiveness carried over intact (`driver sweep`
+  skirmish Medium: 48/48 decided before and after, medians within 2%;
+  the 8-40 Cupric seat lean predates the overhaul). The next training
+  campaign trains under the new movement and takes the sweep bar
+  back, along with the fog-honest duel gate's per-seat floor (its
+  seat split whipsaws with every physics change: [6,15] → [11,15] →
+  [17,4]).
 
 ## Gotchas learned the hard way
 
