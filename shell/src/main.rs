@@ -472,7 +472,7 @@ async fn run() -> Result<()> {
         let mut events = if args.automation {
             Vec::new()
         } else {
-            input::poll_events(&mut input)
+            input::poll_events()
         };
         events.append(&mut injected);
         // Start-of-frame modifier truth, saved before the fold below:

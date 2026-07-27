@@ -64,12 +64,6 @@ pub struct InputState {
     pub(crate) minimap_drag: bool,
     /// Middle-drag pan anchor: the world follows the hand.
     pub(crate) mmb_anchor: Option<Vec2>,
-    /// Last *hardware* cursor position the poll saw. Change detection
-    /// must compare against this, not `mouse`: injected pointer events
-    /// move `mouse`, and comparing the idle OS cursor against it once
-    /// re-emitted a phantom MouseMove every frame — which fought every
-    /// injected drag for the pointer.
-    hw_mouse: Vec2,
     /// Control groups 1..=5 (assigned with Ctrl+N, recalled with N).
     groups: [Vec<UnitId>; crate::action::CONTROL_GROUPS],
     /// Previous click, for double-click detection.
@@ -141,7 +135,6 @@ impl InputState {
             drag_origin: None,
             minimap_drag: false,
             mmb_anchor: None,
-            hw_mouse: vec2(0.0, 0.0),
             groups: Default::default(),
             last_click: None,
             last_recall: None,
@@ -268,7 +261,84 @@ fn touch_event(phase: mq::TouchPhase, id: u64, x: f32, y: f32) -> Option<RawEven
     }
 }
 
-pub fn poll_events(input: &mut InputState) -> Vec<RawEvent> {
+/// The platform's ordered pointer stream, translated event by event
+/// into [`RawEvent`]s that keep their OWN coordinates.
+///
+/// macroquad's polled surface cannot express a press: it keeps the
+/// frame's LAST cursor position and a "was pressed this frame" flag, so
+/// a button that lands while the pointer is moving was stamped wherever
+/// the pointer ENDED the frame. The drag box then anchored ahead of the
+/// click (everything between the press and the frame boundary silently
+/// dropped out of the selection), and could never draw on the press
+/// frame at all — `MouseDown` set `mouse` and `drag_origin` to the same
+/// point by construction, and the frame's motion had already been
+/// collapsed into one MouseMove ahead of it.
+///
+/// Raw events arrive in backing-store pixels; the dpi factor is
+/// injected (never queried) so the whole adapter runs headless.
+pub(crate) struct PointerStream {
+    dpi: f32,
+    /// Translated events, in arrival order.
+    pub(crate) events: Vec<RawEvent>,
+}
+
+impl PointerStream {
+    pub(crate) fn new(dpi: f32) -> Self {
+        Self {
+            dpi: if dpi > 0.0 { dpi } else { 1.0 },
+            events: Vec::new(),
+        }
+    }
+
+    /// Backing-store pixels to the logical space every other coordinate
+    /// in the shell speaks (what `screen_width()` reports).
+    fn logical(&self, x: f32, y: f32) -> (f32, f32) {
+        (x / self.dpi, y / self.dpi)
+    }
+}
+
+fn mouse_button(button: mq::MouseButton) -> Option<MouseButton> {
+    match button {
+        mq::MouseButton::Left => Some(MouseButton::Left),
+        mq::MouseButton::Right => Some(MouseButton::Right),
+        mq::MouseButton::Middle => Some(MouseButton::Middle),
+        mq::MouseButton::Unknown => None,
+    }
+}
+
+impl macroquad::miniquad::EventHandler for PointerStream {
+    // The collector never runs a frame; it only replays input.
+    fn update(&mut self) {}
+    fn draw(&mut self) {}
+
+    fn mouse_motion_event(&mut self, x: f32, y: f32) {
+        let (x, y) = self.logical(x, y);
+        self.events.push(RawEvent::MouseMove { x, y });
+    }
+
+    fn mouse_button_down_event(&mut self, button: mq::MouseButton, x: f32, y: f32) {
+        let (x, y) = self.logical(x, y);
+        if let Some(button) = mouse_button(button) {
+            self.events.push(RawEvent::MouseDown { button, x, y });
+        }
+    }
+
+    fn mouse_button_up_event(&mut self, button: mq::MouseButton, x: f32, y: f32) {
+        let (x, y) = self.logical(x, y);
+        if let Some(button) = mouse_button(button) {
+            self.events.push(RawEvent::MouseUp { button, x, y });
+        }
+    }
+
+    /// A fingertip must arrive ONCE, as a touch: the trait's DEFAULT
+    /// `touch_event` emulates mouse clicks, which would give every
+    /// finger a second life as a press. Touches come from `touches()`
+    /// below.
+    fn touch_event(&mut self, _phase: macroquad::miniquad::TouchPhase, _id: u64, _x: f32, _y: f32) {
+    }
+}
+
+pub fn poll_events() -> Vec<RawEvent> {
     // A fingertip must arrive ONCE, as a touch — macroquad otherwise
     // mirrors every touch into synthetic mouse events and the same
     // finger would both pan the camera and drag a box.
@@ -281,36 +351,19 @@ pub fn poll_events(input: &mut InputState) -> Vec<RawEvent> {
             events.push(event);
         }
     }
-    let (mx, my) = mq::mouse_position();
-    if vec2(mx, my) != input.hw_mouse {
-        input.hw_mouse = vec2(mx, my);
-        events.push(RawEvent::MouseMove { x: mx, y: my });
-    }
+    // Pointer events in true arrival order, each with its own position.
+    // Registration is lazy so an automation shell — which never polls
+    // hardware — never accumulates a subscriber queue it won't drain.
+    static POINTER_SUB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let sub = *POINTER_SUB.get_or_init(mq::utils::register_input_subscriber);
+    let mut stream = PointerStream::new(macroquad::miniquad::window::dpi_scale());
+    mq::utils::repeat_all_miniquad_input(&mut stream, sub);
+    events.append(&mut stream.events);
     let wheel = mq::mouse_wheel().1;
     if wheel != 0.0 {
         events.push(RawEvent::Wheel {
             delta: normalize_wheel(wheel),
         });
-    }
-    for (button, mq_button) in [
-        (MouseButton::Left, mq::MouseButton::Left),
-        (MouseButton::Right, mq::MouseButton::Right),
-        (MouseButton::Middle, mq::MouseButton::Middle),
-    ] {
-        if mq::is_mouse_button_pressed(mq_button) {
-            events.push(RawEvent::MouseDown {
-                button,
-                x: mx,
-                y: my,
-            });
-        }
-        if mq::is_mouse_button_released(mq_button) {
-            events.push(RawEvent::MouseUp {
-                button,
-                x: mx,
-                y: my,
-            });
-        }
     }
     // Modifier edges land BEFORE ordinary key edges: a chord pressed
     // whole within one frame (Ctrl and F5 together) must resolve as

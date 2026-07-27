@@ -1907,3 +1907,115 @@ fn the_type_strip_cuts_a_mixed_selection_both_ways() {
         "a plain click narrows to the kind"
     );
 }
+
+/// A mouse already in flight when the button lands: the press must
+/// anchor the box where it LANDED, and the box must be drawable on the
+/// very frame of the press. The polled adapter could do neither — it
+/// stamped every button with the frame's LAST cursor position, so the
+/// anchor jumped forward by a frame of travel and `mouse ==
+/// drag_origin` made the rect zero-sized until the next frame.
+#[test]
+fn a_press_mid_flight_anchors_the_box_where_it_landed() {
+    use macroquad::miniquad::EventHandler;
+    // Retina: the platform speaks backing-store pixels, the shell logical ones.
+    let mut stream = PointerStream::new(2.0);
+    stream.mouse_motion_event(600.0, 400.0);
+    stream.mouse_motion_event(760.0, 400.0);
+    stream.mouse_button_down_event(macroquad::miniquad::MouseButton::Left, 768.0, 400.0);
+    stream.mouse_motion_event(900.0, 400.0);
+    stream.mouse_motion_event(1000.0, 400.0);
+    assert_eq!(
+        stream.events,
+        vec![
+            RawEvent::MouseMove { x: 300.0, y: 200.0 },
+            RawEvent::MouseMove { x: 380.0, y: 200.0 },
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: 384.0,
+                y: 200.0
+            },
+            RawEvent::MouseMove { x: 450.0, y: 200.0 },
+            RawEvent::MouseMove { x: 500.0, y: 200.0 },
+        ],
+        "every event keeps its own position, in arrival order"
+    );
+
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    input.ui = 1.0;
+    apply_events(&mut game, &mut input, &stream.events);
+    assert_eq!(
+        input.drag_origin,
+        Some(vec2(384.0, 200.0)),
+        "the box anchors at the press, not at the end of the frame"
+    );
+    assert!(
+        input.mouse.distance(input.drag_origin.expect("dragging")) > drag_threshold(input.ui),
+        "and the rect is already drawable on the press frame itself"
+    );
+}
+
+/// The selection consequence of the same frame: a unit sitting between
+/// the press point and where the pointer ended the frame belongs in the
+/// box. The old adapter threw that stretch away.
+#[test]
+fn the_stretch_between_press_and_frame_end_still_selects() {
+    use macroquad::miniquad::EventHandler;
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    input.ui = 1.0;
+    let mine: Vec<_> = game
+        .state
+        .units()
+        .iter()
+        .filter(|u| u.player == game.human)
+        .collect();
+    let (lo, hi) = (mine[0].pos, mine[mine.len() - 1].pos);
+    let a = game
+        .camera
+        .to_screen(vec2(lo.x.to_num::<f32>() - 1.0, lo.y.to_num::<f32>() - 1.0));
+    let b = game
+        .camera
+        .to_screen(vec2(hi.x.to_num::<f32>() + 1.0, hi.y.to_num::<f32>() + 1.0));
+    let want: Vec<_> = mine.iter().map(|u| u.id).collect();
+
+    // One frame: the pointer flies past `a`, the button lands there,
+    // and the pointer carries on to `b` before the frame ends.
+    let mut stream = PointerStream::new(1.0);
+    stream.mouse_motion_event(a.x - 40.0, a.y - 40.0);
+    stream.mouse_button_down_event(macroquad::miniquad::MouseButton::Left, a.x, a.y);
+    stream.mouse_motion_event(b.x, b.y);
+    stream.mouse_button_up_event(macroquad::miniquad::MouseButton::Left, b.x, b.y);
+    apply_events(&mut game, &mut input, &stream.events);
+    let mut got = game.selection.units.clone();
+    got.sort_unstable();
+    assert_eq!(got, want, "the whole sweep selects, press point included");
+
+    // The shape the polled adapter produced for that same frame: one
+    // MouseMove at the frame's END, and a press and release stamped
+    // there too. Origin == release, so the sweep read as a bare click.
+    let mut input = InputState::new();
+    input.ui = 1.0;
+    game.selection.units.clear();
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::MouseMove { x: b.x, y: b.y },
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: b.x,
+                y: b.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: b.x,
+                y: b.y,
+            },
+        ],
+    );
+    assert_ne!(
+        game.selection.units, want,
+        "premise: coalescing the frame into its last position loses the drag"
+    );
+}

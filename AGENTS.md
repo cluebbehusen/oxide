@@ -693,7 +693,10 @@ never runs it.
 - Injected pointer events use *logical* coordinates (what
   `screen_width()` reports); screenshots come back in *physical* pixels
   (2× on retina). Don't dpi-scale injected clicks to match a screenshot
-  — halve the screenshot's coordinates instead.
+  — halve the screenshot's coordinates instead. The miniquad RAW input
+  stream (the shell's hardware pointer source since 0.12) is physical
+  too: `PointerStream` divides by the injected `dpi_scale` once at the
+  adapter, and nothing downstream may scale again.
 - A paused shell stages socket commands for the *next* tick; drive one
   `AdvanceTicks` before asserting on their effects, or the assert races
   the order.
