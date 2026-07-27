@@ -27,23 +27,6 @@ pub fn drag_threshold(ui: f32) -> f32 {
     click_slop(ui)
 }
 
-/// The builder a Build command will actually get: the lowest-id own
-/// harvester in the selection — accepted_units sorts, so this is the
-/// sim's pick. The ghost and the click gate exempt exactly this
-/// machine from the standing-unit rule, or the tint would lie about
-/// building under the builder's own feet.
-pub(crate) fn chosen_builder(game: &Game) -> Option<oxide_sim::UnitId> {
-    game.selection
-        .units
-        .iter()
-        .copied()
-        .filter(|id| {
-            game.state
-                .unit(*id)
-                .is_some_and(|u| u.player == game.human && u.kind.stats().harvest.is_some())
-        })
-        .min()
-}
 /// World-unit pick radius around a unit's center.
 const PICK_RADIUS: f32 = 0.6;
 /// Camera pan speed in screen pixels per second (converted by zoom).
@@ -461,9 +444,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     if !overlaps
                         && affordable
                         && stroke.len() < oxide_sim::stats::ORDER_QUEUE_CAP
-                        && game
-                            .state
-                            .can_place_by(game.human, kind, anchor, chosen_builder(game))
+                        && game.state.can_place(game.human, kind, anchor)
                     {
                         let units = game.selection.units.clone();
                         game.issue(Command::Build {
@@ -830,18 +811,14 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             // away the armed mode on top of it. The toast names the
             // actual blocker — "needs open ground" while your own
             // harvester stands on the tile taught nobody anything.
-            let builder = chosen_builder(game);
-            if let Some(refusal) = game
-                .state
-                .place_refusal_by(game.human, kind, anchor, builder)
-            {
+            if let Some(refusal) = game.state.place_refusal(game.human, kind, anchor) {
                 use oxide_sim::PlaceRefusal;
                 game.toast(match refusal {
                     PlaceRefusal::Fog => "can't build there: ground not in sight",
                     PlaceRefusal::Terrain => "can't build there: impassable ground",
                     PlaceRefusal::Building => "can't build there: something already stands there",
                     PlaceRefusal::Unit => {
-                        "can't build there: a machine is standing on it - move it aside"
+                        "can't build there: an enemy machine is holding that ground"
                     }
                     PlaceRefusal::NotConstructible => "that can't be built",
                 });

@@ -492,7 +492,7 @@ fn apply_build(
         Some(site) => site,
         None => {
             let cost = kind.stats().construction.ok_or(RejectReason::BadSite)?.cost;
-            if !state.can_place_by(player, kind, anchor, Some(builder)) {
+            if !state.can_place(player, kind, anchor) {
                 return Err(RejectReason::BadSite);
             }
             if state.player(player).scrap < cost {
@@ -538,19 +538,48 @@ fn apply_build(
                     state.map.clear_wreck(anchor.offset(dx, dy));
                 }
             }
-            // An under-feet builder steps to the doorstep as the site
-            // claims the ground: no sim rule expects a resting unit on
-            // a claimed footprint. Strictly after the last rejection
-            // path and the payment — a rejected command must not move
-            // the state hash (retract_site's contract).
-            let unit = state.unit_mut(builder).expect("filtered above");
-            let t = unit.tile();
-            let inside = t.x >= anchor.x
-                && t.x < anchor.x + size.0
-                && t.y >= anchor.y
-                && t.y < anchor.y + size.1;
-            if inside {
-                unit.pos = doorstep.center();
+            // Friendly machines make way as the site claims the
+            // ground: no sim rule expects a resting unit on a claimed
+            // footprint. The builder steps to the doorstep (its work
+            // position); every other friendly inside — allies
+            // included — deals round-robin onto the passable perimeter
+            // ring in (y, x) order, id order among the displaced.
+            // Strictly after the last rejection path and the payment —
+            // a rejected command must not move the state hash
+            // (retract_site's contract). Hostiles can't be here:
+            // can_place refused them.
+            let ring: Vec<TilePos> = {
+                let mut ring: Vec<TilePos> = super::rect_adjacent_tiles(anchor, size)
+                    .filter(|&t| state.passable(t))
+                    .collect();
+                ring.sort_unstable_by_key(|t| (t.y, t.x));
+                ring
+            };
+            let inside = |t: TilePos| {
+                t.x >= anchor.x
+                    && t.x < anchor.x + size.0
+                    && t.y >= anchor.y
+                    && t.y < anchor.y + size.1
+            };
+            let mut dealt = 0usize;
+            for i in 0..state.units.len() {
+                let u = &state.units[i];
+                if u.hp == 0
+                    || u.kind.stats().domain != crate::stats::Domain::Ground
+                    || !inside(u.tile())
+                {
+                    continue;
+                }
+                let to = if u.id == builder {
+                    doorstep
+                } else if let Some(&t) = ring.get(dealt % ring.len().max(1)) {
+                    dealt += 1;
+                    t
+                } else {
+                    continue; // no perimeter at all: leave it; collision resolves
+                };
+                let unit = &mut state.units[i];
+                unit.pos = to.center();
                 unit.path = None;
             }
             site

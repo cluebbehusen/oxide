@@ -388,7 +388,14 @@ never runs it.
   surviving attacker gets the answer.
 - **Construction claims ground instantly**: full price on placement
   (refused — and refunded nothing — if no doorstep is reachable), a
-  fifth of max hp standing, blind and inert until built. Ground closing
+  fifth of max hp standing, blind and inert until built. Since 0.12
+  friendly machines never block placement — the builder founds a
+  building under its own feet and steps to the canonical doorstep,
+  and every other friendly on the footprint (allies included) deals
+  deterministically onto the perimeter ring as the site claims the
+  ground; a visible HOSTILE machine still denies its tile, and all
+  relocation runs strictly after the last rejection path so a
+  refused command leaves no trace on the hash. Ground closing
   mid-walk is real: movement revalidates each waypoint and repaths
   around fresh sites. Progress needs an adjacent builder — **several
   adjacent builders stack**, each contributing a tick, so two roughly

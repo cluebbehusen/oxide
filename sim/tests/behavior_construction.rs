@@ -1230,14 +1230,20 @@ fn resuming_a_site_sends_every_hand() {
 fn place_refusal_names_the_actual_blocker() {
     use oxide_sim::PlaceRefusal;
     use oxide_sim::stats::BuildingKind;
-    let state = arena(vec![unit(0, UnitKind::Harvester, 4, 6)])
-        .build()
-        .unwrap();
+    let state = arena(vec![
+        unit(0, UnitKind::Harvester, 4, 6),
+        unit(1, UnitKind::Scuttler, 5, 5),
+    ])
+    .build()
+    .unwrap();
     let p = PlayerId(0);
     let k = BuildingKind::Turret;
     let refusal = |x, y| state.place_refusal(p, k, TilePos::new(x, y));
-    // The harvester's own tile: a standing machine, named as such.
-    assert_eq!(refusal(4, 6), Some(PlaceRefusal::Unit));
+    // The harvester's own tile: friendly machines make way, so the
+    // ground is buildable.
+    assert_eq!(refusal(4, 6), None);
+    // A visible ENEMY machine denies its ground.
+    assert_eq!(refusal(5, 5), Some(PlaceRefusal::Unit));
     // Open visible ground: allowed, and the predicate is literally the
     // same answer with the reason thrown away.
     assert_eq!(refusal(5, 6), None);
@@ -1292,14 +1298,52 @@ fn a_builder_founds_a_building_under_its_own_feet() {
 }
 
 #[test]
-fn only_the_builder_is_exempt_from_the_standing_rule() {
+fn friendly_machines_make_way_for_foundations() {
     use oxide_sim::stats::BuildingKind;
     // A 2x2 Fabricator with the builder on one footprint tile and a
-    // second friendly machine on another: the builder is exempt, the
-    // sentinel still blocks — denial-by-standing stays a real rule.
+    // second OWN machine on another: both make way — the builder to
+    // the doorstep, the sentinel onto the perimeter ring.
     let mut state = arena(vec![
         unit(0, UnitKind::Harvester, 5, 6),
         unit(0, UnitKind::Sentinel, 6, 7),
+    ])
+    .build()
+    .unwrap();
+    let builder = state.units()[0].id;
+    let anchor = TilePos::new(5, 6);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Fabricator,
+            anchor,
+            queue: false,
+        },
+    )]);
+    assert!(
+        state.buildings().iter().any(|b| b.anchor == anchor),
+        "friendly machines no longer deny the site"
+    );
+    let (w, h) = BuildingKind::Fabricator.stats().size;
+    let inside =
+        |t: TilePos| t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h;
+    assert!(
+        state.units().iter().all(|u| !inside(u.tile())),
+        "everyone stepped off the claimed footprint"
+    );
+    assert_eq!(
+        state.unit(builder).unwrap().tile(),
+        TilePos::new(4, 5),
+        "the builder holds the canonical doorstep"
+    );
+}
+
+#[test]
+fn an_enemy_machine_still_denies_the_ground() {
+    use oxide_sim::stats::BuildingKind;
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 5, 6),
+        unit(1, UnitKind::Scuttler, 6, 7),
     ])
     .build()
     .unwrap();
@@ -1317,9 +1361,69 @@ fn only_the_builder_is_exempt_from_the_standing_rule() {
     )]);
     assert!(
         state.buildings().iter().all(|b| b.anchor != anchor),
-        "a non-builder on the footprint still refuses the site"
+        "denial-by-standing stays a real mechanic"
     );
     assert_eq!(state.player(PlayerId(0)).scrap, scrap, "nothing spent");
+}
+
+#[test]
+fn an_allied_machine_makes_way_like_your_own() {
+    use oxide_sim::stats::BuildingKind;
+    // Two seats on one team: seat 0 builds where seat 1's sentinel
+    // stands. The ally steps aside — your teammate's foundation is
+    // not an enemy of your parking spot.
+    let scenario = oxide_sim::Scenario::from_json(
+        &serde_json::json!({
+            "name": "Team Yard",
+            "seed": 11,
+            "players": [
+                {"name": "West", "faction": "ferrous", "team": 1, "scrap": 300, "bot": false},
+                {"name": "East", "faction": "cupric", "team": 1, "scrap": 0, "bot": true,
+                 "bot_config": {"level": "medium"}},
+                {"name": "Foe", "faction": "cupric", "scrap": 0, "bot": true,
+                 "bot_config": {"level": "medium"}}
+            ],
+            "map": [
+                "####################",
+                "#1.................#",
+                "#..................#",
+                "#..................#",
+                "#..................#",
+                "#..............2.3.#",
+                "#..................#",
+                "####################"
+            ],
+            "units": [
+                {"player": 0, "kind": "harvester", "x": 5, "y": 3},
+                {"player": 1, "kind": "sentinel", "x": 6, "y": 4}
+            ]
+        })
+        .to_string(),
+    )
+    .expect("team yard parses");
+    let mut state = scenario.build().expect("team yard builds");
+    let builder = state.units()[0].id;
+    let ally = state.units()[1].id;
+    let anchor = TilePos::new(5, 3);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Fabricator,
+            anchor,
+            queue: false,
+        },
+    )]);
+    assert!(
+        state.buildings().iter().any(|b| b.anchor == anchor),
+        "an ally on the footprint does not deny the site"
+    );
+    let (w, h) = BuildingKind::Fabricator.stats().size;
+    let t = state.unit(ally).unwrap().tile();
+    assert!(
+        !(t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h),
+        "the ally stepped off the claimed footprint (now at {t:?})"
+    );
 }
 
 #[test]
