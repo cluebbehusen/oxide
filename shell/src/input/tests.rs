@@ -2331,6 +2331,69 @@ fn a_fresh_stroke_owns_the_cap_plus_the_active_slot() {
 }
 
 #[test]
+fn a_full_queue_refuses_the_opening_shift_stamp() {
+    let mut game = drag_arena(50_000);
+    let mut input = InputState::new();
+    let builder = game.state.units()[0].id;
+    game.selection.units = vec![builder];
+    // Fill the program to the brim in the SIM: one active order plus a
+    // full queue — zero headroom for the stamp the click would append.
+    game.state.tick(&[PlayerCommand {
+        player: game.human,
+        command: Command::Move {
+            units: vec![builder],
+            goal: TilePos::new(15, 2),
+            queue: false,
+        },
+    }]);
+    for _ in 0..oxide_sim::stats::ORDER_QUEUE_CAP {
+        game.state.tick(&[PlayerCommand {
+            player: game.human,
+            command: Command::Move {
+                units: vec![builder],
+                goal: TilePos::new(15, 2),
+                queue: true,
+            },
+        }]);
+    }
+    assert_eq!(
+        game.state.unit(builder).unwrap().queue.len(),
+        oxide_sim::stats::ORDER_QUEUE_CAP,
+        "the fixture actually filled the queue"
+    );
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    let p = game.camera.to_screen(vec2(4.5, 2.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::Shift },
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+        ],
+    );
+    assert!(
+        game.pending.is_empty(),
+        "zero headroom refuses the opening stamp instead of pinging a doomed build"
+    );
+    assert!(
+        game.sounds_pending
+            .iter()
+            .any(|(k, _)| matches!(k, crate::game::SoundKind::Denied)),
+        "the refusal is audible"
+    );
+    assert!(input.placing.is_some(), "and the mode stays armed");
+}
+
+#[test]
 fn a_fogged_leg_leaves_a_gap_in_the_waypoint_numbers() {
     let mut game = headless_game();
     let fighter = game

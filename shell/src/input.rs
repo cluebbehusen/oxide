@@ -956,6 +956,19 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                     .push((crate::game::SoundKind::Denied, None));
                 return true;
             }
+            // The opening stamp must also FIT the builder's program: a
+            // Shift click onto a crew already at the order-queue cap
+            // would ping and then die in the sim as QueueFull. Same
+            // honest refusal as the broke click, mode stays armed.
+            // (stroke_queued reads sim state, which this frame's issue
+            // hasn't touched — before or after the stamp, same answer.)
+            let depth = stroke_queued(game, input.resolver.shift_held());
+            if depth > oxide_sim::stats::ORDER_QUEUE_CAP {
+                game.toast("that builder's order queue is full");
+                game.sounds_pending
+                    .push((crate::game::SoundKind::Denied, None));
+                return true;
+            }
             let units = game.selection.units.clone();
             // Shift both keeps placing AND queues the build behind the
             // builder's current program — chained construction in one
@@ -972,7 +985,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             // Shift's call, decided at MouseUp.
             input.placing_stroke = Some(PlacingStroke {
                 anchors: vec![anchor],
-                queued: stroke_queued(game, input.resolver.shift_held()),
+                queued: depth,
             });
         }
         return true;
