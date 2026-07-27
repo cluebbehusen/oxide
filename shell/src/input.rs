@@ -43,6 +43,11 @@ pub(crate) struct TouchPoint {
     /// Whether it ever left the slop circle — a moved finger is a
     /// drag, never a tap or a long-press.
     pub moved: bool,
+    /// Whether it LANDED on chrome (minimap or HUD). Chrome-born
+    /// fingers never drive world gestures: a swipe starting on the
+    /// command panel must not pan the camera behind it, and a
+    /// two-finger box with a chrome-born corner must not select.
+    pub chrome: bool,
     /// Whether its long-press already fired (fire once per touch).
     pub fired: bool,
 }
@@ -534,6 +539,8 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
             RawEvent::TouchDown { id, x, y } => {
                 let p = vec2(x, y);
                 input.touches.retain(|(tid, _)| *tid != id);
+                let chrome =
+                    crate::render::minimap_world_at(game, p).is_some() || click_on_hud(game, p);
                 input.touches.push((
                     id,
                     TouchPoint {
@@ -542,6 +549,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         down_at: input.now,
                         moved: false,
                         fired: false,
+                        chrome,
                     },
                 ));
                 if input.touches.len() > 2 {
@@ -574,8 +582,9 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     }
                 }
                 match input.touches.len() {
-                    // One moved finger drags the world under the hand.
-                    1 if input.touches[0].1.moved => {
+                    // One moved finger drags the world under the hand —
+                    // unless it landed on chrome, whose ground it keeps.
+                    1 if input.touches[0].1.moved && !input.touches[0].1.chrome => {
                         game.camera.center -= delta / game.camera.zoom;
                         game.camera.pan(Vec2::ZERO); // re-clamp
                     }
@@ -612,9 +621,11 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 let (_, lifted) = input.touches.remove(pos);
                 match input.touches.len() {
                     // Second finger of a pair released: a pair that
-                    // never pinched commits the box between the fingers.
+                    // never pinched commits the box between the fingers
+                    // — both corners world-born; a chrome-born finger
+                    // boxes nothing behind its panel.
                     1 => {
-                        if !input.pinching {
+                        if !input.pinching && !lifted.chrome && !input.touches[0].1.chrome {
                             let other = input.touches[0].1.at;
                             box_select(game, other, p, false);
                         }

@@ -330,10 +330,14 @@ fn main() -> Result<()> {
             scenario,
         } => {
             if let Some(path) = scenario {
-                // Full-session bench: every seat's shipped bot thinks —
-                // the heaviest honest shape (eight neural minds on the
-                // 4v4 map), deciding whether a perf window is needed.
-                let sc = runner::load_scenario(&path)?;
+                // Full-session bench: every seat thinks — the heaviest
+                // honest shape (eight neural minds on the 4v4 map),
+                // deciding whether a perf window is needed. Shipped
+                // playable maps author a human seat, so every chair is
+                // converted first; benching around an idle seat 0
+                // under-measured the claim.
+                let mut sc = runner::load_scenario(&path)?;
+                oxide_kit::bench::all_bots(&mut sc);
                 let mut state = sc.build()?;
                 let mut bots = oxide_sim::bot::seat_bots(&sc);
                 let start = std::time::Instant::now();

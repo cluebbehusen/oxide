@@ -949,8 +949,12 @@ pub(crate) fn draw_pings(game: &Game) {
 pub(crate) fn draw_rally_marker(game: &Game) {
     // A selected producer draws the line to its rally, not just the
     // flag — where fresh machines will walk should read at a glance.
+    // OWN producers only, like the flag below: the foreign panel hides
+    // rally and orders on purpose, and an inspected enemy building
+    // must not leak its intent through this line either.
     if let Some(id) = game.selection.building
         && let Some(building) = game.state.building(id)
+        && building.player == game.human
         && let Some(rally) = building.rally
     {
         let a = game.camera.to_screen(vec2(

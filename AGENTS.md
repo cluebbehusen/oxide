@@ -307,9 +307,11 @@ serde-default `buildings` list of pre-built structures for exactly
 this kind of harness work).
 `driver bench` times a 500-unit mass battle locally
 (`--scenario scenarios/compass-grand.json` instead runs a shipped map
-with every bot seat thinking — the heaviest honest shape; 0.11
-measured 3,073 ticks/s deep-game, so no perf window is open); CI
-asserts only hash-identity at scale. The 0.10 pacing findings and levers live in
+with EVERY chair converted to a thinking Expert — the heaviest honest
+shape; the earlier 3,073 ticks/s figure benched seven minds around an
+idle authored human seat, and the corrected eight-mind deep-game
+number is 5,044 ticks/s — no perf window is open); CI asserts only
+hash-identity at scale. The 0.10 pacing findings and levers live in
 `experiments/` (the per-era lab notebook — its README indexes the
 campaigns); matches target tens of minutes (the `vast` map class
 and the foundry-durability bless exist for this; the lancer's

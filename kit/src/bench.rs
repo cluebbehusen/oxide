@@ -136,9 +136,44 @@ pub fn engage(state: &mut oxide_sim::State) {
     ]);
 }
 
+/// Puts a neural Expert in EVERY chair. Scenario benches claim the
+/// heaviest honest shape — all seats thinking — but shipped playable
+/// maps author a human seat (`bot: false`), which `seat_bots` skips:
+/// an eight-seat map silently benched seven minds and an idle base.
+pub fn all_bots(scenario: &mut Scenario) {
+    for player in &mut scenario.players {
+        player.bot = true;
+        player.bot_config = Some(oxide_sim::scenario::BotConfig {
+            level: oxide_sim::bot::Level::Expert,
+            aggression: None,
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_bots_leaves_no_idle_chair() {
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        assert!(
+            scenario.players.iter().any(|p| !p.bot),
+            "premise: the shipped map authors a human seat"
+        );
+        all_bots(&mut scenario);
+        assert!(
+            scenario
+                .players
+                .iter()
+                .all(|p| p.bot && p.bot_config.is_some()),
+            "a scenario bench must field a mind in every chair"
+        );
+        assert_eq!(
+            oxide_sim::bot::seat_bots(&scenario).len(),
+            scenario.players.len()
+        );
+    }
 
     /// Two identical runs at scale, hash-compared every 50 ticks — the
     /// CI face of the bench. Short on purpose: the timed thousands-of-

@@ -764,35 +764,47 @@ impl Wizard {
             let accent = crate::render::faction_accent(effective_faction(scenario, draft, seat));
             let cy = rect.y + rect.h * 0.5;
             let chip_x = rect.x + 22.0 * ui;
+            // Everything on a card scales to the card: a compressed
+            // 400px-window roster once drew full-size discs and names
+            // straight across its neighbors and chips.
+            let disc = (10.0 * ui).min(rect.h * 0.38);
             if is_you {
-                draw_circle_lines(chip_x, cy, 13.0 * ui, 2.0, macroquad::prelude::WHITE);
+                draw_circle_lines(chip_x, cy, disc * 1.3, 2.0, macroquad::prelude::WHITE);
             }
-            draw_circle(chip_x, cy, 10.0 * ui, accent);
+            draw_circle(chip_x, cy, disc, accent);
             let num = format!("{}", seat + 1);
-            let ndims = measure_text(&num, None, (14.0 * ui) as u16, 1.0);
+            let num_font = (14.0 * ui).min(rect.h * 0.55);
+            let ndims = measure_text(&num, None, num_font as u16, 1.0);
             draw_text(
                 &num,
                 chip_x - ndims.width * 0.5,
-                cy + 5.0 * ui,
-                14.0 * ui,
+                cy + num_font * 0.35,
+                num_font,
                 Color::from_rgba(20, 20, 24, 255),
             );
+            let mut name_font = (16.0 * ui).min(rect.h * 0.62);
+            let name_room = (layout.cells[pos][0].w - 48.0 * ui).max(20.0);
+            let nw = measure_text(&spec.name, None, name_font as u16, 1.0).width;
+            if nw > name_room {
+                name_font = (name_font * name_room / nw).max(8.0);
+            }
             draw_text(
                 &spec.name,
                 rect.x + 44.0 * ui,
-                cy + 5.0 * ui,
-                16.0 * ui,
+                cy + name_font * 0.35,
+                name_font,
                 ITEM_COLOR,
             );
             if is_you {
                 let tag = "your seat";
-                let tdims = measure_text(tag, None, (14.0 * ui) as u16, 1.0);
+                let tag_font = (14.0 * ui).min(rect.h * 0.55);
+                let tdims = measure_text(tag, None, tag_font as u16, 1.0);
                 let fac = layout.cells[pos][3];
                 draw_text(
                     tag,
                     fac.x - tdims.width - 14.0 * ui,
-                    cy + 5.0 * ui,
-                    14.0 * ui,
+                    cy + tag_font * 0.35,
+                    tag_font,
                     DIM,
                 );
             }
@@ -852,8 +864,8 @@ impl Wizard {
                 let zone = layout.cells[pos][0];
                 draw_rectangle(
                     zone.x + 44.0 * ui,
-                    cy + 9.0 * ui,
-                    measure_text(&spec.name, None, (16.0 * ui) as u16, 1.0).width,
+                    cy + name_font * 0.55,
+                    measure_text(&spec.name, None, name_font as u16, 1.0).width,
                     1.5,
                     TITLE_COLOR,
                 );

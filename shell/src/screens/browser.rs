@@ -56,6 +56,10 @@ pub struct Browser {
     scroll_line: usize,
     hover: Option<usize>,
     pressed: Option<usize>,
+    /// Fractional wheel accumulation: trackpads deliver hundredths per
+    /// event, and one grid line per nonzero event raced through the
+    /// shelf. Whole notches only, like the row menus.
+    wheel_accum: f32,
 }
 
 /// The section heading for a seat count.
@@ -129,6 +133,7 @@ impl Browser {
             scroll_line: 0,
             hover: None,
             pressed: None,
+            wheel_accum: 0.0,
         }
     }
 
@@ -298,11 +303,20 @@ impl Browser {
                     self.ensure_visible(entries);
                 }
                 RawEvent::Wheel { delta } => {
+                    // Whole notches only — fractions accumulate, or a
+                    // trackpad swipe's dozens of tiny deltas each cost
+                    // a full grid line.
+                    self.wheel_accum += delta;
+                    let steps = self.wheel_accum.trunc();
+                    if steps == 0.0 {
+                        continue;
+                    }
+                    self.wheel_accum -= steps;
                     let max = lines(entries, cols).len().saturating_sub(1);
-                    if delta > 0.0 {
-                        self.scroll_line = self.scroll_line.saturating_sub(1);
-                    } else if delta < 0.0 {
-                        self.scroll_line = (self.scroll_line + 1).min(max);
+                    if steps > 0.0 {
+                        self.scroll_line = self.scroll_line.saturating_sub(steps as usize);
+                    } else {
+                        self.scroll_line = (self.scroll_line + (-steps) as usize).min(max);
                     }
                     self.hover = card_at(self, *mouse);
                     // The row-menu rule: scrolling drags the selection
@@ -561,6 +575,22 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn trackpad_fractions_accumulate_into_whole_lines() {
+        let entries = shelf();
+        let mut b = Browser::new();
+        let mut mouse = vec2(0.0, 0.0);
+        // Nine hundredths: no scroll yet. The tenth crosses a whole
+        // notch and moves exactly one line — a trackpad swipe once
+        // cost a full grid line per fractional event.
+        for _ in 0..9 {
+            b.handle(&entries, &[RawEvent::Wheel { delta: -0.11 }], &mut mouse);
+            assert_eq!(b.scroll_line, 0, "fractions alone must not scroll");
+        }
+        b.handle(&entries, &[RawEvent::Wheel { delta: -0.11 }], &mut mouse);
+        assert_eq!(b.scroll_line, 1, "the accumulated whole notch scrolls once");
     }
 
     #[test]

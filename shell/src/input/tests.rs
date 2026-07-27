@@ -1182,6 +1182,122 @@ fn publish_minimap(game: &Game) -> macroquad::math::Rect {
 }
 
 #[test]
+fn chrome_born_touches_never_drive_world_gestures() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let minimap = publish_minimap(&game);
+    let center_before = game.camera.center;
+
+    // A swipe that LANDS on the minimap must not pan the world
+    // behind it, however far it travels.
+    input.now = 2.0;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchDown {
+            id: 1,
+            x: minimap.x + 20.0,
+            y: minimap.y + 20.0,
+        }],
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchMove {
+            id: 1,
+            x: 400.0,
+            y: 300.0,
+        }],
+    );
+    assert_eq!(
+        game.camera.center, center_before,
+        "a chrome-born swipe keeps its hands off the camera"
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchUp {
+            id: 1,
+            x: 400.0,
+            y: 300.0,
+        }],
+    );
+
+    // The same swipe born on open ground pans.
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchDown {
+            id: 2,
+            x: 400.0,
+            y: 300.0,
+        }],
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchMove {
+            id: 2,
+            x: 300.0,
+            y: 260.0,
+        }],
+    );
+    assert_ne!(
+        game.camera.center, center_before,
+        "a world-born swipe still drags the world"
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchUp {
+            id: 2,
+            x: 300.0,
+            y: 260.0,
+        }],
+    );
+
+    // A two-finger box with one chrome-born corner selects nothing —
+    // even when the pair spans the whole own base.
+    let own = game.state.units()[0].pos;
+    let base = game
+        .camera
+        .to_screen(vec2(own.x.to_num::<f32>(), own.y.to_num::<f32>()));
+    game.selection.units.clear();
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchDown {
+            id: 3,
+            x: minimap.x + 30.0,
+            y: minimap.y + 30.0,
+        }],
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchDown {
+            id: 4,
+            x: base.x - 80.0,
+            y: base.y - 80.0,
+        }],
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchUp {
+            id: 4,
+            x: base.x - 80.0,
+            y: base.y - 80.0,
+        }],
+    );
+    assert!(
+        game.selection.units.is_empty(),
+        "a chrome-born corner must not box the base: {:?}",
+        game.selection.units
+    );
+}
+
+#[test]
 fn a_tap_on_the_idle_badge_cycles_workers() {
     let mut game = headless_game();
     let mut input = InputState::new();
