@@ -2221,3 +2221,124 @@ fn a_fresh_stroke_owns_the_cap_plus_the_active_slot() {
         "one active order plus a full queue is legal"
     );
 }
+
+#[test]
+fn a_fogged_leg_leaves_a_gap_in_the_waypoint_numbers() {
+    let mut game = headless_game();
+    let fighter = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Sentinel)
+        .expect("skirmish authors a sentinel")
+        .id;
+    game.selection.units = vec![fighter];
+    // First leg into unexplored ground (its goal draws nothing), then
+    // a leg back onto explored home turf.
+    let fogged = {
+        let map = game.state.map();
+        let mut found = None;
+        'scan: for y in (0..map.height()).rev() {
+            for x in (0..map.width()).rev() {
+                let t = TilePos::new(x, y);
+                if game.state.passable(t) && !game.my_vision().explored(t) {
+                    found = Some(t);
+                    break 'scan;
+                }
+            }
+        }
+        found.expect("skirmish keeps unexplored ground at boot")
+    };
+    let home = game.state.unit(fighter).unwrap().tile();
+    game.state.tick(&[
+        PlayerCommand {
+            player: game.human,
+            command: Command::AttackMove {
+                units: vec![fighter],
+                goal: fogged,
+                queue: false,
+            },
+        },
+        PlayerCommand {
+            player: game.human,
+            command: Command::AttackMove {
+                units: vec![fighter],
+                goal: home,
+                queue: true,
+            },
+        },
+    ]);
+    let unit = game.state.unit(fighter).unwrap();
+    assert_eq!(unit.queue.len(), 1, "two-leg program");
+    let points = crate::render::entities::breadcrumb_points(&game, unit);
+    assert_eq!(points.len(), 1, "the fogged leg draws nothing");
+    assert_eq!(
+        points[0].0, 1,
+        "the survivor wears its PROGRAM position — chip 2 is waypoint 2, \
+         never renumbered down into chip 1's seat"
+    );
+}
+
+#[test]
+fn the_docks_subject_always_draws_its_trail() {
+    // Twelve older harvesters ahead of thirteen newer sentinels: the
+    // majority-kind subject sits past the decor cap in raw selection
+    // order, and the cap must never drop it.
+    let mut units = Vec::new();
+    for i in 0..12 {
+        units.push(serde_json::json!({"player": 0, "kind": "harvester", "x": 2 + i, "y": 2}));
+    }
+    for i in 0..13 {
+        units.push(serde_json::json!({"player": 0, "kind": "sentinel", "x": 2 + i, "y": 4}));
+    }
+    let scenario = oxide_sim::Scenario::from_json(
+        &serde_json::json!({
+            "name": "Crowd",
+            "seed": 9,
+            "players": [
+                {"name": "Mass", "faction": "ferrous", "scrap": 0, "bot": false},
+                {"name": "Idle", "faction": "cupric", "scrap": 0, "bot": true}
+            ],
+            "map": [
+                "######################",
+                "#....................#",
+                "#....................#",
+                "#....................#",
+                "#....................#",
+                "#....................#",
+                "#1.................2.#",
+                "#....................#",
+                "######################"
+            ],
+            "units": units
+        })
+        .to_string(),
+    )
+    .expect("crowd parses");
+    let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("builds");
+    game.selection.units = game
+        .state
+        .units()
+        .iter()
+        .filter(|u| u.player == game.human)
+        .map(|u| u.id)
+        .collect();
+    let subject = crate::panel::subject_unit(&game).expect("a subject");
+    assert_eq!(
+        game.selection.units.iter().position(|id| *id == subject),
+        Some(12),
+        "premise: the subject sits exactly past the old cap's cut"
+    );
+    let decor = crate::render::entities::decor_units(&game);
+    assert_eq!(decor.len(), 12, "the cap holds");
+    assert_eq!(decor[0], subject, "the subject draws first, never dropped");
+    assert!(
+        decor.iter().all(|id| game.selection.units.contains(id)),
+        "decor only draws selected machines"
+    );
+
+    // A lone selection degrades to itself.
+    let one = game.selection.units[0];
+    game.selection.units = vec![one];
+    assert_eq!(crate::render::entities::decor_units(&game), vec![one]);
+}

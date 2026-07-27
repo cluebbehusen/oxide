@@ -260,7 +260,7 @@ pub(crate) fn draw_panel(
             );
             // Order chips carry the same numbers the world breadcrumbs
             // wear — chip 2 IS waypoint 2.
-            if orders_dock && n > 1 {
+            if orders_dock && panel.queue.len() > 1 {
                 draw_text(
                     format!("{}", i + 1),
                     rect.x + 3.0 * s,
