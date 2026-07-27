@@ -66,26 +66,24 @@ pub(crate) fn draw_panel(
     // panels carry the human's faction, so roster cards stay right.
     let faction = panel.faction;
     let icon_source = |icon: &CardIcon| match icon {
-        CardIcon::Unit(kind) => Some(sprites.unit(*kind, faction)),
-        CardIcon::Building(kind) => Some(sprites.building(*kind, faction)),
-        CardIcon::Glyph(_) => None,
+        CardIcon::Unit(kind) => sprites.unit(*kind, faction),
+        CardIcon::Building(kind) => sprites.building(*kind, faction),
+        CardIcon::Verb(v) => sprites.verb_icon(*v),
     };
 
     // Portrait block: sprite, name, status.
     let psize = 56.0 * s;
-    if let Some(source) = icon_source(&panel.portrait) {
-        draw_texture_ex(
-            sprites.texture(),
-            12.0 * s,
-            top + 12.0 * s,
-            WHITE,
-            DrawTextureParams {
-                dest_size: Some(vec2(psize, psize)),
-                source: Some(source),
-                ..Default::default()
-            },
-        );
-    }
+    draw_texture_ex(
+        sprites.texture(),
+        12.0 * s,
+        top + 12.0 * s,
+        WHITE,
+        DrawTextureParams {
+            dest_size: Some(vec2(psize, psize)),
+            source: Some(icon_source(&panel.portrait)),
+            ..Default::default()
+        },
+    );
     draw_text(&panel.title, 12.0 * s, top + 88.0 * s, 17.0 * s, BONE);
     draw_text(&panel.sub, 12.0 * s, top + 106.0 * s, 14.0 * s, BONE_FAINT);
 
@@ -121,45 +119,19 @@ pub(crate) fn draw_panel(
         } else {
             Color::new(1.0, 1.0, 1.0, 0.35)
         };
-        match &card.icon {
-            // The stop square draws as a real filled square — the
-            // glyph rendered like a missing character in this font.
-            CardIcon::Glyph("■") => {
-                let sq = 18.0 * s;
-                draw_rectangle(
-                    rect.x + (rect.w - sq) * 0.5,
-                    rect.y + 14.0 * s,
-                    sq,
-                    sq,
-                    if card.enabled { BONE } else { BONE_FAINT },
-                );
-            }
-            CardIcon::Glyph(g) => {
-                let dims = measure_text(g, None, (30.0 * s) as u16, 1.0);
-                draw_text(
-                    g,
-                    rect.x + (rect.w - dims.width) * 0.5,
-                    rect.y + 34.0 * s,
-                    30.0 * s,
-                    if card.enabled { BONE } else { BONE_FAINT },
-                );
-            }
-            icon => {
-                if let Some(source) = icon_source(icon) {
-                    let isz = 42.0 * s;
-                    draw_texture_ex(
-                        sprites.texture(),
-                        rect.x + (rect.w - isz) * 0.5,
-                        rect.y + 6.0 * s,
-                        tint,
-                        DrawTextureParams {
-                            dest_size: Some(vec2(isz, isz)),
-                            source: Some(source),
-                            ..Default::default()
-                        },
-                    );
-                }
-            }
+        {
+            let isz = 42.0 * s;
+            draw_texture_ex(
+                sprites.texture(),
+                rect.x + (rect.w - isz) * 0.5,
+                rect.y + 6.0 * s,
+                tint,
+                DrawTextureParams {
+                    dest_size: Some(vec2(isz, isz)),
+                    source: Some(icon_source(&card.icon)),
+                    ..Default::default()
+                },
+            );
         }
         // The name lives on the card, not only in the tooltip — and it
         // stays whole: a long name shrinks to fit instead of losing its
@@ -282,33 +254,19 @@ pub(crate) fn draw_panel(
                     Color::new(0.45, 0.45, 0.52, 0.8)
                 },
             );
-            match &card.icon {
-                CardIcon::Glyph(g) => {
-                    let dims = measure_text(g, None, (22.0 * s) as u16, 1.0);
-                    draw_text(
-                        g,
-                        rect.x + (rect.w - dims.width) * 0.5,
-                        rect.y + 28.0 * s,
-                        22.0 * s,
-                        BONE,
-                    );
-                }
-                icon => {
-                    if let Some(source) = icon_source(icon) {
-                        let isz = 34.0 * s;
-                        draw_texture_ex(
-                            sprites.texture(),
-                            rect.x + (rect.w - isz) * 0.5,
-                            rect.y + 5.0 * s,
-                            WHITE,
-                            DrawTextureParams {
-                                dest_size: Some(vec2(isz, isz)),
-                                source: Some(source),
-                                ..Default::default()
-                            },
-                        );
-                    }
-                }
+            {
+                let isz = 34.0 * s;
+                draw_texture_ex(
+                    sprites.texture(),
+                    rect.x + (rect.w - isz) * 0.5,
+                    rect.y + 5.0 * s,
+                    WHITE,
+                    DrawTextureParams {
+                        dest_size: Some(vec2(isz, isz)),
+                        source: Some(icon_source(&card.icon)),
+                        ..Default::default()
+                    },
+                );
             }
             // The head of a production queue wears its progress.
             if i == 0

@@ -20,8 +20,37 @@ pub enum CardIcon {
     Unit(UnitKind),
     /// A building sprite.
     Building(BuildingKind),
-    /// A text glyph — order verbs and other spriteless notions.
-    Glyph(&'static str),
+    /// A verb pictogram from the atlas's icon family.
+    Verb(VerbIcon),
+}
+
+/// The atlas's verb pictograms, in `Sprites::verb_icons` order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerbIcon {
+    /// Everything halts.
+    Stop,
+    /// The oblivious walk.
+    Move,
+    /// The fighting march.
+    AttackMove,
+    /// The strike burst.
+    Attack,
+    /// The loop.
+    Patrol,
+    /// The scrap pyramid.
+    Harvest,
+    /// The wrench.
+    Build,
+    /// The weld.
+    Repair,
+    /// Value coming back down.
+    Salvage,
+    /// The refusal cross.
+    Cancel,
+    /// The rally pennant.
+    Rally,
+    /// The three-beat wait.
+    Idle,
 }
 
 /// What clicking a card does.
@@ -147,34 +176,46 @@ pub fn weapon_lines(kind: UnitKind) -> Vec<String> {
 }
 
 fn order_card(order: &Order, active: bool) -> Card {
-    let (glyph, title, desc): (&str, &str, &str) = match order {
+    let (icon, title, desc): (VerbIcon, &str, &str) = match order {
         Order::Idle => (
-            "·",
+            VerbIcon::Idle,
             "Idle",
             "Standing by; fighters auto-engage in aggro range.",
         ),
-        Order::Move { .. } => ("M", "Move", "Walking; oblivious to enemies on the way."),
-        Order::Harvest { .. } => ("H", "Harvest", "Working a scrap node, hauling home."),
-        Order::Attack { .. } => ("A", "Attack", "Chasing one target until it is gone."),
-        Order::Build { .. } => ("B", "Build", "Standing up a construction site."),
-        // Chip letters must not contradict the chords: "X" on the
-        // attack-move chip while X meant Stop, and "R" on repair while
-        // R meant Patrol, taught exactly the wrong reflexes. W is
-        // welding — the game's own word for it.
+        Order::Move { .. } => (
+            VerbIcon::Move,
+            "Move",
+            "Walking; oblivious to enemies on the way.",
+        ),
+        Order::Harvest { .. } => (
+            VerbIcon::Harvest,
+            "Harvest",
+            "Working a scrap node, hauling home.",
+        ),
+        Order::Attack { .. } => (
+            VerbIcon::Attack,
+            "Attack",
+            "Chasing one target until it is gone.",
+        ),
+        Order::Build { .. } => (VerbIcon::Build, "Build", "Standing up a construction site."),
         Order::Repair { .. } => (
-            "W",
+            VerbIcon::Repair,
             "Repair",
             "Welding a damaged building; costs a trickle.",
         ),
-        Order::AttackMove { .. } => ("E", "Attack-move", "Marching; engages everything met."),
+        Order::AttackMove { .. } => (
+            VerbIcon::AttackMove,
+            "Attack-move",
+            "Marching; engages everything met.",
+        ),
         Order::Salvage { .. } => (
-            "V",
+            VerbIcon::Salvage,
             "Salvage",
             "Stripping a building down for a partial refund.",
         ),
     };
     Card {
-        icon: CardIcon::Glyph(glyph),
+        icon: CardIcon::Verb(icon),
         title: if active {
             format!("{title} (now)")
         } else {
@@ -226,7 +267,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             );
             if !hostile {
                 panel.cards.push(Card {
-                    icon: CardIcon::Glyph("·"),
+                    icon: CardIcon::Verb(VerbIcon::Idle),
                     title: "Ally works".into(),
                     cost: None,
                     hotkey: String::new(),
@@ -244,7 +285,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         if !building.built {
             panel.sub = format!("under construction · {}", panel.sub);
             panel.cards.push(Card {
-                icon: CardIcon::Glyph("X"),
+                icon: CardIcon::Verb(VerbIcon::Cancel),
                 title: "Scrap site".into(),
                 cost: None,
                 hotkey: chord(bindings, Action::StopOrScrap),
@@ -286,7 +327,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         }
         if building.rally.is_some() {
             panel.cards.push(Card {
-                icon: CardIcon::Glyph("R"),
+                icon: CardIcon::Verb(VerbIcon::Rally),
                 title: "Clear rally".into(),
                 cost: None,
                 hotkey: String::new(),
@@ -369,7 +410,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         return Some(panel);
     }
     panel.cards.push(Card {
-        icon: CardIcon::Glyph("■"),
+        icon: CardIcon::Verb(VerbIcon::Stop),
         title: "Stop".into(),
         cost: None,
         hotkey: chord(bindings, Action::StopOrScrap),
@@ -379,9 +420,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         desc: vec!["Clear orders; stand and auto-engage.".into()],
     });
     panel.cards.push(Card {
-        // The letter is the classic chord (R), not the initial — "P"
-        // on a card whose key is R, while P pauses, was a small lie.
-        icon: CardIcon::Glyph("R"),
+        icon: CardIcon::Verb(VerbIcon::Patrol),
         title: "Patrol".into(),
         cost: None,
         hotkey: chord(bindings, Action::Patrol),
@@ -395,7 +434,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
     });
     if has_builder {
         panel.cards.push(Card {
-            icon: CardIcon::Glyph("V"),
+            icon: CardIcon::Verb(VerbIcon::Salvage),
             title: "Salvage".into(),
             cost: None,
             hotkey: chord(bindings, Action::Salvage),
@@ -468,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn verb_letters_do_not_contradict_the_classic_chords() {
+    fn verb_cards_wear_their_atlas_icons() {
         use chassis::grid::TilePos;
         use oxide_sim::UnitKind;
         let mut game = game();
@@ -494,18 +533,14 @@ mod tests {
             .iter()
             .find(|c| c.title == "Patrol")
             .expect("patrol card");
-        assert_eq!(
-            patrol.icon,
-            CardIcon::Glyph("R"),
-            "the card letter IS the chord"
-        );
-        assert_eq!(patrol.hotkey, "R");
+        assert_eq!(patrol.icon, CardIcon::Verb(VerbIcon::Patrol));
+        assert_eq!(patrol.hotkey, "R", "the tooltip chord stays live");
         let chip = &panel.queue[0];
         assert!(chip.title.starts_with("Attack-move"), "{}", chip.title);
         assert_eq!(
             chip.icon,
-            CardIcon::Glyph("E"),
-            "the marching chip must not wear the Stop chord's letter"
+            CardIcon::Verb(VerbIcon::AttackMove),
+            "chips wear pictograms, not letters that shadow chords"
         );
     }
 

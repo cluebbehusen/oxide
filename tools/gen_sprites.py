@@ -1088,6 +1088,149 @@ def scorch() -> None:
     finish(img, px, "scorch")
 
 
+ICON = 48
+
+
+def _icon_bar(d, a, b, w: float, color) -> None:
+    """A thick line as a polygon — PIL's line joins are ragged at 4x."""
+    import math as _m
+
+    (x0, y0), (x1, y1) = a, b
+    dx, dy = x1 - x0, y1 - y0
+    ln = _m.hypot(dx, dy) or 1.0
+    px, py = -dy / ln * w * 0.5, dx / ln * w * 0.5
+    d.polygon(
+        [
+            (s(x0 + px), s(y0 + py)),
+            (s(x1 + px), s(y1 + py)),
+            (s(x1 - px), s(y1 - py)),
+            (s(x0 - px), s(y0 - py)),
+        ],
+        fill=color,
+    )
+
+
+def icon_stop() -> None:
+    """Everything halts: one solid block."""
+    img, d = canvas(ICON)
+    d.rectangle([s(13), s(13), s(35), s(35)], fill=(*BONE, 255))
+    finish(img, ICON, "icon_stop")
+
+
+def icon_move() -> None:
+    """A plain march: arrow up, no opinions."""
+    img, d = canvas(ICON)
+    d.polygon([(s(24), s(6)), (s(40), s(24)), (s(8), s(24))], fill=(*BONE, 255))
+    d.rectangle([s(19), s(24), s(29), s(42)], fill=(*BONE, 255))
+    finish(img, ICON, "icon_move")
+
+
+def icon_attack_move() -> None:
+    """The fighting march: the move arrow wearing blades."""
+    img, d = canvas(ICON)
+    d.polygon([(s(24), s(4)), (s(40), s(22)), (s(8), s(22))], fill=(*BONE, 255))
+    d.rectangle([s(19), s(22), s(29), s(40)], fill=(*BONE, 255))
+    # Blades off the arrowhead.
+    d.polygon([(s(4), s(28)), (s(14), s(24)), (s(12), s(33))], fill=(*SCRAP_LIGHT, 255))
+    d.polygon([(s(44), s(28)), (s(34), s(24)), (s(36), s(33))], fill=(*SCRAP_LIGHT, 255))
+    finish(img, ICON, "icon_attack_move")
+
+
+def icon_attack() -> None:
+    """A strike burst: eight points of contact."""
+    img, d = canvas(ICON)
+    cx, cy = 24, 24
+    import math as _m
+
+    pts = []
+    for i in range(16):
+        ang = _m.pi * 2 * i / 16 - _m.pi / 2
+        r = 19 if i % 2 == 0 else 8
+        pts.append((s(cx + _m.cos(ang) * r), s(cy + _m.sin(ang) * r)))
+    d.polygon(pts, fill=(*BONE, 255))
+    d.ellipse([s(19), s(19), s(29), s(29)], fill=(*SCRAP, 255))
+    finish(img, ICON, "icon_attack")
+
+
+def icon_patrol() -> None:
+    """A closed round: the loop with its arrowhead."""
+    img, d = canvas(ICON)
+    for a, b in [
+        ((12, 10), (36, 10)),
+        ((38, 12), (38, 36)),
+        ((36, 38), (18, 38)),
+        ((10, 36), (10, 12)),
+    ]:
+        _icon_bar(d, a, b, 5.0, (*BONE, 255))
+    # Arrowhead riding the bottom leg, pointing the way around.
+    d.polygon([(s(12), s(38)), (s(22), s(30)), (s(22), s(46))], fill=(*BONE, 255))
+    finish(img, ICON, "icon_patrol")
+
+
+def icon_harvest() -> None:
+    """The scrap pyramid: what the economy is made of."""
+    img, d = canvas(ICON)
+    for x, y in [(14, 14), (26, 14), (8, 26), (20, 26), (32, 26)]:
+        d.rectangle([s(x), s(y), s(x + 9), s(y + 9)], fill=(*SCRAP, 255))
+        d.rectangle([s(x), s(y), s(x + 9), s(y + 3)], fill=(*SCRAP_LIGHT, 255))
+    finish(img, ICON, "icon_harvest")
+
+
+def icon_build() -> None:
+    """A wrench over the work."""
+    img, d = canvas(ICON)
+    d.ellipse([s(6), s(6), s(24), s(24)], fill=(*BONE, 255))
+    d.ellipse([s(11), s(11), s(19), s(19)], fill=(0, 0, 0, 0))
+    # The jaw notch.
+    d.polygon([(s(20), s(4)), (s(30), s(14)), (s(20), s(20))], fill=(0, 0, 0, 0))
+    _icon_bar(d, (17, 17), (38, 38), 7.5, (*BONE, 255))
+    d.rectangle([s(33), s(33), s(43), s(43)], fill=(*BONE, 255))
+    finish(img, ICON, "icon_build")
+
+
+def icon_repair() -> None:
+    """The weld: a plus, sparking."""
+    img, d = canvas(ICON)
+    d.rectangle([s(19), s(9), s(29), s(39)], fill=(*BONE, 255))
+    d.rectangle([s(9), s(19), s(39), s(29)], fill=(*BONE, 255))
+    d.ellipse([s(33), s(7), s(41), s(15)], fill=(*SCRAP_LIGHT, 255))
+    finish(img, ICON, "icon_repair")
+
+
+def icon_salvage() -> None:
+    """Value coming back down: an arrow into the pile."""
+    img, d = canvas(ICON)
+    d.rectangle([s(19), s(4), s(29), s(20)], fill=(*BONE, 255))
+    d.polygon([(s(24), s(32)), (s(38), s(18)), (s(10), s(18))], fill=(*BONE, 255))
+    for x in (10, 20, 30):
+        d.rectangle([s(x), s(36), s(x + 8), s(44)], fill=(*SCRAP, 255))
+    finish(img, ICON, "icon_salvage")
+
+
+def icon_cancel() -> None:
+    """A refusal: the cross."""
+    img, d = canvas(ICON)
+    _icon_bar(d, (11, 11), (37, 37), 8.0, (*BONE, 255))
+    _icon_bar(d, (37, 11), (11, 37), 8.0, (*BONE, 255))
+    finish(img, ICON, "icon_cancel")
+
+
+def icon_rally() -> None:
+    """The rally pennant on its pole."""
+    img, d = canvas(ICON)
+    d.rectangle([s(12), s(6), s(17), s(42)], fill=(*BONE, 255))
+    d.polygon([(s(17), s(8)), (s(42), s(15)), (s(17), s(24))], fill=(*SCRAP, 255))
+    finish(img, ICON, "icon_rally")
+
+
+def icon_idle() -> None:
+    """Standing by: the three-beat wait."""
+    img, d = canvas(ICON)
+    for i, x in enumerate((8, 20, 32)):
+        d.ellipse([s(x), s(21), s(x + 8), s(29)], fill=(*BONE, 200 - i * 30))
+    finish(img, ICON, "icon_idle")
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     print(f"writing {OUT}")
@@ -1142,6 +1285,18 @@ def main() -> None:
         array(faction)
         reclaimer(faction)
     accent_masks()
+    icon_stop()
+    icon_move()
+    icon_attack_move()
+    icon_attack()
+    icon_patrol()
+    icon_harvest()
+    icon_build()
+    icon_repair()
+    icon_salvage()
+    icon_cancel()
+    icon_rally()
+    icon_idle()
     pack_atlas()
     print("done")
 
