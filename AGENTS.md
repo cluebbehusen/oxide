@@ -205,7 +205,10 @@ hash fixtures pin the weights like any other rule). Difficulty is a
 dial into one mind: `bot::Level` (Easy/Medium/Hard/Expert) sets a
 skill knob whose degradation the network *trained under*; a second
 knob picks the personality (turtle → aggressive), dealt from the
-scenario seed when unset; a third carries the seat's faction, honest
+scenario seed when unset — since 0.12 the deal draws from 250-900
+(`bot::deal_aggression`, the one definition the driver probes also
+call), because a dealt deep turtle reads as a bot that never attacks;
+the full 0..=1000 range stays reachable through explicit picks; a third carries the seat's faction, honest
 and never sampled (authored maps deal even seats Ferrous; launch-time
 retints feed the knob the seat's ACTUAL faction, and the 0.11
 flipped-seat probe measured the policy at full strength from

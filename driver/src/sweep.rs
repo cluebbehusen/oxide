@@ -12,10 +12,9 @@
 //! engine, not personality luck.
 
 use anyhow::{Context, Result};
-use chassis::rng::Pcg32;
-use oxide_sim::bot::{Level, seat_bots};
+use oxide_sim::bot::{Level, deal_aggression, seat_bots};
 use oxide_sim::scenario::{BotConfig, Scenario};
-use oxide_sim::{GameResult, State};
+use oxide_sim::{GameResult, PlayerId, State};
 use serde::Serialize;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -243,10 +242,9 @@ fn play(
     swapped: bool,
     max_ticks: u64,
 ) -> Result<SweepMatch> {
-    // NeuralBot::ladder's dealing, replicated — the same stream
-    // balance.rs replicates for candidate probes: same seed, same
-    // personalities.
-    let dealt = [0u64, 1u64].map(|seat| Pcg32::new(seed, 4000 + seat).next_below(1001));
+    // The shipped dealing itself — one definition, no replicated
+    // stream: same seed, same personalities as the game deals.
+    let dealt = [0u8, 1u8].map(|seat| deal_aggression(seed, PlayerId(seat)));
     let mut sc = base.clone();
     sc.seed = seed;
     for (i, player) in sc.players.iter_mut().enumerate() {

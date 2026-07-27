@@ -28,7 +28,10 @@ pub use brain::Brain;
 pub use classic::Bot;
 pub use executive::{Army, ArmyId, ArmyState, Doctrine, Executive, Intent};
 pub use gym::{ACTION_COUNT, Action, Decision, FEATURE_COUNT, FEATURE_NAMES, GYM_VERSION, GymBot};
-pub use neural::{LADDER_CADENCE, Level, NeuralBot, QuantNet};
+pub use neural::{
+    DEALT_AGGRESSION_MAX, DEALT_AGGRESSION_MIN, LADDER_CADENCE, Level, NeuralBot, QuantNet,
+    deal_aggression,
+};
 pub use observation::{BuildingObs, Observation, UnitObs};
 pub use orient::Orientation;
 pub use tiers::Difficulty;

@@ -22,6 +22,29 @@ use std::sync::OnceLock;
 /// The decision cadence the shipped ladder network trained at.
 pub const LADDER_CADENCE: u64 = 16;
 
+/// Floor of the seed-dealt personality range. An explicit `aggression`
+/// pick may use the full 0..=1000 conditioning the network trained
+/// under; the deal narrows it. Below this floor the trained style is a
+/// deep turtle — paid during training for its army NOT fighting — and
+/// a dealt one reads as a bot that never attacks (the 0.12 playtest
+/// complaint; the open deal measured 15/48 undecided on the skirmish
+/// sweep). The extremes stay reachable through explicit picks, on
+/// purpose.
+pub const DEALT_AGGRESSION_MIN: u32 = 250;
+/// Ceiling of the seed-dealt personality range — trims the mirror
+/// extreme of [`DEALT_AGGRESSION_MIN`]'s turtle.
+pub const DEALT_AGGRESSION_MAX: u32 = 900;
+
+/// Deals the personality a seat plays when its scenario config leaves
+/// `aggression` unset: uniform in the dealt range, deterministic from
+/// the scenario seed. The one definition — driver probes call this
+/// instead of replicating the stream.
+pub fn deal_aggression(scenario_seed: u64, player: PlayerId) -> u32 {
+    DEALT_AGGRESSION_MIN
+        + Pcg32::new(scenario_seed, 4000 + u64::from(player.0))
+            .next_below(DEALT_AGGRESSION_MAX - DEALT_AGGRESSION_MIN + 1)
+}
+
 /// The shipped difficulty ladder: one trained network, four skill-knob
 /// settings calibrated against the scripted tiers (Easy loses to even
 /// the gentlest scripted bot; Expert sweeps them all). Difficulty is a
@@ -319,9 +342,7 @@ impl NeuralBot {
         aggression: Option<u32>,
         faction: Faction,
     ) -> Self {
-        let aggression = aggression.unwrap_or_else(|| {
-            Pcg32::new(scenario_seed, 4000 + u64::from(player.0)).next_below(1001)
-        });
+        let aggression = aggression.unwrap_or_else(|| deal_aggression(scenario_seed, player));
         Self::with_profile(
             player,
             level.cadence(),

@@ -79,13 +79,15 @@ pub fn balance_probe(
                         .map(|(seat, player)| {
                             // Exactly the shipped ladder profile unless a
                             // dial is explicitly overridden: the level's
-                            // own cadence and a seed-dealt personality
-                            // (NeuralBot::ladder's dealing, replicated).
+                            // own cadence and the seed-dealt personality
+                            // (the shipped dealing itself, not a copy).
                             // Probing a candidate at a flat cadence-16 /
                             // aggression-500 profile once gated a faster,
                             // blander bot than the one embedding ships.
-                            let aggression = chassis::rng::Pcg32::new(sc.seed, 4000 + seat as u64)
-                                .next_below(1001);
+                            let aggression = oxide_sim::bot::deal_aggression(
+                                sc.seed,
+                                oxide_sim::PlayerId(seat as u8),
+                            );
                             NeuralBot::with_profile(
                                 oxide_sim::PlayerId(seat as u8),
                                 dials.cadence.unwrap_or_else(|| level.cadence()),
