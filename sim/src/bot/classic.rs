@@ -120,11 +120,15 @@ impl Bot {
         let home_id = home.id;
 
         // Retry damping: a harvester sent last think and idle again now
-        // bounced off an unreachable node — never ask twice.
+        // bounced off an unreachable node — never ask twice. A node it
+        // honestly drained holds nothing and stays off the list (the
+        // scrap filter already refuses it); blacklisting it would
+        // poison the tile forever.
         for (id, node) in std::mem::take(&mut self.last_sent) {
             if state
                 .unit(id)
                 .is_some_and(|u| u.order == Order::Idle && u.hp > 0)
+                && (state.map.scrap_at(node) > 0 || state.map.wreck_at(node) > 0)
                 && !self.dead_nodes.contains(&node)
             {
                 self.dead_nodes.push(node);

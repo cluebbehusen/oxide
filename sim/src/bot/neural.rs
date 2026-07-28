@@ -113,7 +113,16 @@ impl Level {
             // resurrected the Standard-stall blemish) — so don't
             // interpolate; re-measure.
             Level::Medium => 26,
-            Level::Hard => 24,
+            // 24 until 0.13: the retarget-radius rule made idle
+            // harvesters routine, and every idle waits a think — the
+            // cadence became the economy's re-tasking latency. At 24
+            // Hard measured BELOW Medium on the widened yardstick
+            // (143 vs 162 of 240) while the skill knob at fixed
+            // cadence read non-monotone (750:152, 850:143, 900:138,
+            // 950:130 — the patience artifact); at 20 Hard reads 186,
+            // cleanly between Medium's 162 and Expert's 210. See the
+            // 0.13 experiments note.
+            Level::Hard => 20,
             Level::Expert => 16,
         }
     }

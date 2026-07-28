@@ -399,15 +399,18 @@ fn deliver(state: &mut State, id: UnitId, node: TilePos, events: &mut Vec<Event>
     }
 }
 
-/// The nearest tile still holding salvage — node scrap or wreck — within
-/// [`RETARGET_RADIUS`] of a dead source, keyed by (distance from the
-/// unit, y, x) so the pick is unique.
+/// The nearest tile still holding node scrap within [`RETARGET_RADIUS`]
+/// of a dead source, keyed by (distance from the unit, y, x) so the pick
+/// is unique. Wreck tiles are deliberately not candidates: battlefield
+/// salvage is directed work (an explicit Harvest still reaches it), and
+/// an auto-hop that accepted wrecks chain-walked harvest lines across
+/// old battlefields toward the enemy.
 fn replacement_node(state: &State, around: TilePos, unit_tile: TilePos) -> Option<TilePos> {
     let mut best: Option<(i32, i32, i32)> = None;
     for dy in -RETARGET_RADIUS..=RETARGET_RADIUS {
         for dx in -RETARGET_RADIUS..=RETARGET_RADIUS {
             let t = around.offset(dx, dy);
-            if state.map.scrap_at(t) == 0 && state.map.wreck_at(t) == 0 {
+            if state.map.scrap_at(t) == 0 {
                 continue;
             }
             let key = (t.manhattan(unit_tile), t.y, t.x);

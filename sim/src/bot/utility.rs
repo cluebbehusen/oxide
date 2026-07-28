@@ -217,14 +217,23 @@ impl UtilityPolicy {
     }
 
     /// A harvester sent last think and idle again now bounced off an
-    /// unreachable node — never ask twice.
+    /// unreachable node — never ask twice. Only a node still reporting
+    /// value earns the blacklist: a source the harvester honestly
+    /// drained reads as empty and needs no entry (the amount filter
+    /// already refuses it), and blacklisting it would poison the tile
+    /// against every future deposit landing there.
     pub(super) fn audit_harvests(&mut self, obs: &Observation) {
         for (id, node) in std::mem::take(&mut self.last_sent) {
             let bounced = obs
                 .my_units
                 .iter()
                 .any(|u| u.id == id && u.idle && u.hp > 0);
-            if bounced && !self.dead_nodes.contains(&node) {
+            let still_reports = obs
+                .known_scrap
+                .iter()
+                .chain(obs.known_wrecks.iter())
+                .any(|(pos, amount)| *pos == node && *amount > 0);
+            if bounced && still_reports && !self.dead_nodes.contains(&node) {
                 self.dead_nodes.push(node);
             }
         }

@@ -757,9 +757,10 @@ pub const WRECK_VALUE_DEN: u32 = 100;
 pub const FOUNDRY_WRECK_VALUE: u32 = 300;
 
 /// Ticks between global wreck-decay steps (every wreck tile loses one
-/// salvage per step). Battlefield scrap is a fresh-battle prize, not a
-/// bank.
-pub const WRECK_DECAY_TICKS: u64 = 40;
+/// salvage per step). Battlefield scrap is a prize that outlives the
+/// battle — worth a deliberate trip minutes later — but never a
+/// permanent bank.
+pub const WRECK_DECAY_TICKS: u64 = 300;
 
 /// Outer detection ring of the Array, in tiles: hostile units inside it
 /// but out of true sight appear as blips — a tile, no kind, no owner.
@@ -814,8 +815,11 @@ pub const ORDER_QUEUE_CAP: usize = 32;
 pub const PATH_EXPANSION_CAP: u32 = 20_000;
 
 /// When a harvest node runs dry, harvesters look for a replacement within
-/// this Chebyshev radius of the old node.
-pub const RETARGET_RADIUS: i32 = 10;
+/// this Chebyshev radius of the old node. Sized to the widest contiguous
+/// scrap deposit on any shipped map: the harvester finishes the deposit
+/// it was sent to, then reports for orders — marching to a different
+/// patch is the owner's call, surfaced through the idle-harvester flow.
+pub const RETARGET_RADIUS: i32 = 2;
 
 /// When a Move command lands on an impassable tile, the goal snaps to the
 /// nearest passable tile within this radius (else the command is rejected).

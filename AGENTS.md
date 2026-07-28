@@ -756,10 +756,25 @@ comparisons don't survive GPU churn, so CI never runs it.
   and the flipped-seat probe cleared the policy for it.
 - **Wrecks are a second salvage layer, not nodes.** Deaths leave a
   fraction of cost as `Tile.wreck`: never blocks movement, stripped
-  standing ON the tile, decays on a global cadence, buried by accepted
-  foundations, skipped when a surviving building covers the tile.
-  Vision remembers wreck amounts like scrap; stale memories resolve by
-  walking and discovering.
+  standing ON the tile, decays on a global cadence (slowed 7.5x in
+  0.13 — a battlefield prize that outlives the battle, minutes not
+  seconds, still never a bank), buried by accepted foundations,
+  skipped when a surviving building covers the tile. Vision remembers
+  wreck amounts like scrap; stale memories resolve by walking and
+  discovering. Since 0.13 wrecks are strictly DIRECTED work: the
+  harvester auto-retarget never adopts a wreck tile (an accepted
+  auto-hop once chain-walked harvest lines 51 tiles across old
+  battlefields toward the enemy); only an explicit Harvest reaches
+  one.
+- **A dry deposit retires its harvester (0.13).** The auto-retarget
+  scan reaches `RETARGET_RADIUS` = 2 — the widest contiguous scrap
+  cluster on any shipped map — so a harvester finishes the patch it
+  was sent to, delivers what it carries, and goes idle instead of
+  marching to the next deposit (radius 10 once carried whole harvest
+  lines to a different patch, and through wrecks, toward the enemy).
+  Farther patches are the owner's call: the human through the idle
+  badge and `N`, the bots through their economy channels, which only
+  ever re-task idle workers on the next think.
 - **Repair reuses construction's machinery.** Welding feeds buffered
   hp gains through the same resolve path as building (fire wins ties),
   stalls broke, and stacks across welders. Since 0.11 the three
@@ -1018,11 +1033,18 @@ comparisons don't survive GPU churn, so CI never runs it.
   win count outright, which is exactly what `neural_ladder.rs` now
   asserts — and decisiveness carried over intact (`driver sweep`
   skirmish Medium: 48/48 decided before and after, medians within 2%;
-  the 8-40 Cupric seat lean predates the overhaul). The next training
-  campaign trains under the new movement and takes the sweep bar
-  back, along with the fog-honest duel gate's per-seat floor (its
-  seat split whipsaws with every physics change: [6,15] → [11,15] →
-  [17,4]).
+  the 8-40 Cupric seat lean predates the overhaul). The 0.13 economy
+  pair (slow wreck decay + the radius-2 retarget) re-rolled the slate
+  again: idle harvesters wait a think, so the cadence dial became the
+  economy's re-tasking latency — Medium/Hard inverted at the old
+  dials and Hard re-metered to cadence 20 (measured, see the 0.13
+  sim-batch experiments note). After the re-meter the gate reads
+  Expert 70/80 with win counts strictly monotone (48 < 53 < 63 < 70)
+  and sweep still 48/48 decided (9-39, the same pre-existing lean).
+  The next training campaign trains under the new movement and
+  economy and takes the sweep bar back, along with the fog-honest
+  duel gate's per-seat floor (its seat split whipsaws with every
+  physics change: [6,15] → [11,15] → [17,4]).
 
 ## Gotchas learned the hard way
 

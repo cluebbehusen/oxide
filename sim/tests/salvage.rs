@@ -6,7 +6,8 @@ use chassis::grid::TilePos;
 use oxide_sim::scenario::{PlayerSpec, UnitSpec};
 use oxide_sim::stats::{BuildingKind, WRECK_DECAY_TICKS, WRECK_VALUE_DEN, WRECK_VALUE_NUM};
 use oxide_sim::{
-    Command, Event, Faction, PlayerCommand, PlayerId, Scenario, State, Target, UnitId, UnitKind,
+    Command, Event, Faction, Order, PlayerCommand, PlayerId, Scenario, State, Target, UnitId,
+    UnitKind,
 };
 
 fn arena(units: Vec<UnitSpec>) -> Scenario {
@@ -203,14 +204,23 @@ fn harvesters_strip_wrecks_standing_on_them_and_deliver() {
 
 #[test]
 fn wrecks_decay_back_into_the_dirt() {
+    // The killer must not outlive its victim: over the minutes-long
+    // decay wait an idle scuttler would grind down the Foundry and
+    // freeze the world mid-loop.
     let mut state = arena(vec![
         unit(0, UnitKind::Harvester, 5, 5),
         unit(1, UnitKind::Scuttler, 6, 5),
+        unit(0, UnitKind::Sentinel, 11, 1),
     ])
     .build()
     .unwrap();
-    let (victim, killer) = (state.units()[0].id, state.units()[1].id);
+    let (victim, killer, executioner) = (
+        state.units()[0].id,
+        state.units()[1].id,
+        state.units()[2].id,
+    );
     let grave = kill_harvester(&mut state, killer, victim);
+    execute(&mut state, executioner, killer);
     let value = state.map().wreck_at(grave);
     assert!(value > 0);
     for _ in 0..(u64::from(value) + 1) * WRECK_DECAY_TICKS {
@@ -219,9 +229,9 @@ fn wrecks_decay_back_into_the_dirt() {
     assert_eq!(state.map().wreck_at(grave), 0, "decay reclaims everything");
     // And a harvest order at the bare tile now bounces.
     let report = state.tick(&[cmd(
-        1,
+        0,
         Command::Harvest {
-            units: vec![killer],
+            units: vec![executioner],
             node: grave,
             queue: false,
         },
@@ -231,7 +241,7 @@ fn wrecks_decay_back_into_the_dirt() {
             .events
             .iter()
             .any(|e| matches!(e, Event::CommandRejected { .. })),
-        "killer is no harvester and the tile holds nothing anyway"
+        "a sentinel is no harvester and the tile holds nothing anyway"
     );
 }
 
@@ -1269,4 +1279,174 @@ fn eviction_reaches_a_looping_programs_rotation() {
         unit.queue
     );
     assert!(unit.looping, "the patrol itself survives");
+}
+
+// --- The retarget contract (0.13): finish the deposit, then report ---
+
+use oxide_sim::stats::RETARGET_RADIUS;
+
+#[test]
+fn a_dry_source_hops_only_inside_its_own_deposit() {
+    // A wreck two tiles from the scrap nodes: when it runs dry, the
+    // harvester hops to the adjacent deposit instead of retiring.
+    // The executioner sits inside sight of the kill site (targeted
+    // attacks are fog-gated) but outside its own aggro ring.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 9, 4),
+        unit(1, UnitKind::Scuttler, 10, 4),
+        unit(0, UnitKind::Harvester, 2, 3),
+        unit(0, UnitKind::Sentinel, 5, 7),
+    ])
+    .build()
+    .unwrap();
+    let (victim, killer, salvager, executioner) = (
+        state.units()[0].id,
+        state.units()[1].id,
+        state.units()[2].id,
+        state.units()[3].id,
+    );
+    let grave = kill_harvester(&mut state, killer, victim);
+    execute(&mut state, executioner, killer);
+    // Park the fighter out of the enemy Foundry's aggro reach so the
+    // match cannot decide itself under the harvest.
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![executioner],
+            goal: TilePos::new(1, 7),
+            queue: false,
+        },
+    )]);
+    state.tick(&[cmd(
+        0,
+        Command::Harvest {
+            units: vec![salvager],
+            node: grave,
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 3000, |s, _| {
+        matches!(
+            s.unit(salvager).unwrap().order,
+            Order::Harvest { node } if node != grave && s.map().scrap_at(node) > 0
+        )
+    });
+    let Order::Harvest { node } = state.unit(salvager).unwrap().order else {
+        unreachable!("run_until checked");
+    };
+    let cheb = (node.x - grave.x).abs().max((node.y - grave.y).abs());
+    assert!(
+        cheb <= RETARGET_RADIUS,
+        "the hop stays inside the deposit: {node:?} is {cheb} from {grave:?}"
+    );
+}
+
+#[test]
+fn a_dry_source_with_no_neighbor_retires_the_harvester_instead_of_marching() {
+    // The nearest scrap sits six tiles from the wreck — far outside the
+    // retarget radius. The harvester delivers what it carries and goes
+    // idle; marching to a different patch is the player's call.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 5, 5),
+        unit(1, UnitKind::Scuttler, 6, 5),
+        unit(0, UnitKind::Harvester, 12, 2),
+        unit(0, UnitKind::Sentinel, 11, 1),
+    ])
+    .build()
+    .unwrap();
+    let (victim, killer, salvager, executioner) = (
+        state.units()[0].id,
+        state.units()[1].id,
+        state.units()[2].id,
+        state.units()[3].id,
+    );
+    let grave = kill_harvester(&mut state, killer, victim);
+    execute(&mut state, executioner, killer);
+    state.tick(&[cmd(
+        0,
+        Command::Harvest {
+            units: vec![salvager],
+            node: grave,
+            queue: false,
+        },
+    )]);
+    let events = run_until(&mut state, 4000, |s, _| {
+        let u = s.unit(salvager).unwrap();
+        u.order == Order::Idle && u.carrying == 0
+    });
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::ScrapDeposited {
+                player: PlayerId(0),
+                ..
+            }
+        )),
+        "the load came home before the unit retired"
+    );
+    // The authored nodes were never auto-adopted.
+    assert_eq!(state.map().scrap_at(TilePos::new(11, 4)), 400);
+    assert_eq!(state.map().scrap_at(TilePos::new(11, 5)), 400);
+}
+
+#[test]
+fn wrecks_never_magnetize_the_retarget_but_a_direct_order_still_reaches_them() {
+    // A second wreck lands two tiles from the first — inside the radius.
+    // The auto-hop must ignore it (battlefield salvage is directed work);
+    // an explicit Harvest on it is still valid.
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 5, 5),
+        unit(0, UnitKind::Harvester, 7, 5),
+        unit(1, UnitKind::Scuttler, 6, 5),
+        unit(0, UnitKind::Harvester, 12, 2),
+        unit(0, UnitKind::Sentinel, 11, 1),
+    ])
+    .build()
+    .unwrap();
+    let (victim_a, victim_b, killer, salvager, executioner) = (
+        state.units()[0].id,
+        state.units()[1].id,
+        state.units()[2].id,
+        state.units()[3].id,
+        state.units()[4].id,
+    );
+    let grave_a = kill_harvester(&mut state, killer, victim_a);
+    let grave_b = kill_harvester(&mut state, killer, victim_b);
+    execute(&mut state, executioner, killer);
+    state.tick(&[cmd(
+        0,
+        Command::Harvest {
+            units: vec![salvager],
+            node: grave_a,
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 4000, |s, _| {
+        let u = s.unit(salvager).unwrap();
+        u.order == Order::Idle && u.carrying == 0
+    });
+    assert!(
+        state.map().wreck_at(grave_b) > 0,
+        "the neighbor wreck was never auto-adopted"
+    );
+    // Directed salvage still works: the player sends the harvester on.
+    let report = state.tick(&[cmd(
+        0,
+        Command::Harvest {
+            units: vec![salvager],
+            node: grave_b,
+            queue: false,
+        },
+    )]);
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::CommandRejected { .. })),
+        "an explicit order onto a wreck is always the player's right"
+    );
+    run_until(&mut state, 600, |s, _| {
+        let u = s.unit(salvager).unwrap();
+        u.tile() == grave_b && u.carrying > 0
+    });
 }

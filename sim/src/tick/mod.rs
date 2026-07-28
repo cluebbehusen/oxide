@@ -19,8 +19,8 @@
 //! 7. **Cleanup** — entities at 0 hp are removed, with events; every
 //!    death deposits wreck salvage on its ground.
 //! 8. **Decay** — on its global cadence, every wreck tile loses one
-//!    salvage (deposits land first, so a fresh wreck survives its birth
-//!    tick).
+//!    salvage. Cleanup and decay share the tick, so a wreck born on a
+//!    cadence tick pays its first salvage immediately.
 //! 9. **Vision** — every player's fog-of-war visible set is rebuilt from
 //!    their surviving entities (explored only accumulates).
 //! 10. **Victory** — a player with no Foundry is out; last standing wins.

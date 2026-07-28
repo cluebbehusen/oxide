@@ -22,3 +22,4 @@ native Rust tournament of the quantized artifact
 | 0.12 (2026-07-27) | [the decisiveness campaign](2026-07-27-the-0.12-decisiveness-campaign.md) | the sweep/duel/yardstick instruments, the personality clamp, Medium's cadence re-meter |
 | 0.12 (2026-07-27) | [the movement overhaul](2026-07-27-the-0.12-movement-overhaul.md) | the head-on freeze, the pursuit tether carved by four failing gates, the lateral slide, the fan-out for free |
 | 0.13 (2026-07-28) | [the old world](2026-07-28-the-0.13-old-world.md) | the BEFORE side of the sim batch: the factorial's roster verdict, the pace table, the composition floor, the arena's roster gap |
+| 0.13 (2026-07-28) | [the sim batch](2026-07-28-the-0.13-sim-batch.md) | the AFTER side, phase by phase: wreck decay and the retarget radius, the ladder inversion, Hard's cadence re-meter |
