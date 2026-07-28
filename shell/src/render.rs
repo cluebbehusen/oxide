@@ -266,6 +266,11 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     draw_blips(game);
     draw_rally_marker(game);
     draw_breadcrumbs(game, input);
+    // Deferred claims are the player's own intent, like breadcrumbs —
+    // a spectator has no chair whose promises deserve footprints.
+    if !game.spectate {
+        draw_pending_founds(game, sprites);
+    }
     draw_placement_ghost(game, sprites, input);
     draw_drag_rect(game, input);
     draw_salvage_tooltip(game, input);

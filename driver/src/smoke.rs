@@ -532,8 +532,10 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
     // Prove the palette actually armed something: commit the build on
     // VISIBLE open ground and watch the scrap move — the half of the
     // contract the minimap check alone cannot see. The minimap jump
-    // left the camera over fog (where can_place refuses), so recenter
-    // home first and aim beside the foundry, inside its vision.
+    // left the camera over fog (never-explored ground still refuses,
+    // and a claim on merely remembered ground would defer its charge),
+    // so recenter home first and aim beside the foundry, inside its
+    // vision, where the claim is instant and the scrap moves NOW.
     for event in [
         RawEvent::KeyDown {
             key: oxide_protocol::Key::Space,

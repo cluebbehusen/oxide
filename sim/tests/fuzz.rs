@@ -346,6 +346,7 @@ fn generate(tag: CommandTag, rng: &mut Pcg32, state: &State) -> Command {
             kind: BUILDING_KINDS[rng.next_below(BUILDING_KINDS.len() as u32) as usize],
             anchor: anchor(rng, state),
             queue: queue(rng),
+            defer: false,
         },
         CommandTag::Cancel => Command::Cancel {
             building: building_id(rng, state),

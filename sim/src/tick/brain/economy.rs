@@ -75,6 +75,64 @@ pub(super) fn build(
     }
 }
 
+/// Walk out to a deferred claim ([`Order::Found`]) and, once standing
+/// beside — or inside — the promised footprint, buffer the founding for
+/// id-ordered resolution after the volley. Adjacency is what makes the
+/// arrival re-check honest: a harvester's sight covers every buildable
+/// footprint from its doorstep, so the strict predicate reads only
+/// ground the founder now sees. A crewmate arriving after the claim
+/// stood simply joins the site. No route stalls exactly like every
+/// other walk-to-work order.
+pub(super) fn found(
+    state: &mut State,
+    id: UnitId,
+    kind: crate::stats::BuildingKind,
+    anchor: TilePos,
+    events: &mut Vec<Event>,
+    founds: &mut Vec<super::PendingFounding>,
+) {
+    let me = state.unit(id).expect("caller checked").player;
+    // The claim already stands (a crewmate founded on an earlier tick,
+    // or the player resumed the same corner): join the crew.
+    let ours = state
+        .buildings
+        .iter()
+        .find(|b| b.anchor == anchor && b.kind == kind && b.player == me && !b.built && b.hp > 0)
+        .map(|b| b.id);
+    if let Some(site) = ours {
+        let unit = state.unit_mut(id).expect("caller checked");
+        unit.order = Order::Build { site };
+        unit.path = None;
+        unit.progress = 0;
+        return;
+    }
+    let size = kind.stats().size;
+    let tile = state.unit(id).expect("caller checked").tile();
+    let inside = tile.x >= anchor.x
+        && tile.x < anchor.x + size.0
+        && tile.y >= anchor.y
+        && tile.y < anchor.y + size.1;
+    if inside || tile_adjacent_to_rect(tile, anchor, size) {
+        founds.push(super::PendingFounding {
+            unit: id,
+            player: me,
+            kind,
+            anchor,
+        });
+        state.unit_mut(id).expect("caller checked").path = None;
+    } else if !approach_rect(state, id, anchor, size) {
+        let unit = state.unit_mut(id).expect("caller checked");
+        let (player, pos) = (unit.player, unit.pos);
+        unit.clear_program();
+        events.push(Event::OrderStalled {
+            unit: id,
+            player,
+            pos,
+            reason: StallReason::NoRoute,
+        });
+    }
+}
+
 /// Weld a damaged own built building: walk adjacent, then feed it hp
 /// along the same ramp construction climbs, billed per hp welded at
 /// [`crate::stats::REPAIR_COST_PERMILLE`] of proportional cost. Gains

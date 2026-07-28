@@ -272,6 +272,7 @@ fn fabricator_gates_the_advanced_roster() {
             kind: BuildingKind::Fabricator,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     let fab = state
@@ -395,6 +396,7 @@ fn harvesters_deposit_only_at_built_foundries() {
             kind: BuildingKind::Turret,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     run_until(&mut state, 700, |s, _| {

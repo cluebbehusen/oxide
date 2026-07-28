@@ -167,6 +167,11 @@ pub(crate) enum LiveCmd {
         /// Append behind current orders instead of replacing them.
         #[arg(long)]
         queue: bool,
+        /// Defer the claim: walk out and found on arrival (validated
+        /// against the seat's knowledge, paid when the ground is
+        /// claimed) — the shell's explored-but-unseen mode.
+        #[arg(long)]
+        defer: bool,
     },
     /// Send harvesters to weld a damaged own built building.
     Repair {
@@ -473,6 +478,7 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
             kind,
             at,
             queue,
+            defer,
         } => Request::SendCommand {
             player: PlayerId(player),
             command: Command::Build {
@@ -480,6 +486,7 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
                 kind: kind.into(),
                 anchor: parse_tile(&at)?,
                 queue,
+                defer,
             },
         },
         LiveCmd::Repair {

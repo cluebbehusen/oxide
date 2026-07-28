@@ -103,6 +103,16 @@ pub enum Command {
         /// defers only the walk-and-work leg.
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         queue: bool,
+        /// Claim on arrival instead of now: validate against the
+        /// issuer's *knowledge* ([`crate::State::place_intent_refusal`])
+        /// and hand the crew [`crate::state::Order::Found`] — nothing
+        /// placed, nothing charged, no route demanded until the founder
+        /// stands beside ground it can see (an honest stall later, like
+        /// a Move into fog). The shell arms this for explored-but-unseen
+        /// ground; bots deliberately do not emit it yet, so their play
+        /// is untouched by the mode's existence.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        defer: bool,
     },
     /// Scrap an own unfinished site for a partial refund.
     Cancel {

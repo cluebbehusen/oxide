@@ -125,6 +125,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
                 kind: building.kind,
                 anchor: building.anchor,
                 queue,
+                defer: false,
             });
             game.ping(world, PingKind::Harvest);
             return;

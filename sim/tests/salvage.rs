@@ -284,6 +284,7 @@ fn foundations_bury_wrecks() {
             kind: BuildingKind::Turret,
             anchor: grave,
             queue: false,
+            defer: false,
         },
     )]);
     assert!(
@@ -316,6 +317,7 @@ fn a_dead_building_splits_its_wreck_across_the_footprint() {
             kind: BuildingKind::Turret,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     assert!(
@@ -760,6 +762,7 @@ fn foundries_and_sites_refuse_the_wrecking_crew() {
             kind: BuildingKind::Turret,
             anchor: TilePos::new(9, 2),
             queue: false,
+            defer: false,
         },
     )]);
     let site = state

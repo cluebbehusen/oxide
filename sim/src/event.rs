@@ -211,4 +211,10 @@ pub enum StallReason {
     NoFiringPosition,
     /// The bank ran dry mid-job.
     InsufficientScrap,
+    /// Ground claimed by a deferred found was taken by the time the
+    /// founder arrived. Fog-legal by construction: the verdict is only
+    /// ever computed on footprint tiles the arriving unit currently
+    /// sees, so it reports the founder's own discovery, never a fact
+    /// fog still hides.
+    GroundTaken,
 }

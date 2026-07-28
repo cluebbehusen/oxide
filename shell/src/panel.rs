@@ -295,6 +295,14 @@ fn order_subject(game: &Game, order: &Order) -> Option<(OrderSubject, String, bo
             (game.all_seeing() || game.my_vision().visible(tile))
                 .then_some((subject, name, false, None))
         }
+        // A pending found's subject is the kind it will claim — drawn as
+        // a ghost, since nothing stands yet.
+        Order::Found { kind, .. } => Some((
+            OrderSubject::Building(*kind, faction_of(game.human)),
+            kind.name().to_string(),
+            true,
+            None,
+        )),
         Order::Idle | Order::Move { .. } | Order::Harvest { .. } | Order::AttackMove { .. } => None,
     }
 }
@@ -336,6 +344,11 @@ fn order_card(game: &Game, order: &Order, active: bool, own: bool) -> Card {
             VerbIcon::Salvage,
             "Salvage",
             "Stripping a building down for a partial refund.",
+        ),
+        Order::Found { .. } => (
+            VerbIcon::Build,
+            "Found",
+            "Walking out to claim remembered ground; pays on arrival.",
         ),
     };
     let subject = if own {
@@ -936,6 +949,7 @@ mod tests {
                         kind,
                         anchor,
                         queue,
+                        defer: false,
                     },
                 }]);
                 if let Some(b) = game

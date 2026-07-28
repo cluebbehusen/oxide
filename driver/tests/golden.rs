@@ -350,6 +350,7 @@ fn opening_orders(cast: &Cast) -> Vec<PlayerCommand> {
                 kind,
                 anchor: TilePos::new(x, y),
                 queue: false,
+                defer: false,
             },
         });
     }

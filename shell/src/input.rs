@@ -131,13 +131,31 @@ pub(crate) struct PlacingStroke {
     queued: usize,
 }
 
+/// Whether a build at `anchor` must defer its claim: some footprint
+/// tile is not currently visible to the human. Decides both the amber
+/// ghost and the `defer` flag the armed click emits — one judgment,
+/// two surfaces.
+pub(crate) fn build_defer_needed(
+    game: &Game,
+    kind: oxide_sim::BuildingKind,
+    anchor: TilePos,
+) -> bool {
+    let (w, h) = kind.stats().size;
+    (0..h).any(|dy| (0..w).any(|dx| !game.state.vision(game.human).visible(anchor.offset(dx, dy))))
+}
+
 /// Scrap the staged-but-undrained Build commands will actually charge
 /// when the tick takes them — summed per command, never count-times-
 /// current-kind: a paused shell accumulates strokes of DIFFERENT
 /// kinds across frames, and a Build aimed at an own unfinished site
-/// is a free resume, not a purchase.
+/// is a free resume, not a purchase. Deferred claims already walking
+/// (live [`oxide_sim::Order::Found`] programs, deduplicated per
+/// promised corner) count too: they pay on arrival, and a stroke that
+/// ignored them could stage ten intents on three turrets' worth of
+/// scrap.
 fn pending_build_bill(game: &Game) -> u32 {
-    game.pending
+    let staged: u32 = game
+        .pending
         .iter()
         .filter_map(|pc| match &pc.command {
             Command::Build { kind, anchor, .. } => {
@@ -153,29 +171,57 @@ fn pending_build_bill(game: &Game) -> u32 {
             }
             _ => None,
         })
-        .sum()
+        .sum();
+    let mut claims: Vec<(oxide_sim::BuildingKind, TilePos)> = Vec::new();
+    for unit in game.state.units().iter().filter(|u| u.player == game.human) {
+        for order in std::iter::once(&unit.order).chain(unit.queue.iter()) {
+            if let oxide_sim::Order::Found { kind, anchor } = order
+                && !claims.contains(&(*kind, *anchor))
+            {
+                claims.push((*kind, *anchor));
+            }
+        }
+    }
+    let walking: u32 = claims
+        .iter()
+        .filter_map(|(kind, _)| kind.stats().construction.map(|c| c.cost))
+        .sum();
+    staged.saturating_add(walking)
 }
 
 /// Whether a footprint of `kind` at `anchor` intersects any
-/// staged-but-undrained Build's footprint. Live state cannot see
-/// those sites while the shell is paused, so without this a stamp
-/// overlapping an earlier stroke's site would acknowledge with a
-/// ping and then die rejected when that site claims the ground.
-/// Footprints are compared kind-by-kind — paused strokes can stack
-/// different building sizes.
+/// staged-but-undrained Build's footprint, or the promised footprint
+/// of a live deferred claim ([`oxide_sim::Order::Found`]). Live state
+/// cannot see staged sites while the shell is paused — and never sees
+/// a pending found's ground at all — so without this a stamp
+/// overlapping an earlier promise would acknowledge with a ping and
+/// then die when that claim lands. Footprints are compared
+/// kind-by-kind — strokes can stack different building sizes.
 fn overlaps_pending_site(game: &Game, kind: oxide_sim::BuildingKind, anchor: TilePos) -> bool {
     let (w, h) = kind.stats().size;
-    game.pending.iter().any(|pc| match &pc.command {
+    let hits = |a: TilePos, staged: oxide_sim::BuildingKind| {
+        let (sw, sh) = staged.stats().size;
+        anchor.x < a.x + sw && a.x < anchor.x + w && anchor.y < a.y + sh && a.y < anchor.y + h
+    };
+    let staged = game.pending.iter().any(|pc| match &pc.command {
         Command::Build {
             kind: staged,
             anchor: a,
             ..
-        } => {
-            let (sw, sh) = staged.stats().size;
-            anchor.x < a.x + sw && a.x < anchor.x + w && anchor.y < a.y + sh && a.y < anchor.y + h
-        }
+        } => hits(*a, *staged),
         _ => false,
-    })
+    });
+    staged
+        || game
+            .state
+            .units()
+            .iter()
+            .filter(|u| u.player == game.human)
+            .any(|u| {
+                std::iter::once(&u.order).chain(u.queue.iter()).any(
+                    |o| matches!(o, oxide_sim::Order::Found { kind: k, anchor: a } if hits(*a, *k)),
+                )
+            })
 }
 
 /// The founder's queue depth once this stroke's FIRST stamp has
@@ -727,7 +773,10 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         && !overlaps_pending_site(game, kind, anchor)
                         && affordable
                         && stroke.queued < oxide_sim::stats::ORDER_QUEUE_CAP
-                        && game.state.can_place(game.human, kind, anchor)
+                        && game
+                            .state
+                            .place_intent_refusal(game.human, kind, anchor)
+                            .is_none()
                     {
                         let units = game.selection.units.clone();
                         game.issue(Command::Build {
@@ -735,6 +784,9 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                             kind,
                             anchor,
                             queue: true,
+                            // A stroke can cross the vision skirt: each
+                            // stamp defers or founds on its own ground.
+                            defer: build_defer_needed(game, kind, anchor),
                         });
                         game.ping(world, PingKind::Rally);
                         stroke.anchors.push(anchor);
@@ -1100,10 +1152,13 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             // away the armed mode on top of it. The toast names the
             // actual blocker — "needs open ground" while your own
             // harvester stands on the tile taught nobody anything.
-            if let Some(refusal) = game.state.place_refusal(game.human, kind, anchor) {
+            // Explored-but-unseen ground is judged by the same intent
+            // predicate the ghost tints from — memory, never live
+            // state — so Fog here means genuinely unscouted.
+            if let Some(refusal) = game.state.place_intent_refusal(game.human, kind, anchor) {
                 use oxide_sim::PlaceRefusal;
                 game.toast(match refusal {
-                    PlaceRefusal::Fog => "can't build there: ground not in sight",
+                    PlaceRefusal::Fog => "can't build there: you haven't scouted that ground",
                     PlaceRefusal::Terrain => "can't build there: impassable ground",
                     PlaceRefusal::Building => "can't build there: something already stands there",
                     PlaceRefusal::Unit => {
@@ -1159,6 +1214,11 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                 kind,
                 anchor,
                 queue: input.resolver.shift_held(),
+                // Remembered ground defers the claim: the crew walks
+                // out and founds on arrival, paying then. Same click,
+                // two claim timings — the amber ghost already said
+                // which this stamp is.
+                defer: build_defer_needed(game, kind, anchor),
             });
             game.ping(world, PingKind::Rally);
             // The stroke opens: dragging stamps more of the same kind,

@@ -631,6 +631,7 @@ fn building_a_footprint_over_rock_is_rejected_as_a_bad_site() {
             kind: BuildingKind::Turret,
             anchor: rock,
             queue: false,
+            defer: false,
         },
     )]);
     assert!(
@@ -697,6 +698,7 @@ fn radar_detects_at_the_ring_and_goes_quiet_one_tile_beyond() {
             kind: BuildingKind::Array,
             anchor: TilePos::new(4, 4),
             queue: false,
+            defer: false,
         },
     )]);
     run_until(&mut state, 500, |_, events| {

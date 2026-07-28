@@ -25,6 +25,7 @@ fn construction_ramps_and_completes() {
             kind: BuildingKind::Turret,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     // Site claimed instantly: paid in full, blocking, unfinished, partial hp.
@@ -82,6 +83,7 @@ fn a_second_builder_resumes_a_dead_builders_site() {
             kind: BuildingKind::Turret,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     // Let some progress land, then eat the builder.
@@ -130,6 +132,7 @@ fn a_second_builder_resumes_a_dead_builders_site() {
             kind: BuildingKind::Turret,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     assert_eq!(state.player(PlayerId(0)).scrap, scrap_before);
@@ -156,6 +159,7 @@ fn cancel_refunds_by_health_and_damage_burns_it() {
             kind: BuildingKind::Turret,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     let site = state
@@ -269,6 +273,7 @@ fn scouted_sites_are_remembered_as_sites() {
             kind: BuildingKind::Turret,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     for _ in 0..30 {
@@ -323,6 +328,7 @@ fn bot_sends_a_relief_builder_to_an_orphaned_site() {
             kind: BuildingKind::Turret,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     state.tick(&[cmd(
@@ -383,6 +389,7 @@ fn a_fresh_site_blocks_units_already_walking_through_it() {
             kind: BuildingKind::Turret,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     for _ in 0..400 {
@@ -422,6 +429,7 @@ fn a_zeroed_site_cannot_be_revived_by_its_builder() {
             kind: BuildingKind::Turret,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     let site = state
@@ -524,6 +532,7 @@ fn unreachable_sites_are_rejected_before_charging() {
             kind: BuildingKind::Turret,
             anchor: TilePos::new(6, 3),
             queue: false,
+            defer: false,
         },
     )]);
     assert!(report.events.iter().any(|e| matches!(
@@ -592,6 +601,7 @@ fn extra_builders_accelerate_construction() {
                 kind: BuildingKind::Turret,
                 anchor,
                 queue: false,
+                defer: false,
             },
         )]);
         if extra_builder {
@@ -602,6 +612,7 @@ fn extra_builders_accelerate_construction() {
                     kind: BuildingKind::Turret,
                     anchor,
                     queue: false,
+                    defer: false,
                 },
             )]);
         }
@@ -705,6 +716,7 @@ fn a_fresh_site_cannot_be_corner_cut_diagonally() {
             kind: BuildingKind::Turret,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     // Every step from here obeys the no-corner-cut rule around the site.
@@ -760,6 +772,7 @@ fn a_rejected_build_leaves_no_trace_on_the_hash() {
             kind: BuildingKind::Turret,
             anchor: TilePos::new(6, 3),
             queue: false,
+            defer: false,
         },
     )]);
     assert!(report.events.iter().any(|e| matches!(
@@ -783,6 +796,7 @@ fn a_rejected_build_leaves_no_trace_on_the_hash() {
             kind: BuildingKind::Turret,
             anchor: TilePos::new(3, 4),
             queue: false,
+            defer: false,
         },
     )]);
     let _ = a;
@@ -793,6 +807,7 @@ fn a_rejected_build_leaves_no_trace_on_the_hash() {
             kind: BuildingKind::Turret,
             anchor: TilePos::new(3, 4),
             queue: false,
+            defer: false,
         },
     )]);
     let _ = b;
@@ -825,6 +840,7 @@ fn same_tick_construction_cannot_absorb_a_lethal_hit() {
             kind: BuildingKind::Turret,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     let site = state
@@ -872,6 +888,7 @@ fn same_tick_construction_cannot_absorb_a_lethal_hit() {
                     kind: BuildingKind::Turret,
                     anchor,
                     queue: false,
+                    defer: false,
                 },
             ),
             cmd(
@@ -952,6 +969,7 @@ fn a_doomed_site_never_comes_online() {
                     kind: BuildingKind::Turret,
                     anchor,
                     queue: false,
+                    defer: false,
                 },
             )])
             .events,
@@ -1035,6 +1053,7 @@ fn queued_builds_chain_one_builder_through_two_sites() {
             kind: oxide_sim::stats::BuildingKind::Turret,
             anchor: TilePos::new(3, 4),
             queue: false,
+            defer: false,
         },
     )]);
     state.tick(&[cmd(
@@ -1044,6 +1063,7 @@ fn queued_builds_chain_one_builder_through_two_sites() {
             kind: oxide_sim::stats::BuildingKind::FlakTurret,
             anchor: TilePos::new(9, 2),
             queue: true,
+            defer: false,
         },
     )]);
     // Both sites exist immediately (pay-and-claim at command time) and
@@ -1079,6 +1099,7 @@ fn a_queued_build_whose_site_died_pops_silently_and_the_program_survives() {
             kind: oxide_sim::stats::BuildingKind::Turret,
             anchor: TilePos::new(3, 4),
             queue: false,
+            defer: false,
         },
     )]);
     state.tick(&[cmd(
@@ -1088,6 +1109,7 @@ fn a_queued_build_whose_site_died_pops_silently_and_the_program_survives() {
             kind: oxide_sim::stats::BuildingKind::FlakTurret,
             anchor: TilePos::new(9, 2),
             queue: true,
+            defer: false,
         },
     )]);
     let walk_home = TilePos::new(8, 6);
@@ -1166,6 +1188,7 @@ fn a_full_order_queue_refuses_placement_with_nothing_spent() {
             kind: oxide_sim::stats::BuildingKind::Turret,
             anchor: TilePos::new(3, 4),
             queue: true,
+            defer: false,
         },
     )]);
     assert!(
@@ -1201,6 +1224,7 @@ fn resuming_a_site_sends_every_hand() {
             kind: oxide_sim::stats::BuildingKind::Turret,
             anchor: TilePos::new(3, 4),
             queue: false,
+            defer: false,
         },
     )]);
     // Resume at the existing site with the full crew: everyone joins.
@@ -1211,6 +1235,7 @@ fn resuming_a_site_sends_every_hand() {
             kind: oxide_sim::stats::BuildingKind::Turret,
             anchor: TilePos::new(3, 4),
             queue: false,
+            defer: false,
         },
     )]);
     for id in &crew {
@@ -1277,6 +1302,7 @@ fn a_builder_founds_a_building_under_its_own_feet() {
             kind: BuildingKind::Turret,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     assert!(
@@ -1339,6 +1365,7 @@ fn friendly_machines_make_way_for_foundations() {
             kind: BuildingKind::Fabricator,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     assert!(
@@ -1389,6 +1416,7 @@ fn an_enemy_machine_still_denies_the_ground() {
             kind: BuildingKind::Fabricator,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     assert!(
@@ -1444,6 +1472,7 @@ fn an_allied_machine_makes_way_like_your_own() {
             kind: BuildingKind::Fabricator,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     assert!(
@@ -1512,6 +1541,7 @@ fn a_rejected_under_feet_build_leaves_no_trace_on_the_hash() {
             kind: BuildingKind::Turret,
             anchor: TilePos::new(5, 6),
             queue: true,
+            defer: false,
         },
     )]);
     assert_eq!(
@@ -1567,6 +1597,7 @@ fn a_walled_in_machine_takes_the_instant_deal() {
             kind: BuildingKind::Fabricator,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     assert!(
@@ -1612,6 +1643,7 @@ fn a_fresh_placement_commits_the_whole_crew() {
                 kind: BuildingKind::Turret,
                 anchor,
                 queue: false,
+                defer: false,
             },
         )]);
         let (hands, sentinel) = ids.split_at(crew);
@@ -1644,4 +1676,476 @@ fn a_fresh_placement_commits_the_whole_crew() {
         trio * 3 < solo * 2,
         "three hands should be markedly faster: solo {solo}, trio {trio}"
     );
+}
+
+/// The deferred mode end-to-end: a claim on remembered ground charges
+/// nothing and places nothing at accept, hands the founder
+/// [`Order::Found`], and founds — site, payment, Build order — only
+/// when the founder stands beside ground it can see again.
+#[test]
+fn a_deferred_build_founds_on_arrival() {
+    use oxide_sim::stats::BuildingKind;
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 12, 2)])
+        .build()
+        .unwrap();
+    let builder = state.units()[0].id;
+    let spot = TilePos::new(12, 1);
+    // Walk home: the spot stays explored but drops out of sight.
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![builder],
+            goal: TilePos::new(2, 6),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| !s.can_see(PlayerId(0), spot));
+    assert!(state.vision(PlayerId(0)).explored(spot));
+    assert!(
+        !state.can_place(PlayerId(0), BuildingKind::Turret, spot),
+        "the strict predicate still refuses remembered ground"
+    );
+    assert!(
+        state
+            .place_intent_refusal(PlayerId(0), BuildingKind::Turret, spot)
+            .is_none(),
+        "the intent predicate accepts it from memory"
+    );
+
+    let scrap_before = state.player(PlayerId(0)).scrap;
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor: spot,
+            queue: false,
+            defer: true,
+        },
+    )]);
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        scrap_before,
+        "nothing charged at accept"
+    );
+    assert!(
+        state.buildings().iter().all(|b| b.anchor != spot),
+        "nothing placed at accept"
+    );
+    assert_eq!(
+        state.unit(builder).unwrap().order,
+        Order::Found {
+            kind: BuildingKind::Turret,
+            anchor: spot
+        }
+    );
+
+    run_until(&mut state, 600, |s, _| {
+        s.buildings().iter().any(|b| b.anchor == spot)
+    });
+    let cost = BuildingKind::Turret.stats().construction.unwrap().cost;
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        scrap_before - cost,
+        "paid in full when the ground was claimed"
+    );
+    let site = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == spot)
+        .unwrap()
+        .id;
+    assert_eq!(state.unit(builder).unwrap().order, Order::Build { site });
+    let events = run_until(&mut state, 800, |_, events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::BuildingCompleted { .. }))
+    });
+    assert!(!events.is_empty(), "the deferred site completes normally");
+}
+
+/// Ground honestly taken while the founder walked: the arrival re-check
+/// discovers the blocker with the founder's own eyes, drops the program
+/// with the fog-safe stall, and never charges a coin.
+#[test]
+fn a_deferred_claim_on_taken_ground_stalls_without_spending() {
+    use oxide_sim::event::StallReason;
+    use oxide_sim::stats::BuildingKind;
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 12, 2),
+        unit(1, UnitKind::Harvester, 13, 3),
+    ])
+    .build()
+    .unwrap();
+    let (founder, rival) = (state.units()[0].id, state.units()[1].id);
+    let spot = TilePos::new(12, 1);
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![founder],
+            goal: TilePos::new(2, 6),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| !s.can_see(PlayerId(0), spot));
+    // The rival claims the corner while nobody watches.
+    state.tick(&[cmd(
+        1,
+        Command::Build {
+            units: vec![rival],
+            kind: BuildingKind::Turret,
+            anchor: spot,
+            queue: false,
+            defer: false,
+        },
+    )]);
+    assert!(state.buildings().iter().any(|b| b.anchor == spot));
+
+    let scrap_before = state.player(PlayerId(0)).scrap;
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![founder],
+            kind: BuildingKind::Turret,
+            anchor: spot,
+            queue: false,
+            defer: true,
+        },
+    )]);
+    assert_eq!(
+        state.unit(founder).unwrap().order,
+        Order::Found {
+            kind: BuildingKind::Turret,
+            anchor: spot
+        },
+        "memory knows nothing of the rival's site, so the intent stands"
+    );
+    let events = run_until(&mut state, 600, |_, events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::OrderStalled { .. }))
+    });
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::OrderStalled {
+                unit,
+                reason: StallReason::GroundTaken,
+                ..
+            } if *unit == founder
+        )),
+        "the arrival re-check names the taken ground"
+    );
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        scrap_before,
+        "a claim that never landed cost nothing"
+    );
+    assert_eq!(
+        state.unit(founder).unwrap().order,
+        Order::Idle,
+        "the program dropped"
+    );
+    assert_eq!(
+        state
+            .buildings()
+            .iter()
+            .filter(|b| b.anchor == spot)
+            .count(),
+        1,
+        "only the rival's site stands"
+    );
+}
+
+/// Stop is the cancel: with nothing placed and nothing paid at accept,
+/// abandoning a pending found needs no refund machinery at all.
+#[test]
+fn a_stopped_pending_found_spends_nothing() {
+    use oxide_sim::stats::BuildingKind;
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 12, 2)])
+        .build()
+        .unwrap();
+    let builder = state.units()[0].id;
+    let spot = TilePos::new(12, 1);
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![builder],
+            goal: TilePos::new(2, 6),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| !s.can_see(PlayerId(0), spot));
+    let scrap_before = state.player(PlayerId(0)).scrap;
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor: spot,
+            queue: false,
+            defer: true,
+        },
+    )]);
+    state.tick(&[]);
+    state.tick(&[cmd(
+        0,
+        Command::Stop {
+            units: vec![builder],
+        },
+    )]);
+    for _ in 0..300 {
+        state.tick(&[]);
+    }
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        scrap_before,
+        "no charge ever landed"
+    );
+    assert!(
+        state.buildings().iter().all(|b| b.anchor != spot),
+        "no site ever appeared"
+    );
+}
+
+/// A rejected deferred build (never-explored footprint) must leave no
+/// trace on the hash, like every other rejected command.
+#[test]
+fn a_rejected_deferred_build_leaves_no_trace_on_the_hash() {
+    use oxide_sim::stats::BuildingKind;
+    let scenario = arena(vec![unit(0, UnitKind::Harvester, 4, 6)]);
+    let mut with_reject = scenario.build().unwrap();
+    let mut pristine = scenario.build().unwrap();
+    let builder = with_reject.units()[0].id;
+    let unscouted = TilePos::new(12, 1);
+    assert!(!with_reject.vision(PlayerId(0)).explored(unscouted));
+    let report = with_reject.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor: unscouted,
+            queue: false,
+            defer: true,
+        },
+    )]);
+    assert!(report.events.iter().any(|e| matches!(
+        e,
+        Event::CommandRejected {
+            reason: RejectReason::BadSite,
+            ..
+        }
+    )));
+    pristine.tick(&[]);
+    assert_eq!(
+        with_reject.hash(),
+        pristine.hash(),
+        "a rejected deferred build must not move the state hash"
+    );
+}
+
+/// The information boundary itself: two worlds differing ONLY in what
+/// the issuer's fog hides must return the same intent verdict for every
+/// anchor on the map — the amber ghost can never be a hidden-enemy
+/// detector.
+#[test]
+fn intent_verdicts_ignore_what_fog_hides() {
+    use oxide_sim::stats::BuildingKind;
+    let build = |ambush: bool| {
+        let mut units = vec![unit(0, UnitKind::Harvester, 30, 4)];
+        if ambush {
+            // A hostile squad starting on never-explored ground, far
+            // from the scout's path.
+            units.push(unit(1, UnitKind::Scuttler, 34, 15));
+            units.push(unit(1, UnitKind::Scuttler, 35, 15));
+        }
+        open_arena(40, 20, units).build().unwrap()
+    };
+    let mut plain = build(false);
+    let mut ambushed = build(true);
+    let spot = TilePos::new(30, 3);
+    // March the scout home in both worlds; identical command stream.
+    for state in [&mut plain, &mut ambushed] {
+        let scout = state.units()[0].id;
+        state.tick(&[cmd(
+            0,
+            Command::Move {
+                units: vec![scout],
+                goal: TilePos::new(3, 5),
+                queue: false,
+            },
+        )]);
+        run_until(state, 800, |s, _| !s.can_see(PlayerId(0), spot));
+        assert!(state.vision(PlayerId(0)).explored(spot));
+    }
+    // Only now does the squad creep onto the remembered ground — the
+    // issuer never sees it arrive.
+    let squad: Vec<UnitId> = ambushed
+        .units()
+        .iter()
+        .filter(|u| u.player == PlayerId(1))
+        .map(|u| u.id)
+        .collect();
+    ambushed.tick(&[cmd(
+        1,
+        Command::Move {
+            units: squad.clone(),
+            goal: spot,
+            queue: false,
+        },
+    )]);
+    run_until(&mut ambushed, 800, |s, _| {
+        squad
+            .iter()
+            .all(|id| s.unit(*id).unwrap().tile().manhattan(spot) <= 2)
+    });
+    // Keep the plain world's clock even with the ambushed one so the
+    // only difference left IS the hidden squad.
+    while plain.current_tick() < ambushed.current_tick() {
+        plain.tick(&[]);
+    }
+    for id in &squad {
+        let t = ambushed.unit(*id).unwrap().tile();
+        assert!(
+            !ambushed.can_see(PlayerId(0), t),
+            "the squad must stay hidden for the property to mean anything"
+        );
+    }
+    // The hidden squad must not tilt a single verdict anywhere.
+    for y in 0..plain.map().height() {
+        for x in 0..plain.map().width() {
+            let anchor = TilePos::new(x, y);
+            for kind in [BuildingKind::Turret, BuildingKind::Fabricator] {
+                let a = plain.place_intent_refusal(PlayerId(0), kind, anchor);
+                let b = ambushed.place_intent_refusal(PlayerId(0), kind, anchor);
+                assert_eq!(
+                    a, b,
+                    "verdict for {kind:?} at {anchor:?} leaked hidden enemies"
+                );
+            }
+        }
+    }
+}
+
+/// A whole crew defers together: the lowest-id arrival founds exactly
+/// one site and every other hand joins the same build.
+#[test]
+fn a_deferred_crew_founds_once_and_stacks() {
+    use oxide_sim::stats::BuildingKind;
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 12, 2),
+        unit(0, UnitKind::Harvester, 11, 2),
+    ])
+    .build()
+    .unwrap();
+    let crew: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
+    let spot = TilePos::new(12, 1);
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: crew.clone(),
+            goal: TilePos::new(2, 6),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| !s.can_see(PlayerId(0), spot));
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: crew.clone(),
+            kind: BuildingKind::Turret,
+            anchor: spot,
+            queue: false,
+            defer: true,
+        },
+    )]);
+    for id in &crew {
+        assert!(matches!(
+            state.unit(*id).unwrap().order,
+            Order::Found { .. }
+        ));
+    }
+    run_until(&mut state, 600, |s, _| {
+        s.buildings().iter().any(|b| b.anchor == spot)
+    });
+    run_until(&mut state, 200, |s, _| {
+        crew.iter()
+            .all(|id| matches!(s.unit(*id).map(|u| u.order), Some(Order::Build { .. })))
+    });
+    assert_eq!(
+        state
+            .buildings()
+            .iter()
+            .filter(|b| b.anchor == spot)
+            .count(),
+        1,
+        "one claim, however many hands"
+    );
+}
+
+/// A bank that ran dry before arrival stalls the founder with the
+/// existing own-state reason — affordability is judged when the ground
+/// is claimed, not when the intent is spoken.
+#[test]
+fn a_broke_founder_stalls_on_arrival() {
+    use oxide_sim::event::StallReason;
+    use oxide_sim::stats::BuildingKind;
+    let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 12, 2)]);
+    let cost = BuildingKind::Turret.stats().construction.unwrap().cost;
+    scenario.players[0].scrap = cost;
+    let mut state = scenario.build().unwrap();
+    let builder = state.units()[0].id;
+    let spot = TilePos::new(12, 1);
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![builder],
+            goal: TilePos::new(2, 6),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| !s.can_see(PlayerId(0), spot));
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor: spot,
+            queue: false,
+            defer: true,
+        },
+    )]);
+    // Drain the bank while the founder walks: train a unit at the
+    // Foundry (paid on enqueue).
+    let foundry = state
+        .buildings()
+        .iter()
+        .find(|b| b.player == PlayerId(0))
+        .unwrap()
+        .id;
+    state.tick(&[cmd(
+        0,
+        Command::Train {
+            building: foundry,
+            kind: UnitKind::Harvester,
+        },
+    )]);
+    assert!(state.player(PlayerId(0)).scrap < cost);
+    let events = run_until(&mut state, 600, |_, events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::OrderStalled { .. }))
+    });
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::OrderStalled {
+                unit,
+                reason: StallReason::InsufficientScrap,
+                ..
+            } if *unit == builder
+        )),
+        "the broke founder stalls with the existing reason"
+    );
+    assert!(state.buildings().iter().all(|b| b.anchor != spot));
 }

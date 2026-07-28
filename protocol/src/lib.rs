@@ -586,6 +586,7 @@ mod tests {
                 kind: BuildingKind::Turret,
                 anchor: TilePos::new(9, 9),
                 queue: false,
+                defer: false,
             },
             Command::Cancel {
                 building: BuildingId(2),

@@ -548,6 +548,9 @@ impl Game {
                         oxide_sim::StallReason::NoRoute => "no route to that order",
                         oxide_sim::StallReason::NoFiringPosition => "no ground to fire from there",
                         oxide_sim::StallReason::InsufficientScrap => "out of scrap",
+                        oxide_sim::StallReason::GroundTaken => {
+                            "that ground was taken before the founder arrived"
+                        }
                     });
                     self.fx.push(Effect {
                         kind: EffectKind::Ping {

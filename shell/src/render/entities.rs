@@ -4,25 +4,33 @@
 
 use super::*;
 
-/// The armed building follows the cursor as a translucent footprint,
-/// green-lit where the sim would accept it — the tint and the command
-/// share `State::can_place`, so what looks legal is legal.
+/// The armed building follows the cursor as a translucent footprint —
+/// the tint and the command share `State::place_intent_refusal`, so
+/// what looks legal is legal. Three states: green founds this instant,
+/// amber founds on arrival (part of the footprint is remembered ground,
+/// judged from memory — never live state, so the tint can't be a
+/// hidden-enemy detector), red is refused.
 pub(crate) fn draw_placement_ghost(game: &Game, sprites: &Sprites, input: &InputState) {
     let Some(kind) = input.placing else { return };
     let world = game.camera.to_world(input.mouse);
     let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     let zoom = game.camera.zoom;
     let (w, h) = kind.stats().size;
-    let ok = game.state.can_place(game.human, kind, anchor);
+    let ok = game
+        .state
+        .place_intent_refusal(game.human, kind, anchor)
+        .is_none();
     let screen = game
         .camera
         .to_screen(vec2(anchor.x as f32, anchor.y as f32));
     let dest = vec2(w as f32 * zoom, h as f32 * zoom);
     let faction = game.state.player(game.human).faction;
-    let tint = if ok {
-        Color::new(0.7, 1.0, 0.75, 0.55)
-    } else {
+    let tint = if !ok {
         Color::new(1.0, 0.45, 0.4, 0.55)
+    } else if crate::input::build_defer_needed(game, kind, anchor) {
+        Color::new(1.0, 0.85, 0.45, 0.55)
+    } else {
+        Color::new(0.7, 1.0, 0.75, 0.55)
     };
     draw_texture_ex(
         sprites.texture(),
@@ -35,6 +43,41 @@ pub(crate) fn draw_placement_ghost(game: &Game, sprites: &Sprites, input: &Input
             ..Default::default()
         },
     );
+}
+
+/// Every deferred claim the human's crews are walking out to, drawn as
+/// a faint amber footprint on its promised ground — the promise made
+/// visible, deduplicated per (kind, anchor) across the crew.
+pub(crate) fn draw_pending_founds(game: &Game, sprites: &Sprites) {
+    let zoom = game.camera.zoom;
+    let faction = game.state.player(game.human).faction;
+    let mut drawn: Vec<(oxide_sim::BuildingKind, TilePos)> = Vec::new();
+    for unit in game.state.units().iter().filter(|u| u.player == game.human) {
+        for order in std::iter::once(&unit.order).chain(unit.queue.iter()) {
+            let oxide_sim::Order::Found { kind, anchor } = order else {
+                continue;
+            };
+            if drawn.contains(&(*kind, *anchor)) {
+                continue;
+            }
+            drawn.push((*kind, *anchor));
+            let (w, h) = kind.stats().size;
+            let screen = game
+                .camera
+                .to_screen(vec2(anchor.x as f32, anchor.y as f32));
+            draw_texture_ex(
+                sprites.texture(),
+                screen.x,
+                screen.y,
+                Color::new(1.0, 0.85, 0.45, 0.3),
+                DrawTextureParams {
+                    dest_size: Some(vec2(w as f32 * zoom, h as f32 * zoom)),
+                    source: Some(sprites.building(*kind, faction)),
+                    ..Default::default()
+                },
+            );
+        }
+    }
 }
 
 /// Queued waypoints of the selection, drawn as a faint chain; a patrol
@@ -62,7 +105,8 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
         oxide_sim::Order::Harvest { .. } => Color::new(0.85, 0.64, 0.25, 0.55),
         oxide_sim::Order::Build { .. }
         | oxide_sim::Order::Repair { .. }
-        | oxide_sim::Order::Salvage { .. } => Color::new(0.25, 0.58, 0.51, 0.55),
+        | oxide_sim::Order::Salvage { .. }
+        | oxide_sim::Order::Found { .. } => Color::new(0.25, 0.58, 0.51, 0.55),
         oxide_sim::Order::Idle => BONE_FAINT,
     };
     let goal_of = |order: &oxide_sim::Order| {
@@ -70,6 +114,7 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
             oxide_sim::Order::Move { goal } | oxide_sim::Order::AttackMove { goal } => *goal,
             oxide_sim::Order::Harvest { node } => *node,
             oxide_sim::Order::Build { site } => game.state.building(*site)?.anchor,
+            oxide_sim::Order::Found { anchor, .. } => *anchor,
             oxide_sim::Order::Repair { building } | oxide_sim::Order::Salvage { building } => {
                 game.state.building(*building)?.anchor
             }

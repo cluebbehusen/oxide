@@ -691,6 +691,7 @@ fn a_full_verb_run_stays_valid_every_tick() {
                     kind: BuildingKind::Turret,
                     anchor: tile(3, 4),
                     queue: false,
+                    defer: false,
                 },
             )],
         ),

@@ -255,6 +255,7 @@ impl Bot {
                     kind: b.kind,
                     anchor: b.anchor,
                     queue: false,
+                    defer: false,
                 }));
             }
         }
@@ -279,6 +280,7 @@ impl Bot {
                 kind: crate::stats::BuildingKind::Fabricator,
                 anchor,
                 queue: false,
+                defer: false,
             }));
         }
 
@@ -298,6 +300,7 @@ impl Bot {
                 kind: crate::stats::BuildingKind::Turret,
                 anchor,
                 queue: false,
+                defer: false,
             }));
         }
 

@@ -67,6 +67,7 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
                 kind,
                 anchor,
                 queue,
+                defer,
             } => apply_build(
                 state,
                 pc.player,
@@ -74,6 +75,7 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
                 *kind,
                 *anchor,
                 *queue,
+                *defer,
             ),
             Command::Cancel { building } => apply_cancel(state, pc.player, *building, events),
             Command::Repair {
@@ -497,7 +499,9 @@ fn apply_patrol(
 /// the site — pays, proves a doorstep is reachable — and every other
 /// accepted harvester takes the same Build order (builders stack).
 /// Aiming at an existing own unfinished site resumes it instead —
-/// that's how a dead builder's work gets picked back up.
+/// that's how a dead builder's work gets picked back up. With `defer`,
+/// nothing is claimed now: the crew takes [`Order::Found`] and the
+/// founder claims through [`found_site`] on arrival.
 fn apply_build(
     state: &mut State,
     player: PlayerId,
@@ -505,6 +509,7 @@ fn apply_build(
     kind: crate::stats::BuildingKind,
     anchor: TilePos,
     queue: bool,
+    defer: bool,
 ) -> Result<(), RejectReason> {
     if !in_envelope(state, anchor) {
         return Err(RejectReason::OutOfBounds);
@@ -540,10 +545,67 @@ fn apply_build(
         }
         return (landed > 0).then_some(()).ok_or(RejectReason::QueueFull);
     }
-    let cost = kind.stats().construction.ok_or(RejectReason::BadSite)?.cost;
+    if defer {
+        // The deferred mode: validate against the issuer's KNOWLEDGE,
+        // then hand out intent. No site, no charge, no route demand —
+        // an unroutable claim stalls honestly at walk time, exactly
+        // like a Move into fog. Affordability is judged at arrival
+        // too: the bank when the ground is claimed is the bank that
+        // matters.
+        if state.place_intent_refusal(player, kind, anchor).is_some() {
+            return Err(RejectReason::BadSite);
+        }
+        let mut landed = 0;
+        for id in crew {
+            if let Some(unit) = state.unit_mut(id)
+                && assign(unit, Order::Found { kind, anchor }, queue)
+            {
+                landed += 1;
+            }
+        }
+        return (landed > 0).then_some(()).ok_or(RejectReason::QueueFull);
+    }
     if !state.can_place(player, kind, anchor) {
         return Err(RejectReason::BadSite);
     }
+    let site = found_site(state, player, builder, kind, anchor, |state, site| {
+        // Assign BEFORE paying: a founder whose order queue is
+        // full must reject the whole command with the site
+        // retracted and nothing spent — the old code discarded
+        // this result and could charge for a site nobody was
+        // ordered to build.
+        let unit = state.unit_mut(builder).expect("filtered above");
+        assign(unit, Order::Build { site }, queue)
+    })?;
+    // The rest of the crew joins best-effort, in id order: an
+    // individual full queue drops that hand, never the command —
+    // the founder alone gates acceptance.
+    for &id in crew.iter().skip(1) {
+        if let Some(unit) = state.unit_mut(id) {
+            let _ = assign(unit, Order::Build { site }, queue);
+        }
+    }
+    Ok(())
+}
+
+/// The one ground-claiming path: place the site, prove a doorstep,
+/// commit the builder, pay, bury wreck, and deal walk-less friendlies
+/// onto the perimeter. Every rejection retracts the site and leaves no
+/// trace on the hash. Serves the instant command path and the deferred
+/// founder's arrival identically — `commit_builder` is each caller's
+/// own way of putting the founder to work (`false` aborts with the
+/// site retracted and nothing spent). The caller has already proved
+/// the placement predicate appropriate to its information: `can_place`
+/// for instant builds, the arrival re-check for deferred ones.
+pub(super) fn found_site(
+    state: &mut State,
+    player: PlayerId,
+    builder: UnitId,
+    kind: crate::stats::BuildingKind,
+    anchor: TilePos,
+    commit_builder: impl FnOnce(&mut State, crate::ids::BuildingId) -> bool,
+) -> Result<crate::ids::BuildingId, RejectReason> {
+    let cost = kind.stats().construction.ok_or(RejectReason::BadSite)?.cost;
     if state.player(player).scrap < cost {
         return Err(RejectReason::NotEnoughScrap);
     }
@@ -555,7 +617,7 @@ fn apply_build(
     // the fresh footprint routes out of it like any unit on newly
     // claimed ground.)
     let site = state.place_site(player, kind, anchor);
-    let from = state.unit(builder).expect("filtered above").tile();
+    let from = state.unit(builder).expect("caller checked").tile();
     let size = kind.stats().size;
     let reachable = super::rect_adjacent_tiles(anchor, size)
         .filter(|&t| state.passable(t))
@@ -564,13 +626,7 @@ fn apply_build(
         state.retract_site(site);
         return Err(RejectReason::UnreachableGoal);
     }
-    // Assign BEFORE paying: a founder whose order queue is
-    // full must reject the whole command with the site
-    // retracted and nothing spent — the old code discarded
-    // this result and could charge for a site nobody was
-    // ordered to build.
-    let unit = state.unit_mut(builder).expect("filtered above");
-    if !assign(unit, Order::Build { site }, queue) {
+    if !commit_builder(state, site) {
         state.retract_site(site);
         return Err(RejectReason::QueueFull);
     }
@@ -582,14 +638,6 @@ fn apply_build(
             state.map.clear_wreck(anchor.offset(dx, dy));
         }
     }
-    // The rest of the crew joins best-effort, in id order: an
-    // individual full queue drops that hand, never the command —
-    // the founder alone gates acceptance.
-    for &id in crew.iter().skip(1) {
-        if let Some(unit) = state.unit_mut(id) {
-            let _ = assign(unit, Order::Build { site }, queue);
-        }
-    }
     // Friendly machines make way as the site claims the ground: no
     // sim rule expects a resting unit on a claimed footprint. Since
     // 0.13 they WALK off — the builders' own approach and the
@@ -599,8 +647,8 @@ fn apply_build(
     // order, id order among the dealt: nothing may end up inside a
     // finished building. Strictly after the last rejection path and
     // the payment — a rejected command must not move the state hash
-    // (retract_site's contract). Hostiles can't be here: can_place
-    // refused them.
+    // (retract_site's contract). Hostiles can't be here: the
+    // caller's placement predicate refused them.
     let ring: Vec<TilePos> = {
         let mut ring: Vec<TilePos> = super::rect_adjacent_tiles(anchor, size)
             .filter(|&t| state.passable(t))
@@ -629,7 +677,7 @@ fn apply_build(
         unit.pos = to.center();
         unit.path = None;
     }
-    Ok(())
+    Ok(site)
 }
 
 /// Salvage an unfinished site: refund scales with its current health, so

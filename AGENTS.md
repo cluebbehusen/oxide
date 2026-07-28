@@ -669,11 +669,28 @@ comparisons don't survive GPU churn, so CI never runs it.
   harvester can resume them; a site zeroed by fire is dead even if its
   builder acts the same tick — construction hp-gains buffer like damage
   and resolve after it, so fire wins ties. Cancel (`X`) refunds
-  `cost × hp / max_hp`. One predicate — `State::can_place` — serves sim
-  validation and the shell's ghost, and it requires the footprint
-  *currently visible*: its occupancy checks read live state, and testing
-  explored-but-unseen ground would leak hidden enemies through the red
-  tint.
+  `cost × hp / max_hp`. The placement doctrine (0.13): a placement
+  verdict may only read facts the issuer knows — static terrain, own
+  memory, own and allied entities. Current visibility is how the STRICT
+  predicate (`State::can_place`, the final word on every actual ground
+  claim) earns the right to read live occupancy; its sibling
+  `State::place_intent_refusal` earns it differently — visible tiles
+  take the live checks verbatim, explored-but-unseen tiles are judged
+  from memory (static terrain, remembered scrap and ghosts, own/ally
+  live buildings, own pending founds — never live hostiles), and the
+  claim re-proves the strict predicate at arrival. That is the deferred
+  build (`Command::Build { defer }` → `Order::Found`): nothing placed,
+  nothing charged, no route demanded at accept; the crew walks out and
+  the founder claims through the same `found_site` tail the instant
+  path uses, in id order after the volley. Ground taken meanwhile
+  stalls fog-safe (`StallReason::GroundTaken`, judged only on tiles the
+  arriving founder sees — the arrival re-check also catches the one
+  memory-proof collision, an allied scaffold on unseen ground, since
+  unbuilt sites cast no vision); with nothing spent, Stop is the
+  cancel. The shell alone emits `defer` (amber ghost on remembered
+  ground, tinted from the intent predicate, never live state); bots
+  keep the strict predicate deliberately, so the mode is hash-inert
+  until the retraining campaign teaches them the verb.
 - **Fog of war enforces exactly one thing in the sim**: targeted attacks
   need the issuer to *see* the victim. Rendering honors fog fully
   (unexplored void, explored dim, unseen enemies culled) but the debug

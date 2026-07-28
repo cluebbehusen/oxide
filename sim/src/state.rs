@@ -114,11 +114,24 @@ pub enum Order {
     /// Walk adjacent to an own built building and strip it down for a
     /// partial refund (harvesters only; Foundries refuse). Drains
     /// buffer like damage and resolve after it — fire wins ties, and
-    /// fire-forfeited hp refunds nothing. (Last variant by appending
-    /// discipline: earlier discriminants keep their serialized bytes.)
+    /// fire-forfeited hp refunds nothing.
     Salvage {
         /// The building coming down.
         building: crate::ids::BuildingId,
+    },
+    /// Walk to remembered ground and claim it on arrival: the deferred
+    /// half of a fog-legal build ([`crate::Command::Build`] with
+    /// `defer`). Nothing is placed or paid until the founder stands
+    /// beside the footprint and re-proves the *strict* placement
+    /// predicate on ground it now sees — taken ground stalls the
+    /// program instead of leaking what fog hid. (Last variant by
+    /// appending discipline: earlier discriminants keep their
+    /// serialized bytes.)
+    Found {
+        /// What to construct on arrival.
+        kind: crate::stats::BuildingKind,
+        /// Top-left tile of the claimed footprint.
+        anchor: TilePos,
     },
 }
 
@@ -875,15 +888,19 @@ impl State {
         self.next_building_id = id.0;
     }
 
-    /// Whether `player` may start `kind` at `anchor` right now: every
-    /// footprint tile *currently visible* to them, open ground, and free
-    /// of buildings and standing units. Visibility (not mere exploration)
-    /// is the fog-honest rule — the occupancy checks read live state,
-    /// and a red ghost over explored-but-unseen ground would otherwise
-    /// leak hidden enemies. One predicate serves command validation and
-    /// the shell's placement preview — they must never disagree, which
-    /// is why this is literally [`State::place_refusal`] with the
-    /// reason thrown away.
+    /// Whether `player` may claim `kind` at `anchor` *this instant*:
+    /// every footprint tile currently visible to them, open ground, and
+    /// free of buildings and standing units. The real invariant is
+    /// narrower than visibility: a placement verdict may only read facts
+    /// the issuer knows — static terrain, own memory, own and allied
+    /// entities. Requiring current sight is how THIS predicate earns the
+    /// right to read live occupancy (`building_at`, the hostile-unit
+    /// scan); [`State::place_intent_refusal`] earns it differently, by
+    /// answering from memory and re-checking here at arrival. This is
+    /// literally [`State::place_refusal`] with the reason thrown away,
+    /// and it stays the final word on every actual ground claim —
+    /// instant builds, bot builds, and the deferred founder's arrival
+    /// all resolve through it.
     pub fn can_place(&self, player: PlayerId, kind: BuildingKind, anchor: TilePos) -> bool {
         self.place_refusal(player, kind, anchor).is_none()
     }
@@ -932,6 +949,101 @@ impl State {
                 }
         });
         hostile_in_footprint.then_some(PlaceRefusal::Unit)
+    }
+
+    /// Whether `player` may *intend* to build `kind` at `anchor` — the
+    /// deferred sibling of [`State::place_refusal`], serving
+    /// [`crate::Command::Build`]'s `defer` mode and the shell's ghost
+    /// on remembered ground. Per footprint tile: a currently visible
+    /// tile takes the strict predicate's live checks verbatim; an
+    /// explored-but-unseen tile is judged ONLY on what the issuer
+    /// knows — static terrain (immutable after parse), remembered
+    /// scrap (conservative: nodes only shrink), remembered enemy
+    /// buildings, live own/allied buildings (team-internal facts),
+    /// and the issuer's own pending [`Order::Found`] claims; a
+    /// never-explored tile refuses as [`PlaceRefusal::Fog`]. Live
+    /// hostile units and unremembered enemy buildings on unseen ground
+    /// are deliberately unreadable here — two states differing only in
+    /// what fog hides return identical verdicts, so the amber ghost
+    /// can never be a hidden-enemy detector. The arrival re-check
+    /// through the strict predicate is what catches the collisions
+    /// memory cannot (an allied scaffold on unseen ground included).
+    pub fn place_intent_refusal(
+        &self,
+        player: PlayerId,
+        kind: BuildingKind,
+        anchor: TilePos,
+    ) -> Option<PlaceRefusal> {
+        if kind.stats().construction.is_none() {
+            return Some(PlaceRefusal::NotConstructible);
+        }
+        let vision = self.vision(player);
+        let my_team = self.players[player.0 as usize].team;
+        let (w, h) = kind.stats().size;
+        let covers = |a: TilePos, size: (i32, i32), t: TilePos| {
+            t.x >= a.x && t.x < a.x + size.0 && t.y >= a.y && t.y < a.y + size.1
+        };
+        for dy in 0..h {
+            for dx in 0..w {
+                let t = anchor.offset(dx, dy);
+                if vision.visible(t) {
+                    if !self.map.terrain_passable(t) {
+                        return Some(PlaceRefusal::Terrain);
+                    }
+                    if self.building_at(t).is_some() {
+                        return Some(PlaceRefusal::Building);
+                    }
+                    continue;
+                }
+                if !vision.explored(t) {
+                    return Some(PlaceRefusal::Fog);
+                }
+                let terrain = self.map.tile(t).map(|tile| tile.terrain);
+                if terrain != Some(crate::map::Terrain::Ground) || vision.remembered_scrap(t) > 0 {
+                    return Some(PlaceRefusal::Terrain);
+                }
+                let ghosted = vision
+                    .ghosts()
+                    .iter()
+                    .any(|g| covers(g.anchor, g.kind.stats().size, t));
+                let allied_building = self.buildings.iter().any(|b| {
+                    self.players[b.player.0 as usize].team == my_team
+                        && covers(b.anchor, b.kind.stats().size, t)
+                });
+                if ghosted || allied_building {
+                    return Some(PlaceRefusal::Building);
+                }
+            }
+        }
+        // The issuer's own outstanding claims: two deferred founds may
+        // not promise the same ground (checked over the whole footprint
+        // so a visible/unseen mix cannot slip a double claim through).
+        let claimed = self.units.iter().any(|u| {
+            u.player == player
+                && u.hp > 0
+                && std::iter::once(&u.order).chain(u.queue.iter()).any(|o| {
+                    matches!(o, Order::Found { kind: k, anchor: a }
+                    if (0..h).any(|dy| (0..w).any(|dx| {
+                        covers(*a, k.stats().size, anchor.offset(dx, dy))
+                    })))
+                })
+        });
+        if claimed {
+            return Some(PlaceRefusal::Building);
+        }
+        // Hostile machines deny only ground the issuer can SEE them
+        // holding — exactly the strict rule, restricted to visible
+        // footprint tiles.
+        let hostile_in_sight = self.units.iter().any(|u| {
+            u.hp > 0
+                && self.hostile(player, u.player)
+                && u.kind.stats().domain == crate::stats::Domain::Ground
+                && {
+                    let t = u.tile();
+                    covers(anchor, (w, h), t) && vision.visible(t)
+                }
+        });
+        hostile_in_sight.then_some(PlaceRefusal::Unit)
     }
 }
 
@@ -994,6 +1106,7 @@ fn order_inside_envelope(order: &Order) -> bool {
         Order::Move { goal } | Order::AttackMove { goal } => tile_inside_envelope(*goal),
         Order::Harvest { node } => tile_inside_envelope(*node),
         Order::Attack { resume, .. } => resume.is_none_or(tile_inside_envelope),
+        Order::Found { anchor, .. } => tile_inside_envelope(*anchor),
     }
 }
 
@@ -1001,7 +1114,11 @@ fn order_inside_envelope(order: &Order) -> bool {
 /// [`order_inside_envelope`].
 fn order_reference(order: &Order) -> Option<Target> {
     match order {
-        Order::Idle | Order::Move { .. } | Order::Harvest { .. } | Order::AttackMove { .. } => None,
+        Order::Idle
+        | Order::Move { .. }
+        | Order::Harvest { .. }
+        | Order::AttackMove { .. }
+        | Order::Found { .. } => None,
         Order::Attack { target, .. } => Some(*target),
         Order::Build { site } => Some(Target::Building(*site)),
         Order::Repair { building } | Order::Salvage { building } => {

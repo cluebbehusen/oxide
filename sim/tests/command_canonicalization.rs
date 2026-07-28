@@ -226,6 +226,7 @@ fn families(stage: &Stage) -> Vec<Family> {
                 kind: BuildingKind::Turret,
                 anchor,
                 queue,
+                defer: false,
             }),
         },
         Family {

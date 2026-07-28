@@ -356,6 +356,7 @@ fn a_right_click_anywhere_on_an_own_site_resumes_it() {
             kind: oxide_sim::stats::BuildingKind::Fabricator,
             anchor,
             queue: false,
+            defer: false,
         },
     }]);
     assert!(
@@ -1461,6 +1462,7 @@ fn an_allied_site_under_fog_refuses_selection() {
             kind: oxide_sim::BuildingKind::Turret,
             anchor: TilePos::new(15, 1),
             queue: false,
+            defer: false,
         },
     }]);
     assert!(
@@ -3023,4 +3025,81 @@ fn the_tutorial_survives_its_own_literal_instructions() {
     // command stream; its flag flips in main.rs.
     game.demo.paused_menu = true;
     assert!(!t.advance(&game.demo), "school is out");
+}
+
+#[test]
+fn a_click_on_remembered_ground_defers_and_unscouted_refuses() {
+    use chassis::grid::TilePos;
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let harvester = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+        .unwrap()
+        .id;
+    let spot = TilePos::new(18, 4);
+    // Scout the spot, then walk home so it stays explored but unseen.
+    let walk = |game: &mut Game, goal: TilePos| {
+        game.state.tick(&[PlayerCommand {
+            player: game.human,
+            command: Command::Move {
+                units: vec![harvester],
+                goal,
+                queue: false,
+            },
+        }]);
+    };
+    walk(&mut game, TilePos::new(18, 5));
+    for _ in 0..600 {
+        if game.state.can_see(game.human, spot) {
+            break;
+        }
+        game.state.tick(&[]);
+    }
+    assert!(
+        game.state.can_see(game.human, spot),
+        "scout reached the spot"
+    );
+    walk(&mut game, TilePos::new(7, 5));
+    for _ in 0..600 {
+        if !game.state.can_see(game.human, spot) {
+            break;
+        }
+        game.state.tick(&[]);
+    }
+    assert!(!game.state.can_see(game.human, spot));
+    assert!(game.state.vision(game.human).explored(spot));
+
+    game.selection.units = vec![harvester];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    game.camera.center = vec2(spot.x as f32 + 0.5, spot.y as f32 + 0.5);
+    game.camera.pan(Vec2::ZERO);
+    let p = game
+        .camera
+        .to_screen(vec2(spot.x as f32 + 0.5, spot.y as f32 + 0.5));
+    apply_events(&mut game, &mut input, &click(p.x, p.y));
+    assert_eq!(game.pending.len(), 1, "remembered ground stages the claim");
+    match &game.pending[0].command {
+        Command::Build { anchor, defer, .. } => {
+            assert_eq!(*anchor, spot);
+            assert!(*defer, "remembered ground emits the deferred mode");
+        }
+        other => panic!("expected a build, staged {other:?}"),
+    }
+
+    // Never-explored ground refuses outright: nothing staged, mode
+    // stays armed for the next try.
+    let dark = TilePos::new(30, 5);
+    assert!(!game.state.vision(game.human).explored(dark));
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    game.camera.center = vec2(dark.x as f32 + 0.5, dark.y as f32 + 0.5);
+    game.camera.pan(Vec2::ZERO);
+    let p = game
+        .camera
+        .to_screen(vec2(dark.x as f32 + 0.5, dark.y as f32 + 0.5));
+    apply_events(&mut game, &mut input, &click(p.x, p.y));
+    assert_eq!(game.pending.len(), 1, "unscouted ground stages nothing");
+    assert!(input.placing.is_some(), "the refusal keeps the mode armed");
 }

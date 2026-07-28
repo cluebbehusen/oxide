@@ -92,6 +92,7 @@ fn wounded_turret(
             kind: BuildingKind::Turret,
             anchor: TilePos::new(3, 3),
             queue: false,
+            defer: false,
         },
     )]);
     run_until(state, 500, |_, events| {
@@ -518,6 +519,7 @@ fn repair_rejects_the_healthy_the_foreign_and_the_unfinished() {
             kind: BuildingKind::Turret,
             anchor: TilePos::new(6, 1),
             queue: false,
+            defer: false,
         },
     )]);
     let site = state
@@ -556,6 +558,7 @@ fn reclaimers_trickle_scrap_forever() {
             kind: BuildingKind::Reclaimer,
             anchor: TilePos::new(5, 1),
             queue: false,
+            defer: false,
         },
     )]);
     run_until(&mut state, 500, |_, events| {

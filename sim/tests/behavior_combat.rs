@@ -320,6 +320,7 @@ fn an_unbuilt_site_is_no_sandbag() {
             kind: BuildingKind::Array,
             anchor: TilePos::new(5, 3),
             queue: false,
+            defer: false,
         },
     )]);
     let site = state
@@ -594,6 +595,7 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
             kind: BuildingKind::Turret,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     let turret = state
@@ -669,6 +671,7 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
             kind: BuildingKind::Turret,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     let turret = state
@@ -726,6 +729,7 @@ fn turret_fires_at_its_stated_cadence() {
             kind: BuildingKind::Turret,
             anchor,
             queue: false,
+            defer: false,
         },
     )]);
     run_until(&mut state, 700, |s, _| {

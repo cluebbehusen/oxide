@@ -239,6 +239,7 @@ impl Executive {
                                 kind: *kind,
                                 anchor: *anchor,
                                 queue: false,
+                                defer: false,
                             },
                         });
                     }
