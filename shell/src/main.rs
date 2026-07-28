@@ -1160,13 +1160,15 @@ fn capture_ui(
     // footing across redesigns.
     if let (Mode::Wizard, Some(w)) = (mode, wizard.as_ref()) {
         let (title, items, selected) = w.ui_surface(draft);
-        let len = items.len();
+        // The frame injected this viewport before drawing, so the
+        // range reports the grid window the player is actually seeing.
+        let visible = w.ui_visible_range(draft, render::viewport(), render::ui_scale());
         return UiView {
             mode: w.mode_name().to_string(),
             title: Some(title),
             selected: Some(selected),
             items,
-            visible_range: Some([0, len]),
+            visible_range: Some(visible),
             hover: w.ui_hover(),
             chrome: None,
         };

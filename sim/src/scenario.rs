@@ -206,17 +206,13 @@ impl Scenario {
     /// flip. Name collisions are the caller's to resolve — two seats
     /// may legitimately end up on one roster.
     pub fn retint_seat(&mut self, seat: usize, faction: Faction) {
-        let label = |f: Faction| match f {
-            Faction::Ferrous => "Ferrous",
-            Faction::Cupric => "Cupric",
-        };
         let Some(player) = self.players.get_mut(seat) else {
             return;
         };
         if player.faction == faction {
             return;
         }
-        player.name = player.name.replace(label(player.faction), label(faction));
+        player.name = retinted_name(&player.name, player.faction, faction);
         player.faction = faction;
         for unit in self.units.iter_mut().filter(|u| u.player as usize == seat) {
             unit.kind = unit.kind.role().unit_for(faction);
@@ -381,6 +377,20 @@ impl Scenario {
         state.refresh_vision();
         Ok(state)
     }
+}
+
+/// The name a seat wears after a retint onto `to`'s roster: any
+/// faction word in the authored name flips ("East Cupric" becomes
+/// "East Ferrous"); a name without one keeps itself. This is the one
+/// definition of the rule — [`Scenario::retint_seat`] applies it at
+/// launch and the setup screen previews through it, so the card can
+/// never disagree with the launched match.
+pub fn retinted_name(name: &str, from: Faction, to: Faction) -> String {
+    let label = |f: Faction| match f {
+        Faction::Ferrous => "Ferrous",
+        Faction::Cupric => "Cupric",
+    };
+    name.replace(label(from), label(to))
 }
 
 #[cfg(test)]

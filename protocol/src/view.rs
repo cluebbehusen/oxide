@@ -182,8 +182,12 @@ pub struct CameraView {
 /// Snapshot of the shell screen that currently owns input.
 ///
 /// Menu rows use a half-open `visible_range`, so `[2, 7]` means item
-/// indices 2 through 6 are currently drawn. Gameplay has no active menu and
-/// reports `None` for the menu-specific fields.
+/// indices 2 through 6 are currently drawn. Grid screens (the
+/// `main_menu` map browser) report the contiguous run of cards on
+/// screen the same way, and `[0, 0]` when the window shows none —
+/// distinct from `None`, which means the mode has no menu at all.
+/// Gameplay has no active menu and reports `None` for the
+/// menu-specific fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiView {
     /// Stable snake-case mode name, such as `main_menu` or `playing`.

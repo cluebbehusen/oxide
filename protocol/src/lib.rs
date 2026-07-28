@@ -437,6 +437,29 @@ mod tests {
         assert_eq!(hash_hex(0x1234), "0x0000000000001234");
     }
 
+    #[test]
+    fn an_empty_visible_window_is_zero_zero_not_absent() {
+        // main_menu's grid reports the run of cards actually drawn; a
+        // window showing none is `[0, 0]`, which must stay distinct on
+        // the wire from a mode with no menu (absent field). Scrolled
+        // windows report a real sub-range, not `[0, items.len()]`.
+        let ui = UiView {
+            mode: "main_menu".into(),
+            title: Some("OXIDE".into()),
+            selected: Some(0),
+            items: vec!["Skirmish".into()],
+            visible_range: Some([0, 0]),
+            hover: None,
+            chrome: None,
+        };
+        let json = serde_json::to_string(&ResponseEnvelope::ok(3, Reply::Ui(ui.clone()))).unwrap();
+        assert!(
+            json.contains(r#""visible_range":[0,0]"#),
+            "the empty window rides the wire explicitly: {json}"
+        );
+        assert_eq!(reply_roundtrip(&Reply::Ui(ui.clone())), Reply::Ui(ui));
+    }
+
     fn reply_roundtrip(reply: &Reply) -> Reply {
         let json = serde_json::to_string(&ResponseEnvelope::ok(9, reply.clone())).unwrap();
         let back: ResponseEnvelope = serde_json::from_str(&json).unwrap();
