@@ -25,7 +25,10 @@ The front door offers Play, Tutorial, Replays, Settings, and Quit
 buses, UI scale, camera feel, accessibility switches (reduced motion,
 colorblind-safe accents, a left-handed preset), and full key
 remapping — every change applies immediately and persists, explicit
-unbindings included. Play opens a thumbnail grid of every map,
+unbindings included. The pause menu carries the same Settings, so a
+live match can be retuned mid-game (the match waits, and Back returns
+to the pause menu); a refused rebind says which verb already holds
+the key. Play opens a thumbnail grid of every map,
 sectioned by format, each card carrying a fog-free, theme-graded
 preview — the selected map's blurb names its pace and scrap richness —
 and every choice you make on the way to a

@@ -1,4 +1,4 @@
-//! The perceptual-diff screenshot suite: eleven canonical screens captured
+//! The perceptual-diff screenshot suite: twelve canonical screens captured
 //! from a real automation-mode shell and compared against per-machine
 //! references on a tolerance metric.
 //!
@@ -229,7 +229,7 @@ impl Suite<'_> {
     }
 }
 
-/// Runs the eleven-shot walk. Spawns its own shell on `port`.
+/// Runs the twelve-shot walk. Spawns its own shell on `port`.
 pub fn run(port: u16, bless: bool, dir: &Path, threshold: f64) -> Result<()> {
     let home = scratch_home()?;
     let (guard, mut client) = auto::spawn_shell(&SpawnOptions {
@@ -327,6 +327,17 @@ fn walk(client: &mut Client, bless: bool, dir: &Path, threshold: f64) -> Result<
         auto::press_key(suite.client, Key::Escape)?;
     }
     suite.shot("pause", "pause_menu")?;
+
+    // Settings over the paused match (the pause payload waits), then a
+    // refused rebind: the screen-owned notice names the chord's holder
+    // above the veil. Last on purpose — the notice's glyph sizes enter
+    // the font atlas here, and drawing them earlier re-rasterized the
+    // text of every capture that followed.
+    auto::activate_labeled(suite.client, "settings")?;
+    auto::activate_labeled(suite.client, "controls")?;
+    auto::press_key(suite.client, Key::Enter)?;
+    auto::press_key(suite.client, Key::M)?;
+    suite.shot("controls-conflict", "controls")?;
 
     if !suite.failed.is_empty() {
         bail!(

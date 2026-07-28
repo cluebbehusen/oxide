@@ -1,13 +1,54 @@
 //! The pause menu and its destructive-choice confirmation — one screen
 //! object. Windowless update; the main loop performs the session verbs
-//! (resume, watch, restart, main menu, quit) and draws.
+//! (resume, watch, settings, restart, main menu, quit) and draws.
 
 use crate::game::SoundKind;
 use crate::menu::Menu;
 use macroquad::prelude::Vec2;
 use oxide_protocol::{Key, RawEvent};
 
-const PAUSE_ITEMS: [&str; 5] = ["Resume", "Watch Replay", "Restart", "Main Menu", "Quit"];
+/// One pause row. The row set is conditional (Watch Replay only once
+/// the match is decided), so rows are values, not indices — the
+/// confirm step and the cursor return key off the row itself, and a
+/// new conditional row costs one variant, not an index-shift audit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Row {
+    /// Back to the match.
+    Resume,
+    /// Watch the session so far (decided matches only).
+    WatchReplay,
+    /// Tune settings over the paused match.
+    Settings,
+    /// Rebuild the match (confirms).
+    Restart,
+    /// Abandon to the front door (confirms).
+    MainMenu,
+    /// Leave the process (confirms).
+    Quit,
+}
+
+impl Row {
+    fn label(self) -> &'static str {
+        match self {
+            Row::Resume => "Resume",
+            Row::WatchReplay => "Watch Replay",
+            Row::Settings => "Settings",
+            Row::Restart => "Restart",
+            Row::MainMenu => "Main Menu",
+            Row::Quit => "Quit",
+        }
+    }
+}
+
+/// The rows the current match state offers, in display order.
+fn rows(finished: bool) -> Vec<Row> {
+    let mut rows = vec![Row::Resume];
+    if finished {
+        rows.push(Row::WatchReplay);
+    }
+    rows.extend([Row::Settings, Row::Restart, Row::MainMenu, Row::Quit]);
+    rows
+}
 
 /// What a pause frame decided. Destructive verbs only ever emerge
 /// after the confirmation step.
@@ -19,6 +60,8 @@ pub enum Out {
     Resume,
     /// Watch the session so far.
     WatchReplay,
+    /// Open Settings over the paused match; this screen waits intact.
+    Settings,
     /// Confirmed: rebuild the match.
     Restart,
     /// Confirmed: abandon to the front door.
@@ -32,17 +75,18 @@ pub enum Out {
 pub struct PauseScreen {
     /// The live menu (pause rows, or the two-row confirm dialog).
     pub menu: Menu,
-    /// Which destructive row is awaiting confirmation, if any
-    /// (canonical PAUSE_ITEMS index).
-    pub confirming: Option<usize>,
+    /// The displayed rows, in menu order.
+    rows: Vec<Row>,
+    /// Which destructive row is awaiting confirmation, if any.
+    confirming: Option<Row>,
     /// Whether the match is decided — only then does Watch Replay
     /// appear. Mid-match playback is a fog-free scout of the enemy;
     /// replays are an end-of-match affair.
     pub finished: bool,
 }
 
-fn confirm_menu(choice: usize) -> Menu {
-    let verb = PAUSE_ITEMS.get(choice).copied().unwrap_or("Quit");
+fn confirm_menu(row: Row) -> Menu {
+    let verb = row.label();
     // Cancel sits first and preselected: confirming destruction takes
     // a deliberate second motion, never a double-tap.
     Menu::new(
@@ -54,25 +98,13 @@ fn confirm_menu(choice: usize) -> Menu {
 impl PauseScreen {
     /// Opens on the pause rows.
     pub fn open(finished: bool) -> Self {
-        let items: Vec<String> = PAUSE_ITEMS
-            .iter()
-            .filter(|&&label| finished || label != "Watch Replay")
-            .map(|s| s.to_string())
-            .collect();
+        let rows = rows(finished);
+        let items: Vec<String> = rows.iter().map(|r| r.label().to_string()).collect();
         Self {
             menu: Menu::new("PAUSED", items),
+            rows,
             confirming: None,
             finished,
-        }
-    }
-
-    /// Maps a displayed row back to its canonical PAUSE_ITEMS index —
-    /// mid-match menus omit the Watch Replay row.
-    fn canonical(&self, row: usize) -> usize {
-        if !self.finished && row >= 1 {
-            row + 1
-        } else {
-            row
         }
     }
 
@@ -101,20 +133,19 @@ impl PauseScreen {
             .iter()
             .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
         let picked = self.menu.handle(events, mouse);
-        if let Some(choice) = self.confirming {
+        if let Some(row) = self.confirming {
             if escaped || picked == Some(0) {
                 self.confirming = None;
                 self.menu = Self::open(self.finished).menu;
-                // The cursor returns to the armed row, at its DISPLAYED
-                // position.
-                self.menu
-                    .select(if !self.finished { choice - 1 } else { choice });
+                // The cursor returns to the armed row.
+                let display = self.rows.iter().position(|&r| r == row).unwrap_or(0);
+                self.menu.select(display);
                 return Out::Stay;
             }
             if picked == Some(1) {
-                return match choice {
-                    2 => Out::Restart,
-                    3 => Out::MainMenu,
+                return match row {
+                    Row::Restart => Out::Restart,
+                    Row::MainMenu => Out::MainMenu,
                     _ => Out::Quit,
                 };
             }
@@ -123,9 +154,10 @@ impl PauseScreen {
         if picked.is_some() {
             sounds.push((SoundKind::Click, None));
         }
-        match picked.map(|row| self.canonical(row)) {
-            Some(0) => Out::Resume,
-            Some(1) => Out::WatchReplay,
+        match picked.map(|i| self.rows[i]) {
+            Some(Row::Resume) => Out::Resume,
+            Some(Row::WatchReplay) => Out::WatchReplay,
+            Some(Row::Settings) => Out::Settings,
             Some(destructive) => {
                 // Restart, Main Menu, and Quit all throw away a live
                 // match — each asks first.
@@ -154,26 +186,44 @@ mod tests {
         )
     }
 
+    /// Moves the cursor to the labeled row and activates it — by
+    /// label, never by raw Down counts, so the tests survive row-set
+    /// changes the way the index math never did.
+    fn activate(p: &mut PauseScreen, label: &str) -> Out {
+        let target = p
+            .menu
+            .items
+            .iter()
+            .position(|i| i == label)
+            .unwrap_or_else(|| panic!("no row labeled {label} in {:?}", p.menu.items));
+        while p.menu.selected < target {
+            drive(p, Key::Down);
+        }
+        while p.menu.selected > target {
+            drive(p, Key::Up);
+        }
+        drive(p, Key::Enter)
+    }
+
     #[test]
     fn destructive_rows_confirm_with_cancel_preselected() {
         let mut p = PauseScreen::open(false);
-        drive(&mut p, Key::Down);
-        assert_eq!(drive(&mut p, Key::Enter), Out::Stay, "Restart only arms");
+        assert_eq!(activate(&mut p, "Restart"), Out::Stay, "Restart only arms");
         assert!(p.confirming(), "the dialog is up");
         // Bare Enter declines: Cancel is the preselected row.
         assert_eq!(drive(&mut p, Key::Enter), Out::Stay);
         assert!(!p.confirming(), "Cancel closed the dialog");
-        assert_eq!(p.menu.selected, 1, "the cursor returns to the armed row");
+        assert_eq!(
+            p.menu.items[p.menu.selected], "Restart",
+            "the cursor returns to the armed row"
+        );
         // Armed again, a deliberate second motion confirms.
         drive(&mut p, Key::Enter);
         drive(&mut p, Key::Down);
         assert_eq!(drive(&mut p, Key::Enter), Out::Restart);
-        // Quit sits at the shifted tail mid-match.
+        // Quit confirms the same way.
         let mut p = PauseScreen::open(false);
-        for _ in 0..3 {
-            drive(&mut p, Key::Down);
-        }
-        drive(&mut p, Key::Enter);
+        activate(&mut p, "Quit");
         drive(&mut p, Key::Down);
         assert_eq!(drive(&mut p, Key::Enter), Out::Quit);
     }
@@ -183,10 +233,7 @@ mod tests {
         let mut p = PauseScreen::open(false);
         assert_eq!(drive(&mut p, Key::Escape), Out::Resume);
         let mut p = PauseScreen::open(false);
-        for _ in 0..3 {
-            drive(&mut p, Key::Down);
-        }
-        drive(&mut p, Key::Enter);
+        activate(&mut p, "Main Menu");
         assert!(p.confirming());
         assert_eq!(
             drive(&mut p, Key::Escape),
@@ -201,19 +248,27 @@ mod tests {
         let mut p = PauseScreen::open(true);
         assert_eq!(drive(&mut p, Key::Enter), Out::Resume);
         let mut p = PauseScreen::open(true);
-        drive(&mut p, Key::Down);
-        assert_eq!(drive(&mut p, Key::Enter), Out::WatchReplay);
+        assert_eq!(activate(&mut p, "Watch Replay"), Out::WatchReplay);
         // Mid-match: no Watch Replay row, and every verb still lands on
-        // the right target through the shifted indices.
+        // the right target.
         let mut p = PauseScreen::open(false);
         assert!(
             !p.menu.items.iter().any(|i| i == "Watch Replay"),
             "mid-match playback would be a fog-free scout of the enemy"
         );
-        drive(&mut p, Key::Down);
-        assert_eq!(drive(&mut p, Key::Enter), Out::Stay, "Restart arms");
+        assert_eq!(activate(&mut p, "Restart"), Out::Stay, "Restart arms");
         assert!(p.confirming());
         drive(&mut p, Key::Down);
         assert_eq!(drive(&mut p, Key::Enter), Out::Restart);
+    }
+
+    #[test]
+    fn settings_opens_without_confirmation_on_both_faces() {
+        // Settings destroys nothing — it must never arm the dialog.
+        for finished in [false, true] {
+            let mut p = PauseScreen::open(finished);
+            assert_eq!(activate(&mut p, "Settings"), Out::Settings);
+            assert!(!p.confirming(), "Settings is not a destructive row");
+        }
     }
 }

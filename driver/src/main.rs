@@ -358,7 +358,7 @@ enum Cmd {
         #[arg(long)]
         spawn: bool,
     },
-    /// Perceptual-diff screenshot suite: eleven canonical screens from a
+    /// Perceptual-diff screenshot suite: twelve canonical screens from a
     /// spawned automation shell, compared against per-machine
     /// references (gitignored — a local gate, never CI).
     Shots {

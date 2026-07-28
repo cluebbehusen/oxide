@@ -462,6 +462,7 @@ async fn run() -> Result<()> {
                     &ui_view,
                     &mut tutorial,
                     &mut playback,
+                    &mut settings,
                 );
                 if holds_queries {
                     break;
@@ -578,16 +579,19 @@ async fn run() -> Result<()> {
                 if up.dirty {
                     config.save().ok();
                 }
-                if let Some(text) = up.toast {
-                    game.toast(text);
-                }
                 render::draw(&game, &sprites, &input);
                 veil();
                 let sc = settings.as_ref().expect("still open");
-                sc.menu.draw(sc.hint());
-                if up.out == screens::settings::Out::Home {
+                sc.draw();
+                if up.out == screens::settings::Out::Leave {
+                    // Back to the origin: Home, or the untouched pause
+                    // menu still waiting on its Settings row.
+                    let origin = sc.origin;
                     settings = None;
-                    mode = Mode::Home;
+                    mode = match origin {
+                        screens::settings::Origin::Home => Mode::Home,
+                        screens::settings::Origin::Pause => Mode::Pause,
+                    };
                 }
             }
             Mode::Wizard => {
@@ -843,6 +847,17 @@ async fn run() -> Result<()> {
                         game.paused = false;
                         pause = None;
                         mode = Mode::Playing;
+                    }
+                    screens::pause::Out::Settings => {
+                        // The pause payload stays put: leaving Settings
+                        // lands back on this exact menu, cursor still on
+                        // the row that opened it. The sim stays frozen —
+                        // neither mode ever advances the wall clock.
+                        settings = Some(screens::settings::SettingsScreen::open_from(
+                            &config,
+                            screens::settings::Origin::Pause,
+                        ));
+                        mode = Mode::Settings;
                     }
                     screens::pause::Out::WatchReplay => {
                         // The recorder IS the record — clone it, stamp
@@ -1125,6 +1140,7 @@ fn handle_request(
     ui_view: &UiView,
     tutorial: &mut Option<tutorial::Tutorial>,
     playback: &mut Option<screens::playback::PlaybackSession>,
+    settings: &mut Option<screens::settings::SettingsScreen>,
 ) {
     let IncomingRequest { id, request, reply } = incoming;
     // A viewer session owns the screen: state-shaped questions and the
@@ -1306,8 +1322,15 @@ fn handle_request(
         Request::Resume => {
             game.paused = false;
             // Resuming implies gameplay: leave the pause menu too, or the
-            // sim runs behind a menu that still claims it is paused.
-            if matches!(mode, Mode::Pause) {
+            // sim runs behind a menu that still claims it is paused —
+            // Settings opened over a paused match included, or the sim
+            // would run under a screen that never ticks it.
+            let settings_over_match = matches!(mode, Mode::Settings)
+                && settings
+                    .as_ref()
+                    .is_some_and(|s| s.origin == screens::settings::Origin::Pause);
+            if matches!(mode, Mode::Pause) || settings_over_match {
+                *settings = None;
                 *mode = Mode::Playing;
                 input.reset_transient();
             }

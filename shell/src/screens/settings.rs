@@ -9,7 +9,7 @@ use crate::config::Config;
 use crate::game::SoundKind;
 use crate::menu::Menu;
 use crate::render;
-use macroquad::prelude::Vec2;
+use macroquad::prelude::{Color, Vec2, color_u8, draw_text, measure_text};
 use oxide_protocol::{Key, RawEvent};
 
 /// Which face is up.
@@ -24,23 +24,42 @@ pub enum Face {
     },
 }
 
+/// Where the screen was opened from — leaving returns there.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Origin {
+    /// The front door.
+    Home,
+    /// The pause menu of a live match; its payload waits intact so the
+    /// cursor comes back to the row that opened this screen.
+    Pause,
+}
+
 /// What a settings frame decided.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Out {
     /// Still tuning.
     Stay,
-    /// Back to the front door.
-    Home,
+    /// Back to wherever the screen was opened from (its [`Origin`]).
+    Leave,
 }
 
-/// A frame's full result: the transition, an optional toast, and
-/// whether the config changed (the caller persists — screens never
-/// touch the disk, which keeps their tests hermetic).
+/// A screen-owned status line, drawn by [`SettingsScreen::draw`] above
+/// the caller's veil — a toast routed through the game HUD dies under
+/// it. Persists until the next action, so it needs no wall clock and
+/// the screen stays headless-testable.
+pub struct Notice {
+    /// The message.
+    pub text: String,
+    /// A complaint (danger red) rather than a confirmation.
+    pub danger: bool,
+}
+
+/// A frame's full result: the transition and whether the config
+/// changed (the caller persists — screens never touch the disk, which
+/// keeps their tests hermetic).
 pub struct Update {
     /// Where to go.
     pub out: Out,
-    /// A complaint to surface, if any.
-    pub toast: Option<&'static str>,
     /// The config changed; persist it.
     pub dirty: bool,
 }
@@ -162,14 +181,25 @@ pub struct SettingsScreen {
     pub face: Face,
     /// The face's live menu.
     pub menu: Menu,
+    /// Where leaving returns to.
+    pub origin: Origin,
+    /// The screen's status line, if one is up.
+    pub notice: Option<Notice>,
 }
 
 impl SettingsScreen {
-    /// Opens on the settings rows.
+    /// Opens on the settings rows, returning Home on leave.
     pub fn open(config: &Config) -> Self {
+        Self::open_from(config, Origin::Home)
+    }
+
+    /// Opens on the settings rows with an explicit return target.
+    pub fn open_from(config: &Config, origin: Origin) -> Self {
         Self {
             face: Face::Settings,
             menu: settings_menu(config),
+            origin,
+            notice: None,
         }
     }
 
@@ -198,6 +228,31 @@ impl SettingsScreen {
         self.face = Face::Controls { rebinding: None };
         self.menu = controls_menu(config);
         self.menu.select(select);
+        self.notice = None;
+    }
+
+    /// Draws the face's menu and the screen-owned notice — the caller
+    /// draws the veil first, so both land above it.
+    pub fn draw(&self) {
+        self.menu.draw(self.hint());
+        if let Some(notice) = &self.notice {
+            const NOTICE_DANGER: Color = color_u8!(217, 82, 74, 255);
+            const NOTICE_PLAIN: Color = color_u8!(232, 228, 216, 200);
+            let s = render::ui_scale();
+            let size = 16.0 * s;
+            let width = measure_text(&notice.text, None, size as u16, 1.0).width;
+            draw_text(
+                &notice.text,
+                (render::viewport().x - width) * 0.5,
+                render::viewport().y - 48.0 * s,
+                size,
+                if notice.danger {
+                    NOTICE_DANGER
+                } else {
+                    NOTICE_PLAIN
+                },
+            );
+        }
     }
 
     /// Applies a frame's events. `live` is the in-play binding map,
@@ -216,7 +271,6 @@ impl SettingsScreen {
     ) -> Update {
         let mut update = Update {
             out: Out::Stay,
-            toast: None,
             dirty: false,
         };
         let escaped = events
@@ -225,9 +279,12 @@ impl SettingsScreen {
         match self.face {
             Face::Settings => {
                 if escaped {
-                    update.out = Out::Home;
+                    update.out = Out::Leave;
                 } else if let Some(row) = self.menu.handle(events, mouse) {
                     sounds.push((SoundKind::Click, None));
+                    // Any activation is "the next action": the standing
+                    // notice has had its say.
+                    self.notice = None;
                     if cycle_setting(config, row) {
                         // Apply live, persist, keep the cursor on the
                         // row being tuned.
@@ -242,14 +299,17 @@ impl SettingsScreen {
                         config.bindings = BindingMap::left_handed();
                         update.dirty = true;
                         *live = config.bindings.clone();
-                        update.toast = Some("left-handed profile applied");
+                        self.notice = Some(Notice {
+                            text: "left-handed profile applied".to_string(),
+                            danger: false,
+                        });
                         let selected = self.menu.selected;
                         self.menu = settings_menu(config);
                         self.menu.select(selected);
                     } else if row == 9 {
                         self.goto_controls(config, 0);
                     } else {
-                        update.out = Out::Home;
+                        update.out = Out::Leave;
                     }
                 }
             }
@@ -280,6 +340,7 @@ impl SettingsScreen {
                 match pressed {
                     Some((Key::Escape, _, _)) => {
                         self.face = Face::Controls { rebinding: None };
+                        self.notice = None;
                     }
                     Some((key, ctrl, shift)) => {
                         let (target, _) = REMAPPABLE[row];
@@ -291,7 +352,18 @@ impl SettingsScreen {
                             *live = config.bindings.clone();
                             self.goto_controls(config, row);
                         } else {
-                            update.toast = Some("that key already means something");
+                            // Refused: name the holder, so the player
+                            // knows which row to unbind first.
+                            let text = match config.bindings.holder(chord).filter(|&a| a != target)
+                            {
+                                Some(holder) => format!(
+                                    "{} is already bound to {}",
+                                    BindingMap::chord_label(chord),
+                                    holder.label()
+                                ),
+                                None => "that key already means something".to_string(),
+                            };
+                            self.notice = Some(Notice { text, danger: true });
                             sounds.push((SoundKind::Denied, None));
                             self.face = Face::Controls { rebinding: None };
                         }
@@ -307,6 +379,7 @@ impl SettingsScreen {
                     self.face = Face::Settings;
                     self.menu = settings_menu(config);
                     self.menu.select(CONTROLS_ROW);
+                    self.notice = None;
                 } else if x_pressed && self.menu.selected < REMAPPABLE.len() {
                     // X on a row unbinds it — outside capture mode, so
                     // the key is free to mean this. The tombstone
@@ -324,6 +397,7 @@ impl SettingsScreen {
                     self.goto_controls(config, row);
                 } else if let Some(row) = self.menu.handle(events, mouse) {
                     sounds.push((SoundKind::Click, None));
+                    self.notice = None;
                     if row < REMAPPABLE.len() {
                         self.face = Face::Controls {
                             rebinding: Some(row),
@@ -440,18 +514,58 @@ mod tests {
     }
 
     #[test]
-    fn a_conflicting_chord_is_refused_with_a_toast_and_no_edit() {
+    fn a_conflicting_chord_is_refused_and_the_notice_names_the_holder() {
         let mut config = Config::default();
         let mut live = config.bindings.clone();
         let before = config.bindings.chord_for(Action::Patrol);
         let mut s = SettingsScreen::open(&config);
         s.goto_controls(&config, 5);
         drive(&mut s, &mut config, &mut live, &press(Key::Enter), false);
-        // H already trains slot 0.
-        let up = drive(&mut s, &mut config, &mut live, &press(Key::H), false);
+        // M already means Run.
+        let up = drive(&mut s, &mut config, &mut live, &press(Key::M), false);
         assert!(!up.dirty);
-        assert_eq!(up.toast, Some("that key already means something"));
+        let notice = s.notice.as_ref().expect("the refusal reports");
+        assert_eq!(notice.text, "M is already bound to Run");
+        assert!(notice.danger);
         assert_eq!(config.bindings.chord_for(Action::Patrol), before);
+        // Navigation is not an action: the notice waits to be read.
+        drive(&mut s, &mut config, &mut live, &press(Key::Down), false);
+        assert!(s.notice.is_some(), "arrow keys must not eat the notice");
+        // The next action clears it.
+        drive(&mut s, &mut config, &mut live, &press(Key::Enter), false);
+        assert!(s.notice.is_none(), "arming a row is the next action");
+    }
+
+    #[test]
+    fn a_conflict_with_a_non_remappable_holder_is_still_named() {
+        // Enter is Confirm — not on the remap screen, but a reachable
+        // collision that once could only say "something".
+        let mut config = Config::default();
+        let mut live = config.bindings.clone();
+        let mut s = SettingsScreen::open(&config);
+        s.goto_controls(&config, 5);
+        drive(&mut s, &mut config, &mut live, &press(Key::Enter), false);
+        drive(&mut s, &mut config, &mut live, &press(Key::Num1), false);
+        assert_eq!(
+            s.notice.as_ref().map(|n| n.text.as_str()),
+            Some("1 is already bound to Slot 1")
+        );
+    }
+
+    #[test]
+    fn leaving_the_controls_face_clears_the_notice() {
+        let mut config = Config::default();
+        let mut live = config.bindings.clone();
+        let mut s = SettingsScreen::open(&config);
+        s.goto_controls(&config, 5);
+        drive(&mut s, &mut config, &mut live, &press(Key::Enter), false);
+        drive(&mut s, &mut config, &mut live, &press(Key::M), false);
+        assert!(s.notice.is_some());
+        drive(&mut s, &mut config, &mut live, &press(Key::Escape), false);
+        assert!(
+            matches!(s.face, Face::Settings) && s.notice.is_none(),
+            "a face change retires the notice with its context"
+        );
     }
 
     #[test]
@@ -464,6 +578,10 @@ mod tests {
         }
         let up = drive(&mut s, &mut config, &mut live, &press(Key::Enter), false);
         assert!(up.dirty);
+        assert!(
+            s.notice.as_ref().is_some_and(|n| !n.danger),
+            "the applied preset confirms on the screen's own notice line"
+        );
         assert_eq!(
             config.bindings.chord_for(Action::TrainSlot(0)),
             Some(Chord::bare(Key::K)),

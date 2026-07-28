@@ -277,6 +277,16 @@ fn every_screen_transition_answers_the_walk() -> Result<()> {
     // Cancel must sit preselected: bare Enter declines the destruction.
     press_key(&mut client, Key::Enter)?;
     assert_mode(&mut client, "pause_menu", "confirm > default is Cancel")?;
+    // Settings opens over the paused match and leaving returns to the
+    // SAME pause menu — the payload waits intact, not a fresh Home.
+    activate_labeled(&mut client, "settings")?;
+    assert_mode(&mut client, "settings", "Pause > Settings")?;
+    activate_labeled(&mut client, "controls")?;
+    assert_mode(&mut client, "controls", "pause-origin Settings > Controls")?;
+    press_key(&mut client, Key::Escape)?;
+    assert_mode(&mut client, "settings", "Controls > Esc")?;
+    press_key(&mut client, Key::Escape)?;
+    assert_mode(&mut client, "pause_menu", "Settings > Esc returns to pause")?;
     activate_labeled(&mut client, "main menu")?;
     activate_labeled(&mut client, "main menu")?;
     assert_mode(&mut client, "home", "pause > Main Menu confirmed")?;

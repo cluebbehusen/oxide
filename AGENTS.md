@@ -521,7 +521,7 @@ and the foundry-durability bless exist for this; the lancer's
 damage bless is what made the tech tree worth climbing — the matchup
 instrument condemned the old rail at true par cost).
 
-`driver shots` is the perceptual-diff screenshot suite: eleven
+`driver shots` is the perceptual-diff screenshot suite: twelve
 canonical screens from a spawned automation shell (throwaway HOME, reduced
 motion pinned so the Home backdrop can't drift), compared against
 per-machine references in the gitignored `shots/` directory on a mean
@@ -529,7 +529,7 @@ per-channel metric. The default threshold is calibrated between font
 AA jitter (<=0.003%) and a small UI element appearing (~0.02%).
 `--bless` adopts the current captures after an intended visual change;
 a compare run FAILS on a missing reference rather than silently
-adopting it, so a fresh machine's first run is eleven failures and a
+adopting it, so a fresh machine's first run is twelve failures and a
 prompt to bless — expected, not drift. The automation shell runs from
 a scratch cwd, so the replay-shelf capture is always an empty shelf
 (local replays can no longer shift it). Local gate only — pixel
@@ -782,6 +782,15 @@ comparisons don't survive GPU churn, so CI never runs it.
   drawing and session wiring. The viewport is INJECTED once per frame
   (`render::set_viewport`); menus, chrome scale, and `Game::new` read
   the seam and never query the window (headless tests get 1280x800).
+  Since 0.13 Settings carries its origin (`open_from`: Home or Pause)
+  and leaving returns there — the pause menu grew a Settings row and
+  its payload waits intact, so the cursor comes back to the row that
+  left. Pause rows are an enum (`pause::Row`), never shifted indices:
+  a new conditional row is one variant, not an index audit. Settings
+  complaints live on the screen's own notice line drawn above the
+  veil (a HUD toast dies under it), persisting until the next action;
+  a refused rebind names its holder ("M is already bound to Run") via
+  `BindingMap::holder` + `Action::label`.
 - **Memories admit their age**: remembered ghosts and salvage fade
   along a 90-second ramp after sight loss (presentation-only state on
   `Game::last_seen`; the sim's Vision carries no timestamps). They
