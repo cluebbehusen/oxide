@@ -799,7 +799,23 @@ comparisons don't survive GPU churn, so CI never runs it.
   LayoutModel's card rects. Buildings and units share it; tooltips
   derive weapon lines from stats and name the live chord. The sim
   gained `CancelTrain` (full refund, head progress resets) for the
-  queue ghosts.
+  queue ghosts. Since 0.13 an order chip carries its SUBJECT
+  (`CardIcon::Order`): the target's own sprite in the target's own
+  faction under a corner verb badge, ghosted beneath a scaffold
+  while its site is still rising, with the kind in the title and a
+  concrete line (percent raised, hp, scrap still in it) in the
+  tooltip. The subject is resolved in the pure model, OWN programs
+  only — an inspected ally's chips stay bare pictograms rather than
+  resting the panel on a claim about what team sight shares, and an
+  attack victim resolves through the breadcrumbs' own fog gate so
+  chip and trail can never tell different stories. A chip whose
+  subject is gone degrades to the plain verb. Every card also
+  carries its own `progress`, so the drawn panel no longer peeks
+  back into the state for the production head's bar. Tooltips anchor
+  to the HOVERED rect through `layout::tooltip_origin` (a pure,
+  headless-tested clamp): command cards above their card, dock chips
+  right of the dock and centered on the chip, both boxed into the
+  window between the top bar and the band.
 - **The tutorial advances on demonstration** (shell/src/tutorial.rs):
   six cards watching `Game::demo` flags set from the human's own
   command stream — never a timer, never a "next" button. Dismissible;

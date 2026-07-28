@@ -35,7 +35,9 @@ rejections say why in words. Clicking anything opens its command
 panel: portrait, sprite cards for everything it can do (costs,
 hotkeys in the corner, reasons in red when a card refuses), and the
 queue along the bottom — production ghosts with progress you can
-click to cancel, or a unit's order program. Hovering a card tells
+click to cancel, or a unit's order program, where every chip wears
+what it acts on: the turret it is raising, the works it is welding,
+the machine it is chasing. Hovering a card tells
 you what the machine is and exactly how it fights. A six-step
 tutorial (Home → Tutorial) teaches by watching you actually do each
 thing; guns aim at what they shoot, turrets track, downed flyers

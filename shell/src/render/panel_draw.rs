@@ -65,24 +65,86 @@ pub(crate) fn draw_panel(
     // enemy draws in its owner's faction, not the viewer's. Own
     // panels carry the human's faction, so roster cards stay right.
     let faction = panel.faction;
-    let icon_source = |icon: &CardIcon| match icon {
-        CardIcon::Unit(kind) => sprites.unit(*kind, faction),
-        CardIcon::Building(kind) => sprites.building(*kind, faction),
-        CardIcon::Verb(v) => sprites.verb_icon(*v),
+    let blit = |dest: Rect, source: Rect, tint: Color| {
+        draw_texture_ex(
+            sprites.texture(),
+            dest.x,
+            dest.y,
+            tint,
+            DrawTextureParams {
+                dest_size: Some(vec2(dest.w, dest.h)),
+                source: Some(source),
+                ..Default::default()
+            },
+        );
+    };
+    // An order chip is two composed draws: the subject's own silhouette
+    // (translucent under a scaffold while its site is still rising) and
+    // the verb as a corner badge on a dark plate, so the pictogram
+    // never dissolves into the hull beneath it. Every other icon is the
+    // one sprite it always was.
+    let draw_icon = |dest: Rect, icon: &CardIcon, tint: Color| {
+        let CardIcon::Order {
+            subject,
+            verb,
+            ghost,
+        } = icon
+        else {
+            let source = match icon {
+                CardIcon::Unit(kind) => sprites.unit(*kind, faction),
+                CardIcon::Building(kind) => sprites.building(*kind, faction),
+                CardIcon::Verb(v) => sprites.verb_icon(*v),
+                CardIcon::Order { verb, .. } => sprites.verb_icon(*verb),
+            };
+            blit(dest, source, tint);
+            return;
+        };
+        // The subject wears ITS OWN colors: an attack chip's victim is
+        // not the panel owner's faction.
+        let source = match subject {
+            crate::panel::OrderSubject::Unit(kind, f) => sprites.unit(*kind, *f),
+            crate::panel::OrderSubject::Building(kind, f) => sprites.building(*kind, *f),
+        };
+        let hull = if *ghost {
+            Color::new(tint.r, tint.g, tint.b, tint.a * 0.7)
+        } else {
+            tint
+        };
+        blit(dest, source, hull);
+        if *ghost {
+            // The sparse lattice, not the dense one the world opens
+            // with: at chip size a full scaffold reads as noise over
+            // the silhouette, and the chip's meter already carries
+            // how far the site has come.
+            blit(
+                dest,
+                sprites.scaffold(false),
+                Color::new(tint.r, tint.g, tint.b, tint.a * 0.45),
+            );
+        }
+        let badge = dest.w * 0.44;
+        let plate = Rect::new(
+            dest.x + dest.w - badge,
+            dest.y + dest.h - badge,
+            badge,
+            badge,
+        );
+        draw_rectangle(
+            plate.x,
+            plate.y,
+            plate.w,
+            plate.h,
+            Color::new(0.05, 0.05, 0.07, tint.a * 0.85),
+        );
+        blit(plate, sprites.verb_icon(*verb), tint);
     };
 
     // Portrait block: sprite, name, status.
     let psize = 56.0 * s;
-    draw_texture_ex(
-        sprites.texture(),
-        12.0 * s,
-        top + 12.0 * s,
+    draw_icon(
+        Rect::new(12.0 * s, top + 12.0 * s, psize, psize),
+        &panel.portrait,
         WHITE,
-        DrawTextureParams {
-            dest_size: Some(vec2(psize, psize)),
-            source: Some(icon_source(&panel.portrait)),
-            ..Default::default()
-        },
     );
     draw_text(&panel.title, 12.0 * s, top + 88.0 * s, 17.0 * s, BONE);
     draw_text(&panel.sub, 12.0 * s, top + 106.0 * s, 14.0 * s, BONE_FAINT);
@@ -121,16 +183,10 @@ pub(crate) fn draw_panel(
         };
         {
             let isz = 42.0 * s;
-            draw_texture_ex(
-                sprites.texture(),
-                rect.x + (rect.w - isz) * 0.5,
-                rect.y + 6.0 * s,
+            draw_icon(
+                Rect::new(rect.x + (rect.w - isz) * 0.5, rect.y + 6.0 * s, isz, isz),
+                &card.icon,
                 tint,
-                DrawTextureParams {
-                    dest_size: Some(vec2(isz, isz)),
-                    source: Some(icon_source(&card.icon)),
-                    ..Default::default()
-                },
             );
         }
         // The name lives on the card, not only in the tooltip — and it
@@ -271,30 +327,20 @@ pub(crate) fn draw_panel(
             }
             {
                 let isz = 34.0 * s;
-                draw_texture_ex(
-                    sprites.texture(),
-                    rect.x + (rect.w - isz) * 0.5,
-                    rect.y + 5.0 * s,
+                draw_icon(
+                    Rect::new(rect.x + (rect.w - isz) * 0.5, rect.y + 5.0 * s, isz, isz),
+                    &card.icon,
                     WHITE,
-                    DrawTextureParams {
-                        dest_size: Some(vec2(isz, isz)),
-                        source: Some(icon_source(&card.icon)),
-                        ..Default::default()
-                    },
                 );
             }
-            // The head of a production queue wears its progress.
-            if i == 0
-                && let Some(bid) = game.selection.building
-                && let Some(building) = game.state.building(bid)
-                && let Some(&kind) = building.queue.front()
-            {
-                let total = kind.stats().train_ticks.max(1);
-                let frac = (building.progress as f32 / total as f32).clamp(0.0, 1.0);
+            // A chip with a measurable job wears its meter: the
+            // production head's build, a site's rise, a patient's hp.
+            // Read from the model, never peeked back out of the state.
+            if let Some(frac) = card.progress {
                 draw_rectangle(
                     rect.x,
                     rect.y + rect.h - 3.0 * s,
-                    rect.w * frac,
+                    rect.w * frac.clamp(0.0, 1.0),
                     3.0 * s,
                     SCRAP_COLOR,
                 );
@@ -335,20 +381,29 @@ pub(crate) fn draw_panel_tooltip(game: &Game, input: &InputState) {
     if !layout.panel_top.is_finite() {
         return;
     }
+    use crate::layout::TooltipSide;
     let s = ui_scale();
+    // The hovered RECT is the anchor, not just the index: the orders
+    // dock stacks upward from the band, so a tooltip pinned to the
+    // band's top edge described chip 1 beside chip 8.
     let hovered = layout.cards[..layout.card_count]
         .iter()
         .enumerate()
         .find(|(_, (r, _))| r.w > 0.0 && r.contains(input.mouse))
-        .and_then(|(i, _)| panel.cards.get(i))
+        .and_then(|(i, (r, _))| panel.cards.get(i).map(|c| (c, *r, TooltipSide::Above)))
         .or_else(|| {
             layout.queue_slots[..layout.queue_count]
                 .iter()
                 .enumerate()
                 .find(|(_, (r, _))| r.w > 0.0 && r.contains(input.mouse))
-                .and_then(|(i, _)| panel.queue.get(i))
+                .and_then(|(i, (r, _))| {
+                    // Anchored across the dock's full width so the box
+                    // clears the strip cleanly at any chip inset.
+                    let row = Rect::new(layout.orders.x, r.y, layout.orders.w.max(r.w), r.h);
+                    panel.queue.get(i).map(|c| (c, row, TooltipSide::RightOf))
+                })
         });
-    let Some(card) = hovered else {
+    let Some((card, anchor, side)) = hovered else {
         return;
     };
     let mut lines: Vec<(String, Color)> = Vec::new();
@@ -376,8 +431,18 @@ pub(crate) fn draw_panel_tooltip(game: &Game, input: &InputState) {
         + pad * 2.0;
     let line_h = 18.0 * s;
     let height = lines.len() as f32 * line_h + pad * 1.5;
-    let x = input.mouse.x.min(screen_width() - width - 4.0 * s).max(0.0);
-    let y = layout.panel_top - height - 6.0 * s;
+    // The box's room is the window BETWEEN the top bar and the band:
+    // a tooltip that spilled over the command cards would cover what
+    // the hand is about to click next.
+    let origin = crate::layout::tooltip_origin(
+        anchor,
+        vec2(width, height),
+        side,
+        vec2(screen_width(), layout.panel_top.min(screen_height())),
+        layout.top_bar_h,
+        6.0 * s,
+    );
+    let (x, y) = (origin.x, origin.y);
     draw_rectangle(x, y, width, height, Color::from_rgba(12, 12, 16, 240));
     draw_rectangle_lines(
         x,

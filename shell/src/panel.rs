@@ -22,6 +22,28 @@ pub enum CardIcon {
     Building(BuildingKind),
     /// A verb pictogram from the atlas's icon family.
     Verb(VerbIcon),
+    /// An order chip that knows what it acts on: the subject's own
+    /// sprite under a corner verb badge. Orders with no subject
+    /// (Idle, Move, Attack-move, Harvest) stay plain [`CardIcon::Verb`].
+    Order {
+        /// The machine or works the verb acts on.
+        subject: OrderSubject,
+        /// The verb, worn as a badge rather than the whole face.
+        verb: VerbIcon,
+        /// An unfinished site: translucent hull plus scaffold, the
+        /// same language the world draws it in.
+        ghost: bool,
+    },
+}
+
+/// What an order chip is ABOUT, with the colors that subject actually
+/// wears — an attack victim is not the panel owner's faction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OrderSubject {
+    /// A machine: an attack victim.
+    Unit(UnitKind, oxide_sim::Faction),
+    /// Works: a site being raised, a patient, a strip job, a victim.
+    Building(BuildingKind, oxide_sim::Faction),
 }
 
 /// The atlas's verb pictograms, in `Sprites::verb_icons` order.
@@ -89,6 +111,11 @@ pub struct Card {
     pub why: Option<String>,
     /// Tooltip body: description plus weapon lines.
     pub desc: Vec<String>,
+    /// How far along the card's job is, 0-1, when it has one — the
+    /// production head's bar and an order chip's own meter. The
+    /// renderer draws this and never reaches back into the state for
+    /// it; the panel model is the one description of the panel.
+    pub progress: Option<f32>,
 }
 
 /// The panel for the current selection.
@@ -209,7 +236,70 @@ pub fn weapon_lines(kind: UnitKind) -> Vec<String> {
         .collect()
 }
 
-fn order_card(order: &Order, active: bool) -> Card {
+/// The subject an order chip may show, plus the lines that name it —
+/// OWN programs only. An ally's chips stay bare pictograms rather than
+/// resting the panel on a claim about what team sight shares, and an
+/// attack victim resolves through the breadcrumbs' own fog gate, so
+/// the chip and the trail can never tell different stories.
+fn order_subject(game: &Game, order: &Order) -> Option<(OrderSubject, String, bool, Option<f32>)> {
+    let faction_of = |p| game.state.player(p).faction;
+    match order {
+        Order::Build { site } => {
+            let b = game.state.building(*site)?;
+            let ticks = b
+                .kind
+                .stats()
+                .construction
+                .map(|c| c.build_ticks)
+                .unwrap_or(1)
+                .max(1);
+            let frac = (b.progress as f32 / ticks as f32).clamp(0.0, 1.0);
+            Some((
+                OrderSubject::Building(b.kind, faction_of(b.player)),
+                b.kind.name().to_string(),
+                !b.built,
+                Some(frac),
+            ))
+        }
+        Order::Repair { building } | Order::Salvage { building } => {
+            let b = game.state.building(*building)?;
+            let frac = (b.hp as f32 / b.kind.stats().max_hp.max(1) as f32).clamp(0.0, 1.0);
+            Some((
+                OrderSubject::Building(b.kind, faction_of(b.player)),
+                b.kind.name().to_string(),
+                !b.built,
+                Some(frac),
+            ))
+        }
+        Order::Attack { target, .. } => {
+            // The same gate the breadcrumb chase point uses: a victim
+            // back in the fog is named by neither surface.
+            let (subject, name, tile) = match target {
+                oxide_sim::Target::Unit(uid) => {
+                    let u = game.state.unit(*uid)?;
+                    (
+                        OrderSubject::Unit(u.kind, faction_of(u.player)),
+                        u.kind.name().to_string(),
+                        u.tile(),
+                    )
+                }
+                oxide_sim::Target::Building(bid) => {
+                    let b = game.state.building(*bid)?;
+                    (
+                        OrderSubject::Building(b.kind, faction_of(b.player)),
+                        b.kind.name().to_string(),
+                        b.anchor,
+                    )
+                }
+            };
+            (game.all_seeing() || game.my_vision().visible(tile))
+                .then_some((subject, name, false, None))
+        }
+        Order::Idle | Order::Move { .. } | Order::Harvest { .. } | Order::AttackMove { .. } => None,
+    }
+}
+
+fn order_card(game: &Game, order: &Order, active: bool, own: bool) -> Card {
     let (icon, title, desc): (VerbIcon, &str, &str) = match order {
         Order::Idle => (
             VerbIcon::Idle,
@@ -248,19 +338,69 @@ fn order_card(order: &Order, active: bool) -> Card {
             "Stripping a building down for a partial refund.",
         ),
     };
+    let subject = if own {
+        order_subject(game, order)
+    } else {
+        None
+    };
+    let mut desc = vec![desc.to_string()];
+    let (face, head, progress) = match subject {
+        Some((subject, name, ghost, progress)) => {
+            if let Some(line) = subject_detail(game, order, progress) {
+                desc.push(line);
+            }
+            (
+                CardIcon::Order {
+                    subject,
+                    verb: icon,
+                    ghost,
+                },
+                format!("{title} - {name}"),
+                progress,
+            )
+        }
+        None => (CardIcon::Verb(icon), title.to_string(), None),
+    };
     Card {
-        icon: CardIcon::Verb(icon),
+        icon: face,
         title: if active {
-            format!("{title} (now)")
+            format!("{head} (now)")
         } else {
-            title.to_string()
+            head
         },
         cost: None,
         hotkey: String::new(),
         action: CardAction::None,
         enabled: true,
         why: None,
-        desc: vec![desc.to_string()],
+        desc,
+        progress,
+    }
+}
+
+/// The concrete second tooltip line for a subject-bearing order: how
+/// far the job has come, in the units the verb is actually measured in.
+fn subject_detail(game: &Game, order: &Order, progress: Option<f32>) -> Option<String> {
+    let pct = |f: f32| (f * 100.0).round() as u32;
+    match order {
+        Order::Build { .. } => Some(format!("{}% raised", pct(progress?))),
+        Order::Repair { building } => {
+            let b = game.state.building(*building)?;
+            Some(format!("{}/{} hp", b.hp, b.kind.stats().max_hp))
+        }
+        Order::Salvage { building } => {
+            let b = game.state.building(*building)?;
+            let cost = b.kind.stats().construction.map(|c| c.cost).unwrap_or(0);
+            let left = u64::from(cost) * oxide_sim::stats::SALVAGE_REFUND_PERMILLE / 1000
+                * u64::from(b.hp)
+                / u64::from(b.kind.stats().max_hp.max(1));
+            Some(format!(
+                "{}/{} hp · ~{left} scrap left",
+                b.hp,
+                b.kind.stats().max_hp
+            ))
+        }
+        _ => None,
     }
 }
 
@@ -312,6 +452,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
                         "Read-only: allies coordinate by position,".into(),
                         "not by each other's controls.".into(),
                     ],
+                    progress: None,
                 });
             }
             return Some(panel);
@@ -327,6 +468,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
                 enabled: true,
                 why: None,
                 desc: vec!["Abandon the site for a partial refund.".into()],
+                progress: None,
             });
             return Some(panel);
         }
@@ -357,6 +499,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
                 enabled,
                 why,
                 desc,
+                progress: None,
             });
         }
         if building.rally.is_some() {
@@ -369,9 +512,15 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
                 enabled: true,
                 why: None,
                 desc: vec!["Fresh units gather at the doorstep again.".into()],
+                progress: None,
             });
         }
         for (i, &kind) in building.queue.iter().enumerate() {
+            // Only the head is being worked; the rest are prepaid ghosts.
+            let progress = (i == 0).then(|| {
+                let total = kind.stats().train_ticks.max(1);
+                (building.progress as f32 / total as f32).clamp(0.0, 1.0)
+            });
             panel.queue.push(Card {
                 icon: CardIcon::Unit(kind),
                 title: kind.name().to_string(),
@@ -381,6 +530,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
                 enabled: true,
                 why: None,
                 desc: vec!["Click to cancel; full refund.".into()],
+                progress,
             });
         }
         return Some(panel);
@@ -448,9 +598,11 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             panel.sub
         );
         if !hostile && units.len() == 1 {
-            panel.queue.push(order_card(&first.order, true));
+            panel
+                .queue
+                .push(order_card(game, &first.order, true, false));
             for order in &first.queue {
-                panel.queue.push(order_card(order, false));
+                panel.queue.push(order_card(game, order, false, false));
             }
         }
         return Some(panel);
@@ -482,6 +634,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
                         "Click: keep only this kind.".into(),
                         "Ctrl-click: drop this kind instead.".into(),
                     ],
+                    progress: None,
                 });
             }
         }
@@ -495,6 +648,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         enabled: true,
         why: None,
         desc: vec!["Clear orders; stand and auto-engage.".into()],
+        progress: None,
     });
     panel.cards.push(Card {
         icon: CardIcon::Verb(VerbIcon::Move),
@@ -508,6 +662,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             "Arm, then click ground: walk there WITHOUT".into(),
             "engaging. The recall when a fight must wait.".into(),
         ],
+        progress: None,
     });
     panel.cards.push(Card {
         icon: CardIcon::Verb(VerbIcon::Patrol),
@@ -521,6 +676,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             "Arm a looping route; press again to start it.".into(),
             "Machines engage whatever they meet along the way.".into(),
         ],
+        progress: None,
     });
     if has_builder {
         panel.cards.push(Card {
@@ -535,6 +691,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
                 "Arm, then click an own built building to strip it".into(),
                 "for a partial refund. Foundries refuse.".into(),
             ],
+            progress: None,
         });
     }
     if has_builder {
@@ -556,6 +713,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
                 enabled,
                 why,
                 desc: vec![building_flavor(kind).to_string()],
+                progress: None,
             });
         }
     }
@@ -563,9 +721,9 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
     // An idle unit with nothing queued contributes no chips, so the
     // orders dock vanishes instead of showing a lone "Idle" cell.
     if !matches!(first.order, Order::Idle) || !first.queue.is_empty() {
-        panel.queue.push(order_card(&first.order, true));
+        panel.queue.push(order_card(game, &first.order, true, true));
         for order in first.queue.iter().take(7) {
-            panel.queue.push(order_card(order, false));
+            panel.queue.push(order_card(game, order, false, true));
         }
     }
     Some(panel)
@@ -748,6 +906,144 @@ mod tests {
             CardAction::None,
             "orders are display-only"
         );
+    }
+
+    /// Places `kind` on the first tile the sim accepts near the
+    /// harvester, returns the site.
+    fn place(
+        game: &mut Game,
+        builder: oxide_sim::UnitId,
+        kind: BuildingKind,
+        queue: bool,
+    ) -> BuildingId {
+        use chassis::grid::TilePos;
+        let here = game.state.unit(builder).expect("builder").tile();
+        let before: Vec<BuildingId> = game.state.buildings().iter().map(|b| b.id).collect();
+        for dy in -6i32..=6 {
+            for dx in -6i32..=6 {
+                let (x, y) = (here.x + dx, here.y + dy);
+                if x < 0 || y < 0 {
+                    continue;
+                }
+                let anchor = TilePos::new(x, y);
+                if !game.state.can_place(game.human, kind, anchor) {
+                    continue;
+                }
+                game.state.tick(&[PlayerCommand {
+                    player: game.human,
+                    command: Command::Build {
+                        units: vec![builder],
+                        kind,
+                        anchor,
+                        queue,
+                    },
+                }]);
+                if let Some(b) = game
+                    .state
+                    .buildings()
+                    .iter()
+                    .find(|b| !before.contains(&b.id) && b.kind == kind)
+                {
+                    return b.id;
+                }
+            }
+        }
+        panic!("no ground accepted a {}", kind.name());
+    }
+
+    fn builder_game() -> (Game, oxide_sim::UnitId) {
+        let mut scenario = Scenario::skirmish();
+        scenario.players[0].scrap = 5000;
+        let game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("skirmish builds");
+        let harvester = game
+            .state
+            .units()
+            .iter()
+            .find(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+            .expect("starting harvester")
+            .id;
+        (game, harvester)
+    }
+
+    #[test]
+    fn build_chips_wear_the_works_they_are_raising() {
+        let (mut game, harvester) = builder_game();
+        place(&mut game, harvester, BuildingKind::Turret, false);
+        place(&mut game, harvester, BuildingKind::Array, true);
+        game.selection.units = vec![harvester];
+        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        assert_eq!(panel.queue.len(), 2, "two legs of one program");
+        // Two Build chips that no longer look the same: each carries
+        // its own works, ghosted while the site is still rising.
+        let faction = game.state.player(game.human).faction;
+        assert_eq!(
+            panel.queue[0].icon,
+            CardIcon::Order {
+                subject: OrderSubject::Building(BuildingKind::Turret, faction),
+                verb: VerbIcon::Build,
+                ghost: true,
+            }
+        );
+        assert_eq!(
+            panel.queue[1].icon,
+            CardIcon::Order {
+                subject: OrderSubject::Building(BuildingKind::Array, faction),
+                verb: VerbIcon::Build,
+                ghost: true,
+            }
+        );
+        assert!(
+            panel.queue[0].title.starts_with("Build - turret"),
+            "{}",
+            panel.queue[0].title
+        );
+        assert!(
+            panel.queue[1].title.starts_with("Build - array"),
+            "{}",
+            panel.queue[1].title
+        );
+        assert!(panel.queue[0].desc.iter().any(|l| l.contains("% raised")));
+        assert!(
+            panel.queue[0].progress.is_some(),
+            "a site chip meters its rise"
+        );
+        assert_eq!(
+            panel.queue[0].action,
+            CardAction::None,
+            "an enriched chip is still display-only"
+        );
+    }
+
+    #[test]
+    fn a_chip_whose_subject_is_gone_falls_back_to_the_bare_verb() {
+        // Orders outlive their subjects by a tick — the panel names
+        // what it can find and never invents a silhouette.
+        let (game, _) = builder_game();
+        let dangling = Order::Repair {
+            building: BuildingId(9999),
+        };
+        let card = order_card(&game, &dangling, true, true);
+        assert_eq!(card.icon, CardIcon::Verb(VerbIcon::Repair));
+        assert_eq!(card.title, "Repair (now)");
+        assert!(card.progress.is_none());
+        assert_eq!(card.desc.len(), 1, "no detail line it cannot back up");
+    }
+
+    #[test]
+    fn a_foreign_program_is_never_enriched() {
+        // Enriching an inspected ally's chips would rest the panel on a
+        // claim about what team sight shares; a teammate's dock says
+        // the verb and nothing about what it acts on.
+        let (mut game, harvester) = builder_game();
+        place(&mut game, harvester, BuildingKind::Turret, false);
+        game.selection.units = vec![harvester];
+        let own = build(&game, &BindingMap::classic()).expect("panel");
+        assert!(matches!(own.queue[0].icon, CardIcon::Order { .. }));
+        let order = game.state.unit(harvester).expect("builder").order;
+        let bare = order_card(&game, &order, true, false);
+        assert_eq!(bare.icon, CardIcon::Verb(VerbIcon::Build));
+        assert_eq!(bare.title, "Build (now)");
+        assert!(bare.progress.is_none());
     }
 
     #[test]
