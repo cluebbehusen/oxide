@@ -414,6 +414,10 @@ comparisons don't survive GPU churn, so CI never runs it.
   is a no-op past the queue wipe, keeping path and progress (the
   scripted tiers re-command every think; repair billing counts on the
   meter surviving). Patrol legs are attack-moves and never settle.
+  A command's unit list is read as a SET: dispatch sorts it and folds
+  repeats away before any handler sees it, so a hand-forged
+  `--units 3,3,3` queues one leg, not three. The recorded command keeps
+  the client's bytes — the set is an interpretation rule, not a rewrite.
 - **Combat resolves simultaneously since 0.6**: brains decide in id
   order (direction alternating by tick parity), but every shot is
   buffered and applied only after all brains and turrets have acted —

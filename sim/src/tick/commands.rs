@@ -3,7 +3,9 @@
 //! Commands mutate *intent* (orders, queues) and nothing else — the later
 //! phases do the actual work. Invalid commands are dropped with a
 //! [`Event::CommandRejected`]; per-unit problems (a dead id in an otherwise
-//! fine selection) are skipped silently, matching how an RTS should feel.
+//! fine selection) are skipped silently, matching how an RTS should feel — a
+//! repeated id among them, which [`canonical_units`] folds away at dispatch
+//! before any handler sees the list.
 
 use super::domain_goal;
 use crate::command::{Command, PlayerCommand, RejectReason};
@@ -42,40 +44,47 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
         }
         let outcome = match &pc.command {
             Command::Move { units, goal, queue } => {
-                apply_move(state, pc.player, units, *goal, *queue)
+                apply_move(state, pc.player, &canonical_units(units), *goal, *queue)
             }
             Command::Attack {
                 units,
                 target,
                 queue,
-            } => apply_attack(state, pc.player, units, *target, *queue),
+            } => apply_attack(state, pc.player, &canonical_units(units), *target, *queue),
             Command::AttackMove { units, goal, queue } => {
-                apply_attack_move(state, pc.player, units, *goal, *queue)
+                apply_attack_move(state, pc.player, &canonical_units(units), *goal, *queue)
             }
             Command::Harvest { units, node, queue } => {
-                apply_harvest(state, pc.player, units, *node, *queue)
+                apply_harvest(state, pc.player, &canonical_units(units), *node, *queue)
             }
             Command::Patrol { units, waypoints } => {
-                apply_patrol(state, pc.player, units, waypoints)
+                apply_patrol(state, pc.player, &canonical_units(units), waypoints)
             }
             Command::Build {
                 units,
                 kind,
                 anchor,
                 queue,
-            } => apply_build(state, pc.player, units, *kind, *anchor, *queue),
+            } => apply_build(
+                state,
+                pc.player,
+                &canonical_units(units),
+                *kind,
+                *anchor,
+                *queue,
+            ),
             Command::Cancel { building } => apply_cancel(state, pc.player, *building, events),
             Command::Repair {
                 units,
                 building,
                 queue,
-            } => apply_repair(state, pc.player, units, *building, *queue),
+            } => apply_repair(state, pc.player, &canonical_units(units), *building, *queue),
             Command::Salvage {
                 units,
                 building,
                 queue,
-            } => apply_salvage(state, pc.player, units, *building, *queue),
-            Command::Stop { units } => apply_stop(state, pc.player, units),
+            } => apply_salvage(state, pc.player, &canonical_units(units), *building, *queue),
+            Command::Stop { units } => apply_stop(state, pc.player, &canonical_units(units)),
             Command::Train { building, kind } => apply_train(state, pc.player, *building, *kind),
             Command::CancelTrain { building, index } => {
                 apply_cancel_train(state, pc.player, *building, *index)
@@ -91,6 +100,22 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
             });
         }
     }
+}
+
+/// A command's unit list read as the SET it means: id-ordered, each id
+/// once. Every unit-bearing command passes through here at dispatch, so no
+/// handler can double-apply a repeated id — a duplicate used to append a
+/// second queued leg, and on an idle unit it appended a clone of the order
+/// it had just been given. Ownership filtering stays in the handlers, whose
+/// `NoValidUnits` reporting also weighs what a unit can do.
+///
+/// The recorded command keeps the client's bytes; this is how the sim
+/// *interprets* a list, not a rewrite of it.
+fn canonical_units(ids: &[UnitId]) -> Vec<UnitId> {
+    let mut ids = ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
 }
 
 /// Iterates the subset of `ids` that exist and belong to `player`, applying
@@ -113,17 +138,36 @@ fn for_owned_units(
     applied
 }
 
-/// The units of `ids` that exist and belong to `player`, deduplicated and
-/// in id order — the deterministic basis for spread-goal assignment.
+/// [`for_owned_units`] narrowed to the labor crew — the three economy
+/// verbs all address the same harvesters, and each reports `NoValidUnits`
+/// when the selection holds none.
+fn for_owned_workers(
+    state: &mut State,
+    player: PlayerId,
+    ids: &[UnitId],
+    mut f: impl FnMut(&mut crate::state::Unit),
+) -> usize {
+    let mut applied = 0;
+    for &id in ids {
+        if let Some(unit) = state.unit_mut(id)
+            && unit.player == player
+            && unit.kind.stats().harvest.is_some()
+        {
+            f(unit);
+            applied += 1;
+        }
+    }
+    applied
+}
+
+/// The units of `ids` that exist and belong to `player` — the deterministic
+/// basis for spread-goal assignment. Order and uniqueness come from the
+/// canonical list dispatch built; filtering preserves both.
 fn accepted_units(state: &State, player: PlayerId, ids: &[UnitId]) -> Vec<UnitId> {
-    let mut accepted: Vec<UnitId> = ids
-        .iter()
+    ids.iter()
         .copied()
         .filter(|id| state.unit(*id).is_some_and(|u| u.player == player))
-        .collect();
-    accepted.sort_unstable();
-    accepted.dedup();
-    accepted
+        .collect()
 }
 
 /// Hands a unit its next order: replacing wipes any queued program;
@@ -373,19 +417,12 @@ fn apply_harvest(
     if !live && !remembered {
         return Err(RejectReason::NotANode);
     }
-    let mut applied = 0;
     let mut landed = 0;
-    for &id in units {
-        if let Some(unit) = state.unit_mut(id)
-            && unit.player == player
-            && unit.kind.stats().harvest.is_some()
-        {
-            if assign(unit, Order::Harvest { node }, queue) {
-                landed += 1;
-            }
-            applied += 1;
+    let applied = for_owned_workers(state, player, units, |unit| {
+        if assign(unit, Order::Harvest { node }, queue) {
+            landed += 1;
         }
-    }
+    });
     if applied == 0 {
         return Err(RejectReason::NoValidUnits);
     }
@@ -641,18 +678,11 @@ fn apply_repair(
         return Err(RejectReason::InvalidTarget);
     }
     let mut landed = 0;
-    let mut applied = 0;
-    for &id in units {
-        if let Some(unit) = state.unit_mut(id)
-            && unit.player == player
-            && unit.kind.stats().harvest.is_some()
-        {
-            if assign(unit, Order::Repair { building }, queue) {
-                landed += 1;
-            }
-            applied += 1;
+    let applied = for_owned_workers(state, player, units, |unit| {
+        if assign(unit, Order::Repair { building }, queue) {
+            landed += 1;
         }
-    }
+    });
     if applied == 0 {
         return Err(RejectReason::NoValidUnits);
     }
@@ -688,18 +718,11 @@ fn apply_salvage(
         return Err(RejectReason::InvalidTarget);
     }
     let mut landed = 0;
-    let mut applied = 0;
-    for &id in units {
-        if let Some(unit) = state.unit_mut(id)
-            && unit.player == player
-            && unit.kind.stats().harvest.is_some()
-        {
-            if assign(unit, Order::Salvage { building }, queue) {
-                landed += 1;
-            }
-            applied += 1;
+    let applied = for_owned_workers(state, player, units, |unit| {
+        if assign(unit, Order::Salvage { building }, queue) {
+            landed += 1;
         }
-    }
+    });
     if applied == 0 {
         return Err(RejectReason::NoValidUnits);
     }
