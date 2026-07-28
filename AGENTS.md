@@ -869,6 +869,16 @@ comparisons don't survive GPU churn, so CI never runs it.
   is structurally extinct only while this holds. ui_scale() is the
   USER factor only: macroquad's coordinate space is logical, and
   multiplying dpi in is the double-scaling disease (fixed 0.9).
+- **Chrome text color has one source too** (shell/src/theme.rs, 0.13):
+  four tiers picked by what a line IS — primary, body (required
+  reading: tutorial lessons, coaching, tooltip descriptions),
+  secondary (hints, captions, off-cursor dials), disabled (the only
+  legitimately dim one) — plus title/accent/danger and the surface
+  fields. Unit tests pin body and secondary to >=4.5:1 (WCAG AA)
+  composited on the house fields; pre-0.13 the shell carried four
+  divergent constant sets and one alpha-90 token did triple duty.
+  World decoration (order rings, rally lines, faction art) keeps the
+  renderer's own palette — raising text must never retint the world.
 - **Presentation config persists** (shell/src/config.rs): bindings
   (explicit unbindings survive via a tombstone list — a missing row
   alone reads as "verb newer than this config" and would re-adopt

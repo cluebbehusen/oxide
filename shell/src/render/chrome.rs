@@ -123,7 +123,7 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
             150.0 * s,
             22.0 * s,
             22.0 * s,
-            BONE,
+            TEXT_PRIMARY,
         );
         // Idle harvesters are money on the ground; the badge nags in
         // danger red and clicking it (or N) cycles through them. Tick
@@ -201,7 +201,7 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
                 screen_width() - width - 10.0 * s,
                 21.0 * s,
                 16.0 * s,
-                BONE_FAINT,
+                TEXT_BODY,
             );
         }
     }
@@ -288,7 +288,7 @@ pub(crate) fn draw_result_overlay(game: &Game) {
                 ("VICTORY".to_string(), SCRAP_COLOR)
             }
             GameResult::Victory { .. } => ("DEFEAT".to_string(), DANGER),
-            GameResult::Draw => ("MUTUAL DESTRUCTION".to_string(), BONE_FAINT),
+            GameResult::Draw => ("MUTUAL DESTRUCTION".to_string(), TEXT_BODY),
         };
         let sub = match result {
             GameResult::Victory { .. } => {
@@ -324,7 +324,7 @@ pub(crate) fn draw_result_overlay(game: &Game) {
             (screen_width() - sub_dims.width) * 0.5,
             y + 26.0 * s,
             20.0 * s,
-            BONE_FAINT,
+            TEXT_BODY,
         );
         // The match in numbers: one line per seat from the recomputed
         // record — losses and the peak army it ever fielded — then the
@@ -379,7 +379,7 @@ pub(crate) fn draw_result_overlay(game: &Game) {
                 (screen_width() - cap_dims.width) * 0.5,
                 curves_y + gh + 14.0 * s,
                 13.0 * s,
-                BONE_FAINT,
+                TEXT_SECONDARY,
             );
             for (i, seat) in stats.players.iter().enumerate() {
                 let name = game
@@ -401,7 +401,7 @@ pub(crate) fn draw_result_overlay(game: &Game) {
                     (screen_width() - dims.width) * 0.5,
                     y + (86.0 + 22.0 * i as f32) * s,
                     16.0 * s,
-                    BONE_FAINT,
+                    TEXT_BODY,
                 );
             }
         }
@@ -412,7 +412,7 @@ pub(crate) fn draw_result_overlay(game: &Game) {
             (screen_width() - hint_dims.width) * 0.5,
             y + 52.0 * s,
             20.0 * s,
-            BONE_FAINT,
+            TEXT_SECONDARY,
         );
     }
 }

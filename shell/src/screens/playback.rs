@@ -127,13 +127,7 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2) {
             size + 10.0 * s,
             macroquad::prelude::Color::from_rgba(15, 15, 18, 235),
         );
-        draw_text(
-            &line,
-            x,
-            y,
-            size,
-            macroquad::prelude::Color::new(0.9, 0.88, 0.84, 1.0),
-        );
+        draw_text(&line, x, y, size, crate::theme::TEXT_PRIMARY);
         return;
     }
     let full = format!(
@@ -166,7 +160,7 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2) {
         size + 10.0 * s,
         Color::from_rgba(15, 15, 19, 220),
     );
-    draw_text(&line, x, y, size, Color::from_rgba(232, 228, 216, 255));
+    draw_text(&line, x, y, size, crate::theme::TEXT_PRIMARY);
 }
 
 impl PlaybackSession {

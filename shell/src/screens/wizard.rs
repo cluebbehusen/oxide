@@ -13,17 +13,14 @@ use crate::menu::{PreviewCache, ScenarioEntry, discover_scenarios};
 use crate::screens::browser::{Browser, Out as BrowserOut};
 use anyhow::{Context, Result};
 use macroquad::prelude::{
-    Color, DrawTextureParams, Rect, Vec2, color_u8, draw_circle, draw_circle_lines, draw_rectangle,
+    Color, DrawTextureParams, Rect, Vec2, draw_circle, draw_circle_lines, draw_rectangle,
     draw_rectangle_lines, draw_text, draw_texture_ex, measure_text, vec2,
 };
 use oxide_protocol::{Key, MouseButton, RawEvent};
 use oxide_sim::Scenario;
 use std::path::PathBuf;
 
-const TITLE_COLOR: Color = color_u8!(196, 87, 59, 255);
-const ITEM_COLOR: Color = color_u8!(214, 210, 196, 255);
-const DIM: Color = color_u8!(214, 210, 196, 120);
-const PANEL: Color = color_u8!(20, 20, 24, 230);
+use crate::theme::{SURFACE_MENU, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE};
 
 /// One seat's dials in the draft.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -647,7 +644,7 @@ impl Wizard {
             (view.x - tdims.width) * 0.5,
             64.0 * ui,
             tsize,
-            TITLE_COLOR,
+            TEXT_TITLE,
         );
         let sub = format!("{} - pick your seat; tune each opponent", scenario.name);
         let sdims = measure_text(&sub, None, (18.0 * ui) as u16, 1.0);
@@ -656,11 +653,11 @@ impl Wizard {
             (view.x - sdims.width) * 0.5,
             92.0 * ui,
             18.0 * ui,
-            DIM,
+            TEXT_SECONDARY,
         );
 
         for (label, rect) in &layout.headings {
-            draw_text(label, rect.x, rect.y + rect.h * 0.7, 17.0 * ui, TITLE_COLOR);
+            draw_text(label, rect.x, rect.y + rect.h * 0.7, 17.0 * ui, TEXT_TITLE);
             let dims = measure_text(label, None, (17.0 * ui) as u16, 1.0);
             draw_rectangle(
                 rect.x + dims.width + 12.0 * ui,
@@ -675,7 +672,7 @@ impl Wizard {
             let display = effective_name(scenario, draft, seat);
             let selected = self.setup_sel == pos;
             let is_you = seat == draft.seat_choice;
-            draw_rectangle(rect.x, rect.y, rect.w, rect.h, PANEL);
+            draw_rectangle(rect.x, rect.y, rect.w, rect.h, SURFACE_MENU);
             draw_rectangle_lines(
                 rect.x,
                 rect.y,
@@ -683,7 +680,7 @@ impl Wizard {
                 rect.h,
                 if selected { 2.5 } else { 1.0 },
                 if selected {
-                    TITLE_COLOR
+                    TEXT_TITLE
                 } else {
                     Color::new(0.6, 0.6, 0.65, 0.3)
                 },
@@ -720,7 +717,7 @@ impl Wizard {
                 rect.x + 44.0 * ui,
                 cy + name_font * 0.35,
                 name_font,
-                ITEM_COLOR,
+                TEXT_PRIMARY,
             );
             if is_you {
                 let tag = "your seat";
@@ -732,7 +729,7 @@ impl Wizard {
                     fac.x - tdims.width - 14.0 * ui,
                     cy + tag_font * 0.35,
                     tag_font,
-                    DIM,
+                    TEXT_SECONDARY,
                 );
             }
             // The inline dials: boxed value chips; the cursor's cell
@@ -764,7 +761,7 @@ impl Wizard {
                     chip.h,
                     if on_cell { 2.0 } else { 1.0 },
                     if on_cell {
-                        TITLE_COLOR
+                        TEXT_TITLE
                     } else {
                         Color::new(0.6, 0.6, 0.65, 0.35)
                     },
@@ -782,7 +779,11 @@ impl Wizard {
                     chip.x + (chip.w - ldims.width) * 0.5,
                     chip.y + chip.h * 0.5 + font * 0.35,
                     font,
-                    if on_cell { ITEM_COLOR } else { DIM },
+                    if on_cell {
+                        TEXT_PRIMARY
+                    } else {
+                        TEXT_SECONDARY
+                    },
                 );
             }
             // The seat-zone cell cursor: a soft inner line under
@@ -794,7 +795,7 @@ impl Wizard {
                     cy + name_font * 0.55,
                     measure_text(&display, None, name_font as u16, 1.0).width,
                     1.5,
-                    TITLE_COLOR,
+                    TEXT_TITLE,
                 );
             }
         }
@@ -805,7 +806,7 @@ impl Wizard {
             layout.start.y,
             layout.start.w,
             layout.start.h,
-            PANEL,
+            SURFACE_MENU,
         );
         draw_rectangle_lines(
             layout.start.x,
@@ -813,7 +814,11 @@ impl Wizard {
             layout.start.w,
             layout.start.h,
             if start_selected { 3.0 } else { 1.5 },
-            if start_selected { TITLE_COLOR } else { DIM },
+            if start_selected {
+                TEXT_TITLE
+            } else {
+                TEXT_SECONDARY
+            },
         );
         let label = "Start match";
         let ldims = measure_text(label, None, (20.0 * ui) as u16, 1.0);
@@ -822,7 +827,11 @@ impl Wizard {
             layout.start.x + (layout.start.w - ldims.width) * 0.5,
             layout.start.y + layout.start.h * 0.66,
             20.0 * ui,
-            if start_selected { ITEM_COLOR } else { DIM },
+            if start_selected {
+                TEXT_PRIMARY
+            } else {
+                TEXT_SECONDARY
+            },
         );
 
         // The map, large, with every chair marked.
@@ -838,7 +847,7 @@ impl Wizard {
                 y - 8.0 * ui,
                 pw + 16.0 * ui,
                 ph + 16.0 * ui,
-                PANEL,
+                SURFACE_MENU,
             );
             draw_texture_ex(
                 tex,
@@ -875,7 +884,7 @@ impl Wizard {
             (view.x - hdims.width) * 0.5,
             view.y - 20.0 * ui,
             16.0 * ui,
-            DIM,
+            TEXT_SECONDARY,
         );
     }
 

@@ -146,8 +146,20 @@ pub(crate) fn draw_panel(
         &panel.portrait,
         WHITE,
     );
-    draw_text(&panel.title, 12.0 * s, top + 88.0 * s, 17.0 * s, BONE);
-    draw_text(&panel.sub, 12.0 * s, top + 106.0 * s, 14.0 * s, BONE_FAINT);
+    draw_text(
+        &panel.title,
+        12.0 * s,
+        top + 88.0 * s,
+        17.0 * s,
+        TEXT_PRIMARY,
+    );
+    draw_text(
+        &panel.sub,
+        12.0 * s,
+        top + 106.0 * s,
+        14.0 * s,
+        TEXT_SECONDARY,
+    );
 
     // Command cards, wrapping into as many rows as the width demands.
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
@@ -203,7 +215,11 @@ pub(crate) fn draw_panel(
             rect.x + (rect.w - ndims.width) * 0.5,
             rect.y + rect.h - 17.0 * s,
             nsize,
-            if card.enabled { BONE } else { BONE_FAINT },
+            if card.enabled {
+                TEXT_PRIMARY
+            } else {
+                TEXT_DISABLED
+            },
         );
         if let Some(cost) = card.cost {
             let label = format!("{cost}");
@@ -216,7 +232,7 @@ pub(crate) fn draw_panel(
                 if card.enabled {
                     SCRAP_COLOR
                 } else {
-                    BONE_FAINT
+                    TEXT_DISABLED
                 },
             );
         }
@@ -226,7 +242,7 @@ pub(crate) fn draw_panel(
                 rect.x + 3.0 * s,
                 rect.y + 13.0 * s,
                 12.0 * s,
-                BONE_FAINT,
+                TEXT_SECONDARY,
             );
         }
         cards[card_count] = (
@@ -286,7 +302,7 @@ pub(crate) fn draw_panel(
             8.0 * s,
             dock_top + 15.0 * s,
             13.0 * s,
-            BONE_FAINT,
+            TEXT_SECONDARY,
         );
         let orders_dock = panel.queue_label.starts_with("orders");
         for (i, card) in panel.queue.iter().take(n).enumerate() {
@@ -322,7 +338,7 @@ pub(crate) fn draw_panel(
                     rect.x + 3.0 * s,
                     rect.y + 13.0 * s,
                     11.0 * s,
-                    BONE_FAINT,
+                    TEXT_SECONDARY,
                 );
             }
             {
@@ -354,7 +370,7 @@ pub(crate) fn draw_panel(
                 12.0 * s,
                 dock_top + dock_h - 8.0 * s,
                 13.0 * s,
-                BONE_FAINT,
+                TEXT_SECONDARY,
             );
         }
     }
@@ -412,12 +428,12 @@ pub(crate) fn draw_panel_tooltip(game: &Game, input: &InputState) {
     } else {
         format!("{}   [{}]", card.title, card.hotkey)
     };
-    lines.push((header, BONE));
+    lines.push((header, TEXT_PRIMARY));
     if let Some(cost) = card.cost {
         lines.push((format!("{cost} scrap"), SCRAP_COLOR));
     }
     for d in &card.desc {
-        lines.push((d.clone(), BONE_FAINT));
+        lines.push((d.clone(), TEXT_BODY));
     }
     if let Some(why) = &card.why {
         lines.push((why.clone(), DANGER));

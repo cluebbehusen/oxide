@@ -10,11 +10,7 @@ use oxide_protocol::{Key, MouseButton, RawEvent};
 use oxide_sim::Scenario;
 use std::path::PathBuf;
 
-const TITLE_COLOR: Color = color_u8!(196, 87, 59, 255);
-const ITEM_COLOR: Color = color_u8!(232, 228, 216, 200);
-const SELECTED_COLOR: Color = color_u8!(232, 228, 216, 255);
-const DIM: Color = color_u8!(232, 228, 216, 110);
-const PANEL: Color = color_u8!(20, 20, 24, 230);
+use crate::theme::{SURFACE_MENU, TEXT_BODY, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE};
 
 const ITEM_HEIGHT: f32 = 44.0;
 const ITEM_WIDTH: f32 = 420.0;
@@ -320,7 +316,7 @@ impl Menu {
             (view_w() - dims.width) * 0.5,
             view_h() * 0.28,
             title_size,
-            TITLE_COLOR,
+            TEXT_TITLE,
         );
         // The subtitle shrinks to fit — map blurbs run long, and text
         // spilling off both window edges reads as a defect, not a hook.
@@ -336,7 +332,7 @@ impl Menu {
             (view_w() - sub_dims.width) * 0.5,
             view_h() * 0.28 + 34.0 * s,
             sub_size,
-            DIM,
+            TEXT_SECONDARY,
         );
 
         let (_, row, first, visible) = self.layout();
@@ -353,19 +349,19 @@ impl Menu {
                     rect.x + (rect.w - dims.width) * 0.5,
                     rect.y + rect.h * 0.68,
                     size,
-                    DIM,
+                    TEXT_SECONDARY,
                 );
                 continue;
             }
             let selected = index == self.selected;
             let hovered = self.hover == Some(index);
             if selected {
-                draw_rectangle(rect.x, rect.y, rect.w, rect.h, PANEL);
-                draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 2.0, TITLE_COLOR);
+                draw_rectangle(rect.x, rect.y, rect.w, rect.h, SURFACE_MENU);
+                draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 2.0, TEXT_TITLE);
             } else if hovered {
-                draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, DIM);
+                draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, TEXT_SECONDARY);
             }
-            let color = if selected { SELECTED_COLOR } else { ITEM_COLOR };
+            let color = if selected { TEXT_PRIMARY } else { TEXT_BODY };
             draw_text(
                 label,
                 rect.x + 18.0 * s,
@@ -377,11 +373,23 @@ impl Menu {
         // Scroll cues when the list is windowed.
         if first > 0 {
             let r = self.item_rect(first).unwrap();
-            draw_text("^", r.x + r.w * 0.5, r.y - 6.0 * s, 22.0 * s, DIM);
+            draw_text(
+                "^",
+                r.x + r.w * 0.5,
+                r.y - 6.0 * s,
+                22.0 * s,
+                TEXT_SECONDARY,
+            );
         }
         if first + visible < self.items.len() {
             let r = self.item_rect(first + visible - 1).unwrap();
-            draw_text("v", r.x + r.w * 0.5, r.y + row + 14.0 * s, 22.0 * s, DIM);
+            draw_text(
+                "v",
+                r.x + r.w * 0.5,
+                r.y + row + 14.0 * s,
+                22.0 * s,
+                TEXT_SECONDARY,
+            );
         }
 
         // ASCII on purpose: the default font has no glyphs for arrows.
@@ -392,7 +400,7 @@ impl Menu {
             (view_w() - hint_dims.width) * 0.5,
             view_h() - 24.0 * s,
             18.0 * s,
-            DIM,
+            TEXT_SECONDARY,
         );
     }
 }

@@ -114,13 +114,20 @@ use macroquad::prelude::*;
 use oxide_sim::stats::SCRAP_NODE_AMOUNT;
 use oxide_sim::{GameResult, UnitKind};
 
+pub(crate) use crate::theme::{
+    SURFACE_CARD, TEXT_BODY, TEXT_DISABLED, TEXT_PRIMARY, TEXT_SECONDARY,
+};
+
 const OUTSIDE: Color = color_u8!(20, 20, 25, 255);
+// World decoration (selection rings, rally poles, breadcrumbs) keeps
+// its own bone pair: the text tiers in crate::theme answer for
+// legibility, and raising them must never thicken the world's weight.
 const BONE: Color = color_u8!(232, 228, 216, 255);
 const BONE_FAINT: Color = color_u8!(232, 228, 216, 90);
-const SCRAP_COLOR: Color = color_u8!(217, 164, 65, 255);
+const SCRAP_COLOR: Color = crate::theme::TEXT_ACCENT;
 const HP_BACK: Color = color_u8!(20, 20, 24, 220);
-const DANGER: Color = color_u8!(217, 82, 74, 255);
-const PANEL: Color = color_u8!(20, 20, 24, 200);
+const DANGER: Color = crate::theme::TEXT_DANGER;
+const PANEL: Color = crate::theme::SURFACE_PANEL;
 
 /// The user's UI scale preference — atomic f32 bits so the settings
 /// screen can retune it live while every draw and hit-test path reads
@@ -564,7 +571,7 @@ pub fn draw_tutorial(t: &crate::tutorial::Tutorial, game: &crate::game::Game) {
     let rect = tutorial_card_rect(t);
     let (x, y, w, h) = (rect.x, rect.y, rect.w, rect.h);
     let line_h = 18.0 * s;
-    draw_rectangle(x, y, w, h, Color::from_rgba(14, 14, 18, 235));
+    draw_rectangle(x, y, w, h, SURFACE_CARD);
     draw_rectangle_lines(x, y, w, h, 1.5 * s, Color::new(0.85, 0.65, 0.35, 0.9));
     draw_text(
         format!(
@@ -584,7 +591,7 @@ pub fn draw_tutorial(t: &crate::tutorial::Tutorial, game: &crate::game::Game) {
             x + 10.0 * s,
             y + 42.0 * s + i as f32 * line_h,
             15.0 * s,
-            BONE_FAINT,
+            TEXT_BODY,
         );
     }
     if let Some(coach) = t.coach(game) {
@@ -601,8 +608,8 @@ pub fn draw_tutorial(t: &crate::tutorial::Tutorial, game: &crate::game::Game) {
         );
     }
     let d = tutorial_dismiss_rect();
-    draw_rectangle_lines(d.x, d.y, d.w, d.h, 1.2 * s, BONE_FAINT);
-    draw_text("x", d.x + 7.0 * s, d.y + 16.0 * s, 16.0 * s, BONE_FAINT);
+    draw_rectangle_lines(d.x, d.y, d.w, d.h, 1.2 * s, TEXT_SECONDARY);
+    draw_text("x", d.x + 7.0 * s, d.y + 16.0 * s, 16.0 * s, TEXT_SECONDARY);
 }
 
 #[cfg(test)]

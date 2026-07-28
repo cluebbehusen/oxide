@@ -29,6 +29,7 @@ mod paths;
 mod render;
 mod saves;
 mod screens;
+mod theme;
 mod tutorial;
 
 use anyhow::{Context, Result};
@@ -982,7 +983,7 @@ async fn run() -> Result<()> {
                     (screen_width() - width) * 0.5,
                     screen_height() - 48.0 * s,
                     16.0 * s,
-                    Color::from_rgba(217, 82, 74, 255),
+                    theme::TEXT_DANGER,
                 );
             } else {
                 menu_notice = None;

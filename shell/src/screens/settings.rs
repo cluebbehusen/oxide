@@ -9,7 +9,7 @@ use crate::config::Config;
 use crate::game::SoundKind;
 use crate::menu::Menu;
 use crate::render;
-use macroquad::prelude::{Color, Vec2, color_u8, draw_text, measure_text};
+use macroquad::prelude::{Vec2, draw_text, measure_text};
 use oxide_protocol::{Key, RawEvent};
 
 /// Which face is up.
@@ -236,8 +236,6 @@ impl SettingsScreen {
     pub fn draw(&self) {
         self.menu.draw(self.hint());
         if let Some(notice) = &self.notice {
-            const NOTICE_DANGER: Color = color_u8!(217, 82, 74, 255);
-            const NOTICE_PLAIN: Color = color_u8!(232, 228, 216, 200);
             let s = render::ui_scale();
             let size = 16.0 * s;
             let width = measure_text(&notice.text, None, size as u16, 1.0).width;
@@ -247,9 +245,9 @@ impl SettingsScreen {
                 render::viewport().y - 48.0 * s,
                 size,
                 if notice.danger {
-                    NOTICE_DANGER
+                    crate::theme::TEXT_DANGER
                 } else {
-                    NOTICE_PLAIN
+                    crate::theme::TEXT_BODY
                 },
             );
         }
