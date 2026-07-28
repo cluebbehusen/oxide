@@ -1,0 +1,760 @@
+//! The deserialization trust boundary, from both sides.
+//!
+//! One half is adversarial: a live state is serialized, one JSON pointer
+//! is poked, and the forgery must be refused by name. Every row of
+//! `State::validate_invariants` owes a fixture here, so a checklist row
+//! that stops firing is a red test rather than a silent gap.
+//!
+//! The other half is the bring-up gate, and it is the load-bearing one:
+//! a validator row TIGHTER than reality would refuse a state the sim
+//! really produces, which is how a stricter validator turns into data
+//! loss the day a snapshot save exists. So every shipped map plays out
+//! bot-vs-bot with the checklist sampled along the way, a scripted run
+//! exercises the verbs the bots rarely reach and is checked every single
+//! tick, and a ticked state makes the full round trip through JSON.
+
+use oxide_sim::bot::{Brain, Difficulty, Level, NeuralBot};
+use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::stats::BuildingKind;
+use oxide_sim::{
+    BuildingId, Command, Faction, PlayerCommand, PlayerId, Scenario, State, UnitId, UnitKind,
+};
+use serde_json::{Value, json};
+
+/// A two-seat arena with a standing Fabricator (a producer whose roster
+/// spans both factions) and enough open ground for siege.
+fn arena() -> Scenario {
+    Scenario {
+        name: "integrity-arena".into(),
+        seed: 11,
+        map: vec![
+            "####################".into(),
+            "#1.................#".into(),
+            "#..................#".into(),
+            "#....s.............#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#................2.#".into(),
+            "#..................#".into(),
+            "####################".into(),
+        ],
+        players: vec![
+            PlayerSpec {
+                name: "Ferrous".into(),
+                faction: Faction::Ferrous,
+                team: None,
+                scrap: 900,
+                bot: false,
+                bot_config: None,
+            },
+            PlayerSpec {
+                name: "Cupric".into(),
+                faction: Faction::Cupric,
+                team: None,
+                scrap: 900,
+                bot: false,
+                bot_config: None,
+            },
+        ],
+        units: vec![
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Harvester,
+                x: 4,
+                y: 4,
+            },
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Bombard,
+                x: 12,
+                y: 6,
+            },
+            UnitSpec {
+                player: 1,
+                kind: UnitKind::Sentinel,
+                x: 15,
+                y: 6,
+            },
+            UnitSpec {
+                player: 1,
+                kind: UnitKind::Harvester,
+                x: 16,
+                y: 4,
+            },
+        ],
+        buildings: vec![BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Fabricator,
+            x: 4,
+            y: 7,
+        }],
+        meta: None,
+    }
+}
+
+fn cmd(player: u8, command: Command) -> PlayerCommand {
+    PlayerCommand {
+        player: PlayerId(player),
+        command,
+    }
+}
+
+fn run(state: &mut State, ticks: u32) {
+    for _ in 0..ticks {
+        state.tick(&[]);
+    }
+}
+
+/// The base snapshot the forgeries are cut from: a few ticks in, so
+/// orders, walks, and memories are real rather than freshly assembled.
+fn snapshot() -> Value {
+    let mut state = arena().build().unwrap();
+    let (harvester, bombard) = (state.units()[0].id, state.units()[1].id);
+    state.tick(&[
+        cmd(
+            0,
+            Command::Harvest {
+                units: vec![harvester],
+                node: chassis::grid::TilePos::new(5, 3),
+                queue: false,
+            },
+        ),
+        cmd(
+            0,
+            Command::AttackMove {
+                units: vec![bombard],
+                goal: chassis::grid::TilePos::new(12, 6),
+                queue: false,
+            },
+        ),
+    ]);
+    run(&mut state, 20);
+    doc(&state)
+}
+
+fn doc(state: &State) -> Value {
+    serde_json::from_str(&serde_json::to_string(state).unwrap()).unwrap()
+}
+
+/// The refusal a forged snapshot earns. Deserialization is the only path
+/// into a `State`, so the validator speaks through serde's error.
+fn refusal(doc: Value) -> String {
+    serde_json::from_value::<State>(doc)
+        .expect_err("a forged snapshot must never become a state")
+        .to_string()
+}
+
+/// A well-formed shell, for fixtures that need one in the sky.
+fn shell(shooter: Value, player: u32, impact_bits: i64) -> Value {
+    json!({
+        "shooter": shooter,
+        "player": player,
+        "launch": {"x": {"bits": 0}, "y": {"bits": 0}},
+        "impact": {"x": {"bits": impact_bits}, "y": {"bits": 0}},
+        "arrival": 40,
+        "damage": 40,
+        "targets": {"ground": true, "air": false},
+        "splash": {"bits": 4294967296i64},
+    })
+}
+
+/// A well-formed memory of an enemy building.
+fn ghost(owner: u32, x: i32, y: i32) -> Value {
+    json!({"kind": "turret", "owner": owner, "anchor": {"x": x, "y": y}, "hp": 350})
+}
+
+#[test]
+fn the_base_snapshot_is_accepted() {
+    // Every forgery below is a single poke on this document; if the
+    // document itself were refused, the fixtures would prove nothing.
+    let base = snapshot();
+    let restored: State = serde_json::from_value(base.clone()).expect("a real state round-trips");
+    assert_eq!(doc(&restored), base, "the round trip is lossless");
+}
+
+#[test]
+fn well_formed_additions_are_accepted() {
+    // The hand-written shell, ghost, and contact shapes the forgeries
+    // mutate must themselves be legal — otherwise a fixture could be
+    // passing for the wrong reason.
+    let mut base = snapshot();
+    base["shells"].as_array_mut().unwrap().push(shell(
+        json!({"kind": "unit", "id": 1}),
+        0,
+        4294967296,
+    ));
+    base["vision"][0]["ghosts"]
+        .as_array_mut()
+        .unwrap()
+        .push(ghost(1, 12, 5));
+    base["vision"][0]["contacts"] = json!([{"x": 3, "y": 3}, {"x": 1, "y": 4}]);
+    serde_json::from_value::<State>(base).expect("legal additions stay legal");
+}
+
+/// One forgery: what it is called, the single poke that makes it, and
+/// the fragment of the refusal it must earn.
+type Forgery = (&'static str, fn(&mut Value), &'static str);
+
+/// Every checklist row, one forgery each. The expectation is the
+/// message fragment the row names its victim with, so a row that stops
+/// firing (or starts blaming the wrong entity) reads as a failure here.
+#[test]
+fn every_checklist_row_refuses_its_forgery() {
+    let fixtures: Vec<Forgery> = vec![
+        (
+            "an empty player table",
+            |d| d["players"] = json!([]),
+            "no players",
+        ),
+        (
+            "more seats than a player id can address",
+            |d| {
+                let seat = d["players"][0].clone();
+                d["players"] = json!(vec![seat; 257]);
+            },
+            "more players than a player id can address",
+        ),
+        (
+            "a team index no seat carries",
+            |d| d["players"][0]["team"] = json!(9),
+            "player p0 sits on a team outside the table",
+        ),
+        (
+            "a truncated map grid",
+            |d| {
+                d["map"]["grid"]["cells"].as_array_mut().unwrap().pop();
+            },
+            "map grid dimensions disagree with its cells",
+        ),
+        (
+            "a map wider than the supported maximum",
+            |d| {
+                let cell = d["map"]["grid"]["cells"][0].clone();
+                d["map"]["grid"] = json!({"width": 300, "height": 1, "cells": vec![cell; 300]});
+            },
+            "the supported maximum is 256 per side",
+        ),
+        (
+            "a vision table short a seat",
+            |d| {
+                d["vision"].as_array_mut().unwrap().pop();
+            },
+            "vision table does not match the player list",
+        ),
+        (
+            "a truncated vision grid",
+            |d| {
+                d["vision"][0]["visible"]["cells"]
+                    .as_array_mut()
+                    .unwrap()
+                    .pop();
+            },
+            "disagrees with the map dimensions",
+        ),
+        (
+            "units out of id order",
+            |d| d["units"][1]["id"] = d["units"][0]["id"].clone(),
+            "units not strictly sorted by id",
+        ),
+        (
+            "buildings out of id order",
+            |d| d["buildings"][1]["id"] = d["buildings"][0]["id"].clone(),
+            "buildings not strictly sorted by id",
+        ),
+        (
+            "a unit counter behind a live unit",
+            |d| d["next_unit_id"] = json!(1),
+            "unit id counter behind a live unit",
+        ),
+        (
+            "a building counter behind a live building",
+            |d| d["next_building_id"] = json!(1),
+            "building id counter behind a live building",
+        ),
+        (
+            "a unit owned off the table",
+            |d| d["units"][0]["player"] = json!(9),
+            "unit u0 is owned by a player outside the table",
+        ),
+        (
+            "a unit healthier than its kind can be",
+            |d| d["units"][0]["hp"] = json!(999_999),
+            "unit u0 carries hit points its kind cannot hold",
+        ),
+        (
+            "a unit corpse that never got swept",
+            |d| d["units"][0]["hp"] = json!(0),
+            "unit u0 carries hit points its kind cannot hold",
+        ),
+        (
+            "a unit work meter past the ceiling",
+            |d| d["units"][0]["progress"] = json!(u32::MAX),
+            "unit u0 carries a work meter past the ceiling",
+        ),
+        (
+            "a cooldown on a weapon the harvester does not carry",
+            |d| d["units"][0]["cooldowns"] = json!([5, 0]),
+            "unit u0 carries a cooldown no weapon of its kind sets",
+        ),
+        (
+            "an order queue past the cap",
+            |d| d["units"][0]["queue"] = json!(vec![json!({"order": "idle"}); 33]),
+            "unit u0 queues more orders than the cap allows",
+        ),
+        (
+            "a unit shoved to the far end of the coordinate space",
+            |d| d["units"][0]["pos"]["x"] = json!({"bits": i64::MAX}),
+            "unit u0 names a coordinate outside the envelope",
+        ),
+        (
+            "a walk routed through nonsense",
+            |d| {
+                d["units"][0]["path"] = json!({"goal": {"x": 1, "y": 1}, "waypoints": [{"x": i32::MAX, "y": 0}], "next": 0});
+            },
+            "unit u0 names a coordinate outside the envelope",
+        ),
+        (
+            "an order against an id the run never minted",
+            |d| {
+                d["units"][0]["order"] =
+                    json!({"order": "attack", "target": {"kind": "unit", "id": 9_999}});
+            },
+            "unit u0 is ordered against an id the run never minted",
+        ),
+        (
+            "a building owned off the table",
+            |d| d["buildings"][0]["player"] = json!(9),
+            "building b0 is owned by a player outside the table",
+        ),
+        (
+            "a building healthier than its kind can be",
+            |d| d["buildings"][0]["hp"] = json!(999_999),
+            "building b0 carries hit points its kind cannot hold",
+        ),
+        (
+            "a progress meter past the ceiling",
+            |d| d["buildings"][0]["progress"] = json!(u32::MAX),
+            "building b0 carries a progress meter past the ceiling",
+        ),
+        (
+            "a cooldown on a Foundry, which carries no weapon",
+            |d| d["buildings"][0]["cooldown"] = json!(7),
+            "building b0 carries a cooldown its weapon never sets",
+        ),
+        (
+            "a production queue past the cap",
+            |d| d["buildings"][0]["queue"] = json!(vec!["harvester"; 6]),
+            "building b0 queues more units than the cap allows",
+        ),
+        (
+            "a Foundry queuing a unit only the Fabricator trains",
+            |d| d["buildings"][0]["queue"] = json!(["scuttler"]),
+            "building b0 queues a unit it could never train",
+        ),
+        (
+            "a Ferrous Fabricator queuing the Cupric roster",
+            |d| d["buildings"][2]["queue"] = json!(["wisp"]),
+            "building b2 queues a unit it could never train",
+        ),
+        (
+            "an anchor at the far end of the coordinate space",
+            |d| d["buildings"][0]["anchor"]["x"] = json!(i32::MAX),
+            "building b0 names a coordinate outside the envelope",
+        ),
+        (
+            "a rally point at the far end of the coordinate space",
+            |d| d["buildings"][0]["rally"] = json!({"x": -i32::MAX, "y": 0}),
+            "building b0 names a coordinate outside the envelope",
+        ),
+        (
+            "salvage credited against a building nothing stripped",
+            |d| d["buildings"][0]["salvage_credited"] = json!(50),
+            "building b0 carries an incoherent salvage ledger",
+        ),
+        (
+            "a shell fired by a seat off the table",
+            |d| {
+                d["shells"].as_array_mut().unwrap().push(shell(
+                    json!({"kind": "unit", "id": 1}),
+                    9,
+                    4294967296,
+                ));
+            },
+            "shell 0 is owned by a player outside the table",
+        ),
+        (
+            "a shell aimed at the far end of the coordinate space",
+            |d| {
+                d["shells"].as_array_mut().unwrap().push(shell(
+                    json!({"kind": "unit", "id": 1}),
+                    0,
+                    i64::MAX,
+                ));
+            },
+            "shell 0 names a coordinate outside the envelope",
+        ),
+        (
+            "a shell fired by an id the run never minted",
+            |d| {
+                d["shells"].as_array_mut().unwrap().push(shell(
+                    json!({"kind": "building", "id": 9_999}),
+                    0,
+                    4294967296,
+                ));
+            },
+            "shell 0 was fired by an id the run never minted",
+        ),
+        (
+            "a memory of a building owned off the table",
+            |d| d["vision"][0]["ghosts"] = json!([ghost(9, 12, 5)]),
+            "player p0 remembers a building owned outside the table",
+        ),
+        (
+            "a memory of one's own building",
+            |d| d["vision"][0]["ghosts"] = json!([ghost(0, 12, 5)]),
+            "player p0 remembers a building of their own team",
+        ),
+        (
+            "a memory anchored at the far end of the coordinate space",
+            |d| d["vision"][0]["ghosts"] = json!([ghost(1, i32::MAX, 5)]),
+            "player p0 remembers a building outside the envelope",
+        ),
+        (
+            "memories out of canonical order",
+            |d| d["vision"][0]["ghosts"] = json!([ghost(1, 3, 9), ghost(1, 3, 2)]),
+            "player p0 remembers buildings out of canonical order",
+        ),
+        (
+            "a radar blip at the far end of the coordinate space",
+            |d| d["vision"][0]["contacts"] = json!([{"x": i32::MIN, "y": 0}]),
+            "player p0 holds a radar contact outside the envelope",
+        ),
+        (
+            "radar blips out of canonical order",
+            |d| d["vision"][0]["contacts"] = json!([{"x": 1, "y": 4}, {"x": 3, "y": 3}]),
+            "player p0 holds radar contacts out of canonical order",
+        ),
+    ];
+
+    let base = snapshot();
+    for (label, poke, expected) in fixtures {
+        let mut forged = base.clone();
+        poke(&mut forged);
+        let message = refusal(forged);
+        assert!(
+            message.contains(expected),
+            "{label}: expected a refusal naming '{expected}', got '{message}'"
+        );
+    }
+}
+
+#[test]
+fn the_ghost_sort_key_carries_the_owner() {
+    // Two hostile seats can leave memories under the same corner, which
+    // is exactly why the canonical key is (y, x, owner) and not (y, x).
+    let mut base = snapshot();
+    base["players"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"name": "Third", "faction": "ferrous", "team": 2, "scrap": 0}));
+    let view = base["vision"][0].clone();
+    base["vision"].as_array_mut().unwrap().push(view);
+    base["vision"][0]["ghosts"] = json!([ghost(1, 6, 6), ghost(2, 6, 6)]);
+    serde_json::from_value::<State>(base.clone()).expect("owner-ordered memories are canonical");
+    base["vision"][0]["ghosts"] = json!([ghost(2, 6, 6), ghost(1, 6, 6)]);
+    assert!(
+        refusal(base).contains("out of canonical order"),
+        "the owner is part of the key, so reversing it breaks the order"
+    );
+}
+
+#[test]
+fn a_ticked_state_survives_a_json_round_trip() {
+    let mut state = arena().build().unwrap();
+    run(&mut state, 300);
+    let restored: State =
+        serde_json::from_str(&serde_json::to_string(&state).unwrap()).expect("a real state loads");
+    assert_eq!(restored.hash(), state.hash(), "the round trip is exact");
+}
+
+/// The bring-up gate, narrow half: a run that deliberately drives the
+/// verbs a bot rarely reaches — construction, welding, stripping,
+/// patrol, artillery in flight — checked on EVERY tick. A row tighter
+/// than reality fails here on the tick it becomes wrong.
+#[test]
+fn a_full_verb_run_stays_valid_every_tick() {
+    let mut state = arena().build().unwrap();
+    let (harvester, bombard, sentinel) = (
+        state.units()[0].id,
+        state.units()[1].id,
+        state.units()[2].id,
+    );
+    let fabricator = BuildingId(state.buildings()[2].id.0);
+    let tile = chassis::grid::TilePos::new;
+
+    let script: Vec<(u32, Vec<PlayerCommand>)> = vec![
+        (
+            0,
+            vec![
+                cmd(
+                    0,
+                    Command::Harvest {
+                        units: vec![harvester],
+                        node: tile(5, 3),
+                        queue: false,
+                    },
+                ),
+                cmd(
+                    0,
+                    Command::AttackMove {
+                        units: vec![bombard],
+                        goal: tile(13, 6),
+                        queue: false,
+                    },
+                ),
+                cmd(
+                    1,
+                    Command::Patrol {
+                        units: vec![sentinel],
+                        waypoints: vec![tile(15, 3), tile(15, 7), tile(13, 6)],
+                    },
+                ),
+                cmd(
+                    0,
+                    Command::Train {
+                        building: fabricator,
+                        kind: UnitKind::Scuttler,
+                    },
+                ),
+            ],
+        ),
+        (
+            40,
+            vec![cmd(
+                0,
+                Command::Build {
+                    units: vec![harvester],
+                    kind: BuildingKind::Turret,
+                    anchor: tile(3, 4),
+                    queue: false,
+                },
+            )],
+        ),
+        (
+            120,
+            vec![cmd(
+                0,
+                Command::SetRally {
+                    building: fabricator,
+                    rally: Some(tile(5, 3)),
+                },
+            )],
+        ),
+        (
+            420,
+            vec![cmd(
+                0,
+                Command::Salvage {
+                    units: vec![harvester],
+                    building: fabricator,
+                    queue: false,
+                },
+            )],
+        ),
+        (
+            520,
+            vec![cmd(
+                0,
+                Command::Repair {
+                    units: vec![harvester],
+                    building: fabricator,
+                    queue: false,
+                },
+            )],
+        ),
+    ];
+
+    let (mut saw_shell, mut saw_site, mut saw_strip, mut saw_weld) = (false, false, false, false);
+    let mut saw_haul = false;
+    let mut last_hp = state.building(fabricator).map(|b| b.hp);
+    for tick in 0..1_200u32 {
+        let commands = script
+            .iter()
+            .find(|(at, _)| *at == tick)
+            .map(|(_, c)| c.clone())
+            .unwrap_or_default();
+        state.tick(&commands);
+        state.validate_invariants().unwrap_or_else(|err| {
+            panic!("tick {tick} produced a state the validator refuses: {err}")
+        });
+        saw_shell |= !state.shells().is_empty();
+        saw_haul |= state.units().iter().any(|u| u.carrying > 0);
+        saw_site |= state.buildings().iter().any(|b| !b.built);
+        let hp = state.building(fabricator).map(|b| b.hp);
+        saw_strip |= matches!((last_hp, hp), (Some(was), Some(now)) if now < was);
+        saw_weld |= matches!((last_hp, hp), (Some(was), Some(now)) if now > was);
+        last_hp = hp;
+    }
+    // The script really did reach the interesting shapes.
+    assert!(saw_shell, "premise: artillery was airborne");
+    assert!(saw_haul, "premise: scrap was hauled");
+    assert!(saw_site, "premise: a site stood unfinished");
+    assert!(saw_strip, "premise: the Fabricator was stripped");
+    assert!(saw_weld, "premise: the Fabricator was welded back");
+    assert!(
+        state
+            .building(fabricator)
+            .is_some_and(|b| b.salvage_drained > 0 && b.salvage_credited > 0),
+        "premise: the salvage ledger carries a real entry"
+    );
+}
+
+/// A seat's command source for the sweep. The two families reach
+/// different shapes — the shipped ladder builds and techs, the scripted
+/// tiers scout hard and leave memories behind them — so the sweep runs
+/// both and insists on seeing both.
+enum Mind {
+    Scripted(Box<Brain>),
+    Ladder(Box<NeuralBot>),
+}
+
+impl Mind {
+    fn act(&mut self, state: &State) -> Vec<PlayerCommand> {
+        match self {
+            Mind::Scripted(brain) => brain.act(state),
+            Mind::Ladder(bot) => bot.act(state),
+        }
+    }
+}
+
+/// The bring-up gate, broad half: every shipped map, every seat driven,
+/// thousands of ticks, the checklist sampled along the way. Independent
+/// deterministic sims, so the sweep fans across threads like the other
+/// map sweeps.
+#[test]
+fn every_shipped_map_stays_valid_under_bot_play() {
+    const TICKS: u32 = 2_000;
+    /// How often the checklist runs directly (cheap: entities, not tiles).
+    const SAMPLE: u32 = 100;
+    /// How often the state makes the full trip through the deserializer,
+    /// which is where the checklist actually stands guard.
+    const ROUND_TRIP: u32 = 500;
+
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scenarios");
+    let paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .expect("scenarios dir")
+        .map(|e| e.expect("dir entry").path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
+        .collect();
+    assert!(paths.len() >= 10, "the shipped roster is present");
+
+    // A sweep that stopped producing memories, sites, or fresh machines
+    // would still pass every row while proving nothing.
+    let built_up = std::sync::atomic::AtomicUsize::new(0);
+    let remembered = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for (index, path) in paths.iter().enumerate() {
+            let (built_up, remembered) = (&built_up, &remembered);
+            scope.spawn(move || {
+                let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+                let scenario = Scenario::load(path).unwrap_or_else(|err| panic!("{name}: {err}"));
+                let seed = scenario.seed;
+                let mut state = scenario
+                    .build()
+                    .unwrap_or_else(|err| panic!("{name}: {err}"));
+                let (scenario_units, scenario_buildings) =
+                    (state.units().len(), state.buildings().len());
+                // Every chair thinks: the widest spread of live orders,
+                // construction, and battle the shipped maps can produce.
+                let mut brains: Vec<Mind> = state
+                    .players()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| {
+                        let seat = PlayerId(i as u8);
+                        if index.is_multiple_of(2) {
+                            Mind::Ladder(Box::new(NeuralBot::ladder(
+                                seat,
+                                seed,
+                                Level::Expert,
+                                None,
+                                p.faction,
+                            )))
+                        } else {
+                            Mind::Scripted(Box::new(Brain::for_tier(seat, seed, Difficulty::Prime)))
+                        }
+                    })
+                    .collect();
+                let mut saw_ghost = false;
+                for tick in 0..TICKS {
+                    let commands: Vec<PlayerCommand> =
+                        brains.iter_mut().flat_map(|b| b.act(&state)).collect();
+                    state.tick(&commands);
+                    if tick.is_multiple_of(SAMPLE) {
+                        state.validate_invariants().unwrap_or_else(|err| {
+                            panic!("{name}: tick {tick} is a state the validator refuses: {err}")
+                        });
+                    }
+                    if tick.is_multiple_of(ROUND_TRIP) {
+                        let restored: State =
+                            serde_json::from_str(&serde_json::to_string(&state).unwrap())
+                                .unwrap_or_else(|err| {
+                                    panic!("{name}: tick {tick} is refused at the door: {err}")
+                                });
+                        assert_eq!(
+                            restored.hash(),
+                            state.hash(),
+                            "{name}: tick {tick} round-trips exactly"
+                        );
+                    }
+                    saw_ghost |= (0..state.players().len())
+                        .any(|i| !state.vision(PlayerId(i as u8)).ghosts().is_empty());
+                }
+                let rich = state.units().len() > scenario_units
+                    && state.buildings().len() > scenario_buildings;
+                if rich {
+                    built_up.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                if saw_ghost {
+                    remembered.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            });
+        }
+    });
+    let (built_up, remembered) = (
+        built_up.load(std::sync::atomic::Ordering::Relaxed),
+        remembered.load(std::sync::atomic::Ordering::Relaxed),
+    );
+    assert!(
+        built_up * 3 >= paths.len(),
+        "the sweep must reach built-up worlds, not idle openings ({built_up} of {})",
+        paths.len()
+    );
+    assert!(
+        remembered * 3 >= paths.len(),
+        "the sweep must reach worlds carrying enemy memories ({remembered} of {})",
+        paths.len()
+    );
+}
+
+#[test]
+fn a_dangling_order_target_is_not_a_forgery() {
+    // The permissive reference rule, stated as a test: an order outliving
+    // its victim by a tick is ordinary play, and refusing it would refuse
+    // a state the sim produces every time something dies mid-chase.
+    let mut base = snapshot();
+    let live = base["units"][0]["id"].as_u64().unwrap() as u32;
+    let minted = base["next_unit_id"].as_u64().unwrap() as u32;
+    assert!(live < minted, "premise: the counter is ahead of the roster");
+    base["units"][0]["order"] =
+        json!({"order": "attack", "target": {"kind": "unit", "id": minted - 1}});
+    let state: State =
+        serde_json::from_value(base).expect("a minted-but-departed target is accepted");
+    // And it stays a legal state as the brains discover the victim is gone.
+    let mut state = state;
+    run(&mut state, 5);
+    state.validate_invariants().expect("still coherent");
+    assert!(state.unit(UnitId(live)).is_some());
+}

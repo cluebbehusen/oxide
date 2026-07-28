@@ -375,6 +375,25 @@ comparisons don't survive GPU churn, so CI never runs it.
   through the accessors (`units()`, `buildings()`, `players()`, `map()`,
   `current_tick()`, `result()`, `vision(id)`, `hash()`). If new code needs
   a view the accessors can't give, add an accessor — never a `pub` field.
+- **Deserialization is the sim's trust boundary.**
+  `State::validate_invariants` runs inside `State`'s `Deserialize` impl
+  and there is no unvalidated constructor, so a snapshot that parses is
+  one the tick pipeline, the renderers, and the gym may assume whole:
+  map bounds, entity owners and references, hp/meter/cooldown/queue
+  bounds, the salvage ledger's exact arithmetic, canonical ghost and
+  radar order, and a coordinate envelope — which is what *licenses*
+  every unchecked `+` in `TilePos::offset` and `Building::contains`.
+  Two rules stay deliberately permissive, because tightening them would
+  refuse states the sim really produces: references are checked against
+  the id counters, never the live tables (an order or a shell outliving
+  its subject by a tick is ordinary), and the envelopes are generous
+  sanity boxes rather than map-relative bounds (collision does shove a
+  body a fraction past the border). Every new `State` field owes a row
+  there and a fixture in `sim/tests/state_integrity.rs`, whose other
+  half is the bring-up gate — every shipped map played out bot-vs-bot
+  and round-tripped through the deserializer, plus a scripted verb run
+  checked every tick, so a row tighter than reality fails there instead
+  of eating a save.
 - **Ranged fire traces line of sight** (`chassis::path::line_blocked`, a
   fixed-point supercover walk): rock and non-target buildings block, scrap
   and units don't, endpoints never do. In range but blocked → keep

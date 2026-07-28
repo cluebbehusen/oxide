@@ -12,11 +12,11 @@
 //!   tick that killed it.
 //! - `result` is set at most once; once set, ticks are frozen no-ops.
 
-use crate::ids::{BuildingId, PlayerId, UnitId};
-use crate::map::Map;
+use crate::ids::{BuildingId, PlayerId, Target, UnitId};
+use crate::map::{MAX_MAP_EDGE, Map};
 use crate::stats::{BuildingKind, UnitKind};
 use chassis::Tick;
-use chassis::fx::Vec2Fx;
+use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::TilePos;
 use chassis::rng::Pcg32;
 use serde::{Deserialize, Serialize};
@@ -431,62 +431,254 @@ impl State {
         self.vision.get(id.0 as usize)
     }
 
-    /// Checks the structural invariants field-level deserialization alone
-    /// cannot: sorted id lists, id counters ahead of every live id,
-    /// per-player tables sized to the player list, entity owners inside
-    /// it, and nested grids that hold together. Called automatically by
-    /// [`State`]'s `Deserialize` impl, so a snapshot that parses is a
-    /// snapshot that holds together; public for tooling that wants to
-    /// re-check after mutating one by hand.
+    /// Checks every structural invariant field-level deserialization alone
+    /// cannot. This is the sim's trust boundary: [`State`]'s `Deserialize`
+    /// impl calls it, there is no unvalidated constructor, and everything
+    /// downstream — the tick pipeline, the renderers, the gym's feature
+    /// builder — is entitled to assume the whole checklist below. In
+    /// particular the coordinate envelope is what *licenses* the sim's
+    /// unchecked tile arithmetic ([`TilePos::offset`],
+    /// [`Building::contains`], the neighborhood scans): a coordinate that
+    /// got through here cannot overflow them.
+    ///
+    /// The checklist, in the order it runs:
+    /// - Players: a non-empty table, addressable by [`PlayerId`], with
+    ///   team indices inside it.
+    /// - Map: consistent grid dimensions, within [`MAX_MAP_EDGE`].
+    /// - Per-player tables: one vision per seat, its grids sized to the
+    ///   map.
+    /// - Entity lists: strictly sorted by id, both id counters ahead of
+    ///   every live id.
+    /// - Units: owner in the table, hp inside `(0, max_hp]`, meters and
+    ///   per-weapon cooldowns bounded, queue within
+    ///   [`crate::stats::ORDER_QUEUE_CAP`], every coordinate inside the
+    ///   envelope, every entity named by an order actually minted.
+    /// - Buildings: the same, plus a queue this kind can produce for this
+    ///   seat's faction and a coherent salvage ledger.
+    /// - Shells: coordinates inside the envelope, shooter minted.
+    /// - Vision: ghost owners in the table and hostile to the viewer,
+    ///   ghosts and contacts in canonical order, all of it inside the
+    ///   envelope.
+    ///
+    /// Two rules are deliberately *permissive*, because tighter ones would
+    /// refuse legitimately reachable states. References are checked
+    /// against the id counters, never against the live tables: an order
+    /// or a shell outliving its subject by a tick is ordinary (brains
+    /// re-validate, and a shell's shooter may be dead by impact), while an
+    /// id the run never minted is forgery. And the envelopes are
+    /// generous sanity boxes rather than map-relative bounds: the bug
+    /// being killed is the overflow class, not nonsense geometry, and a
+    /// body the separation phase shoved a fraction of a tile past the
+    /// border is a state the sim really does produce.
+    ///
+    /// Every field added to [`State`] or its nested types owes a row here
+    /// and a fixture in `sim/tests/state_integrity.rs`.
+    ///
+    /// Public for tooling that wants to re-check a state it mutated by
+    /// hand; the sim itself never calls it inside [`State::tick`].
     pub fn validate_invariants(&self) -> Result<(), StateIntegrityError> {
+        use StateIntegrityError as E;
+
         if self.players.is_empty() {
-            return Err(StateIntegrityError::NoPlayers);
+            return Err(E::NoPlayers);
         }
-        if !self.units.windows(2).all(|w| w[0].id < w[1].id) {
-            return Err(StateIntegrityError::UnsortedUnits);
+        // PlayerId is a u8: past 256 seats the ids alias and winners()
+        // would name the wrong ones.
+        if self.players.len() > usize::from(u8::MAX) + 1 {
+            return Err(E::TooManyPlayers);
         }
-        if !self.buildings.windows(2).all(|w| w[0].id < w[1].id) {
-            return Err(StateIntegrityError::UnsortedBuildings);
+        let players = self.players.len();
+        // Teams normalize to dense ids at scenario build, so a team index
+        // is always a seat index too.
+        if let Some(i) = self
+            .players
+            .iter()
+            .position(|p| usize::from(p.team) >= players)
+        {
+            return Err(E::ForeignTeam(PlayerId(i as u8)));
+        }
+
+        // Nested grids: derived Deserialize accepts any cell count, and a
+        // short one panics deep inside vision refresh instead of here.
+        if !self.map.is_consistent() {
+            return Err(E::MalformedMapGrid);
+        }
+        let (w, h) = (self.map.width(), self.map.height());
+        // The parse-time bound, re-applied: the neighborhood scans add
+        // unchecked radii to the map dimensions.
+        if w > MAX_MAP_EDGE as i32 || h > MAX_MAP_EDGE as i32 {
+            return Err(E::MapTooLarge {
+                width: w,
+                height: h,
+            });
+        }
+        if self.vision.len() != players {
+            return Err(E::VisionTableMismatch);
+        }
+        if self.vision.iter().any(|v| !v.is_consistent(w, h)) {
+            return Err(E::MalformedVisionGrid);
+        }
+
+        if !self.units.windows(2).all(|a| a[0].id < a[1].id) {
+            return Err(E::UnsortedUnits);
+        }
+        if !self.buildings.windows(2).all(|a| a[0].id < a[1].id) {
+            return Err(E::UnsortedBuildings);
         }
         if let Some(u) = self.units.last()
             && u.id.0 >= self.next_unit_id
         {
-            return Err(StateIntegrityError::StaleUnitCounter);
+            return Err(E::StaleUnitCounter);
         }
         if let Some(b) = self.buildings.last()
             && b.id.0 >= self.next_building_id
         {
-            return Err(StateIntegrityError::StaleBuildingCounter);
+            return Err(E::StaleBuildingCounter);
         }
-        if self.vision.len() != self.players.len() {
-            return Err(StateIntegrityError::VisionTableMismatch);
+
+        for u in &self.units {
+            if usize::from(u.player.0) >= players {
+                return Err(E::ForeignUnitOwner(u.id));
+            }
+            let stats = u.kind.stats();
+            if u.hp == 0 || u.hp > stats.max_hp {
+                return Err(E::UnitHpOutOfRange(u.id));
+            }
+            if u.progress > PROGRESS_ENVELOPE {
+                return Err(E::UnitProgressOutOfRange(u.id));
+            }
+            // Slot i belongs to weapon i; slots past the roster stay zero
+            // for the machine's whole life.
+            if u.cooldowns.iter().enumerate().any(|(i, cd)| {
+                *cd > stats
+                    .weapons
+                    .get(i)
+                    .map_or(0, |weapon| weapon.cooldown_ticks)
+            }) {
+                return Err(E::UnitCooldownOutOfRange(u.id));
+            }
+            if u.queue.len() > crate::stats::ORDER_QUEUE_CAP {
+                return Err(E::OverlongUnitQueue(u.id));
+            }
+            if !unit_inside_envelope(u) {
+                return Err(E::UnitOutsideEnvelope(u.id));
+            }
+            for target in std::iter::once(&u.order)
+                .chain(&u.queue)
+                .filter_map(order_reference)
+            {
+                if !self.minted(target) {
+                    return Err(E::UnmintedOrderTarget(u.id));
+                }
+            }
         }
-        let players = self.players.len();
-        if self.units.iter().any(|u| (u.player.0 as usize) >= players) {
-            return Err(StateIntegrityError::ForeignUnitOwner);
+
+        for b in &self.buildings {
+            if usize::from(b.player.0) >= players {
+                return Err(E::ForeignBuildingOwner(b.id));
+            }
+            let stats = b.kind.stats();
+            if b.hp == 0 || b.hp > stats.max_hp {
+                return Err(E::BuildingHpOutOfRange(b.id));
+            }
+            if b.progress > PROGRESS_ENVELOPE {
+                return Err(E::BuildingProgressOutOfRange(b.id));
+            }
+            // A building fires its first weapon and nothing else.
+            if b.cooldown
+                > stats
+                    .weapons
+                    .first()
+                    .map_or(0, |weapon| weapon.cooldown_ticks)
+            {
+                return Err(E::BuildingCooldownOutOfRange(b.id));
+            }
+            if b.queue.len() > crate::stats::QUEUE_CAP {
+                return Err(E::OverlongBuildingQueue(b.id));
+            }
+            let faction = self.players[usize::from(b.player.0)].faction;
+            if b.queue.iter().any(|kind| {
+                !stats.produces.contains(kind) || kind.faction().is_some_and(|f| f != faction)
+            }) {
+                return Err(E::UnproducibleQueueEntry(b.id));
+            }
+            // The footprint needs no separate check: sizes are single
+            // digits, so an anchor inside the envelope keeps `anchor + size`
+            // inside it too.
+            if !tile_inside_envelope(b.anchor) || !b.rally.is_none_or(tile_inside_envelope) {
+                return Err(E::BuildingOutsideEnvelope(b.id));
+            }
+            if !salvage_ledger_coherent(b) {
+                return Err(E::IncoherentSalvageLedger(b.id));
+            }
         }
-        if self
-            .buildings
-            .iter()
-            .any(|b| (b.player.0 as usize) >= players)
-        {
-            return Err(StateIntegrityError::ForeignBuildingOwner);
+
+        for (i, s) in self.shells.iter().enumerate() {
+            // Shells carry a seat too: hostile() indexes the player table
+            // on impact, so a foreign owner would panic ticks after
+            // acceptance.
+            if usize::from(s.player.0) >= players {
+                return Err(E::ForeignShellOwner(i));
+            }
+            if !point_inside_envelope(s.launch)
+                || !point_inside_envelope(s.impact)
+                || s.splash
+                    .is_some_and(|r| r < Fx::ZERO || r > Fx::from_num(COORD_ENVELOPE))
+            {
+                return Err(E::ShellOutsideEnvelope(i));
+            }
+            if !self.minted(s.shooter) {
+                return Err(E::UnmintedShellShooter(i));
+            }
         }
-        // Shells carry a seat too: hostile() indexes the player table on
-        // impact, so a foreign owner would panic ticks after acceptance.
-        if self.shells.iter().any(|s| (s.player.0 as usize) >= players) {
-            return Err(StateIntegrityError::ForeignShellOwner);
-        }
-        // Nested grids: derived Deserialize accepts any cell count, and a
-        // short one panics deep inside vision refresh instead of here.
-        if !self.map.is_consistent() {
-            return Err(StateIntegrityError::MalformedMapGrid);
-        }
-        let (w, h) = (self.map.width(), self.map.height());
-        if self.vision.iter().any(|v| !v.is_consistent(w, h)) {
-            return Err(StateIntegrityError::MalformedVisionGrid);
+
+        for (i, v) in self.vision.iter().enumerate() {
+            let seat = PlayerId(i as u8);
+            for ghost in v.ghosts() {
+                // Renderers index the player table with this to pick a
+                // tint; an owner outside it is a panic, not a wrong color.
+                if usize::from(ghost.owner.0) >= players {
+                    return Err(E::ForeignGhostOwner(seat));
+                }
+                if self.players[usize::from(ghost.owner.0)].team == self.players[i].team {
+                    return Err(E::FriendlyGhost(seat));
+                }
+                if !tile_inside_envelope(ghost.anchor) {
+                    return Err(E::GhostOutsideEnvelope(seat));
+                }
+            }
+            // The real sort key carries the owner; two seats can hold
+            // footprints a memory records under the same corner.
+            let ghost_key = |g: &crate::vision::GhostBuilding| (g.anchor.y, g.anchor.x, g.owner);
+            if !v
+                .ghosts()
+                .windows(2)
+                .all(|a| ghost_key(&a[0]) <= ghost_key(&a[1]))
+            {
+                return Err(E::UnsortedGhosts(seat));
+            }
+            if v.contacts().iter().any(|t| !tile_inside_envelope(*t)) {
+                return Err(E::ContactOutsideEnvelope(seat));
+            }
+            // Blips are sorted and deduplicated every refresh.
+            if !v
+                .contacts()
+                .windows(2)
+                .all(|a| (a[0].y, a[0].x) < (a[1].y, a[1].x))
+            {
+                return Err(E::UnsortedContacts(seat));
+            }
         }
         Ok(())
+    }
+
+    /// Whether this run ever handed out `target`'s id — the permissive
+    /// reference rule. Dangling is fine; unminted is forgery.
+    fn minted(&self, target: Target) -> bool {
+        match target {
+            Target::Unit(id) => id.0 < self.next_unit_id,
+            Target::Building(id) => id.0 < self.next_building_id,
+        }
     }
 
     /// Whether `player` currently sees `pos`.
@@ -727,6 +919,97 @@ impl State {
     }
 }
 
+/// How far outside the map a coordinate may sit before a snapshot is
+/// refused, in tiles: eight times the largest legal map edge. Deliberately
+/// a generous sanity box rather than a map-relative bound — see
+/// [`State::validate_invariants`] for why. Every offset the sim adds to a
+/// coordinate (footprint sizes, ring scans, vision spans) is smaller than
+/// one map edge, so nothing inside this box can overflow the unchecked
+/// arithmetic downstream, and the squared distances it feeds stay far
+/// inside [`Fx`]'s integer range.
+const COORD_ENVELOPE: i32 = 8 * MAX_MAP_EDGE as i32;
+
+/// Ceiling on the tick meters a snapshot may carry ([`Unit::progress`],
+/// [`Building::progress`]). Construction, repair, and salvage all price a
+/// step as `ramp * (meter + 1) / ramp_ticks` in `u32`; an unbounded meter
+/// overflows that product. This bound keeps it inside the type for every
+/// shipped building and sits far above any meter a match of playable
+/// length reaches.
+const PROGRESS_ENVELOPE: u32 = 1 << 21;
+
+/// Ceiling on a building's cumulative salvage ledger. Repairing a
+/// half-stripped building and stripping it again legitimately drains more
+/// hp than it ever had, so the ledger has no semantic bound — only this
+/// one, which keeps the running total clear of a `u32` wrap.
+const SALVAGE_LEDGER_CEILING: u32 = u32::MAX / 2;
+
+/// Whether a tile coordinate sits inside [`COORD_ENVELOPE`].
+fn tile_inside_envelope(t: TilePos) -> bool {
+    t.x >= -COORD_ENVELOPE
+        && t.x <= COORD_ENVELOPE
+        && t.y >= -COORD_ENVELOPE
+        && t.y <= COORD_ENVELOPE
+}
+
+/// Whether a world position sits inside [`COORD_ENVELOPE`].
+fn point_inside_envelope(p: Vec2Fx) -> bool {
+    let (lo, hi) = (Fx::from_num(-COORD_ENVELOPE), Fx::from_num(COORD_ENVELOPE));
+    p.x >= lo && p.x <= hi && p.y >= lo && p.y <= hi
+}
+
+/// Whether every coordinate an order names sits inside the envelope. The
+/// match is exhaustive on purpose: a new [`Order`] variant carrying a tile
+/// must decide its row here rather than slip through a catch-all.
+fn order_inside_envelope(order: &Order) -> bool {
+    match order {
+        Order::Idle | Order::Build { .. } | Order::Repair { .. } | Order::Salvage { .. } => true,
+        Order::Move { goal } | Order::AttackMove { goal } => tile_inside_envelope(*goal),
+        Order::Harvest { node } => tile_inside_envelope(*node),
+        Order::Attack { resume, .. } => resume.is_none_or(tile_inside_envelope),
+    }
+}
+
+/// The entity an order names, if any — exhaustive for the same reason as
+/// [`order_inside_envelope`].
+fn order_reference(order: &Order) -> Option<Target> {
+    match order {
+        Order::Idle | Order::Move { .. } | Order::Harvest { .. } | Order::AttackMove { .. } => None,
+        Order::Attack { target, .. } => Some(*target),
+        Order::Build { site } => Some(Target::Building(*site)),
+        Order::Repair { building } | Order::Salvage { building } => {
+            Some(Target::Building(*building))
+        }
+    }
+}
+
+/// Whether every coordinate a unit carries — body, orders, walk, tether —
+/// sits inside the envelope.
+fn unit_inside_envelope(u: &Unit) -> bool {
+    point_inside_envelope(u.pos)
+        && order_inside_envelope(&u.order)
+        && u.queue.iter().all(order_inside_envelope)
+        && u.leash.is_none_or(|l| tile_inside_envelope(l.anchor))
+        && u.path.as_ref().is_none_or(|p| {
+            tile_inside_envelope(p.goal) && p.waypoints.iter().copied().all(tile_inside_envelope)
+        })
+}
+
+/// Whether a building's salvage ledger is a coherent record of the hp
+/// stripped from it: crediting reads the cumulative drain through one
+/// exact formula, so any other pairing is a forgery — and one that would
+/// underflow the `u32` subtraction the next drain performs.
+fn salvage_ledger_coherent(b: &Building) -> bool {
+    if b.salvage_drained > SALVAGE_LEDGER_CEILING {
+        return false;
+    }
+    let stats = b.kind.stats();
+    let basis = stats.construction.map_or(0, |c| c.cost);
+    let target =
+        u64::from(b.salvage_drained) * u64::from(basis) * crate::stats::SALVAGE_REFUND_PERMILLE
+            / (1000 * u64::from(stats.max_hp));
+    u64::from(b.salvage_credited) == target
+}
+
 /// Why [`State::place_refusal`] said no. Own-state facts only — no
 /// variant may ever derive from what fog hides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -805,6 +1088,49 @@ mod tests {
     }
 
     #[test]
+    fn the_progress_ceiling_keeps_the_construction_ramp_in_u32() {
+        // Construction, repair, and salvage all price one tick of work as
+        // `ramp * (meter + 1) / ramp_ticks` in u32. The ceiling is only
+        // worth anything if that product still fits at the ceiling.
+        const KINDS: [BuildingKind; 7] = [
+            BuildingKind::Foundry,
+            BuildingKind::Turret,
+            BuildingKind::Fabricator,
+            BuildingKind::FlakTurret,
+            BuildingKind::Bastion,
+            BuildingKind::Array,
+            BuildingKind::Reclaimer,
+        ];
+        for kind in KINDS {
+            let stats = kind.stats();
+            let ramp = u64::from(stats.max_hp - stats.max_hp / 5);
+            assert!(
+                ramp * (u64::from(PROGRESS_ENVELOPE) + 1) <= u64::from(u32::MAX),
+                "{}: the ramp math must stay inside u32 at the ceiling",
+                kind.name()
+            );
+        }
+    }
+
+    #[test]
+    fn the_coordinate_envelope_admits_every_legal_map_and_refuses_the_extremes() {
+        assert!(tile_inside_envelope(TilePos::new(
+            MAX_MAP_EDGE as i32,
+            MAX_MAP_EDGE as i32
+        )));
+        assert!(tile_inside_envelope(TilePos::new(-1, -1)));
+        assert!(!tile_inside_envelope(TilePos::new(i32::MAX, 0)));
+        assert!(!tile_inside_envelope(TilePos::new(0, i32::MIN)));
+        assert!(point_inside_envelope(
+            TilePos::new(MAX_MAP_EDGE as i32, 0).center()
+        ));
+        assert!(!point_inside_envelope(Vec2Fx::new(
+            Fx::from_bits(i64::MAX),
+            Fx::ZERO
+        )));
+    }
+
+    #[test]
     fn state_hash_changes_with_content() {
         let mut a = tiny_state();
         let b = tiny_state();
@@ -815,12 +1141,36 @@ mod tests {
 }
 
 /// Why a deserialized snapshot was refused. Every variant is a structural
-/// contradiction the tick pipeline is entitled to assume away.
+/// contradiction the tick pipeline is entitled to assume away, and every
+/// one names the entity that broke it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum StateIntegrityError {
     /// The player table is empty.
     #[error("no players")]
     NoPlayers,
+    /// The player table is longer than [`PlayerId`] can address.
+    #[error("more players than a player id can address")]
+    TooManyPlayers,
+    /// A player sits on a team index no seat carries.
+    #[error("player {0} sits on a team outside the table")]
+    ForeignTeam(PlayerId),
+    /// The map grid's dimensions disagree with its cells.
+    #[error("map grid dimensions disagree with its cells")]
+    MalformedMapGrid,
+    /// The map is larger than the supported maximum per side.
+    #[error("map is {width}x{height}; the supported maximum is {MAX_MAP_EDGE} per side")]
+    MapTooLarge {
+        /// Columns claimed by the grid.
+        width: i32,
+        /// Rows claimed by the grid.
+        height: i32,
+    },
+    /// The vision table does not match the player list.
+    #[error("vision table does not match the player list")]
+    VisionTableMismatch,
+    /// A vision grid disagrees with the map dimensions.
+    #[error("a vision table disagrees with the map dimensions")]
+    MalformedVisionGrid,
     /// Units are not strictly sorted by id.
     #[error("units not strictly sorted by id")]
     UnsortedUnits,
@@ -833,24 +1183,86 @@ pub enum StateIntegrityError {
     /// The building id counter sits behind a live building.
     #[error("building id counter behind a live building")]
     StaleBuildingCounter,
-    /// The vision table does not match the player list.
-    #[error("vision table does not match the player list")]
-    VisionTableMismatch,
     /// A unit is owned by a player outside the table.
-    #[error("unit owned by a player outside the table")]
-    ForeignUnitOwner,
+    #[error("unit {0} is owned by a player outside the table")]
+    ForeignUnitOwner(UnitId),
+    /// A unit's hit points sit outside `(0, max_hp]`.
+    #[error("unit {0} carries hit points its kind cannot hold")]
+    UnitHpOutOfRange(UnitId),
+    /// A unit's work meter is past the ceiling.
+    #[error("unit {0} carries a work meter past the ceiling")]
+    UnitProgressOutOfRange(UnitId),
+    /// A unit's weapon cooldown is longer than that weapon's period, or a
+    /// slot past its roster is armed.
+    #[error("unit {0} carries a cooldown no weapon of its kind sets")]
+    UnitCooldownOutOfRange(UnitId),
+    /// A unit's order queue is longer than [`crate::stats::ORDER_QUEUE_CAP`].
+    #[error("unit {0} queues more orders than the cap allows")]
+    OverlongUnitQueue(UnitId),
+    /// A unit's body, order, walk, or tether names a coordinate outside
+    /// the sanity envelope.
+    #[error("unit {0} names a coordinate outside the envelope")]
+    UnitOutsideEnvelope(UnitId),
+    /// A unit's order names an entity id this run never handed out.
+    #[error("unit {0} is ordered against an id the run never minted")]
+    UnmintedOrderTarget(UnitId),
     /// A building is owned by a player outside the table.
-    #[error("building owned by a player outside the table")]
-    ForeignBuildingOwner,
+    #[error("building {0} is owned by a player outside the table")]
+    ForeignBuildingOwner(BuildingId),
+    /// A building's hit points sit outside `(0, max_hp]`.
+    #[error("building {0} carries hit points its kind cannot hold")]
+    BuildingHpOutOfRange(BuildingId),
+    /// A building's progress meter is past the ceiling.
+    #[error("building {0} carries a progress meter past the ceiling")]
+    BuildingProgressOutOfRange(BuildingId),
+    /// A building's cooldown is longer than its weapon's period.
+    #[error("building {0} carries a cooldown its weapon never sets")]
+    BuildingCooldownOutOfRange(BuildingId),
+    /// A building's production queue is longer than
+    /// [`crate::stats::QUEUE_CAP`].
+    #[error("building {0} queues more units than the cap allows")]
+    OverlongBuildingQueue(BuildingId),
+    /// A building queues a unit its kind cannot train, or one belonging to
+    /// the other faction's roster.
+    #[error("building {0} queues a unit it could never train")]
+    UnproducibleQueueEntry(BuildingId),
+    /// A building's anchor or rally point sits outside the sanity
+    /// envelope.
+    #[error("building {0} names a coordinate outside the envelope")]
+    BuildingOutsideEnvelope(BuildingId),
+    /// A building's salvage ledger is not a coherent record of the hp
+    /// stripped from it.
+    #[error("building {0} carries an incoherent salvage ledger")]
+    IncoherentSalvageLedger(BuildingId),
     /// A shell in flight is owned by a player outside the table.
-    #[error("shell owned by a player outside the table")]
-    ForeignShellOwner,
-    /// The map grid's dimensions disagree with its cells.
-    #[error("map grid dimensions disagree with its cells")]
-    MalformedMapGrid,
-    /// A vision grid disagrees with the map dimensions.
-    #[error("a vision table disagrees with the map dimensions")]
-    MalformedVisionGrid,
+    #[error("shell {0} is owned by a player outside the table")]
+    ForeignShellOwner(usize),
+    /// A shell's launch, impact, or splash radius is outside the sanity
+    /// envelope.
+    #[error("shell {0} names a coordinate outside the envelope")]
+    ShellOutsideEnvelope(usize),
+    /// A shell was fired by an entity id this run never handed out.
+    #[error("shell {0} was fired by an id the run never minted")]
+    UnmintedShellShooter(usize),
+    /// A remembered building is owned by a player outside the table.
+    #[error("player {0} remembers a building owned outside the table")]
+    ForeignGhostOwner(PlayerId),
+    /// A player remembers a building belonging to their own team; ghosts
+    /// are memories of the enemy.
+    #[error("player {0} remembers a building of their own team")]
+    FriendlyGhost(PlayerId),
+    /// A remembered building's anchor sits outside the sanity envelope.
+    #[error("player {0} remembers a building outside the envelope")]
+    GhostOutsideEnvelope(PlayerId),
+    /// A player's remembered buildings are not in canonical order.
+    #[error("player {0} remembers buildings out of canonical order")]
+    UnsortedGhosts(PlayerId),
+    /// A radar contact sits outside the sanity envelope.
+    #[error("player {0} holds a radar contact outside the envelope")]
+    ContactOutsideEnvelope(PlayerId),
+    /// A player's radar contacts are not sorted and deduplicated.
+    #[error("player {0} holds radar contacts out of canonical order")]
+    UnsortedContacts(PlayerId),
 }
 
 /// A shell in flight: launched at the victim's fire-time position,
