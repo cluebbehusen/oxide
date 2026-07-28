@@ -88,11 +88,29 @@ pub enum RawEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::assert_every_tag_sampled;
 
     fn roundtrip(event: RawEvent) -> RawEvent {
         let json = serde_json::to_string(&event).unwrap();
         serde_json::from_str(&json).unwrap()
     }
+
+    /// Contiguous index per [`RawEvent`] variant, in declaration order.
+    fn event_tag(event: &RawEvent) -> usize {
+        match event {
+            RawEvent::MouseMove { .. } => 0,
+            RawEvent::MouseDown { .. } => 1,
+            RawEvent::MouseUp { .. } => 2,
+            RawEvent::Wheel { .. } => 3,
+            RawEvent::KeyDown { .. } => 4,
+            RawEvent::KeyUp { .. } => 5,
+            RawEvent::TouchDown { .. } => 6,
+            RawEvent::TouchMove { .. } => 7,
+            RawEvent::TouchUp { .. } => 8,
+        }
+    }
+
+    const EVENT_VARIANTS: usize = 9;
 
     #[test]
     fn every_raw_event_variant_including_touch_survives_a_roundtrip() {
@@ -129,8 +147,7 @@ mod tests {
                 y: 13.0,
             },
         ];
-        // A new variant with no line here escapes the wire round-trip.
-        assert_eq!(events.len(), 9);
+        assert_every_tag_sampled(events.iter().map(event_tag), EVENT_VARIANTS, "raw event");
         for event in events {
             assert_eq!(
                 roundtrip(event),

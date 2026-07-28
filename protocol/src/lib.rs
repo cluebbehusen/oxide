@@ -330,29 +330,77 @@ mod tests {
         back.request
     }
 
-    #[test]
-    fn requests_roundtrip() {
-        for req in [
-            Request::Status,
-            Request::QueryState {
-                filter: StateFilter::default(),
-            },
-            Request::QueryUi,
-            Request::AdvanceTicks { ticks: 99 },
-            Request::PresentTicks { ticks: 3 },
-            Request::SendCommand {
-                player: PlayerId(0),
-                command: Command::Stop {
-                    units: vec![UnitId(3)],
-                },
-            },
-            Request::InjectEvent {
-                event: RawEvent::Wheel { delta: -1.0 },
-            },
-            Request::Screenshot { path: None },
-        ] {
-            assert_eq!(roundtrip(&req), req);
+    /// Exactly one sample per wire-enum variant. Paired with an exhaustive
+    /// tag match, a new variant cannot reach the wire unexercised: the match
+    /// stops compiling until it is indexed, and this stops passing until it
+    /// is sampled.
+    pub(crate) fn assert_every_tag_sampled(
+        tags: impl IntoIterator<Item = usize>,
+        variants: usize,
+        what: &str,
+    ) {
+        let mut samples = vec![0usize; variants];
+        for tag in tags {
+            samples[tag] += 1;
         }
+        for (tag, count) in samples.iter().enumerate() {
+            assert_eq!(
+                *count, 1,
+                "{what} variant {tag} has {count} samples; every variant needs exactly one"
+            );
+        }
+    }
+
+    /// Contiguous index per [`Request`] variant, in declaration order.
+    fn request_tag(request: &Request) -> usize {
+        match request {
+            Request::Status => 0,
+            Request::QueryState { .. } => 1,
+            Request::QueryCamera => 2,
+            Request::QueryUi => 3,
+            Request::StateHash => 4,
+            Request::AdvanceTicks { .. } => 5,
+            Request::PresentTicks { .. } => 6,
+            Request::Pause => 7,
+            Request::Resume => 8,
+            Request::SetSpeed { .. } => 9,
+            Request::SendCommand { .. } => 10,
+            Request::InjectEvent { .. } => 11,
+            Request::Screenshot { .. } => 12,
+            Request::ToggleOverlay => 13,
+            Request::LoadScenario { .. } => 14,
+            Request::LoadReplay { .. } => 15,
+            Request::SaveReplay { .. } => 16,
+        }
+    }
+
+    const REQUEST_VARIANTS: usize = 17;
+
+    /// Contiguous index per [`Reply`] variant, in declaration order.
+    fn reply_tag(reply: &Reply) -> usize {
+        match reply {
+            Reply::Ok => 0,
+            Reply::Status(_) => 1,
+            Reply::State(_) => 2,
+            Reply::Camera(_) => 3,
+            Reply::Ui(_) => 4,
+            Reply::Hash(_) => 5,
+            Reply::Advanced(_) => 6,
+            Reply::Presented(_) => 7,
+            Reply::Screenshot(_) => 8,
+            Reply::Overlay(_) => 9,
+            Reply::Saved(_) => 10,
+        }
+    }
+
+    const REPLY_VARIANTS: usize = 11;
+
+    #[test]
+    fn an_omitted_screenshot_path_survives_the_roundtrip() {
+        // The sampled variant carries a path; its defaulted form is pinned
+        // here, since serde only writes what is present.
+        let req = Request::Screenshot { path: None };
+        assert_eq!(roundtrip(&req), req);
     }
 
     #[test]
@@ -428,8 +476,11 @@ mod tests {
                 path: "replays/y.json".into(),
             },
         ];
-        // A new method with no entry here escapes the wire round-trip.
-        assert_eq!(requests.len(), 17);
+        assert_every_tag_sampled(
+            requests.iter().map(request_tag),
+            REQUEST_VARIANTS,
+            "request",
+        );
         for req in requests {
             assert_eq!(
                 roundtrip(&req),
@@ -507,8 +558,7 @@ mod tests {
                 commands: 42,
             }),
         ];
-        // A new reply kind with no entry here escapes the wire round-trip.
-        assert_eq!(replies.len(), 11);
+        assert_every_tag_sampled(replies.iter().map(reply_tag), REPLY_VARIANTS, "reply");
         for reply in replies {
             assert_eq!(
                 reply_roundtrip(&reply),
