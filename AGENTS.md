@@ -349,7 +349,34 @@ Hard < Expert forever).
 `driver balance-probe` runs bot-vs-bot across the shipped maps
 (optionally `--weights` for a candidate artifact — the fun gate's
 mechanical form) and reports cost-weighted composition with a
-spam-detecting entropy, headed by the probed artifact's digest. `driver matchup --a kind:n --b kind:n` fights
+spam-detecting entropy, headed by the probed artifact's digest. Since
+0.13 every record states the terms it was measured under — result,
+capped, winners, and the last sample anything moved — because a capped
+stalemate's army mix is evidence about a stalemate, and inferring that
+from `ticks == cap` is wrong on a match decided at the buzzer. Finished
+BUILDINGS ride beside the unit shares (distinct completed buildings per
+kind per seat): a roster that never stands a Fabricator never had the
+advanced kinds to decline. The aggregate keeps the historical
+entropy-of-the-mean AND publishes the per-seat entropy distribution —
+`p10` is the actual spam detector, because two seats each spamming a
+different kind average to a mix that reads as diverse. Everything folds
+through one seat-level cohort primitive (`composition::aggregate_by`
+with ready-made faction / map-class / decided-vs-capped / per-map
+keys), the matches fan out over the shared pool, and `--out` carries a
+`schema` integer beside `overall`, `decided`, and the cohort tables —
+`tools/train/fun_gate.py` reads that payload by key and cannot fail
+loudly on a reshape, so a driver test pins the keys it reads. The gate
+itself judges the DECIDED cohort only and enforces two tech rules with
+distinct thresholds: `--min-tech-share` (0.25) on the SUM over the
+Fabricator-gated kinds asks whether the tree was climbed at all, and
+`--min-top-tech-share` (0.03) on the LARGEST single tech kind asks
+whether anything on it was worth building — nine kinds at 0.4% each
+clear the first bar and fail the second. Before 0.13 the docstring
+promised the second and the code implemented only the first, at a
+threshold the sample cleared 15x. The corrected gate reads GREEN on the
+shipped artifact (Medium, 2 seeds, 37 of 50 matches decided: entropy
+2.26 bits, per-seat p10 1.52, tech sum 48.5%, fattest tech kind
+scuttler 24.3%). `driver matchup --a kind:n --b kind:n` fights
 hand-picked armies twice on a clean arena, swapping their physical seats;
 use comparable starting costs when testing counters. It reports each leg's
 completion status and survivor purchase value, plus the paired mean.
