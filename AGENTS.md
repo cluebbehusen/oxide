@@ -1082,13 +1082,21 @@ comparisons don't survive GPU churn, so CI never runs it.
   Expert; 12-2 west in decisive Twin Forges games). Both are artifacts
   of near-deterministic symmetric self-play: each seat's
   enemy-strength reading doubles in 2v2 so trained push thresholds
-  never fire, and the sim's residual id-order micro (movement still
-  iterates in fixed id order) compounds without blunder noise. At the
-  shipped Medium default both effects vanish (12/12 decisive, no
-  consistent lean), and a human in the match breaks symmetry at any
-  level — bounded to bot-vs-bot spectacles. Standing candidate engine
-  experiment: parity-alternate `movement::run` like the brain
-  loop (hash-moving; needs a bless and a re-measure).
+  never fire, and the sim's residual id-order micro compounds without
+  blunder noise. At the shipped Medium default both effects vanish
+  (12/12 decisive, no consistent lean), and a human in the match
+  breaks symmetry at any level — bounded to bot-vs-bot spectacles.
+  The parity-alternate `movement::run` candidate was run and retired
+  in 0.13: path following has no cross-unit reads (each body consults
+  only itself, terrain, and buildings), so reversing its iteration by
+  tick parity is provably inert — measured bit-identical across the
+  25-scenario fixture slate unblessed, a 120k-tick skirmish bot run,
+  the 48-game Medium decisiveness sweep, and a 12-game Expert duel at
+  120k cap. The id-order coupling in movement lives in the collision
+  resolver's sequential Gauss-Seidel passes, and their direction has
+  alternated by tick parity since 0.6; what remains fixed is
+  pair-visit order within a pass — a future candidate would aim
+  there, and THAT one is genuinely hash-moving.
 - **Causeway Verdict and Gatework Array fire no shot in 12k ticks**
   (all-Medium, the shipped default): not one casualty either, while
   every seat's economy runs at the roster's normal rate. Ten minutes of
