@@ -10,10 +10,11 @@ Three thresholds, each catching a different failure:
     is three-plus kinds pulling weight.
   --min-tech-share (0.25) on the SUM over the Fabricator-gated kinds:
     was the tech tree climbed at all.
-  --min-top-tech-share (0.03) on the LARGEST single tech kind: nine
-    tech kinds at 0.4% each clear the sum while not one of them was
-    ever worth building. The sum says the tree was visited; this says
-    something on it was chosen.
+  --min-top-tech-share (0.03) on the LARGEST single tech kind: the
+    sum can be cleared by many kinds each individually negligible
+    (say ten at 2.6%); this floor demands that at least one of them
+    was actually chosen. The sum says the tree was visited; this says
+    something on it was worth building.
 
 Judgment reads the DECIDED cohort of `driver balance-probe --out`. A
 stalemate's army mix is evidence about a stalemate, not about what a

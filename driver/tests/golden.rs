@@ -73,7 +73,7 @@ fn skirmish_midgame_matches_golden() {
 // `scenarios/`, which ships to players and is swept by the hash fixtures,
 // the liveness gate and the map gates — and driven through a scripted
 // program until the final state carries every branch of
-// `kit/src/render.rs`: all four terrains, rubble, scrap full and rich and
+// `kit/src/render.rs`: all three terrains, rubble, scrap full and rich and
 // worked down past half, a wreck tile, standing and half-built structures
 // of every kind, damaged machines of every kind on both rosters, a laden
 // harvester, and a same-faction hostile pair.

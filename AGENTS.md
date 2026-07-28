@@ -404,8 +404,8 @@ itself judges the DECIDED cohort only and enforces two tech rules with
 distinct thresholds: `--min-tech-share` (0.25) on the SUM over the
 Fabricator-gated kinds asks whether the tree was climbed at all, and
 `--min-top-tech-share` (0.03) on the LARGEST single tech kind asks
-whether anything on it was worth building — nine kinds at 0.4% each
-clear the first bar and fail the second. Before 0.13 the docstring
+whether anything on it was worth building — many individually
+negligible kinds can clear the first bar and still fail the second. Before 0.13 the docstring
 promised the second and the code implemented only the first, at a
 threshold the sample cleared 15x. The corrected gate reads GREEN on the
 shipped artifact (Medium, 2 seeds, 37 of 50 matches decided: entropy
@@ -473,9 +473,15 @@ of victories with 95% Wilson intervals, decision-tick quartiles, the
 censored share per cell, and the WHOLE cell table, because the
 interactions are the finding — the same-roster mirrors lean opposite
 ways and any average erases that. The all-baseline cell is the shipped
-game bit for bit (pinned by test against `runner::step` + `seat_bots`),
-which is what makes a reading against it a reading about the real
-world. First reading, skirmish Medium at 128 cells x 4 seeds: the
+game bit for bit on maps whose authored unit lists are seat-grouped
+(pinned by test against `runner::step` + `seat_bots` on skirmish);
+on the three 1v1 maps that author interleaved lists (meridian-scar,
+open-circuit, slagline) BOTH spawn levels re-group ids, so the
+comparison stays controlled but the baseline cell is not the authored
+id order there. Intervals are unpaired and therefore conservative for
+low-effect factors — the cell table and the hash-divergence counts
+are the paired evidence; a paired statistic is a campaign-era
+follow-up. First reading, skirmish Medium at 128 cells x 4 seeds: the
 bundle is almost entirely ROSTER (ferrous 22.7% [18.0, 28.2] of
 mixed-roster victories) plus a live geometry term (seat 0 takes 45.6%
 authored, 73.2% rotated); id range, command order and rng stream all

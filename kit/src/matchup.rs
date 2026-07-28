@@ -456,7 +456,8 @@ fn siege_leg(
         .unwrap_or(1);
     anyhow::ensure!(
         pitch >= widest,
-        "garrison pitch {pitch} is narrower than the widest structure ({widest} tiles)"
+        "garrison pitch {pitch} must be at least {widest} (the widest garrison structure, \
+         or 1 for an empty garrison)"
     );
     let rows = (LAST_ROW - FIRST_ROW) / pitch + 1;
     let columns = (FIRST_COLUMN - LAST_COLUMN) / pitch + 1;

@@ -14,9 +14,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// Runs `play` over every job across a worker pool, returning the
 /// results in job order.
 ///
-/// The first failure is returned and its worker stops; workers already
-/// inside a job finish it. `play` must be self-contained — the jobs are
-/// independent sims, which is what makes the fan-out safe at all.
+/// The first recorded failure is returned; workers stop picking up new
+/// jobs once one exists, though a worker already inside a job finishes
+/// it. `play` must be self-contained — the jobs are independent sims,
+/// which is what makes the fan-out safe at all.
 pub fn fan_out<J, R, F>(jobs: &[J], play: F) -> Result<Vec<R>>
 where
     J: Sync,
@@ -36,6 +37,9 @@ where
         for _ in 0..workers {
             scope.spawn(|| {
                 loop {
+                    if failure.lock().unwrap().is_some() {
+                        break;
+                    }
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(job) = jobs.get(i) else {
                         break;
@@ -43,7 +47,10 @@ where
                     match play(job) {
                         Ok(result) => results.lock().unwrap().push((i, result)),
                         Err(err) => {
-                            *failure.lock().unwrap() = Some(err);
+                            let mut first = failure.lock().unwrap();
+                            if first.is_none() {
+                                *first = Some(err);
+                            }
                             break;
                         }
                     }
