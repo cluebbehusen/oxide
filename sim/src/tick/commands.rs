@@ -180,22 +180,28 @@ fn accepted_units(state: &State, player: PlayerId, ids: &[UnitId]) -> Vec<UnitId
         .collect()
 }
 
+/// Any command is the player (or bot) speaking: whatever tether a
+/// self-acquired fight put on this machine ends here, and station
+/// keeping restarts — a commanded machine is on assignment, not
+/// standing a post. Runs UNCONDITIONALLY at the head of every verb
+/// that writes a unit's program ([`assign`], [`assign_circuit`],
+/// [`apply_stop`]) — before `assign`'s no-op early return, because a
+/// player re-ordering the exact attack the unit already picked itself
+/// compares equal, returns early, and would otherwise silently keep
+/// the leash on an explicit commitment. A new program-writing verb
+/// must pass through here too, not restate the contract inline.
+fn end_station_keeping(unit: &mut crate::state::Unit) {
+    unit.leash = None;
+    unit.settled = 0;
+}
+
 /// Hands a unit its next order: replacing wipes any queued program;
 /// appending parks the order behind the current one (bounded — a hostile
 /// stream of appends must not grow memory forever). Returns whether the
 /// order actually landed — a full queue drops the append, and the caller
 /// reports it instead of pretending.
 fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) -> bool {
-    // Any command is the player (or bot) speaking: whatever tether a
-    // self-acquired fight put on this machine, it ends here —
-    // UNCONDITIONALLY, before the no-op early return below. A player
-    // re-ordering the exact attack the unit already picked itself
-    // compares equal, returns early, and without this line would
-    // silently keep the leash on an explicit commitment. Station
-    // keeping restarts too: a commanded machine is on assignment,
-    // not standing a post.
-    unit.leash = None;
-    unit.settled = 0;
+    end_station_keeping(unit);
     if queue && !matches!(unit.order, Order::Idle) {
         if unit.queue.len() < ORDER_QUEUE_CAP {
             unit.queue.push_back(order);
@@ -220,6 +226,20 @@ fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) -> bool {
     unit.path = None;
     unit.progress = 0;
     true
+}
+
+/// Hands a unit a whole looping circuit wholesale — patrol's shape:
+/// first leg active, the rest queued, path and progress reset. The
+/// caller validates the route; `legs` must be non-empty. Shares
+/// [`end_station_keeping`] with [`assign`] so the command contract
+/// cannot drift between program writers.
+fn assign_circuit(unit: &mut crate::state::Unit, mut legs: impl Iterator<Item = Order>) {
+    end_station_keeping(unit);
+    unit.order = legs.next().expect("caller validated a non-empty route");
+    unit.queue = legs.collect();
+    unit.looping = true;
+    unit.path = None;
+    unit.progress = 0;
 }
 
 /// The first `count` tiles open to `domain`, ring-scanned outward from
@@ -474,23 +494,14 @@ fn apply_patrol(
         for id in ids {
             let unit = state.unit_mut(id).expect("filtered above");
             let can_fight = unit.kind.stats().can_fight();
-            let mut legs = snapped.iter().map(|&goal| {
+            let legs = snapped.iter().map(|&goal| {
                 if can_fight {
                     Order::AttackMove { goal }
                 } else {
                     Order::Move { goal }
                 }
             });
-            unit.order = legs.next().expect("validated non-empty");
-            unit.queue = legs.collect();
-            unit.looping = true;
-            unit.path = None;
-            unit.progress = 0;
-            // Patrol writes the program directly instead of through
-            // `assign`, so it must keep assign's side of the tether
-            // contract itself: a command ends station keeping.
-            unit.leash = None;
-            unit.settled = 0;
+            assign_circuit(unit, legs);
         }
     }
     if !routed {
@@ -861,8 +872,7 @@ fn purge_opposing_verb(
 
 fn apply_stop(state: &mut State, player: PlayerId, units: &[UnitId]) -> Result<(), RejectReason> {
     let applied = for_owned_units(state, player, units, |u| {
-        u.leash = None;
-        u.settled = 0;
+        end_station_keeping(u);
         u.clear_program();
     });
     (applied > 0)
