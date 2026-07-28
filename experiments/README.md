@@ -21,3 +21,4 @@ native Rust tournament of the quantized artifact
 | 0.11 (2026-07-25/26) | [the salvage campaign](2026-07-25-the-0.11-salvage-campaign.md) | gym v5, the salvage verb's consolidation lineage, the flipped-faction probe |
 | 0.12 (2026-07-27) | [the decisiveness campaign](2026-07-27-the-0.12-decisiveness-campaign.md) | the sweep/duel/yardstick instruments, the personality clamp, Medium's cadence re-meter |
 | 0.12 (2026-07-27) | [the movement overhaul](2026-07-27-the-0.12-movement-overhaul.md) | the head-on freeze, the pursuit tether carved by four failing gates, the lateral slide, the fan-out for free |
+| 0.13 (2026-07-28) | [the old world](2026-07-28-the-0.13-old-world.md) | the BEFORE side of the sim batch: the factorial's roster verdict, the pace table, the composition floor, the arena's roster gap |
