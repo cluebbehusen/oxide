@@ -220,13 +220,21 @@ and test fixtures inside crate `tests/` directories.
   one — genuinely: teams normalize to dense ids by first appearance,
   so an authored id can never alias an omitted seat, whatever number
   it picked — and every-seat-one-team is a build error. Shipped maps are
-  180°-symmetric — author edits in mirrored pairs, and on 4-player maps
-  every seat's unit list must be the exact image-transform of seat 0's,
-  entry by entry (the 0.7 seat-fairness rule generalized). The
+  180°-symmetric — author edits in mirrored pairs. The seat pairing is
+  derived from the map, never assumed: a Foundry anchor rotated 180°
+  lands on exactly one other anchor, and that relation is an involution
+  over the seats — `{0<->1}` on duels, `{0<->3, 1<->2}` or
+  `{0<->2, 1<->3}` on the 4-player maps, `{i <-> n-1-i}` on the lane
+  stacks (so "every seat is an image of seat 0" is NOT the rule and is
+  false on Open Quarry and Twin Forges). Paired seats must be
+  cross-team, bank the same scrap, and carry unit lists that are exact
+  entry-by-entry image transforms of each other — compared by
+  `Role`, so a launch-time retint or a future faction-varied starting
+  unit still reads as a mirror. `driver/tests/map_gates.rs` gates all
+  of it, the 0.7 seat-fairness bug made permanently unrepeatable. The
   3v3/4v4 maps (Trident Plateau and Causeway Verdict; Compass Grand
   and Gatework Array) generalize further:
-  stacks of identical 180°-self-symmetric lanes, east unit lists the
-  exact entry-by-entry images of their paired west seats, and the
+  stacks of identical 180°-self-symmetric lanes, and the
   map-gates fairness test holds all six/eight seats to strict scrap
   equality (team seats also need unique names — a headless sweep
   gates every shipped map, and launch gives colliding labels
