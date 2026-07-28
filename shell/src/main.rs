@@ -97,6 +97,42 @@ struct Args {
     /// layout path on high-DPI displays.
     #[arg(long)]
     no_high_dpi: bool,
+
+    /// Print startup diagnostics to stderr: prologue milestones with
+    /// ms-since-entry, then per-frame gap and hardware-event counts for
+    /// the first frames. OXIDE_TRACE_STARTUP=1 enables it too (handy
+    /// for the packaged .app, where flags are awkward).
+    #[arg(long)]
+    trace_startup: bool,
+}
+
+/// Wall-clock zero for the startup trace, pinned by the first caller —
+/// `window_conf` runs before the window exists, so it lands close to
+/// process entry.
+static TRACE_ENTRY: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// Frames the startup trace reports before going quiet.
+const TRACE_FRAMES: u32 = 200;
+
+/// The env var alone must not switch tracing on under `--automation`:
+/// the shots and menu_ux harnesses capture stderr from spawned shells,
+/// and an exported OXIDE_TRACE_STARTUP would leak into every one. The
+/// explicit flag always wins.
+fn trace_active(flag: bool, automation: bool, env_set: bool) -> bool {
+    flag || (env_set && !automation)
+}
+
+fn trace_startup_enabled(args: &Args) -> bool {
+    let env_set = std::env::var("OXIDE_TRACE_STARTUP").is_ok_and(|v| v == "1");
+    trace_active(args.trace_startup, args.automation, env_set)
+}
+
+fn trace_mark(label: &str) {
+    let entry = TRACE_ENTRY.get_or_init(std::time::Instant::now);
+    eprintln!(
+        "[trace-startup] {label} +{:.1}ms",
+        entry.elapsed().as_secs_f64() * 1000.0
+    );
 }
 
 /// Parses `WIDTHxHEIGHT` with sane floors — smaller than 640x400 and the
@@ -132,10 +168,14 @@ fn parse_speed(s: &str) -> Result<f64, String> {
 }
 
 fn window_conf() -> Conf {
+    TRACE_ENTRY.get_or_init(std::time::Instant::now);
     // The window is created before `run()` ever sees clap's output, so
     // the size/DPI flags are parsed here too — clap is idempotent and
     // errors surface identically on the second parse in `run()`.
     let args = Args::parse();
+    if trace_startup_enabled(&args) {
+        trace_mark("window_conf enter");
+    }
     let (width, height) = args.window.unwrap_or(config::Config::load().window);
     Conf {
         window_title: "Oxide".to_string(),
@@ -349,12 +389,29 @@ impl Mixer {
 
 async fn run() -> Result<()> {
     let args = Args::parse();
+    let trace = trace_startup_enabled(&args);
+    let mark = |label: &str| {
+        if trace {
+            trace_mark(label);
+        }
+    };
+    mark("run enter (first frame)");
+    // Subscribe to hardware input before the prologue: the whole load
+    // below runs inside frame 1, and events dispatched before the
+    // subscriber exists are discarded, not queued. Automation shells
+    // stay unarmed — they never poll, so a queue would never drain.
+    if !args.automation {
+        input::arm_hardware();
+    }
     let mut config = config::Config::load();
     render::set_user_scale(config.ui_scale);
     render::set_reduced_motion(config.reduced_motion);
     render::set_colorblind(config.colorblind);
+    mark("config loaded");
     let sprites = assets::Sprites::load().await?;
+    mark("sprites loaded");
     let sounds = assets::Sounds::load().await?;
+    mark("sounds loaded");
     let mut mixer = Mixer::default();
 
     let mut game = if let Some(path) = &args.replay {
@@ -369,11 +426,13 @@ async fn run() -> Result<()> {
     };
     game.paused = args.paused;
     game.speed = args.speed;
+    mark("game built");
 
     // Launched for a purpose (a scenario, a resume, or an agent socket)?
     // Straight into the game. Everyone else — automation and humans
     // alike — starts cold at the Home front door.
     let mut home = screens::home::HomeScreen::open();
+    mark("home screen open");
     let mut playback: Option<screens::playback::PlaybackSession> = None;
     let mut tutorial: Option<tutorial::Tutorial> = None;
     // Window-size persistence: written once the size has been stable
@@ -418,10 +477,15 @@ async fn run() -> Result<()> {
     prevent_quit();
 
     let debug_rx: Option<Receiver<IncomingRequest>> = if args.debug_server {
-        Some(debug_server::spawn(args.port)?)
+        let rx = debug_server::spawn(args.port)?;
+        mark("debug server up");
+        Some(rx)
     } else {
         None
     };
+    // Per-frame trace state: (frame index, previous frame top).
+    let mut trace_frames: Option<(u32, std::time::Instant)> =
+        trace.then(|| (0, std::time::Instant::now()));
     let mut input = input::InputState::new();
     let mut injected: Vec<RawEvent> = Vec::new();
     let mut pending_shots: Vec<PendingScreenshot> = Vec::new();
@@ -470,6 +534,21 @@ async fn run() -> Result<()> {
         } else {
             input::poll_events()
         };
+        if let Some((frame, last_top)) = trace_frames.as_mut() {
+            *frame += 1;
+            let now = std::time::Instant::now();
+            let entry = TRACE_ENTRY.get_or_init(std::time::Instant::now);
+            eprintln!(
+                "[trace-startup] [F] {frame} +{:.1}ms gap={:.1}ms hw_events={}",
+                now.duration_since(*entry).as_secs_f64() * 1000.0,
+                now.duration_since(*last_top).as_secs_f64() * 1000.0,
+                events.len()
+            );
+            *last_top = now;
+        }
+        if trace_frames.is_some_and(|(frame, _)| frame >= TRACE_FRAMES) {
+            trace_frames = None;
+        }
         events.append(&mut injected);
         // Start-of-frame modifier truth, saved before the fold below:
         // the Controls capture replays this frame's edges in order from
@@ -1665,5 +1744,15 @@ mod tests {
             .expect("automation with the debug server should parse");
         assert!(args.debug_server);
         assert!(args.automation);
+    }
+
+    #[test]
+    fn trace_env_never_reaches_an_automation_shell() {
+        // Harness-spawned shells inherit the developer's environment;
+        // only the explicit flag may trace under --automation.
+        assert!(!trace_active(false, true, true));
+        assert!(trace_active(true, true, false));
+        assert!(trace_active(false, false, true));
+        assert!(!trace_active(false, false, false));
     }
 }

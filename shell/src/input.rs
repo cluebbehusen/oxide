@@ -499,11 +499,30 @@ impl macroquad::miniquad::EventHandler for PointerStream {
     }
 }
 
+// A fingertip must arrive ONCE, as a touch — macroquad otherwise
+// mirrors every touch into synthetic mouse events and the same
+// finger would both pan the camera and drag a box.
+static TOUCH_SETUP: std::sync::Once = std::sync::Once::new();
+// The subscriber is registered on demand so an automation shell —
+// which never polls hardware — never accumulates a queue it won't
+// drain. Hardware shells must arm BEFORE the prologue instead:
+// macroquad's register_input_subscriber starts an empty queue, so
+// every event dispatched earlier is fanned out to no one and gone —
+// with lazy-only arming, anything clicked or typed while assets and
+// the autosave scan ran inside frame 1 was silently discarded.
+static POINTER_SUB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+/// Subscribes to the hardware input stream now, so events arriving
+/// before the first [`poll_events`] queue instead of vanishing. Call
+/// at the top of the frame future, before any prologue work; never
+/// call from an automation shell. `poll_events` still self-arms as a
+/// fallback and keeps its first-poll cursor seed either way.
+pub fn arm_hardware() {
+    TOUCH_SETUP.call_once(|| mq::simulate_mouse_with_touch(false));
+    POINTER_SUB.get_or_init(mq::utils::register_input_subscriber);
+}
+
 pub fn poll_events() -> Vec<RawEvent> {
-    // A fingertip must arrive ONCE, as a touch — macroquad otherwise
-    // mirrors every touch into synthetic mouse events and the same
-    // finger would both pan the camera and drag a box.
-    static TOUCH_SETUP: std::sync::Once = std::sync::Once::new();
     TOUCH_SETUP.call_once(|| mq::simulate_mouse_with_touch(false));
     let mut events = Vec::new();
     for touch in mq::touches() {
@@ -513,20 +532,17 @@ pub fn poll_events() -> Vec<RawEvent> {
         }
     }
     // Pointer events in true arrival order, each with its own position.
-    // Registration is lazy so an automation shell — which never polls
-    // hardware — never accumulates a subscriber queue it won't drain.
-    static POINTER_SUB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    let first_poll = POINTER_SUB.get().is_none();
     let sub = *POINTER_SUB.get_or_init(mq::utils::register_input_subscriber);
-    if first_poll {
-        // The fresh subscriber queue is empty and a stationary cursor
-        // will never fill it: seed the stream with the position the
-        // pointer already holds, or edge pan and wheel zoom anchor at
-        // (0, 0) until the first real motion. mouse_position() is
+    static FIRST_POLL: std::sync::Once = std::sync::Once::new();
+    FIRST_POLL.call_once(|| {
+        // However early the subscriber was armed, a stationary cursor
+        // never queues a baseline: seed the stream with the position
+        // the pointer already holds, or edge pan and wheel zoom anchor
+        // at (0, 0) until the first real motion. mouse_position() is
         // already logical (macroquad divides its dpi out).
         let (x, y) = mq::mouse_position();
         events.push(RawEvent::MouseMove { x, y });
-    }
+    });
     let mut stream = PointerStream::new(macroquad::miniquad::window::dpi_scale());
     mq::utils::repeat_all_miniquad_input(&mut stream, sub);
     events.append(&mut stream.events);

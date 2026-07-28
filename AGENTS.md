@@ -141,6 +141,13 @@ cargo run -p oxide-shell -- --debug-server --paused # driven mode: sim time
 cargo run -p oxide-driver -- smoke --spawn          # automated live check
 ```
 
+`--trace-startup` (or `OXIDE_TRACE_STARTUP=1`, which reaches the
+packaged .app where flags are awkward) prints a stderr timeline:
+prologue milestones with ms-since-entry, then per-frame gap and
+hardware-event counts for the first 200 frames. Off by default, and
+the env var alone never activates it under `--automation` — the
+harnesses capture spawned shells' stderr.
+
 A typical agent session against a running shell:
 
 ```sh
@@ -937,6 +944,14 @@ comparisons don't survive GPU churn, so CI never runs it.
 
 ## Known issues (tracked, deliberate)
 
+- **The first click into an unfocused shell window is eaten by the
+  engine layer** (macOS: miniquad's view answers neither
+  `acceptsFirstMouse` nor a tracking area, so pointer motion and the
+  focusing click go undelivered until the window is key — worst after
+  a terminal launch, where activation lags a beat). Diagnosis
+  recorded; the fix is upstream and deferred to a post-0.13 session.
+  `dist/Oxide.app` activates normally, and `--trace-startup` shows
+  the dead window as frames with `hw_events=0`.
 - **The classic bot's 27/27 seat-1 mirror sweep: root-caused and fixed
   in 0.7.** The twin-simulation trace found symmetry breaking at tick 0
   because `skirmish.json`'s p1 spawn list wasn't the exact mirror-order
