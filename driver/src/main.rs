@@ -71,8 +71,6 @@ enum Cmd {
         #[arg(short, long)]
         out: PathBuf,
     },
-    /// Measure a map: room per seat, route lengths by domain, resources,
-    /// artillery pressure, spawn spacing.
     /// Bot-vs-bot composition probe across the shipped maps: what the
     /// armies were made of, cost-weighted, with a spam-detecting
     /// entropy — the balance review's measuring stick.
@@ -231,6 +229,8 @@ enum Cmd {
         #[arg(long)]
         b_structures: Option<String>,
     },
+    /// Measure a map: room per seat, route lengths by domain, resources,
+    /// artillery pressure, spawn spacing.
     MapAudit {
         /// Scenario path, or "skirmish".
         scenario: String,
@@ -508,20 +508,35 @@ fn main() -> Result<()> {
                 oxide_kit::bench::all_bots(&mut sc);
                 let mut state = sc.build()?;
                 let mut bots = oxide_sim::bot::seat_bots(&sc);
+                // The timed loop stops at the decision: post-victory
+                // ticks simulate a world with nothing left to decide
+                // and average as free work, so a long --ticks quietly
+                // inflated ticks/s (the once-recorded 25k+ figures).
                 let start = std::time::Instant::now();
+                let mut ran: u64 = 0;
                 for _ in 0..ticks {
+                    if state.result().is_some() {
+                        break;
+                    }
                     let mut commands = Vec::new();
                     for bot in &mut bots {
                         commands.extend(bot.act(&state));
                     }
                     state.tick(&commands);
+                    ran += 1;
                 }
                 let secs = start.elapsed().as_secs_f64();
+                let decided = if state.result().is_some() {
+                    format!(" — decided at tick {}", state.current_tick())
+                } else {
+                    String::new()
+                };
                 println!(
-                    "bench: {} ({} bot seats) x {ticks} ticks in {secs:.2}s = {:.0} ticks/s (hash {:#x})",
+                    "bench: {} ({} bot seats) x {ran} of {ticks} requested ticks in {secs:.2}s \
+                     = {:.0} ticks/s{decided} (hash {:#x})",
                     sc.name,
                     bots.len(),
-                    f64::from(ticks) / secs,
+                    (ran as f64) / secs,
                     state.hash()
                 );
                 return Ok(());
@@ -530,14 +545,25 @@ fn main() -> Result<()> {
             let mut state = scenario.build()?;
             oxide_kit::bench::engage(&mut state);
             let start = std::time::Instant::now();
+            let mut ran: u64 = 0;
             for _ in 0..ticks {
+                if state.result().is_some() {
+                    break;
+                }
                 state.tick(&[]);
+                ran += 1;
             }
             let secs = start.elapsed().as_secs_f64();
+            let decided = if state.result().is_some() {
+                format!(" — decided at tick {}", state.current_tick())
+            } else {
+                String::new()
+            };
             println!(
-                "bench: {} units x {ticks} ticks in {secs:.2}s = {:.0} ticks/s (hash {:#x})",
+                "bench: {} units x {ran} of {ticks} requested ticks in {secs:.2}s \
+                 = {:.0} ticks/s{decided} (hash {:#x})",
                 units * 2,
-                f64::from(ticks) / secs,
+                (ran as f64) / secs,
                 state.hash(),
             );
         }

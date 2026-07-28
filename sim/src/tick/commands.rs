@@ -503,104 +503,91 @@ fn apply_build(
         }
         return (landed > 0).then_some(()).ok_or(RejectReason::QueueFull);
     }
-    let site = match existing {
-        Some(site) => site,
-        None => {
-            let cost = kind.stats().construction.ok_or(RejectReason::BadSite)?.cost;
-            if !state.can_place(player, kind, anchor) {
-                return Err(RejectReason::BadSite);
-            }
-            if state.player(player).scrap < cost {
-                return Err(RejectReason::NotEnoughScrap);
-            }
-            // Place first, then prove the builder can actually reach a
-            // doorstep *around the now-blocking footprint* — otherwise
-            // undo for free. Charging for a site nobody can ever touch
-            // would burn 80% of the price through the hp-scaled refund.
-            let site = state.place_site(player, kind, anchor);
-            let from = state.unit(builder).expect("filtered above").tile();
-            let size = kind.stats().size;
-            // The canonical doorstep: lowest-(y, x) reachable
-            // perimeter tile. One deterministic tile, because it
-            // doubles as where an under-feet builder steps when the
-            // foundation claims its ground. (A* tolerates a blocked
-            // start, so a builder standing inside the fresh footprint
-            // routes out of it like any unit on newly claimed ground.)
-            let doorstep = super::rect_adjacent_tiles(anchor, size)
-                .filter(|&t| state.passable(t))
-                .filter(|&t| from == t || super::astar_for(state, from, t).is_some())
-                .min_by_key(|t| (t.y, t.x));
-            let Some(doorstep) = doorstep else {
-                state.retract_site(site);
-                return Err(RejectReason::UnreachableGoal);
-            };
-            // Assign BEFORE paying: a builder whose order queue is
-            // full must reject the whole command with the site
-            // retracted and nothing spent — the old code discarded
-            // this result and could charge for a site nobody was
-            // ordered to build.
-            let unit = state.unit_mut(builder).expect("filtered above");
-            if !assign(unit, Order::Build { site }, queue) {
-                state.retract_site(site);
-                return Err(RejectReason::QueueFull);
-            }
-            state.player_mut(player).scrap -= cost;
-            // The accepted foundation buries whatever wreck salvage lay
-            // there (only now — a rejected site must leave no trace).
-            let size = kind.stats().size;
-            for dy in 0..size.1 {
-                for dx in 0..size.0 {
-                    state.map.clear_wreck(anchor.offset(dx, dy));
-                }
-            }
-            // Friendly machines make way as the site claims the
-            // ground: no sim rule expects a resting unit on a claimed
-            // footprint. The builder steps to the doorstep (its work
-            // position); every other friendly inside — allies
-            // included — deals round-robin onto the passable perimeter
-            // ring in (y, x) order, id order among the displaced.
-            // Strictly after the last rejection path and the payment —
-            // a rejected command must not move the state hash
-            // (retract_site's contract). Hostiles can't be here:
-            // can_place refused them.
-            let ring: Vec<TilePos> = {
-                let mut ring: Vec<TilePos> = super::rect_adjacent_tiles(anchor, size)
-                    .filter(|&t| state.passable(t))
-                    .collect();
-                ring.sort_unstable_by_key(|t| (t.y, t.x));
-                ring
-            };
-            let inside = |t: TilePos| {
-                t.x >= anchor.x
-                    && t.x < anchor.x + size.0
-                    && t.y >= anchor.y
-                    && t.y < anchor.y + size.1
-            };
-            let mut dealt = 0usize;
-            for i in 0..state.units.len() {
-                let u = &state.units[i];
-                if u.hp == 0
-                    || u.kind.stats().domain != crate::stats::Domain::Ground
-                    || !inside(u.tile())
-                {
-                    continue;
-                }
-                let to = if u.id == builder {
-                    doorstep
-                } else if let Some(&t) = ring.get(dealt % ring.len().max(1)) {
-                    dealt += 1;
-                    t
-                } else {
-                    continue; // no perimeter at all: leave it; collision resolves
-                };
-                let unit = &mut state.units[i];
-                unit.pos = to.center();
-                unit.path = None;
-            }
-            site
-        }
+    let cost = kind.stats().construction.ok_or(RejectReason::BadSite)?.cost;
+    if !state.can_place(player, kind, anchor) {
+        return Err(RejectReason::BadSite);
+    }
+    if state.player(player).scrap < cost {
+        return Err(RejectReason::NotEnoughScrap);
+    }
+    // Place first, then prove the builder can actually reach a
+    // doorstep *around the now-blocking footprint* — otherwise
+    // undo for free. Charging for a site nobody can ever touch
+    // would burn 80% of the price through the hp-scaled refund.
+    let site = state.place_site(player, kind, anchor);
+    let from = state.unit(builder).expect("filtered above").tile();
+    let size = kind.stats().size;
+    // The canonical doorstep: lowest-(y, x) reachable
+    // perimeter tile. One deterministic tile, because it
+    // doubles as where an under-feet builder steps when the
+    // foundation claims its ground. (A* tolerates a blocked
+    // start, so a builder standing inside the fresh footprint
+    // routes out of it like any unit on newly claimed ground.)
+    let doorstep = super::rect_adjacent_tiles(anchor, size)
+        .filter(|&t| state.passable(t))
+        .filter(|&t| from == t || super::astar_for(state, from, t).is_some())
+        .min_by_key(|t| (t.y, t.x));
+    let Some(doorstep) = doorstep else {
+        state.retract_site(site);
+        return Err(RejectReason::UnreachableGoal);
     };
-    let _ = site;
+    // Assign BEFORE paying: a builder whose order queue is
+    // full must reject the whole command with the site
+    // retracted and nothing spent — the old code discarded
+    // this result and could charge for a site nobody was
+    // ordered to build.
+    let unit = state.unit_mut(builder).expect("filtered above");
+    if !assign(unit, Order::Build { site }, queue) {
+        state.retract_site(site);
+        return Err(RejectReason::QueueFull);
+    }
+    state.player_mut(player).scrap -= cost;
+    // The accepted foundation buries whatever wreck salvage lay
+    // there (only now — a rejected site must leave no trace).
+    let size = kind.stats().size;
+    for dy in 0..size.1 {
+        for dx in 0..size.0 {
+            state.map.clear_wreck(anchor.offset(dx, dy));
+        }
+    }
+    // Friendly machines make way as the site claims the
+    // ground: no sim rule expects a resting unit on a claimed
+    // footprint. The builder steps to the doorstep (its work
+    // position); every other friendly inside — allies
+    // included — deals round-robin onto the passable perimeter
+    // ring in (y, x) order, id order among the displaced.
+    // Strictly after the last rejection path and the payment —
+    // a rejected command must not move the state hash
+    // (retract_site's contract). Hostiles can't be here:
+    // can_place refused them.
+    let ring: Vec<TilePos> = {
+        let mut ring: Vec<TilePos> = super::rect_adjacent_tiles(anchor, size)
+            .filter(|&t| state.passable(t))
+            .collect();
+        ring.sort_unstable_by_key(|t| (t.y, t.x));
+        ring
+    };
+    let inside = |t: TilePos| {
+        t.x >= anchor.x && t.x < anchor.x + size.0 && t.y >= anchor.y && t.y < anchor.y + size.1
+    };
+    let mut dealt = 0usize;
+    for i in 0..state.units.len() {
+        let u = &state.units[i];
+        if u.hp == 0 || u.kind.stats().domain != crate::stats::Domain::Ground || !inside(u.tile()) {
+            continue;
+        }
+        let to = if u.id == builder {
+            doorstep
+        } else if let Some(&t) = ring.get(dealt % ring.len().max(1)) {
+            dealt += 1;
+            t
+        } else {
+            continue; // no perimeter at all: leave it; collision resolves
+        };
+        let unit = &mut state.units[i];
+        unit.pos = to.center();
+        unit.path = None;
+    }
     Ok(())
 }
 

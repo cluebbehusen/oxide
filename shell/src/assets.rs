@@ -69,7 +69,7 @@ fn faction_index(faction: Faction) -> usize {
 const ACCENT: usize = 2;
 
 /// Where game data lives. A macOS .app bundle keeps it in
-/// Contents/Resources beside Contents/MacOS/<exe>; development runs
+/// Contents/Resources beside `Contents/MacOS/<exe>`; development runs
 /// from the workspace root. Resolved once by probing for the atlas —
 /// the one file no build ships without.
 pub fn resource_root() -> std::path::PathBuf {

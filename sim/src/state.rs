@@ -853,12 +853,6 @@ pub enum StateIntegrityError {
     MalformedVisionGrid,
 }
 
-/// The wire shape of [`State`]: a private mirror that derives the actual
-/// field-level `Deserialize`, so the only path from bytes to a `State`
-/// runs through [`State::validate_invariants`] — there is no public
-/// unvalidated constructor to call by accident. The exhaustive `From`
-/// below keeps the mirror honest: if `State` grows or loses a field, this
-/// module stops compiling instead of silently desyncing.
 /// A shell in flight: launched at the victim's fire-time position,
 /// unguided from that instant ("a shell in flight chooses nothing" —
 /// literal since 0.9), resolving on its arrival tick against whatever
@@ -883,6 +877,12 @@ pub struct Shell {
     pub splash: Option<chassis::fx::Fx>,
 }
 
+/// The wire shape of [`State`]: a private mirror that derives the actual
+/// field-level `Deserialize`, so the only path from bytes to a `State`
+/// runs through `State::validate_invariants` — there is no public
+/// unvalidated constructor to call by accident. The exhaustive `From`
+/// below keeps the mirror honest: if `State` grows or loses a field, this
+/// module stops compiling instead of silently desyncing.
 #[derive(Deserialize)]
 #[serde(rename = "State")]
 struct StateWire {

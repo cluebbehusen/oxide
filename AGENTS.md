@@ -60,6 +60,11 @@ in the commit message. A branch that blesses `state-hashes.json` must
 already carry its cycle's workspace version: SIM_VERSION stamps every
 replay and autosave, and a behavior change wearing last release's
 number lets an old binary silently reconstruct a different world.
+Since 0.13 the fixture enforces this mechanically — it carries the
+`sim_version` it was blessed under, and `BLESS=1` refuses same-version
+hash movement on an existing row (bump the version first;
+`BLESS_SAME_VERSION=1` overrides for a justified exception, and new or
+removed rows never block).
 
 ## Build, test, bless
 
@@ -84,7 +89,12 @@ tripwire that flags sim drift without image churn, and the fixture CI
 re-derives per-OS as the cross-platform determinism proof.
 `.github/workflows/ci.yml` runs the suite on three OSes plus an MSRV
 job on every push and PR; the hash-fixture step re-derives per-OS as the
-cross-platform determinism proof.
+cross-platform determinism proof. Since 0.13 every cargo invocation is
+`--locked`, the Linux leg gates strict rustdoc, the python job launches
+a real `oxide-driver gym` worker (the Rust/Python contract handshake
+CI was missing), and a `deny` job enforces `deny.toml` — advisories,
+licenses, and source policy, with a reasoned triage ledger for
+macroquad's stale corners.
 
 ## Running and driving the game
 
@@ -171,7 +181,7 @@ and test fixtures inside crate `tests/` directories.
   exclusively from that one texture (source rects, 1px edge extrusion
   against bleed) so the whole world batches into a handful of draw calls —
   never load per-sprite textures in the shell. The palette constants also
-  appear in `driver/src/render.rs` and `shell/src/render.rs` — keep them
+  appear in `kit/src/render.rs` and `shell/src/render.rs` — keep them
   in sync.
 - **Scenarios** are JSON with ASCII maps: `.` ground, `,` rubble (cosmetic
   ground; the byte is hashed but nothing else changes), `#` rock, `^` peak
@@ -334,8 +344,10 @@ patience and stopped ordering the ladder in 0.10.
 (`--scenario scenarios/compass-grand.json` instead runs a shipped map
 with EVERY chair converted to a thinking Expert — the heaviest honest
 shape; the earlier 3,073 ticks/s figure benched seven minds around an
-idle authored human seat, and the corrected eight-mind deep-game
-number is 5,044 ticks/s — no perf window is open); CI asserts only
+idle authored human seat, the 5,044 figure averaged free post-victory
+ticks, and since 0.13 the timed loop stops at the decision — the
+honest eight-mind live-game number is 3,210 ticks/s, still ~160x
+realtime, so no perf window is open); CI asserts only
 hash-identity at scale. The 0.10 pacing findings and levers live in
 `experiments/` (the per-era lab notebook — its README indexes the
 campaigns); matches target tens of minutes (the `vast` map class

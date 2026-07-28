@@ -344,8 +344,6 @@ impl Scenario {
         // buildings — foundries and authored structures alike — can be
         // demolished, so terrain is the honest floor of reachability).
         if let Some((first, rest)) = anchors.split_first() {
-            let map = &self.map;
-            let _ = map;
             let mut open = std::collections::VecDeque::new();
             let width = state.map().width();
             let height = state.map().height();

@@ -6,8 +6,9 @@
 //! Injected and hardware events take the identical path, which is what makes
 //! presentation-layer tests trustworthy without OS-level input faking.
 //!
-//! Touch variants exist now, unused, so the mobile ports extend this enum
-//! instead of growing a second funnel.
+//! Touch variants flow through the shell's real touch handling (tap
+//! select, drag pan, pinch zoom) — one funnel for every pointer
+//! species, sized for the mobile ports.
 
 use serde::{Deserialize, Serialize};
 

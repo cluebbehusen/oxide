@@ -1,7 +1,9 @@
 //! The shipped ladder holds: embedded weights load, every named level
-//! beats the one below it head-to-head (seat-swapped), and ladder
-//! matches reproduce bit-identically — the neural tiers live inside
-//! replays like any other command source.
+//! outpaces the one below it against the scripted yardstick slate
+//! (seat-swapped; wins first, then victory pace with losses priced at
+//! the horizon — deliberately NOT neural head-to-head, which rewards
+//! patience), and ladder matches reproduce bit-identically — the
+//! neural tiers live inside replays like any other command source.
 
 use oxide_sim::bot::{Brain, Difficulty, Level, NeuralBot, QuantNet};
 use oxide_sim::state::GameResult;

@@ -27,7 +27,8 @@ colorblind-safe accents, a left-handed preset), and full key
 remapping — every change applies immediately and persists, explicit
 unbindings included. Play opens a thumbnail grid of every map,
 sectioned by format, each card carrying a fog-free, theme-graded
-preview and pace badge — and every choice you make on the way to a
+preview — the selected map's blurb names its pace and scrap richness —
+and every choice you make on the way to a
 match survives backing up a screen. Selected
 machines draw their weapon ranges (and radar rings); stalls and
 rejections say why in words. Clicking anything opens its command
@@ -109,6 +110,7 @@ only what's still standing — damage burns salvage.
 | Left click on minimap              | Jump the camera there                                                                                                                                                        |
 | Right click                        | Contextual order: enemy → attack, scrap → harvest, ground → **move engaging everything on the way** (fire at will is the only stance; combat units always defend themselves) |
 | Shift + right click                | Queue the order behind the current one                                                                                                                                       |
+| `M`                                | Units selected: arm run — click ground to move **without** engaging, the recall that works while standing next to an enemy (Esc cancels)                                     |
 | `R`                                | Arm a patrol: right-click waypoints, `R` again to start the loop — patrollers engage everything met and never settle                                                         |
 | `B`                                | With a harvester selected: open the build palette — digits pick the structure, the ghost shows validity on ground you can currently see, click commits, Esc cancels          |
 | Right click a damaged own building | With harvesters selected: weld it (billed per hp — pricier than building, cheaper than losing it)                                                                            |
@@ -131,9 +133,10 @@ only what's still standing — damage burns salvage.
 
 Ranged fire needs a clear line: rock (and buildings) block ground
 shots, so a Sentinel behind cover must step out to fire — and so must
-the one shooting at it. The air plays by different rules: nothing
-blocks a shot to or from the sky, and indirect shells (Bombard,
-Bastion) arc over everything. Guns that outrange their own eyes fire
+the one shooting at it. The air plays by different rules: the sky is
+clear of everything except peaks, which wall it, block every shot
+across them in any pairing, and break the indirect arcs (Bombard,
+Bastion) that sail over mere rock. Guns that outrange their own eyes fire
 on your team's sight — kill the spotter and the guns go quiet. Every order answers back — a ground ping where it landed, a toast
 when it couldn't be done. Rich scrap nodes (the taller, denser piles)
 hold double the salvage and are usually worth fighting over.

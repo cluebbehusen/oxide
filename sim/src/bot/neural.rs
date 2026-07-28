@@ -90,7 +90,7 @@ impl Level {
     /// turtles into a tech advantage and "handicaps" cancel out.
     /// Against aggression — scripted tiers, human rushes — reaction
     /// lag costs what it should. The in-tree ladder test is the
-    /// 24-match strict-ordering tripwire; `driver yardstick` is the
+    /// 80-match pace-ordering tripwire; `driver yardstick` is the
     /// wide instrument (0.12 read: 34 < 42 < 46 < 48 of 48, and every
     /// probed "stronger Medium" dial measured weaker — the skill knob
     /// is trained conditioning, not a pure handicap, so these dials

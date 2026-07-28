@@ -1,4 +1,5 @@
-"""Wrapper over `oxide-driver gym` subprocesses (protocol v3).
+"""Wrapper over `oxide-driver gym` subprocesses (contract pinned by
+``GYM_VERSION`` below and re-verified at every worker's hello).
 
 Each worker is one driver process serving sequential episodes over
 stdio. `control` picks the externally-driven seats: `(0,)` against a
