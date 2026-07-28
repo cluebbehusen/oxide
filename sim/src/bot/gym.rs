@@ -160,12 +160,13 @@ pub const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
 /// token) are never eligible — humans may sell a Fabricator, but the
 /// bot's lowering never picks one: v1's value-ordered list made
 /// selling the Fabricator the first legal salvage in every game.
-pub const SALVAGE_PRIORITY: [BuildingKind; 5] = [
+pub const SALVAGE_PRIORITY: [BuildingKind; 6] = [
     BuildingKind::Turret,
     BuildingKind::FlakTurret,
     BuildingKind::Array,
     BuildingKind::Bastion,
     BuildingKind::Reclaimer,
+    BuildingKind::RepairBay,
 ];
 
 impl Action {

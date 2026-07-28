@@ -272,6 +272,12 @@ fn showcase_scenario() -> (Scenario, Cast) {
             x: 19,
             y: 2,
         },
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::RepairBay,
+            x: 22,
+            y: 2,
+        },
     ];
 
     let scenario = Scenario {
@@ -333,7 +339,7 @@ fn opening_orders(cast: &Cast) -> Vec<PlayerCommand> {
             queue: false,
         },
     }];
-    // Six sites, founded and then abandoned: the builder's order is
+    // Seven sites, founded and then abandoned: the builder's order is
     // replaced each time, but the ground is claimed on placement.
     for (kind, x, y) in [
         (BuildingKind::Turret, 33, 23),
@@ -342,6 +348,7 @@ fn opening_orders(cast: &Cast) -> Vec<PlayerCommand> {
         (BuildingKind::Reclaimer, 39, 23),
         (BuildingKind::Fabricator, 32, 25),
         (BuildingKind::Bastion, 38, 25),
+        (BuildingKind::RepairBay, 41, 25),
     ] {
         commands.push(PlayerCommand {
             player: PlayerId(1),
@@ -405,7 +412,7 @@ fn showcase_state() -> State {
     for tick in 0..SHOWCASE_TICKS {
         let commands = match tick {
             0 => opening_orders(&cast),
-            // Calling the builder off leaves all six sites orphaned at a
+            // Calling the builder off leaves all seven sites orphaned at a
             // fifth of their hp — scaffolding, for as long as we like.
             1 => vec![PlayerCommand {
                 player: PlayerId(1),
@@ -494,6 +501,7 @@ fn showcase_covers_every_rendered_feature() {
         BuildingKind::Bastion,
         BuildingKind::Array,
         BuildingKind::Reclaimer,
+        BuildingKind::RepairBay,
     ] {
         assert!(
             state.buildings().iter().any(|b| b.kind == kind && b.built),

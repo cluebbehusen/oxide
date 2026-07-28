@@ -200,6 +200,9 @@ pub fn building_flavor(kind: BuildingKind) -> &'static str {
         BuildingKind::Bastion => "Siege gun emplacement. Arcs shells beyond its sight.",
         BuildingKind::Array => "Radar mast. True sight close, nameless contacts far.",
         BuildingKind::Reclaimer => "Slow-drips scrap from the ground it stands on.",
+        BuildingKind::RepairBay => {
+            "Welds nearby wounded machines. Sustain costs scrap, not torches."
+        }
     }
 }
 

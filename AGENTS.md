@@ -853,6 +853,26 @@ comparisons don't survive GPU churn, so CI never runs it.
   contract, so fixtures never move — and the executive's
   rotate-to-the-rear doctrine still assumes nothing bot-reachable
   heals (the constraint is written on `PULLBACK_NUM`).
+- **The Repair Bay is an aura, not a crew** (0.13):
+  `BuildingKind::RepairBay` (2x2, 200 scrap, unarmed — appended last,
+  postcard discipline) welds own wounded units, ground AND air (the
+  reason the harvester verb may refuse flyers), inside
+  `REPAIR_BAY_RADIUS` of its footprint on the `REPAIR_BAY_PERIOD`
+  cadence — a building-id-order pass in the brain phase feeding the
+  same `resolve_unit_heals` seam as crewmate welds, so fire wins
+  ties. Billing is per hp at the same 850‰ from the OWNER's bank
+  with hp itself as the meter (ceiling-diff of the patient's
+  milli-scrap value telescopes to within one scrap — no stored
+  counter, nothing new in the hash); a bank that can't cover a
+  patient's coin skips it and keeps scanning, so partial scrap heals
+  the earliest ids deterministically and a broke owner heals nothing.
+  No gym action until the v6 contract — the bot cannot build one,
+  which is what keeps the fixtures inert (the Salvage precedent).
+  The matchup arena seats carry a bank now (only billed sustain can
+  spend it), so `--b-structures repairbay:n` measures the aura; at
+  the shipped dials a bay roughly pays for itself sustaining an
+  equal-cost army inside its ring and loses to the same scrap spent
+  on turrets or attackers — a sustain tool, not a turtle wall.
 - **Salvage is labor, not a button** (0.11): `Command::Salvage` sends
   harvesters to strip an own BUILT non-Foundry building down the
   construction ramp backward. Drains buffer beside the gains

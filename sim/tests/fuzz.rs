@@ -170,7 +170,7 @@ fn unit_kind_index(kind: UnitKind) -> usize {
 }
 
 /// Every building kind, the unbuildable Foundry included.
-const BUILDING_KINDS: [BuildingKind; 7] = [
+const BUILDING_KINDS: [BuildingKind; 8] = [
     BuildingKind::Foundry,
     BuildingKind::Turret,
     BuildingKind::Fabricator,
@@ -178,6 +178,7 @@ const BUILDING_KINDS: [BuildingKind; 7] = [
     BuildingKind::Bastion,
     BuildingKind::Array,
     BuildingKind::Reclaimer,
+    BuildingKind::RepairBay,
 ];
 
 fn building_kind_index(kind: BuildingKind) -> usize {
@@ -189,6 +190,7 @@ fn building_kind_index(kind: BuildingKind) -> usize {
         BuildingKind::Bastion => 4,
         BuildingKind::Array => 5,
         BuildingKind::Reclaimer => 6,
+        BuildingKind::RepairBay => 7,
     }
 }
 

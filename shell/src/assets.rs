@@ -41,6 +41,7 @@ pub struct Sprites {
     bastion: [Rect; 3],
     array: [Rect; 3],
     reclaimer: [Rect; 3],
+    repair_bay: [Rect; 3],
     harvester: [Rect; 3],
     harvester_scoop: [[Rect; 3]; 2],
     scaffold: [Rect; 2],
@@ -151,6 +152,7 @@ fn building_stem(kind: BuildingKind) -> &'static str {
         BuildingKind::Bastion => "bastion",
         BuildingKind::Array => "array",
         BuildingKind::Reclaimer => "reclaimer",
+        BuildingKind::RepairBay => "repair_bay",
     }
 }
 
@@ -204,7 +206,7 @@ const ALL_UNIT_KINDS: [UnitKind; 11] = [
 ];
 
 #[cfg(test)]
-const ALL_BUILDING_KINDS: [BuildingKind; 7] = [
+const ALL_BUILDING_KINDS: [BuildingKind; 8] = [
     BuildingKind::Foundry,
     BuildingKind::Turret,
     BuildingKind::Fabricator,
@@ -212,6 +214,7 @@ const ALL_BUILDING_KINDS: [BuildingKind; 7] = [
     BuildingKind::Bastion,
     BuildingKind::Array,
     BuildingKind::Reclaimer,
+    BuildingKind::RepairBay,
 ];
 
 /// Every atlas key [`Sprites::load`] resolves, built from the same lists
@@ -324,6 +327,7 @@ impl Sprites {
             bastion: building(BuildingKind::Bastion)?,
             array: building(BuildingKind::Array)?,
             reclaimer: building(BuildingKind::Reclaimer)?,
+            repair_bay: building(BuildingKind::RepairBay)?,
             harvester: unit(UnitKind::Harvester)?,
             harvester_scoop: [
                 variant_row(&rects, unit_stem(UnitKind::Harvester), SCOOP_SUFFIXES[0])?,
@@ -450,6 +454,7 @@ impl Sprites {
             oxide_sim::BuildingKind::Bastion => &self.bastion,
             oxide_sim::BuildingKind::Array => &self.array,
             oxide_sim::BuildingKind::Reclaimer => &self.reclaimer,
+            oxide_sim::BuildingKind::RepairBay => &self.repair_bay,
         }
     }
 

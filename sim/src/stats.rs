@@ -67,6 +67,10 @@ pub enum BuildingKind {
     /// Grinds ambient debris into a scrap trickle. Slow to repay itself;
     /// the reason a match can outlive its scrap patches.
     Reclaimer,
+    /// Field workshop: an unarmed aura that welds own wounded machines —
+    /// ground and air alike — inside its ring, billed per hp from the
+    /// owner's bank at repair pricing.
+    RepairBay,
 }
 
 /// A movement medium. Ground units path and collide on the terrain grid;
@@ -696,6 +700,18 @@ const RECLAIMER: BuildingStats = BuildingStats {
     }),
 };
 
+const REPAIR_BAY: BuildingStats = BuildingStats {
+    max_hp: 400,
+    size: (2, 2),
+    vision: 5,
+    produces: &[],
+    weapons: &[],
+    construction: Some(ConstructionStats {
+        cost: 200,
+        build_ticks: 350,
+    }),
+};
+
 impl UnitKind {
     /// Static stats for this kind.
     pub const fn stats(self) -> &'static UnitStats {
@@ -726,6 +742,7 @@ impl BuildingKind {
             BuildingKind::Bastion => "bastion",
             BuildingKind::Array => "array",
             BuildingKind::Reclaimer => "reclaimer",
+            BuildingKind::RepairBay => "repair bay",
         }
     }
 
@@ -739,6 +756,7 @@ impl BuildingKind {
             BuildingKind::Bastion => &BASTION,
             BuildingKind::Array => &ARRAY,
             BuildingKind::Reclaimer => &RECLAIMER,
+            BuildingKind::RepairBay => &REPAIR_BAY,
         }
     }
 }
@@ -796,6 +814,22 @@ pub const SALVAGE_REFUND_PERMILLE: u64 = 800;
 /// widest radius pair, and well under any weapon's reach. Unit welds
 /// have no footprint to be adjacent to; this is their adjacency.
 pub const REPAIR_REACH: Fx = Fx::lit("1.2");
+
+/// Reach of the Repair Bay's welding aura, in tiles from the nearest
+/// point of its footprint — a base ring, not battlefield cover: shorter
+/// than every siege weapon's reach, so the counter to a healed defense
+/// is standing outside it.
+pub const REPAIR_BAY_RADIUS: Fx = Fx::lit("4.0");
+
+/// Ticks between Repair Bay aura pulses. With [`REPAIR_BAY_STEP`] this
+/// sets the sustain rate per patient: 1 hp / 8 ticks — around a quarter
+/// of one Turret's damage rate, so an aura never out-heals focused
+/// fire; its value is breadth (every wounded machine in the ring heals
+/// at once) and never needing a harvester's torch time.
+pub const REPAIR_BAY_PERIOD: u64 = 8;
+
+/// Hp each aura pulse offers each patient in the ring.
+pub const REPAIR_BAY_STEP: u32 = 1;
 
 /// Welding ramp for the Foundry, which has no construction stats to
 /// borrow one from.

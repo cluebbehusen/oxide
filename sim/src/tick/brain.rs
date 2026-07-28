@@ -126,6 +126,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         }
     }
     turret_fire(state, events, &mut hits, &mut launches);
+    repair_bay_aura(state, &mut heals);
     // Arrivals join this tick's volley; launches land on later ticks
     // (flight is at least one tick), so ordering here cannot matter.
     land_shells(state, &mut hits, events);
@@ -354,6 +355,77 @@ fn resolve_unit_heals(state: &mut State, heals: Vec<PendingUnitHeal>) {
         }
         let max = i64::from(u.kind.stats().max_hp);
         u.hp = (i64::from(u.hp) + gain).clamp(0, max) as u32;
+    }
+}
+
+/// The Repair Bay's act — the one building whose output is a heal. On
+/// its pulse cadence every built bay, in building-id order, offers each
+/// own wounded machine inside [`crate::stats::REPAIR_BAY_RADIUS`] of
+/// its footprint (ground and air alike; reach measures from the
+/// nearest footprint point, so a 2x2 gets no phantom ring) one
+/// [`crate::stats::REPAIR_BAY_STEP`] of hp, billed from the owner's
+/// bank at [`crate::stats::REPAIR_COST_PERMILLE`] of the patient's
+/// proportional cost. Hp itself is the billing meter: each pulse pays
+/// the ceiling-diff of the patient's milli-scrap value across its
+/// step, so a full heal telescopes to within one scrap of exact — no
+/// stored counter, nothing new in the hash. A bank that cannot cover a
+/// patient's coin skips that patient and keeps scanning: partial scrap
+/// heals the earliest ids and starves the rest, deterministically.
+/// Everything buffers into the one unit-heal resolver, so fire wins
+/// ties and an overlapping second bay's past-ceiling coin refunds like
+/// any stacked welder's.
+fn repair_bay_aura(state: &mut State, heals: &mut Vec<PendingUnitHeal>) {
+    use crate::stats::BuildingKind;
+    if !state
+        .current_tick()
+        .is_multiple_of(crate::stats::REPAIR_BAY_PERIOD)
+    {
+        return;
+    }
+    let bays: Vec<crate::ids::BuildingId> = state
+        .buildings
+        .iter()
+        .filter(|b| b.built && b.hp > 0 && b.kind == BuildingKind::RepairBay)
+        .map(|b| b.id)
+        .collect();
+    let radius = crate::stats::REPAIR_BAY_RADIUS;
+    for bay in bays {
+        let Some(b) = state.building(bay) else {
+            continue;
+        };
+        let owner = b.player;
+        let patients: Vec<UnitId> = state
+            .units
+            .iter()
+            .filter(|u| {
+                u.player == owner
+                    && u.hp > 0
+                    && u.hp < u.kind.stats().max_hp
+                    && b.closest_point_to(u.pos).dist_sq(u.pos) <= radius * radius
+            })
+            .map(|u| u.id)
+            .collect();
+        for id in patients {
+            let u = state.unit(id).expect("just filtered");
+            let stats = u.kind.stats();
+            let step = crate::stats::REPAIR_BAY_STEP.min(stats.max_hp - u.hp);
+            let millis = |hp: u32| -> u64 {
+                u64::from(hp) * u64::from(stats.cost) * crate::stats::REPAIR_COST_PERMILLE
+                    / u64::from(stats.max_hp)
+            };
+            let due = millis(u.hp + step).div_ceil(1000) - millis(u.hp).div_ceil(1000);
+            let bank = state.player(owner).scrap;
+            if u64::from(bank) < due {
+                continue; // broke for this patient; cheaper coins may still land
+            }
+            state.player_mut(owner).scrap = bank - due as u32;
+            heals.push(PendingUnitHeal {
+                unit: id,
+                step,
+                player: owner,
+                paid: due as u32,
+            });
+        }
     }
 }
 

@@ -304,12 +304,13 @@ fn stroke_queued(game: &Game, shift: bool) -> usize {
 
 /// Everything a harvester can put in the ground, in palette order — the
 /// digit keys index straight into this.
-pub(crate) const BUILD_PALETTE: [oxide_sim::BuildingKind; 6] = [
+pub(crate) const BUILD_PALETTE: [oxide_sim::BuildingKind; 7] = [
     oxide_sim::BuildingKind::Turret,
     oxide_sim::BuildingKind::FlakTurret,
     oxide_sim::BuildingKind::Bastion,
     oxide_sim::BuildingKind::Array,
     oxide_sim::BuildingKind::Reclaimer,
+    oxide_sim::BuildingKind::RepairBay,
     oxide_sim::BuildingKind::Fabricator,
 ];
 

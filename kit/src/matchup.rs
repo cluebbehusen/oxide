@@ -50,13 +50,14 @@ pub fn parse_army(spec: &str) -> Result<Army> {
 /// the arena's own anchors are the victory tokens, and the verdict
 /// deliberately never counts them.
 pub fn parse_garrison(spec: &str) -> Result<Garrison> {
-    const KINDS: [BuildingKind; 6] = [
+    const KINDS: [BuildingKind; 7] = [
         BuildingKind::Turret,
         BuildingKind::Fabricator,
         BuildingKind::FlakTurret,
         BuildingKind::Bastion,
         BuildingKind::Array,
         BuildingKind::Reclaimer,
+        BuildingKind::RepairBay,
     ];
     let squash = |s: &str| {
         s.chars()
@@ -673,7 +674,11 @@ fn seat(name: &str, faction: Faction) -> PlayerSpec {
         name: name.into(),
         faction,
         team: None,
-        scrap: 0,
+        // The arena has no economy, but billed sustain (the Repair
+        // Bay's aura) must not starve artificially. No commands flow
+        // here, so nothing else can touch the bank; both seats carry
+        // the same one, keeping the paired legs exactly neutral.
+        scrap: 10_000,
         bot: false,
         bot_config: None,
     }
