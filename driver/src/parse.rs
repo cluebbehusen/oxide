@@ -138,6 +138,7 @@ pub(crate) fn parse_key(s: &str) -> Result<Key> {
         "home" => Key::Home,
         "end" => Key::End,
         "escape" | "esc" => Key::Escape,
+        "backspace" => Key::Backspace,
         "space" => Key::Space,
         "f1" => Key::F1,
         "shift" => Key::Shift,

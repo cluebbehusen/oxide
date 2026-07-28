@@ -255,6 +255,12 @@ pub(crate) enum LiveCmd {
         /// Keys joined with '+', e.g. "ctrl+1" or "shift+f1".
         keys: String,
     },
+    /// Inject typed text, one Text event per character — drives the
+    /// save-name field the way a keyboard's char stream does.
+    InjectText {
+        /// Printable ASCII; anything else is refused.
+        text: String,
+    },
     /// Inject a cursor move.
     InjectMouseMove {
         /// Window x.
@@ -572,6 +578,19 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
                 event: RawEvent::KeyUp { key },
             }));
             return Ok(requests);
+        }
+        LiveCmd::InjectText { text } => {
+            // The shell filters ingest to printable ASCII; refusing here
+            // tells the caller instead of silently dropping characters.
+            if let Some(bad) = text.chars().find(|c| !('\u{20}'..='\u{7e}').contains(c)) {
+                bail!("inject-text takes printable ASCII only (got {bad:?})");
+            }
+            return Ok(text
+                .chars()
+                .map(|ch| Request::InjectEvent {
+                    event: RawEvent::Text { ch },
+                })
+                .collect());
         }
         LiveCmd::InjectMouseMove { x, y } => Request::InjectEvent {
             event: RawEvent::MouseMove { x, y },

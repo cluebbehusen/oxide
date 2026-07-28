@@ -105,25 +105,21 @@ fn write_record(game: &mut Game, dir: &Path) -> Result<SaveOutcome, SaveError> {
         path: dir.to_path_buf(),
         source,
     })?;
-    game.recorder.meta.ticks = Some(game.state.current_tick());
-    // Tick-stamped names collide across sessions (same map, same quit
-    // tick); walk a counter until a free name turns up so rotation
-    // always keeps the newest sessions instead of overwriting one.
     let tick = game.state.current_tick();
     let prefix = if game.state.result().is_some() {
         "match"
     } else {
         "autosave"
     };
-    let mut path = dir.join(format!("{prefix}-{tick:010}.json"));
-    let mut n = 0u32;
-    while path.exists() && n < 1000 {
-        n += 1;
-        path = dir.join(format!(
-            "{prefix}-{tick:010}-{}-{n}.json",
-            game.scenario.seed
-        ));
-    }
+    game.recorder.meta.ticks = Some(tick);
+    // The record says what it is: the shelf classifies on `kind` and
+    // falls back to the filename prefix only for pre-0.13 files.
+    game.recorder.meta.kind = Some(prefix.to_string());
+    game.recorder.meta.saved_at = Some(now_unix());
+    // Tick-stamped names collide across sessions (same map, same quit
+    // tick); walk a counter until a free name turns up so rotation
+    // always keeps the newest sessions instead of overwriting one.
+    let path = free_path(dir, prefix, tick, game.scenario.seed);
     game.recorder
         .save(&path)
         .map_err(|source| SaveError::Write {
@@ -133,6 +129,60 @@ fn write_record(game: &mut Game, dir: &Path) -> Result<SaveOutcome, SaveError> {
     game.autosave_done = true;
     rotate(dir);
     Ok(SaveOutcome::Wrote(path))
+}
+
+/// Writes a player-named save into the saves directory, which rotation
+/// never touches — a save the player asked for is deleted only by the
+/// player. The name lives in the record's `description`, never in the
+/// filename, so reserved names, path traversal, and length limits never
+/// become a class of bug. Leaves the live recorder untouched (a later
+/// quit-autosave must not inherit the name) and never marks the session
+/// saved: explicit saves and quit autosaves are independent records.
+pub fn save_named(game: &Game, name: &str) -> Result<PathBuf, SaveError> {
+    let dir = crate::paths::saves_dir().ok_or(SaveError::NoDataDir)?;
+    write_named(game, name, &dir, now_unix())
+}
+
+/// The testable core of [`save_named`]: everything but the platform
+/// directory lookup and the wall clock.
+fn write_named(game: &Game, name: &str, dir: &Path, saved_at: u64) -> Result<PathBuf, SaveError> {
+    std::fs::create_dir_all(dir).map_err(|source| SaveError::CreateDir {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+    let mut record = game.recorder.clone();
+    record.meta.ticks = Some(game.state.current_tick());
+    record.meta.description = Some(name.to_string());
+    record.meta.kind = Some("save".to_string());
+    record.meta.saved_at = Some(saved_at);
+    let path = free_path(dir, "save", game.state.current_tick(), game.scenario.seed);
+    record.save(&path).map_err(|source| SaveError::Write {
+        path: path.clone(),
+        source,
+    })?;
+    Ok(path)
+}
+
+/// A collision-free `{prefix}-{tick}` path in `dir`: same-tick records
+/// from other sessions walk a seed-suffixed counter instead of being
+/// overwritten.
+fn free_path(dir: &Path, prefix: &str, tick: u64, seed: u64) -> PathBuf {
+    let mut path = dir.join(format!("{prefix}-{tick:010}.json"));
+    let mut n = 0u32;
+    while path.exists() && n < 1000 {
+        n += 1;
+        path = dir.join(format!("{prefix}-{tick:010}-{seed}-{n}.json"));
+    }
+    path
+}
+
+/// Wall-clock provenance for record metadata — never consumed by any
+/// sim path (the sim's ban is on state, not on metadata).
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Retention runs per record kind: live sessions and finished matches
@@ -239,6 +289,43 @@ mod tests {
             matches!(write_record(&mut game, &dir), Ok(SaveOutcome::AlreadySaved)),
             "one record per session"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn records_carry_their_kind_and_a_named_save_leaves_the_session_recorder_alone() {
+        let dir = scratch("kind-stamp");
+        let mut game = Game::new(oxide_sim::Scenario::skirmish()).expect("game");
+        game.advance_ticks(1);
+        let saved = write_named(&game, "before the big push", &dir, 1_784_721_600)
+            .expect("a named save lands");
+        let record = GameReplay::load(&saved).expect("loads back");
+        assert_eq!(record.meta.kind.as_deref(), Some("save"));
+        assert_eq!(
+            record.meta.description.as_deref(),
+            Some("before the big push")
+        );
+        assert_eq!(record.meta.saved_at, Some(1_784_721_600));
+        assert!(
+            game.recorder.meta.description.is_none(),
+            "the live recorder never inherits the name"
+        );
+        assert!(
+            !game.autosave_done,
+            "an explicit save is not the session's quit record"
+        );
+        // A second save on the same tick walks the name instead of
+        // overwriting the first.
+        let again =
+            write_named(&game, "again", &dir, 1_784_721_601).expect("the twin walks a counter");
+        assert_ne!(saved, again);
+        // The quit autosave stamps its own kind.
+        let Ok(SaveOutcome::Wrote(auto_path)) = write_record(&mut game, &dir) else {
+            panic!("the quit record lands");
+        };
+        let auto = GameReplay::load(&auto_path).expect("loads back");
+        assert_eq!(auto.meta.kind.as_deref(), Some("autosave"));
+        assert!(auto.meta.description.is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 

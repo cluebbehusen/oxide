@@ -37,6 +37,17 @@ pub struct ReplayMeta {
     /// run is fully reproduced (commands alone only bound it from below).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ticks: Option<Tick>,
+    /// What kind of record this is. Chassis assigns no meaning — games
+    /// write their own tags (Oxide uses "autosave", "save", "match") and
+    /// classify at their own boundary, the same shape as `description`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Wall-clock save time, unix seconds. This is provenance OUTSIDE
+    /// the sim: a wall clock is forbidden in deterministic state, not in
+    /// recorder metadata — the caller passes the value (chassis never
+    /// reads a clock) and no sim path or hash ever consumes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_at: Option<u64>,
 }
 
 /// A command stamped with the tick it executes on.
@@ -79,6 +90,8 @@ impl<S, C> Replay<S, C> {
                 sim_version: sim_version.into(),
                 description: None,
                 ticks: None,
+                kind: None,
+                saved_at: None,
             },
             setup,
             commands: Vec::new(),
@@ -357,6 +370,29 @@ mod tests {
         assert_eq!(loaded.commands.len(), 2, "the second record won");
         assert_eq!(loaded.commands[1].command, "late");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn absent_metadata_stays_out_of_the_file_and_present_metadata_survives() {
+        // Compatibility both directions: a record that sets nothing
+        // serializes byte-identically to the pre-metadata format (an old
+        // binary reads it untroubled), and a pre-metadata file loads
+        // with the new fields honestly absent.
+        let bare: Replay<u8, u8> = Replay::new("1.0.0", 1);
+        let json = serde_json::to_string(&bare).unwrap();
+        assert!(!json.contains("kind") && !json.contains("saved_at"));
+        let old_file = r#"{"meta":{"sim_version":"1.0.0"},"setup":1,"commands":[]}"#;
+        let loaded: Replay<u8, u8> = serde_json::from_str(old_file).unwrap();
+        assert_eq!(loaded.meta.kind, None);
+        assert_eq!(loaded.meta.saved_at, None);
+
+        let mut tagged: Replay<u8, u8> = Replay::new("1.0.0", 1);
+        tagged.meta.kind = Some("save".to_string());
+        tagged.meta.saved_at = Some(1_784_721_600);
+        let json = serde_json::to_string(&tagged).unwrap();
+        let back: Replay<u8, u8> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.meta.kind.as_deref(), Some("save"));
+        assert_eq!(back.meta.saved_at, Some(1_784_721_600));
     }
 
     #[test]

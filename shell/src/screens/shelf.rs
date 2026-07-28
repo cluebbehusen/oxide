@@ -1,6 +1,7 @@
-//! The replay shelf: autosaves and local records, watch or delete —
-//! the second screen-object extraction. Windowless update; the main
-//! loop opens playback sessions and draws.
+//! The record shelf: two sections over one menu — SAVES (resumable
+//! sessions, Enter loads) and REPLAYS (finished matches, Enter
+//! watches) — the second screen-object extraction. Windowless update;
+//! the main loop opens sessions and draws.
 
 use crate::game::SoundKind;
 use crate::menu::Menu;
@@ -15,6 +16,9 @@ pub enum Out {
     Stay,
     /// Back to the front door.
     Home,
+    /// Resume this record as a live session (the caller loads it and
+    /// answers for a file that no longer loads).
+    Load(std::path::PathBuf),
     /// Watch this record (the caller opens the playback session and
     /// answers for a file that no longer loads).
     Watch(std::path::PathBuf),
@@ -23,32 +27,74 @@ pub enum Out {
     Deleted,
 }
 
-/// The shelf screen: discovered records, their menu, and the
+/// What one menu row stands for. Rows are values, not arithmetic: the
+/// section headers shift every index below them, and a hand-shifted
+/// offset is exactly the class of bug the pause screen's row enum
+/// retired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowKind {
+    /// A section label; the cursor skips it, clicks ignore it.
+    Header,
+    /// A record, by index into `entries`.
+    Entry(usize),
+    /// The exit row.
+    Back,
+}
+
+/// The shelf screen: discovered records, their sectioned menu, and the
 /// two-press delete arming state.
 pub struct Shelf {
-    /// Everything watchable or deletable, newest first.
+    /// Everything loadable, watchable, or deletable, newest first
+    /// within its section.
     pub entries: Vec<ReplayEntry>,
-    /// The rows: one per entry, plus Back — always plus Back, which is
-    /// the 0.9 regression this construction pins (a delete-refresh once
-    /// dropped it and stranded mouse-only players in an exitless menu).
+    /// The rows: section headers, one row per entry, plus Back —
+    /// always plus Back, which is the 0.9 regression this construction
+    /// pins (a delete-refresh once dropped it and stranded mouse-only
+    /// players in an exitless menu).
     pub menu: Menu,
-    /// Row armed for deletion; X on the same row confirms.
+    /// What each menu row stands for, parallel to `menu.items`.
+    rows: Vec<RowKind>,
+    /// Menu row armed for deletion; X on the same row confirms.
     pub arming: Option<usize>,
 }
 
 impl Shelf {
-    /// Scans the autosave dir and `replays/` like the front door does.
+    /// Scans the save and replay directories like the front door does.
     pub fn open() -> Self {
         Self::from_entries(saves::discover())
     }
 
     /// Builds the shelf over the given records (tests inject their own).
+    /// Sections appear only when they have rows; an empty shelf is just
+    /// Back under the empty-state subtitle.
     pub fn from_entries(entries: Vec<ReplayEntry>) -> Self {
-        let mut rows: Vec<String> = entries.iter().map(|e| e.label.clone()).collect();
-        rows.push("Back".to_string());
+        let mut items: Vec<String> = Vec::new();
+        let mut rows: Vec<RowKind> = Vec::new();
+        let mut headers: Vec<usize> = Vec::new();
+        for (title, resumable) in [("SAVES", true), ("REPLAYS", false)] {
+            let section: Vec<usize> = entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.kind.resumable() == resumable)
+                .map(|(i, _)| i)
+                .collect();
+            if section.is_empty() {
+                continue;
+            }
+            headers.push(items.len());
+            items.push(title.to_string());
+            rows.push(RowKind::Header);
+            for i in section {
+                items.push(entries[i].label.clone());
+                rows.push(RowKind::Entry(i));
+            }
+        }
+        items.push("Back".to_string());
+        rows.push(RowKind::Back);
         Self {
             entries,
-            menu: Menu::new("REPLAYS", rows),
+            menu: Menu::with_headers("SAVES & REPLAYS", items, headers),
+            rows,
             arming: None,
         }
     }
@@ -74,24 +120,29 @@ impl Shelf {
         }
         if let Some(row) = picked {
             sounds.push((SoundKind::Click, None));
-            if row >= self.entries.len() {
-                return Out::Home;
-            }
-            return match self.entries.get(row) {
-                Some(entry) if entry.compatible && entry.watchable => {
-                    Out::Watch(entry.path.clone())
+            let entry = match self.rows.get(row) {
+                Some(RowKind::Entry(i)) => self.entries.get(*i),
+                Some(RowKind::Header) => return Out::Stay,
+                _ => return Out::Home,
+            };
+            return match entry {
+                Some(entry) if entry.compatible && entry.kind.resumable() => {
+                    Out::Load(entry.path.clone())
                 }
+                Some(entry) if entry.compatible => Out::Watch(entry.path.clone()),
                 Some(_) => {
+                    // The honest version badge already told this story;
+                    // the refusal just repeats it out loud.
                     sounds.push((SoundKind::Denied, None));
                     Out::Stay
                 }
                 None => Out::Stay,
             };
         }
-        if x_pressed && self.menu.selected < self.entries.len() {
+        if x_pressed && let Some(RowKind::Entry(i)) = self.rows.get(self.menu.selected).copied() {
             let row = self.menu.selected;
             if self.arming == Some(row) {
-                if let Some(entry) = self.entries.get(row) {
+                if let Some(entry) = self.entries.get(i) {
                     std::fs::remove_file(&entry.path).ok();
                 }
                 self.arming = None;
@@ -109,10 +160,14 @@ impl Shelf {
         } else if self.arming == Some(self.menu.selected) {
             "press X again to delete this record".to_string()
         } else {
-            self.entries
-                .get(self.menu.selected)
-                .map(|e| e.blurb.clone())
-                .unwrap_or_default()
+            match self.rows.get(self.menu.selected) {
+                Some(RowKind::Entry(i)) => self
+                    .entries
+                    .get(*i)
+                    .map(|e| e.blurb.clone())
+                    .unwrap_or_default(),
+                _ => String::new(),
+            }
         }
     }
 }
@@ -120,15 +175,21 @@ impl Shelf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::saves::RecordKind;
     use macroquad::prelude::vec2;
 
-    fn entry(name: &str, compatible: bool, path: std::path::PathBuf) -> ReplayEntry {
+    fn entry(
+        name: &str,
+        compatible: bool,
+        kind: RecordKind,
+        path: std::path::PathBuf,
+    ) -> ReplayEntry {
         ReplayEntry {
             path,
             label: name.to_string(),
             blurb: format!("{name} blurb"),
             compatible,
-            watchable: true,
+            kind,
         }
     }
 
@@ -142,6 +203,24 @@ mod tests {
         )
     }
 
+    /// Moves the cursor to the labeled row and activates it — by label,
+    /// so the tests survive the section headers shifting every index.
+    fn activate(shelf: &mut Shelf, label: &str) -> Out {
+        let target = shelf
+            .menu
+            .items
+            .iter()
+            .position(|i| i == label)
+            .unwrap_or_else(|| panic!("no row labeled {label} in {:?}", shelf.menu.items));
+        while shelf.menu.selected < target {
+            drive(shelf, Key::Down);
+        }
+        while shelf.menu.selected > target {
+            drive(shelf, Key::Up);
+        }
+        drive(shelf, Key::Enter)
+    }
+
     #[test]
     fn the_back_row_exists_even_after_every_record_is_deleted() {
         // The 0.9 regression, pinned structurally: however the shelf is
@@ -153,12 +232,50 @@ mod tests {
     }
 
     #[test]
+    fn records_shelve_into_their_sections_and_the_cursor_skips_the_headers() {
+        let mut shelf = Shelf::from_entries(vec![
+            entry("live", true, RecordKind::Autosave, "/nowhere/a.json".into()),
+            entry("named", true, RecordKind::Save, "/nowhere/s.json".into()),
+            entry("done", true, RecordKind::Match, "/nowhere/m.json".into()),
+        ]);
+        assert_eq!(
+            shelf.menu.items,
+            vec!["SAVES", "live", "named", "REPLAYS", "done", "Back"],
+            "saves first, replays after, Back always last"
+        );
+        assert!(shelf.menu.is_header(0) && shelf.menu.is_header(3));
+        assert_eq!(shelf.menu.selected, 1, "the cursor opens on a real row");
+        // Walking down never rests on the REPLAYS header.
+        drive(&mut shelf, Key::Down);
+        drive(&mut shelf, Key::Down);
+        assert_eq!(shelf.menu.items[shelf.menu.selected], "done");
+    }
+
+    #[test]
+    fn enter_loads_a_save_and_watches_a_match() {
+        let mut shelf = Shelf::from_entries(vec![
+            entry("live", true, RecordKind::Autosave, "/nowhere/a.json".into()),
+            entry("done", true, RecordKind::Match, "/nowhere/m.json".into()),
+        ]);
+        assert_eq!(
+            activate(&mut shelf, "live"),
+            Out::Load("/nowhere/a.json".into()),
+            "a resumable record's verb is Load, never a mid-match scout"
+        );
+        assert_eq!(
+            activate(&mut shelf, "done"),
+            Out::Watch("/nowhere/m.json".into())
+        );
+    }
+
+    #[test]
     fn deleting_takes_two_x_presses_on_the_same_row_and_removes_the_file() {
         let dir = std::env::temp_dir().join(format!("oxide-shelf-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("doomed.json");
         std::fs::write(&path, "{}").unwrap();
-        let mut shelf = Shelf::from_entries(vec![entry("doomed", true, path.clone())]);
+        let mut shelf =
+            Shelf::from_entries(vec![entry("doomed", true, RecordKind::Match, path.clone())]);
         assert_eq!(drive(&mut shelf, Key::X), Out::Stay, "first X only arms");
         assert!(path.exists(), "arming deletes nothing");
         assert_eq!(drive(&mut shelf, Key::X), Out::Deleted);
@@ -167,31 +284,34 @@ mod tests {
     }
 
     #[test]
-    fn an_incompatible_record_refuses_to_watch_and_a_compatible_one_offers_its_path() {
-        let old = entry("old", false, "/nowhere/old.json".into());
-        let new = entry("new", true, "/nowhere/new.json".into());
-        let mut shelf = Shelf::from_entries(vec![old, new]);
-        assert_eq!(
-            drive(&mut shelf, Key::Enter),
-            Out::Stay,
-            "an unwatchable record answers with a refusal, not a session"
+    fn an_incompatible_record_refuses_its_verb_in_both_sections() {
+        let old_save = entry(
+            "old-save",
+            false,
+            RecordKind::Save,
+            "/nowhere/s.json".into(),
         );
-        drive(&mut shelf, Key::Down);
+        let old_match = entry(
+            "old-match",
+            false,
+            RecordKind::Match,
+            "/nowhere/m.json".into(),
+        );
+        let new = entry("new", true, RecordKind::Match, "/nowhere/new.json".into());
+        let mut shelf = Shelf::from_entries(vec![old_save, old_match, new]);
         assert_eq!(
-            drive(&mut shelf, Key::Enter),
+            activate(&mut shelf, "old-save"),
+            Out::Stay,
+            "an incompatible save refuses to load"
+        );
+        assert_eq!(
+            activate(&mut shelf, "old-match"),
+            Out::Stay,
+            "an incompatible match refuses to watch"
+        );
+        assert_eq!(
+            activate(&mut shelf, "new"),
             Out::Watch("/nowhere/new.json".into())
-        );
-    }
-
-    #[test]
-    fn a_live_autosave_is_continue_only_never_a_mid_match_scout() {
-        let mut live = entry("live", true, "/nowhere/autosave-1.json".into());
-        live.watchable = false;
-        let mut shelf = Shelf::from_entries(vec![live]);
-        assert_eq!(
-            drive(&mut shelf, Key::Enter),
-            Out::Stay,
-            "watching an unfinished session would be a fog-free scout"
         );
     }
 }

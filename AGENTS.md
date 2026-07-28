@@ -157,6 +157,7 @@ driver live capture-sequence --present --out screenshots/motion
 driver live inject-wheel 2.0       # events enter the real input funnel
 driver live inject-key escape      # opens the pause menu — menus share
 driver live inject-key enter       # the input funnel too
+driver live inject-text "my save"  # types into the save-name field
 driver live save-replay replays/session.json
 driver replay replays/session.json # must print the same hash as live
 driver live load-replay replays/session.json      # resume = load a save
@@ -186,16 +187,25 @@ driver replay-stats replays/session.json          # per-seat series + losses
 driver map-audit scenarios/basalt-spine.json      # routes, fairness, pressure
 ```
 
-Replay UX in the shell: cold launches land on Home; `Replays` browses
-autosaves and `replays/` (watch, delete, honest version badges);
-`oxide-shell --watch <replay>` opens the read-only playback viewer
-(pause, seek, speed — no recorder; backward seek restores an
-in-memory checkpoint and re-simulates; checkpoint cadence stretches
-with record length so no replay retains more than 64 state clones,
-and interactive loads cap at 2M claimed ticks). Watch Replay appears on the
-pause menu only once the match is decided — mid-match playback was
-a fog-free scout of the enemy — and `autosave-` records (live
-sessions) are Continue-only on the shelf. `sh tools/package_macos.sh`
+Replay UX in the shell: cold launches land on Home; `Replays` opens
+the Saves & Replays shelf — two header sections over one menu:
+SAVES (autosaves and player-named saves; Enter loads one back into a
+live session through the same loader as Home's Continue) and REPLAYS
+(finished matches; Enter watches), with per-row delete and honest
+version badges throughout. The pause menu's Save Game writes a named
+save (the inline name field is the shell's only text-entry surface:
+`RawEvent::Text` from the funnel, printable-ASCII at ingest, static
+caret) into the saves dir rotation never touches; the name lives in
+`ReplayMeta.description`, never the filename, and records carry
+`kind` + `saved_at` metadata — 0.12-era files classify by filename
+prefix instead. `oxide-shell --watch <replay>` opens the read-only
+playback viewer (pause, seek, speed — no recorder; backward seek
+restores an in-memory checkpoint and re-simulates; checkpoint cadence
+stretches with record length so no replay retains more than 64 state
+clones, and interactive loads cap at 2M claimed ticks). Watch Replay
+appears on the pause menu only once the match is decided — mid-match
+playback was a fog-free scout of the enemy, which is also why the
+shelf's resumable records load instead of watching. `sh tools/package_macos.sh`
 builds `dist/Oxide.app` (resources resolve executable-relative when
 bundled, cwd otherwise; `OXIDE_RESOURCE_ROOT` overrides both — the
 harness's isolation seam, unvalidated by design: a wrong root fails

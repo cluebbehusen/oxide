@@ -21,7 +21,10 @@ replay that re-executes headless to a bit-identical state hash.
 ## Playing
 
 The front door offers Play, Tutorial, Replays, Settings, and Quit
-(plus Continue when an autosave waits). Settings holds live volume
+(plus Continue when an autosave waits). The pause menu carries Save
+Game — name the save inline (Enter accepts the suggested name) and
+load it back any time from the Replays shelf, which shelves saves
+and finished-match replays in their own sections. Settings holds live volume
 buses, UI scale, camera feel, accessibility switches (reduced motion,
 colorblind-safe accents, a left-handed preset), and full key
 remapping — every change applies immediately and persists, explicit
@@ -236,9 +239,12 @@ replayable end-to-end and can never desync from its own history. The
 trade-off: replays only reproduce on the sim version that wrote them.
 
 The shell wraps all of this: quitting a live match autosaves it and
-Home offers Continue; the Replays screen lists every autosave and
-local record with honest version badges (watch, or delete with a
-deliberate double-X); once a match is decided the pause
+Home offers Continue; the pause menu's Save Game writes a named save
+whenever you like (the name rides in the record's metadata, so no
+filename rules to trip over); the Saves & Replays shelf lists every
+record with honest version badges in two sections — saves load back
+into a live session, finished matches watch — and any row deletes
+with a deliberate double-X. Once a match is decided the pause
 menu's Watch Replay plays it back (replays are an end-of-match
 affair — mid-match playback would scout the enemy through the fog);
 and `--watch file.json` opens any record in the
@@ -249,8 +255,11 @@ re-simulates, so the viewer can never diverge from the record.
 Saves land atomically (a crash mid-write can never truncate a record),
 and a save that fails — full disk, read-only folder — says so: quit
 paths raise a Retry / Leave-without-saving dialog instead of exiting
-silently. Autosave rotation keeps the newest five live sessions and
-twenty finished matches, each pool on its own budget.
+silently, and an explicit save reports its verdict on the pause menu.
+Autosave rotation keeps the newest five live sessions and
+twenty finished matches, each pool on its own budget; named saves sit
+in their own directory that rotation never touches — a save you asked
+for is deleted only by you.
 
 ## Status and road ahead
 

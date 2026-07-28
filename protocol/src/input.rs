@@ -83,6 +83,16 @@ pub enum RawEvent {
         /// Window y.
         y: f32,
     },
+    /// A typed character, for text entry (save names). The shell emits
+    /// these only for printable ASCII: the menu font is Latin-1 and UI
+    /// strings stay ASCII, so the filter sits at ingest and every
+    /// consumer is safe by construction. Screens consume them only
+    /// while a text field has focus; letters stay semantic everywhere
+    /// else.
+    Text {
+        /// The character as typed (layout- and shift-resolved).
+        ch: char,
+    },
 }
 
 #[cfg(test)]
@@ -107,10 +117,11 @@ mod tests {
             RawEvent::TouchDown { .. } => 6,
             RawEvent::TouchMove { .. } => 7,
             RawEvent::TouchUp { .. } => 8,
+            RawEvent::Text { .. } => 9,
         }
     }
 
-    const EVENT_VARIANTS: usize = 9;
+    const EVENT_VARIANTS: usize = 10;
 
     #[test]
     fn every_raw_event_variant_including_touch_survives_a_roundtrip() {
@@ -146,6 +157,7 @@ mod tests {
                 x: 12.0,
                 y: 13.0,
             },
+            RawEvent::Text { ch: 'k' },
         ];
         assert_every_tag_sampled(events.iter().map(event_tag), EVENT_VARIANTS, "raw event");
         for event in events {
@@ -295,4 +307,7 @@ pub enum Key {
     Y,
     /// See [`Key::C`].
     Z,
+    /// Delete the character before the caret (text entry only; not a
+    /// bindable game verb).
+    Backspace,
 }

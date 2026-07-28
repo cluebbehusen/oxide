@@ -341,7 +341,7 @@ impl InputState {
     }
 }
 
-const KEY_MAP: [(Key, mq::KeyCode); 42] = [
+const KEY_MAP: [(Key, mq::KeyCode); 43] = [
     (Key::Up, mq::KeyCode::Up),
     (Key::Down, mq::KeyCode::Down),
     (Key::Left, mq::KeyCode::Left),
@@ -384,6 +384,7 @@ const KEY_MAP: [(Key, mq::KeyCode); 42] = [
     (Key::W, mq::KeyCode::W),
     (Key::Y, mq::KeyCode::Y),
     (Key::Z, mq::KeyCode::Z),
+    (Key::Backspace, mq::KeyCode::Backspace),
 ];
 
 /// Converts this frame's hardware input into events. Purely a poll→event
@@ -479,6 +480,22 @@ impl macroquad::miniquad::EventHandler for PointerStream {
     /// finger a second life as a press. Touches come from `touches()`
     /// below.
     fn touch_event(&mut self, _phase: macroquad::miniquad::TouchPhase, _id: u64, _x: f32, _y: f32) {
+    }
+
+    /// Typed characters, layout- and shift-resolved by the OS — a
+    /// Key-to-character table would get every non-US layout wrong.
+    /// Printable ASCII only, filtered AT INGEST: the menu font is
+    /// Latin-1 and UI strings stay ASCII, so nothing downstream ever
+    /// needs its own filter.
+    fn char_event(
+        &mut self,
+        character: char,
+        _keymods: macroquad::miniquad::KeyMods,
+        _repeat: bool,
+    ) {
+        if ('\u{20}'..='\u{7e}').contains(&character) {
+            self.events.push(RawEvent::Text { ch: character });
+        }
     }
 }
 
@@ -933,6 +950,11 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     }
                     _ => {}
                 }
+            }
+            RawEvent::Text { .. } => {
+                // Typed characters exist for menu text fields (the
+                // save-name flow); gameplay deliberately has no text
+                // consumer — letters reach the world as semantic keys.
             }
             RawEvent::TouchUp { id, x, y } => {
                 let p = vec2(x, y);

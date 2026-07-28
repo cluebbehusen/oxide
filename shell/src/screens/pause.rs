@@ -15,6 +15,8 @@ use oxide_protocol::{Key, RawEvent};
 pub enum Row {
     /// Back to the match.
     Resume,
+    /// Write a named save (non-destructive; never confirms).
+    SaveGame,
     /// Watch the session so far (decided matches only).
     WatchReplay,
     /// Tune settings over the paused match.
@@ -31,6 +33,7 @@ impl Row {
     fn label(self) -> &'static str {
         match self {
             Row::Resume => "Resume",
+            Row::SaveGame => "Save Game",
             Row::WatchReplay => "Watch Replay",
             Row::Settings => "Settings",
             Row::Restart => "Restart",
@@ -42,7 +45,7 @@ impl Row {
 
 /// The rows the current match state offers, in display order.
 fn rows(finished: bool) -> Vec<Row> {
-    let mut rows = vec![Row::Resume];
+    let mut rows = vec![Row::Resume, Row::SaveGame];
     if finished {
         rows.push(Row::WatchReplay);
     }
@@ -62,12 +65,19 @@ pub enum LeaveVerb {
 
 /// What a pause frame decided. Destructive verbs only ever emerge
 /// after the confirmation step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Out {
     /// Still paused.
     Stay,
     /// Back to the match.
     Resume,
+    /// Save Game was picked; the caller supplies the suggested name via
+    /// [`PauseScreen::begin_naming`] (only the session knows its map
+    /// and tick).
+    SaveGame,
+    /// The name field committed: write the save under this name. The
+    /// caller reports the verdict through [`PauseScreen::end_naming`].
+    Save(String),
     /// Watch the session so far.
     WatchReplay,
     /// Open Settings over the paused match; this screen waits intact.
@@ -99,6 +109,13 @@ pub struct PauseScreen {
     confirming: Option<Row>,
     /// The save-failure dialog, if a leave verb's autosave refused.
     save_failed: Option<SaveFailed>,
+    /// The save-name buffer while the name field has focus. Only here
+    /// do Text events mean anything; letters stay semantic everywhere
+    /// else.
+    naming: Option<String>,
+    /// A one-line verdict from the last explicit save (success or
+    /// failure), shown as the subtitle until the next activation.
+    notice: Option<String>,
     /// Whether the match is decided — only then does Watch Replay
     /// appear. Mid-match playback is a fog-free scout of the enemy;
     /// replays are an end-of-match affair.
@@ -137,8 +154,48 @@ impl PauseScreen {
             rows,
             confirming: None,
             save_failed: None,
+            naming: None,
+            notice: None,
             finished,
         }
+    }
+
+    /// Longest save name the field accepts — what the shelf row can
+    /// show without eliding.
+    pub const NAME_MAX: usize = 26;
+
+    /// Opens the name field over the pause menu, prefilled with the
+    /// caller's suggestion so Enter-Enter saves without typing (the
+    /// Start-preselected doctrine).
+    pub fn begin_naming(&mut self, suggested: String) {
+        // The field itself only ever grows typed ASCII; the suggestion
+        // holds to the same UI alphabet (ASCII plus the '·' separator)
+        // so a map name cannot smuggle glyphs past the ingest filter.
+        let mut value: String = suggested.chars().take(Self::NAME_MAX).collect();
+        value.retain(|c| c.is_ascii() || c == '\u{b7}');
+        self.menu = Self::name_menu(&value);
+        self.naming = Some(value);
+    }
+
+    /// Reports the save verdict and returns to the pause rows, cursor
+    /// back on Save Game, the verdict as the subtitle.
+    pub fn end_naming(&mut self, notice: String) {
+        self.naming = None;
+        self.menu = Self::open(self.finished).menu;
+        let display = self
+            .rows
+            .iter()
+            .position(|&r| r == Row::SaveGame)
+            .unwrap_or(0);
+        self.menu.select(display);
+        self.notice = Some(notice);
+    }
+
+    /// The name field's face: one editable row under the SAVE GAME
+    /// title. The caret is a static underscore — never a blink, so
+    /// reduced motion holds and the shots suite stays deterministic.
+    fn name_menu(value: &str) -> Menu {
+        Menu::new("SAVE GAME", vec![format!("{value}_")])
     }
 
     /// Opens straight onto the save-failure dialog: a leave verb's
@@ -181,6 +238,11 @@ impl PauseScreen {
         self.save_failed.is_some()
     }
 
+    /// Whether the save-name field has focus (for the mode report).
+    pub fn naming(&self) -> bool {
+        self.naming.is_some()
+    }
+
     /// Refreshes the failure sentence after a retry failed again —
     /// the dialog stays up, the reason stays current.
     pub fn set_save_failure_line(&mut self, line: String) {
@@ -193,8 +255,12 @@ impl PauseScreen {
     pub fn subtitle<'a>(&'a self, scenario_name: &'a str) -> &'a str {
         if let Some(dialog) = &self.save_failed {
             &dialog.line
+        } else if self.naming.is_some() {
+            "type a name · Enter saves · Esc cancels"
         } else if self.confirming.is_some() {
             "this throws the current match away"
+        } else if let Some(notice) = &self.notice {
+            notice
         } else {
             scenario_name
         }
@@ -210,6 +276,57 @@ impl PauseScreen {
         let escaped = events
             .iter()
             .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
+        if let Some(value) = self.naming.as_mut() {
+            // The name field owns the frame: typed characters edit,
+            // Backspace deletes, Enter commits, Escape abandons. The
+            // menu widget is display only here — its navigation would
+            // fight the caret.
+            let mut edited = false;
+            for event in events {
+                match *event {
+                    RawEvent::Text { ch } => {
+                        if value.chars().count() < Self::NAME_MAX {
+                            value.push(ch);
+                            edited = true;
+                        }
+                    }
+                    RawEvent::KeyDown {
+                        key: Key::Backspace,
+                    } => {
+                        value.pop();
+                        edited = true;
+                    }
+                    _ => {}
+                }
+            }
+            let committed = events
+                .iter()
+                .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Enter }));
+            if committed {
+                let name = value.trim().to_string();
+                if name.is_empty() {
+                    sounds.push((SoundKind::Denied, None));
+                } else {
+                    return Out::Save(name);
+                }
+            }
+            if escaped {
+                self.naming = None;
+                self.menu = Self::open(self.finished).menu;
+                let display = self
+                    .rows
+                    .iter()
+                    .position(|&r| r == Row::SaveGame)
+                    .unwrap_or(0);
+                self.menu.select(display);
+                return Out::Stay;
+            }
+            if edited {
+                let display = Self::name_menu(value);
+                self.menu = display;
+            }
+            return Out::Stay;
+        }
         let picked = self.menu.handle(events, mouse);
         if let Some(dialog) = &self.save_failed {
             let (verb, cancel_home) = (dialog.verb, dialog.cancel_home);
@@ -256,9 +373,11 @@ impl PauseScreen {
         }
         if picked.is_some() {
             sounds.push((SoundKind::Click, None));
+            self.notice = None;
         }
         match picked.map(|i| self.rows[i]) {
             Some(Row::Resume) => Out::Resume,
+            Some(Row::SaveGame) => Out::SaveGame,
             Some(Row::WatchReplay) => Out::WatchReplay,
             Some(Row::Settings) => Out::Settings,
             Some(destructive) => {
@@ -410,6 +529,78 @@ mod tests {
         // of a pause menu the player never opened.
         let mut p = PauseScreen::open_save_failed("x".to_string(), LeaveVerb::Quit, false, true);
         assert_eq!(drive(&mut p, Key::Escape), Out::Home);
+    }
+
+    fn type_text(p: &mut PauseScreen, text: &str) {
+        let mut mouse = vec2(0.0, 0.0);
+        let mut sounds = Vec::new();
+        let events: Vec<RawEvent> = text.chars().map(|ch| RawEvent::Text { ch }).collect();
+        p.update(&events, &mut mouse, &mut sounds);
+    }
+
+    #[test]
+    fn save_game_never_confirms_and_bare_enter_saves_the_suggestion() {
+        for finished in [false, true] {
+            let mut p = PauseScreen::open(finished);
+            assert_eq!(activate(&mut p, "Save Game"), Out::SaveGame);
+            assert!(!p.confirming(), "saving destroys nothing — no dialog");
+            p.begin_naming("skirmish · t100".to_string());
+            assert!(p.naming());
+            assert_eq!(
+                p.menu.items[0], "skirmish · t100_",
+                "prefilled, with a static caret"
+            );
+            // The Start-preselected doctrine: Enter alone commits the
+            // suggested name without any typing.
+            assert_eq!(
+                drive(&mut p, Key::Enter),
+                Out::Save("skirmish · t100".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn the_name_field_edits_with_text_and_backspace_and_escape_cancels() {
+        let mut p = PauseScreen::open(false);
+        p.begin_naming(String::new());
+        type_text(&mut p, "abc");
+        assert_eq!(drive(&mut p, Key::Backspace), Out::Stay);
+        assert_eq!(p.menu.items[0], "ab_");
+        // Letter KEYS are not text: only Text events edit the buffer,
+        // so an injected semantic H cannot type.
+        drive(&mut p, Key::H);
+        assert_eq!(p.menu.items[0], "ab_");
+        assert_eq!(drive(&mut p, Key::Escape), Out::Stay, "Escape abandons");
+        assert!(!p.naming());
+        assert_eq!(
+            p.menu.items[p.menu.selected], "Save Game",
+            "the cursor returns to the verb"
+        );
+        // An empty name refuses to commit instead of writing a blank.
+        p.begin_naming(String::new());
+        assert_eq!(drive(&mut p, Key::Enter), Out::Stay);
+        assert!(p.naming(), "the field waits for a real name");
+    }
+
+    #[test]
+    fn the_name_field_caps_its_length_and_the_verdict_shows_until_the_next_pick() {
+        let mut p = PauseScreen::open(false);
+        p.begin_naming("x".repeat(40));
+        let shown = p.menu.items[0].clone();
+        assert_eq!(
+            shown.chars().count(),
+            PauseScreen::NAME_MAX + 1,
+            "cap+caret"
+        );
+        type_text(&mut p, "y");
+        assert_eq!(p.menu.items[0], shown, "a full field refuses more");
+        drive(&mut p, Key::Enter);
+        p.end_naming("saved: x".to_string());
+        assert!(!p.naming());
+        assert_eq!(p.subtitle("map"), "saved: x", "the verdict is the subtitle");
+        assert_eq!(p.menu.items[p.menu.selected], "Save Game");
+        assert_eq!(activate(&mut p, "Resume"), Out::Resume);
+        assert_eq!(p.subtitle("map"), "map", "an activation clears the verdict");
     }
 
     #[test]

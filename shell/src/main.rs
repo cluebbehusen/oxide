@@ -505,9 +505,8 @@ async fn run() -> Result<()> {
                     screens::home::Out::Continue => {
                         // Resume the newest autosave — a replay load, so
                         // it cannot desync from its own history.
-                        if let Some(path) = autosave::latest_compatible()
-                            && let Ok(replay) = GameReplay::load(&path)
-                            && let Ok(fresh) = Game::from_replay(replay)
+                        if let Some(fresh) =
+                            autosave::latest_compatible().and_then(|path| resume(&path).ok())
                         {
                             tutorial = None;
                             game = keep_flags(fresh, &game);
@@ -813,6 +812,23 @@ async fn run() -> Result<()> {
                             }
                         }
                     }
+                    screens::shelf::Out::Load(path) => match resume(&path) {
+                        // The same loader Continue uses, so the two
+                        // verbs cannot drift apart.
+                        Ok(fresh) => {
+                            tutorial = None;
+                            game = keep_flags(fresh, &game);
+                            game.paused = args.paused;
+                            input.reset_session();
+                            shelf = None;
+                            mode = Mode::Playing;
+                            render::draw(&game, &sprites, &input);
+                            continue;
+                        }
+                        Err(_) => {
+                            game.sounds_pending.push((SoundKind::Denied, None));
+                        }
+                    },
                     screens::shelf::Out::Deleted => {
                         *sh = screens::shelf::Shelf::open();
                         home = screens::home::HomeScreen::open();
@@ -839,6 +855,26 @@ async fn run() -> Result<()> {
                         game.paused = false;
                         pause = None;
                         mode = Mode::Playing;
+                    }
+                    screens::pause::Out::SaveGame => {
+                        // Only the session knows its map and tick; the
+                        // screen just edits the string.
+                        let suggested =
+                            format!("{} · t{}", game.scenario.name, game.state.current_tick());
+                        if let Some(ps) = pause.as_mut() {
+                            ps.begin_naming(suggested);
+                        }
+                    }
+                    screens::pause::Out::Save(name) => {
+                        // Stay paused either way: the player may want to
+                        // save and then quit.
+                        let verdict = match autosave::save_named(&game, &name) {
+                            Ok(_) => format!("saved: {name}"),
+                            Err(err) => err.player_line(),
+                        };
+                        if let Some(ps) = pause.as_mut() {
+                            ps.end_naming(verdict);
+                        }
                     }
                     screens::pause::Out::Settings => {
                         // The pause payload stays put: leaving Settings
@@ -1072,6 +1108,16 @@ async fn run() -> Result<()> {
     }
 }
 
+/// Loads a record back into a live session — the one loader behind both
+/// Home's Continue and the shelf's Load, so the two verbs cannot drift.
+/// A resume IS a replay load; validation and the tick-count cap live in
+/// [`Game::from_replay`].
+fn resume(path: &std::path::Path) -> Result<Game> {
+    let replay =
+        GameReplay::load(path).with_context(|| format!("loading record {}", path.display()))?;
+    Game::from_replay(replay)
+}
+
 /// Carries session-level toggles (pause/speed/overlay) onto a fresh game.
 fn keep_flags(mut fresh: Game, old: &Game) -> Game {
     fresh.paused = old.paused;
@@ -1106,6 +1152,8 @@ fn capture_ui(
         Mode::Pause => (
             if pause.as_ref().is_some_and(|p| p.saving_failed()) {
                 "save_failed"
+            } else if pause.as_ref().is_some_and(|p| p.naming()) {
+                "save_name"
             } else if pause.as_ref().is_some_and(|p| p.confirming()) {
                 "confirm_pause"
             } else {
