@@ -13,20 +13,25 @@ fn ladder_match(hi: Level, lo: Level, hi_seat: u8, seed: u64) -> (Option<bool>, 
     let mut scenario = Scenario::skirmish();
     scenario.seed = seed;
     let mut state = scenario.build().unwrap();
+    let lo_seat = 1 - hi_seat;
     // Fixed balanced personalities: this test isolates the skill knob.
+    // The faction knob is honest, never assumed from the rung: a bot
+    // conditioned on the roster it is not holding also orders kinds
+    // `apply_train` rejects, so a seated-wrong diagnostic measures a
+    // crippled mind.
     let mut a = NeuralBot::ladder(
         PlayerId(hi_seat),
         seed,
         hi,
         Some(500),
-        oxide_sim::Faction::Ferrous,
+        scenario.players[usize::from(hi_seat)].faction,
     );
     let mut b = NeuralBot::ladder(
-        PlayerId(1 - hi_seat),
+        PlayerId(lo_seat),
         seed,
         lo,
         Some(500),
-        oxide_sim::Faction::Cupric,
+        scenario.players[usize::from(lo_seat)].faction,
     );
     for _ in 0..40_000u32 {
         let mut commands = a.act(&state);
@@ -136,6 +141,15 @@ fn the_ladder_orders_against_the_scripted_yardsticks() {
     // seeds — a fact about the shipped sim, not a statistical claim.
     let totals: Vec<(u32, u64)> = Level::LADDER.iter().map(|l| yardstick(*l)).collect();
     let max = 80u32; // 4 tiers x 10 seeds x 2 seats
+    // Published, not just asserted: the separation the assertions read
+    // is a table a maintainer re-metering the rungs needs in front of
+    // them. `cargo test -p oxide-sim --test neural_ladder -- --nocapture`.
+    println!("\nLADDER YARDSTICK  ·  skirmish  ·  {max} matches/rung  ·  40k horizon");
+    for (level, (wins, ticks)) in Level::LADDER.iter().zip(&totals) {
+        // Derived Debug ignores width, so the rung name pads as a string.
+        let rung = format!("{level:?}");
+        println!("  {rung:<8} wins {wins:>2}/{max}  ·  tick total {ticks:>9}");
+    }
     for pair in totals.windows(2) {
         assert!(
             pair[0].1 > pair[1].1,

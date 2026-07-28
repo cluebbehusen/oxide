@@ -380,7 +380,17 @@ included) seat-swapped across seeds, and `driver yardstick --level
 <level> [--skill --cadence]` measures one profile against all four
 scripted tiers over as many seeds as recalibration wants — the
 doctrinal strength instrument, since neural head-to-heads reward
-patience and stopped ordering the ladder in 0.10. All four share one
+patience and stopped ordering the ladder in 0.10. The yardstick
+reports pace, not just record: per tier, the median and p75 tick of
+the profile's own victories beside the unresolved count, because two
+rungs with the same count separate on how fast they close. `--dir
+<scenarios>` (mutually exclusive with `--scenario`) runs the whole
+1v1 slate on one pool and pools the tier records from the raw
+matches — the ladder is gated on skirmish alone and duration
+distributions vary by an order of magnitude across the roster. The
+in-tree gate prints the same shape: `cargo test -p oxide-sim --test
+neural_ladder -- --nocapture` lays out every rung's (wins, tick
+total) instead of leaving it to an assertion message. All four share one
 fan-out pool (`driver/src/pool.rs`) — job list in, results back in job
 order, so no verdict depends on the thread count.
 `driver sweep-factorial` (0.13) finishes what `sweep` starts:

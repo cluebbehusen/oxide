@@ -216,6 +216,10 @@ enum Cmd {
         /// Scenario path, or "skirmish".
         #[arg(long, default_value = "skirmish")]
         scenario: String,
+        /// Measure every 1v1 map in this directory instead of one
+        /// scenario (other formats are skipped).
+        #[arg(long, conflicts_with = "scenario")]
+        dir: Option<String>,
         /// Seeds per tier (each fought from both seats).
         #[arg(long, default_value_t = 6, value_parser = clap::value_parser!(u64).range(1..))]
         seeds: u64,
@@ -512,6 +516,7 @@ fn main() -> Result<()> {
             skill,
             cadence,
             scenario,
+            dir,
             seeds,
             ticks,
             seed_base,
@@ -522,14 +527,24 @@ fn main() -> Result<()> {
                 skill,
                 cadence,
             };
-            oxide_driver::sweep::yardstick_report(
-                &scenario,
-                &side,
-                seeds,
-                ticks,
-                seed_base,
-                out.as_deref(),
-            )?;
+            match dir {
+                Some(dir) => oxide_driver::sweep::yardstick_slate_report(
+                    &dir,
+                    &side,
+                    seeds,
+                    ticks,
+                    seed_base,
+                    out.as_deref(),
+                )?,
+                None => oxide_driver::sweep::yardstick_report(
+                    &scenario,
+                    &side,
+                    seeds,
+                    ticks,
+                    seed_base,
+                    out.as_deref(),
+                )?,
+            }
         }
         Cmd::BalanceProbe {
             dir,
