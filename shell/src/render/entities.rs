@@ -106,6 +106,7 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
         oxide_sim::Order::Build { .. }
         | oxide_sim::Order::Repair { .. }
         | oxide_sim::Order::Salvage { .. }
+        | oxide_sim::Order::RepairUnit { .. }
         | oxide_sim::Order::Found { .. } => Color::new(0.25, 0.58, 0.51, 0.55),
         oxide_sim::Order::Idle => BONE_FAINT,
     };
@@ -118,6 +119,8 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
             oxide_sim::Order::Repair { building } | oxide_sim::Order::Salvage { building } => {
                 game.state.building(*building)?.anchor
             }
+            // A weld patient is the viewer's own machine — always seen.
+            oxide_sim::Order::RepairUnit { unit } => game.state.unit(*unit)?.tile(),
             oxide_sim::Order::Attack { target, .. } => {
                 // A chase target draws only while its ground is
                 // seen — the victim may have slipped back into fog.

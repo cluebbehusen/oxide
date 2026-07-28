@@ -97,6 +97,11 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
                 apply_set_rally(state, pc.player, *building, *rally)
             }
             Command::Surrender => apply_surrender(state, pc.player, events),
+            Command::RepairUnit {
+                units,
+                target,
+                queue,
+            } => apply_repair_unit(state, pc.player, &canonical_units(units), *target, *queue),
         };
         if let Err(reason) = outcome {
             events.push(Event::CommandRejected {
@@ -782,6 +787,41 @@ fn apply_salvage(
         return Err(RejectReason::QueueFull);
     }
     purge_opposing_verb(state, player, building, Verb::Repair);
+    Ok(())
+}
+
+/// Unit welding is for wounded, own, GROUND machines. Air patients
+/// refuse (a harvester cannot stand where a flyer hovers; the ring
+/// stand-in machinery is a chase tool, not a service bay), the healthy
+/// leave nothing to do, and the patient never joins its own crew.
+/// No eviction rule: nothing else targets a friendly unit, and the
+/// patient's own orders are deliberately untouched — welding is the
+/// crew's job, not a hold order on the wounded.
+fn apply_repair_unit(
+    state: &mut State,
+    player: PlayerId,
+    units: &[UnitId],
+    target: UnitId,
+    queue: bool,
+) -> Result<(), RejectReason> {
+    let t = state.unit(target).ok_or(RejectReason::InvalidTarget)?;
+    let stats = t.kind.stats();
+    if t.player != player || t.hp == 0 || t.hp >= stats.max_hp || stats.domain != Domain::Ground {
+        return Err(RejectReason::InvalidTarget);
+    }
+    let crew: Vec<UnitId> = units.iter().copied().filter(|&id| id != target).collect();
+    let mut landed = 0;
+    let applied = for_owned_workers(state, player, &crew, |unit| {
+        if assign(unit, Order::RepairUnit { unit: target }, queue) {
+            landed += 1;
+        }
+    });
+    if applied == 0 {
+        return Err(RejectReason::NoValidUnits);
+    }
+    if landed == 0 {
+        return Err(RejectReason::QueueFull);
+    }
     Ok(())
 }
 

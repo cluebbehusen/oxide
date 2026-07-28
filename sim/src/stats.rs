@@ -791,6 +791,12 @@ pub const REPAIR_COST_PERMILLE: u64 = 850;
 /// (against max_hp). A full-health salvage banks exactly cost*800/1000.
 pub const SALVAGE_REFUND_PERMILLE: u64 = 800;
 
+/// How close a welder must stand to a wounded machine for the torch to
+/// hold, in tiles between body centers — body contact, a hair over the
+/// widest radius pair, and well under any weapon's reach. Unit welds
+/// have no footprint to be adjacent to; this is their adjacency.
+pub const REPAIR_REACH: Fx = Fx::lit("1.2");
+
 /// Welding ramp for the Foundry, which has no construction stats to
 /// borrow one from.
 pub const FOUNDRY_REPAIR_TICKS: u32 = 400;

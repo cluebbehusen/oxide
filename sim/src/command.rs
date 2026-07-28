@@ -164,9 +164,25 @@ pub enum Command {
     /// team-scoped victory check and its future commands reject as
     /// [`RejectReason::Eliminated`]; units already in the world keep
     /// executing their brains, like any eliminated seat's remnants.
-    /// (Last variant by appending discipline: earlier discriminants keep
-    /// their serialized bytes.)
     Surrender,
+    /// Send harvesters to weld a wounded own GROUND unit back toward
+    /// full. Billed per hp against the patient's cost at repair
+    /// pricing, prepaid at whole-scrap boundaries like a building weld.
+    /// Air patients refuse — a harvester cannot service a machine
+    /// hovering where it cannot stand. The patient's own orders are
+    /// untouched: a fleeing machine keeps fleeing and simply goes
+    /// unwelded while out of reach. (Last variant by appending
+    /// discipline: earlier discriminants keep their serialized bytes.)
+    RepairUnit {
+        /// The units to commit (only harvesters are accepted; the
+        /// patient itself never joins its own crew).
+        units: Vec<UnitId>,
+        /// The wounded machine.
+        target: UnitId,
+        /// Append behind current orders instead of replacing them.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        queue: bool,
+    },
 }
 
 /// A command attributed to its issuing player. Ownership checks are made

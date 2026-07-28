@@ -33,14 +33,15 @@ fn command_tag(command: &Command) -> usize {
         Command::CancelTrain { .. } => 11,
         Command::SetRally { .. } => 12,
         Command::Surrender => 13,
+        Command::RepairUnit { .. } => 14,
     }
 }
 
-const COMMAND_VARIANTS: usize = 14;
+const COMMAND_VARIANTS: usize = 15;
 
 /// The verbs that carry a unit list — every one of them owes this file a
 /// duplicate-id row.
-const UNIT_BEARING_TAGS: [usize; 9] = [0, 1, 2, 3, 4, 5, 7, 8, 9];
+const UNIT_BEARING_TAGS: [usize; 10] = [0, 1, 2, 3, 4, 5, 7, 8, 9, 14];
 
 /// The verbs that address a building alone, with no list to canonicalize.
 const BUILDING_ONLY_TAGS: [usize; 4] = [6, 10, 11, 12];
@@ -50,14 +51,16 @@ const OPERANDLESS_TAGS: [usize; 1] = [13];
 
 /// A quiet field with a legal target for every unit-bearing verb: a guard
 /// that can see an enemy without being in aggro of it, a worker beside a
-/// scrap node and buildable ground, and an own turret the raid left
-/// wounded — welded and stripped alike.
+/// scrap node and buildable ground, an own turret the raid left
+/// wounded — welded and stripped alike — and an own sentinel its own
+/// skirmish left weldable.
 struct Stage {
     state: State,
     guard: UnitId,
     worker: UnitId,
     enemy: Target,
     turret: BuildingId,
+    patient: UnitId,
     node: TilePos,
     ground: TilePos,
     anchor: TilePos,
@@ -100,6 +103,10 @@ fn stage() -> Stage {
             // so both sides stand still until commanded.
             unit(1, UnitKind::Scuttler, 11, 4),
             unit(1, UnitKind::Scuttler, 14, 9),
+            // The patient's skirmish: a sentinel spawned in mutual aggro
+            // with a scuttler it beats — wounded, still standing.
+            unit(0, UnitKind::Sentinel, 3, 11),
+            unit(1, UnitKind::Scuttler, 4, 12),
         ],
         buildings: vec![BuildingSpec {
             player: 0,
@@ -116,6 +123,8 @@ fn stage() -> Stage {
     let worker = state.units()[1].id;
     let enemy = Target::Unit(state.units()[2].id);
     let raider = state.units()[3].id;
+    let patient = state.units()[4].id;
+    let biter = state.units()[5].id;
     let turret = state
         .buildings()
         .iter()
@@ -133,18 +142,29 @@ fn stage() -> Stage {
             queue: false,
         },
     )]);
+    let mut fallen = Vec::new();
     run_until(&mut state, 600, |_, events| {
-        events
-            .iter()
-            .any(|e| matches!(e, Event::UnitDied { unit, .. } if *unit == raider))
+        fallen.extend(events.iter().filter_map(|e| match e {
+            Event::UnitDied { unit, .. } => Some(*unit),
+            _ => None,
+        }));
+        fallen.contains(&raider) && fallen.contains(&biter)
     });
     let hp = state.building(turret).unwrap().hp;
     assert!(
         hp < BuildingKind::Turret.stats().max_hp,
         "test premise: the raid must leave the turret weldable (hp {hp})"
     );
+    let patient_hp = state.unit(patient).unwrap().hp;
+    assert!(
+        patient_hp < UnitKind::Sentinel.stats().max_hp,
+        "test premise: the skirmish must leave the sentinel weldable (hp {patient_hp})"
+    );
     assert_eq!(state.unit(guard).unwrap().order, Order::Idle);
     assert_eq!(state.unit(worker).unwrap().order, Order::Idle);
+    run_until(&mut state, 60, |s, _| {
+        s.unit(patient).unwrap().order == Order::Idle
+    });
 
     Stage {
         state,
@@ -152,6 +172,7 @@ fn stage() -> Stage {
         worker,
         enemy,
         turret,
+        patient,
         node: TilePos::new(7, 6),
         ground: TilePos::new(8, 8),
         anchor: TilePos::new(6, 7),
@@ -172,6 +193,7 @@ fn families(stage: &Stage) -> Vec<Family> {
         worker,
         enemy,
         turret,
+        patient,
         node,
         ground,
         anchor,
@@ -251,6 +273,15 @@ fn families(stage: &Stage) -> Vec<Family> {
             name: "stop",
             actor: guard,
             make: Box::new(move |units, _| Command::Stop { units }),
+        },
+        Family {
+            name: "repair-unit",
+            actor: worker,
+            make: Box::new(move |units, queue| Command::RepairUnit {
+                units,
+                target: patient,
+                queue,
+            }),
         },
     ]
 }

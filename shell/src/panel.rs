@@ -295,6 +295,18 @@ fn order_subject(game: &Game, order: &Order) -> Option<(OrderSubject, String, bo
             (game.all_seeing() || game.my_vision().visible(tile))
                 .then_some((subject, name, false, None))
         }
+        // A weld patient is own by construction — no fog gate needed,
+        // and its meter is the wound closing.
+        Order::RepairUnit { unit } => {
+            let u = game.state.unit(*unit)?;
+            let frac = (u.hp as f32 / u.kind.stats().max_hp.max(1) as f32).clamp(0.0, 1.0);
+            Some((
+                OrderSubject::Unit(u.kind, faction_of(u.player)),
+                u.kind.name().to_string(),
+                false,
+                Some(frac),
+            ))
+        }
         // A pending found's subject is the kind it will claim — drawn as
         // a ghost, since nothing stands yet.
         Order::Found { kind, .. } => Some((
@@ -349,6 +361,11 @@ fn order_card(game: &Game, order: &Order, active: bool, own: bool) -> Card {
             VerbIcon::Build,
             "Found",
             "Walking out to claim remembered ground; pays on arrival.",
+        ),
+        Order::RepairUnit { .. } => (
+            VerbIcon::Repair,
+            "Weld",
+            "Welding a damaged machine; costs a trickle.",
         ),
     };
     let subject = if own {
@@ -412,6 +429,10 @@ fn subject_detail(game: &Game, order: &Order, progress: Option<f32>) -> Option<S
                 b.hp,
                 b.kind.stats().max_hp
             ))
+        }
+        Order::RepairUnit { unit } => {
+            let u = game.state.unit(*unit)?;
+            Some(format!("{}/{} hp", u.hp, u.kind.stats().max_hp))
         }
         _ => None,
     }
@@ -703,6 +724,22 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             desc: vec![
                 "Arm, then click an own built building to strip it".into(),
                 "for a partial refund. Foundries refuse.".into(),
+            ],
+            progress: None,
+        });
+    }
+    if has_builder {
+        panel.cards.push(Card {
+            icon: CardIcon::Verb(VerbIcon::Repair),
+            title: "Weld".into(),
+            cost: None,
+            hotkey: chord(bindings, Action::RepairUnit),
+            action: CardAction::Dispatch(Action::RepairUnit),
+            enabled: true,
+            why: None,
+            desc: vec![
+                "Arm, then click a damaged own ground unit to weld".into(),
+                "it back up (billed per hp against its cost).".into(),
             ],
             progress: None,
         });

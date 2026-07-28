@@ -187,6 +187,21 @@ pub(crate) enum LiveCmd {
         #[arg(long)]
         queue: bool,
     },
+    /// Send harvesters to weld a wounded own ground unit (billed per
+    /// hp against the patient's cost; air patients refuse).
+    RepairUnit {
+        /// Acting player index.
+        player: u8,
+        /// Welder unit ids, comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        units: Vec<u32>,
+        /// The wounded machine.
+        #[arg(long)]
+        target: u32,
+        /// Append behind current orders instead of replacing them.
+        #[arg(long)]
+        queue: bool,
+    },
     /// Send harvesters to strip an own built building for a partial
     /// refund (Foundries refuse; sites keep Cancel).
     Salvage {
@@ -499,6 +514,19 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
             command: Command::Repair {
                 units: units(ids),
                 building: BuildingId(building),
+                queue,
+            },
+        },
+        LiveCmd::RepairUnit {
+            player,
+            units: ids,
+            target,
+            queue,
+        } => Request::SendCommand {
+            player: PlayerId(player),
+            command: Command::RepairUnit {
+                units: units(ids),
+                target: UnitId(target),
                 queue,
             },
         },

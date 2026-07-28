@@ -88,7 +88,7 @@ shared sight.
 
 Eleven machines and seven buildings now. The shared core: **Harvesters**
 feed the economy, build, salvage battlefield wrecks, and weld wounded
-buildings; **Sentinels** hold the line (and carry a weak anti-air
+buildings and ground machines alike; **Sentinels** hold the line (and carry a weak anti-air
 poke); **Scuttlers** eat undefended harvest lines; **Lancers**
 outrange turrets and melt in reach; the **Bombard** shells beyond its
 own eyes — someone must spot for it — and its blasts hurt everything
@@ -128,6 +128,8 @@ only what's still standing — damage burns salvage.
 | `R`                                | Arm a patrol: right-click waypoints, `R` again to start the loop — patrollers engage everything met and never settle                                                         |
 | `B`                                | With harvesters selected: open the build palette — digits pick the structure, the ghost shows validity on ground you have seen (green claims now, amber on remembered ground sends the crew to found on arrival), click commits the whole selected crew, Esc cancels |
 | Right click a damaged own building | With harvesters selected: weld it (billed per hp — pricier than building, cheaper than losing it)                                                                            |
+| Right click a damaged own unit     | With harvesters selected: weld the machine (ground only; billed per hp against its cost). The torch holds only while welder and patient both stand still — a fleeing machine is chased, not healed |
+| `W`                                | With harvesters selected: arm weld — click a damaged own ground unit, even one in your selection (Esc cancels; Shift chains)                                                 |
 | Right click an own unfinished site | With harvesters selected: resume construction — several builders stack                                                                                                       |
 | `V`                                | With harvesters selected: arm salvage — click an own built building to strip it for a partial refund (Foundries refuse; Shift chains teardowns)                              |
 | `X`                                | Units selected: stop in place. Construction site selected: scrap it for a partial refund                                                                                     |
@@ -274,7 +276,8 @@ Working today: the full loop (harvest → train → fight → win) with fog of
 war and ghost memory, the two-faction eleven-unit roster (ground, air,
 artillery) behind a build-your-tech gate, the harvester-built structure
 palette from turrets to radar to Reclaimers, wreck salvage and repair
-welding, team games from 2v2 to 4v4 with shared sight, order queues
+welding (buildings and ground machines alike), team games from 2v2 to
+4v4 with shared sight, order queues
 and patrols, solid
 units that crowd without gridlocking, attack-move with line-of-sight
 fire, damage retaliation, rally points, control groups, shift-select,

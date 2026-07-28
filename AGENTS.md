@@ -831,7 +831,28 @@ comparisons don't survive GPU churn, so CI never runs it.
   was an exploit), so welding back what salvage banked always loses.
   Stacked welders bill against the same start-of-tick reading, so
   resolution refunds a welder whose whole step the hp ceiling
-  rejected — the crew bills the job, not the crew size.
+  rejected — the crew bills the job, not the crew size. The live
+  weld/salvage meters saturate one shy of the validator's
+  `PROGRESS_ENVELOPE` (economy's `metered`), so a torch held on one
+  job for millions of ticks never overflows the u32 step math.
+- **Machines weld too since 0.13** (`Command::RepairUnit`, appended
+  last — postcard discipline): harvesters chase a wounded own GROUND
+  unit and weld it at body contact (`REPAIR_REACH`), billed per hp
+  against the patient's cost at the same 850‰ through the same
+  prepaid meter (ramp = max_hp over train_ticks). The torch holds
+  only while welder and patient BOTH stand still — a walking patient
+  is chased, never healed, so sustain can't ride along with a
+  retreat — and the patient's own orders are untouched (no eviction:
+  nothing else targets a friendly unit). Heals buffer as
+  `PendingUnitHeal` and resolve through `resolve_unit_heals`, the ONE
+  seam every future unit-healing source (a repair structure's aura)
+  must feed — fire wins ties, the volley's dead forfeit, the
+  ceiling-rejected welder is refunded. Air patients refuse in v1;
+  shell surface is right-click a damaged own unit or the armed `W`
+  verb. Player-only for now: the bots' gym action waits for the next
+  contract, so fixtures never move — and the executive's
+  rotate-to-the-rear doctrine still assumes nothing bot-reachable
+  heals (the constraint is written on `PULLBACK_NUM`).
 - **Salvage is labor, not a button** (0.11): `Command::Salvage` sends
   harvesters to strip an own BUILT non-Foundry building down the
   construction ramp backward. Drains buffer beside the gains

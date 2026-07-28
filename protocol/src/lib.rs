@@ -422,10 +422,11 @@ mod tests {
             Command::CancelTrain { .. } => 11,
             Command::SetRally { .. } => 12,
             Command::Surrender => 13,
+            Command::RepairUnit { .. } => 14,
         }
     }
 
-    const COMMAND_VARIANTS: usize = 14;
+    const COMMAND_VARIANTS: usize = 15;
 
     #[test]
     fn an_omitted_screenshot_path_survives_the_roundtrip() {
@@ -610,6 +611,11 @@ mod tests {
                 rally: Some(TilePos::new(4, 4)),
             },
             Command::Surrender,
+            Command::RepairUnit {
+                units: vec![UnitId(10)],
+                target: UnitId(11),
+                queue: false,
+            },
         ];
         assert_every_tag_sampled(
             commands.iter().map(command_tag),

@@ -182,6 +182,40 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         game.ping(world, PingKind::Attack);
         return;
     }
+    // A wounded own GROUND unit under the cursor takes the weld, the
+    // unit mirror of the damaged-building flow above — but only AFTER
+    // the enemy checks (attack intent stays reliable in a brawl) and
+    // never for a machine in the current selection, so ordering a
+    // group that contains its own wounded still reads as a move. The
+    // armed verb (the Weld card) reaches those.
+    if has_harvester {
+        let patient = game
+            .state
+            .units()
+            .iter()
+            .filter(|u| {
+                u.player == game.human
+                    && u.hp > 0
+                    && u.hp < u.kind.stats().max_hp
+                    && u.kind.stats().domain == oxide_sim::stats::Domain::Ground
+                    && !game.selection.units.contains(&u.id)
+            })
+            .map(|u| {
+                let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
+                (p.distance(world), u.id)
+            })
+            .filter(|(d, _)| *d <= PICK_RADIUS)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((_, target)) = patient {
+            game.issue(Command::RepairUnit {
+                units,
+                target,
+                queue,
+            });
+            game.ping(world, PingKind::Harvest);
+            return;
+        }
+    }
     // The harvest check reads the player's *memory*, not the live map —
     // probing fog with right-clicks must not reveal hidden scrap. Wreck
     // memory counts the same as node memory.

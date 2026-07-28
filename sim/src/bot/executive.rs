@@ -130,15 +130,20 @@ pub enum Intent {
 }
 
 /// Fraction of max hp below which a member is rotated out of its army to
-/// the rear — permanently: nothing heals in this world, and cycling the
-/// wounded back in just feeds the grinder.
+/// the rear — permanently: nothing the BOT can do heals a machine (the
+/// harvester weld verb is player-only until a gym contract carries it),
+/// so cycling the wounded back in just feeds the grinder. The moment any
+/// heal verb becomes bot-reachable this doctrine goes wrong two ways:
+/// `rear` never releases ids, and a welded veteran should re-draft.
 const PULLBACK_NUM: u32 = 35;
 const PULLBACK_DEN: u32 = 100;
 
 /// Withdraw only from catastrophe: below half the local enemy strength.
-/// Nothing in this world outruns its pursuers and nothing heals, so a
-/// merely-losing fight finished on the spot costs less than a rout —
-/// disengaging under fire is free damage handed to the enemy.
+/// Nothing in this world outruns its pursuers and nothing the bot does
+/// heals, so a merely-losing fight finished on the spot costs less than
+/// a rout — disengaging under fire is free damage handed to the enemy.
+/// This margin shares the pullback rule's expiry: bot-reachable healing
+/// re-prices the rout.
 const WITHDRAW_MARGIN_NUM: u32 = 1;
 const WITHDRAW_MARGIN_DEN: u32 = 2;
 /// Radius (tiles) around the army centroid scored as "the fight".

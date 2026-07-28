@@ -11,6 +11,17 @@ use crate::state::{Order, PathFollow, State};
 use crate::stats::RETARGET_RADIUS;
 use chassis::grid::TilePos;
 
+/// The live meter read for weld and salvage billing, saturated one shy
+/// of [`crate::state::PROGRESS_ENVELOPE`] — the ceiling the snapshot
+/// validator enforces and the ramp products are proven to fit under.
+/// The step math prices one tick as `ramp * (p + 1) / ramp_ticks` in
+/// `u32`; unbounded, the product overflows once a torch has held one
+/// job a few million ticks. Saturated, the meter parks at the ceiling
+/// and the torch keeps billing and welding its marginal step forever.
+fn metered(progress: u32) -> u32 {
+    progress.min(crate::state::PROGRESS_ENVELOPE - 1)
+}
+
 /// Stand up an own unfinished site: walk adjacent, then feed it progress.
 /// One built tick raises hp along a linear ramp to full at completion
 /// (damage taken meanwhile is simply kept — nobody rebuilds for free).
@@ -177,7 +188,7 @@ pub(super) fn repair(
         // re-clicked welder from re-entering the prepaid stretch.
         let start_hp = stats.max_hp / 5;
         let ramp = stats.max_hp - start_hp;
-        let p = state.unit(id).expect("caller checked").progress;
+        let p = metered(state.unit(id).expect("caller checked").progress);
         let owed_millis = |ticks: u32| -> u64 {
             let welded = u64::from(ramp) * u64::from(ticks) / u64::from(ramp_ticks);
             welded * u64::from(basis) * crate::stats::REPAIR_COST_PERMILLE / u64::from(stats.max_hp)
@@ -201,7 +212,7 @@ pub(super) fn repair(
         }
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = None;
-        unit.progress += 1;
+        unit.progress = p + 1;
         let step = (ramp * (p + 1) / ramp_ticks) - (ramp * p / ramp_ticks);
         if step > 0 {
             builds.push(PendingHpGain {
@@ -223,6 +234,121 @@ pub(super) fn repair(
             pos,
             reason: StallReason::NoRoute,
         });
+    }
+}
+
+/// Weld a wounded own ground machine: chase it to body contact, then
+/// feed it hp along its training ramp, billed per hp at
+/// [`crate::stats::REPAIR_COST_PERMILLE`] of proportional cost through
+/// the same prepaid milli-scrap meter buildings use. The torch holds
+/// only while both bodies stand still inside
+/// [`crate::stats::REPAIR_REACH`]: a walking patient is chased, not
+/// welded — field sustain never rides along with a retreat. Heals
+/// buffer like every hp gain and resolve after damage (fire wins
+/// ties); several welders stack, each billing its own torch time.
+/// The patient's own orders are never touched.
+pub(super) fn repair_unit(
+    state: &mut State,
+    id: UnitId,
+    patient: UnitId,
+    events: &mut Vec<Event>,
+    heals: &mut Vec<super::PendingUnitHeal>,
+) {
+    let me = state.unit(id).expect("caller checked").player;
+    // The self-target guard is defense in depth: commands refuse it,
+    // but an order that somehow names its own welder must end, not
+    // bill a machine for welding itself.
+    let Some(t) = state
+        .unit(patient)
+        .filter(|t| t.id != id && t.player == me && t.hp > 0 && t.hp < t.kind.stats().max_hp)
+    else {
+        // Healed, dead, or never a patient: the job is over.
+        state.unit_mut(id).expect("caller checked").advance_queue();
+        return;
+    };
+    // Reading the patient's path mid-phase is deliberate: both machines
+    // are the same seat's, so the parity-alternating brain order leaks
+    // no cross-seat edge, and the read is a pure function of the tick.
+    let (t_pos, t_tile, t_walking) = (t.pos, t.tile(), t.path.is_some());
+    let stats = t.kind.stats();
+    let (basis, ramp, ramp_ticks) = (stats.cost, stats.max_hp, stats.train_ticks);
+    let reach = crate::stats::REPAIR_REACH;
+    let unit = state.unit(id).expect("caller checked");
+    let in_reach = unit.pos.dist_sq(t_pos) <= reach * reach;
+    if in_reach && !t_walking {
+        // The billing meter is the building welder's, with the unit's
+        // own numbers: ramp is full max_hp (machines have no one-fifth
+        // foundation), the clock is its training time, the basis its
+        // price. Same ceiling prepay, same survival of no-op reissues.
+        let p = metered(unit.progress);
+        let owed_millis = |ticks: u32| -> u64 {
+            let welded = u64::from(ramp) * u64::from(ticks) / u64::from(ramp_ticks);
+            welded * u64::from(basis) * crate::stats::REPAIR_COST_PERMILLE / u64::from(stats.max_hp)
+        };
+        let due = owed_millis(p + 1).div_ceil(1000) - owed_millis(p).div_ceil(1000);
+        if due > 0 {
+            if u64::from(state.player(me).scrap) < due {
+                // Broke stalls the torch.
+                let unit = state.unit_mut(id).expect("caller checked");
+                let (player, pos) = (unit.player, unit.pos);
+                unit.clear_program();
+                events.push(Event::OrderStalled {
+                    unit: id,
+                    player,
+                    pos,
+                    reason: StallReason::InsufficientScrap,
+                });
+                return;
+            }
+            state.player_mut(me).scrap -= due as u32;
+        }
+        let unit = state.unit_mut(id).expect("caller checked");
+        unit.path = None;
+        unit.progress = p + 1;
+        let step = (ramp * (p + 1) / ramp_ticks) - (ramp * p / ramp_ticks);
+        if step > 0 {
+            heals.push(super::PendingUnitHeal {
+                unit: patient,
+                step,
+                player: me,
+                paid: due as u32,
+            });
+        }
+    } else {
+        // The chase: re-aim at the patient's CURRENT tile whenever the
+        // path's goal has drifted more than a tile from it — cheap
+        // pursuit without per-tick A*, the combat chase's rule. The
+        // meter survives the walk; only the torch time bills.
+        let kind = unit.kind;
+        let tile = unit.tile();
+        let keep = unit
+            .path
+            .as_ref()
+            .is_some_and(|pf| pf.goal.chebyshev(t_tile) <= 1);
+        if keep {
+            return;
+        }
+        match route_for(state, kind, tile, t_tile) {
+            Some(waypoints) => {
+                let unit = state.unit_mut(id).expect("caller checked");
+                unit.path = Some(PathFollow {
+                    goal: t_tile,
+                    waypoints,
+                    next: 0,
+                });
+            }
+            None => {
+                let unit = state.unit_mut(id).expect("caller checked");
+                let (player, pos) = (unit.player, unit.pos);
+                unit.clear_program();
+                events.push(Event::OrderStalled {
+                    unit: id,
+                    player,
+                    pos,
+                    reason: StallReason::NoRoute,
+                });
+            }
+        }
     }
 }
 
@@ -260,8 +386,8 @@ pub(super) fn salvage(
         let ramp = stats.max_hp - start_hp;
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = None;
-        let p = unit.progress;
-        unit.progress += 1;
+        let p = metered(unit.progress);
+        unit.progress = p + 1;
         let step = (ramp * (p + 1) / ramp_ticks) - (ramp * p / ramp_ticks);
         if step > 0 {
             drains.push(super::PendingHpDrain { building, step });
@@ -478,4 +604,20 @@ fn replacement_node(state: &State, around: TilePos, unit_tile: TilePos) -> Optio
         }
     }
     best.map(|(_, y, x)| TilePos::new(x, y))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::state::PROGRESS_ENVELOPE;
+
+    #[test]
+    fn the_live_meter_saturates_below_the_progress_envelope() {
+        // The step math's overflow guard: whatever a torch has lived
+        // through, the meter it bills from stays under the ceiling the
+        // ramp products are proven to fit (state.rs pins the products).
+        assert_eq!(super::metered(0), 0);
+        assert_eq!(super::metered(PROGRESS_ENVELOPE - 1), PROGRESS_ENVELOPE - 1);
+        assert_eq!(super::metered(PROGRESS_ENVELOPE), PROGRESS_ENVELOPE - 1);
+        assert_eq!(super::metered(u32::MAX), PROGRESS_ENVELOPE - 1);
+    }
 }

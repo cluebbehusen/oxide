@@ -42,6 +42,26 @@ struct PendingHpGain {
     paid: u32,
 }
 
+/// A buffered hp gain on a UNIT — welding by a crewmate today; any
+/// future source of unit healing (a healing structure, an aura) must
+/// push into this same list and resolve through
+/// [`resolve_unit_heals`] — two independent unit-heal paths would be a
+/// determinism trap. Same contract as [`PendingHpGain`]: applied after
+/// damage, so a machine the volley zeroed forfeits every heal (fire
+/// wins ties).
+struct PendingUnitHeal {
+    /// The patient.
+    unit: UnitId,
+    /// Hp this welder's tick offers.
+    step: u32,
+    /// Whose bank prepaid, for the ceiling refund.
+    player: crate::ids::PlayerId,
+    /// Scrap this welder prepaid for this tick's step — refunded when
+    /// the WHOLE step lands past the hp ceiling, exactly like a
+    /// building weld's coin.
+    paid: u32,
+}
+
 /// A buffered hp drain — salvage work — resolved with the gains as one
 /// signed per-building delta after damage. A building fire zeroed this
 /// tick forfeits every drain (fire wins; forfeited hp refunds
@@ -67,6 +87,7 @@ struct PendingFounding {
 pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
     let mut hits: Vec<PendingHit> = Vec::new();
     let mut builds: Vec<PendingHpGain> = Vec::new();
+    let mut heals: Vec<PendingUnitHeal> = Vec::new();
     let mut drains: Vec<PendingHpDrain> = Vec::new();
     let mut founds: Vec<PendingFounding> = Vec::new();
     let mut launches: Vec<crate::state::Shell> = Vec::new();
@@ -101,6 +122,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
             Order::Repair { building } => repair(state, id, building, events, &mut builds),
             Order::Salvage { building } => salvage(state, id, building, events, &mut drains),
             Order::Found { kind, anchor } => found(state, id, kind, anchor, events, &mut founds),
+            Order::RepairUnit { unit } => repair_unit(state, id, unit, events, &mut heals),
         }
     }
     turret_fire(state, events, &mut hits, &mut launches);
@@ -108,7 +130,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
     // (flight is at least one tick), so ordering here cannot matter.
     land_shells(state, &mut hits, events);
     state.shells.extend(launches);
-    resolve_hits(state, hits, builds, drains, events);
+    resolve_hits(state, hits, builds, heals, drains, events);
     resolve_founds(state, founds, events);
 }
 
@@ -118,7 +140,7 @@ mod locomotion;
 
 use combat::attack;
 use combat::{land_shells, retaliate, target_standing, turret_fire};
-use economy::{build, found, harvest, repair, salvage};
+use economy::{build, found, harvest, repair, repair_unit, salvage};
 use locomotion::{attack_move, idle, walk};
 
 /// The other half of simultaneity: buffered shots land now, in the order
@@ -131,6 +153,7 @@ fn resolve_hits(
     state: &mut State,
     hits: Vec<PendingHit>,
     builds: Vec<PendingHpGain>,
+    heals: Vec<PendingUnitHeal>,
     drains: Vec<PendingHpDrain>,
     events: &mut Vec<Event>,
 ) {
@@ -268,12 +291,69 @@ fn resolve_hits(
             }
         }
     }
+    resolve_unit_heals(state, heals);
     for hit in &hits {
         if let Target::Unit(uid) = hit.victim
             && target_standing(state, hit.attacker)
         {
             retaliate(state, uid, hit.attacker);
         }
+    }
+}
+
+/// The unit half of buffered hp work — the ONE seam every unit heal
+/// resolves through, built to be fed by any future healing source (a
+/// repair structure's aura pushes into the same list) as well as
+/// today's crewmate welds. The building resolver's three rules,
+/// restated for machines: a unit at 0 hp after the volley forfeits
+/// every heal and refunds nothing (fire wins ties, and nothing
+/// resurrects); stacked welders billed against the same start-of-tick
+/// reading, so a welder whose WHOLE step lands past the hp ceiling
+/// gets its prepaid coin back (the marginal welder's partially
+/// accepted step keeps its ceil-billed fraction); and per unit the
+/// gains net into one delta clamped once to max_hp.
+fn resolve_unit_heals(state: &mut State, heals: Vec<PendingUnitHeal>) {
+    let mut rooms: Vec<(UnitId, i64)> = Vec::new();
+    for heal in &heals {
+        let Some(u) = state.unit(heal.unit).filter(|u| u.hp > 0) else {
+            continue;
+        };
+        let i = match rooms.iter().position(|(id, _)| *id == heal.unit) {
+            Some(i) => i,
+            None => {
+                let room = i64::from(u.kind.stats().max_hp) - i64::from(u.hp);
+                rooms.push((heal.unit, room));
+                rooms.len() - 1
+            }
+        };
+        if rooms[i].1 <= 0 {
+            // Every gain consumes room; only the refund cares what was
+            // paid — the same rule the building ledger learned when a
+            // free-stepping welder ate the last room uncompensated.
+            if heal.paid > 0 {
+                let bank = &mut state.player_mut(heal.player).scrap;
+                *bank = bank.saturating_add(heal.paid);
+            }
+        } else {
+            rooms[i].1 -= i64::from(heal.step);
+        }
+    }
+    let mut sums: Vec<(UnitId, i64)> = Vec::new();
+    for heal in &heals {
+        match sums.iter_mut().find(|(id, _)| *id == heal.unit) {
+            Some((_, gain)) => *gain += i64::from(heal.step),
+            None => sums.push((heal.unit, i64::from(heal.step))),
+        }
+    }
+    for (unit, gain) in sums {
+        let Some(u) = state.unit_mut(unit) else {
+            continue;
+        };
+        if u.hp == 0 {
+            continue; // fire won this tick; the heal forfeits with its coin
+        }
+        let max = i64::from(u.kind.stats().max_hp);
+        u.hp = (i64::from(u.hp) + gain).clamp(0, max) as u32;
     }
 }
 

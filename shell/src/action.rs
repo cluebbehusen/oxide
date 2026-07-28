@@ -68,6 +68,10 @@ pub enum Action {
     SetBookmark(u8),
     /// Return the camera to a remembered slot.
     RecallBookmark(u8),
+    /// Arm the unit weld: the next click on a damaged own ground unit
+    /// sends the selected harvesters to weld it back up (billed per hp
+    /// against the machine's cost).
+    RepairUnit,
 }
 
 impl Action {
@@ -98,6 +102,7 @@ impl Action {
             Action::Run => "Run".to_string(),
             Action::SetBookmark(n) => format!("Set bookmark {}", n + 1),
             Action::RecallBookmark(n) => format!("Recall bookmark {}", n + 1),
+            Action::RepairUnit => "Weld unit".to_string(),
         }
     }
 }
@@ -243,6 +248,10 @@ impl BindingMap {
                 chord: Chord::bare(Key::M),
                 action: Action::Run,
             },
+            Binding {
+                chord: Chord::bare(Key::W),
+                action: Action::RepairUnit,
+            },
         ];
         for (i, key) in [Key::F5, Key::F6, Key::F7, Key::F8].into_iter().enumerate() {
             bindings.push(Binding {
@@ -290,6 +299,8 @@ impl BindingMap {
             // Classic's M belongs to StopOrScrap over here; Run takes
             // the freed right-index H (TrainSlot 1 moved to K).
             (Action::Run, Key::H),
+            // Weld crosses to the right hand's remaining top-row key.
+            (Action::RepairUnit, Key::Y),
         ] {
             // Order matters: unbind the target key's old meaning first
             // so the rebind never reports a conflict.

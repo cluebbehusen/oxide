@@ -124,14 +124,22 @@ pub enum Order {
     /// `defer`). Nothing is placed or paid until the founder stands
     /// beside the footprint and re-proves the *strict* placement
     /// predicate on ground it now sees — taken ground stalls the
-    /// program instead of leaking what fog hid. (Last variant by
-    /// appending discipline: earlier discriminants keep their
-    /// serialized bytes.)
+    /// program instead of leaking what fog hid.
     Found {
         /// What to construct on arrival.
         kind: crate::stats::BuildingKind,
         /// Top-left tile of the claimed footprint.
         anchor: TilePos,
+    },
+    /// Chase a wounded own ground unit and weld it back toward full
+    /// (harvesters only; billed per hp against the patient's cost).
+    /// The weld ticks only while welder and patient both stand still
+    /// within [`crate::stats::REPAIR_REACH`]. (Last variant by
+    /// appending discipline: earlier discriminants keep their
+    /// serialized bytes.)
+    RepairUnit {
+        /// The patient.
+        unit: crate::ids::UnitId,
     },
 }
 
@@ -1061,9 +1069,12 @@ const COORD_ENVELOPE: i32 = 8 * MAX_MAP_EDGE as i32;
 /// [`Building::progress`]). Construction, repair, and salvage all price a
 /// step as `ramp * (meter + 1) / ramp_ticks` in `u32`; an unbounded meter
 /// overflows that product. This bound keeps it inside the type for every
-/// shipped building and sits far above any meter a match of playable
-/// length reaches.
-const PROGRESS_ENVELOPE: u32 = 1 << 21;
+/// shipped building and unit and sits far above any meter a match of
+/// playable length reaches. The live weld/salvage meters saturate just
+/// short of here (the economy brain's `metered` read), so a torch held
+/// on one job for millions of ticks keeps billing at its marginal rate
+/// instead of walking the product past `u32`.
+pub(crate) const PROGRESS_ENVELOPE: u32 = 1 << 21;
 
 /// Ceiling on a building's cumulative salvage ledger. Repairing a
 /// half-stripped building and stripping it again legitimately drains more
@@ -1102,7 +1113,11 @@ fn point_inside_envelope(p: Vec2Fx) -> bool {
 /// must decide its row here rather than slip through a catch-all.
 fn order_inside_envelope(order: &Order) -> bool {
     match order {
-        Order::Idle | Order::Build { .. } | Order::Repair { .. } | Order::Salvage { .. } => true,
+        Order::Idle
+        | Order::Build { .. }
+        | Order::Repair { .. }
+        | Order::Salvage { .. }
+        | Order::RepairUnit { .. } => true,
         Order::Move { goal } | Order::AttackMove { goal } => tile_inside_envelope(*goal),
         Order::Harvest { node } => tile_inside_envelope(*node),
         Order::Attack { resume, .. } => resume.is_none_or(tile_inside_envelope),
@@ -1124,6 +1139,7 @@ fn order_reference(order: &Order) -> Option<Target> {
         Order::Repair { building } | Order::Salvage { building } => {
             Some(Target::Building(*building))
         }
+        Order::RepairUnit { unit } => Some(Target::Unit(*unit)),
     }
 }
 
@@ -1253,6 +1269,29 @@ mod tests {
             assert!(
                 ramp * (u64::from(PROGRESS_ENVELOPE) + 1) <= u64::from(u32::MAX),
                 "{}: the ramp math must stay inside u32 at the ceiling",
+                kind.name()
+            );
+        }
+        // Unit welds ramp over the full max_hp — same product, same
+        // ceiling, same obligation for every machine on the roster.
+        const UNIT_KINDS: [UnitKind; 11] = [
+            UnitKind::Harvester,
+            UnitKind::Sentinel,
+            UnitKind::Scuttler,
+            UnitKind::Lancer,
+            UnitKind::Bombard,
+            UnitKind::Flakhound,
+            UnitKind::Stinger,
+            UnitKind::Buzzard,
+            UnitKind::Darter,
+            UnitKind::Talon,
+            UnitKind::Wisp,
+        ];
+        for kind in UNIT_KINDS {
+            let ramp = u64::from(kind.stats().max_hp);
+            assert!(
+                ramp * (u64::from(PROGRESS_ENVELOPE) + 1) <= u64::from(u32::MAX),
+                "{}: the unit weld ramp must stay inside u32 at the ceiling",
                 kind.name()
             );
         }

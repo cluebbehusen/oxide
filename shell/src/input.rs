@@ -83,6 +83,9 @@ pub struct InputState {
     /// Armed salvage: the next left-click on an own built building
     /// sends the selected harvesters to strip it.
     pub(crate) salvaging: bool,
+    /// Armed unit weld: the next left-click on a damaged own ground
+    /// unit sends the selected harvesters to weld it.
+    pub(crate) repairing: bool,
     /// Armed run: the next ground click sends the selection walking
     /// obliviously — no engaging, no auto-acquire en route.
     pub(crate) running: bool,
@@ -282,6 +285,7 @@ fn stroke_queued(game: &Game, shift: bool) -> usize {
             | Command::Harvest { units, queue, .. }
             | Command::Repair { units, queue, .. }
             | Command::Salvage { units, queue, .. }
+            | Command::RepairUnit { units, queue, .. }
                 if mine(units) =>
             {
                 depth = if *queue {
@@ -324,6 +328,7 @@ impl InputState {
             placing: None,
             placing_stroke: None,
             salvaging: false,
+            repairing: false,
             running: false,
             build_menu: false,
             ui: 1.0,
@@ -359,6 +364,7 @@ impl InputState {
         self.placing = None;
         self.placing_stroke = None;
         self.salvaging = false;
+        self.repairing = false;
         self.running = false;
     }
 
@@ -371,6 +377,7 @@ impl InputState {
         self.placing = None;
         self.placing_stroke = None;
         self.salvaging = false;
+        self.repairing = false;
         self.running = false;
         self.build_menu = false;
         self.touches.clear();
@@ -694,7 +701,12 @@ use select::{
 /// chrome, the arrow otherwise. Pure — the loop applies it.
 pub fn desired_cursor(game: &Game, input: &InputState) -> macroquad::miniquad::CursorIcon {
     use macroquad::miniquad::CursorIcon;
-    if input.placing.is_some() || input.patrol_route.is_some() || input.salvaging || input.running {
+    if input.placing.is_some()
+        || input.patrol_route.is_some()
+        || input.salvaging
+        || input.repairing
+        || input.running
+    {
         return CursorIcon::Crosshair;
     }
     let layout = game.layout.get();
@@ -1259,6 +1271,50 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.ping(world, PingKind::Harvest);
             if !input.resolver.shift_held() {
                 input.salvaging = false;
+            }
+        }
+        return true;
+    }
+    if input.repairing {
+        // Same manners as salvage: minimap jumps the camera, a
+        // misclick keeps the mode armed, Shift chains welds behind the
+        // crew's program.
+        if let Some(world) = crate::render::minimap_world_at(game, p) {
+            game.camera.center = world;
+            game.camera.pan(Vec2::ZERO); // re-clamp
+        } else if !click_on_hud(game, p) {
+            let world = game.camera.to_world(p);
+            let patient = game
+                .state
+                .units()
+                .iter()
+                .filter(|u| {
+                    u.player == game.human
+                        && u.hp > 0
+                        && u.hp < u.kind.stats().max_hp
+                        && u.kind.stats().domain == oxide_sim::stats::Domain::Ground
+                })
+                .map(|u| {
+                    let at = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
+                    (at.distance(world), u.id)
+                })
+                .filter(|(d, _)| *d <= PICK_RADIUS)
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            let Some((_, target)) = patient else {
+                game.toast("weld wants a damaged own ground unit");
+                game.sounds_pending
+                    .push((crate::game::SoundKind::Denied, None));
+                return true;
+            };
+            let units = game.selection.units.clone();
+            game.issue(Command::RepairUnit {
+                units,
+                target,
+                queue: input.resolver.shift_held(),
+            });
+            game.ping(world, PingKind::Harvest);
+            if !input.resolver.shift_held() {
+                input.repairing = false;
             }
         }
         return true;
