@@ -353,10 +353,21 @@ spam-detecting entropy, headed by the probed artifact's digest. `driver matchup 
 hand-picked armies twice on a clean arena, swapping their physical seats;
 use comparable starting costs when testing counters. It reports each leg's
 completion status and survivor purchase value, plus the paired mean.
+Both seats wear ONE roster by default, so the leg swap exchanges seat,
+geometry and initial ID range and nothing else; `--factions ff|cc|fc|cf`
+(west then east) splits them when the roster is itself the experiment.
+The arena trains nothing, so a seat's faction selects no unit stat —
+same-faction seating removes a label from the swap's bundle without
+moving a number. A wound-discounted survivor value (sum of
+`cost · hp / max_hp`) rides beside the purchase value and never enters
+the verdict: changing the verdict's input would silently restate every
+arena conclusion already recorded.
 `--b-structures turret:n` is defense mode: pre-built structures
 stand in front of side B, priced into its verdict — scenarios grew a
 serde-default `buildings` list of pre-built structures for exactly
-this kind of harness work.
+this kind of harness work. `--garrison-pitch` (default 3) refills the
+wall's fixed band more or less densely and must clear the widest
+structure standing in it.
 `driver sweep` (0.12) is the decisiveness instrument: N seeds of
 bot-vs-bot on one 1v1 map at one level, each seed played in both
 personality orientations (the dealt pair exchanged between the

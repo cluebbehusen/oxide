@@ -257,6 +257,15 @@ enum Cmd {
         /// mode: the swarm-vs-fortification experiment).
         #[arg(long)]
         b_structures: Option<String>,
+        /// Seat rosters, west then east: ff, cc, fc or cf. Both seats
+        /// wear one roster by default, so a leg swap exchanges seat,
+        /// geometry and ID range and nothing else.
+        #[arg(long, default_value = "ff", value_parser = oxide_kit::matchup::parse_factions)]
+        factions: oxide_kit::matchup::SeatFactions,
+        /// Tile spacing of the garrison grid (must clear the widest
+        /// structure standing in it).
+        #[arg(long, default_value_t = 3)]
+        garrison_pitch: i32,
     },
     /// Measure a map: room per seat, route lengths by domain, resources,
     /// artillery pressure, spawn spacing.
@@ -623,7 +632,13 @@ fn main() -> Result<()> {
                 state.hash(),
             );
         }
-        Cmd::Matchup { a, b, b_structures } => {
+        Cmd::Matchup {
+            a,
+            b,
+            b_structures,
+            factions,
+            garrison_pitch,
+        } => {
             let army_a = oxide_kit::matchup::parse_army(&a)?;
             let army_b = if b.trim().is_empty() {
                 Vec::new()
@@ -641,23 +656,31 @@ fn main() -> Result<()> {
             );
             if let Some(spec) = &b_structures {
                 print!(
-                    "  + garrison {spec} ({} scrap)",
+                    "  + garrison {spec} ({} scrap, pitch {garrison_pitch})",
                     oxide_kit::matchup::garrison_cost(&garrison)
                 );
             }
             println!();
-            let out = oxide_kit::matchup::siege(&army_a, &army_b, &garrison, 42, 8_000)?;
+            println!("seats: {factions}");
+            let arena = oxide_kit::matchup::Arena {
+                factions,
+                garrison_pitch,
+                ..oxide_kit::matchup::Arena::default()
+            };
+            let out = oxide_kit::matchup::siege(&army_a, &army_b, &garrison, &arena)?;
             for leg in out.legs() {
                 let verdict = leg
                     .verdict()
                     .map_or_else(|| "unresolved".to_string(), |v| v.to_string());
                 println!(
                     "  A as player {} / B as player {}: A survives {:>4}  B survives {:>4}  \
-                     ({} ticks, {}, verdict {})",
+                     [hp-weighted A {:>4}  B {:>4}]  ({} ticks, {}, verdict {})",
                     leg.a_player,
                     1 - leg.a_player,
                     leg.a_value,
                     leg.b_value,
+                    leg.a_hp_value,
+                    leg.b_hp_value,
                     leg.ticks,
                     leg.termination,
                     verdict,
@@ -678,6 +701,11 @@ fn main() -> Result<()> {
                 out.b_mean_value(),
                 verdict,
                 flips,
+            );
+            println!(
+                "paired mean hp-weighted surviving value  A {:.1}  B {:.1}",
+                out.a_mean_hp_value(),
+                out.b_mean_hp_value(),
             );
         }
         Cmd::MapAudit { scenario, json } => {
