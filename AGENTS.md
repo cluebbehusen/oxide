@@ -81,6 +81,15 @@ deterministic sims across threads — grown-shelf sweeps stay a
 dozen-seconds affair, and a new sweep over per-map runs should spawn
 the same way.
 
+`sim/tests/fuzz.rs` fans the same way: seeded garbage down the command
+surface, generated through a tag enum the compiler holds against
+`Command`'s variant list (a new verb stops that file building until it
+is fuzzed), with `State::validate_invariants` sampled along every run
+and a set of reach premises asserting the garbage still lands — a
+fuzzer that quietly stops reaching the deep shapes is the failure mode.
+`FUZZ_SEEDS=<n> cargo test -p oxide-sim --test fuzz` soaks it past the
+default sweep; a failure names its seed, which is the whole repro.
+
 Before committing: fmt + clippy clean, tests green. Golden files live in
 `driver/tests/goldens/`: byte-exact PNGs (a mismatch writes the actual
 under `target/` for side-by-side inspection) plus `state-hashes.json`,
