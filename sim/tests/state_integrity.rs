@@ -17,7 +17,8 @@ use oxide_sim::bot::{Brain, Difficulty, Level, NeuralBot};
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
 use oxide_sim::stats::BuildingKind;
 use oxide_sim::{
-    BuildingId, Command, Faction, PlayerCommand, PlayerId, Scenario, State, UnitId, UnitKind,
+    BuildingId, Command, Faction, PlayerCommand, PlayerId, Scenario, State, StateIntegrityError,
+    UnitId, UnitKind,
 };
 use serde_json::{Value, json};
 
@@ -193,6 +194,107 @@ fn well_formed_additions_are_accepted() {
     serde_json::from_value::<State>(base).expect("legal additions stay legal");
 }
 
+/// Contiguous index per checklist row, in declaration order. The
+/// exhaustive match is the forcing chain: a new `StateIntegrityError`
+/// variant fails to compile here until it takes an index, and the
+/// coverage assertion below stays red until a forgery earns its
+/// message.
+fn row_index(e: &StateIntegrityError) -> usize {
+    use StateIntegrityError as E;
+    match e {
+        E::NoPlayers => 0,
+        E::TooManyPlayers => 1,
+        E::ForeignTeam(_) => 2,
+        E::MalformedMapGrid => 3,
+        E::MapTooLarge { .. } => 4,
+        E::VisionTableMismatch => 5,
+        E::MalformedVisionGrid => 6,
+        E::UnsortedUnits => 7,
+        E::UnsortedBuildings => 8,
+        E::StaleUnitCounter => 9,
+        E::StaleBuildingCounter => 10,
+        E::TickBeyondEnvelope => 11,
+        E::IdCounterBeyondEnvelope => 12,
+        E::ForeignUnitOwner(_) => 13,
+        E::UnitHpOutOfRange(_) => 14,
+        E::UnitProgressOutOfRange(_) => 15,
+        E::UnitCooldownOutOfRange(_) => 16,
+        E::OverlongUnitQueue(_) => 17,
+        E::UnitOutsideEnvelope(_) => 18,
+        E::UnmintedOrderTarget(_) => 19,
+        E::ForeignBuildingOwner(_) => 20,
+        E::BuildingHpOutOfRange(_) => 21,
+        E::BuildingProgressOutOfRange(_) => 22,
+        E::BuildingCooldownOutOfRange(_) => 23,
+        E::OverlongBuildingQueue(_) => 24,
+        E::UnproducibleQueueEntry(_) => 25,
+        E::BuildingOutsideEnvelope(_) => 26,
+        E::IncoherentSalvageLedger(_) => 27,
+        E::ForeignShellOwner(_) => 28,
+        E::ShellOutsideEnvelope(_) => 29,
+        E::UnmintedShellShooter(_) => 30,
+        E::ForeignGhostOwner(_) => 31,
+        E::FriendlyGhost(_) => 32,
+        E::GhostOutsideEnvelope(_) => 33,
+        E::UnsortedGhosts(_) => 34,
+        E::ContactOutsideEnvelope(_) => 35,
+        E::UnsortedContacts(_) => 36,
+    }
+}
+
+const ROWS: usize = 37;
+
+/// One rendered message per row, with the entity ids the forgeries
+/// provoke (everything targets seat p0 and entity 0). A fixture's
+/// expected fragment must be a substring of exactly its row's message,
+/// which is what lets string-matched forgeries prove enum-level
+/// coverage.
+fn row_examples() -> Vec<StateIntegrityError> {
+    use StateIntegrityError as E;
+    vec![
+        E::NoPlayers,
+        E::TooManyPlayers,
+        E::ForeignTeam(PlayerId(0)),
+        E::MalformedMapGrid,
+        E::MapTooLarge {
+            width: 300,
+            height: 1,
+        },
+        E::VisionTableMismatch,
+        E::MalformedVisionGrid,
+        E::UnsortedUnits,
+        E::UnsortedBuildings,
+        E::StaleUnitCounter,
+        E::StaleBuildingCounter,
+        E::TickBeyondEnvelope,
+        E::IdCounterBeyondEnvelope,
+        E::ForeignUnitOwner(UnitId(0)),
+        E::UnitHpOutOfRange(UnitId(0)),
+        E::UnitProgressOutOfRange(UnitId(0)),
+        E::UnitCooldownOutOfRange(UnitId(0)),
+        E::OverlongUnitQueue(UnitId(0)),
+        E::UnitOutsideEnvelope(UnitId(0)),
+        E::UnmintedOrderTarget(UnitId(0)),
+        E::ForeignBuildingOwner(BuildingId(0)),
+        E::BuildingHpOutOfRange(BuildingId(0)),
+        E::BuildingProgressOutOfRange(BuildingId(0)),
+        E::BuildingCooldownOutOfRange(BuildingId(0)),
+        E::OverlongBuildingQueue(BuildingId(0)),
+        E::UnproducibleQueueEntry(BuildingId(0)),
+        E::BuildingOutsideEnvelope(BuildingId(0)),
+        E::IncoherentSalvageLedger(BuildingId(0)),
+        E::ForeignShellOwner(0),
+        E::ShellOutsideEnvelope(0),
+        E::UnmintedShellShooter(0),
+        E::ForeignGhostOwner(PlayerId(0)),
+        E::FriendlyGhost(PlayerId(0)),
+        E::GhostOutsideEnvelope(PlayerId(0)),
+        E::UnsortedGhosts(PlayerId(0)),
+        E::ContactOutsideEnvelope(PlayerId(0)),
+        E::UnsortedContacts(PlayerId(0)),
+    ]
+}
+
 /// One forgery: what it is called, the single poke that makes it, and
 /// the fragment of the refusal it must earn.
 type Forgery = (&'static str, fn(&mut Value), &'static str);
@@ -272,6 +374,16 @@ fn every_checklist_row_refuses_its_forgery() {
             "a building counter behind a live building",
             |d| d["next_building_id"] = json!(1),
             "building id counter behind a live building",
+        ),
+        (
+            "a tick past the envelope",
+            |d| d["tick"] = json!(u64::MAX),
+            "tick beyond the sanity envelope",
+        ),
+        (
+            "an id counter past the envelope",
+            |d| d["next_unit_id"] = json!(u32::MAX),
+            "an id counter is beyond the sanity envelope",
         ),
         (
             "a unit owned off the table",
@@ -437,6 +549,46 @@ fn every_checklist_row_refuses_its_forgery() {
             "player p0 holds radar contacts out of canonical order",
         ),
     ];
+
+    // Enum-level coverage: the examples must map onto their own indices
+    // (a duplicated index in row_index reads as a hole here), and every
+    // row's rendered message must be earned by at least one forgery's
+    // fragment.
+    let examples = row_examples();
+    assert_eq!(examples.len(), ROWS, "one example per checklist row");
+    for (i, e) in examples.iter().enumerate() {
+        assert_eq!(
+            row_index(e),
+            i,
+            "row_index and row_examples disagree at {i}"
+        );
+    }
+    // Ids differ between fixtures (whichever entity the poke hits) and
+    // examples (always entity 0), so the match ignores digits and
+    // anchors on the words.
+    let no_digits = |s: &str| s.replace(|c: char| c.is_ascii_digit(), "");
+    let mut covered = vec![false; ROWS];
+    for (label, _, expected) in &fixtures {
+        let rows: Vec<usize> = examples
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| no_digits(&e.to_string()).contains(&no_digits(expected)))
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            !rows.is_empty(),
+            "{label}: fragment '{expected}' matches no checklist row's message"
+        );
+        for i in rows {
+            covered[i] = true;
+        }
+    }
+    if let Some(row) = covered.iter().position(|c| !c) {
+        panic!(
+            "checklist row {row} ({}) has no forgery fixture",
+            examples[row]
+        );
+    }
 
     let base = snapshot();
     for (label, poke, expected) in fixtures {

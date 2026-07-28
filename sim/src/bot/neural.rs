@@ -235,6 +235,16 @@ impl QuantNet {
         if dto.features != FEATURE_COUNT || dto.actions != ACTION_COUNT {
             return Err("feature/action shape mismatch".into());
         }
+        // The width ceiling must gate the raw scalar BEFORE the add: a
+        // hostile `conditioning` near usize::MAX would otherwise
+        // overflow the sum itself — a debug panic and a release wrap,
+        // the exact build-profile split this boundary exists to refuse.
+        if dto.conditioning > MAX_WIDTH {
+            return Err(format!(
+                "conditioning is {} wide, over the {MAX_WIDTH} ceiling",
+                dto.conditioning
+            ));
+        }
         let input_width = FEATURE_COUNT + dto.conditioning;
         if dto.recips.len() != input_width || dto.tanh_lut.len() != 513 {
             return Err("scale or lut shape mismatch".into());

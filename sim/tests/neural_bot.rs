@@ -152,6 +152,14 @@ fn numeric_drift_is_refused_and_the_offending_tensor_is_named() {
     art["head"] = serde_json::json!({"w": vec![vec![0; wide]; actions], "b": vec![0; actions]});
     cases.push(("layer 0 is 4097 wide", art));
 
+    // A hostile conditioning count must be refused BEFORE the input
+    // width is computed: near usize::MAX the sum itself overflows —
+    // a debug panic and a release wrap, the build-profile split this
+    // boundary exists to close.
+    let mut art = tiny_artifact();
+    art["conditioning"] = serde_json::json!(u64::MAX);
+    cases.push(("conditioning", art));
+
     for (named, art) in cases {
         let err = QuantNet::from_json(&art.to_string())
             .err()

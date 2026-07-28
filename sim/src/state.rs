@@ -535,6 +535,15 @@ impl State {
         {
             return Err(E::StaleBuildingCounter);
         }
+        // The counters and the clock increment unchecked in the tick
+        // pipeline; a forged extreme is a next-step panic (debug) or a
+        // wrap that aliases live ids (release).
+        if self.tick > TICK_ENVELOPE {
+            return Err(E::TickBeyondEnvelope);
+        }
+        if self.next_unit_id > ID_COUNTER_ENVELOPE || self.next_building_id > ID_COUNTER_ENVELOPE {
+            return Err(E::IdCounterBeyondEnvelope);
+        }
 
         for u in &self.units {
             if usize::from(u.player.0) >= players {
@@ -943,6 +952,18 @@ const PROGRESS_ENVELOPE: u32 = 1 << 21;
 /// one, which keeps the running total clear of a `u32` wrap.
 const SALVAGE_LEDGER_CEILING: u32 = u32::MAX / 2;
 
+/// Ceiling on a snapshot's tick. `State::tick` increments unchecked;
+/// a forged `u64::MAX` panics on the very next step in a debug build
+/// and wraps in release. Half the type is ~14 trillion years at 20
+/// ticks/s — no honest record gets near it.
+const TICK_ENVELOPE: u64 = u64::MAX / 2;
+
+/// Ceiling on the id counters. Spawning increments unchecked, and a
+/// wrapped counter would alias live ids and break the sorted-id
+/// invariant this same validator enforces. Half the type leaves two
+/// billion spawns of headroom.
+const ID_COUNTER_ENVELOPE: u32 = u32::MAX / 2;
+
 /// Whether a tile coordinate sits inside [`COORD_ENVELOPE`].
 fn tile_inside_envelope(t: TilePos) -> bool {
     t.x >= -COORD_ENVELOPE
@@ -1183,6 +1204,13 @@ pub enum StateIntegrityError {
     /// The building id counter sits behind a live building.
     #[error("building id counter behind a live building")]
     StaleBuildingCounter,
+    /// The tick is past the envelope the pipeline's unchecked
+    /// increment tolerates.
+    #[error("tick beyond the sanity envelope")]
+    TickBeyondEnvelope,
+    /// An id counter is past the envelope spawning tolerates.
+    #[error("an id counter is beyond the sanity envelope")]
+    IdCounterBeyondEnvelope,
     /// A unit is owned by a player outside the table.
     #[error("unit {0} is owned by a player outside the table")]
     ForeignUnitOwner(UnitId),
