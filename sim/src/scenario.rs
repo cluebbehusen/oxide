@@ -266,6 +266,7 @@ impl Scenario {
                     faction: spec.faction,
                     team,
                     scrap: spec.scrap,
+                    resigned: false,
                 }
             })
             .collect();

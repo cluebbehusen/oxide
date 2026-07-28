@@ -21,6 +21,9 @@ pub enum Row {
     WatchReplay,
     /// Tune settings over the paused match.
     Settings,
+    /// Concede the human's seat (confirms; mid-match only — a decided
+    /// match has nothing left to give up).
+    Surrender,
     /// Rebuild the match (confirms).
     Restart,
     /// Abandon to the front door (confirms).
@@ -36,6 +39,7 @@ impl Row {
             Row::SaveGame => "Save Game",
             Row::WatchReplay => "Watch Replay",
             Row::Settings => "Settings",
+            Row::Surrender => "Surrender",
             Row::Restart => "Restart",
             Row::MainMenu => "Main Menu",
             Row::Quit => "Quit",
@@ -43,13 +47,20 @@ impl Row {
     }
 }
 
-/// The rows the current match state offers, in display order.
-fn rows(finished: bool) -> Vec<Row> {
+/// The rows the current match state offers, in display order. Watch
+/// Replay belongs to decided matches; Surrender to running ones where
+/// the seat still has a voice — a resigned or eliminated spectator is
+/// shown no verb the sim would only reject.
+fn rows(finished: bool, can_surrender: bool) -> Vec<Row> {
     let mut rows = vec![Row::Resume, Row::SaveGame];
     if finished {
         rows.push(Row::WatchReplay);
     }
-    rows.extend([Row::Settings, Row::Restart, Row::MainMenu, Row::Quit]);
+    rows.push(Row::Settings);
+    if !finished && can_surrender {
+        rows.push(Row::Surrender);
+    }
+    rows.extend([Row::Restart, Row::MainMenu, Row::Quit]);
     rows
 }
 
@@ -82,6 +93,10 @@ pub enum Out {
     WatchReplay,
     /// Open Settings over the paused match; this screen waits intact.
     Settings,
+    /// Confirmed: concede the human's seat. The caller issues the sim
+    /// command and returns to the match — the result (or the team
+    /// game's concede overlay) arrives with the next tick.
+    Surrender,
     /// Confirmed: rebuild the match.
     Restart,
     /// Confirmed: abandon to the front door.
@@ -120,6 +135,9 @@ pub struct PauseScreen {
     /// appear. Mid-match playback is a fog-free scout of the enemy;
     /// replays are an end-of-match affair.
     pub finished: bool,
+    /// Whether the human's seat can still concede (alive and not
+    /// already resigned) — the Surrender row's other gate.
+    can_surrender: bool,
 }
 
 /// The state a save-failure dialog holds open.
@@ -146,8 +164,8 @@ fn confirm_menu(row: Row) -> Menu {
 
 impl PauseScreen {
     /// Opens on the pause rows.
-    pub fn open(finished: bool) -> Self {
-        let rows = rows(finished);
+    pub fn open(finished: bool, can_surrender: bool) -> Self {
+        let rows = rows(finished, can_surrender);
         let items: Vec<String> = rows.iter().map(|r| r.label().to_string()).collect();
         Self {
             menu: Menu::new("PAUSED", items),
@@ -157,6 +175,7 @@ impl PauseScreen {
             naming: None,
             notice: None,
             finished,
+            can_surrender,
         }
     }
 
@@ -181,7 +200,7 @@ impl PauseScreen {
     /// back on Save Game, the verdict as the subtitle.
     pub fn end_naming(&mut self, notice: String) {
         self.naming = None;
-        self.menu = Self::open(self.finished).menu;
+        self.menu = Self::open(self.finished, self.can_surrender).menu;
         let display = self
             .rows
             .iter()
@@ -207,9 +226,10 @@ impl PauseScreen {
         line: String,
         verb: LeaveVerb,
         finished: bool,
+        can_surrender: bool,
         cancel_home: bool,
     ) -> Self {
-        let mut screen = Self::open(finished);
+        let mut screen = Self::open(finished, can_surrender);
         let mut menu = Menu::new(
             "COULD NOT SAVE",
             vec![
@@ -257,8 +277,14 @@ impl PauseScreen {
             &dialog.line
         } else if self.naming.is_some() {
             "type a name · Enter saves · Esc cancels"
-        } else if self.confirming.is_some() {
-            "this throws the current match away"
+        } else if let Some(row) = self.confirming {
+            // Surrender ends the match rather than discarding it — its
+            // dialog names the real consequence.
+            if row == Row::Surrender {
+                "this concedes the match"
+            } else {
+                "this throws the current match away"
+            }
         } else if let Some(notice) = &self.notice {
             notice
         } else {
@@ -312,7 +338,7 @@ impl PauseScreen {
             }
             if escaped {
                 self.naming = None;
-                self.menu = Self::open(self.finished).menu;
+                self.menu = Self::open(self.finished, self.can_surrender).menu;
                 let display = self
                     .rows
                     .iter()
@@ -348,7 +374,7 @@ impl PauseScreen {
                 LeaveVerb::MainMenu => Row::MainMenu,
                 LeaveVerb::Quit => Row::Quit,
             };
-            self.menu = Self::open(self.finished).menu;
+            self.menu = Self::open(self.finished, self.can_surrender).menu;
             let display = self.rows.iter().position(|&r| r == row).unwrap_or(0);
             self.menu.select(display);
             return Out::Stay;
@@ -356,7 +382,7 @@ impl PauseScreen {
         if let Some(row) = self.confirming {
             if escaped || picked == Some(0) {
                 self.confirming = None;
-                self.menu = Self::open(self.finished).menu;
+                self.menu = Self::open(self.finished, self.can_surrender).menu;
                 // The cursor returns to the armed row.
                 let display = self.rows.iter().position(|&r| r == row).unwrap_or(0);
                 self.menu.select(display);
@@ -364,6 +390,7 @@ impl PauseScreen {
             }
             if picked == Some(1) {
                 return match row {
+                    Row::Surrender => Out::Surrender,
                     Row::Restart => Out::Restart,
                     Row::MainMenu => Out::MainMenu,
                     _ => Out::Quit,
@@ -381,8 +408,8 @@ impl PauseScreen {
             Some(Row::WatchReplay) => Out::WatchReplay,
             Some(Row::Settings) => Out::Settings,
             Some(destructive) => {
-                // Restart, Main Menu, and Quit all throw away a live
-                // match — each asks first.
+                // Surrender, Restart, Main Menu, and Quit all end or
+                // throw away a live match — each asks first.
                 self.confirming = Some(destructive);
                 self.menu = confirm_menu(destructive);
                 Out::Stay
@@ -429,7 +456,7 @@ mod tests {
 
     #[test]
     fn destructive_rows_confirm_with_cancel_preselected() {
-        let mut p = PauseScreen::open(false);
+        let mut p = PauseScreen::open(false, true);
         assert_eq!(activate(&mut p, "Restart"), Out::Stay, "Restart only arms");
         assert!(p.confirming(), "the dialog is up");
         // Bare Enter declines: Cancel is the preselected row.
@@ -444,7 +471,7 @@ mod tests {
         drive(&mut p, Key::Down);
         assert_eq!(drive(&mut p, Key::Enter), Out::Restart);
         // Quit confirms the same way.
-        let mut p = PauseScreen::open(false);
+        let mut p = PauseScreen::open(false, true);
         activate(&mut p, "Quit");
         drive(&mut p, Key::Down);
         assert_eq!(drive(&mut p, Key::Enter), Out::Quit);
@@ -452,9 +479,9 @@ mod tests {
 
     #[test]
     fn escape_resumes_from_the_menu_but_only_cancels_the_dialog() {
-        let mut p = PauseScreen::open(false);
+        let mut p = PauseScreen::open(false, true);
         assert_eq!(drive(&mut p, Key::Escape), Out::Resume);
-        let mut p = PauseScreen::open(false);
+        let mut p = PauseScreen::open(false, true);
         activate(&mut p, "Main Menu");
         assert!(p.confirming());
         assert_eq!(
@@ -467,13 +494,13 @@ mod tests {
 
     #[test]
     fn resume_needs_no_confirmation_and_watch_exists_only_after_the_end() {
-        let mut p = PauseScreen::open(true);
+        let mut p = PauseScreen::open(true, false);
         assert_eq!(drive(&mut p, Key::Enter), Out::Resume);
-        let mut p = PauseScreen::open(true);
+        let mut p = PauseScreen::open(true, false);
         assert_eq!(activate(&mut p, "Watch Replay"), Out::WatchReplay);
         // Mid-match: no Watch Replay row, and every verb still lands on
         // the right target.
-        let mut p = PauseScreen::open(false);
+        let mut p = PauseScreen::open(false, true);
         assert!(
             !p.menu.items.iter().any(|i| i == "Watch Replay"),
             "mid-match playback would be a fog-free scout of the enemy"
@@ -490,6 +517,7 @@ mod tests {
             "could not save: the disk refused the file".to_string(),
             LeaveVerb::Quit,
             false,
+            true,
             false,
         );
         assert!(p.saving_failed());
@@ -507,7 +535,7 @@ mod tests {
     #[test]
     fn retry_and_leave_unsaved_carry_the_pending_verb() {
         let mut p =
-            PauseScreen::open_save_failed("x".to_string(), LeaveVerb::MainMenu, false, false);
+            PauseScreen::open_save_failed("x".to_string(), LeaveVerb::MainMenu, false, true, false);
         assert_eq!(
             activate(&mut p, "Retry"),
             Out::RetrySave(LeaveVerb::MainMenu)
@@ -522,12 +550,14 @@ mod tests {
 
     #[test]
     fn escape_cancels_the_save_failure_dialog_never_the_leave() {
-        let mut p = PauseScreen::open_save_failed("x".to_string(), LeaveVerb::Quit, false, false);
+        let mut p =
+            PauseScreen::open_save_failed("x".to_string(), LeaveVerb::Quit, false, true, false);
         assert_eq!(drive(&mut p, Key::Escape), Out::Stay);
         assert!(!p.saving_failed());
         // A Home-origin dialog cancels back to the front door instead
         // of a pause menu the player never opened.
-        let mut p = PauseScreen::open_save_failed("x".to_string(), LeaveVerb::Quit, false, true);
+        let mut p =
+            PauseScreen::open_save_failed("x".to_string(), LeaveVerb::Quit, false, true, true);
         assert_eq!(drive(&mut p, Key::Escape), Out::Home);
     }
 
@@ -541,7 +571,7 @@ mod tests {
     #[test]
     fn save_game_never_confirms_and_bare_enter_saves_the_suggestion() {
         for finished in [false, true] {
-            let mut p = PauseScreen::open(finished);
+            let mut p = PauseScreen::open(finished, true);
             assert_eq!(activate(&mut p, "Save Game"), Out::SaveGame);
             assert!(!p.confirming(), "saving destroys nothing — no dialog");
             p.begin_naming("skirmish · t100".to_string());
@@ -561,7 +591,7 @@ mod tests {
 
     #[test]
     fn the_name_field_edits_with_text_and_backspace_and_escape_cancels() {
-        let mut p = PauseScreen::open(false);
+        let mut p = PauseScreen::open(false, true);
         p.begin_naming(String::new());
         type_text(&mut p, "abc");
         assert_eq!(drive(&mut p, Key::Backspace), Out::Stay);
@@ -584,7 +614,7 @@ mod tests {
 
     #[test]
     fn the_name_field_caps_its_length_and_the_verdict_shows_until_the_next_pick() {
-        let mut p = PauseScreen::open(false);
+        let mut p = PauseScreen::open(false, true);
         p.begin_naming("x".repeat(40));
         let shown = p.menu.items[0].clone();
         assert_eq!(
@@ -604,10 +634,46 @@ mod tests {
     }
 
     #[test]
+    fn surrender_exists_mid_match_only_and_confirms_with_cancel_preselected() {
+        let mut p = PauseScreen::open(false, true);
+        assert_eq!(activate(&mut p, "Surrender"), Out::Stay, "Surrender arms");
+        assert!(p.confirming(), "conceding asks first");
+        assert_eq!(
+            p.subtitle("map"),
+            "this concedes the match",
+            "the dialog names the real consequence, not a thrown-away match"
+        );
+        // Bare Enter declines: Cancel is the preselected row.
+        assert_eq!(drive(&mut p, Key::Enter), Out::Stay);
+        assert!(!p.confirming(), "Cancel closed the dialog");
+        assert_eq!(
+            p.menu.items[p.menu.selected], "Surrender",
+            "the cursor returns to the armed row"
+        );
+        // A deliberate second motion concedes.
+        drive(&mut p, Key::Enter);
+        drive(&mut p, Key::Down);
+        assert_eq!(drive(&mut p, Key::Enter), Out::Surrender);
+        // A decided match has nothing left to give up.
+        let p = PauseScreen::open(true, false);
+        assert!(
+            !p.menu.items.iter().any(|i| i == "Surrender"),
+            "a decided match offers Watch Replay, not concession"
+        );
+        // A seat with no voice (resigned or eliminated) gets no verb
+        // the sim would only reject.
+        let p = PauseScreen::open(false, false);
+        assert!(
+            !p.menu.items.iter().any(|i| i == "Surrender"),
+            "a spectating seat cannot concede twice"
+        );
+    }
+
+    #[test]
     fn settings_opens_without_confirmation_on_both_faces() {
         // Settings destroys nothing — it must never arm the dialog.
         for finished in [false, true] {
-            let mut p = PauseScreen::open(finished);
+            let mut p = PauseScreen::open(finished, true);
             assert_eq!(activate(&mut p, "Settings"), Out::Settings);
             assert!(!p.confirming(), "Settings is not a destructive row");
         }

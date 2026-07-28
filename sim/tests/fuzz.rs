@@ -58,13 +58,14 @@ enum CommandTag {
     Salvage,
     CancelTrain,
     SetRally,
+    Surrender,
 }
 
 /// The draw pool. Paired with the exhaustive matches below, the array and
 /// the variant list cannot drift apart — the old `next_below(10)` bound
 /// against nine arms is exactly how `Repair`, `Salvage`, and
 /// `CancelTrain` went unfuzzed.
-const COMMAND_TAGS: [CommandTag; 13] = [
+const COMMAND_TAGS: [CommandTag; 14] = [
     CommandTag::Move,
     CommandTag::Attack,
     CommandTag::AttackMove,
@@ -78,7 +79,17 @@ const COMMAND_TAGS: [CommandTag; 13] = [
     CommandTag::Salvage,
     CommandTag::CancelTrain,
     CommandTag::SetRally,
+    CommandTag::Surrender,
 ];
+
+/// How rarely a drawn [`CommandTag::Surrender`] is kept: one landed
+/// surrender from a real seat freezes the rest of that seed's run
+/// (the other seat wins on the spot), so an unweighted draw would end
+/// every match within a few dozen ticks and starve the other verbs of
+/// coverage. Rare-but-present keeps most seeds hot for the whole
+/// budget while the sweep still exercises concession and the frozen
+/// world behind it.
+const SURRENDER_KEEP_ODDS: u32 = 2_048;
 
 /// Contiguous indices, one arm per tag — the other half of the forcing
 /// chain: a tag [`COMMAND_TAGS`] forgot fails the coverage test instead of
@@ -98,6 +109,7 @@ fn tag_index(tag: CommandTag) -> usize {
         CommandTag::Salvage => 10,
         CommandTag::CancelTrain => 11,
         CommandTag::SetRally => 12,
+        CommandTag::Surrender => 13,
     }
 }
 
@@ -117,6 +129,7 @@ fn tag_of(command: &Command) -> CommandTag {
         Command::Salvage { .. } => CommandTag::Salvage,
         Command::CancelTrain { .. } => CommandTag::CancelTrain,
         Command::SetRally { .. } => CommandTag::SetRally,
+        Command::Surrender => CommandTag::Surrender,
     }
 }
 
@@ -355,6 +368,7 @@ fn generate(tag: CommandTag, rng: &mut Pcg32, state: &State) -> Command {
             building: building_id(rng, state),
             rally: (rng.next_below(3) != 0).then(|| tile(rng, state)),
         },
+        CommandTag::Surrender => Command::Surrender,
     }
 }
 
@@ -445,7 +459,14 @@ fn fuzz_run(seed: u64) -> Run {
         );
         let commands: Vec<PlayerCommand> = (0..rng.next_below(4))
             .map(|_| {
-                let drawn = rng.next_below(COMMAND_TAGS.len() as u32) as usize;
+                let drawn = loop {
+                    let d = rng.next_below(COMMAND_TAGS.len() as u32) as usize;
+                    if COMMAND_TAGS[d] != CommandTag::Surrender
+                        || rng.next_below(SURRENDER_KEEP_ODDS) == 0
+                    {
+                        break d;
+                    }
+                };
                 reach.drawn[drawn] += 1;
                 PlayerCommand {
                     // Players 0-3 on a two-player map: half the issuers

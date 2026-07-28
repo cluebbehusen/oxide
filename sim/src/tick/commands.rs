@@ -30,11 +30,13 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
         }
         // The eliminated don't give orders (matters in 3+ player games —
         // two-player matches freeze on the result before this can bite).
-        // Alive means a standing Foundry, matching the victory rule.
-        if !state
-            .buildings
-            .iter()
-            .any(|b| b.player == pc.player && b.kind == crate::stats::BuildingKind::Foundry)
+        // Alive means a standing Foundry and no concession, matching the
+        // victory rule — which also makes a second Surrender reject here.
+        if state.players[pc.player.0 as usize].resigned
+            || !state
+                .buildings
+                .iter()
+                .any(|b| b.player == pc.player && b.kind == crate::stats::BuildingKind::Foundry)
         {
             events.push(Event::CommandRejected {
                 player: pc.player,
@@ -92,6 +94,7 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
             Command::SetRally { building, rally } => {
                 apply_set_rally(state, pc.player, *building, *rally)
             }
+            Command::Surrender => apply_surrender(state, pc.player, events),
         };
         if let Err(reason) = outcome {
             events.push(Event::CommandRejected {
@@ -846,6 +849,20 @@ fn apply_train(
         .expect("checked above")
         .queue
         .push_back(kind);
+    Ok(())
+}
+
+/// Concession is a fact, not a macro for razing the base: one flag the
+/// victory check and the command gate both read. Commands are phase 1
+/// and victory phase 10, so a decisive surrender ends the match on its
+/// own tick.
+fn apply_surrender(
+    state: &mut State,
+    player: PlayerId,
+    events: &mut Vec<Event>,
+) -> Result<(), RejectReason> {
+    state.player_mut(player).resigned = true;
+    events.push(Event::PlayerResigned { player });
     Ok(())
 }
 

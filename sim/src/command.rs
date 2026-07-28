@@ -150,6 +150,13 @@ pub enum Command {
         /// Rally tile, or `None` for the doorstep default.
         rally: Option<TilePos>,
     },
+    /// Concede the seat. The issuer's Foundries stop counting toward the
+    /// team-scoped victory check and its future commands reject as
+    /// [`RejectReason::Eliminated`]; units already in the world keep
+    /// executing their brains, like any eliminated seat's remnants.
+    /// (Last variant by appending discipline: earlier discriminants keep
+    /// their serialized bytes.)
+    Surrender,
 }
 
 /// A command attributed to its issuing player. Ownership checks are made

@@ -26,7 +26,8 @@
 //!    cadence tick pays its first salvage immediately.
 //! 9. **Vision** — every player's fog-of-war visible set is rebuilt from
 //!    their surviving entities (explored only accumulates).
-//! 10. **Victory** — a player with no Foundry is out; last standing wins.
+//! 10. **Victory** — a player with no Foundry (or who conceded) is out;
+//!     last standing wins.
 //!
 //! After [`GameResult`] is set the world freezes: ticks still count up (so
 //! timelines stay aligned) but nothing moves and commands are ignored.
@@ -159,8 +160,10 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
 /// holds a Foundry — no Foundry anywhere, no comeback; turrets and
 /// factories left standing don't keep a team in the game (or 0.5's
 /// buildable kinds would have silently rewritten the victory rule).
-/// The per-seat command gate in `commands::apply` deliberately stays
-/// player-scoped: a foundry-less seat on a living team spectates while
+/// A resigned seat's Foundries stop counting the tick it concedes, so
+/// a fully-resigned team is eliminated on the spot. The per-seat
+/// command gate in `commands::apply` deliberately stays player-scoped:
+/// a foundry-less or resigned seat on a living team spectates while
 /// its team plays on.
 fn victory(state: &mut State, events: &mut Vec<Event>) {
     if state.result.is_some() {
@@ -171,8 +174,8 @@ fn victory(state: &mut State, events: &mut Vec<Event>) {
     teams.dedup();
     let alive = |team: u8| {
         state.buildings.iter().any(|b| {
-            b.kind == crate::stats::BuildingKind::Foundry
-                && state.players[b.player.0 as usize].team == team
+            let owner = &state.players[b.player.0 as usize];
+            b.kind == crate::stats::BuildingKind::Foundry && owner.team == team && !owner.resigned
         })
     };
     let survivors: Vec<u8> = teams.iter().copied().filter(|&t| alive(t)).collect();

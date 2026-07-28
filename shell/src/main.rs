@@ -628,6 +628,7 @@ async fn run() -> Result<()> {
                                 err.player_line(),
                                 screens::pause::LeaveVerb::Quit,
                                 game.state.result().is_some(),
+                                can_surrender(&game),
                                 true,
                             ));
                             mode = Mode::Pause;
@@ -783,14 +784,20 @@ async fn run() -> Result<()> {
                 // placing or plotting, pointer over chrome.
                 macroquad::miniquad::window::set_mouse_cursor(input::desired_cursor(&game, &input));
                 // Escape walks outward: deselect first, then the menu —
-                // except over a decided match, where the banner promises
-                // 'Press Esc to continue' and must mean it even with a
-                // selection still alive.
-                if escape_pressed && (!had_selection || game.state.result().is_some()) {
+                // except over a decided match (or the concede overlay),
+                // where the banner promises 'Press Esc to continue' and
+                // must mean it even with a selection still alive.
+                if escape_pressed
+                    && (!had_selection || game.state.result().is_some() || game.conceded_banner)
+                {
+                    // Opening the menu dismisses the concede overlay for
+                    // good — Resume from here is clean spectating.
+                    game.conceded_banner = false;
                     game.paused = true;
                     game.demo.paused_menu = true;
                     pause = Some(screens::pause::PauseScreen::open(
                         game.state.result().is_some(),
+                        can_surrender(&game),
                     ));
                     mode = Mode::Pause;
                 }
@@ -843,6 +850,7 @@ async fn run() -> Result<()> {
                         if back_to_pause {
                             pause = Some(screens::pause::PauseScreen::open(
                                 game.state.result().is_some(),
+                                can_surrender(&game),
                             ));
                             mode = Mode::Pause;
                         } else {
@@ -960,6 +968,17 @@ async fn run() -> Result<()> {
                         ));
                         mode = Mode::Settings;
                     }
+                    screens::pause::Out::Surrender => {
+                        // The command lands on the next tick like any
+                        // other. A 1v1 decides on the spot and the
+                        // normal result flow takes over; in a team game
+                        // the concede overlay meets the player back in
+                        // the match while the ally plays on.
+                        game.issue(oxide_sim::Command::Surrender);
+                        game.paused = false;
+                        pause = None;
+                        mode = Mode::Playing;
+                    }
                     screens::pause::Out::WatchReplay => {
                         // The recorder IS the record — clone it, stamp
                         // its length, play it back. Non-destructive; the
@@ -1000,6 +1019,7 @@ async fn run() -> Result<()> {
                                 err.player_line(),
                                 screens::pause::LeaveVerb::MainMenu,
                                 game.state.result().is_some(),
+                                can_surrender(&game),
                                 false,
                             ));
                         }
@@ -1011,6 +1031,7 @@ async fn run() -> Result<()> {
                                 err.player_line(),
                                 screens::pause::LeaveVerb::Quit,
                                 game.state.result().is_some(),
+                                can_surrender(&game),
                                 false,
                             ));
                         }
@@ -1170,6 +1191,7 @@ async fn run() -> Result<()> {
                         err.player_line(),
                         screens::pause::LeaveVerb::Quit,
                         game.state.result().is_some(),
+                        can_surrender(&game),
                         !matches!(mode, Mode::Playing | Mode::Pause),
                     ));
                     mode = Mode::Pause;
@@ -1192,6 +1214,14 @@ fn resume(path: &std::path::Path) -> Result<Game> {
 }
 
 /// Carries session-level toggles (pause/speed/overlay) onto a fresh game.
+/// Whether the human's seat can still concede: it holds a Foundry and
+/// has not already resigned — the Surrender row's gate, matching the
+/// sim's own command gate so the menu never offers a verb the sim
+/// would only reject.
+fn can_surrender(game: &Game) -> bool {
+    !game.state.player(game.human).resigned && game.home_foundry().is_some()
+}
+
 fn keep_flags(mut fresh: Game, old: &Game) -> Game {
     fresh.paused = old.paused;
     fresh.speed = old.speed;

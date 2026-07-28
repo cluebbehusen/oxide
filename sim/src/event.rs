@@ -181,6 +181,12 @@ pub enum Event {
         /// The final outcome.
         result: GameResult,
     },
+    /// A seat conceded. Its machines play on as remnants; the victory
+    /// check stops counting its Foundries the same tick.
+    PlayerResigned {
+        /// The seat that gave up.
+        player: PlayerId,
+    },
 }
 
 /// Everything [`crate::State::tick`] has to say about one tick.

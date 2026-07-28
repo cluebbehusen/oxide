@@ -212,7 +212,15 @@ stretches with record length so no replay retains more than 64 state
 clones, and interactive loads cap at 2M claimed ticks). Watch Replay
 appears on the pause menu only once the match is decided — mid-match
 playback was a fog-free scout of the enemy, which is also why the
-shelf's resumable records load instead of watching. `sh tools/package_macos.sh`
+shelf's resumable records load instead of watching. Surrender is its
+mid-match complement (hidden again for a seat that already resigned
+or lost its Foundry — no verb the sim would only reject), behind the
+destructive-confirm dialog with its own subtitle: a 1v1 concession
+decides on the next tick and the normal result flow takes over
+(banner reads SURRENDERED); a team-game concession raises the
+surrender overlay — concede-time stats, Esc to the menu as the exit
+offer — and dismissing it leaves the human spectating under a
+SURRENDERED - SPECTATING strip while the ally plays on. `sh tools/package_macos.sh`
 builds `dist/Oxide.app` (resources resolve executable-relative when
 bundled, cwd otherwise; `OXIDE_RESOURCE_ROOT` overrides both — the
 harness's isolation seam, unvalidated by design: a wrong root fails
@@ -723,7 +731,15 @@ comparisons don't survive GPU churn, so CI never runs it.
   Masterless machines finishing their last orders fit the fiction; in a
   team game a foundry-less seat spectates while its team plays on (the
   victory check is team-scoped, the command gate stays player-scoped —
-  the two sites cross-reference each other on purpose).
+  the two sites cross-reference each other on purpose). Surrender
+  (0.13) is the same doctrine chosen voluntarily: `Command::Surrender`
+  sets `Player.resigned` — a first-class hashed fact, not a macro for
+  razing the base — the seat's Foundries stop counting toward the
+  victory check (a fully-resigned team is eliminated on the spot; a
+  1v1 concession decides its own tick), its future commands reject as
+  `Eliminated` (which makes a second Surrender a no-op), and its
+  machines play out as remnants. Bots never surrender; the gym
+  contract is untouched (still v5, 22 actions).
 - **Air is a second movement domain, not a special case.** Flyers take
   the straight line (no A*), ignore terrain, construction claims, and
   ground collision, collide only with each other, never block

@@ -401,6 +401,32 @@ mod tests {
 
     const REPLY_VARIANTS: usize = 11;
 
+    /// Contiguous index per [`Command`] variant, in declaration order.
+    /// The sim's verbs ride this wire through [`Request::SendCommand`],
+    /// so they carry the same obligation as the protocol's own enums: a
+    /// new verb stops this match compiling until it is indexed, and the
+    /// sample test stops passing until it is exercised on the wire.
+    fn command_tag(command: &Command) -> usize {
+        match command {
+            Command::Move { .. } => 0,
+            Command::Attack { .. } => 1,
+            Command::AttackMove { .. } => 2,
+            Command::Harvest { .. } => 3,
+            Command::Patrol { .. } => 4,
+            Command::Stop { .. } => 5,
+            Command::Train { .. } => 6,
+            Command::Build { .. } => 7,
+            Command::Cancel { .. } => 8,
+            Command::Repair { .. } => 9,
+            Command::Salvage { .. } => 10,
+            Command::CancelTrain { .. } => 11,
+            Command::SetRally { .. } => 12,
+            Command::Surrender => 13,
+        }
+    }
+
+    const COMMAND_VARIANTS: usize = 14;
+
     #[test]
     fn an_omitted_screenshot_path_survives_the_roundtrip() {
         // The sampled variant carries a path; its defaulted form is pinned
@@ -517,6 +543,93 @@ mod tests {
                 "request variant did not survive: {req:?}"
             );
         }
+    }
+
+    #[test]
+    fn every_command_variant_survives_the_send_command_wire() {
+        use chassis::grid::TilePos;
+        use oxide_sim::{BuildingId, BuildingKind, Target, UnitKind};
+        let commands = vec![
+            Command::Move {
+                units: vec![UnitId(1)],
+                goal: TilePos::new(3, 4),
+                queue: true,
+            },
+            Command::Attack {
+                units: vec![UnitId(2)],
+                target: Target::Building(BuildingId(1)),
+                queue: false,
+            },
+            Command::AttackMove {
+                units: vec![UnitId(3)],
+                goal: TilePos::new(5, 6),
+                queue: false,
+            },
+            Command::Harvest {
+                units: vec![UnitId(4)],
+                node: TilePos::new(7, 2),
+                queue: false,
+            },
+            Command::Patrol {
+                units: vec![UnitId(5)],
+                waypoints: vec![TilePos::new(1, 1), TilePos::new(2, 2)],
+            },
+            Command::Stop {
+                units: vec![UnitId(6)],
+            },
+            Command::Train {
+                building: BuildingId(0),
+                kind: UnitKind::Harvester,
+            },
+            Command::Build {
+                units: vec![UnitId(7)],
+                kind: BuildingKind::Turret,
+                anchor: TilePos::new(9, 9),
+                queue: false,
+            },
+            Command::Cancel {
+                building: BuildingId(2),
+            },
+            Command::Repair {
+                units: vec![UnitId(8)],
+                building: BuildingId(3),
+                queue: false,
+            },
+            Command::Salvage {
+                units: vec![UnitId(9)],
+                building: BuildingId(4),
+                queue: false,
+            },
+            Command::CancelTrain {
+                building: BuildingId(5),
+                index: 1,
+            },
+            Command::SetRally {
+                building: BuildingId(6),
+                rally: Some(TilePos::new(4, 4)),
+            },
+            Command::Surrender,
+        ];
+        assert_every_tag_sampled(
+            commands.iter().map(command_tag),
+            COMMAND_VARIANTS,
+            "command",
+        );
+        for command in commands {
+            let req = Request::SendCommand {
+                player: PlayerId(0),
+                command,
+            };
+            assert_eq!(
+                roundtrip(&req),
+                req,
+                "command variant did not survive: {req:?}"
+            );
+        }
+        // Unit variants ride as a bare tag — the exact string a client
+        // sends for a concession.
+        let json = serde_json::to_string(&Command::Surrender).unwrap();
+        assert_eq!(json, r#"{"type":"surrender"}"#);
     }
 
     #[test]

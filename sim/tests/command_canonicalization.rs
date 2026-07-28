@@ -32,10 +32,11 @@ fn command_tag(command: &Command) -> usize {
         Command::Train { .. } => 10,
         Command::CancelTrain { .. } => 11,
         Command::SetRally { .. } => 12,
+        Command::Surrender => 13,
     }
 }
 
-const COMMAND_VARIANTS: usize = 13;
+const COMMAND_VARIANTS: usize = 14;
 
 /// The verbs that carry a unit list — every one of them owes this file a
 /// duplicate-id row.
@@ -43,6 +44,9 @@ const UNIT_BEARING_TAGS: [usize; 9] = [0, 1, 2, 3, 4, 5, 7, 8, 9];
 
 /// The verbs that address a building alone, with no list to canonicalize.
 const BUILDING_ONLY_TAGS: [usize; 4] = [6, 10, 11, 12];
+
+/// The verbs that name no entity at all — nothing to canonicalize.
+const OPERANDLESS_TAGS: [usize; 1] = [13];
 
 /// A quiet field with a legal target for every unit-bearing verb: a guard
 /// that can see an enemy without being in aggro of it, a worker beside a
@@ -265,12 +269,13 @@ fn every_verb_is_sorted_into_a_tag_list() {
     let mut all: Vec<usize> = UNIT_BEARING_TAGS
         .into_iter()
         .chain(BUILDING_ONLY_TAGS)
+        .chain(OPERANDLESS_TAGS)
         .collect();
     all.sort_unstable();
     assert_eq!(
         all,
         (0..COMMAND_VARIANTS).collect::<Vec<_>>(),
-        "every command is either unit-bearing or building-only"
+        "every command is unit-bearing, building-only, or operandless"
     );
 }
 

@@ -121,6 +121,14 @@ pub struct Game {
     /// End-of-match statistics, computed once from the recorder when
     /// the result lands (the record IS the match — a re-execution).
     pub end_stats: Option<oxide_kit::stats::MatchStats>,
+    /// The match in numbers at the moment the human conceded an
+    /// UNDECIDED team match — the exit offer's stats. Decided matches
+    /// (a 1v1 surrender included) go through `end_stats` instead.
+    pub concede_stats: Option<oxide_kit::stats::MatchStats>,
+    /// Whether the surrender overlay (banner + concede stats + the
+    /// Esc-to-menu exit) is up. Presentation only; opening the pause
+    /// menu dismisses it so spectating the ally stays unobstructed.
+    pub conceded_banner: bool,
     /// What the player has demonstrably done — the tutorial's evidence.
     pub demo: crate::tutorial::Demo,
     /// Fog-free viewing without the debug chrome — the playback
@@ -227,6 +235,8 @@ impl Game {
             layout: std::cell::Cell::new(crate::layout::LayoutModel::default()),
             panel_model: std::cell::RefCell::new(None),
             end_stats: None,
+            concede_stats: None,
+            conceded_banner: false,
             demo: crate::tutorial::Demo::default(),
             spectate: false,
             accum: 0.0,
@@ -342,6 +352,26 @@ impl Game {
             .any(|e| matches!(e, Event::ScrapDeposited { player, .. } if *player == self.human))
         {
             self.demo.deposited = true;
+        }
+
+        // A concession that did NOT decide the match (a team game, the
+        // ally fighting on) raises the surrender overlay: the human's
+        // match in numbers so far, with Esc-to-menu as the exit. A
+        // decisive surrender goes through the normal result flow, and a
+        // bulk fast-forward (replay load) keeps only the resigned fact —
+        // the banner is a fresh-concession moment, not standing state.
+        if !self.suppress_presentation
+            && self.state.result().is_none()
+            && report
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::PlayerResigned { player } if *player == self.human))
+        {
+            let mut replay = self.recorder.clone();
+            let total = self.state.current_tick();
+            replay.meta.ticks = Some(total);
+            self.concede_stats = oxide_kit::stats::compute(&replay, (total / 48).max(1)).ok();
+            self.conceded_banner = true;
         }
 
         // The tutorial's evidence: what the human actually asked for
@@ -750,5 +780,85 @@ mod tests {
                 .any(|effect| matches!(effect.kind, EffectKind::Ping { .. })),
             "an effect must expire after enough presented sim time"
         );
+    }
+
+    #[test]
+    fn a_decisive_concession_uses_the_result_flow_not_the_overlay() {
+        // 1v1: the surrender decides the match on its own tick, so the
+        // normal end-of-match banner takes over.
+        let mut game = Game::with_viewport(
+            Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("skirmish builds");
+        game.issue(Command::Surrender);
+        game.do_tick();
+        assert!(game.state.player(game.human).resigned);
+        assert!(game.state.result().is_some(), "a 1v1 concession decides");
+        assert!(!game.conceded_banner, "no concede overlay over a result");
+        assert!(game.concede_stats.is_none());
+    }
+
+    #[test]
+    fn a_team_concession_raises_the_surrender_overlay() {
+        use oxide_sim::scenario::PlayerSpec;
+        let seat = |name: &str, faction, team, bot| PlayerSpec {
+            name: name.into(),
+            faction,
+            team: Some(team),
+            scrap: 100,
+            bot,
+            // Teamed bot seats need a config (the classic bot is
+            // team-blind by design).
+            bot_config: bot.then_some(oxide_sim::scenario::BotConfig {
+                level: oxide_sim::bot::Level::Easy,
+                aggression: Some(500),
+            }),
+        };
+        let scenario = Scenario {
+            name: "concede-arena".into(),
+            seed: 42,
+            map: vec![
+                "####################".into(),
+                "#1..............3..#".into(),
+                "#..................#".into(),
+                "#..................#".into(),
+                "#..................#".into(),
+                "#2..............4..#".into(),
+                "#..................#".into(),
+                "####################".into(),
+            ],
+            players: vec![
+                seat("West Ferrous", oxide_sim::Faction::Ferrous, 0, false),
+                seat("West Cupric", oxide_sim::Faction::Cupric, 0, true),
+                seat("East Ferrous", oxide_sim::Faction::Ferrous, 1, true),
+                seat("East Cupric", oxide_sim::Faction::Cupric, 1, true),
+            ],
+            units: Vec::new(),
+            buildings: Vec::new(),
+            meta: None,
+        };
+        let mut game = Game::with_viewport(scenario, macroquad::prelude::vec2(1280.0, 800.0))
+            .expect("the concede arena builds");
+        game.issue(Command::Surrender);
+        game.do_tick();
+        assert!(game.state.player(game.human).resigned);
+        assert!(
+            game.state.result().is_none(),
+            "the ally's Foundry keeps the match running"
+        );
+        assert!(
+            game.conceded_banner,
+            "the undecided concession raises the overlay"
+        );
+        assert!(
+            game.concede_stats.is_some(),
+            "the exit offer carries the match-so-far numbers"
+        );
+        // The banner is a one-shot moment: later ticks never re-raise
+        // a dismissed overlay.
+        game.conceded_banner = false;
+        game.do_tick();
+        assert!(!game.conceded_banner, "spectating stays unobstructed");
     }
 }

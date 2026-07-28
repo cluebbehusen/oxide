@@ -31,7 +31,13 @@ remapping — every change applies immediately and persists, explicit
 unbindings included. The pause menu carries the same Settings, so a
 live match can be retuned mid-game (the match waits, and Back returns
 to the pause menu); a refused rebind says which verb already holds
-the key. Play opens a thumbnail grid of every map,
+the key. Mid-match the pause menu also offers Surrender (confirmed,
+Cancel preselected, like every destructive choice): a 1v1 concession
+ends the match on the spot and the normal stats and Watch Replay
+flow takes over, while in a team game only your seat resigns — the
+overlay shows your match-so-far numbers with Esc as the exit to the
+menu, and dismissing it leaves you spectating while your ally plays
+on. Play opens a thumbnail grid of every map,
 sectioned by format, each card carrying a fog-free, theme-graded
 preview — the selected map's blurb names its pace and scrap richness —
 and every choice you make on the way to a

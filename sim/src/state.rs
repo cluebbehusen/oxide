@@ -43,6 +43,12 @@ pub struct Player {
     pub team: u8,
     /// Scrap in the bank.
     pub scrap: u32,
+    /// Whether this seat conceded ([`crate::Command::Surrender`]): its
+    /// Foundries no longer keep its team in the match and its commands
+    /// reject, while its machines play out their brains as remnants.
+    /// Defaulted so records that predate the field deserialize.
+    #[serde(default)]
+    pub resigned: bool,
 }
 
 /// How the match ended.
@@ -1064,6 +1070,7 @@ mod tests {
                 faction: Faction::Ferrous,
                 team: 0,
                 scrap: 0,
+                resigned: false,
             }],
             7,
         )
