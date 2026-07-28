@@ -25,6 +25,7 @@ mod input;
 mod layout;
 mod menu;
 mod panel;
+mod paths;
 mod render;
 mod saves;
 mod screens;
@@ -127,13 +128,6 @@ fn parse_speed(s: &str) -> Result<f64, String> {
     } else {
         Err("speed must be a finite value within 0.05..=64".to_string())
     }
-}
-
-/// Everything a quit must not lose: the live session (as an autosave)
-/// and any settled-but-unwritten window size.
-fn save_on_quit(game: &mut Game, config: &config::Config) {
-    autosave::save(game);
-    config.save().ok();
 }
 
 fn window_conf() -> Conf {
@@ -553,10 +547,20 @@ async fn run() -> Result<()> {
                         settings = Some(screens::settings::SettingsScreen::open(&config));
                         mode = Mode::Settings;
                     }
-                    screens::home::Out::Quit => {
-                        autosave::save(&mut game);
-                        std::process::exit(0);
-                    }
+                    screens::home::Out::Quit => match autosave::save(&mut game) {
+                        Ok(_) => std::process::exit(0),
+                        Err(err) => {
+                            // Exiting anyway would be silent data loss:
+                            // the failure dialog holds the door.
+                            pause = Some(screens::pause::PauseScreen::open_save_failed(
+                                err.player_line(),
+                                screens::pause::LeaveVerb::Quit,
+                                game.state.result().is_some(),
+                                true,
+                            ));
+                            mode = Mode::Pause;
+                        }
+                    },
                 }
                 render::draw(&game, &sprites, &input);
                 veil();
@@ -576,8 +580,11 @@ async fn run() -> Result<()> {
                     ctrl_at_frame_start,
                     shift_at_frame_start,
                 );
-                if up.dirty {
-                    config.save().ok();
+                if up.dirty
+                    && let Err(err) = config.save()
+                {
+                    menu_notice =
+                        Some((format!("could not save settings: {err}"), get_time() + 5.0));
                 }
                 render::draw(&game, &sprites, &input);
                 veil();
@@ -653,21 +660,6 @@ async fn run() -> Result<()> {
                     }
                     WizardStep::Setup => {
                         w.draw_setup(&draft, &mut previews);
-                    }
-                }
-                if let Some((msg, until)) = &menu_notice {
-                    if get_time() < *until {
-                        let s = render::ui_scale();
-                        let width = measure_text(msg, None, (16.0 * s) as u16, 1.0).width;
-                        draw_text(
-                            msg,
-                            (screen_width() - width) * 0.5,
-                            screen_height() - 48.0 * s,
-                            16.0 * s,
-                            Color::from_rgba(217, 82, 74, 255),
-                        );
-                    } else {
-                        menu_notice = None;
                     }
                 }
             }
@@ -888,17 +880,83 @@ async fn run() -> Result<()> {
                         pause = None;
                         mode = Mode::Playing;
                     }
-                    screens::pause::Out::MainMenu => {
-                        autosave::save(&mut game);
+                    screens::pause::Out::MainMenu => match autosave::save(&mut game) {
+                        Ok(_) => {
+                            home = screens::home::HomeScreen::open();
+                            pause = None;
+                            mode = Mode::Home;
+                        }
+                        Err(err) => {
+                            pause = Some(screens::pause::PauseScreen::open_save_failed(
+                                err.player_line(),
+                                screens::pause::LeaveVerb::MainMenu,
+                                game.state.result().is_some(),
+                                false,
+                            ));
+                        }
+                    },
+                    screens::pause::Out::Quit => match autosave::save(&mut game) {
+                        Ok(_) => std::process::exit(0),
+                        Err(err) => {
+                            pause = Some(screens::pause::PauseScreen::open_save_failed(
+                                err.player_line(),
+                                screens::pause::LeaveVerb::Quit,
+                                game.state.result().is_some(),
+                                false,
+                            ));
+                        }
+                    },
+                    screens::pause::Out::RetrySave(verb) => match autosave::save(&mut game) {
+                        Ok(_) => match verb {
+                            screens::pause::LeaveVerb::MainMenu => {
+                                home = screens::home::HomeScreen::open();
+                                pause = None;
+                                mode = Mode::Home;
+                            }
+                            screens::pause::LeaveVerb::Quit => std::process::exit(0),
+                        },
+                        Err(err) => {
+                            // The dialog stays up; only the reason may
+                            // have changed.
+                            if let Some(ps) = pause.as_mut() {
+                                ps.set_save_failure_line(err.player_line());
+                            }
+                        }
+                    },
+                    screens::pause::Out::LeaveUnsaved(verb) => match verb {
+                        screens::pause::LeaveVerb::MainMenu => {
+                            home = screens::home::HomeScreen::open();
+                            pause = None;
+                            mode = Mode::Home;
+                        }
+                        screens::pause::LeaveVerb::Quit => std::process::exit(0),
+                    },
+                    screens::pause::Out::Home => {
                         home = screens::home::HomeScreen::open();
                         pause = None;
                         mode = Mode::Home;
                     }
-                    screens::pause::Out::Quit => {
-                        autosave::save(&mut game);
-                        std::process::exit(0);
-                    }
                 }
+            }
+        }
+
+        // The menu-context error line draws over whichever menu is up;
+        // the gameplay modes speak through the HUD's toast strip.
+        if !matches!(mode, Mode::Playing | Mode::Playback)
+            && let Some((msg, until)) = &menu_notice
+        {
+            if get_time() < *until {
+                let s = render::ui_scale();
+                let width = measure_text(msg, None, (16.0 * s) as u16, 1.0).width;
+                draw_text(
+                    msg,
+                    (screen_width() - width) * 0.5,
+                    screen_height() - 48.0 * s,
+                    16.0 * s,
+                    Color::from_rgba(217, 82, 74, 255),
+                );
+            } else {
+                menu_notice = None;
             }
         }
 
@@ -972,7 +1030,14 @@ async fn run() -> Result<()> {
                 Some((size, since)) if size == live => {
                     if get_time() - since > 1.0 {
                         config.window = live;
-                        config.save().ok();
+                        if let Err(err) = config.save() {
+                            let line = format!("could not save settings: {err}");
+                            if matches!(mode, Mode::Playing) {
+                                game.toast(line);
+                            } else {
+                                menu_notice = Some((line, get_time() + 5.0));
+                            }
+                        }
                         pending_size = None;
                     }
                 }
@@ -983,8 +1048,24 @@ async fn run() -> Result<()> {
         }
 
         if is_quit_requested() {
-            save_on_quit(&mut game, &config);
-            std::process::exit(0);
+            // Everything a quit must not lose: any settled-but-unwritten
+            // window size, and the live session as an autosave. A failed
+            // autosave swallows the quit (prevent_quit is in force) and
+            // raises the failure dialog instead of exiting over data loss.
+            config.save().ok();
+            match autosave::save(&mut game) {
+                Ok(_) => std::process::exit(0),
+                Err(err) => {
+                    game.paused = true;
+                    pause = Some(screens::pause::PauseScreen::open_save_failed(
+                        err.player_line(),
+                        screens::pause::LeaveVerb::Quit,
+                        game.state.result().is_some(),
+                        !matches!(mode, Mode::Playing | Mode::Pause),
+                    ));
+                    mode = Mode::Pause;
+                }
+            }
         }
 
         next_frame().await;
@@ -1023,7 +1104,9 @@ fn capture_ui(
         Mode::Playback => ("playback", None),
         Mode::Replays => ("replays", shelf.as_ref().map(|s| &s.menu)),
         Mode::Pause => (
-            if pause.as_ref().is_some_and(|p| p.confirming()) {
+            if pause.as_ref().is_some_and(|p| p.saving_failed()) {
+                "save_failed"
+            } else if pause.as_ref().is_some_and(|p| p.confirming()) {
                 "confirm_pause"
             } else {
                 "pause_menu"

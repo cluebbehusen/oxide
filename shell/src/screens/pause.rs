@@ -50,6 +50,16 @@ fn rows(finished: bool) -> Vec<Row> {
     rows
 }
 
+/// The verb a save-failure dialog is holding open: what the player
+/// was leaving toward when the autosave refused to land.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeaveVerb {
+    /// Abandon to the front door.
+    MainMenu,
+    /// Leave the process.
+    Quit,
+}
+
 /// What a pause frame decided. Destructive verbs only ever emerge
 /// after the confirmation step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,21 +78,43 @@ pub enum Out {
     MainMenu,
     /// Confirmed: leave the process.
     Quit,
+    /// Try the failed save again, then perform the verb if it lands.
+    RetrySave(LeaveVerb),
+    /// Perform the verb without a save — the row that guarantees a
+    /// player on a permanently full disk can always leave.
+    LeaveUnsaved(LeaveVerb),
+    /// Back to the front door (a Home-origin failure dialog cancelled).
+    Home,
 }
 
 /// The pause screen: its menu, plus the armed destructive row while
 /// the confirmation dialog is up.
 pub struct PauseScreen {
-    /// The live menu (pause rows, or the two-row confirm dialog).
+    /// The live menu (pause rows, the two-row confirm dialog, or the
+    /// save-failure dialog).
     pub menu: Menu,
     /// The displayed rows, in menu order.
     rows: Vec<Row>,
     /// Which destructive row is awaiting confirmation, if any.
     confirming: Option<Row>,
+    /// The save-failure dialog, if a leave verb's autosave refused.
+    save_failed: Option<SaveFailed>,
     /// Whether the match is decided — only then does Watch Replay
     /// appear. Mid-match playback is a fog-free scout of the enemy;
     /// replays are an end-of-match affair.
     pub finished: bool,
+}
+
+/// The state a save-failure dialog holds open.
+struct SaveFailed {
+    /// The verb waiting on the save.
+    verb: LeaveVerb,
+    /// The player-facing failure sentence (the dialog's subtitle).
+    line: String,
+    /// Whether Cancel returns to the front door (the dialog was raised
+    /// from Home or a window close outside a match) instead of the
+    /// pause rows.
+    cancel_home: bool,
 }
 
 fn confirm_menu(row: Row) -> Menu {
@@ -104,8 +136,39 @@ impl PauseScreen {
             menu: Menu::new("PAUSED", items),
             rows,
             confirming: None,
+            save_failed: None,
             finished,
         }
+    }
+
+    /// Opens straight onto the save-failure dialog: a leave verb's
+    /// autosave refused, and exiting silently would be data loss. The
+    /// safe Cancel row sits preselected (the destructive-confirm house
+    /// pattern); Leave without saving is always reachable, so a full
+    /// disk can never trap the player in the game.
+    pub fn open_save_failed(
+        line: String,
+        verb: LeaveVerb,
+        finished: bool,
+        cancel_home: bool,
+    ) -> Self {
+        let mut screen = Self::open(finished);
+        let mut menu = Menu::new(
+            "COULD NOT SAVE",
+            vec![
+                "Retry".to_string(),
+                "Cancel".to_string(),
+                "Leave without saving".to_string(),
+            ],
+        );
+        menu.select(1);
+        screen.menu = menu;
+        screen.save_failed = Some(SaveFailed {
+            verb,
+            line,
+            cancel_home,
+        });
+        screen
     }
 
     /// Whether the confirmation dialog is up (for the mode report).
@@ -113,9 +176,24 @@ impl PauseScreen {
         self.confirming.is_some()
     }
 
+    /// Whether the save-failure dialog is up (for the mode report).
+    pub fn saving_failed(&self) -> bool {
+        self.save_failed.is_some()
+    }
+
+    /// Refreshes the failure sentence after a retry failed again —
+    /// the dialog stays up, the reason stays current.
+    pub fn set_save_failure_line(&mut self, line: String) {
+        if let Some(dialog) = self.save_failed.as_mut() {
+            dialog.line = line;
+        }
+    }
+
     /// The subtitle for the current face of the screen.
-    pub fn subtitle<'a>(&self, scenario_name: &'a str) -> &'a str {
-        if self.confirming.is_some() {
+    pub fn subtitle<'a>(&'a self, scenario_name: &'a str) -> &'a str {
+        if let Some(dialog) = &self.save_failed {
+            &dialog.line
+        } else if self.confirming.is_some() {
             "this throws the current match away"
         } else {
             scenario_name
@@ -133,6 +211,31 @@ impl PauseScreen {
             .iter()
             .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
         let picked = self.menu.handle(events, mouse);
+        if let Some(dialog) = &self.save_failed {
+            let (verb, cancel_home) = (dialog.verb, dialog.cancel_home);
+            match picked {
+                Some(0) => return Out::RetrySave(verb),
+                Some(2) => return Out::LeaveUnsaved(verb),
+                Some(_) => {}
+                None if escaped => {}
+                None => return Out::Stay,
+            }
+            // Cancel (or Escape — never the leave verb): back to the
+            // rows, cursor on the verb that raised the dialog, or back
+            // to the front door that asked.
+            self.save_failed = None;
+            if cancel_home {
+                return Out::Home;
+            }
+            let row = match verb {
+                LeaveVerb::MainMenu => Row::MainMenu,
+                LeaveVerb::Quit => Row::Quit,
+            };
+            self.menu = Self::open(self.finished).menu;
+            let display = self.rows.iter().position(|&r| r == row).unwrap_or(0);
+            self.menu.select(display);
+            return Out::Stay;
+        }
         if let Some(row) = self.confirming {
             if escaped || picked == Some(0) {
                 self.confirming = None;
@@ -260,6 +363,53 @@ mod tests {
         assert!(p.confirming());
         drive(&mut p, Key::Down);
         assert_eq!(drive(&mut p, Key::Enter), Out::Restart);
+    }
+
+    #[test]
+    fn the_save_failure_dialog_preselects_cancel_and_returns_to_the_verb() {
+        let mut p = PauseScreen::open_save_failed(
+            "could not save: the disk refused the file".to_string(),
+            LeaveVerb::Quit,
+            false,
+            false,
+        );
+        assert!(p.saving_failed());
+        assert!(p.subtitle("map").is_ascii(), "the menu font is Latin-1");
+        // Bare Enter declines: Cancel is the preselected row, so a
+        // reflexive double-tap never leaves unsaved.
+        assert_eq!(drive(&mut p, Key::Enter), Out::Stay);
+        assert!(!p.saving_failed(), "Cancel closed the dialog");
+        assert_eq!(
+            p.menu.items[p.menu.selected], "Quit",
+            "the cursor returns to the verb that raised the dialog"
+        );
+    }
+
+    #[test]
+    fn retry_and_leave_unsaved_carry_the_pending_verb() {
+        let mut p =
+            PauseScreen::open_save_failed("x".to_string(), LeaveVerb::MainMenu, false, false);
+        assert_eq!(
+            activate(&mut p, "Retry"),
+            Out::RetrySave(LeaveVerb::MainMenu)
+        );
+        assert!(p.saving_failed(), "the dialog waits on the retry's verdict");
+        assert_eq!(
+            activate(&mut p, "Leave without saving"),
+            Out::LeaveUnsaved(LeaveVerb::MainMenu),
+            "a full disk can never trap the player"
+        );
+    }
+
+    #[test]
+    fn escape_cancels_the_save_failure_dialog_never_the_leave() {
+        let mut p = PauseScreen::open_save_failed("x".to_string(), LeaveVerb::Quit, false, false);
+        assert_eq!(drive(&mut p, Key::Escape), Out::Stay);
+        assert!(!p.saving_failed());
+        // A Home-origin dialog cancels back to the front door instead
+        // of a pause menu the player never opened.
+        let mut p = PauseScreen::open_save_failed("x".to_string(), LeaveVerb::Quit, false, true);
+        assert_eq!(drive(&mut p, Key::Escape), Out::Home);
     }
 
     #[test]

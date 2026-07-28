@@ -246,6 +246,12 @@ read-only viewer — pause, seek both directions, speed steps, free
 camera. Seeking backward restores an in-memory checkpoint and
 re-simulates, so the viewer can never diverge from the record.
 
+Saves land atomically (a crash mid-write can never truncate a record),
+and a save that fails — full disk, read-only folder — says so: quit
+paths raise a Retry / Leave-without-saving dialog instead of exiting
+silently. Autosave rotation keeps the newest five live sessions and
+twenty finished matches, each pool on its own budget.
+
 ## Status and road ahead
 
 Working today: the full loop (harvest → train → fight → win) with fog of

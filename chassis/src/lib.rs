@@ -8,6 +8,7 @@
 //!
 //! Game rules live elsewhere. This crate must stay reusable for the next game.
 
+pub mod fsx;
 pub mod fx;
 pub mod grid;
 pub mod hash;

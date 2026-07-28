@@ -1,6 +1,7 @@
 //! The replay shelf: everything watchable this machine has kept —
-//! autosaves from the platform data dir plus anything under a local
-//! `replays/` directory. Entries carry the metadata the browser shows
+//! autosaves and explicit saves from the platform data dir plus
+//! anything under the replays dir (cwd-relative in a workspace run,
+//! data-rooted when bundled). Entries carry the metadata the browser shows
 //! and an honest compatibility verdict: replays reproduce only on the
 //! sim that wrote them, and the browser says so instead of guessing.
 
@@ -118,10 +119,13 @@ fn scan(dir: &std::path::Path, out: &mut Vec<(std::time::SystemTime, ReplayEntry
 /// Every known replay, newest first.
 pub fn discover() -> Vec<ReplayEntry> {
     let mut found = Vec::new();
-    if let Some(dir) = crate::autosave::dir() {
+    if let Some(dir) = crate::paths::autosave_dir() {
         scan(&dir, &mut found);
     }
-    scan(std::path::Path::new("replays"), &mut found);
+    if let Some(dir) = crate::paths::saves_dir() {
+        scan(&dir, &mut found);
+    }
+    scan(&crate::paths::replays_dir(), &mut found);
     found.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
     found.into_iter().map(|(_, e)| e).collect()
 }

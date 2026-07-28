@@ -19,7 +19,7 @@ screenshots you read back and judge with your own eyes.
 
 | Crate | Path | Purpose |
 |---|---|---|
-| `chassis` | `chassis/` | Reusable deterministic-sim toolkit: Q32.32 fixed point (`fx`), PCG32 (`rng`), FNV-1a state hashing over postcard bytes (`hash`), tile grid (`grid`), 8-dir A* (`path`), tick-stamped replay format (`replay`). No game rules, no engine deps. |
+| `chassis` | `chassis/` | Reusable deterministic-sim toolkit: Q32.32 fixed point (`fx`), PCG32 (`rng`), FNV-1a state hashing over postcard bytes (`hash`), tile grid (`grid`), 8-dir A* (`path`), tick-stamped replay format (`replay`), atomic durable file writes (`fsx`). No game rules, no engine deps. |
 | `oxide-sim` | `sim/` | All Oxide game rules. `State::tick(&[PlayerCommand])` is the only way anything happens. The bots live here too, but *outside* the tick pipeline — command sources like the mouse: the shipped **neural ladder** (`bot::NeuralBot`, embedded quantized weights, Easy/Medium/Hard/Expert + a personality knob), the scripted `bot::Brain` tiers (fog-honest, training anchors and benchmarks), and the classic 0.6 `bot::Bot` (what replays without a `bot_config` reproduce). |
 | `oxide-protocol` | `protocol/` | Debug-protocol types: JSON-lines envelope, tagged requests/replies, `RawEvent` input events (touch included for the future mobile shell), and `StateView` (floats + ASCII map — legible, not exact; exactness is the hash's job). |
 | `oxide-shell` | `shell/` | macroquad renderer, the single input funnel, HUD, debug server. Nothing here may affect game outcomes except by staging tick-stamped commands. |
@@ -856,6 +856,22 @@ comparisons don't survive GPU churn, so CI never runs it.
   window size, reduced motion, colorblind — platform config dir,
   versioned separately from replays, silent defaults on any trouble
   (and replace-not-rename on save, for Windows).
+- **Persistence fails loudly and rotates narrowly (0.13).** Every
+  record lands through `chassis::fsx::write_atomic` — parents created,
+  temp + fsync + cross-platform atomic replace (std's rename replaces
+  existing files on Windows too; the old remove-then-rename fallback
+  was folklore), temp reaped on every error path, orphans swept by
+  rotation. `autosave::save` reports `SaveOutcome`/`SaveError` and a
+  quit path whose save fails raises a Retry / Leave-without-saving
+  dialog (Cancel preselected) instead of exiting over data loss — the
+  Leave row guarantees a full disk can never trap the player.
+  Rotation is kind-scoped: `autosave-` keeps 5, `match-` keeps 20,
+  and the explicit-saves directory (`<data>/saves`) is never
+  rotation's to touch. `shell/src/paths.rs` is the one owner of the
+  per-OS write roots (config/data/autosaves/saves/replays); a
+  packaged bundle resolves `replays/` against the data dir instead of
+  its unusable cwd, while workspace runs keep the documented
+  cwd-relative `replays/`.
 - **Screens are draft-driven.** The New Match wizard's choices live in
   a NewMatchDraft that survives Back; destructive pause choices
   confirm with Cancel preselected; menus scroll independently of

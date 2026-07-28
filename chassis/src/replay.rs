@@ -154,34 +154,20 @@ impl<S, C> Replay<S, C> {
         }
     }
 
-    /// Writes the replay as pretty JSON: parent directories are created,
-    /// the write is flushed, and the file lands atomically (tmp + rename)
-    /// so a crash mid-save can't leave a truncated log behind.
+    /// Writes the replay as pretty JSON through [`crate::fsx::write_atomic`]:
+    /// parent directories are created, the payload is flushed and fsynced,
+    /// and the file atomically replaces any previous record on every
+    /// platform — a crash mid-save can't publish a truncated log, and a
+    /// failed save leaves no temp behind.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), ReplayError>
     where
         S: Serialize,
         C: Serialize,
     {
-        let path = path.as_ref();
-        if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent)?;
-        }
-        // Unique temp name: two sessions (or two threads of one) saving
-        // the same stem concurrently must not clobber each other.
-        static SAVE_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let nonce = SAVE_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let tmp = path.with_extension(format!("tmp.{}.{nonce}", std::process::id()));
-        {
-            let file = std::fs::File::create(&tmp)?;
-            let mut writer = std::io::BufWriter::new(file);
-            serde_json::to_writer_pretty(&mut writer, self)?;
-            use std::io::Write as _;
-            writer.flush()?;
-        }
-        std::fs::rename(&tmp, path)?;
-        Ok(())
+        crate::fsx::write_atomic(path, |writer| {
+            serde_json::to_writer_pretty(&mut *writer, self)?;
+            Ok(())
+        })
     }
 
     /// Reads a replay written by [`Replay::save`].
@@ -348,6 +334,29 @@ mod tests {
         let replay: Replay<u8, u8> = Replay::new("1.0.0", 1);
         replay.save(&path).unwrap();
         assert!(path.exists());
+    }
+
+    #[test]
+    fn saving_twice_to_one_path_replaces_the_record() {
+        // Pinned on every CI platform: a second save onto an existing
+        // replay lands (std's rename replaces on Windows too) and its
+        // content wins.
+        let dir = std::env::temp_dir().join(format!("chassis-replay-twice-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.json");
+
+        let mut first: Replay<u8, &str> = Replay::new("1.0.0", 1);
+        first.record(1, "early");
+        first.save(&path).unwrap();
+        let mut second: Replay<u8, &str> = Replay::new("1.0.0", 1);
+        second.record(1, "early");
+        second.record(7, "late");
+        second.save(&path).unwrap();
+
+        let loaded: Replay<u8, String> = Replay::load(&path).unwrap();
+        assert_eq!(loaded.commands.len(), 2, "the second record won");
+        assert_eq!(loaded.commands[1].command, "late");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
