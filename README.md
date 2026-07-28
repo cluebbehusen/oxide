@@ -184,8 +184,10 @@ cargo run -p oxide-driver -- bench                  # 500-unit ticks/s
 cargo run -p oxide-driver -- live status
 cargo run -p oxide-driver -- live harvest 0 --units 0,1,2 --node 7,2
 cargo run -p oxide-driver -- live attack-move 0 --units 3 --to 34,18
+cargo run -p oxide-driver -- live step 1              # effects + sim events
 cargo run -p oxide-driver -- live advance 300         # exactly 300 ticks
 cargo run -p oxide-driver -- live screenshot -o screenshots/now.png
+cargo run -p oxide-driver -- live capture-sequence --present --out screenshots/motion
 cargo run -p oxide-driver -- live inject-wheel 2      # real input funnel
 cargo run -p oxide-driver -- live save-replay replays/session.json
 cargo run -p oxide-driver -- replay replays/session.json   # → same hash

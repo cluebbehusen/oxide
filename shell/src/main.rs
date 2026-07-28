@@ -38,8 +38,8 @@ use macroquad::audio::{PlaySoundParams, play_sound};
 use macroquad::prelude::*;
 use menu::{Menu, PreviewCache};
 use oxide_protocol::{
-    AdvancedView, CameraView, HashView, Key, MouseButton, OverlayView, RawEvent, Reply, Request,
-    ResponseEnvelope, SavedView, ScreenshotView, StateView, StatusView, UiView,
+    AdvancedView, CameraView, HashView, Key, MouseButton, OverlayView, PresentedView, RawEvent,
+    Reply, Request, ResponseEnvelope, SavedView, ScreenshotView, StateView, StatusView, UiView,
 };
 use oxide_sim::{PlayerCommand, SIM_VERSION, Scenario};
 use std::sync::mpsc::{Receiver, Sender};
@@ -516,7 +516,7 @@ async fn run() -> Result<()> {
                         {
                             tutorial = None;
                             game = keep_flags(fresh, &game);
-                            game.paused = false;
+                            game.paused = args.paused;
                             mode = Mode::Playing;
                             input.reset_session();
                         } else {
@@ -539,7 +539,7 @@ async fn run() -> Result<()> {
                         }
                         let fresh = Game::new(scenario)?;
                         game = keep_flags(fresh, &game);
-                        game.paused = false;
+                        game.paused = args.paused;
                         tutorial = Some(tutorial::Tutorial::new());
                         input.reset_session();
                         mode = Mode::Playing;
@@ -624,7 +624,7 @@ async fn run() -> Result<()> {
                         Ok(fresh) => {
                             tutorial = None;
                             game = keep_flags(fresh, &game);
-                            game.paused = false;
+                            game.paused = args.paused;
                             input.reset_session();
                             wizard = None;
                             mode = Mode::Playing;
@@ -868,7 +868,7 @@ async fn run() -> Result<()> {
                             tutorial = Some(tutorial::Tutorial::new());
                         }
                         game = keep_flags(fresh, &game);
-                        game.paused = false;
+                        game.paused = args.paused;
                         input.reset_session();
                         pause = None;
                         mode = Mode::Playing;
@@ -1157,7 +1157,7 @@ fn handle_request(
                 // than asked. Seek, don't advance: advance collects the
                 // interval's events for presentation, and a million-tick
                 // battle's worth of them is memory nobody will hear.
-                let requested = (*ticks).min(1_000_000);
+                let requested = (*ticks).min(oxide_protocol::MAX_ADVANCE_TICKS);
                 // An external transport op replaces any UI seek in
                 // flight: left pending, the stale target resumes next
                 // frame and rewinds the replay this reply just reported
@@ -1171,6 +1171,30 @@ fn handle_request(
                     ticks: pb.engine.position() - before,
                     tick: pb.game.state.current_tick(),
                     hash: oxide_protocol::hash_hex(pb.game.state.hash()),
+                })))
+            }
+            Request::PresentTicks { ticks } => {
+                let requested = (*ticks).min(oxide_protocol::MAX_PRESENT_TICKS);
+                pb.seeking = None;
+                let before = pb.engine.position();
+                let mut events = Vec::new();
+                for _ in 0..requested {
+                    if pb.engine.at_end() {
+                        break;
+                    }
+                    // Mirror Game::present_ticks: the previous tick's
+                    // transients age by one sim interval, while effects
+                    // emitted by the newest tick stay fresh.
+                    pb.game.update_fx(game::TICK_DT);
+                    let tick_events = pb.engine.advance(1);
+                    pb.game.playback_present(&pb.engine.state, &tick_events);
+                    events.extend(tick_events);
+                }
+                Some(Ok(Reply::Presented(PresentedView {
+                    ticks: pb.engine.position() - before,
+                    tick: pb.game.state.current_tick(),
+                    hash: oxide_protocol::hash_hex(pb.game.state.hash()),
+                    events,
                 })))
             }
             Request::Pause => {
@@ -1257,12 +1281,22 @@ fn handle_request(
             hash: game.hash_hex(),
         })),
         Request::AdvanceTicks { ticks } => {
-            let ticks = ticks.min(1_000_000);
+            let ticks = ticks.min(oxide_protocol::MAX_ADVANCE_TICKS);
             game.advance_ticks(ticks);
             Ok(Reply::Advanced(AdvancedView {
                 ticks,
                 tick: game.state.current_tick(),
                 hash: game.hash_hex(),
+            }))
+        }
+        Request::PresentTicks { ticks } => {
+            let ticks = ticks.min(oxide_protocol::MAX_PRESENT_TICKS);
+            let events = game.present_ticks(ticks);
+            Ok(Reply::Presented(PresentedView {
+                ticks,
+                tick: game.state.current_tick(),
+                hash: game.hash_hex(),
+                events,
             }))
         }
         Request::Pause => {

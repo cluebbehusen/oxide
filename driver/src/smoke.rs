@@ -14,46 +14,83 @@ use crate::runner::{self, GameReplay};
 use anyhow::{Context, Result, bail};
 use oxide_protocol::{RawEvent, Reply, Request, StateFilter};
 use oxide_sim::{Command, PlayerId, UnitId, UnitKind};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+static NEXT_HOME: AtomicU64 = AtomicU64::new(0);
+
+struct ScratchHome(PathBuf);
+
+impl ScratchHome {
+    fn new() -> Result<Self> {
+        loop {
+            let id = NEXT_HOME.fetch_add(1, Ordering::Relaxed);
+            let path =
+                std::env::temp_dir().join(format!("oxide-smoke-{}-{id}", std::process::id()));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Ok(Self(path)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+}
+
+impl Drop for ScratchHome {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.0)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!(
+                "warning: could not remove smoke scratch HOME {}: {error}",
+                self.0.display()
+            );
+        }
+    }
+}
 
 /// Runs the smoke sequence against `addr`, optionally spawning a shell
 /// first (killed on exit, pass or fail).
 pub fn run(addr: &str, spawn: bool) -> Result<()> {
-    let mut child = if spawn {
+    let scratch_home = spawn.then(ScratchHome::new).transpose()?;
+    let guard = if spawn {
         // Spawn on the port we'll actually connect to, not the default.
         let port = addr
             .rsplit(':')
             .next()
             .context("addr must look like host:port")?;
-        Some(
-            std::process::Command::new("cargo")
-                .args([
-                    "run",
-                    "-p",
-                    "oxide-shell",
-                    "--",
-                    "--debug-server",
-                    "--paused",
-                    // Pin the window: the persisted config carries whatever
-                    // size the user last dragged, and a large-enough window
-                    // clamps the camera immovable on the smoke's map —
-                    // which turns the minimap-jump check into a coin flip.
-                    "--window",
-                    "1280x800",
-                    "--port",
-                    port,
-                ])
-                .spawn()
-                .context("spawning oxide-shell via cargo")?,
-        )
+        let executable = crate::auto::build_shell_executable()?;
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut command = std::process::Command::new(executable);
+        command
+            .args([
+                "--debug-server",
+                "--automation",
+                "--paused",
+                // Pin the window: the persisted config carries whatever
+                // size the user last dragged, and a large-enough window
+                // clamps the camera immovable on the smoke's map —
+                // which turns the minimap-jump check into a coin flip.
+                "--window",
+                "1280x800",
+                "--port",
+                port,
+            ])
+            .env("OXIDE_RESOURCE_ROOT", &root);
+        crate::auto::isolate_home(
+            &mut command,
+            &scratch_home.as_ref().expect("created when spawning").0,
+        );
+        command.current_dir(&scratch_home.as_ref().expect("created when spawning").0);
+        Some(crate::auto::ShellGuard::new(
+            command.spawn().context("spawning built Oxide shell")?,
+        ))
     } else {
         None
     };
     let outcome = execute(addr, spawn);
-    if let Some(child) = &mut child {
-        child.kill().ok();
-        child.wait().ok();
-    }
+    drop(guard);
     // A passing smoke tidies its scratch artifacts: the replay and
     // screenshot exist to be checked, not kept, and the leftovers were
     // accumulating in replays/ — where the shell's shelf lists them and
@@ -104,8 +141,21 @@ fn connect_with_retry(addr: &str, attempts: u32) -> Result<Client> {
 
 fn execute(addr: &str, patient: bool) -> Result<()> {
     println!("smoke: connecting to {addr}");
-    // A spawned shell may need a full cargo build first.
+    // A spawned native window may need a moment to create its frame loop.
     let mut client = connect_with_retry(addr, if patient { 240 } else { 6 })?;
+    if patient {
+        // Automation intentionally starts at Home and ignores hardware
+        // input. Load the smoke fixture through the same public protocol
+        // an agent uses, while retaining the shell's driven-clock flag.
+        let scenario = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../scenarios/skirmish.json")
+            .to_string_lossy()
+            .into_owned();
+        let reply = client.call(Request::LoadScenario { path: scenario })?;
+        if !matches!(reply, Reply::Ok) {
+            bail!("loading the smoke scenario returned {reply:?}");
+        }
+    }
     let mut checks = Checks {
         passed: 0,
         failures: Vec::new(),
@@ -154,6 +204,43 @@ fn run_checks(client: &mut Client, checks: &mut Checks) -> Result<()> {
         "advance_ticks moves exactly N ticks",
         advanced.tick == start.tick + 10,
         format!("{} -> {}", start.tick, advanced.tick),
+    );
+    let Reply::State(view) = client.call(Request::QueryState {
+        filter: StateFilter::default(),
+    })?
+    else {
+        bail!("query_state returned the wrong reply kind");
+    };
+    let foreign = view
+        .units
+        .iter()
+        .find(|unit| unit.player != 0)
+        .context("no opposing unit for a rejection probe")?
+        .id;
+    client.call(Request::SendCommand {
+        player: PlayerId(0),
+        command: Command::Stop {
+            units: vec![UnitId(foreign)],
+        },
+    })?;
+    let Reply::Presented(presented) = client.call(Request::PresentTicks { ticks: 1 })? else {
+        bail!("present_ticks returned the wrong reply kind");
+    };
+    let rejected = presented.events.iter().any(|event| {
+        matches!(
+            event,
+            oxide_sim::Event::CommandRejected { player, .. } if *player == PlayerId(0)
+        )
+    });
+    checks.note(
+        "present_ticks moves exactly N ticks and returns rejection events",
+        presented.ticks == 1 && presented.tick == advanced.tick + 1 && rejected,
+        format!(
+            "{} -> {} ({} events, rejection {rejected})",
+            advanced.tick,
+            presented.tick,
+            presented.events.len()
+        ),
     );
 
     // Injected wheel input must reach the camera through the real funnel.

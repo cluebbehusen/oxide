@@ -13,6 +13,12 @@ use std::path::PathBuf;
 /// window holding the port.
 pub struct ShellGuard(std::process::Child);
 
+impl ShellGuard {
+    pub(crate) fn new(child: std::process::Child) -> Self {
+        Self(child)
+    }
+}
+
 impl Drop for ShellGuard {
     fn drop(&mut self) {
         self.0.kill().ok();
@@ -26,26 +32,72 @@ pub struct SpawnOptions {
     pub port: u16,
     /// Start with the sim clock paused (driven mode).
     pub paused: bool,
-    /// Override HOME for the child, isolating persisted config and
-    /// autosaves from the host user's real state.
+    /// Override HOME and the writable working directory for the child,
+    /// isolating config, autosaves, replay discovery, and default output
+    /// from the host user's real state.
     pub home: Option<PathBuf>,
 }
 
-/// Spawns an automation-mode shell and connects, retrying while cargo
-/// builds and the window boots. The window is pinned to 1280x800: the
+/// Builds the shell with the caller's normal Rust environment and returns
+/// Cargo's exact executable path. The separation matters: an isolated HOME
+/// belongs on the game process, not the rustup shim that launches Cargo.
+pub(crate) fn build_shell_executable() -> Result<PathBuf> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    let output = std::process::Command::new("cargo")
+        .args([
+            "build",
+            "-p",
+            "oxide-shell",
+            "--message-format=json-render-diagnostics",
+        ])
+        .current_dir(&root)
+        .output()
+        .context("building oxide-shell via cargo")?;
+    if !output.status.success() {
+        let rendered = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter_map(|message| message["message"]["rendered"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>()
+            .join("");
+        bail!(
+            "building oxide-shell failed:\n{rendered}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if message["reason"] == "compiler-artifact"
+            && message["target"]["name"] == "Oxide"
+            && let Some(executable) = message["executable"].as_str()
+        {
+            return Ok(PathBuf::from(executable));
+        }
+    }
+    bail!("cargo did not report the Oxide executable")
+}
+
+pub(crate) fn isolate_home(command: &mut std::process::Command, home: &std::path::Path) {
+    command.env("HOME", home);
+    command.env("XDG_CONFIG_HOME", home.join(".config"));
+    command.env("XDG_DATA_HOME", home.join(".local/share"));
+    command.env("APPDATA", home.join("AppData"));
+}
+
+/// Builds and spawns an automation-mode shell, then connects while the
+/// window boots. The window is pinned to 1280x800: the
 /// persisted config carries whatever size the user last dragged, and
 /// both suites depend on stable geometry.
 pub fn spawn_shell(opts: &SpawnOptions) -> Result<(ShellGuard, Client)> {
-    // Callers run with varying cwds, but the shell loads assets and
-    // scenarios relative to the workspace root — spawn it from there.
+    // Read-only resources stay rooted at the workspace even when the
+    // writable working directory is isolated below.
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let mut command = std::process::Command::new("cargo");
+    let executable = build_shell_executable()?;
+    let mut command = std::process::Command::new(executable);
     command
         .args([
-            "run",
-            "-p",
-            "oxide-shell",
-            "--",
             "--debug-server",
             "--automation",
             "--window",
@@ -53,7 +105,7 @@ pub fn spawn_shell(opts: &SpawnOptions) -> Result<(ShellGuard, Client)> {
             "--port",
             &opts.port.to_string(),
         ])
-        .current_dir(root);
+        .env("OXIDE_RESOURCE_ROOT", &root);
     if opts.paused {
         command.arg("--paused");
     }
@@ -63,14 +115,15 @@ pub fn spawn_shell(opts: &SpawnOptions) -> Result<(ShellGuard, Client)> {
         // / XDG_DATA_HOME over HOME when they are set — a host with
         // those exported would leak its real settings into (or worse,
         // take rebinds from) a supposedly throwaway shell. Point every
-        // platform's root into the scratch tree.
-        command.env("HOME", home);
-        command.env("XDG_CONFIG_HOME", home.join(".config"));
-        command.env("XDG_DATA_HOME", home.join(".local/share"));
-        command.env("APPDATA", home.join("AppData"));
+        // platform's root and all relative writable paths into the
+        // scratch tree.
+        isolate_home(&mut command, home);
+        command.current_dir(home);
+    } else {
+        command.current_dir(root);
     }
-    let child = command.spawn().context("spawning oxide-shell via cargo")?;
-    let guard = ShellGuard(child);
+    let child = command.spawn().context("spawning built Oxide shell")?;
+    let guard = ShellGuard::new(child);
     let addr = format!("127.0.0.1:{}", opts.port);
     for _ in 0..240 {
         if let Ok(client) = Client::connect(&addr) {

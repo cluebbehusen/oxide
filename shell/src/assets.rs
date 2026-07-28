@@ -73,6 +73,12 @@ const ACCENT: usize = 2;
 /// from the workspace root. Resolved once by probing for the atlas —
 /// the one file no build ships without.
 pub fn resource_root() -> std::path::PathBuf {
+    // Native automation runs from an isolated writable directory so
+    // local replays and screenshots cannot perturb a golden walk. It
+    // points back at the read-only workspace resources explicitly.
+    if let Some(root) = std::env::var_os("OXIDE_RESOURCE_ROOT") {
+        return root.into();
+    }
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {

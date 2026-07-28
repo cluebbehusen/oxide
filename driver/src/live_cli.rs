@@ -32,6 +32,12 @@ pub(crate) enum LiveCmd {
         /// Tick count.
         ticks: u64,
     },
+    /// Advance a small number of ticks while preserving transient
+    /// presentation and returning the sim events.
+    Step {
+        /// Tick count (capped at 120 by the protocol).
+        ticks: u64,
+    },
     /// Stop the wall clock (rendering continues).
     Pause,
     /// Restart the wall clock.
@@ -313,6 +319,10 @@ pub(crate) enum LiveCmd {
         /// Sim ticks advanced between frames.
         #[arg(long, default_value_t = 5)]
         ticks_between: u64,
+        /// Preserve transient effects between frames instead of using
+        /// presentation-suppressing bulk advances.
+        #[arg(long)]
+        present: bool,
         /// Output directory for frame-NNN.png and sheet.png.
         #[arg(short, long)]
         out: std::path::PathBuf,
@@ -348,6 +358,7 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
         LiveCmd::Ui => Request::QueryUi,
         LiveCmd::Hash => Request::StateHash,
         LiveCmd::Advance { ticks } => Request::AdvanceTicks { ticks },
+        LiveCmd::Step { ticks } => Request::PresentTicks { ticks },
         LiveCmd::Pause => Request::Pause,
         LiveCmd::Resume => Request::Resume,
         LiveCmd::Speed { multiplier } => Request::SetSpeed { multiplier },
@@ -646,10 +657,17 @@ pub(crate) fn capture_sequence(
     addr: &str,
     frames: u32,
     ticks_between: u64,
+    present: bool,
     out: &std::path::Path,
 ) -> Result<()> {
     if !(2..=64).contains(&frames) {
         bail!("frames must be within 2..=64");
+    }
+    if present && ticks_between > oxide_protocol::MAX_PRESENT_TICKS {
+        bail!(
+            "--present supports at most {} ticks between frames",
+            oxide_protocol::MAX_PRESENT_TICKS
+        );
     }
     std::fs::create_dir_all(out)?;
     let out = out.canonicalize()?;
@@ -657,9 +675,16 @@ pub(crate) fn capture_sequence(
     let mut paths = Vec::new();
     for i in 0..frames {
         if i > 0 {
-            client.call(Request::AdvanceTicks {
-                ticks: ticks_between,
-            })?;
+            let request = if present {
+                Request::PresentTicks {
+                    ticks: ticks_between,
+                }
+            } else {
+                Request::AdvanceTicks {
+                    ticks: ticks_between,
+                }
+            };
+            client.call(request)?;
         }
         let path = out.join(format!("frame-{i:03}.png"));
         client.call(Request::Screenshot {
@@ -701,6 +726,27 @@ pub(crate) fn capture_sequence(
 mod tests {
     use super::*;
     use oxide_protocol::MouseButton;
+
+    #[test]
+    fn step_uses_the_presentation_preserving_protocol_method() {
+        assert_eq!(
+            live_requests(LiveCmd::Step { ticks: 7 }).unwrap(),
+            vec![Request::PresentTicks { ticks: 7 }]
+        );
+    }
+
+    #[test]
+    fn presented_capture_rejects_an_unbounded_interval_before_connecting() {
+        let error = capture_sequence(
+            "127.0.0.1:1",
+            2,
+            oxide_protocol::MAX_PRESENT_TICKS + 1,
+            true,
+            std::path::Path::new("not-created"),
+        )
+        .expect_err("the interval is invalid independently of a live shell");
+        assert!(error.to_string().contains("at most 120"));
+    }
 
     #[test]
     fn a_chord_presses_in_order_and_releases_in_reverse() {

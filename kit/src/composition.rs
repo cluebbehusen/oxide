@@ -5,7 +5,7 @@
 //! the weaker signal — some units are merely hard to learn).
 
 use crate::runner;
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use oxide_sim::{Scenario, UnitKind};
 use std::collections::BTreeMap;
 
@@ -47,6 +47,7 @@ pub fn sample_driven(
     sample_every: u64,
     mut tick_fn: impl FnMut(&mut oxide_sim::State),
 ) -> Result<MatchComposition> {
+    ensure!(sample_every > 0, "sample stride must be greater than zero");
     let mut state = scenario.build()?;
     let seats = scenario.players.len();
     let mut acc: Vec<BTreeMap<UnitKind, u64>> = vec![BTreeMap::new(); seats];
@@ -141,6 +142,16 @@ pub fn aggregate(matches: &[MatchComposition]) -> Aggregate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_zero_sample_stride_is_rejected() {
+        let scenario = Scenario::skirmish();
+        let error = sample_driven(&scenario, 10, 0, |state| {
+            state.tick(&[]);
+        })
+        .expect_err("zero would panic at the modulo operation");
+        assert_eq!(error.to_string(), "sample stride must be greater than zero");
+    }
 
     #[test]
     fn a_sampled_skirmish_reports_normalized_shares() {

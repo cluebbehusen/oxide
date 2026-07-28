@@ -217,8 +217,8 @@ enum Cmd {
         #[arg(long)]
         scenario: Option<String>,
     },
-    /// Par-cost arena duel between two hand-picked armies (no
-    /// economy): the balance review's controlled experiment.
+    /// Paired, seat-neutral arena duel between two hand-picked armies
+    /// (no economy): the balance review's controlled experiment.
     Matchup {
         /// Side A, as "kind:count,kind:count".
         #[arg(long)]
@@ -230,9 +230,6 @@ enum Cmd {
         /// mode: the swarm-vs-fortification experiment).
         #[arg(long)]
         b_structures: Option<String>,
-        /// Seeds to run (deterministic each).
-        #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u64).range(1..))]
-        seeds: u64,
     },
     MapAudit {
         /// Scenario path, or "skirmish".
@@ -290,11 +287,11 @@ enum Cmd {
         /// Shell debug-server address.
         #[arg(long, default_value = "127.0.0.1:4123")]
         addr: String,
-        /// Spawn `cargo run -p oxide-shell` first and kill it after.
+        /// Build and spawn an isolated shell first, then kill it after.
         #[arg(long)]
         spawn: bool,
     },
-    /// Perceptual-diff screenshot suite: ten canonical screens from a
+    /// Perceptual-diff screenshot suite: eleven canonical screens from a
     /// spawned automation shell, compared against per-machine
     /// references (gitignored — a local gate, never CI).
     Shots {
@@ -544,12 +541,7 @@ fn main() -> Result<()> {
                 state.hash(),
             );
         }
-        Cmd::Matchup {
-            a,
-            b,
-            b_structures,
-            seeds,
-        } => {
+        Cmd::Matchup { a, b, b_structures } => {
             let army_a = oxide_kit::matchup::parse_army(&a)?;
             let army_b = if b.trim().is_empty() {
                 Vec::new()
@@ -572,20 +564,38 @@ fn main() -> Result<()> {
                 );
             }
             println!();
-            let (mut a_total, mut b_total) = (0u64, 0u64);
-            for seed in 0..seeds {
-                let out = oxide_kit::matchup::siege(&army_a, &army_b, &garrison, 42 + seed, 8_000)?;
-                a_total += u64::from(out.a_value);
-                b_total += u64::from(out.b_value);
+            let out = oxide_kit::matchup::siege(&army_a, &army_b, &garrison, 42, 8_000)?;
+            for leg in out.legs() {
+                let verdict = leg
+                    .verdict()
+                    .map_or_else(|| "unresolved".to_string(), |v| v.to_string());
                 println!(
-                    "  seed {seed}: A survives {:>4}  B survives {:>4}  ({} ticks)",
-                    out.a_value, out.b_value, out.ticks
+                    "  A as player {} / B as player {}: A survives {:>4}  B survives {:>4}  \
+                     ({} ticks, {}, verdict {})",
+                    leg.a_player,
+                    1 - leg.a_player,
+                    leg.a_value,
+                    leg.b_value,
+                    leg.ticks,
+                    leg.termination,
+                    verdict,
                 );
             }
+            let verdict = out
+                .verdict()
+                .map_or_else(|| "unresolved".to_string(), |v| v.to_string());
+            let flips = match out.verdict_flips_on_swap() {
+                Some(true) => "yes",
+                Some(false) => "no",
+                None => "unresolved",
+            };
             println!(
-                "mean surviving value  A {}  B {}",
-                a_total / seeds,
-                b_total / seeds
+                "paired mean surviving purchase value  A {:.1}  B {:.1}  \
+                 (verdict {}, verdict flips on swap {})",
+                out.a_mean_value(),
+                out.b_mean_value(),
+                verdict,
+                flips,
             );
         }
         Cmd::MapAudit { scenario, json } => {
@@ -607,10 +617,11 @@ fn main() -> Result<()> {
             if let LiveCmd::CaptureSequence {
                 frames,
                 ticks_between,
+                present,
                 out,
             } = cmd
             {
-                return capture_sequence(&addr, frames, ticks_between, &out);
+                return capture_sequence(&addr, frames, ticks_between, present, &out);
             }
             // Parse everything before touching the socket: a typo'd tile
             // should fail fast, not after connecting to a live game.

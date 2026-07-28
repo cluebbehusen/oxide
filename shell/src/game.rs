@@ -304,7 +304,7 @@ impl Game {
     /// Runs exactly one tick: bots think, staged commands drain, everything
     /// is recorded, presentation caches update. The only place `state.current_tick()`
     /// is called.
-    pub fn do_tick(&mut self) {
+    pub fn do_tick(&mut self) -> oxide_sim::TickReport {
         // New ticks make any earlier autosave stale.
         self.autosave_done = false;
         // Interpolation cache; pointless during suppressed bulk advances
@@ -407,6 +407,7 @@ impl Game {
         {
             self.selection.building = None;
         }
+        report
     }
 
     /// Whether rendering should ignore fog: the debug overlay or a
@@ -511,6 +512,23 @@ impl Game {
             .iter()
             .map(|u| (u.id.0, world_vec(u.pos)))
             .collect();
+    }
+
+    /// Advances a small number of ticks while retaining presentation
+    /// effects and returning the sim events. This is the agent-facing
+    /// counterpart to [`Game::advance_ticks`]: slower, but suitable for
+    /// judging command acceptance, transient feedback, and combat frames.
+    pub fn present_ticks(&mut self, n: u64) -> Vec<Event> {
+        let mut events = Vec::new();
+        for _ in 0..n {
+            // A presented step stands in for one normal sim interval.
+            // Age what the previous tick put on screen before spawning
+            // this tick's effects, leaving the newest effects at age zero.
+            self.update_fx(TICK_DT);
+            events.extend(self.do_tick().events);
+        }
+        self.accum = 0.0;
+        events
     }
 
     /// Interpolation factor for rendering between ticks.
@@ -652,5 +670,74 @@ mod tests {
         }
         assert!(!game.demo.attack_moved);
         assert!(!game.demo.built);
+    }
+
+    #[test]
+    fn presented_ticks_return_rejections_and_keep_their_toast() {
+        let mut game = Game::with_viewport(
+            Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("skirmish builds");
+        let foreign = game
+            .state
+            .units()
+            .iter()
+            .find(|unit| unit.player != game.human)
+            .expect("skirmish has an opponent")
+            .id;
+        game.issue(Command::Stop {
+            units: vec![foreign],
+        });
+
+        let events = game.present_ticks(1);
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            Event::CommandRejected { player, .. } if *player == game.human
+        )));
+        assert!(
+            game.toasts
+                .iter()
+                .any(|toast| toast.text == "nothing selected can do that"),
+            "presentation-preserving steps must retain shell feedback"
+        );
+    }
+
+    #[test]
+    fn presented_ticks_age_old_effects_and_leave_new_feedback_fresh() {
+        let mut game = Game::with_viewport(
+            Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("skirmish builds");
+        game.fx.push(Effect {
+            kind: EffectKind::Ping {
+                at: macroquad::prelude::Vec2::ZERO,
+                kind: PingKind::Move,
+            },
+            age: 0.0,
+        });
+
+        game.present_ticks(4);
+
+        let age = game
+            .fx
+            .iter()
+            .find_map(|effect| matches!(effect.kind, EffectKind::Ping { .. }).then_some(effect.age))
+            .expect("the half-second ping remains after four ticks");
+        assert!(
+            (age - 4.0 * TICK_DT).abs() < f32::EPSILON * 8.0,
+            "each represented interval must age existing presentation: {age}"
+        );
+
+        game.present_ticks(6);
+        assert!(
+            !game
+                .fx
+                .iter()
+                .any(|effect| matches!(effect.kind, EffectKind::Ping { .. })),
+            "an effect must expire after enough presented sim time"
+        );
     }
 }

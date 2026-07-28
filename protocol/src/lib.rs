@@ -22,7 +22,7 @@
 pub mod input;
 pub mod view;
 
-use oxide_sim::{Command, PlayerCommand, PlayerId};
+use oxide_sim::{Command, Event, PlayerCommand, PlayerId};
 use serde::{Deserialize, Serialize};
 
 pub use input::{Key, MouseButton, RawEvent};
@@ -32,6 +32,12 @@ pub use view::{
 
 /// Default TCP port for `--debug-server`.
 pub const DEFAULT_PORT: u16 = 4123;
+
+/// Largest fast-forward request the shell will execute in one operation.
+pub const MAX_ADVANCE_TICKS: u64 = 1_000_000;
+
+/// Largest presentation-preserving step the shell will execute at once.
+pub const MAX_PRESENT_TICKS: u64 = 120;
 
 /// Everything a client can ask of a running shell.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -52,10 +58,18 @@ pub enum Request {
     /// The canonical state fingerprint at the current tick.
     StateHash,
     /// Run sim ticks now (bots included), regardless of pause state, then
-    /// report the resulting tick and hash. Requests above one million
-    /// ticks are capped; the reply's `ticks` field reports what actually
-    /// ran.
+    /// report the resulting tick and hash. Requests above
+    /// [`MAX_ADVANCE_TICKS`] are capped; the reply's `ticks` field reports
+    /// what actually ran.
     AdvanceTicks {
+        /// How many ticks to run.
+        ticks: u64,
+    },
+    /// Run a small number of ticks without suppressing presentation, then
+    /// return every sim event produced. This is the deterministic way for
+    /// an agent to observe command rejection, shots, deaths, and transient
+    /// shell feedback. Requests above [`MAX_PRESENT_TICKS`] are capped.
+    PresentTicks {
         /// How many ticks to run.
         ticks: u64,
     },
@@ -129,6 +143,8 @@ pub enum Reply {
     Hash(HashView),
     /// Answer to [`Request::AdvanceTicks`].
     Advanced(AdvancedView),
+    /// Answer to [`Request::PresentTicks`].
+    Presented(PresentedView),
     /// Answer to [`Request::Screenshot`].
     Screenshot(ScreenshotView),
     /// Answer to [`Request::ToggleOverlay`].
@@ -155,6 +171,19 @@ pub struct AdvancedView {
     pub tick: u64,
     /// State hash afterwards, as hex.
     pub hash: String,
+}
+
+/// Result of a presentation-preserving step.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PresentedView {
+    /// Ticks actually run.
+    pub ticks: u64,
+    /// Tick counter afterwards.
+    pub tick: u64,
+    /// State hash afterwards, as hex.
+    pub hash: String,
+    /// Events emitted across the interval, in tick and event order.
+    pub events: Vec<Event>,
 }
 
 /// Where a screenshot landed.
@@ -310,6 +339,7 @@ mod tests {
             },
             Request::QueryUi,
             Request::AdvanceTicks { ticks: 99 },
+            Request::PresentTicks { ticks: 3 },
             Request::SendCommand {
                 player: PlayerId(0),
                 command: Command::Stop {
@@ -371,6 +401,7 @@ mod tests {
             Request::QueryUi,
             Request::StateHash,
             Request::AdvanceTicks { ticks: 12 },
+            Request::PresentTicks { ticks: 2 },
             Request::Pause,
             Request::Resume,
             Request::SetSpeed { multiplier: 2.5 },
@@ -398,7 +429,7 @@ mod tests {
             },
         ];
         // A new method with no entry here escapes the wire round-trip.
-        assert_eq!(requests.len(), 16);
+        assert_eq!(requests.len(), 17);
         for req in requests {
             assert_eq!(
                 roundtrip(&req),
@@ -456,6 +487,15 @@ mod tests {
                 tick: 15,
                 hash: hash_hex(0xabcd),
             }),
+            Reply::Presented(PresentedView {
+                ticks: 2,
+                tick: 17,
+                hash: hash_hex(0xbcde),
+                events: vec![Event::CommandRejected {
+                    player: PlayerId(0),
+                    reason: oxide_sim::command::RejectReason::BadSite,
+                }],
+            }),
             Reply::Screenshot(ScreenshotView {
                 path: "shots/x.png".into(),
                 width: 800,
@@ -468,7 +508,7 @@ mod tests {
             }),
         ];
         // A new reply kind with no entry here escapes the wire round-trip.
-        assert_eq!(replies.len(), 10);
+        assert_eq!(replies.len(), 11);
         for reply in replies {
             assert_eq!(
                 reply_roundtrip(&reply),

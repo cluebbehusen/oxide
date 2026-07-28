@@ -105,8 +105,10 @@ driver live state --map            # ASCII map with entities overlaid
 driver live harvest 0 --units 0,1,2 --node 7,2
 driver live attack-move 0 --units 3 --to 34,18
 driver live rally 0 --building 0 --tile 7,2   # or --clear
+driver live step 1                 # presented tick + exact sim events
 driver live advance 300            # exactly 300 ticks, replies with hash
 driver live screenshot -o screenshots/check.png   # then READ the png
+driver live capture-sequence --present --out screenshots/motion
 driver live inject-wheel 2.0       # events enter the real input funnel
 driver live inject-key escape      # opens the pause menu — menus share
 driver live inject-key enter       # the input funnel too
@@ -143,7 +145,9 @@ pause menu only once the match is decided — mid-match playback was
 a fog-free scout of the enemy — and `autosave-` records (live
 sessions) are Continue-only on the shelf. `sh tools/package_macos.sh`
 builds `dist/Oxide.app` (resources resolve executable-relative when
-bundled, cwd otherwise).
+bundled, cwd otherwise; `OXIDE_RESOURCE_ROOT` overrides both — the
+harness's isolation seam, unvalidated by design: a wrong root fails
+loudly at atlas load).
 
 `screenshots/` and `replays/` are gitignored scratch output; keep goldens
 and test fixtures inside crate `tests/` directories.
@@ -306,12 +310,13 @@ Hard < Expert forever).
 (optionally `--weights` for a candidate artifact — the fun gate's
 mechanical form) and reports cost-weighted composition with a
 spam-detecting entropy. `driver matchup --a kind:n --b kind:n` fights
-par-cost armies on a clean arena — the experiment that separates "the
-learner never found the counter" from "no counter exists"
-(`--b-structures turret:n` is defense mode: pre-built structures
+hand-picked armies twice on a clean arena, swapping their physical seats;
+use comparable starting costs when testing counters. It reports each leg's
+completion status and survivor purchase value, plus the paired mean.
+`--b-structures turret:n` is defense mode: pre-built structures
 stand in front of side B, priced into its verdict — scenarios grew a
 serde-default `buildings` list of pre-built structures for exactly
-this kind of harness work).
+this kind of harness work.
 `driver sweep` (0.12) is the decisiveness instrument: N seeds of
 bot-vs-bot on one 1v1 map at one level, each seed played in both
 personality orientations (the dealt pair exchanged between the
@@ -344,9 +349,13 @@ motion pinned so the Home backdrop can't drift), compared against
 per-machine references in the gitignored `shots/` directory on a mean
 per-channel metric. The default threshold is calibrated between font
 AA jitter (<=0.003%) and a small UI element appearing (~0.02%).
-`--bless` adopts the current captures after an intended visual change.
-Local gate only — pixel comparisons don't survive GPU churn, so CI
-never runs it.
+`--bless` adopts the current captures after an intended visual change;
+a compare run FAILS on a missing reference rather than silently
+adopting it, so a fresh machine's first run is eleven failures and a
+prompt to bless — expected, not drift. The automation shell runs from
+a scratch cwd, so the replay-shelf capture is always an empty shelf
+(local replays can no longer shift it). Local gate only — pixel
+comparisons don't survive GPU churn, so CI never runs it.
 
 ## Design decisions worth knowing
 

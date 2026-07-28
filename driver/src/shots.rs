@@ -1,11 +1,13 @@
-//! The perceptual-diff screenshot suite: ten canonical screens captured
+//! The perceptual-diff screenshot suite: eleven canonical screens captured
 //! from a real automation-mode shell and compared against per-machine
 //! references on a tolerance metric.
 //!
 //! Pixel goldens don't survive GPU or font churn, so this is a LOCAL
 //! gate, never a CI one: references live in a gitignored directory,
 //! belong to this machine, and re-bless with `--bless` after any
-//! intended visual change. The spawned shell gets a throwaway HOME
+//! intended visual change. A compare run never adopts a missing
+//! reference implicitly; it keeps the run capture and fails with a
+//! prompt to bless explicitly. The spawned shell gets a throwaway HOME
 //! (fresh config with reduced motion on, no autosaves), so the walk and
 //! the Home screen's backdrop are reproducible run to run.
 //!
@@ -16,18 +18,46 @@
 
 use crate::auto::{self, SpawnOptions};
 use crate::client::Client;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use oxide_kit::perceptual::{self, Verdict};
 use oxide_protocol::{Key, MouseButton, RawEvent, Reply, Request};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_HOME: AtomicU64 = AtomicU64::new(0);
+static NEXT_ADOPTION: AtomicU64 = AtomicU64::new(0);
+
+struct ScratchHome(PathBuf);
+
+impl Drop for ScratchHome {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.0)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!(
+                "warning: could not remove shots scratch HOME {}: {error}",
+                self.0.display()
+            );
+        }
+    }
+}
 
 /// A throwaway HOME whose Oxide config pins the presentation knobs the
 /// suite depends on: reduced motion (stills the Home backdrop drift),
 /// default scale, classic bindings (empty list resets to classic on
 /// load), 1280x800. Both the macOS and XDG locations are written so the
 /// suite behaves the same on either platform.
-fn scratch_home() -> Result<PathBuf> {
-    let home = std::env::temp_dir().join(format!("oxide-shots-home-{}", std::process::id()));
+fn scratch_home() -> Result<ScratchHome> {
+    let home = loop {
+        let id = NEXT_HOME.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("oxide-shots-home-{}-{id}", std::process::id()));
+        match std::fs::create_dir(&path) {
+            Ok(()) => break ScratchHome(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+    };
     let config = serde_json::json!({
         "version": 1,
         "bindings": { "bindings": [] },
@@ -40,9 +70,9 @@ fn scratch_home() -> Result<PathBuf> {
     });
     let text = serde_json::to_string_pretty(&config).expect("static json");
     for dir in [
-        home.join("Library/Application Support/Oxide"),
-        home.join(".config/oxide"),
-        home.join("AppData/Oxide"),
+        home.0.join("Library/Application Support/Oxide"),
+        home.0.join(".config/oxide"),
+        home.0.join("AppData/Oxide"),
     ] {
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join("config.json"), &text)?;
@@ -83,8 +113,71 @@ struct Suite<'a> {
     bless: bool,
     threshold: f64,
     taken: usize,
-    new: Vec<String>,
+    captured: Vec<String>,
     failed: Vec<String>,
+}
+
+enum ReferenceResult {
+    Missing,
+    Diff(Verdict),
+}
+
+fn check_reference(run: &Path, reference: &Path) -> Result<ReferenceResult> {
+    if !reference.exists() {
+        return Ok(ReferenceResult::Missing);
+    }
+    Ok(ReferenceResult::Diff(perceptual::diff_pngs(
+        reference, run,
+    )?))
+}
+
+/// Stages a complete reference directory, then swaps it into place. A
+/// failed walk never calls this; a failed staging copy leaves the old set
+/// untouched instead of half-blessing a visual change.
+fn adopt_reference_set(dir: &Path, names: &[String]) -> Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let nonce = NEXT_ADOPTION.fetch_add(1, Ordering::Relaxed);
+    let suffix = format!("{}.{}", std::process::id(), nonce);
+    let staged = dir.join(format!(".ref-staged-{suffix}"));
+    let backup = dir.join(format!(".ref-backup-{suffix}"));
+    std::fs::create_dir(&staged)?;
+
+    let staged_result = (|| -> Result<()> {
+        for name in names {
+            let source = dir.join("run").join(format!("{name}.png"));
+            let target = staged.join(format!("{name}.png"));
+            std::fs::copy(&source, &target)
+                .with_context(|| format!("staging reference {}", source.display()))?;
+        }
+        let reference = dir.join("ref");
+        let had_reference = reference.exists();
+        if had_reference {
+            std::fs::rename(&reference, &backup)?;
+        }
+        if let Err(error) = std::fs::rename(&staged, &reference) {
+            if had_reference {
+                std::fs::rename(&backup, &reference).with_context(|| {
+                    format!(
+                        "restoring reference set after adoption failed: {}",
+                        reference.display()
+                    )
+                })?;
+            }
+            return Err(error.into());
+        }
+        if had_reference && let Err(error) = std::fs::remove_dir_all(&backup) {
+            eprintln!(
+                "warning: adopted references but could not remove backup {}: {error}",
+                backup.display()
+            );
+        }
+        Ok(())
+    })();
+
+    if staged.exists() {
+        std::fs::remove_dir_all(&staged).ok();
+    }
+    staged_result
 }
 
 impl Suite<'_> {
@@ -94,18 +187,25 @@ impl Suite<'_> {
         let run = self.dir.join("run").join(format!("{name}.png"));
         let reference = self.dir.join("ref").join(format!("{name}.png"));
         capture(self.client, &run)?;
-        if self.bless || !reference.exists() {
-            std::fs::create_dir_all(reference.parent().expect("has parent"))?;
-            std::fs::copy(&run, &reference)?;
-            println!("  NEW  {name} (reference blessed)");
-            self.new.push(name.to_string());
+        if self.bless {
+            println!("  CAPTURE {name}");
+            self.captured.push(name.to_string());
             return Ok(());
         }
-        match perceptual::diff_pngs(&reference, &run)? {
-            Verdict::Score(score) if score <= self.threshold => {
+        match check_reference(&run, &reference)? {
+            ReferenceResult::Missing => {
+                println!(
+                    "  FAIL {name}  missing reference {}; run capture kept at {}; rerun with \
+                     --bless to adopt it",
+                    reference.display(),
+                    run.display()
+                );
+                self.failed.push(name.to_string());
+            }
+            ReferenceResult::Diff(Verdict::Score(score)) if score <= self.threshold => {
                 println!("  ok   {name}  {score:.3}%");
             }
-            Verdict::Score(score) => {
+            ReferenceResult::Diff(Verdict::Score(score)) => {
                 println!(
                     "  FAIL {name}  {score:.3}% > {:.2}% — compare {} vs {}",
                     self.threshold,
@@ -114,10 +214,10 @@ impl Suite<'_> {
                 );
                 self.failed.push(name.to_string());
             }
-            Verdict::SizeMismatch {
+            ReferenceResult::Diff(Verdict::SizeMismatch {
                 reference: r,
                 candidate: c,
-            } => {
+            }) => {
                 println!(
                     "  FAIL {name}  size {}x{} vs {}x{} — window or DPI changed; re-bless",
                     r.0, r.1, c.0, c.1
@@ -129,17 +229,16 @@ impl Suite<'_> {
     }
 }
 
-/// Runs the ten-shot walk. Spawns its own shell on `port`.
+/// Runs the eleven-shot walk. Spawns its own shell on `port`.
 pub fn run(port: u16, bless: bool, dir: &Path, threshold: f64) -> Result<()> {
     let home = scratch_home()?;
     let (guard, mut client) = auto::spawn_shell(&SpawnOptions {
         port,
         paused: true,
-        home: Some(home.clone()),
+        home: Some(home.0.clone()),
     })?;
     let outcome = walk(&mut client, bless, dir, threshold);
     drop(guard);
-    std::fs::remove_dir_all(&home).ok();
     outcome
 }
 
@@ -157,7 +256,7 @@ fn walk(client: &mut Client, bless: bool, dir: &Path, threshold: f64) -> Result<
         bless,
         threshold,
         taken: 0,
-        new: Vec::new(),
+        captured: Vec::new(),
         failed: Vec::new(),
     };
 
@@ -229,18 +328,107 @@ fn walk(client: &mut Client, bless: bool, dir: &Path, threshold: f64) -> Result<
     }
     suite.shot("pause", "pause_menu")?;
 
+    if !suite.failed.is_empty() {
+        bail!(
+            "shot failures: {}; run captures kept in {}",
+            suite.failed.join(", "),
+            suite.dir.join("run").display()
+        );
+    }
+    if suite.bless {
+        adopt_reference_set(&suite.dir, &suite.captured)?;
+        for name in &suite.captured {
+            println!("  BLESS {name}");
+        }
+    }
     println!(
-        "shots: {} compared, {} new, {} failed",
-        // Counted, not hardcoded: the walk grows, and a stale literal
-        // underflowed the summary the day it did.
-        suite
-            .taken
-            .saturating_sub(suite.new.len() + suite.failed.len()),
-        suite.new.len(),
+        "shots: {} compared, {} blessed, {} failed",
+        if suite.bless {
+            0
+        } else {
+            suite.taken.saturating_sub(suite.failed.len())
+        },
+        suite.captured.len(),
         suite.failed.len()
     );
-    if !suite.failed.is_empty() {
-        bail!("shot drift: {}", suite.failed.join(", "));
-    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReferenceResult, adopt_reference_set, check_reference};
+    use anyhow::Result;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new() -> Result<Self> {
+            loop {
+                let id = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
+                let path = std::env::temp_dir()
+                    .join(format!("oxide-shots-test-{}-{id}", std::process::id()));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return Ok(Self(path)),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    #[test]
+    fn missing_reference_fails_without_adopting_capture() -> Result<()> {
+        let dir = TestDir::new()?;
+        let run = dir.0.join("run/example.png");
+        let reference = dir.0.join("ref/example.png");
+        std::fs::create_dir_all(run.parent().expect("has parent"))?;
+        std::fs::write(&run, b"current capture")?;
+
+        assert!(matches!(
+            check_reference(&run, &reference)?,
+            ReferenceResult::Missing
+        ));
+        assert!(!reference.exists());
+        assert_eq!(std::fs::read(run)?, b"current capture");
+        Ok(())
+    }
+
+    #[test]
+    fn bless_explicitly_adopts_the_complete_capture_set() -> Result<()> {
+        let dir = TestDir::new()?;
+        std::fs::create_dir_all(dir.0.join("run"))?;
+        std::fs::create_dir_all(dir.0.join("ref"))?;
+        std::fs::write(dir.0.join("run/a.png"), b"new a")?;
+        std::fs::write(dir.0.join("run/b.png"), b"new b")?;
+        std::fs::write(dir.0.join("ref/a.png"), b"old a")?;
+
+        adopt_reference_set(&dir.0, &["a".to_string(), "b".to_string()])?;
+
+        assert_eq!(std::fs::read(dir.0.join("ref/a.png"))?, b"new a");
+        assert_eq!(std::fs::read(dir.0.join("ref/b.png"))?, b"new b");
+        Ok(())
+    }
+
+    #[test]
+    fn failed_staging_leaves_the_old_reference_set_untouched() -> Result<()> {
+        let dir = TestDir::new()?;
+        std::fs::create_dir_all(dir.0.join("run"))?;
+        std::fs::create_dir_all(dir.0.join("ref"))?;
+        std::fs::write(dir.0.join("run/a.png"), b"new a")?;
+        std::fs::write(dir.0.join("ref/a.png"), b"old a")?;
+
+        assert!(adopt_reference_set(&dir.0, &["a".to_string(), "missing".to_string()]).is_err());
+        assert_eq!(std::fs::read(dir.0.join("ref/a.png"))?, b"old a");
+        Ok(())
+    }
 }
