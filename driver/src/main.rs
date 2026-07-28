@@ -132,6 +132,31 @@ enum Cmd {
         #[arg(long)]
         out: Option<String>,
     },
+    /// Empirical pace measurement: the decisiveness sweep run over every
+    /// 1v1 map in a directory, tabling measured decision-tick quartiles
+    /// (ticks and clock) beside the geometric `pace` label and the
+    /// audited ground route. Measurement only — nothing gates on it.
+    PaceSweep {
+        /// Scenario directory to sweep (other formats are skipped).
+        #[arg(long, default_value = "scenarios")]
+        dir: String,
+        /// Ladder level both seats play ("easy".."expert").
+        #[arg(long, default_value = "medium")]
+        level: String,
+        /// Seeds per map (each played in both personality orientations).
+        #[arg(long, default_value_t = 12, value_parser = clap::value_parser!(u64).range(1..))]
+        seeds: u64,
+        /// Tick cap per match; every map's slowest tail must fit under
+        /// it or its quantiles read censored.
+        #[arg(long, default_value_t = 40_000, value_parser = clap::value_parser!(u64).range(1..))]
+        ticks: u64,
+        /// First scenario seed; offsets count up from here.
+        #[arg(long, default_value_t = 7_000)]
+        seed_base: u64,
+        /// Raw JSON output path.
+        #[arg(long)]
+        out: Option<String>,
+    },
     /// Factorial fairness probe: every advantage the game binds to the
     /// seat index — roster, geometry, id range, command order, rng
     /// stream, personality — permuted as a full cross product on one
@@ -445,6 +470,23 @@ fn main() -> Result<()> {
             oxide_driver::sweep::sweep_report(
                 &scenario,
                 level,
+                seeds,
+                ticks,
+                seed_base,
+                out.as_deref(),
+            )?;
+        }
+        Cmd::PaceSweep {
+            dir,
+            level,
+            seeds,
+            ticks,
+            seed_base,
+            out,
+        } => {
+            oxide_driver::pace::pace_sweep_report(
+                &dir,
+                parse_level(&level)?,
                 seeds,
                 ticks,
                 seed_base,

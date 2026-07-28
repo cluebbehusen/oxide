@@ -529,7 +529,7 @@ struct YardstickEntry {
 }
 
 /// Nearest-rank quantile over an already-sorted series.
-fn quantile(sorted: &[u64], num: usize, den: usize) -> Option<u64> {
+pub(crate) fn quantile(sorted: &[u64], num: usize, den: usize) -> Option<u64> {
     (!sorted.is_empty()).then(|| sorted[(sorted.len() * num / den).min(sorted.len() - 1)])
 }
 

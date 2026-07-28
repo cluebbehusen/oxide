@@ -421,6 +421,24 @@ authored, 73.2% rotated); id range, command order and rng stream all
 sit inside their intervals, and command order changed 10 of 256 paired
 matches bit-for-bit while flipping not one outcome. No balance-number
 edit ships without a before/after run on the same seed set.
+`driver pace-sweep --dir scenarios --level <l> --seeds N` (0.13) is
+the clock: `sweep` run over every 1v1 map in a directory and tabled
+per map as decided/undecided, censored percent, and decision-tick
+p25/median/p75 in ticks AND mm:ss, beside the map's declared `pace`
+and its audited ground route. `pace` is a claim about map SCALE —
+`map_gates.rs` bands it on Foundry-to-Foundry route length and
+nothing else measured how long a match actually runs. It does now,
+and the two are only loosely correlated: at Medium the 15-step
+Scrapyard Brawl closes in 3:52 while the 31-step Skirmish Basin takes
+4:37, and inside one label Ferric Reach (large, 65) reads 7:23
+against Cinder Steppe (large, 85) at 19:33. Each row is exactly what
+`driver sweep --scenario <map>` reports at the same dials — the rows
+run one after another, each fanning its own matches, so a surprising
+row is reproducible with one command. Measurement only: the medians
+move with every artifact generation and every balance bless, so
+nothing gates on them and no label is derived from them. A duration
+badge beside `pace` in the browser is the standing follow-up, and it
+waits for the sim batch and the campaign or it ships stale.
 `driver bench` times a 500-unit mass battle locally
 (`--scenario scenarios/compass-grand.json` instead runs a shipped map
 with EVERY chair converted to a thinking Expert — the heaviest honest

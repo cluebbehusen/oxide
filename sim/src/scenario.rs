@@ -48,8 +48,9 @@ pub struct ScenarioMeta {
     /// One-sentence strategic hook.
     #[serde(default)]
     pub hook: String,
-    /// Pace label: "quick", "standard", or "large" — map-audit's route
-    /// bands hold each label honest.
+    /// Pace label: "quick", "standard", "large", or "vast" — a claim
+    /// about map *scale*, which map-audit's route bands hold honest.
+    /// It is not a clock reading; `driver pace-sweep` measures those.
     #[serde(default)]
     pub pace: String,
     /// Mode support, e.g. "1v1" or "2v2".
