@@ -107,7 +107,21 @@ Before committing: fmt + clippy clean, tests green. Golden files live in
 under `target/` for side-by-side inspection) plus `state-hashes.json`,
 bot-vs-bot hashes at tick 2,000 for every shipped scenario — the cheap
 tripwire that flags sim drift without image churn, and the fixture CI
-re-derives per-OS as the cross-platform determinism proof.
+re-derives per-OS as the cross-platform determinism proof. Three PNGs,
+not two: skirmish at t0 and t1200, plus `showcase.png` (0.13), a
+scenario built in `driver/tests/golden.rs` — never under `scenarios/`,
+which ships to players — and driven through a scripted program until
+its final state holds every branch the CPU renderer can take: four
+terrains, rubble, scrap at full/rich/depleted, a wreck, standing and
+half-built structures of every kind, wounded machines of every kind on
+both rosters, a laden harvester, a same-faction hostile pair. A
+companion test names those features, so a showcase that stops covering
+one fails with a sentence before the pixels disagree. Assets get the
+same treatment without a GPU: `shell/src/assets.rs` holds
+`assets/sprites/atlas.json` to a bijection against the keys the shell
+resolves, so a regenerated atlas that dropped a row — or a new kind
+whose art was never generated — fails by name in the ordinary test run
+instead of at somebody's window.
 `.github/workflows/ci.yml` runs the suite on three OSes plus an MSRV
 job on every push and PR; the hash-fixture step re-derives per-OS as the
 cross-platform determinism proof. Since 0.13 every cargo invocation is
