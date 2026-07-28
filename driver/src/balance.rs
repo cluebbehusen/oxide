@@ -115,11 +115,23 @@ pub fn balance_probe(
         }
     }
 
+    // Provenance: a composition table is evidence about ONE artifact,
+    // and a candidate's file name outlives neither the campaign nor
+    // the run directory. The digest does.
+    let (artifact, digest) = match (&net, weights) {
+        (Some(net), Some(path)) => (path.to_string(), net.digest()),
+        _ => (
+            "embedded ladder".to_string(),
+            oxide_sim::bot::QuantNet::ladder().digest(),
+        ),
+    };
+
     let overall = composition::aggregate(&matches);
     println!(
         "\nBALANCE PROBE  ·  {} maps x {seeds} seeds  ·  level {level:?}",
         paths.len()
     );
+    println!("artifact: {artifact} · digest {digest:016x}");
     println!("cost-weighted mean army share (all seats):");
     let mut rows: Vec<(&String, &f64)> = overall.mean_share.iter().collect();
     rows.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap());
@@ -154,6 +166,8 @@ pub fn balance_probe(
     if let Some(path) = out {
         let payload = serde_json::json!({
             "level": format!("{level:?}"),
+            "artifact": artifact,
+            "digest": format!("{digest:016x}"),
             "seeds": seeds,
             "overall": overall,
             "matches": matches,

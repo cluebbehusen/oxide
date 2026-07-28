@@ -271,6 +271,20 @@ uv run export.py --ckpt <winner> --out runs/candidate.json   # Q12 artifact
 cargo run -p oxide-driver -- neural-cup --weights runs/candidate.json  # the gate
 ```
 
+`--weights` loads a file the sim did not write, so `QuantNet::from_json`
+is a trust boundary, not just a shape check: every tensor carries a
+magnitude ceiling (recip in `1..=2^26`, `|w|`/`|b|` <= 2^20, `|lut|` <=
+2^13, <=16 layers of <=4096 width), and those ceilings are what make the
+`i64` kernel's accumulator bound provable — see the derivation in
+`sim/src/bot/neural.rs`. They sit orders of magnitude above anything
+`export.py` can structurally emit, which mirrors them so a drifting
+architecture fails with the checkpoint in hand rather than at promotion
+time. Every artifact also carries a `digest()` — FNV over its parsed
+tensors and contract fields, blind to reformatting and to the
+`arch`/`update` metadata — and `balance-probe` and `neural-cup` print it
+on every result, so a composition table or a cup line pasted into
+`experiments/` answers "which weights" on its own.
+
 Hard-won rules encoded in that stack: pick checkpoints by tournament,
 never recency — leagues are checkpoint farms with a shelf life
 (ladder-facing quality peaks, then league inbreeding takes over;
@@ -328,7 +342,7 @@ Hard < Expert forever).
 `driver balance-probe` runs bot-vs-bot across the shipped maps
 (optionally `--weights` for a candidate artifact — the fun gate's
 mechanical form) and reports cost-weighted composition with a
-spam-detecting entropy. `driver matchup --a kind:n --b kind:n` fights
+spam-detecting entropy, headed by the probed artifact's digest. `driver matchup --a kind:n --b kind:n` fights
 hand-picked armies twice on a clean arena, swapping their physical seats;
 use comparable starting costs when testing counters. It reports each leg's
 completion status and survivor purchase value, plus the paired mean.

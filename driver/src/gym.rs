@@ -346,6 +346,11 @@ pub fn neural_cup(
     let json = std::fs::read_to_string(weights)
         .with_context(|| format!("reading {}", weights.display()))?;
     let net = QuantNet::from_json(&json).map_err(|e| anyhow::anyhow!(e))?;
+    // Every result line carries the artifact's digest: a cup table
+    // pasted into an experiments note answers "which weights" on its
+    // own, long after the checkpoint path stops meaning anything.
+    let digest = format!("{:016x}", net.digest());
+    eprintln!("artifact: {} · digest {digest}", weights.display());
     for tier in [
         Difficulty::Scrapheap,
         Difficulty::Standard,
@@ -418,6 +423,7 @@ pub fn neural_cup(
             "{}",
             serde_json::json!({
                 "opponent": format!("{tier:?}"),
+                "digest": digest,
                 "wins": wins,
                 "draws": draws,
                 "games": games,

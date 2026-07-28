@@ -22,6 +22,16 @@ from oxide_gym import ACTIONS, CONDITION_DIMS, FEATURES, GYM_VERSION, SCALES
 
 Q = 12  # fractional bits
 
+# The loader's numeric contract (sim/src/bot/neural.rs): the magnitude
+# ceilings that let the sim's i64 kernel stay total. An artifact that
+# breaks one is refused at load, so catch it here, where the offending
+# checkpoint is still in hand.
+MAX_RECIP = 1 << 26
+MAX_LUT = 1 << 13
+MAX_COEFF = 1 << 20
+MAX_LAYERS = 16
+MAX_WIDTH = 4096
+
 
 def quant(t: torch.Tensor) -> list:
     return (t.detach().numpy() * (1 << Q)).round().astype(int).tolist()
@@ -61,6 +71,21 @@ def main() -> None:
     if len(head["w"]) != ACTIONS:
         got = len(head["w"])
         raise SystemExit(f"head emits {got} logits, contract wants {ACTIONS}")
+
+    # Magnitude tripwires: the same ceilings the loader enforces.
+    if not all(1 <= r <= MAX_RECIP for r in recips):
+        raise SystemExit(f"a recip is outside 1..={MAX_RECIP} — check SCALES")
+    if max(abs(v) for v in lut) > MAX_LUT:
+        raise SystemExit(f"the tanh table exceeds +/-{MAX_LUT}")
+    if len(layers) > MAX_LAYERS:
+        raise SystemExit(f"{len(layers)} trunk layers, over the {MAX_LAYERS} ceiling")
+    named = [(f"layer {i}", lay) for i, lay in enumerate(layers)] + [("head", head)]
+    for name, lay in named:
+        if len(lay["w"]) > MAX_WIDTH:
+            raise SystemExit(f"{name} is {len(lay['w'])} wide, over {MAX_WIDTH}")
+        peak = max(max(abs(v) for v in row) for row in [*lay["w"], lay["b"]] if row)
+        if peak > MAX_COEFF:
+            raise SystemExit(f"{name} peaks at {peak}, over the +/-{MAX_COEFF} ceiling")
 
     artifact = {
         "gym_version": GYM_VERSION,

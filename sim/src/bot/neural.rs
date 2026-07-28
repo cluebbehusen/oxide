@@ -118,10 +118,63 @@ const Q: u32 = 12;
 /// The tanh table spans [-8, 8] in Q12: ±(8 << 12).
 const TANH_SPAN: i64 = 8 << Q;
 
-#[derive(Deserialize)]
+// The artifact's numeric contract. `from_json` is a trust boundary,
+// not just a shape check — `--weights` loads files the sim did not
+// write — and the kernel is `i64` throughout, so every tensor carries
+// a magnitude ceiling and the accumulators are bounded by
+// construction:
+//
+//   scaling: |feature| <= MAX_FEATURE (2^36) times |recip| <=
+//     MAX_RECIP (2^26) is 2^62, and the shifted result enters the
+//     trunk clamped to MAX_ACT (2^30).
+//   affine row: MAX_WIDTH (2^12) terms of |w| <= MAX_COEFF (2^20)
+//     times |x| <= MAX_ACT (2^30) is 2^62. Past the first layer |x|
+//     is a tanh output, itself capped at MAX_LUT (2^13), so later
+//     rows sit near 2^45.
+//
+// Both peaks leave a bit of headroom under `i64::MAX`, and every
+// ceiling sits orders of magnitude above what `tools/train/export.py`
+// can structurally emit (the shipped artifact peaks at recip 2^24,
+// |lut| 2^12, |w| 2^12, three 384-wide layers), so an honestly
+// exported candidate can never be refused and neither clamp can bind
+// on a reachable observation. The exporter mirrors these ceilings.
+
+/// Largest accepted per-feature reciprocal scale.
+const MAX_RECIP: i64 = 1 << 26;
+/// Largest accepted tanh table magnitude.
+const MAX_LUT: i32 = 1 << 13;
+/// Largest accepted weight or bias magnitude.
+const MAX_COEFF: i32 = 1 << 20;
+/// Most trunk layers an artifact may declare (the head is extra).
+const MAX_LAYERS: usize = 16;
+/// Widest layer — and widest input — an artifact may declare.
+const MAX_WIDTH: usize = 4096;
+/// Raw feature magnitude the scaling step saturates at.
+const MAX_FEATURE: i64 = 1 << 36;
+/// Scaled activation magnitude the trunk's input saturates at.
+const MAX_ACT: i64 = 1 << 30;
+
+#[derive(Deserialize, Serialize)]
 struct LayerDto {
     w: Vec<Vec<i32>>,
     b: Vec<i32>,
+}
+
+/// What a [`QuantNet::digest`] fingerprints: the parsed tensors and
+/// the contract they were accepted under. Reformatting the JSON or
+/// editing its `arch`/`update` metadata leaves the digest alone; one
+/// changed coefficient moves it.
+#[derive(Serialize)]
+struct DigestView<'a> {
+    gym_version: u32,
+    q_bits: u32,
+    features: usize,
+    conditioning: usize,
+    actions: usize,
+    recips: &'a [i64],
+    tanh_lut: &'a [i32],
+    layers: &'a [LayerDto],
+    head: &'a LayerDto,
 }
 
 #[derive(Deserialize)]
@@ -148,6 +201,7 @@ pub struct QuantNet {
     tanh_lut: Vec<i32>,
     layers: Vec<(Vec<Vec<i32>>, Vec<i32>)>,
     head: (Vec<Vec<i32>>, Vec<i32>),
+    digest: u64,
 }
 
 impl QuantNet {
@@ -164,7 +218,9 @@ impl QuantNet {
         })
     }
 
-    /// Parses an exported artifact, refusing shape or version drift.
+    /// Parses an exported artifact, refusing version, shape, or
+    /// magnitude drift. The magnitude ceilings are what make the
+    /// integer kernel total: see the numeric contract above.
     pub fn from_json(json: &str) -> Result<Self, String> {
         let dto: ArtifactDto = serde_json::from_str(json).map_err(|e| e.to_string())?;
         if dto.gym_version != GYM_VERSION {
@@ -183,6 +239,33 @@ impl QuantNet {
         if dto.recips.len() != input_width || dto.tanh_lut.len() != 513 {
             return Err("scale or lut shape mismatch".into());
         }
+        if input_width > MAX_WIDTH {
+            return Err(format!(
+                "input is {input_width} wide, over the {MAX_WIDTH} ceiling"
+            ));
+        }
+        if dto.layers.len() > MAX_LAYERS {
+            return Err(format!(
+                "{} trunk layers, over the {MAX_LAYERS} ceiling",
+                dto.layers.len()
+            ));
+        }
+        if let Some((i, r)) = dto
+            .recips
+            .iter()
+            .enumerate()
+            .find(|(_, r)| **r < 1 || **r > MAX_RECIP)
+        {
+            return Err(format!("recips[{i}] = {r} outside 1..={MAX_RECIP}"));
+        }
+        if let Some((i, v)) = dto
+            .tanh_lut
+            .iter()
+            .enumerate()
+            .find(|(_, v)| v.unsigned_abs() > MAX_LUT.unsigned_abs())
+        {
+            return Err(format!("tanh_lut[{i}] = {v} over the +/-{MAX_LUT} ceiling"));
+        }
         let mut width = input_width;
         for (i, l) in dto
             .layers
@@ -190,22 +273,71 @@ impl QuantNet {
             .chain(std::iter::once(&dto.head))
             .enumerate()
         {
+            let name = if i < dto.layers.len() {
+                format!("layer {i}")
+            } else {
+                "head".to_string()
+            };
             if l.w.is_empty() || l.w.iter().any(|row| row.len() != width) || l.b.len() != l.w.len()
             {
-                return Err(format!("layer {i} shape mismatch"));
+                return Err(format!("{name} shape mismatch"));
+            }
+            if l.w.len() > MAX_WIDTH {
+                return Err(format!(
+                    "{name} is {} wide, over the {MAX_WIDTH} ceiling",
+                    l.w.len()
+                ));
+            }
+            if let Some((row, col, v)) = l.w.iter().enumerate().find_map(|(row, r)| {
+                r.iter()
+                    .enumerate()
+                    .find(|(_, v)| v.unsigned_abs() > MAX_COEFF.unsigned_abs())
+                    .map(|(col, v)| (row, col, *v))
+            }) {
+                return Err(format!(
+                    "{name} w[{row}][{col}] = {v} over the +/-{MAX_COEFF} ceiling"
+                ));
+            }
+            if let Some((row, v)) =
+                l.b.iter()
+                    .enumerate()
+                    .find(|(_, v)| v.unsigned_abs() > MAX_COEFF.unsigned_abs())
+            {
+                return Err(format!(
+                    "{name} b[{row}] = {v} over the +/-{MAX_COEFF} ceiling"
+                ));
             }
             width = l.w.len();
         }
         if width != ACTION_COUNT {
             return Err("head does not produce one logit per action".into());
         }
+        let digest = chassis::hash::state_hash(&DigestView {
+            gym_version: dto.gym_version,
+            q_bits: dto.q_bits,
+            features: dto.features,
+            conditioning: dto.conditioning,
+            actions: dto.actions,
+            recips: &dto.recips,
+            tanh_lut: &dto.tanh_lut,
+            layers: &dto.layers,
+            head: &dto.head,
+        });
         Ok(Self {
             conditioning: dto.conditioning,
             recips: dto.recips,
             tanh_lut: dto.tanh_lut,
             layers: dto.layers.into_iter().map(|l| (l.w, l.b)).collect(),
             head: (dto.head.w, dto.head.b),
+            digest,
         })
+    }
+
+    /// This artifact's provenance fingerprint — the number balance
+    /// evidence quotes to say which weights produced it. Stable across
+    /// reformatting and metadata edits, moved by any coefficient.
+    pub fn digest(&self) -> u64 {
+        self.digest
     }
 
     /// Q12 tanh via table lookup with linear interpolation.
@@ -241,11 +373,17 @@ impl QuantNet {
     /// Q12 logits for gym features plus conditioning knobs (in 0..=1000;
     /// empty for unconditioned artifacts).
     pub fn logits(&self, features: &[i64; FEATURE_COUNT], knobs: &[i64]) -> Vec<i64> {
+        // The two saturations that close the kernel's overflow class:
+        // an observation is a number the sim computed, not one the
+        // artifact's contract covers, so it is held inside the
+        // envelope the accumulator bound was derived for. Neither can
+        // bind on a reachable observation — MAX_ACT is 262144.0 once
+        // normalized, five orders past any feature the gym reports.
         let mut act: Vec<i64> = features
             .iter()
             .chain(knobs.iter().take(self.conditioning))
             .zip(&self.recips)
-            .map(|(f, r)| (f * r) >> Q)
+            .map(|(&f, r)| ((f.clamp(-MAX_FEATURE, MAX_FEATURE) * r) >> Q).clamp(-MAX_ACT, MAX_ACT))
             .collect();
         act.resize(self.recips.len(), 0);
         for (w, b) in &self.layers {
@@ -414,5 +552,38 @@ impl NeuralBot {
             action = Action::Idle;
         }
         self.gym.step(state, action)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The numeric contract's arithmetic, checked rather than argued:
+    /// if a future ceiling rises past what `i64` holds, this fails
+    /// instead of the kernel wrapping on some artifact nobody tried.
+    #[test]
+    fn the_accepted_ceilings_cannot_overflow_an_i64_accumulator() {
+        MAX_FEATURE
+            .checked_mul(MAX_RECIP)
+            .expect("scaling a saturated feature by the largest recip");
+
+        let term = i64::from(MAX_COEFF)
+            .checked_mul(MAX_ACT)
+            .expect("one affine term at both ceilings");
+        let row = term
+            .checked_mul(MAX_WIDTH as i64)
+            .expect("a full-width affine row at both ceilings");
+        assert!(
+            row.checked_add(i64::from(MAX_COEFF)).is_some(),
+            "the bias rides on top of the widest row"
+        );
+
+        // Past the first layer an activation is a tanh output, so its
+        // ceiling is the table's, not the trunk input's.
+        let interpolated = (i64::from(MAX_LUT) - i64::from(-MAX_LUT))
+            .checked_mul(127)
+            .expect("the tanh interpolation at the table's ceiling");
+        assert!(i64::from(MAX_LUT) + (interpolated >> 7) < MAX_ACT);
     }
 }
