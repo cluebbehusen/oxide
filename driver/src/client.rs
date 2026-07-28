@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result, bail};
 use oxide_protocol::{MAX_ADVANCE_TICKS, Reply, Request, RequestEnvelope, ResponseEnvelope};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
@@ -101,6 +101,7 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::BufRead;
     use std::net::TcpListener;
 
     #[test]

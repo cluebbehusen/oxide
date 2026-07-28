@@ -132,6 +132,35 @@ enum Cmd {
         #[arg(long)]
         out: Option<String>,
     },
+    /// Factorial fairness probe: every advantage the game binds to the
+    /// seat index — roster, geometry, id range, command order, rng
+    /// stream, personality — permuted as a full cross product on one
+    /// seed set. Reports per-factor marginals with Wilson intervals and
+    /// the whole cell table, because the interactions are the finding.
+    SweepFactorial {
+        /// Scenario path, or "skirmish".
+        #[arg(long, default_value = "skirmish")]
+        scenario: String,
+        /// Ladder level both seats play ("easy".."expert").
+        #[arg(long, default_value = "medium")]
+        level: String,
+        /// Factors in the design, comma-separated (default: all of
+        /// personality, faction, spawn, command, geometry, stream).
+        #[arg(long)]
+        factors: Option<String>,
+        /// Seeds per cell.
+        #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u64).range(1..))]
+        seeds: u64,
+        /// Tick cap per match.
+        #[arg(long, default_value_t = 40_000, value_parser = clap::value_parser!(u64).range(1..))]
+        ticks: u64,
+        /// First scenario seed; offsets count up from here.
+        #[arg(long, default_value_t = 7_000)]
+        seed_base: u64,
+        /// Raw JSON output path.
+        #[arg(long)]
+        out: Option<String>,
+    },
     /// Head-to-head duel between two ladder profiles (optionally with
     /// candidate skill/cadence dial overrides), each seed fought from
     /// both seats — the re-metering experiments' measuring stick.
@@ -403,6 +432,33 @@ fn main() -> Result<()> {
             oxide_driver::sweep::sweep_report(
                 &scenario,
                 level,
+                seeds,
+                ticks,
+                seed_base,
+                out.as_deref(),
+            )?;
+        }
+        Cmd::SweepFactorial {
+            scenario,
+            level,
+            factors,
+            seeds,
+            ticks,
+            seed_base,
+            out,
+        } => {
+            use oxide_driver::factorial::Factor;
+            let enabled: Vec<Factor> = match factors.as_deref() {
+                Some(list) => list
+                    .split(',')
+                    .map(|key| Factor::parse(key.trim()))
+                    .collect::<anyhow::Result<_>>()?,
+                None => Factor::ALL.to_vec(),
+            };
+            oxide_driver::factorial::factorial_report(
+                &scenario,
+                parse_level(&level)?,
+                &enabled,
                 seeds,
                 ticks,
                 seed_base,

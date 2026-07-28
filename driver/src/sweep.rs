@@ -22,8 +22,6 @@ use oxide_sim::bot::{Level, NeuralBot, QuantNet, deal_aggression, seat_bots};
 use oxide_sim::scenario::{BotConfig, Scenario};
 use oxide_sim::{GameResult, PlayerId, State};
 use serde::Serialize;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// How one sweep match ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -107,45 +105,19 @@ pub fn run_sweep(
     let jobs: Vec<(u64, bool)> = (0..seeds)
         .flat_map(|offset| [(offset, false), (offset, true)])
         .collect();
-    let next = AtomicUsize::new(0);
-    let results: Mutex<Vec<SweepMatch>> = Mutex::new(Vec::with_capacity(jobs.len()));
-    let failure: Mutex<Option<anyhow::Error>> = Mutex::new(None);
-    let workers = std::thread::available_parallelism()
-        .map_or(4, |n| n.get())
-        .min(jobs.len());
-    std::thread::scope(|scope| {
-        for _ in 0..workers {
-            scope.spawn(|| {
-                loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(&(offset, swapped)) = jobs.get(i) else {
-                        break;
-                    };
-                    match play(&base, level, seed_base + offset, swapped, max_ticks) {
-                        Ok(m) => {
-                            eprintln!(
-                                "  seed {} {} · {} ticks · {:?}",
-                                m.seed,
-                                if m.swapped { "swap" } else { "deal" },
-                                m.ticks,
-                                m.outcome
-                            );
-                            results.lock().unwrap().push(m);
-                        }
-                        Err(err) => {
-                            *failure.lock().unwrap() = Some(err);
-                            break;
-                        }
-                    }
-                }
-            });
-        }
-    });
-    if let Some(err) = failure.into_inner().unwrap() {
-        return Err(err);
-    }
-    let mut matches = results.into_inner().unwrap();
-    matches.sort_by_key(|m| (m.seed, m.swapped));
+    // The pool returns results in job order, so the record is ordered
+    // by (seed, orientation) without a second sort.
+    let matches = crate::pool::fan_out(&jobs, |&(offset, swapped)| {
+        let m = play(&base, level, seed_base + offset, swapped, max_ticks)?;
+        eprintln!(
+            "  seed {} {} · {} ticks · {:?}",
+            m.seed,
+            if m.swapped { "swap" } else { "deal" },
+            m.ticks,
+            m.outcome
+        );
+        Ok(m)
+    })?;
 
     let mut victories = 0u32;
     let mut draws = 0u32;
@@ -395,37 +367,10 @@ pub fn run_duel(
     let jobs: Vec<(u64, usize)> = (0..seeds)
         .flat_map(|offset| [(offset, 0), (offset, 1)])
         .collect();
-    let next = AtomicUsize::new(0);
-    let results: Mutex<Vec<DuelEntry>> = Mutex::new(Vec::with_capacity(jobs.len()));
-    let failure: Mutex<Option<anyhow::Error>> = Mutex::new(None);
-    let workers = std::thread::available_parallelism()
-        .map_or(4, |n| n.get())
-        .min(jobs.len());
-    std::thread::scope(|scope| {
-        for _ in 0..workers {
-            scope.spawn(|| {
-                loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(&(offset, a_seat)) = jobs.get(i) else {
-                        break;
-                    };
-                    let seed = seed_base + offset;
-                    match play_duel(&base, a, b, seed, a_seat, max_ticks) {
-                        // (a_seat, decision tick, winning seat, drawn)
-                        Ok(entry) => results.lock().unwrap().push(entry),
-                        Err(err) => {
-                            *failure.lock().unwrap() = Some(err);
-                            break;
-                        }
-                    }
-                }
-            });
-        }
-    });
-    if let Some(err) = failure.into_inner().unwrap() {
-        return Err(err);
-    }
-    let entries = results.into_inner().unwrap();
+    // (a_seat, decision tick, winning seat, drawn)
+    let entries: Vec<DuelEntry> = crate::pool::fan_out(&jobs, |&(offset, a_seat)| {
+        play_duel(&base, a, b, seed_base + offset, a_seat, max_ticks)
+    })?;
 
     let mut report = DuelReport {
         scenario: base.name.clone(),
@@ -621,54 +566,27 @@ pub fn run_yardstick(
     let jobs: Vec<(usize, u64, u8)> = (0..TIERS.len())
         .flat_map(|t| (0..seeds_per_tier).flat_map(move |o| [(t, o, 0u8), (t, o, 1u8)]))
         .collect();
-    let next = AtomicUsize::new(0);
     // (tier index, won, resolved)
-    let results: Mutex<Vec<(usize, bool, bool)>> = Mutex::new(Vec::with_capacity(jobs.len()));
-    let failure: Mutex<Option<anyhow::Error>> = Mutex::new(None);
-    let workers = std::thread::available_parallelism()
-        .map_or(4, |n| n.get())
-        .min(jobs.len());
-    std::thread::scope(|scope| {
-        for _ in 0..workers {
-            scope.spawn(|| {
-                loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(&(t, offset, seat)) = jobs.get(i) else {
-                        break;
-                    };
-                    let seed = seed_base + offset;
-                    let mut sc = base.clone();
-                    sc.seed = seed;
-                    let built = sc.build().context("building scenario");
-                    let mut state: State = match built {
-                        Ok(state) => state,
-                        Err(err) => {
-                            *failure.lock().unwrap() = Some(err);
-                            break;
-                        }
-                    };
-                    let faction = sc.players[usize::from(seat)].faction;
-                    let mut bot = side.bot_with_aggression(PlayerId(seat), seed, faction, 500);
-                    let mut opp = Brain::for_tier(PlayerId(1 - seat), seed, TIERS[t]);
-                    for _ in 0..max_ticks {
-                        let mut commands = bot.act(&state);
-                        commands.extend(opp.act(&state));
-                        state.tick(&commands);
-                        if state.result().is_some() {
-                            break;
-                        }
-                    }
-                    let won = matches!(state.result(), Some(GameResult::Victory { .. }))
-                        && state.winners().contains(&PlayerId(seat));
-                    let resolved = matches!(state.result(), Some(GameResult::Victory { .. }));
-                    results.lock().unwrap().push((t, won, resolved));
-                }
-            });
+    let results: Vec<(usize, bool, bool)> = crate::pool::fan_out(&jobs, |&(t, offset, seat)| {
+        let seed = seed_base + offset;
+        let mut sc = base.clone();
+        sc.seed = seed;
+        let mut state: State = sc.build().context("building scenario")?;
+        let faction = sc.players[usize::from(seat)].faction;
+        let mut bot = side.bot_with_aggression(PlayerId(seat), seed, faction, 500);
+        let mut opp = Brain::for_tier(PlayerId(1 - seat), seed, TIERS[t]);
+        for _ in 0..max_ticks {
+            let mut commands = bot.act(&state);
+            commands.extend(opp.act(&state));
+            state.tick(&commands);
+            if state.result().is_some() {
+                break;
+            }
         }
-    });
-    if let Some(err) = failure.into_inner().unwrap() {
-        return Err(err);
-    }
+        let resolved = matches!(state.result(), Some(GameResult::Victory { .. }));
+        let won = resolved && state.winners().contains(&PlayerId(seat));
+        Ok((t, won, resolved))
+    })?;
 
     let mut per_tier: Vec<TierRecord> = TIERS
         .iter()
@@ -679,7 +597,7 @@ pub fn run_yardstick(
             unresolved: 0,
         })
         .collect();
-    for (t, won, resolved) in results.into_inner().unwrap() {
+    for (t, won, resolved) in results {
         per_tier[t].matches += 1;
         per_tier[t].wins += u32::from(won);
         per_tier[t].unresolved += u32::from(!resolved);

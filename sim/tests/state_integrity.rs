@@ -567,7 +567,7 @@ fn every_checklist_row_refuses_its_forgery() {
     // examples (always entity 0), so the match ignores digits and
     // anchors on the words.
     let no_digits = |s: &str| s.replace(|c: char| c.is_ascii_digit(), "");
-    let mut covered = vec![false; ROWS];
+    let mut covered = [false; ROWS];
     for (label, _, expected) in &fixtures {
         let rows: Vec<usize> = examples
             .iter()

@@ -369,7 +369,37 @@ included) seat-swapped across seeds, and `driver yardstick --level
 <level> [--skill --cadence]` measures one profile against all four
 scripted tiers over as many seeds as recalibration wants — the
 doctrinal strength instrument, since neural head-to-heads reward
-patience and stopped ordering the ladder in 0.10.
+patience and stopped ordering the ladder in 0.10. All four share one
+fan-out pool (`driver/src/pool.rs`) — job list in, results back in job
+order, so no verdict depends on the thread count.
+`driver sweep-factorial` (0.13) finishes what `sweep` starts:
+everything the shipped game binds to the SEAT INDEX, permuted as a
+full cross product on one seed set — the dealt personality pair, each
+seat's roster (`Scenario::retint_seat`), which seat's units claim the
+low unit-id range, which seat's commands land first in the tick's
+command slice, whether the map plays as authored or rotated 180
+degrees, and whether a seat's hesitation rng runs on its own stream
+(`NeuralBot::with_profile_stream`, the additive constructor that
+exists for exactly this and defaults every shipped path to
+`DECISION_STREAM_BASE + seat`). Six factors, 128 cells; `--factors`
+cuts the design down. The rotation asserts the map's terrain is
+exactly 180-symmetric and refuses otherwise — a Foundry anchor names
+the top-left of its footprint, so it moves a footprint in, not a tile,
+and a silently mis-rotated map would make every verdict a verdict
+about terrain. The report gives per-factor marginals on seat 0's share
+of victories with 95% Wilson intervals, decision-tick quartiles, the
+censored share per cell, and the WHOLE cell table, because the
+interactions are the finding — the same-roster mirrors lean opposite
+ways and any average erases that. The all-baseline cell is the shipped
+game bit for bit (pinned by test against `runner::step` + `seat_bots`),
+which is what makes a reading against it a reading about the real
+world. First reading, skirmish Medium at 128 cells x 4 seeds: the
+bundle is almost entirely ROSTER (ferrous 22.7% [18.0, 28.2] of
+mixed-roster victories) plus a live geometry term (seat 0 takes 45.6%
+authored, 73.2% rotated); id range, command order and rng stream all
+sit inside their intervals, and command order changed 10 of 256 paired
+matches bit-for-bit while flipping not one outcome. No balance-number
+edit ships without a before/after run on the same seed set.
 `driver bench` times a 500-unit mass battle locally
 (`--scenario scenarios/compass-grand.json` instead runs a shipped map
 with EVERY chair converted to a thinking Expert — the heaviest honest

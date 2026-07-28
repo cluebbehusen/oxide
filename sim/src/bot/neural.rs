@@ -22,6 +22,12 @@ use std::sync::OnceLock;
 /// The decision cadence the shipped ladder network trained at.
 pub const LADDER_CADENCE: u64 = 16;
 
+/// Stream selector a seat's hesitation rng runs on: this base plus the
+/// player index. Every shipped path uses that derivation; the constant
+/// is public so a fairness probe can exchange the streams between seats
+/// and measure whether the seat-bound assignment carries an advantage.
+pub const DECISION_STREAM_BASE: u64 = 3000;
+
 /// Floor of the seed-dealt personality range. An explicit `aggression`
 /// pick may use the full 0..=1000 conditioning the network trained
 /// under; the deal narrows it. Below this floor the trained style is a
@@ -468,6 +474,36 @@ impl NeuralBot {
         blunder_permille: u32,
         scenario_seed: u64,
     ) -> Self {
+        Self::with_profile_stream(
+            player,
+            cadence,
+            net,
+            skill,
+            aggression,
+            faction,
+            blunder_permille,
+            scenario_seed,
+            DECISION_STREAM_BASE + u64::from(player.0),
+        )
+    }
+
+    /// [`Self::with_profile`] with the hesitation rng's stream selector
+    /// named outright instead of derived from the seat. Every shipped
+    /// path takes the derived stream; an explicit one exists so a
+    /// fairness probe can exchange two seats' streams and leave
+    /// everything else alone.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_profile_stream(
+        player: PlayerId,
+        cadence: u64,
+        net: QuantNet,
+        skill: u32,
+        aggression: u32,
+        faction: Faction,
+        blunder_permille: u32,
+        scenario_seed: u64,
+        stream: u64,
+    ) -> Self {
         let skill = skill.min(1000);
         let derived = (1000 - skill) / 2; // matches the training mapping
         let blunder = if blunder_permille > 0 {
@@ -488,7 +524,7 @@ impl NeuralBot {
                 faction_knob,
             ],
             blunder_permille: blunder,
-            rng: Pcg32::new(scenario_seed, 3000 + u64::from(player.0)),
+            rng: Pcg32::new(scenario_seed, stream),
         }
     }
 
