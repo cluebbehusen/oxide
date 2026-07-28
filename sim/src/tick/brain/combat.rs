@@ -24,10 +24,11 @@ fn target_domain(state: &State, target: Target) -> Domain {
 }
 
 /// Whether full terrain cover applies to a shot: only direct fire between
-/// two ground parties traces rock and buildings — rock reaches nobody in
-/// the air, and indirect shells arc over it. Peaks are checked on every
-/// shot regardless (see the `shot_open` closures): a mountain outreaches
-/// any arc.
+/// two ground parties traces rock — rock reaches nobody in the air, and
+/// indirect shells arc over it. Buildings never block fire in any pairing:
+/// they block movement, not bullets (terrain is the only cover). Peaks are
+/// checked on every shot regardless (see the `shot_open` closures): a
+/// mountain outreaches any arc.
 fn traces_terrain(weapon: &WeaponStats, shooter: Domain, victim: Domain) -> bool {
     !weapon.indirect && shooter == Domain::Ground && victim == Domain::Ground
 }
@@ -208,9 +209,7 @@ pub(super) fn turret_fire(
             if tile.terrain == crate::map::Terrain::Peak {
                 return false;
             }
-            !full
-                || (tile.terrain == crate::map::Terrain::Ground
-                    && state.building_at(t).is_none_or(|other| other.id == id))
+            !full || tile.terrain == crate::map::Terrain::Ground
         };
         // The owner must see the victim's tile — a turret that outranges
         // its own mast fires on a spotter's eyes, never into fog.
@@ -426,13 +425,14 @@ pub(super) fn attack(
     let weapon = &stats.weapons[pi];
 
     // In range only counts with a clear line — and with eyes. Terrain
-    // cover (rock, non-victim buildings) applies to direct ground-vs-
-    // ground fire only; shots to or from the air and indirect shells arc
-    // past it — but nothing arcs past a peak. The owner must currently
-    // *see* the victim's tile: a gun that outranges its own vision fires
-    // on a spotter's sight (scrap piles are low junk — fire passes over
-    // them). No shot → keep approaching; the chase path already routes
-    // around what's in the way.
+    // cover (rock) applies to direct ground-vs-ground fire only; shots
+    // to or from the air and indirect shells arc past it — but nothing
+    // arcs past a peak. Buildings never block fire: they block movement,
+    // not bullets. The owner must currently *see* the victim's tile: a
+    // gun that outranges its own vision fires on a spotter's sight
+    // (scrap piles are low junk — fire passes over them). No shot →
+    // keep approaching; the chase path already routes around what's in
+    // the way.
     let shot_open = |t: TilePos, full: bool| {
         let Some(tile) = state.map.tile(t) else {
             return false;
@@ -440,14 +440,7 @@ pub(super) fn attack(
         if tile.terrain == crate::map::Terrain::Peak {
             return false;
         }
-        if !full {
-            return true;
-        }
-        let building_open = match target {
-            Target::Building(bid) => state.building_at(t).is_none_or(|b| b.id == bid),
-            _ => state.building_at(t).is_none(),
-        };
-        tile.terrain == crate::map::Terrain::Ground && building_open
+        !full || tile.terrain == crate::map::Terrain::Ground
     };
     // Sight of any footprint tile serves for a building (matching attack
     // validation); a unit is seen at its own tile. The line trace runs
@@ -466,7 +459,7 @@ pub(super) fn attack(
     // neighbor is the mountain itself, and an unchecked endpoint let
     // direct fire through it. The endpoint tile must be open for this
     // shot too (a unit's aim point is its own standable tile, and a
-    // footprint tile passes through shot_open's own-target exemption).
+    // footprint tile stands on ground, which shot_open passes).
     let endpoint_open = shot_open(chassis::grid::TilePos::containing(aim_point), full);
     if in_range
         && seen
@@ -685,7 +678,7 @@ fn fire_sidearms(
             if tile.terrain == crate::map::Terrain::Peak {
                 return false;
             }
-            !full || (tile.terrain == crate::map::Terrain::Ground && state.building_at(t).is_none())
+            !full || tile.terrain == crate::map::Terrain::Ground
         };
         let victim = state
             .units

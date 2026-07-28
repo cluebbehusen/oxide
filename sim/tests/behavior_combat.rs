@@ -3,7 +3,8 @@
 mod common;
 
 use chassis::grid::TilePos;
-use oxide_sim::{Command, Event, Order, Scenario, Target, UnitId, UnitKind};
+use oxide_sim::scenario::BuildingSpec;
+use oxide_sim::{BuildingKind, Command, Event, Order, Scenario, Target, UnitId, UnitKind};
 
 use common::*;
 
@@ -174,6 +175,177 @@ fn rock_is_cover_until_the_attacker_repositions() {
         hit_tile, start_tile,
         "the first shot must come from a repositioned tile — firing through \
          the rock means LOS failed"
+    );
+}
+
+#[test]
+fn buildings_are_not_cover_only_terrain_is() {
+    // The rock test's mirror image: same 2-tile spacing inside range 2.5,
+    // but the wall is a building. Buildings block movement, never bullets,
+    // so the first shot lands on the command tick from the starting tile.
+    let scenario = Scenario {
+        name: "building-no-cover".into(),
+        seed: 42,
+        map: vec![
+            "############".into(),
+            "#1.........#".into(),
+            "#..........#".into(),
+            "#..........#".into(),
+            "#..........#".into(),
+            "#........2.#".into(),
+            "#..........#".into(),
+            "############".into(),
+        ],
+        players: arena(vec![]).players,
+        units: vec![
+            unit(0, UnitKind::Sentinel, 4, 3),
+            unit(1, UnitKind::Harvester, 6, 3),
+        ],
+        buildings: vec![BuildingSpec {
+            player: 1,
+            kind: BuildingKind::Array,
+            x: 5,
+            y: 3,
+        }],
+        meta: None,
+    };
+    let mut state = scenario.build().unwrap();
+    let (attacker, victim) = (state.units()[0].id, state.units()[1].id);
+    let start_tile = state.unit(attacker).unwrap().tile();
+    let events = state
+        .tick(&[cmd(
+            0,
+            Command::Attack {
+                units: vec![attacker],
+                target: Target::Unit(victim),
+                queue: false,
+            },
+        )])
+        .events;
+    assert!(
+        events.iter().any(|e| matches!(e, Event::AttackHit { .. })),
+        "the shot must land on the command tick — a building on the line is \
+         not cover"
+    );
+    assert_eq!(
+        state.unit(attacker).unwrap().tile(),
+        start_tile,
+        "no repositioning: the attacker fires from where it stands"
+    );
+}
+
+#[test]
+fn a_turret_fires_past_the_building_flush_against_it() {
+    // The playtest complaint: a 1x1 flush against a Turret used to shadow
+    // over a quarter of its arc, and the turret path has no repositioning
+    // fallback — it just went quiet. Terrain-only cover: the turret fires
+    // straight through its neighbor.
+    let scenario = Scenario {
+        name: "turret-past-neighbor".into(),
+        seed: 42,
+        map: vec![
+            "############".into(),
+            "#1.........#".into(),
+            "#..........#".into(),
+            "#..........#".into(),
+            "#..........#".into(),
+            "#........2.#".into(),
+            "#..........#".into(),
+            "############".into(),
+        ],
+        players: arena(vec![]).players,
+        units: vec![unit(1, UnitKind::Harvester, 6, 3)],
+        buildings: vec![
+            BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Turret,
+                x: 4,
+                y: 3,
+            },
+            BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Array,
+                x: 5,
+                y: 3,
+            },
+        ],
+        meta: None,
+    };
+    let mut state = scenario.build().unwrap();
+    let victim = state.units()[0].id;
+    // 60 hp / 12 damage every 25 ticks — dead within ~110 ticks. Before
+    // terrain-only cover the turret never fired at all.
+    run_until(&mut state, 200, |s, _| s.unit(victim).is_none());
+}
+
+#[test]
+fn an_unbuilt_site_is_no_sandbag() {
+    // Construction claims ground the tick it is placed — but a foundation
+    // is a slab, not a wall. Dropping a site on the fire line must not buy
+    // instant hard cover.
+    let scenario = Scenario {
+        name: "site-no-sandbag".into(),
+        seed: 42,
+        map: vec![
+            "############".into(),
+            "#1.........#".into(),
+            "#..........#".into(),
+            "#..........#".into(),
+            "#..........#".into(),
+            "#........2.#".into(),
+            "#..........#".into(),
+            "############".into(),
+        ],
+        players: arena(vec![]).players,
+        units: vec![
+            unit(0, UnitKind::Sentinel, 4, 3),
+            unit(1, UnitKind::Harvester, 6, 3),
+            unit(1, UnitKind::Harvester, 5, 5),
+        ],
+        buildings: Vec::new(),
+        meta: None,
+    };
+    let mut state = scenario.build().unwrap();
+    let (attacker, victim, builder) = (
+        state.units()[0].id,
+        state.units()[1].id,
+        state.units()[2].id,
+    );
+    let start_tile = state.unit(attacker).unwrap().tile();
+    // The site claims the line tile on the command tick.
+    state.tick(&[cmd(
+        1,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Array,
+            anchor: TilePos::new(5, 3),
+            queue: false,
+        },
+    )]);
+    let site = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == BuildingKind::Array)
+        .expect("the site must have been placed");
+    assert!(!site.built, "the blocker must be an unbuilt foundation");
+    let events = state
+        .tick(&[cmd(
+            0,
+            Command::Attack {
+                units: vec![attacker],
+                target: Target::Unit(victim),
+                queue: false,
+            },
+        )])
+        .events;
+    assert!(
+        events.iter().any(|e| matches!(e, Event::AttackHit { .. })),
+        "the shot must land on the command tick — an unbuilt site is not cover"
+    );
+    assert_eq!(
+        state.unit(attacker).unwrap().tile(),
+        start_tile,
+        "no repositioning: the attacker fires from where it stands"
     );
 }
 

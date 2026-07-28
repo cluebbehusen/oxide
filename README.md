@@ -139,9 +139,10 @@ only what's still standing — damage burns salvage.
 | Ctrl + `F5`-`F8` / `F5`-`F8`       | Set / recall camera bookmarks                                                                                                                                                |
 | `F1`                               | Debug overlay (grid, ids, paths — and no fog)                                                                                                                                |
 
-Ranged fire needs a clear line: rock (and buildings) block ground
-shots, so a Sentinel behind cover must step out to fire — and so must
-the one shooting at it. The air plays by different rules: the sky is
+Ranged fire needs a clear line: rock blocks ground shots, so a
+Sentinel behind cover must step out to fire — and so must the one
+shooting at it. Buildings are not cover: they block movement, never
+bullets. The air plays by different rules: the sky is
 clear of everything except peaks, which wall it, block every shot
 across them in any pairing, and break the indirect arcs (Bombard,
 Bastion) that sail over mere rock. Guns that outrange their own eyes fire

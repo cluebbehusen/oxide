@@ -132,7 +132,7 @@ pub struct WeaponStats {
     /// the direct hit.
     pub splash: Option<Fx>,
     /// Indirect fire arcs over terrain: the line-of-sight trace that lets
-    /// rock and buildings block direct shots is skipped.
+    /// rock block direct shots is skipped.
     pub indirect: bool,
     /// The shot is a real projectile: a Shell entity travels to the
     /// victim's fire-time position and resolves on arrival — dodgeable

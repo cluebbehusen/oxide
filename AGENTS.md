@@ -578,10 +578,13 @@ comparisons don't survive GPU churn, so CI never runs it.
   checked every tick, so a row tighter than reality fails there instead
   of eating a save.
 - **Ranged fire traces line of sight** (`chassis::path::line_blocked`, a
-  fixed-point supercover walk): rock and non-target buildings block, scrap
-  and units don't, endpoints never do. In range but blocked → keep
-  approaching until range *and* line hold. Vision stays radius-based on
-  purpose — cover is a firing rule, not a stealth system. The trace
+  fixed-point supercover walk): rock blocks; buildings never do (since
+  0.13 — they block movement, not bullets; built and unbuilt alike, so
+  a dropped foundation buys no instant cover and a turret's own base
+  can't blind it); scrap and units don't block, endpoints never do. In
+  range but blocked → keep approaching until range *and* line hold.
+  Vision stays radius-based on purpose — cover is a firing rule, not a
+  stealth system, and the only cover is terrain. The trace
   saturates on hairline deltas (a 1-ulp segment once overflowed the
   1/Δ step math); direction symmetry A→B vs B→A is *not* promised
   (corner-graze rounding differs), mirror fairness *is* — a lattice
