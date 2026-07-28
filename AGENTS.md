@@ -79,7 +79,19 @@ The three map-sweep suites (every-shipped-map bot play-through, the
 neural ladder yardstick, the hash fixtures) fan their independent
 deterministic sims across threads — grown-shelf sweeps stay a
 dozen-seconds affair, and a new sweep over per-map runs should spawn
-the same way.
+the same way. The play-through
+(`driver/tests/headless.rs`) is the **liveness gate**: 12k bot-vs-bot
+ticks per map, tallied per seat out of the `TickReport`s — units
+produced, deliveries, buildings completed, shots fired, last-progress
+tick. Every seat still holding a Foundry owes its format's production
+and delivery floor; eliminated seats owe nothing (the
+autonomous-remnants rule); the match owes recent progress, and a shot
+below the 6/8-seat formats. The floors are authored at roughly a third
+of the measured minimum by `liveness_floors_calibration_table` — an
+`#[ignore]`d diagnostic in the same file that prints the whole
+per-seat table. Re-run it and re-author after anything that moves bot
+behavior. (Until 0.13 the gate was a unit-id proxy that a 32-unit
+starting roster satisfied at tick zero.)
 
 `sim/tests/fuzz.rs` fans the same way: seeded garbage down the command
 surface, generated through a tag enum the compiler holds against
@@ -861,6 +873,14 @@ comparisons don't survive GPU churn, so CI never runs it.
   level — bounded to bot-vs-bot spectacles. Standing candidate engine
   experiment: parity-alternate `movement::run` like the brain
   loop (hash-moving; needs a bless and a re-measure).
+- **Causeway Verdict and Gatework Array fire no shot in 12k ticks**
+  (all-Medium, the shipped default): not one casualty either, while
+  every seat's economy runs at the roster's normal rate. Ten minutes of
+  game time is march time on the biggest team maps — Trident Plateau
+  and Compass Grand at the same seat counts do fight — so the liveness
+  gate holds only the 2- and 4-seat formats to a combat floor. Whether
+  that is honest scale or a marching problem is a pacing question, not
+  a liveness one.
 - **The 0.11 artifact leans Cupric on skirmish** (34-6 at Expert
   across seat-swapped pairs, dealt personalities — present in the
   shipped convention configuration, same artifact-specific class as
