@@ -892,7 +892,7 @@ comparisons don't survive GPU churn, so CI never runs it.
   its classic chord), volumes, ui scale, camera feel, touch timing,
   window size, reduced motion, colorblind — platform config dir,
   versioned separately from replays, silent defaults on any trouble
-  (and replace-not-rename on save, for Windows).
+ .
 - **Persistence fails loudly and rotates narrowly (0.13).** Every
   record lands through `chassis::fsx::write_atomic` — parents created,
   temp + fsync + cross-platform atomic replace (std's rename replaces
