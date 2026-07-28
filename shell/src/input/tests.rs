@@ -2845,3 +2845,182 @@ fn the_docks_subject_always_draws_its_trail() {
     game.selection.units = vec![one];
     assert_eq!(crate::render::entities::decor_units(&game), vec![one]);
 }
+
+#[test]
+fn the_tutorial_survives_its_own_literal_instructions() {
+    // The regression gate for the 150-scrap dead end: every lesson,
+    // played exactly as its card words it (keyboard alternatives the
+    // text itself offers, world clicks for the rest), must stay
+    // affordable with the shipped numbers. If a cost change or a bank
+    // change re-opens the trap, this fails before a player finds it.
+    use crate::tutorial::{Tutorial, tutorial_scenario};
+
+    let harvester_cost = UnitKind::Harvester.stats().cost;
+    let turret_cost = BUILD_PALETTE[0]
+        .stats()
+        .construction
+        .expect("palette structures are constructable")
+        .cost;
+    let sentinel_cost = UnitKind::Sentinel.stats().cost;
+    let opening = tutorial_scenario().players[0].scrap;
+    assert!(
+        opening >= harvester_cost + turret_cost + sentinel_cost,
+        "the tutorial bank ({opening}) no longer covers its literal lesson spends \
+         ({harvester_cost}+{turret_cost}+{sentinel_cost}): raise tutorial_scenario's \
+         scrap or cheapen a lesson"
+    );
+
+    let mut game =
+        Game::with_viewport(tutorial_scenario(), vec2(1280.0, 800.0)).expect("tutorial builds");
+    let mut input = InputState::new();
+    let mut t = Tutorial::new();
+    game.camera.center = vec2(8.0, 5.0);
+    let key = |game: &mut Game, input: &mut InputState, key: Key| {
+        apply_events(
+            game,
+            input,
+            &[RawEvent::KeyDown { key }, RawEvent::KeyUp { key }],
+        );
+    };
+    let right_click = |game: &mut Game, input: &mut InputState, world: Vec2| {
+        let p = game.camera.to_screen(world);
+        apply_events(
+            game,
+            input,
+            &[RawEvent::MouseDown {
+                button: MouseButton::Right,
+                x: p.x,
+                y: p.y,
+            }],
+        );
+    };
+    let bank = |game: &Game| game.state.player(game.human).scrap;
+
+    // Lesson 1 — "or press H": the Foundry fallback trains a Harvester.
+    assert!(t.advance(&game.demo));
+    assert_eq!(t.step, 0);
+    assert!(bank(&game) >= harvester_cost, "lesson 1 must be affordable");
+    key(&mut game, &mut input, Key::H);
+    game.do_tick();
+    assert!(t.advance(&game.demo));
+    assert_eq!(t.step, 1, "training graduates lesson 1");
+
+    // Lesson 2 — select a harvester, right-click a scrap pile; the
+    // card holds until the first load lands.
+    let hauler = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+        .map(|u| (u.id, u.pos))
+        .expect("a starting harvester");
+    let p = game
+        .camera
+        .to_screen(vec2(hauler.1.x.to_num::<f32>(), hauler.1.y.to_num::<f32>()));
+    apply_events(&mut game, &mut input, &click(p.x, p.y));
+    assert_eq!(
+        game.selection.units,
+        vec![hauler.0],
+        "the harvester is in hand"
+    );
+    right_click(&mut game, &mut input, vec2(7.5, 2.5)); // the home scrap pile
+    game.do_tick();
+    assert!(game.demo.harvested, "the order was accepted");
+    assert!(t.advance(&game.demo));
+    assert_eq!(
+        t.step, 1,
+        "an accepted order alone must not graduate the lesson"
+    );
+    for _ in 0..1500 {
+        if game.demo.deposited {
+            break;
+        }
+        game.do_tick();
+    }
+    assert!(game.demo.deposited, "a load reaches the bank within budget");
+    assert!(t.advance(&game.demo));
+    assert_eq!(t.step, 2, "income graduates the mining lesson");
+
+    // Lesson 3 — "Pick a DIFFERENT harvester": the hauler keeps its
+    // program while an idle machine raises the palette's structure.
+    assert!(bank(&game) >= turret_cost, "lesson 3 must be affordable");
+    let idle = game
+        .state
+        .units()
+        .iter()
+        .find(|u| {
+            u.player == game.human
+                && u.kind == UnitKind::Harvester
+                && matches!(u.order, oxide_sim::Order::Idle)
+        })
+        .map(|u| (u.id, u.pos))
+        .expect("an idle harvester to build with");
+    let p = game
+        .camera
+        .to_screen(vec2(idle.1.x.to_num::<f32>(), idle.1.y.to_num::<f32>()));
+    apply_events(&mut game, &mut input, &click(p.x, p.y));
+    assert_eq!(game.selection.units.len(), 1, "one builder in hand");
+    let picked = game.selection.units[0];
+    assert!(
+        game.state
+            .unit(picked)
+            .is_some_and(|u| !matches!(u.order, oxide_sim::Order::Harvest { .. })),
+        "the literal reading leaves the hauler hauling"
+    );
+    key(&mut game, &mut input, Key::B);
+    key(&mut game, &mut input, Key::Num1);
+    let ground = game.camera.to_screen(vec2(10.5, 4.5));
+    apply_events(&mut game, &mut input, &click(ground.x, ground.y));
+    assert!(
+        game.pending.iter().any(
+            |c| matches!(&c.command, Command::Build { kind, .. } if *kind == BUILD_PALETTE[0])
+        ),
+        "B, digit, ground click staged the build: {:?}",
+        game.pending
+    );
+    game.do_tick();
+    assert!(t.advance(&game.demo));
+    assert_eq!(t.step, 3, "the site graduates the building lesson");
+    assert!(
+        game.state
+            .units()
+            .iter()
+            .any(|u| u.player == game.human && matches!(u.order, oxide_sim::Order::Harvest { .. })),
+        "income survives the building lesson"
+    );
+
+    // Lesson 4 — the trap's teeth: the fighter must be payable here.
+    assert!(
+        bank(&game) >= sentinel_cost,
+        "the fighter lesson re-opened the dead end: bank {} vs {} needed",
+        bank(&game),
+        sentinel_cost
+    );
+    key(&mut game, &mut input, Key::S); // train slot 2: the Sentinel
+    game.do_tick();
+    assert!(t.advance(&game.demo));
+    assert_eq!(t.step, 4, "the fighter graduates the arming lesson");
+
+    // Lesson 5 — right-click ground with a fighter selected.
+    let sentinel = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Sentinel)
+        .map(|u| (u.id, u.pos))
+        .expect("the starting sentinel stands");
+    let p = game.camera.to_screen(vec2(
+        sentinel.1.x.to_num::<f32>(),
+        sentinel.1.y.to_num::<f32>(),
+    ));
+    apply_events(&mut game, &mut input, &click(p.x, p.y));
+    right_click(&mut game, &mut input, vec2(12.5, 9.5));
+    game.do_tick();
+    assert!(t.advance(&game.demo));
+    assert_eq!(t.step, 5, "attack-move graduates the march lesson");
+
+    // Lesson 6 is the pause menu, a frame-loop act outside the
+    // command stream; its flag flips in main.rs.
+    game.demo.paused_menu = true;
+    assert!(!t.advance(&game.demo), "school is out");
+}

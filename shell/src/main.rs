@@ -524,14 +524,7 @@ async fn run() -> Result<()> {
                     screens::home::Out::Tutorial => {
                         // The tutorial is a gentle real match with the
                         // lesson cards riding on top.
-                        let mut scenario = Scenario::skirmish();
-                        for p in scenario.players.iter_mut().skip(1) {
-                            p.bot_config = Some(oxide_sim::scenario::BotConfig {
-                                level: oxide_sim::bot::Level::Easy,
-                                aggression: Some(0),
-                            });
-                        }
-                        let fresh = Game::new(scenario)?;
+                        let fresh = Game::new(tutorial::tutorial_scenario())?;
                         game = keep_flags(fresh, &game);
                         game.paused = args.paused;
                         tutorial = Some(tutorial::Tutorial::new());
@@ -748,7 +741,7 @@ async fn run() -> Result<()> {
                 }
                 render::draw(&game, &sprites, &input);
                 if let Some(t) = &tutorial {
-                    render::draw_tutorial(t);
+                    render::draw_tutorial(t, &game);
                 }
             }
             Mode::Playback => {

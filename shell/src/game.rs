@@ -333,6 +333,17 @@ impl Game {
         }
         let report = self.state.tick(&commands);
 
+        // Income is evidence too: the mining lesson graduates on a
+        // load actually landing, not on the accepted order — so it
+        // rides the sim's event, outside the command gate below.
+        if report
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::ScrapDeposited { player, .. } if *player == self.human))
+        {
+            self.demo.deposited = true;
+        }
+
         // The tutorial's evidence: what the human actually asked for
         // AND the sim accepted. A tick carrying any rejection for the
         // human grades nothing — the deliberately-illegal placement

@@ -837,8 +837,18 @@ comparisons don't survive GPU churn, so CI never runs it.
   window between the top bar and the band.
 - **The tutorial advances on demonstration** (shell/src/tutorial.rs):
   six cards watching `Game::demo` flags set from the human's own
-  command stream — never a timer, never a "next" button. Dismissible;
-  re-entry is another tutorial match from Home.
+  command stream — never a timer, never a "next" button — except the
+  mining lesson, which graduates on the first *delivered* load
+  (`Event::ScrapDeposited`), not on the accepted order. The match is
+  `tutorial_scenario()`: the embedded skirmish with pushover bots and
+  a tutorial-only raised bank (the authored 150 ran dry across the
+  lessons' prepaid spends; the JSON stays untouched so every fixture
+  and replay stands). Cost-bearing cards carry a live coach line —
+  price, bank, hauling count — that becomes the press-N recovery
+  nudge at an unaffordable lesson with nothing mining, and a
+  literal-instructions playthrough test in `input::tests` pins every
+  lesson affordable at shipped numbers. Dismissible; re-entry is
+  another tutorial match from Home.
 - **The build palette is data-driven.** `B` opens it; digits are
   contextual (palette first, then a selected factory's produce slots
   filtered to the seat's faction, then control groups). The old
