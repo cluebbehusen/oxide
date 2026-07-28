@@ -178,9 +178,14 @@ fn overlaps_pending_site(game: &Game, kind: oxide_sim::BuildingKind, anchor: Til
     })
 }
 
-/// The builder's queue depth once this stroke's FIRST stamp has
-/// landed — the sim gives a new site to the lowest-id own harvester in
-/// the selection (`accepted_units` sorts). Without Shift the stamp
+/// The founder's queue depth once this stroke's FIRST stamp has
+/// landed — a Build drafts every own harvester in the selection, and
+/// the lowest-id one (`accepted_units` sorts) is the founder whose
+/// full queue rejects the whole command, so it is the unit whose
+/// depth gates the stroke. (Another crew member arriving with a
+/// deeper program can individually hit QueueFull while this proxy
+/// says there was room — that drops the one hand, never the
+/// command.) Without Shift the stamp
 /// wipes the program; with Shift it appends, except onto an idle
 /// builder, where it takes the free active slot. Live state alone is
 /// not enough: a paused shell stages whole strokes — and any other
@@ -210,11 +215,12 @@ fn stroke_queued(game: &Game, shift: bool) -> usize {
     let mut depth =
         builder.queue.len() + usize::from(!matches!(builder.order, oxide_sim::Order::Idle));
     for pc in &game.pending {
-        // Build assigns only the sim's chosen builder; every other
-        // unit order lands on each listed unit (an Attack degrades to
-        // a walk for a pacifist harvester, but it still occupies the
-        // program). Appends saturate at the cap the way assign drops
-        // them.
+        // Build drafts every listed harvester — the depth tracked
+        // here is the founder's, the hand that gates the command;
+        // every other unit order lands on each listed unit (an
+        // Attack degrades to a walk for a pacifist harvester, but it
+        // still occupies the program). Appends saturate at the cap
+        // the way assign drops them.
         let mine = |units: &[oxide_sim::UnitId]| units.contains(&builder.id);
         match &pc.command {
             Command::Build { units, queue, .. } if chosen_builder(units) == Some(builder.id) => {

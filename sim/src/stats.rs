@@ -825,6 +825,12 @@ pub const RETARGET_RADIUS: i32 = 2;
 /// nearest passable tile within this radius (else the command is rejected).
 pub const GOAL_SNAP_RADIUS: i32 = 3;
 
+/// How far the footprint-eviction pre-pass ring-scans for a walkable
+/// escape tile. Any real escape starts on an adjacent open tile (A*
+/// cannot leave a fully sealed one), so the reach only pads for
+/// corner-cut geometry around the footprint.
+pub const EVICT_SCAN_RADIUS: i32 = 3;
+
 /// Relaxation passes of collision resolution per tick. More passes settle
 /// dense crowds faster; each pass is a full pairwise sweep.
 pub const COLLISION_ITERATIONS: u32 = 3;

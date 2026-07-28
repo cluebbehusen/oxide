@@ -631,20 +631,30 @@ comparisons don't survive GPU churn, so CI never runs it.
   range beyond aggro. Inside aggro, auto-acquire already covered it.
   Retaliation resolves after all damage, in decision order: the earliest
   surviving attacker gets the answer.
-- **Construction claims ground instantly**: full price on placement
-  (refused — and refunded nothing — if no doorstep is reachable), a
-  fifth of max hp standing, blind and inert until built. Since 0.12
-  friendly machines never block placement — the builder founds a
-  building under its own feet and steps to the canonical doorstep,
-  and every other friendly on the footprint (allies included) deals
-  deterministically onto the perimeter ring as the site claims the
-  ground; a visible HOSTILE machine still denies its tile, and all
-  relocation runs strictly after the last rejection path so a
+- **Construction claims ground instantly — and bodies WALK off (0.13)**:
+  full price on placement (refused — and refunded nothing — if no
+  doorstep is reachable), a fifth of max hp standing, blind and inert
+  until built. Since 0.12 friendly machines never block placement; a
+  visible HOSTILE machine still denies its tile. Displaced bodies are
+  no longer relocated instantly: the builder's own approach routes it
+  to a doorstep (A* tolerates a blocked start), and every other
+  friendly on the footprint (allies included) is walked off by a
+  phase-5 eviction pre-pass — pathless ground bodies on claimed
+  ground get a path to the nearest routable open tile each tick,
+  path ONLY, so programs survive and an extracting harvester keeps
+  its job while it clears the ground. Only a body with NO escape
+  route takes the old instant perimeter deal (nothing may end up
+  inside a finished building), and the crew draft plus that
+  last-resort deal run strictly after the last rejection path so a
   refused command leaves no trace on the hash. Ground closing
   mid-walk is real: movement revalidates each waypoint and repaths
   around fresh sites. Progress needs an adjacent builder — **several
   adjacent builders stack**, each contributing a tick, so two roughly
-  halve the build; deliberate, tested. Orphaned sites freeze and any own
+  halve the build; deliberate, tested — and since 0.13 a
+  multi-harvester Build commits the whole accepted crew, fresh and
+  resume alike: the first accepted harvester founds (pays, proves the
+  doorstep, and alone gates the command), the rest join best-effort.
+  Orphaned sites freeze and any own
   harvester can resume them; a site zeroed by fire is dead even if its
   builder acts the same tick — construction hp-gains buffer like damage
   and resolve after it, so fire wins ties. Cancel (`X`) refunds

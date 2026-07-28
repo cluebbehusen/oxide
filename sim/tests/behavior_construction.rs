@@ -1283,12 +1283,30 @@ fn a_builder_founds_a_building_under_its_own_feet() {
         state.buildings().iter().any(|b| b.anchor == anchor),
         "the site claims the builder's own ground"
     );
-    // The builder stepped to the canonical doorstep — lowest (y, x)
-    // reachable perimeter tile — as the foundation landed.
-    let u = state.unit(builder).unwrap();
-    assert_eq!(u.tile(), TilePos::new(4, 5), "the canonical doorstep");
-    assert!(matches!(u.order, Order::Build { .. }));
-    // And the build completes from there.
+    assert!(matches!(
+        state.unit(builder).unwrap().order,
+        Order::Build { .. }
+    ));
+    // The builder WALKS off the claimed ground — the position series is
+    // continuous, never the old instant relocation (a 1+ tile jump
+    // inside one tick).
+    let step_cap = chassis::fx::Fx::lit("0.5");
+    let mut prev = state.unit(builder).unwrap().pos;
+    let mut off_at = None;
+    for t in 0..40u32 {
+        state.tick(&[]);
+        let u = state.unit(builder).unwrap();
+        assert!(
+            u.pos.dist(prev) <= step_cap,
+            "the builder teleported at tick {t} instead of walking"
+        );
+        prev = u.pos;
+        if off_at.is_none() && u.tile() != anchor {
+            off_at = Some(t);
+        }
+    }
+    assert!(off_at.is_some(), "the builder never stepped off its site");
+    // And the build completes from the doorstep it walked to.
     let events = run_until(&mut state, 600, |_, events| {
         events
             .iter()
@@ -1301,8 +1319,10 @@ fn a_builder_founds_a_building_under_its_own_feet() {
 fn friendly_machines_make_way_for_foundations() {
     use oxide_sim::stats::BuildingKind;
     // A 2x2 Fabricator with the builder on one footprint tile and a
-    // second OWN machine on another: both make way — the builder to
-    // the doorstep, the sentinel onto the perimeter ring.
+    // second OWN machine on another: both make way — by WALKING off
+    // the claimed ground (the eviction pre-pass routes the pathless
+    // sentinel out; the builder's own approach routes it to a
+    // doorstep), positions continuous the whole way.
     let mut state = arena(vec![
         unit(0, UnitKind::Harvester, 5, 6),
         unit(0, UnitKind::Sentinel, 6, 7),
@@ -1310,6 +1330,7 @@ fn friendly_machines_make_way_for_foundations() {
     .build()
     .unwrap();
     let builder = state.units()[0].id;
+    let sentinel = state.units()[1].id;
     let anchor = TilePos::new(5, 6);
     state.tick(&[cmd(
         0,
@@ -1324,17 +1345,28 @@ fn friendly_machines_make_way_for_foundations() {
         state.buildings().iter().any(|b| b.anchor == anchor),
         "friendly machines no longer deny the site"
     );
+    let step_cap = chassis::fx::Fx::lit("0.5");
+    let mut prev: Vec<_> = [builder, sentinel]
+        .iter()
+        .map(|id| state.unit(*id).unwrap().pos)
+        .collect();
+    for t in 0..60u32 {
+        state.tick(&[]);
+        for (i, id) in [builder, sentinel].iter().enumerate() {
+            let now = state.unit(*id).unwrap().pos;
+            assert!(
+                now.dist(prev[i]) <= step_cap,
+                "a displaced machine teleported at tick {t} instead of walking"
+            );
+            prev[i] = now;
+        }
+    }
     let (w, h) = BuildingKind::Fabricator.stats().size;
     let inside =
         |t: TilePos| t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h;
     assert!(
         state.units().iter().all(|u| !inside(u.tile())),
-        "everyone stepped off the claimed footprint"
-    );
-    assert_eq!(
-        state.unit(builder).unwrap().tile(),
-        TilePos::new(4, 5),
-        "the builder holds the canonical doorstep"
+        "everyone walked off the claimed footprint"
     );
 }
 
@@ -1418,11 +1450,24 @@ fn an_allied_machine_makes_way_like_your_own() {
         state.buildings().iter().any(|b| b.anchor == anchor),
         "an ally on the footprint does not deny the site"
     );
+    // The ally walks off like an own machine would — continuous
+    // positions, off the footprint within a few seconds.
+    let step_cap = chassis::fx::Fx::lit("0.5");
+    let mut prev = state.unit(ally).unwrap().pos;
+    for t in 0..60u32 {
+        state.tick(&[]);
+        let now = state.unit(ally).unwrap().pos;
+        assert!(
+            now.dist(prev) <= step_cap,
+            "the ally teleported at tick {t} instead of walking"
+        );
+        prev = now;
+    }
     let (w, h) = BuildingKind::Fabricator.stats().size;
     let t = state.unit(ally).unwrap().tile();
     assert!(
         !(t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h),
-        "the ally stepped off the claimed footprint (now at {t:?})"
+        "the ally walked off the claimed footprint (now at {t:?})"
     );
 }
 
@@ -1432,9 +1477,9 @@ fn a_rejected_under_feet_build_leaves_no_trace_on_the_hash() {
     // QueueFull is the one rejection that fires after place_site: fill
     // the builder's program to the cap, then order a queued build
     // under its feet. The whole tick must leave the state exactly
-    // where an empty tick would - the builder relocation runs only
-    // after the last rejection path, or a refused command would
-    // teleport a unit into the hash.
+    // where an empty tick would - the crew draft and the last-resort
+    // perimeter deal run only after the last rejection path, or a
+    // refused command would leave a mark on the hash.
     let mut state = arena(vec![unit(0, UnitKind::Harvester, 5, 6)])
         .build()
         .unwrap();
@@ -1473,5 +1518,130 @@ fn a_rejected_under_feet_build_leaves_no_trace_on_the_hash() {
         state.hash(),
         twin.hash(),
         "a rejected build moved the state hash"
+    );
+}
+
+#[test]
+fn a_walled_in_machine_takes_the_instant_deal() {
+    use oxide_sim::stats::BuildingKind;
+    // A rock pocket seals one footprint tile: the machine standing
+    // there has NO escape route once the site claims the ground, so
+    // it takes the last-resort perimeter deal on the command tick —
+    // nothing may end up inside a finished building. The builder,
+    // whose side is open, walks like anyone else.
+    let scenario = Scenario::from_json(
+        &serde_json::json!({
+            "name": "Pocket Yard",
+            "seed": 7,
+            "players": [
+                {"name": "West", "faction": "ferrous", "scrap": 300, "bot": false},
+                {"name": "East", "faction": "cupric", "scrap": 0, "bot": false}
+            ],
+            "map": [
+                "############",
+                "#1.........#",
+                "#..........#",
+                "#......#...#",
+                "#......#...#",
+                "#....###...#",
+                "#........2.#",
+                "#..........#",
+                "############"
+            ],
+            "units": [
+                {"player": 0, "kind": "harvester", "x": 5, "y": 3},
+                {"player": 0, "kind": "sentinel", "x": 6, "y": 4}
+            ]
+        })
+        .to_string(),
+    )
+    .expect("pocket yard parses");
+    let mut state = scenario.build().expect("pocket yard builds");
+    let builder = state.units()[0].id;
+    let sealed = state.units()[1].id;
+    let anchor = TilePos::new(5, 3);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Fabricator,
+            anchor,
+            queue: false,
+        },
+    )]);
+    assert!(
+        state.buildings().iter().any(|b| b.anchor == anchor),
+        "the pocketed footprint still accepts the site"
+    );
+    let (w, h) = BuildingKind::Fabricator.stats().size;
+    let inside =
+        |t: TilePos| t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h;
+    let t = state.unit(sealed).unwrap().tile();
+    assert!(
+        !inside(t),
+        "the routeless machine was dealt off the footprint immediately (at {t:?})"
+    );
+    // And the site stands up over the whole affair.
+    let events = run_until(&mut state, 600, |_, events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::BuildingCompleted { .. }))
+    });
+    assert!(!events.is_empty(), "the site completes");
+}
+
+#[test]
+fn a_fresh_placement_commits_the_whole_crew() {
+    use oxide_sim::stats::BuildingKind;
+    // The reclaim-parity rule reaches construction: a fresh Build
+    // drafts every accepted harvester — not just the founder — and
+    // non-harvesters in the selection are left to their own work.
+    // Three hands raise the site markedly faster than one.
+    let build_time = |crew: usize| {
+        let mut units: Vec<_> = (0..crew)
+            .map(|i| unit(0, UnitKind::Harvester, 3 + i as i32, 2))
+            .collect();
+        units.push(unit(0, UnitKind::Sentinel, 8, 2));
+        let mut state = arena(units).build().unwrap();
+        let ids: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
+        let anchor = TilePos::new(3, 4);
+        state.tick(&[cmd(
+            0,
+            Command::Build {
+                units: ids.clone(),
+                kind: BuildingKind::Turret,
+                anchor,
+                queue: false,
+            },
+        )]);
+        let (hands, sentinel) = ids.split_at(crew);
+        for id in hands {
+            assert!(
+                matches!(state.unit(*id).unwrap().order, Order::Build { .. }),
+                "every selected harvester took the order"
+            );
+        }
+        assert_eq!(
+            state.unit(sentinel[0]).unwrap().order,
+            Order::Idle,
+            "the sentinel is not drafted into construction"
+        );
+        let mut ticks = 0u32;
+        while !state
+            .buildings()
+            .iter()
+            .any(|b| b.anchor == anchor && b.built)
+        {
+            state.tick(&[]);
+            ticks += 1;
+            assert!(ticks < 700, "construction never finished");
+        }
+        ticks
+    };
+    let solo = build_time(1);
+    let trio = build_time(3);
+    assert!(
+        trio * 3 < solo * 2,
+        "three hands should be markedly faster: solo {solo}, trio {trio}"
     );
 }

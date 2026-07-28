@@ -1,16 +1,20 @@
-//! Phases 4–5: path following and collision resolution.
+//! Phases 4–5: footprint eviction, path following, and collision
+//! resolution.
 //!
 //! Movement is per-unit work. Since 0.5, ground can close *during* a walk —
 //! a construction site claims its footprint the moment the command lands —
 //! so each step revalidates the waypoint it is about to move toward and
 //! drops the path when the ground has closed (the brain repaths around the
-//! new obstacle next tick). Collision resolution then pushes overlapping
+//! new obstacle next tick). Since 0.13 a pathless ground body left
+//! standing on claimed ground walks itself off (see
+//! [`evict_claimed_ground`]) instead of being relocated instantly.
+//! Collision resolution then pushes overlapping
 //! bodies apart until they fit — units are solid to each other, but tiles
 //! are only ever blocked by terrain and buildings, so pathfinding stays
 //! deadlock-free while crowds physically jostle.
 
 use crate::map::Map;
-use crate::state::{Order, State};
+use crate::state::{Order, PathFollow, State};
 use chassis::fx::{Fx, Vec2Fx, sqrt};
 use chassis::grid::TilePos;
 
@@ -38,6 +42,69 @@ fn early_advance_safe(
         return true;
     }
     open(cur.offset(dx, 0)) && open(cur.offset(0, dy))
+}
+
+/// The nearest walkable escape from a body's own (possibly blocked)
+/// tile: candidates ring-scan outward in (chebyshev, y, x) order — the
+/// deterministic order every ring scan uses — and the first one that
+/// routes wins (A* consults `passable` for every tile except the start,
+/// so a body paths out of ground it could not enter). Bounded: any real
+/// escape begins on an adjacent open tile, so the reach only pads for
+/// corner-cut geometry.
+pub(super) fn escape_route(
+    state: &State,
+    kind: crate::stats::UnitKind,
+    from: TilePos,
+) -> Option<PathFollow> {
+    for r in 1..=crate::stats::EVICT_SCAN_RADIUS {
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs().max(dy.abs()) != r {
+                    continue;
+                }
+                let goal = from.offset(dx, dy);
+                if !state.passable(goal) {
+                    continue;
+                }
+                if let Some(waypoints) = super::route_for(state, kind, from, goal) {
+                    return Some(PathFollow {
+                        goal,
+                        waypoints,
+                        next: 0,
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Phase-5 pre-pass: a pathless ground body standing on a building
+/// footprint walks off — an accepted foundation claims its ground
+/// instantly, and no sim rule expects a resting unit on a claimed
+/// footprint. Sets `path` ONLY: orders, queue, progress, leash, and
+/// settle all survive, so the body keeps its job while it clears the
+/// ground. Re-arms every tick because working brains null the path
+/// while standing still (extract, attack-in-range) — brains run first,
+/// eviction re-arms, movement consumes. Id order; deterministic scan.
+/// No route means the body stays put — a crowd the sim already
+/// tolerates — except at placement time, where `apply_build` deals a
+/// routeless body onto the perimeter instantly so nothing can end up
+/// inside a finished building.
+pub(super) fn evict_claimed_ground(state: &mut State) {
+    for i in 0..state.units.len() {
+        let u = &state.units[i];
+        if u.hp == 0 || u.kind.stats().domain != crate::stats::Domain::Ground || u.path.is_some() {
+            continue;
+        }
+        let (kind, tile) = (u.kind, u.tile());
+        if state.building_at(tile).is_none() {
+            continue;
+        }
+        if let Some(path) = escape_route(state, kind, tile) {
+            state.units[i].path = Some(path);
+        }
+    }
 }
 
 /// Advances every unit along its path by its speed, returning each

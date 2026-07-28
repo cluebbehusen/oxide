@@ -489,10 +489,12 @@ fn apply_patrol(
     Ok(())
 }
 
-/// Claims the site immediately (full price, footprint blocks) and sends
-/// the first accepted harvester to stand it up. Aiming at an existing own
-/// unfinished site resumes it instead — that's how a dead builder's work
-/// gets picked back up.
+/// Claims the site immediately (full price, footprint blocks) and
+/// commits the whole accepted crew: the first accepted harvester founds
+/// the site — pays, proves a doorstep is reachable — and every other
+/// accepted harvester takes the same Build order (builders stack).
+/// Aiming at an existing own unfinished site resumes it instead —
+/// that's how a dead builder's work gets picked back up.
 fn apply_build(
     state: &mut State,
     player: PlayerId,
@@ -504,32 +506,27 @@ fn apply_build(
     if !in_envelope(state, anchor) {
         return Err(RejectReason::OutOfBounds);
     }
-    let builder = accepted_units(state, player, units)
+    // The crew: every accepted harvester, in id order. `crew[0]` is the
+    // founder — the same unit the fresh-placement path always chose.
+    let crew: Vec<UnitId> = accepted_units(state, player, units)
         .into_iter()
-        .find(|id| {
+        .filter(|id| {
             state
                 .unit(*id)
                 .is_some_and(|u| u.kind.stats().harvest.is_some())
         })
-        .ok_or(RejectReason::NoValidUnits)?;
+        .collect();
+    let &builder = crew.first().ok_or(RejectReason::NoValidUnits)?;
 
-    // Resume an existing site of ours at this anchor? Every accepted
-    // harvester joins — builders stack, and a dead builder's work is
-    // picked back up by however many hands the player sends.
+    // Resume an existing site of ours at this anchor? Every hand joins —
+    // builders stack, and a dead builder's work is picked back up by
+    // however many hands the player sends.
     let existing = state
         .buildings
         .iter()
         .find(|b| b.anchor == anchor && b.kind == kind && b.player == player && !b.built)
         .map(|b| b.id);
     if let Some(site) = existing {
-        let crew: Vec<UnitId> = accepted_units(state, player, units)
-            .into_iter()
-            .filter(|id| {
-                state
-                    .unit(*id)
-                    .is_some_and(|u| u.kind.stats().harvest.is_some())
-            })
-            .collect();
         let mut landed = 0;
         for id in crew {
             if let Some(unit) = state.unit_mut(id)
@@ -547,28 +544,24 @@ fn apply_build(
     if state.player(player).scrap < cost {
         return Err(RejectReason::NotEnoughScrap);
     }
-    // Place first, then prove the builder can actually reach a
+    // Place first, then prove the founder can actually reach a
     // doorstep *around the now-blocking footprint* — otherwise
     // undo for free. Charging for a site nobody can ever touch
     // would burn 80% of the price through the hp-scaled refund.
+    // (A* tolerates a blocked start, so a founder standing inside
+    // the fresh footprint routes out of it like any unit on newly
+    // claimed ground.)
     let site = state.place_site(player, kind, anchor);
     let from = state.unit(builder).expect("filtered above").tile();
     let size = kind.stats().size;
-    // The canonical doorstep: lowest-(y, x) reachable
-    // perimeter tile. One deterministic tile, because it
-    // doubles as where an under-feet builder steps when the
-    // foundation claims its ground. (A* tolerates a blocked
-    // start, so a builder standing inside the fresh footprint
-    // routes out of it like any unit on newly claimed ground.)
-    let doorstep = super::rect_adjacent_tiles(anchor, size)
+    let reachable = super::rect_adjacent_tiles(anchor, size)
         .filter(|&t| state.passable(t))
-        .filter(|&t| from == t || super::astar_for(state, from, t).is_some())
-        .min_by_key(|t| (t.y, t.x));
-    let Some(doorstep) = doorstep else {
+        .any(|t| from == t || super::astar_for(state, from, t).is_some());
+    if !reachable {
         state.retract_site(site);
         return Err(RejectReason::UnreachableGoal);
-    };
-    // Assign BEFORE paying: a builder whose order queue is
+    }
+    // Assign BEFORE paying: a founder whose order queue is
     // full must reject the whole command with the site
     // retracted and nothing spent — the old code discarded
     // this result and could charge for a site nobody was
@@ -581,22 +574,30 @@ fn apply_build(
     state.player_mut(player).scrap -= cost;
     // The accepted foundation buries whatever wreck salvage lay
     // there (only now — a rejected site must leave no trace).
-    let size = kind.stats().size;
     for dy in 0..size.1 {
         for dx in 0..size.0 {
             state.map.clear_wreck(anchor.offset(dx, dy));
         }
     }
-    // Friendly machines make way as the site claims the
-    // ground: no sim rule expects a resting unit on a claimed
-    // footprint. The builder steps to the doorstep (its work
-    // position); every other friendly inside — allies
-    // included — deals round-robin onto the passable perimeter
-    // ring in (y, x) order, id order among the displaced.
-    // Strictly after the last rejection path and the payment —
-    // a rejected command must not move the state hash
-    // (retract_site's contract). Hostiles can't be here:
-    // can_place refused them.
+    // The rest of the crew joins best-effort, in id order: an
+    // individual full queue drops that hand, never the command —
+    // the founder alone gates acceptance.
+    for &id in crew.iter().skip(1) {
+        if let Some(unit) = state.unit_mut(id) {
+            let _ = assign(unit, Order::Build { site }, queue);
+        }
+    }
+    // Friendly machines make way as the site claims the ground: no
+    // sim rule expects a resting unit on a claimed footprint. Since
+    // 0.13 they WALK off — the builders' own approach and the
+    // phase-5 eviction pre-pass both route out of the footprint —
+    // so only a body with NO escape route takes the instant deal
+    // onto the passable perimeter ring, round-robin in (y, x)
+    // order, id order among the dealt: nothing may end up inside a
+    // finished building. Strictly after the last rejection path and
+    // the payment — a rejected command must not move the state hash
+    // (retract_site's contract). Hostiles can't be here: can_place
+    // refused them.
     let ring: Vec<TilePos> = {
         let mut ring: Vec<TilePos> = super::rect_adjacent_tiles(anchor, size)
             .filter(|&t| state.passable(t))
@@ -613,14 +614,14 @@ fn apply_build(
         if u.hp == 0 || u.kind.stats().domain != crate::stats::Domain::Ground || !inside(u.tile()) {
             continue;
         }
-        let to = if u.id == builder {
-            doorstep
-        } else if let Some(&t) = ring.get(dealt % ring.len().max(1)) {
-            dealt += 1;
-            t
-        } else {
+        let (unit_kind, tile) = (u.kind, u.tile());
+        if super::movement::escape_route(state, unit_kind, tile).is_some() {
+            continue; // it can walk; the eviction pre-pass sees to it
+        }
+        let Some(&to) = ring.get(dealt % ring.len().max(1)) else {
             continue; // no perimeter at all: leave it; collision resolves
         };
+        dealt += 1;
         let unit = &mut state.units[i];
         unit.pos = to.center();
         unit.path = None;

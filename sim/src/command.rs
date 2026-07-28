@@ -84,13 +84,15 @@ pub enum Command {
         /// What to build.
         kind: UnitKind,
     },
-    /// Start a construction site and send a harvester to stand it up.
+    /// Start a construction site and send harvesters to stand it up.
     /// The full price is paid on placement; cancelling salvages
     /// `cost x hp / max_hp`.
     Build {
-        /// Candidate builders. Fresh placement sends the first accepted
-        /// harvester; resuming an existing site sends every accepted
-        /// harvester (builders stack).
+        /// Candidate builders. Every accepted harvester joins the crew,
+        /// fresh placement and resume alike (builders stack); on a
+        /// fresh placement the first accepted harvester founds the
+        /// site — it pays and proves the doorstep, and its full queue
+        /// rejects the whole command.
         units: Vec<UnitId>,
         /// What to construct.
         kind: crate::stats::BuildingKind,

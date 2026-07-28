@@ -912,9 +912,10 @@ impl State {
         }
         // Hostile machines hold their ground — standing on a tile
         // denies it to the enemy's foundations. Friendly machines
-        // (allies included) never block: the accept path relocates
-        // them to the perimeter as the site claims the ground. A flyer
-        // passing overhead blocks nothing either way.
+        // (allies included) never block: they walk off as the site
+        // claims the ground (only a routeless body is dealt to the
+        // perimeter instantly). A flyer passing overhead blocks
+        // nothing either way.
         let hostile_in_footprint = self.units.iter().any(|u| {
             u.hp > 0
                 && self.hostile(player, u.player)

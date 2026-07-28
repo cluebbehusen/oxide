@@ -13,7 +13,10 @@
 //!    mutual kills are possible.
 //! 4. **Resolution** — buffered damage lands (decision order), then
 //!    surviving victims retaliate against their earliest attacker.
-//! 5. **Movement** — units advance along their paths.
+//! 5. **Movement** — a pre-pass walks pathless ground bodies off claimed
+//!    building footprints (path only — programs survive; brains may null
+//!    the path each tick, so the pre-pass re-arms it), then units
+//!    advance along their paths.
 //! 6. **Collision** — overlapping bodies are pushed apart until they fit;
 //!    units are solid to each other but never block tiles.
 //! 7. **Cleanup** — entities at 0 hp are removed, with events; every
@@ -51,6 +54,7 @@ impl State {
             commands::apply(self, commands, &mut events);
             production::run(self, &mut events);
             brain::run(self, &mut events);
+            movement::evict_claimed_ground(self);
             let travel = movement::run(self);
             movement::resolve_collisions(self, &travel);
             cleanup(self, &mut events);

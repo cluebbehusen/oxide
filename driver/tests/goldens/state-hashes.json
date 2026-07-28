@@ -2,9 +2,9 @@
   "sim_version": "0.13.0",
   "hashes": {
     "basalt-spine": "0xbda7763e1bc43d61",
-    "broad-front": "0x1642310e1ff29c5b",
+    "broad-front": "0xb426a194d894dcd0",
     "causeway-verdict": "0x8632ee5e0534343d",
-    "cinder-steppe": "0x5ed15776637d4b11",
+    "cinder-steppe": "0x791ee0d6f5a1f37e",
     "compass-grand": "0x64fa415cf5fd9a22",
     "continental-divide": "0x1ab8a0978447a0c7",
     "derelict-yard": "0x6e4a5ebd5e6695af",
@@ -13,8 +13,8 @@
     "long-haul": "0x3a47f54814031d40",
     "meridian-scar": "0x453dd89f53f92947",
     "open-circuit": "0x7d64a1b5022ba006",
-    "open-quarry": "0xc522c3edfac35ef0",
-    "oxide-flats": "0x27fd5319999c7632",
+    "open-quarry": "0x466da2efae358886",
+    "oxide-flats": "0xe1e6d33a48f10814",
     "paired-claims": "0xda1daeec1d0ee736",
     "parallel-works": "0x1aaee68a7615af47",
     "rustbelt-canyon": "0x30eea177c700b7b2",
@@ -24,7 +24,7 @@
     "slagline": "0xe586d605c81bd4f0",
     "the-crossing": "0xcd02db3b1d6f4737",
     "trident-plateau": "0xccd2cd2a523186fb",
-    "twin-forges": "0x09bf059759a74536",
+    "twin-forges": "0x810937a987691851",
     "verdigris-fields": "0x4a9c62974c7ae3dd"
   }
 }
