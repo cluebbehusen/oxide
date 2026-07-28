@@ -144,6 +144,13 @@ them) and load time proportional to session length, which at thousands of
 ticks per second is noise. If sessions ever get long enough to hurt,
 revisit with a snapshot+suffix-log hybrid — and keep the recorder valid.
 
+The socket is bounded (shell/src/debug_server.rs): eight connections at
+once — a ninth is told so in an error envelope and closed — request lines
+capped at `oxide_protocol::MAX_FRAME_BYTES`, and a connection idle for
+half an hour is dropped, which is deliberately far longer than a paused
+driven-mode session ever parks. Undecodable bytes answer like any other
+bad request instead of vanishing.
+
 Headless, no window needed:
 
 ```sh

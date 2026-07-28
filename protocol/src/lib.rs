@@ -39,6 +39,12 @@ pub const MAX_ADVANCE_TICKS: u64 = 1_000_000;
 /// Largest presentation-preserving step the shell will execute at once.
 pub const MAX_PRESENT_TICKS: u64 = 120;
 
+/// Longest request line a server accepts, newline excluded. A line that
+/// runs past it is answered with an error naming the limit and the
+/// connection is closed — framing has to bound its own allocation, and no
+/// legitimate request comes within three orders of magnitude of this.
+pub const MAX_FRAME_BYTES: usize = 1 << 20;
+
 /// Everything a client can ask of a running shell.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
