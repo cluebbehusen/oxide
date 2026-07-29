@@ -106,8 +106,7 @@ Before committing: fmt + clippy clean, tests green. Golden files live in
 `driver/tests/goldens/`: byte-exact PNGs (a mismatch writes the actual
 under `target/` for side-by-side inspection) plus `state-hashes.json`,
 bot-vs-bot hashes at tick 2,000 for every shipped scenario — the cheap
-tripwire that flags sim drift without image churn, and the fixture CI
-re-derives per-OS as the cross-platform determinism proof. Three PNGs,
+tripwire that flags sim drift without image churn. Three PNGs,
 not two: skirmish at t0 and t1200, plus `showcase.png` (0.13), a
 scenario built in `driver/tests/golden.rs` — never under `scenarios/`,
 which ships to players — and driven through a scripted program until
@@ -361,21 +360,11 @@ damaged_unit_value joins the features because my_strength conflates
 count with wounds and a potential term must price what welding
 recovers; the shipped artifact is the widen bridge of the 0.11
 weights — zero columns, unreachable floors — so every fixture held
-unblessed. The 0.13 weld campaign then trained from scratch under
-the new world (no parent survived: bc prior → 2000-update anchored
-league → short consolidation, tournament-picked) and its candidate
-FAILED the gate battery — tier-sweeping strength, but 31/48 on the
-decisiveness gate against the frozen artifact's 48/48, a
-faction-conditional factorial skew, and the loaned bars uncarried —
-and a second era resumed from and anchored to that refused winner
-(bay-action seeding surgery, tournament-picked again) was refused
-on the same gates within noise (44/48 decisiveness, factorial
-25.3%) — so the bridge REMAINS the shipped artifact and the weld
-verbs stay unreachable in shipped play; the campaign notebook
-entry carries both rounds' full tables, and the sim-batch entry's
-neural readings describe the shipped game, not a superseded
-baseline); training slots are
-role-indexed where the factions
+unblessed, and it STAYED the shipped artifact: the 0.13 weld
+campaign's two candidates were both refused by the gate battery
+(the weld-campaign notebook entry carries the full tables; the
+Known Issues loan entry carries the numbers that matter going
+forward)); training slots are role-indexed where the factions
 differ, so one action space serves both rosters. Since v4 every
 positional feature rides as relative 0-1000 against the actual map
 dimensions (fixed scales broke on the large map classes), map dims
@@ -391,7 +380,7 @@ the goldens. From `tools/train/` (uv + PyTorch):
 
 ```sh
 uv run bc.py --arch deep --episodes 48 --out runs/prior.pt   # imitation warm start
-uv run league.py --name run --resume runs/prior.pt --anchor runs/prior.pt     --maps random --mix "self=0.35,past=0.15,tier=0.15,rusher=0.10,ffa=0.25"
+uv run league.py --name run --resume runs/prior.pt --anchor runs/prior.pt     --maps grand --mix "self=0.35,past=0.15,tier=0.15,rusher=0.10,ffa=0.25"
 uv run tournament.py --ckpt runs/run/pool/ckpt-XXXXX.pt      # torch-side eval
 uv run export.py --ckpt <winner> --out runs/candidate.json   # Q12 artifact
 cargo run -p oxide-driver -- neural-cup --weights runs/candidate.json  # the gate
@@ -486,7 +475,7 @@ stay in-tree as league anchors, benchmarks, and the ladder-integrity
 yardstick (`sim/tests/neural_ladder.rs` enforces Easy < Medium <
 Hard < Expert forever).
 
-### Balance instruments (0.10)
+### Balance instruments
 
 `driver balance-probe` runs bot-vs-bot across the shipped maps
 (optionally `--weights` for a candidate artifact — the fun gate's
@@ -871,8 +860,8 @@ comparisons don't survive GPU churn, so CI never runs it.
   victory check (a fully-resigned team is eliminated on the spot; a
   1v1 concession decides its own tick), its future commands reject as
   `Eliminated` (which makes a second Surrender a no-op), and its
-  machines play out as remnants. Bots never surrender; the gym
-  contract is untouched (still v5, 22 actions).
+  machines play out as remnants. Bots never surrender — no gym
+  action exists for it, deliberately.
 - **Air is a second movement domain, not a special case.** Flyers take
   the straight line (no A*), ignore terrain, construction claims, and
   ground collision, collide only with each other, never block
@@ -965,10 +954,11 @@ comparisons don't survive GPU churn, so CI never runs it.
   must feed — fire wins ties, the volley's dead forfeit, the
   ceiling-rejected welder is refunded. Air patients refuse in v1;
   shell surface is right-click a damaged own unit or the armed `W`
-  verb. Player-only for now: the bots' gym action waits for the next
-  contract, so fixtures never move — and the executive's
-  rotate-to-the-rear doctrine still assumes nothing bot-reachable
-  heals (the constraint is written on `PULLBACK_NUM`).
+  verb. The v6 gym action exists, but the SHIPPED artifact is the
+  widen bridge with the weld actions floored unreachable, so in
+  shipped play the verb is human-only and fixtures never move — and
+  the executive's rotate-to-the-rear doctrine still assumes nothing
+  bot-reachable heals (the constraint is written on `PULLBACK_NUM`).
 - **The Repair Bay is an aura, not a crew** (0.13):
   `BuildingKind::RepairBay` (2x2, 200 scrap, unarmed — appended last,
   postcard discipline) welds own wounded units, ground AND air (the
@@ -982,8 +972,9 @@ comparisons don't survive GPU churn, so CI never runs it.
   counter, nothing new in the hash); a bank that can't cover a
   patient's coin skips it and keeps scanning, so partial scrap heals
   the earliest ids deterministically and a broke owner heals nothing.
-  No gym action until the v6 contract — the bot cannot build one,
-  which is what keeps the fixtures inert (the Salvage precedent).
+  The v6 build slot exists, but the shipped bridge floors it
+  unreachable — the shipped bot never builds one, which is what
+  keeps the fixtures inert (the Salvage precedent).
   The matchup arena seats carry a bank now (only billed sustain can
   spend it), so `--b-structures repairbay:n` measures the aura; at
   the shipped dials a bay roughly pays for itself sustaining an
@@ -1113,8 +1104,7 @@ comparisons don't survive GPU churn, so CI never runs it.
   alone reads as "verb newer than this config" and would re-adopt
   its classic chord), volumes, ui scale, camera feel, touch timing,
   window size, reduced motion, colorblind — platform config dir,
-  versioned separately from replays, silent defaults on any trouble
- .
+  versioned separately from replays, silent defaults on any trouble.
 - **Persistence fails loudly and rotates narrowly (0.13).** Every
   record lands through `chassis::fsx::write_atomic` — parents created,
   temp + fsync + cross-platform atomic replace (std's rename replaces
@@ -1174,36 +1164,16 @@ comparisons don't survive GPU churn, so CI never runs it.
   recorded; the fix is upstream and deferred to a post-0.13 session.
   `dist/Oxide.app` activates normally, and `--trace-startup` shows
   the dead window as frames with `hw_events=0`.
-- **The classic bot's 27/27 seat-1 mirror sweep: root-caused and fixed
-  in 0.7.** The twin-simulation trace found symmetry breaking at tick 0
-  because `skirmish.json`'s p1 spawn list wasn't the exact mirror-order
-  of p0's — every id-order-sensitive decision then ran in a different
-  logical order per seat. Two swapped JSON lines turned the sweep into
-  a seed-decided coin flip; all other shipped maps were already
-  mirror-ordered (authoring rule: p1's unit list must mirror p0's entry
-  by entry). The learned bots additionally think in *seat-oriented*
-  coordinates (`bot::Orientation`) so no `(y, x)` tie-break or ring
-  scan favors a compass direction. Residual: the sim's id-order micro
-  (movement first-mover, brain iteration) can still decide
-  identical-dial neural mirror matches; win-rate gates neutralize it by
-  scoring seat-swapped pairs, and shipped matches deal varied
-  personalities, so no seat holds a standing edge in practice.
-- **The 0.7 Standard-stall blemish stayed gone in 0.9** — the
-  promoted artifact swept 1200/1200 with zero draws (ckpt-900 of the
-  same run resurrected the stall with 13 tick-cap draws and was
-  disqualified for it; the draw rule keeps earning its keep).
-- **Parallel Works leaned 10-2 east under the BRIDGE artifact at
-  Medium** (faction asymmetry on a geometrically exact map — the
-  air-transparent belts rewarded the Cupric roster). Re-probed with
-  the shipped 0.9 artifact: 6/6 decisive at 3-3. Bot-vs-bot leans are
-  artifact-specific; re-measure per artifact before blaming a map.
 - **All-neural Expert 2v2 can stall on open maps and leans west on
   Twin Forges** (measured: 12/12 thirty-k-tick draws on Open Quarry at
   Expert; 12-2 west in decisive Twin Forges games). Both are artifacts
   of near-deterministic symmetric self-play: each seat's
   enemy-strength reading doubles in 2v2 so trained push thresholds
   never fire, and the sim's residual id-order micro compounds without
-  blunder noise. At the shipped Medium default both effects vanish
+  blunder noise (the learned bots think in seat-oriented coordinates
+  — `bot::Orientation` — precisely so no tie-break favors a compass
+  direction; what remains is the micro, and leans are
+  artifact-specific: re-measure per artifact before blaming a map). At the shipped Medium default both effects vanish
   (12/12 decisive, no consistent lean), and a human in the match
   breaks symmetry at any level — bounded to bot-vs-bot spectacles.
   The parity-alternate `movement::run` candidate was run and retired
