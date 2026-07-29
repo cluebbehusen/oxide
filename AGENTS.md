@@ -438,7 +438,16 @@ SHORT consolidation resumed from and anchored to the intact parent
 shadow before the rusher canary collapses. A seeded verb the true
 objective still prices as lossy ships as trained runner-up logits,
 not a usage quota — forcing usage past the game's own economics is
-the "weird ML" line the campaign doctrine refuses to cross.
+the "weird ML" line the campaign doctrine refuses to cross. The 0.13
+contract stage extends both instruments: one `--repair-bonus` seeds
+the v6 weld pair on the tech-bonus schedule (RepairUnit and the
+Repair Bay each earn it once per episode), and `--probe-every` plays
+the fun gate's composition probe in-loop — every N updates the
+league snapshots the checkpoint, exports it to Q12, and runs
+`balance-probe` over the shipped slate, logging decisiveness,
+per-seat entropy p10, and unit AND building shares beside the rusher
+eval (observed, never rewarded; snapshot, artifact, and raw payload
+land under `runs/<name>/probe/` for post-hoc reading).
 Team training runs two flavors — self-team (`team`: the learner holds
 both chairs) and mixed-ally (`team2`: a scripted Brain drives the
 teammate) — and per-seat episode truncation pads a dead learner's

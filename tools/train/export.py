@@ -37,13 +37,12 @@ def quant(t: torch.Tensor) -> list:
     return (t.detach().numpy() * (1 << Q)).round().astype(int).tolist()
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt", required=True)
-    ap.add_argument("--out", required=True)
-    args = ap.parse_args()
-
-    policy, blob = load_policy(args.ckpt)
+def export(ckpt: str, out: str) -> tuple[int, str | None]:
+    """Quantizes `ckpt` to the Q12 artifact at `out`; returns the
+    parameter count and recorded arch. Importable so league.py's
+    in-loop composition probe can export a snapshot without a
+    subprocess."""
+    policy, blob = load_policy(ckpt)
     policy.eval()
 
     linears = [m for m in policy.trunk.modules() if isinstance(m, torch.nn.Linear)]
@@ -100,11 +99,20 @@ def main() -> None:
         "layers": layers,
         "head": head,
     }
-    with open(args.out, "w") as f:
+    with open(out, "w") as f:
         json.dump(artifact, f)
     n = sum(len(lay["w"]) * len(lay["w"][0]) + len(lay["b"]) for lay in layers)
     n += len(head["w"]) * len(head["w"][0]) + len(head["b"])
-    print(f"exported {n} params (arch {blob.get('arch')}) to {args.out}")
+    return n, blob.get("arch")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--ckpt", required=True)
+    ap.add_argument("--out", required=True)
+    args = ap.parse_args()
+    n, arch = export(args.ckpt, args.out)
+    print(f"exported {n} params (arch {arch}) to {args.out}")
 
 
 if __name__ == "__main__":

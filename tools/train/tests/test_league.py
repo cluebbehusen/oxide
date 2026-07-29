@@ -9,7 +9,9 @@ seat_view machinery and a real (tiny) policy; only the subprocess Worker
 is scripted."""
 
 import itertools
+import json
 import pathlib
+import sys
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
@@ -17,13 +19,17 @@ import pytest
 import torch
 
 from league import (
+    BUILD_BAY_ACTION,
     FAB_BUILT,
+    REPAIR_ACTION,
     SHAPE_K,
     TEL,
     F,
     Job,
     comp_entropy,
+    composition_probe,
     faction_knob,
+    probe_canary,
     rollout,
     sample_condition,
     tech_bonus_at,
@@ -409,6 +415,169 @@ class TestMixBonus:
         assert rew[1][0] == pytest.approx(1.0 + 0.05), "1 bit earns half of 0.1"
         assert rew[1][1] == pytest.approx(-1.0), "a monoculture earns nothing"
         assert sorted(finals) == [-1.0, 1.0], "telemetry finals stay pure"
+
+
+def _forced_view(action: int) -> SeatView:
+    """A view whose mask permits exactly one action — the policy has no
+    choice, so the rollout's executed action is the test's choice."""
+    view = _view(0.5)
+    view.mask = np.zeros(ACTIONS, dtype=bool)
+    view.mask[action] = True
+    return view
+
+
+class TestRepairBonus:
+    """The v6 seeding: one --repair-bonus flag pays each weld verb the
+    seat picked this episode, independently — tracked like Salvage,
+    annealed on the same schedule, invisible to telemetry finals."""
+
+    def _rollout(
+        self, initial: Frame, frames: list[Frame], steps: int
+    ) -> tuple[np.ndarray, list[float]]:
+        fresh = Frame(False, 99, seats={0: _forced_view(0), 1: _forced_view(0)})
+        worker = cast("Worker", _ResettingWorker(frames, fresh))
+        job = Job(worker, "self", 0, pathlib.Path("."), np.random.default_rng(0), "cpu")
+        job.frame = initial
+        job.conditions = {0: (1000, 500, 0), 1: (1000, 500, 1000)}
+        torch.manual_seed(0)
+        policy = make_policy("mlp")
+        policy.eval()
+        TEL.clear()
+        batch, _last_val, finals = rollout(
+            policy, [job], itertools.repeat(0), steps, "cpu", repair_bonus=0.05
+        )
+        return batch[5], finals
+
+    def test_each_weld_verb_pays_the_bonus_once(self) -> None:
+        initial = Frame(
+            False,
+            0,
+            seats={
+                0: _forced_view(REPAIR_ACTION),
+                1: _forced_view(BUILD_BAY_ACTION),
+            },
+        )
+        rew, finals = self._rollout(initial, [Frame(True, 16, winners=[0])], 1)
+        assert rew[0][0] == pytest.approx(1.0 + 0.05), "the field weld pays"
+        assert rew[0][1] == pytest.approx(-1.0 + 0.05), "the Bay pays, even in defeat"
+        assert sorted(finals) == [-1.0, 1.0], "telemetry finals stay pure"
+        assert TEL["ep_repair"] == 1
+        assert TEL["ep_bay"] == 1
+
+    def test_a_seat_that_picked_both_verbs_earns_both(self) -> None:
+        initial = Frame(
+            False, 0, seats={0: _forced_view(REPAIR_ACTION), 1: _forced_view(0)}
+        )
+        frames = [
+            Frame(
+                False,
+                16,
+                seats={0: _forced_view(BUILD_BAY_ACTION), 1: _forced_view(0)},
+            ),
+            Frame(True, 32, winners=[0]),
+        ]
+        rew, _finals = self._rollout(initial, frames, 2)
+        assert rew[1][0] == pytest.approx(1.0 + 0.10), "both verbs, both bonuses"
+        assert rew[1][1] == pytest.approx(-1.0), "an idle seat earns nothing"
+
+    def test_the_flags_reset_at_the_episode_boundary(self) -> None:
+        initial = Frame(
+            False,
+            0,
+            seats={0: _forced_view(REPAIR_ACTION), 1: _forced_view(REPAIR_ACTION)},
+        )
+        frames = [Frame(True, 16, winners=[0]), Frame(True, 32, winners=[0])]
+        rew, _finals = self._rollout(initial, frames, 2)
+        assert rew[0][0] == pytest.approx(1.0 + 0.05)
+        # Episode 2 picked nothing (the fresh frame forces Idle); a
+        # stale flag would let one early weld pay rent forever.
+        assert rew[1][0] == pytest.approx(1.0)
+        assert rew[1][1] == pytest.approx(-1.0)
+
+
+_PROBE_PAYLOAD = {
+    "schema": 2,
+    "overall": {"matches": 50, "decided": 41, "capped": 9},
+    "decided": {
+        "seats": 82,
+        "entropy_bits": 2.134,
+        "seat_entropy": {"mean": 1.9, "p10": 1.42, "p25": 1.7, "median": 2.0},
+        "mean_share": {"lancer": 0.599, "sentinel": 0.401},
+        "mean_buildings": {"fabricator": 1.2},
+        "seats_with_building": {"fabricator": 0.85, "repairbay": 0.125},
+    },
+}
+
+
+class TestProbeCanary:
+    def test_the_row_reads_decisiveness_mix_and_both_share_tables(self) -> None:
+        assert probe_canary(_PROBE_PAYLOAD) == {
+            "matches": 50,
+            "decided": 41,
+            "capped": 9,
+            "entropy_bits": 2.13,
+            "seat_p10": 1.42,
+            "unit_share": {"lancer": 0.599, "sentinel": 0.401},
+            "building_share": {"fabricator": 0.85, "repairbay": 0.125},
+        }
+
+    def test_an_empty_cohort_reports_no_p10_instead_of_crashing(self) -> None:
+        payload = json.loads(json.dumps(_PROBE_PAYLOAD))
+        payload["decided"]["seat_entropy"] = None
+        assert probe_canary(payload)["seat_p10"] is None
+
+
+class TestCompositionProbe:
+    """The in-loop canary's plumbing: snapshot -> Q12 export -> a
+    balance-probe subprocess -> the canary row. The driver is a stub
+    that records its argv and writes a canned payload, so the test
+    proves the wiring without a Rust build."""
+
+    def _fake_driver(self, tmp_path: pathlib.Path, payload: dict) -> pathlib.Path:
+        script = tmp_path / "fake-driver"
+        script.write_text(
+            f"#!{sys.executable}\n"
+            "import json, sys\n"
+            "opts = dict(zip(sys.argv[2::2], sys.argv[3::2]))\n"
+            "with open(opts['--out'] + '.argv', 'w') as f:\n"
+            "    json.dump(sys.argv[1:], f)\n"
+            "with open(opts['--out'], 'w') as f:\n"
+            f"    json.dump({payload!r}, f)\n"
+        )
+        script.chmod(0o755)
+        return script
+
+    def test_the_probe_snapshots_exports_and_reads_the_canary(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        driver = self._fake_driver(tmp_path, _PROBE_PAYLOAD)
+        torch.manual_seed(0)
+        policy = make_policy("mlp")
+        row = composition_probe(
+            policy, "mlp", 100, tmp_path, str(driver), "some/scenarios", "medium", 2
+        )
+        assert row["decided"] == 41
+        assert row["seat_p10"] == 1.42
+        probe_dir = tmp_path / "probe"
+        assert (probe_dir / "ckpt-00100.pt").exists(), "the snapshot persists"
+        weights = json.loads((probe_dir / "weights-00100.json").read_text())
+        assert weights["actions"] == ACTIONS, "the export speaks the live contract"
+        argv = json.loads((probe_dir / "probe-00100.json.argv").read_text())
+        assert argv[0] == "balance-probe"
+        opts = dict(zip(argv[1::2], argv[2::2], strict=True))
+        assert opts["--dir"] == "some/scenarios"
+        assert opts["--level"] == "medium"
+        assert opts["--seeds"] == "2"
+        assert opts["--weights"] == str(probe_dir / "weights-00100.json")
+
+    def test_an_old_probe_schema_is_refused(self, tmp_path: pathlib.Path) -> None:
+        stale = json.loads(json.dumps(_PROBE_PAYLOAD))
+        stale["schema"] = 1
+        driver = self._fake_driver(tmp_path, stale)
+        torch.manual_seed(0)
+        policy = make_policy("mlp")
+        with pytest.raises(RuntimeError, match="schema 1"):
+            composition_probe(policy, "mlp", 5, tmp_path, str(driver), "s", "medium", 1)
 
 
 class TestTerminalObservations:

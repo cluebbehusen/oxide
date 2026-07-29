@@ -27,6 +27,7 @@ import argparse
 import contextlib
 import json
 import pathlib
+import subprocess
 import threading
 import time
 from collections import Counter
@@ -39,6 +40,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from export import export
 from mapgen import cache_dir
 from mapgen import generate as _generate
 from models import load_policy, make_policy, save_policy
@@ -125,6 +127,10 @@ def style_reward(raw: list[int], aggression: int) -> float:
 FAB_BUILT = FEATURE_NAMES.index("fab_built")
 # Action index the gym assigns Salvage (v5's appended verb).
 SALVAGE_ACTION = 21
+# The v6 weld pair, appended in this order: unit repair and the
+# Repair Bay's build slot.
+REPAIR_ACTION = 22
+BUILD_BAY_ACTION = 23
 
 # The agent's own army-count features with rough unit costs (varied
 # roles use the midpoint of their two faction kinds) — the same
@@ -289,6 +295,10 @@ class Job:
         # episode. Lives on the Job, not the Lane, because episodes span
         # rollout windows and Lanes are recreated per window.
         self.salvaged: set[int] = set()
+        # Learner seats that picked each v6 weld verb this episode —
+        # the --repair-bonus evidence, tracked exactly like salvaged.
+        self.repaired: set[int] = set()
+        self.built_bay: set[int] = set()
         if kind == "self":
             self.learner_seats = [0, 1]
             self.opp_seat = None
@@ -336,6 +346,8 @@ class Job:
         self.dead = set()
         self.last_views = {}
         self.salvaged = set()
+        self.repaired = set()
+        self.built_bay = set()
         self.conditions = {s: sample_condition(self.rng, s) for s in self.learner_seats}
         scenario = None
         if self.maps == "random":
@@ -466,6 +478,7 @@ def rollout(
     tech_bonus: float = 0.0,
     mix_bonus: float = 0.0,
     salvage_bonus: float = 0.0,
+    repair_bonus: float = 0.0,
 ) -> tuple[tuple[np.ndarray, ...], np.ndarray, list[float]]:
     lanes = {(id(j), s): Lane(j.worker, s) for j in jobs for s in j.learner_seats}
     finished_rewards = []
@@ -533,6 +546,10 @@ def rollout(
                 )
                 if acts[s] == SALVAGE_ACTION:
                     j.salvaged.add(s)
+                elif acts[s] == REPAIR_ACTION:
+                    j.repaired.add(s)
+                elif acts[s] == BUILD_BAY_ACTION:
+                    j.built_bay.add(s)
             acts.update(j.opponent_action(device))
             all_acts.append(acts)
         with timed("env_sec"):
@@ -567,6 +584,17 @@ def rollout(
                         # picked action), annealed to zero so the true
                         # objective decides whether the verb survives.
                         mut_bonus += salvage_bonus
+                    # One flag seeds both v6 weld verbs, each paying
+                    # independently — a policy that found only the Bay
+                    # (or only the field weld) still gets that verb
+                    # seeded, and the anneal hands both back to the
+                    # game's own economics.
+                    if s in j.repaired:
+                        TEL["ep_repair"] += 1
+                        mut_bonus += repair_bonus
+                    if s in j.built_bay:
+                        TEL["ep_bay"] += 1
+                        mut_bonus += repair_bonus
                     if mix_bonus > 0.0:
                         # The seat's frozen last view carries its final
                         # army; two bits (a real three-way mix) earns
@@ -697,6 +725,88 @@ def evaluate(
     return wins / games if games else 0.0
 
 
+def probe_canary(payload: dict) -> dict:
+    """One canary row from a `balance-probe --out` payload:
+    decisiveness, the decided cohort's mix entropy with its per-seat
+    p10, and unit AND building shares — read beside the rusher eval in
+    the run log. Observed, never rewarded: nothing here may feed a
+    loss term, or the probe stops being a measurement.
+
+    Judgment reads the DECIDED cohort like the fun gate does — a
+    stalemate's army mix is evidence about a stalemate — while the
+    decided/capped counts keep the decisiveness reading itself."""
+    overall, decided = payload["overall"], payload["decided"]
+    spread = decided.get("seat_entropy")
+    return {
+        "matches": overall["matches"],
+        "decided": overall["decided"],
+        "capped": overall["capped"],
+        "entropy_bits": round(decided["entropy_bits"], 2),
+        "seat_p10": round(spread["p10"], 2) if spread else None,
+        "unit_share": {k: round(v, 3) for k, v in decided["mean_share"].items()},
+        "building_share": {
+            k: round(v, 3) for k, v in decided["seats_with_building"].items()
+        },
+    }
+
+
+# The `--out` payload schema this loop reads; below it the decided
+# cohort does not exist (same seam fun_gate.py pins).
+PROBE_SCHEMA = 2
+
+
+def composition_probe(
+    policy: nn.Module,
+    arch: str,
+    update: int,
+    run_dir: pathlib.Path,
+    driver: str,
+    scenarios: str,
+    level: str,
+    seeds: int,
+) -> dict:
+    """Snapshots the current policy and runs the enriched composition
+    probe against the anchor slate (the shipped maps): checkpoint ->
+    Q12 export -> `driver balance-probe --weights` — the fun gate's
+    instrument played in-loop, so composition collapse shows up beside
+    the rusher canary instead of after the campaign. The snapshot,
+    artifact, and raw payload all land under runs/<name>/probe/ for
+    post-hoc reading."""
+    probe_dir = run_dir / "probe"
+    probe_dir.mkdir(parents=True, exist_ok=True)
+    ckpt = probe_dir / f"ckpt-{update:05d}.pt"
+    save_policy(policy, arch, ckpt, {"gym_version": GYM_VERSION, "update": update})
+    weights = probe_dir / f"weights-{update:05d}.json"
+    export(str(ckpt), str(weights))
+    out = probe_dir / f"probe-{update:05d}.json"
+    subprocess.run(
+        [
+            driver,
+            "balance-probe",
+            "--dir",
+            scenarios,
+            "--level",
+            level,
+            "--seeds",
+            str(seeds),
+            "--weights",
+            str(weights),
+            "--out",
+            str(out),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    payload = json.loads(out.read_text())
+    schema = payload.get("schema", 1)
+    if schema < PROBE_SCHEMA:
+        raise RuntimeError(
+            f"probe payload is schema {schema}, this loop reads {PROBE_SCHEMA} "
+            "— rebuild the driver"
+        )
+    return probe_canary(payload)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", required=True)
@@ -746,6 +856,15 @@ def main() -> None:
         "--tech-anneal schedule. 0 disables.",
     )
     ap.add_argument(
+        "--repair-bonus",
+        type=float,
+        default=0.0,
+        help="terminal bonus paid per v6 weld verb the seat picked this "
+        "episode (RepairUnit and Build RepairBay each earn it once; "
+        "own-state only, fog-safe); annealed on the --tech-anneal "
+        "schedule. 0 disables.",
+    )
+    ap.add_argument(
         "--mix-bonus",
         type=float,
         default=0.0,
@@ -765,6 +884,20 @@ def main() -> None:
         default="self=0.45,past=0.20,tier=0.20,rusher=0.15",
         help="opponent kind weights",
     )
+    ap.add_argument(
+        "--probe-every",
+        type=int,
+        default=100,
+        help="run the composition probe on the current checkpoint every "
+        "N updates and log its canary row (0 disables)",
+    )
+    ap.add_argument(
+        "--probe-dir",
+        default="../../scenarios",
+        help="the anchor slate the composition probe fights across",
+    )
+    ap.add_argument("--probe-level", default="medium")
+    ap.add_argument("--probe-seeds", type=int, default=2)
     args = ap.parse_args()
 
     device = "cpu"
@@ -865,6 +998,11 @@ def main() -> None:
                 update - start_update - 1,
                 args.tech_anneal or args.updates,
             )
+            rb = tech_bonus_at(
+                args.repair_bonus,
+                update - start_update - 1,
+                args.tech_anneal or args.updates,
+            )
             batch, last_val, finals = rollout(
                 policy,
                 jobs,
@@ -874,6 +1012,7 @@ def main() -> None:
                 tech_bonus=tb,
                 mix_bonus=mb,
                 salvage_bonus=sb,
+                repair_bonus=rb,
             )
             rollout_sec = time.time() - t0
             obs_b, mask_b, act_b, logp_b, val_b, rew_b, done_b, valid_b = batch
@@ -921,7 +1060,8 @@ def main() -> None:
                 **{
                     k: (
                         int(v)
-                        if k in ("resets", "ep_teched", "ep_salvage")
+                        if k
+                        in ("resets", "ep_teched", "ep_salvage", "ep_repair", "ep_bay")
                         else round(v, 2)
                     )
                     for k, v in sorted(TEL.items())
@@ -931,6 +1071,8 @@ def main() -> None:
                 entry["tech_bonus"] = round(tb, 4)
             if args.salvage_bonus:
                 entry["salvage_bonus"] = round(sb, 4)
+            if args.repair_bonus:
+                entry["repair_bonus"] = round(rb, 4)
             if update % args.pool_every == 0:
                 save_policy(
                     policy,
@@ -953,6 +1095,29 @@ def main() -> None:
                 # gone. Fresh ones start next rollout.
                 for j in jobs:
                     j.frame = None
+            if args.probe_every and update % args.probe_every == 0:
+                t_probe = time.time()
+                try:
+                    entry["probe"] = composition_probe(
+                        policy,
+                        arch,
+                        update,
+                        run_dir,
+                        args.driver,
+                        args.probe_dir,
+                        args.probe_level,
+                        args.probe_seeds,
+                    )
+                except (
+                    subprocess.CalledProcessError,
+                    OSError,
+                    ValueError,
+                    KeyError,
+                    RuntimeError,
+                ) as e:
+                    # A broken canary is a log line, not a dead campaign.
+                    entry["probe_error"] = str(e)
+                entry["probe_sec"] = round(time.time() - t_probe, 1)
             print(json.dumps(entry), flush=True)
             log.write(json.dumps(entry) + "\n")
             log.flush()
