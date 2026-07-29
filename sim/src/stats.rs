@@ -811,6 +811,11 @@ pub const SHELL_SPEED: Fx = Fx::lit("0.30");
 /// a stalemate valve, never an opening.
 pub const RECLAIMER_PERIOD: u64 = 30;
 
+/// Ticks per emergency scrap credited by a surviving Foundry after its
+/// owner's last Harvester is gone. The credit stops at the price of a new
+/// Harvester and never runs while one is already training.
+pub const FOUNDRY_RECOVERY_PERIOD: u64 = 10;
+
 /// Per-mille of a building's cost billed per hp welded (against max_hp).
 /// The three economy verbs price strictly build > repair > salvage:
 /// welding always costs more than salvage refunds, so repair-then-salvage

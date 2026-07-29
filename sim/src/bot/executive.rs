@@ -265,6 +265,58 @@ impl Executive {
             .chain(self.rear.iter().copied())
     }
 
+    /// Reserves a stranded economy's bank and queues its replacement
+    /// Harvester as soon as the reserve is whole.
+    ///
+    /// `None` means ordinary play. `Some([])` means the seat is still
+    /// saving (or its Foundry queue is temporarily full); callers must
+    /// skip policy spending for this think. A non-empty vector is the
+    /// one emergency Train command. Keeping this below the policies is
+    /// deliberate: recovery is an executive safety rule, not something
+    /// every scripted and learned policy must rediscover.
+    pub(crate) fn harvester_recovery(
+        &self,
+        me: PlayerId,
+        obs: &Observation,
+    ) -> Option<Vec<PlayerCommand>> {
+        let has_harvester = obs.my_units.iter().any(|u| u.kind == UnitKind::Harvester);
+        let queued_harvester = obs
+            .my_queues
+            .iter()
+            .flatten()
+            .any(|kind| *kind == UnitKind::Harvester);
+        let has_foundry = obs
+            .my_buildings
+            .iter()
+            .any(|b| b.kind == BuildingKind::Foundry && b.built);
+        if has_harvester || queued_harvester || !has_foundry {
+            return None;
+        }
+
+        let mut commands = Vec::new();
+        if obs.scrap >= UnitKind::Harvester.stats().cost
+            && let Some((_, foundry)) = obs
+                .my_buildings
+                .iter()
+                .enumerate()
+                .filter(|(qi, b)| {
+                    b.kind == BuildingKind::Foundry
+                        && b.built
+                        && obs.my_queues[*qi].len() < crate::stats::QUEUE_CAP
+                })
+                .min_by_key(|(_, b)| b.id)
+        {
+            commands.push(PlayerCommand {
+                player: me,
+                command: Command::Train {
+                    building: foundry.id,
+                    kind: UnitKind::Harvester,
+                },
+            });
+        }
+        Some(commands)
+    }
+
     /// Applies a think's intents under the scripted baseline rules —
     /// see [`Executive::apply_with`].
     pub fn apply(

@@ -29,6 +29,32 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         }
     }
 
+    // A destroyed harvest line must not turn one lost fight into a
+    // permanent soft-lock. One surviving Foundry smelts just enough
+    // ambient scrap to replace the first Harvester, then stops. Credit
+    // per seat, not per Foundry: extra bases improve resilience, not
+    // the emergency income rate.
+    if state
+        .tick
+        .is_multiple_of(crate::stats::FOUNDRY_RECOVERY_PERIOD)
+    {
+        let harvester_cost = UnitKind::Harvester.stats().cost;
+        let credits: Vec<PlayerId> = state
+            .players
+            .iter()
+            .enumerate()
+            .map(|(index, _)| PlayerId(index as u8))
+            .filter(|player| {
+                state.player(*player).scrap < harvester_cost
+                    && super::harvester_recovery_needed(state, *player)
+            })
+            .collect();
+        for player in credits {
+            let bank = &mut state.player_mut(player).scrap;
+            *bank += 1;
+        }
+    }
+
     let ids: Vec<_> = state.buildings.iter().map(|b| b.id).collect();
     for id in ids {
         let Some(b) = state.building_mut(id) else {

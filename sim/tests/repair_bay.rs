@@ -293,6 +293,40 @@ fn a_broke_owner_gets_no_healing() {
 }
 
 #[test]
+fn the_aura_cannot_spend_the_emergency_harvester_reserve() {
+    // Put a wounded non-Harvester directly in the ring through the
+    // validated state boundary. On tick zero the Foundry supplies the
+    // 50th scrap before the aura runs; the automatic repair must leave
+    // that coin and the patient alone.
+    let scenario = arena(
+        vec![unit(0, UnitKind::Sentinel, RING.x, RING.y)],
+        [Faction::Ferrous, Faction::Cupric],
+        UnitKind::Harvester.stats().cost - 1,
+        true,
+    );
+    let state = scenario.build().unwrap();
+    let max = UnitKind::Sentinel.stats().max_hp;
+    let hurt = (1..max)
+        .find(|hp| aura_bill(UnitKind::Sentinel, *hp, *hp + 1) == 1)
+        .expect("some Sentinel hp step costs one scrap");
+    let mut json = serde_json::to_value(state).unwrap();
+    json["units"][0]["hp"] = serde_json::json!(hurt);
+    let mut state: State = serde_json::from_value(json).unwrap();
+
+    state.tick(&[]);
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        UnitKind::Harvester.stats().cost,
+        "the 50th recovery scrap must survive the same tick's aura"
+    );
+    assert_eq!(
+        state.units()[0].hp,
+        hurt,
+        "paid sustain pauses while the economy is stranded"
+    );
+}
+
+#[test]
 fn partial_scrap_heals_the_earliest_id_first_then_starves() {
     let units = vec![
         unit(0, UnitKind::Harvester, FAR.x, FAR.y), // first patient

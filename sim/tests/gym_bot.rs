@@ -3,9 +3,9 @@
 //! masked menu is honest enough to play a real game through.
 
 use chassis::rng::Pcg32;
-use oxide_sim::bot::{Action, Brain, Difficulty, GymBot};
+use oxide_sim::bot::{Action, Brain, Difficulty, GymBot, Level, NeuralBot};
 use oxide_sim::state::GameResult;
-use oxide_sim::{PlayerId, Scenario};
+use oxide_sim::{Command, PlayerId, Scenario, UnitKind};
 
 /// Drives a full match: gym bot in seat 0 picks actions with a seeded
 /// rng over the legal mask; a scripted tier drives seat 1. Returns the
@@ -38,6 +38,110 @@ fn scripted_match(seed: u64) -> (u64, Option<GameResult>) {
         }
     }
     (state.hash(), state.result())
+}
+
+fn stranded_scenario(scrap: u32) -> Scenario {
+    use oxide_sim::BuildingKind;
+    use oxide_sim::scenario::BuildingSpec;
+
+    let mut scenario = Scenario::skirmish();
+    scenario.players[0].scrap = scrap;
+    scenario
+        .units
+        .retain(|u| u.player != 0 || u.kind != UnitKind::Harvester);
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Fabricator,
+        x: 9,
+        y: 3,
+    });
+    scenario
+}
+
+#[test]
+fn recovery_reserves_partial_scrap_and_overrides_a_wrong_macro_action() {
+    let state = stranded_scenario(UnitKind::Scuttler.stats().cost)
+        .build()
+        .unwrap();
+    let mut gym = GymBot::new(PlayerId(0));
+    let decision = gym.decision(&state);
+    let legal: Vec<usize> = decision
+        .mask
+        .iter()
+        .enumerate()
+        .filter_map(|(index, legal)| legal.then_some(index))
+        .collect();
+    assert_eq!(
+        legal,
+        vec![Action::Idle as usize],
+        "the Scuttler-priced partial reserve must not be spendable"
+    );
+    assert!(
+        gym.step(&state, Action::TrainScuttler).is_empty(),
+        "an out-of-contract action cannot bypass the reserve"
+    );
+
+    let state = stranded_scenario(UnitKind::Harvester.stats().cost)
+        .build()
+        .unwrap();
+    let decision = gym.decision(&state);
+    let legal: Vec<usize> = decision
+        .mask
+        .iter()
+        .enumerate()
+        .filter_map(|(index, legal)| legal.then_some(index))
+        .collect();
+    assert_eq!(
+        legal,
+        vec![Action::TrainHarvester as usize],
+        "the completed reserve has exactly one legal use"
+    );
+    let commands = gym.step(&state, Action::TrainScuttler);
+    assert!(commands.iter().any(|command| matches!(
+        command.command,
+        Command::Train {
+            kind: UnitKind::Harvester,
+            ..
+        }
+    )));
+    assert!(!commands.iter().any(|command| matches!(
+        command.command,
+        Command::Train {
+            kind: UnitKind::Scuttler,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn scripted_and_neural_commanders_take_the_recovery_harvester() {
+    let scenario = stranded_scenario(UnitKind::Harvester.stats().cost);
+    let state = scenario.build().unwrap();
+    let assert_recovery = |commands: &[oxide_sim::PlayerCommand]| {
+        assert!(commands.iter().any(|command| matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Harvester,
+                ..
+            }
+        )));
+        assert!(!commands.iter().any(|command| matches!(
+            command.command,
+            Command::Train { kind, .. } if kind != UnitKind::Harvester
+        )));
+    };
+
+    let mut scripted = Brain::for_tier(PlayerId(0), scenario.seed, Difficulty::Prime);
+    assert_recovery(&scripted.act(&state));
+
+    let mut neural = NeuralBot::ladder(
+        PlayerId(0),
+        scenario.seed,
+        Level::Expert,
+        Some(500),
+        scenario.players[0].faction,
+    );
+    assert_recovery(&neural.act(&state));
 }
 
 #[test]

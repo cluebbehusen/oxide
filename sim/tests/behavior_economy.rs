@@ -99,6 +99,89 @@ fn train_costs_scrap_and_spawns_after_build_time() {
 }
 
 #[test]
+fn a_stranded_foundry_trickles_only_the_replacement_harvesters_price() {
+    let mut scenario = arena(Vec::new());
+    scenario.players[0].scrap = 0;
+    let mut state = scenario.build().unwrap();
+
+    // Tick zero is the first global cadence, matching Reclaimer income.
+    state.tick(&[]);
+    assert_eq!(state.player(PlayerId(0)).scrap, 1);
+    for _ in 0..9 {
+        state.tick(&[]);
+    }
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        1,
+        "the credit lands once per ten ticks"
+    );
+    state.tick(&[]);
+    assert_eq!(state.player(PlayerId(0)).scrap, 2);
+
+    let mut scenario = arena(Vec::new());
+    scenario.players[0].scrap = UnitKind::Harvester.stats().cost - 1;
+    let mut capped = scenario.build().unwrap();
+    capped.tick(&[]);
+    assert_eq!(
+        capped.player(PlayerId(0)).scrap,
+        UnitKind::Harvester.stats().cost
+    );
+    for _ in 0..100 {
+        capped.tick(&[]);
+    }
+    assert_eq!(
+        capped.player(PlayerId(0)).scrap,
+        UnitKind::Harvester.stats().cost,
+        "the emergency Foundry is a restart, not passive income"
+    );
+}
+
+#[test]
+fn live_queued_and_resigned_harvest_lines_get_no_recovery_credit() {
+    let mut live = arena(vec![unit(0, UnitKind::Harvester, 3, 2)]);
+    live.players[0].scrap = 0;
+    let mut live = live.build().unwrap();
+    live.tick(&[]);
+    assert_eq!(live.player(PlayerId(0)).scrap, 0);
+
+    let mut queued = arena(Vec::new());
+    queued.players[0].scrap = UnitKind::Harvester.stats().cost;
+    let mut queued = queued.build().unwrap();
+    let foundry = queued
+        .buildings()
+        .iter()
+        .find(|b| b.player == PlayerId(0))
+        .unwrap()
+        .id;
+    queued.tick(&[cmd(
+        0,
+        Command::Train {
+            building: foundry,
+            kind: UnitKind::Harvester,
+        },
+    )]);
+    assert_eq!(queued.player(PlayerId(0)).scrap, 0);
+    for _ in 0..50 {
+        queued.tick(&[]);
+    }
+    assert_eq!(
+        queued.player(PlayerId(0)).scrap,
+        0,
+        "a prepaid Harvester in training already is the recovery"
+    );
+
+    let mut resigned = arena(Vec::new());
+    resigned.players[0].scrap = 0;
+    let mut resigned = resigned.build().unwrap();
+    resigned.tick(&[cmd(0, Command::Surrender)]);
+    assert_eq!(
+        resigned.player(PlayerId(0)).scrap,
+        0,
+        "a conceded seat cannot bank a comeback"
+    );
+}
+
+#[test]
 fn rally_routes_fresh_units_by_role() {
     // A bystander parked in sight of the node: rallies read the owner's
     // remembered scrap, so somebody must have actually seen it.

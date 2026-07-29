@@ -45,6 +45,34 @@ use crate::stats::PATH_EXPANSION_CAP;
 use chassis::grid::TilePos;
 use chassis::path::astar;
 
+/// Whether this seat is stranded and eligible for Foundry recovery income.
+///
+/// Keep every automatic consumer of the recovery reserve on this one
+/// predicate: a living, completed Foundry can rebuild an economy only when
+/// its owner has neither a Harvester in the world nor one prepaid in a live
+/// production queue.
+fn harvester_recovery_needed(state: &State, player: crate::ids::PlayerId) -> bool {
+    !state.player(player).resigned
+        && state.buildings.iter().any(|b| {
+            b.player == player
+                && b.hp > 0
+                && b.built
+                && b.kind == crate::stats::BuildingKind::Foundry
+        })
+        && !state
+            .units
+            .iter()
+            .any(|u| u.player == player && u.hp > 0 && u.kind == crate::stats::UnitKind::Harvester)
+        && !state.buildings.iter().any(|b| {
+            b.player == player
+                && b.hp > 0
+                && b.built
+                && b.queue
+                    .iter()
+                    .any(|kind| *kind == crate::stats::UnitKind::Harvester)
+        })
+}
+
 impl State {
     /// Advances the world by one fixed timestep, applying `commands` (all
     /// stamped for this tick). The returned report is presentation data —

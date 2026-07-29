@@ -93,6 +93,10 @@ impl Brain {
             .map(|b| b.anchor)
             .unwrap_or(TilePos::new(0, 0));
         let mut commands = self.exec.maintain(self.player, &obs, rear);
+        if let Some(recovery) = self.exec.harvester_recovery(self.player, &obs) {
+            commands.extend(recovery);
+            return commands;
+        }
         // The policy thinks in seat-oriented space (see [`Orientation`]):
         // the same logic runs for both seats, so its compass-flavored
         // tie-breaks cannot systematically favor either one.

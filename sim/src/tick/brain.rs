@@ -415,6 +415,10 @@ fn repair_bay_aura(state: &mut State, heals: &mut Vec<PendingUnitHeal>) {
             continue;
         };
         let owner = b.player;
+        // The aura is automatic, so unlike a voluntary purchase it must
+        // not eat the only 50 scrap a stranded seat can use to restart
+        // harvesting. Sustain may spend any surplus above the reserve.
+        let preserve_harvester_reserve = super::harvester_recovery_needed(state, owner);
         let patients: Vec<UnitId> = state
             .units
             .iter()
@@ -441,6 +445,12 @@ fn repair_bay_aura(state: &mut State, heals: &mut Vec<PendingUnitHeal>) {
             };
             let due = millis(healed + step).div_ceil(1000) - millis(healed).div_ceil(1000);
             let bank = state.player(owner).scrap;
+            if due > 0
+                && preserve_harvester_reserve
+                && bank <= crate::stats::UnitKind::Harvester.stats().cost
+            {
+                continue;
+            }
             if u64::from(bank) < due {
                 continue; // broke for this patient; cheaper coins may still land
             }

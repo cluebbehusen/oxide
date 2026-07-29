@@ -928,6 +928,14 @@ comparisons don't survive GPU churn, so CI never runs it.
   Farther patches are the owner's call: the human through the idle
   badge and `N`, the bots through their economy channels, which only
   ever re-task idle workers on the next think.
+- **A stranded Foundry rebuilds one harvest line.** A non-resigned seat
+  with a surviving completed Foundry, no live Harvester, and none in a
+  live production queue receives one scrap every 10 ticks until its bank
+  reaches the Harvester's 50-scrap price. The credit is per seat, never
+  per Foundry. Automatic Repair Bays preserve that reserve, and the
+  neural/scripted executive saves and spends it on the replacement
+  before returning control to policy; the replay-era classic bot remains
+  untouched.
 - **Repair reuses construction's machinery.** Welding feeds buffered
   hp gains through the same resolve path as building (fire wins ties),
   stalls broke, and stacks across welders. Since 0.11 the three

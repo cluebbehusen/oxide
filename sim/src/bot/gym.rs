@@ -671,6 +671,15 @@ impl GymBot {
                     && (u.kind == UnitKind::Harvester || (u.idle && u.kind.stats().can_fight()))
             });
         }
+        if let Some(recovery) = projected.harvester_recovery(self.player, &obs) {
+            mask.fill(false);
+            let action = if recovery.is_empty() {
+                Action::Idle
+            } else {
+                Action::TrainHarvester
+            };
+            mask[action as usize] = true;
+        }
         Decision { features, mask }
     }
 
@@ -685,6 +694,10 @@ impl GymBot {
         let Some(home) = home_tile(&obs) else {
             return commands; // eliminated
         };
+        if let Some(recovery) = self.exec.harvester_recovery(self.player, &obs) {
+            commands.extend(recovery);
+            return commands;
+        }
         let armies: Vec<_> = self
             .exec
             .armies()

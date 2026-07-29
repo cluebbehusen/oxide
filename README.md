@@ -112,7 +112,10 @@ blips out to its ring); the **Reclaimer** grinds a slow scrap trickle
 so a long war never fully starves; the **Repair Bay** is a field
 workshop — an unarmed ring that welds your wounded machines, ground
 and air alike, billed per hp from your bank at the same rate a
-harvester's torch charges. Deaths leave wreck salvage where
+harvester's torch charges. If your last Harvester is destroyed, a
+surviving Foundry slowly smelts just enough emergency scrap to train
+one replacement; automatic Repair Bays leave that reserve untouched.
+Deaths leave wreck salvage where
 machines fall — winning a fight and holding the ground pays twice,
 and throwing an army away literally funds the enemy. Construction
 sites are attackable from the first tick, and cancelling one refunds
