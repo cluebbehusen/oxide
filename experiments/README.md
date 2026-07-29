@@ -24,3 +24,4 @@ native Rust tournament of the quantized artifact
 | 0.13 (2026-07-28) | [the old world](2026-07-28-the-0.13-old-world.md) | the BEFORE side of the sim batch: the factorial's roster verdict, the pace table, the composition floor, the arena's roster gap |
 | 0.13 (2026-07-28) | [the sim batch](2026-07-28-the-0.13-sim-batch.md) | the AFTER side, phase by phase and then the whole slate re-run: the roster at par, Hard's cadence re-meter, the cover-rule flip, the campaign's baseline |
 | 0.13 (2026-07-28) | [the perf ledger](2026-07-28-the-0.13-perf-ledger.md) | the hash-neutral pass after the spatial index: the vision fusion measured, and two refusals — the span-scoped clear and the tile-to-building index — with their triggers |
+| 0.13 (2026-07-29) | [the weld campaign](2026-07-29-the-0.13-weld-campaign.md) | gym v6's from-scratch lineage, the canary record, the greedy weld probe — and the gate battery that said no: the frozen artifact stays |

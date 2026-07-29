@@ -361,7 +361,17 @@ damaged_unit_value joins the features because my_strength conflates
 count with wounds and a potential term must price what welding
 recovers; the shipped artifact is the widen bridge of the 0.11
 weights — zero columns, unreachable floors — so every fixture held
-unblessed); training slots are role-indexed where the factions
+unblessed. The 0.13 weld campaign then trained from scratch under
+the new world (no parent survived: bc prior → 2000-update anchored
+league → short consolidation, tournament-picked) and its candidate
+FAILED the gate battery — tier-sweeping strength, but 31/48 on the
+decisiveness gate against the frozen artifact's 48/48, a
+faction-conditional factorial skew, and the loaned bars uncarried —
+so the bridge REMAINS the shipped artifact and the weld verbs stay
+unreachable in shipped play; the campaign notebook entry carries
+the full table, and the sim-batch entry's neural readings describe
+the shipped game, not a superseded baseline); training slots are
+role-indexed where the factions
 differ, so one action space serves both rosters. Since v4 every
 positional feature rides as relative 0-1000 against the actual map
 dimensions (fixed scales broke on the large map classes), map dims
@@ -447,7 +457,17 @@ league snapshots the checkpoint, exports it to Q12, and runs
 `balance-probe` over the shipped slate, logging decisiveness,
 per-seat entropy p10, and unit AND building shares beside the rusher
 eval (observed, never rewarded; snapshot, artifact, and raw payload
-land under `runs/<name>/probe/` for post-hoc reading).
+land under `runs/<name>/probe/` for post-hoc reading). The 0.13
+campaign wrote the doctrine's converse in numbers: a from-scratch
+league under moved physics farms tier-sweeping STRENGTH in one
+campaign, but decisiveness — the will to end games — has been
+consolidated across every era since 0.7 and did not re-derive from
+scratch (the candidate stalled 17 of 48 sweep games the incumbent
+decides); the canaries called that verdict from the first in-loop
+probe (composition p10 never near the shipped floor, the prime eval
+pinned seat-sided), so read them as a forecast, not a formality,
+and prefer a decisive parent's bridged lineage over a fresh prior
+even when the physics gap argues for starting over.
 Team training runs two flavors — self-team (`team`: the learner holds
 both chairs) and mixed-ally (`team2`: a scripted Brain drives the
 teammate) — and per-seat episode truncation pads a dead learner's
@@ -1213,8 +1233,11 @@ comparisons don't survive GPU churn, so CI never runs it.
   par: Long Haul and Oxide Flats read 19/24 decided at a 60k cap
   (Long Haul's old 24/24 at median 4,859 was seat1 winning every
   game — its decisiveness WAS the imbalance); the frozen policy's
-  passivity stall surfaces there until the retraining campaign, which
-  trains under these prices.
+  passivity stall surfaces there still: the 0.13 weld campaign
+  trained under these prices and its candidate stalled WORSE
+  (23.8% factorial censoring vs the frozen artifact's 2.3%), so the
+  stall stays with the frozen artifact until a future campaign
+  clears the gate battery.
 - **The learned policy is a middling teammate beside a scripted ally**
   (25-31% on the mixed-ally 2v2 bracket vs scripted pairs, up 5x from
   pre-team-training). Shipped 2v2 seats are all-neural, which is the
@@ -1241,11 +1264,18 @@ comparisons don't survive GPU churn, so CI never runs it.
   still strictly monotone, Expert still 70/80 and top outright, zero
   unresolved — and sweep still 48/48 decided at median 6,375 with the
   seat lean softened to 16-32 (the pre-rebalance 9-39 was the roster
-  skew wearing a seat costume). The next training campaign trains
-  under the new movement, economy, and prices and takes the sweep
-  bar back, along with the fog-honest duel gate's per-seat floor
-  (its seat split whipsaws with every physics change:
-  [6,15] → [11,15] → [17,4]).
+  skew wearing a seat costume). The 0.13 weld campaign tried to take
+  the bars back and its candidate did not ship (three gates failed;
+  the weld-campaign notebook entry carries the table): the
+  from-scratch candidate's ceiling was the same 70/80 — the Prime
+  off-seat game is lost at skill 1000 across the whole cadence grid
+  {8..20} — and its decisiveness collapsed (31/48 on the sweep gate
+  vs the frozen artifact's 48/48 at median 6,375, both re-verified
+  at HEAD). So the loans stay on loan to a future campaign: Expert's
+  outright sweep bar, and the fog-honest duel per-seat floor —
+  weights-independent, whipsawing with every physics change
+  ([6,15] → [11,15] → [17,4] → [13,9] at 0.13: combined 22/40
+  still a majority, but a per-seat floor restores only at 9).
 
 ## Gotchas learned the hard way
 
