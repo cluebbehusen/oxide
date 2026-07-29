@@ -367,10 +367,14 @@ league → short consolidation, tournament-picked) and its candidate
 FAILED the gate battery — tier-sweeping strength, but 31/48 on the
 decisiveness gate against the frozen artifact's 48/48, a
 faction-conditional factorial skew, and the loaned bars uncarried —
-so the bridge REMAINS the shipped artifact and the weld verbs stay
-unreachable in shipped play; the campaign notebook entry carries
-the full table, and the sim-batch entry's neural readings describe
-the shipped game, not a superseded baseline); training slots are
+and a second era resumed from and anchored to that refused winner
+(bay-action seeding surgery, tournament-picked again) was refused
+on the same gates within noise (44/48 decisiveness, factorial
+25.3%) — so the bridge REMAINS the shipped artifact and the weld
+verbs stay unreachable in shipped play; the campaign notebook
+entry carries both rounds' full tables, and the sim-batch entry's
+neural readings describe the shipped game, not a superseded
+baseline); training slots are
 role-indexed where the factions
 differ, so one action space serves both rosters. Since v4 every
 positional feature rides as relative 0-1000 against the actual map
@@ -467,7 +471,11 @@ decides); the canaries called that verdict from the first in-loop
 probe (composition p10 never near the shipped floor, the prime eval
 pinned seat-sided), so read them as a forecast, not a formality,
 and prefer a decisive parent's bridged lineage over a fresh prior
-even when the physics gap argues for starting over.
+even when the physics gap argues for starting over. The endgame's
+second round added the corollary: one more era DESCENDED from the
+refused winner came back within noise on every gated axis —
+descending from an indecisive lineage is not the bridged-lineage
+lever, which the 0.13 campaign left unspent.
 Team training runs two flavors — self-team (`team`: the learner holds
 both chairs) and mixed-ally (`team2`: a scripted Brain drives the
 teammate) — and per-seat episode truncation pads a dead learner's
@@ -1234,10 +1242,10 @@ comparisons don't survive GPU churn, so CI never runs it.
   (Long Haul's old 24/24 at median 4,859 was seat1 winning every
   game — its decisiveness WAS the imbalance); the frozen policy's
   passivity stall surfaces there still: the 0.13 weld campaign
-  trained under these prices and its candidate stalled WORSE
-  (23.8% factorial censoring vs the frozen artifact's 2.3%), so the
-  stall stays with the frozen artifact until a future campaign
-  clears the gate battery.
+  trained under these prices and both its candidates stalled WORSE
+  (23.8% factorial censoring in round 1, 11.7% in round 2, vs the
+  frozen artifact's 2.3%), so the stall stays with the frozen
+  artifact until a future campaign clears the gate battery.
 - **The learned policy is a middling teammate beside a scripted ally**
   (25-31% on the mixed-ally 2v2 bracket vs scripted pairs, up 5x from
   pre-team-training). Shipped 2v2 seats are all-neural, which is the
@@ -1271,11 +1279,30 @@ comparisons don't survive GPU churn, so CI never runs it.
   off-seat game is lost at skill 1000 across the whole cadence grid
   {8..20} — and its decisiveness collapsed (31/48 on the sweep gate
   vs the frozen artifact's 48/48 at median 6,375, both re-verified
-  at HEAD). So the loans stay on loan to a future campaign: Expert's
-  outright sweep bar, and the fog-honest duel per-seat floor —
+  at HEAD). Round 2 descended from that refused winner (the era-2
+  pool, bay-action seeding surgery, tournament-picked again) and
+  was refused on the same gates: cup 1050/1200 with the Prime seat
+  wall intact across all 150 seeds, decisiveness 44/48 (stalls
+  bought back, not cured), Expert's ceiling 210/240 across the
+  cadence grid with the seat-sided deterministic loss MIGRATING
+  between rungs instead of curing (c12 sweeps Prime and halves
+  Standard and Veteran; c14 loses Prime outright), and the
+  factorial mixed-roster marginal at 25.3% vs the 48.5% reference —
+  the faction-conditional play fully re-opened. Era 2 did localize
+  the Prime wall: ckpt-02800 broke it (51/60) but paid the rusher
+  canary one-for-one, and the consolidation that restored the
+  rusher ground the gain back out — treat "prime off-seat" and
+  "rusher softness" as one trait with two readings until a run
+  separates them. So the loans stay on loan, and the next-era
+  handoff is written in the notebook: nothing descended from the
+  from-scratch prior re-derived the incumbent's cross-era
+  decisiveness, so the next campaign starts from the FROZEN
+  artifact's float lineage bridged forward. The bars themselves:
+  Expert's outright sweep, and the fog-honest duel per-seat floor —
   weights-independent, whipsawing with every physics change
-  ([6,15] → [11,15] → [17,4] → [13,9] at 0.13: combined 22/40
-  still a majority, but a per-seat floor restores only at 9).
+  ([6,15] → [11,15] → [17,4] → [13,9] at 0.13, re-derived
+  byte-identical in round 2: combined 22/40 still a majority, but
+  a per-seat floor restores only at 9).
 
 ## Gotchas learned the hard way
 
