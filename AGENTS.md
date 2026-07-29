@@ -360,14 +360,18 @@ deepest-wound own ground machine with a free harvester inside a
 Repair Bay takes a build slot beside the other emplacements, and
 damaged_unit_value joins the features because my_strength conflates
 count with wounds and a potential term must price what welding
-recovers; the shipped artifact is the widen bridge of the 0.11
-weights — zero columns, unreachable floors — so every fixture held
-unblessed, and it STAYED the shipped artifact: the 0.13 weld
-campaign's two candidates were both refused by the gate battery
-(the weld-campaign notebook entry carries the full tables; the
-Known Issues loan entry carries the numbers that matter going
-forward)); training slots are role-indexed where the factions
-differ, so one action space serves both rosters. Since v4 every
+recovers. The first 0.13 artifact was the widen bridge of the 0.11
+weights — zero columns and unreachable new-action floors — so every
+fixture initially held unblessed. The from-scratch weld campaign's
+two candidates were refused by the gate battery; the later
+incumbent-continuation campaign recovered the exact Q12 actor,
+trained from that decisive lineage, then adapted the dense winner to
+the final healed-veteran lifecycle and promoted update 1450
+(`fe2b97bdb7058372`). It reaches both repair verbs in every controlled
+faction/seat case, lowers the measured Scuttler body-time share, and
+preserves the incumbent's native cup outcome. Training slots are
+role-indexed where the factions differ, so one action space serves
+both rosters. Since v4 every
 positional feature rides as relative 0-1000 against the actual map
 dimensions (fixed scales broke on the large map classes), map dims
 ride along (march timing is an absolute-distance skill), and two
@@ -479,7 +483,25 @@ even when the physics gap argues for starting over. The endgame's
 second round added the corollary: one more era DESCENDED from the
 refused winner came back within noise on every gated axis —
 descending from an indecisive lineage is not the bridged-lineage
-lever, which the 0.13 campaign left unspent.
+lever. The incumbent-continuation campaign finally spent that lever:
+recover the shipped Q12 actor exactly, give the float bridge reachable
+new-action floors, warm only the reconstructed critic, then use a
+short fixed-anchor consolidation with all faction/seat pairings. Pay
+seed bonuses on successful effects, never sampled intent; save densely
+around the first whole-gate boundary; and keep the unmodified
+checkpoint when output-row or bias surgery merely moves failures
+between gates. When a final executive correction changes what a
+successful verb accomplishes, run one more short anchored continuation
+under that exact lifecycle: the first repaired parent lost a Veteran
+cup cell after healed units became draftable, while twelve conservative
+updates restored it, closed repair reach to 8/8 cases, and improved FFA
+and team play. The tier-heavier sibling was more diverse and twice as
+strong against Prime, but its mixed-roster Ferrous marginal fell to
+41.8% and it lost the paired FFA comparison; whole-game factors outrank
+an isolated strength axis. The stall audit added one more rule: a cap
+is not a dead economy. Inspect live Harvesters, remaining map scrap,
+production, combat, and last movement before prescribing baseline
+income.
 Team training runs two flavors — self-team (`team`: the learner holds
 both chairs) and mixed-ally (`team2`: a scripted Brain drives the
 teammate) — and per-seat episode truncation pads a dead learner's
@@ -992,11 +1014,12 @@ comparisons don't survive GPU churn, so CI never runs it.
   must feed — fire wins ties, the volley's dead forfeit, the
   ceiling-rejected welder is refunded. Air patients refuse in v1;
   shell surface is right-click a damaged own unit or the armed `W`
-  verb. The v6 gym action exists, but the SHIPPED artifact is the
-  widen bridge with the weld actions floored unreachable, so in
-  shipped play the verb is human-only and fixtures never move — and
-  the executive's rotate-to-the-rear doctrine still assumes nothing
-  bot-reachable heals (the constraint is written on `PULLBACK_NUM`).
+  verb. The v6 gym action keeps another free Harvester for the economy
+  and admits a patient only when the bank covers that unit kind's exact
+  first paid weld step (derived from the same debit function the sim
+  executes). The promoted policy reaches field welding; a rear-line
+  veteran becomes draftable again only at full health, avoiding
+  pullback/re-draft oscillation.
 - **The Repair Bay is an aura, not a crew** (0.13):
   `BuildingKind::RepairBay` (2x2, 200 scrap, unarmed — appended last,
   postcard discipline) welds own wounded units, ground AND air (the
@@ -1010,9 +1033,8 @@ comparisons don't survive GPU churn, so CI never runs it.
   counter, nothing new in the hash); a bank that can't cover a
   patient's coin skips it and keeps scanning, so partial scrap heals
   the earliest ids deterministically and a broke owner heals nothing.
-  The v6 build slot exists, but the shipped bridge floors it
-  unreachable — the shipped bot never builds one, which is what
-  keeps the fixtures inert (the Salvage precedent).
+  The promoted v6 policy reaches the build slot in the capability
+  probe, though Bays remain rare in ordinary matches.
   The matchup arena seats carry a bank now (only billed sustain can
   spend it), so `--b-structures repairbay:n` measures the aura; at
   the shipped dials a bay roughly pays for itself sustaining an
@@ -1248,72 +1270,41 @@ comparisons don't survive GPU churn, so CI never runs it.
   seat-swapped skirmish sweep flipped its lean from 34-6 Cupric to
   35-1 Ferrous under the new prices — the near-deterministic mirror
   residual whipsawing as it does under any sim change, broken by any
-  human in the match, re-measured per artifact. And two maps paid for
-  par: Long Haul and Oxide Flats read 19/24 decided at a 60k cap
-  (Long Haul's old 24/24 at median 4,859 was seat1 winning every
-  game — its decisiveness WAS the imbalance); the frozen policy's
-  passivity stall surfaces there still: the 0.13 weld campaign
-  trained under these prices and both its candidates stalled WORSE
-  (23.8% factorial censoring in round 1, 11.7% in round 2, vs the
-  frozen artifact's 2.3%), so the stall stays with the frozen
-  artifact until a future campaign clears the gate battery.
-- **The learned policy is a middling teammate beside a scripted ally**
-  (25-31% on the mixed-ally 2v2 bracket vs scripted pairs, up 5x from
-  pre-team-training). Shipped 2v2 seats are all-neural, which is the
-  configuration it trained; deeper mixed-ally training is the known
-  lever and costs duel sharpness — revisit when 2v2 becomes a
-  headline mode.
+  human in the match, re-measured per artifact. Two maps initially
+  paid for par: Long Haul and Oxide Flats read 19/24 decided at a 60k
+  cap (Long Haul's old 24/24 at median 4,859 was seat1 winning every
+  game — its decisiveness WAS the imbalance). The first two 0.13 weld
+  candidates stalled worse and were refused. The promoted
+  incumbent-continuation artifact closes that regression: its
+  3,072-match factorial has zero censored games, and the 16-map pace
+  slate decides 384/384 at 60k with all Long Haul and Oxide Flats
+  games resolved. Its mixed-roster Ferrous marginal is 45.3%
+  [42.8, 47.8], close to the frozen bridge's 48.5% rather than the
+  refused candidates' reopened faction failure.
+- **The learned policy is still a middling teammate beside a scripted
+  ally**, though the promoted continuation improves every tier on the
+  2v2 slate (48/96 versus the frozen bridge's 33/96). Shipped 2v2
+  seats are all-neural, which is the configuration it trained; deeper
+  mixed-ally training remains a known lever and has historically cost
+  duel sharpness — revisit when 2v2 becomes a headline mode.
 - **Expert's outright yardstick sweep is on loan to the movement era.**
-  The 0.12 overhaul (pursuit tether + collision slide) re-rolled every
-  bot-vs-bot match: un-ground movement helps massed scripted pushes
-  most and the shipped policy trained under the old physics, so Expert
-  reads 60/80 on the widened slate instead of sweeping. The ladder
-  still orders — strictly by pace of victory, Expert holding the top
-  win count outright, which is exactly what `neural_ladder.rs` now
-  asserts — and decisiveness carried over intact (`driver sweep`
-  skirmish Medium: 48/48 decided before and after, medians within 2%;
-  the 8-40 Cupric seat lean predates the overhaul). The 0.13 economy
-  pair (slow wreck decay + the radius-2 retarget) re-rolled the slate
-  again: idle harvesters wait a think, so the cadence dial became the
-  economy's re-tasking latency — Medium/Hard inverted at the old
-  dials and Hard re-metered to cadence 20 (measured, see the 0.13
-  sim-batch experiments note). After the re-meter the gate read
-  Expert 70/80 with win counts strictly monotone (48 < 53 < 63 < 70);
-  the roster rebalance re-rolled it once more to 38 < 55 < 56 < 70 —
-  still strictly monotone, Expert still 70/80 and top outright, zero
-  unresolved — and sweep still 48/48 decided at median 6,375 with the
-  seat lean softened to 16-32 (the pre-rebalance 9-39 was the roster
-  skew wearing a seat costume). The 0.13 weld campaign tried to take
-  the bars back and its candidate did not ship (three gates failed;
-  the weld-campaign notebook entry carries the table): the
-  from-scratch candidate's ceiling was the same 70/80 — the Prime
-  off-seat game is lost at skill 1000 across the whole cadence grid
-  {8..20} — and its decisiveness collapsed (31/48 on the sweep gate
-  vs the frozen artifact's 48/48 at median 6,375, both re-verified
-  at HEAD). Round 2 descended from that refused winner (the era-2
-  pool, bay-action seeding surgery, tournament-picked again) and
-  was refused on the same gates: cup 1050/1200 with the Prime seat
-  wall intact across all 150 seeds, decisiveness 44/48 (stalls
-  bought back, not cured), Expert's ceiling 210/240 across the
-  cadence grid with the seat-sided deterministic loss MIGRATING
-  between rungs instead of curing (c12 sweeps Prime and halves
-  Standard and Veteran; c14 loses Prime outright), and the
-  factorial mixed-roster marginal at 25.3% vs the 48.5% reference —
-  the faction-conditional play fully re-opened. Era 2 did localize
-  the Prime wall: ckpt-02800 broke it (51/60) but paid the rusher
-  canary one-for-one, and the consolidation that restored the
-  rusher ground the gain back out — treat "prime off-seat" and
-  "rusher softness" as one trait with two readings until a run
-  separates them. So the loans stay on loan, and the next-era
-  handoff is written in the notebook: nothing descended from the
-  from-scratch prior re-derived the incumbent's cross-era
-  decisiveness, so the next campaign starts from the FROZEN
-  artifact's float lineage bridged forward. The bars themselves:
-  Expert's outright sweep, and the fog-honest duel per-seat floor —
-  weights-independent, whipsawing with every physics change
-  ([6,15] → [11,15] → [17,4] → [13,9] at 0.13, re-derived
-  byte-identical in round 2: combined 22/40 still a majority, but
-  a per-seat floor restores only at 9).
+  The 0.12 movement overhaul first moved Expert from a sweep to 60/80;
+  subsequent 0.13 economy and roster changes re-rolled every rung
+  again. The ladder therefore asserts strict ordering and an outright
+  Expert lead, not historical bars that no longer describe the same
+  physics. The first 0.13 weld lineages did not ship: the from-scratch
+  candidate decided only 31/48 skirmish games, its descendant recovered
+  only to 44/48, and faction parity reopened. The
+  incumbent-continuation artifact finally preserves decisiveness and
+  the exact 150-seed native cup matrix, but embedding it made Hard at
+  cadence 16 read below Medium. Re-measuring the dial set Hard to
+  cadence 17; the current yardstick is 38 < 55 < 60 < 70 with zero
+  unresolved, and the Medium pace cell is 24/24 at median 5,628. Expert
+  still cannot break the Prime off-seat wall: across all four faction
+  pairs the first three tiers are 3,600/3,600, while Prime is
+  300/1,200 with only Ferrous-west winning. Treat that wall and rusher
+  softness as one trait until a run separates them; output surgery
+  around the promoted checkpoint only moved failures between gates.
 
 ## Gotchas learned the hard way
 
