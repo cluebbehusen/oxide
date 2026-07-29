@@ -16,7 +16,7 @@ import os
 
 import pytest
 
-from oxide_gym import ACTIONS, FEATURES, Worker
+from oxide_gym import ACTIONS, FEATURES, Worker, normalize_factions
 
 pytestmark = pytest.mark.skipif(
     "OXIDE_DRIVER_BIN" not in os.environ,
@@ -40,5 +40,34 @@ def test_the_handshake_and_one_masked_step() -> None:
         after = worker.step({seat: legal})
         assert after.tick > frame.tick
         assert after.done or seat in after.seats
+    finally:
+        worker.close()
+
+
+def test_reset_retints_every_faction_pair_and_conditions_follow_rust() -> None:
+    worker = Worker(os.environ["OXIDE_DRIVER_BIN"])
+    try:
+        for i, code in enumerate(("ff", "fc", "cf", "cc")):
+            expected = normalize_factions(code)
+            frame = worker.reset(
+                seed=100 + i,
+                control=(0, 1),
+                max_ticks=200,
+                factions=code,
+                # Deliberately lie in both directions. The wrapper must
+                # replace this final knob from Rust's observation.
+                conditions={
+                    0: (1000, 500, 1000),
+                    1: (1000, 500, 0),
+                },
+            )
+            assert frame.factions == expected
+            for seat, faction in enumerate(expected):
+                view = frame.seats[seat]
+                knob = 1000 if faction == "cupric" else 0
+                assert view.faction == faction
+                assert view.faction_knob == knob
+                assert worker.conditions[seat][-1] == knob
+                assert view.obs[-1] == knob / 1000
     finally:
         worker.close()

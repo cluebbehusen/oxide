@@ -13,8 +13,14 @@ import contextlib
 import json
 import subprocess
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+type FactionName = Literal["ferrous", "cupric"]
 
 FEATURES = 65
 ACTIONS = 24
@@ -116,10 +122,85 @@ FEATURE_NAMES = list(SCALE_BY_NAME.keys())
 SCALES = np.array([SCALE_BY_NAME[n] for n in FEATURE_NAMES], dtype=np.float32)
 if SCALES.shape != (FEATURES,):
     raise RuntimeError("SCALES must cover every gym feature")
+FACTION_FEATURE = FEATURE_NAMES.index("faction")
+
+FACTION_CODES: dict[str, FactionName] = {
+    "f": "ferrous",
+    "c": "cupric",
+}
+
+
+def _faction_name(value: str) -> FactionName:
+    match value.lower():
+        case "ferrous":
+            return "ferrous"
+        case "cupric":
+            return "cupric"
+        case _:
+            raise ValueError(f"unknown faction {value!r}; expected ferrous or cupric")
+
+
+def normalize_factions(factions: str | Sequence[FactionName]) -> list[FactionName]:
+    """Expands a compact seat-order code (``ff``, ``fc``, ``cf``,
+    ``cc``) or validates a full-name sequence."""
+    if isinstance(factions, str):
+        if not factions:
+            raise ValueError("factions must name at least one seat")
+        normalized: list[FactionName] = []
+        for code in factions.lower():
+            try:
+                normalized.append(FACTION_CODES[code])
+            except KeyError as err:
+                raise ValueError(
+                    f"unknown faction code {code!r}; expected only f or c"
+                ) from err
+        return normalized
+    if not factions:
+        raise ValueError("factions must name at least one seat")
+    return [_faction_name(faction) for faction in factions]
+
+
+def validate_reported_factions(
+    reported: Sequence[FactionName] | None,
+    requested: list[FactionName] | None,
+) -> list[FactionName] | None:
+    """Checks the optional reset extension instead of trusting that an
+    older same-version driver understood an unknown request field."""
+    actual = normalize_factions(reported) if reported is not None else None
+    if requested is not None and actual != requested:
+        raise RuntimeError(
+            f"gym reset faction mismatch: requested {requested}, Rust reported {actual}"
+        )
+    return actual
 
 
 def normalize(features: list[int]) -> np.ndarray:
     return np.asarray(features, dtype=np.float32) / SCALES
+
+
+def faction_name_from_features(features: list[int]) -> FactionName:
+    """Reads the seat's actual Rust-side faction observation."""
+    faction = features[FACTION_FEATURE]
+    if faction == 0:
+        return "ferrous"
+    if faction == 1:
+        return "cupric"
+    raise ValueError(f"Rust faction feature must be 0 or 1, got {faction}")
+
+
+def faction_knob_from_features(features: list[int]) -> int:
+    """Returns the network's 0/1000 faction condition from Rust facts."""
+    return 1000 if faction_name_from_features(features) == "cupric" else 0
+
+
+def honest_condition(
+    condition: tuple[int, ...], features: list[int]
+) -> tuple[int, ...]:
+    """Keeps skill/style knobs and replaces any caller-supplied faction
+    with the faction Rust observed after scenario retinting."""
+    if len(condition) != CONDITION_DIMS:
+        raise ValueError(f"expected {CONDITION_DIMS} knobs, got {condition}")
+    return (*condition[:-1], faction_knob_from_features(features))
 
 
 def with_condition(obs: np.ndarray, condition: tuple[int, ...]) -> np.ndarray:
@@ -138,6 +219,16 @@ class SeatView:
     mask: np.ndarray
     raw: list[int]
 
+    @property
+    def faction(self) -> FactionName:
+        """The actual roster reported by the Rust observation."""
+        return faction_name_from_features(self.raw)
+
+    @property
+    def faction_knob(self) -> int:
+        """The same roster in the network condition's 0/1000 scale."""
+        return faction_knob_from_features(self.raw)
+
 
 @dataclass
 class Frame:
@@ -147,6 +238,7 @@ class Frame:
     winners: list[int] | None = None  # seats on the winning team
     alive: list[int] | None = None  # controlled seats still standing
     seats: dict[int, SeatView] = field(default_factory=dict)
+    factions: list[FactionName] | None = None  # every scenario seat, in order
 
     def reward(self, seat: int) -> float:
         """Terminal reward for `seat` (call when done). A team win pays
@@ -166,6 +258,8 @@ class Worker:
 
     def __init__(self, driver_bin: str) -> None:
         self.conditions: dict[int, tuple[int, ...]] = {}
+        self.factions: list[FactionName] | None = None
+        self.requested_factions: list[FactionName] | None = None
         self.proc = subprocess.Popen(
             [driver_bin, "gym"],
             stdin=subprocess.PIPE,
@@ -190,6 +284,7 @@ class Worker:
                 "feature-name mismatch between Rust and Python — "
                 f"rust: {hello.get('names')} vs python: {FEATURE_NAMES}"
             )
+        self._supports_reset_factions = hello.get("reset_factions") is True
 
     def _rpc(self, request: dict) -> Frame:
         self.send(request)
@@ -209,43 +304,61 @@ class Worker:
         reply = json.loads(self._stdout.readline())
         if "error" in reply:
             raise RuntimeError(reply["error"])
+        self.factions = validate_reported_factions(
+            reply.get("factions"),
+            self.requested_factions,
+        )
         if reply["done"]:
             frame = Frame(
-                True,
-                reply["tick"],
-                reply["winner"],
-                reply.get("winners"),
-                reply.get("alive"),
+                done=True,
+                tick=reply["tick"],
+                winner=reply["winner"],
+                winners=reply.get("winners"),
+                alive=reply.get("alive"),
+                factions=self.factions,
             )
             # v5: terminal frames carry observations for living
             # controlled seats — evidence for terminal shaping (the
             # tech bonus pays the LAST view's fab_built, and the
             # potential difference closes on the true final position).
             for s in reply.get("seats", []):
-                seat = s["seat"]
-                obs = normalize(s["features"])
-                cond = self.conditions.get(seat)
-                if cond is not None:
-                    obs = with_condition(obs, cond)
-                frame.seats[seat] = SeatView(
-                    obs,
-                    np.asarray(s["mask"], dtype=bool),
-                    s["features"],
-                )
+                seat, view = self._seat_view(s)
+                frame.seats[seat] = view
             return frame
-        frame = Frame(False, reply["tick"])
+        frame = Frame(False, reply["tick"], factions=self.factions)
         for s in reply["seats"]:
-            seat = s["seat"]
-            obs = normalize(s["features"])
-            cond = self.conditions.get(seat)
-            if cond is not None:
-                obs = with_condition(obs, cond)
-            frame.seats[seat] = SeatView(
-                obs,
-                np.asarray(s["mask"], dtype=bool),
-                s["features"],
-            )
+            seat, view = self._seat_view(s)
+            frame.seats[seat] = view
         return frame
+
+    def _seat_view(self, reply: dict) -> tuple[int, SeatView]:
+        """Builds one seat row and makes its condition faction honest."""
+        seat = reply["seat"]
+        raw = reply["features"]
+        obs = normalize(raw)
+        condition = self.conditions.get(seat)
+        if condition is not None:
+            condition = honest_condition(condition, raw)
+            self.conditions[seat] = condition
+            obs = with_condition(obs, condition)
+        view = SeatView(
+            obs,
+            np.asarray(reply["mask"], dtype=bool),
+            raw,
+        )
+        if self.factions is not None:
+            try:
+                reported = self.factions[seat]
+            except IndexError as err:
+                raise RuntimeError(
+                    f"Rust faction list has no entry for controlled seat {seat}"
+                ) from err
+            if view.faction != reported:
+                raise RuntimeError(
+                    "gym faction observation mismatch: "
+                    f"seat {seat} list says {reported}, feature says {view.faction}"
+                )
+        return seat, view
 
     def reset(
         self,
@@ -256,10 +369,17 @@ class Worker:
         cadence: int = CADENCE,
         scenario: str | None = None,
         conditions: dict[int, tuple[int, ...]] | None = None,
+        factions: str | Sequence[FactionName] | None = None,
     ) -> Frame:
+        """Starts an episode. ``factions`` optionally names every
+        scenario seat in order, either as a compact code such as ``fc``
+        or as full names. The returned Rust observation is authoritative
+        for the condition's faction knob."""
         self.control = control
-        self.conditions = conditions or {}
-        req = {
+        self.conditions = dict(conditions or {})
+        self.factions = None
+        self.requested_factions = None
+        req: dict[str, object] = {
             "cmd": "reset",
             "seed": seed,
             "control": list(control),
@@ -269,6 +389,13 @@ class Worker:
         }
         if scenario:
             req["scenario"] = scenario
+        if factions is not None:
+            if not self._supports_reset_factions:
+                raise RuntimeError(
+                    "gym driver does not advertise reset-time faction support"
+                )
+            self.requested_factions = normalize_factions(factions)
+            req["factions"] = self.requested_factions
         return self._rpc(req)
 
     def step(self, actions: dict[int, int]) -> Frame:

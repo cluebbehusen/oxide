@@ -13,7 +13,7 @@
 use anyhow::{Context, Result, bail};
 use oxide_sim::bot::{ACTION_COUNT, Action, Brain, Difficulty, FEATURE_COUNT, GYM_VERSION, GymBot};
 use oxide_sim::state::GameResult;
-use oxide_sim::{PlayerId, State};
+use oxide_sim::{Faction, PlayerId, State};
 use serde::Deserialize;
 use std::io::{BufRead, Write};
 
@@ -32,6 +32,10 @@ enum Request {
         max_ticks: u64,
         #[serde(default)]
         scenario: Option<String>,
+        /// Optional roster for every scenario seat, in seat order.
+        /// Omitted resets preserve the scenario's authored factions.
+        #[serde(default)]
+        factions: Option<Vec<Faction>>,
         /// Decision stride in ticks (default 8).
         #[serde(default = "default_cadence")]
         cadence: u64,
@@ -73,6 +77,7 @@ impl Episode {
         tier: Difficulty,
         max_ticks: u64,
         scenario: Option<&str>,
+        factions: Option<&[Faction]>,
         cadence: u64,
     ) -> Result<Self> {
         let mut scenario = crate::runner::load_scenario(scenario.unwrap_or("skirmish"))?;
@@ -86,6 +91,17 @@ impl Episode {
         seen.dedup();
         if seen.len() != control.len() || control.iter().any(|s| *s >= players) {
             bail!("controlled seats must be distinct and < {players}");
+        }
+        if let Some(factions) = factions {
+            if factions.len() != usize::from(players) {
+                bail!(
+                    "factions must name exactly {players} seats, got {}",
+                    factions.len()
+                );
+            }
+            for (seat, &faction) in factions.iter().enumerate() {
+                scenario.retint_seat(seat, faction);
+            }
         }
         let state = scenario.build().context("scenario build")?;
         let gyms: Vec<GymBot> = control
@@ -182,6 +198,7 @@ impl Episode {
             .filter(|p| self.seat_alive(*p))
             .map(|p| p.0)
             .collect();
+        let factions: Vec<Faction> = self.state.players().iter().map(|p| p.faction).collect();
         if self.live() {
             let state = &self.state;
             let live_seats: Vec<PlayerId> = self
@@ -213,6 +230,7 @@ impl Episode {
                 "tick": self.state.current_tick(),
                 "seats": seats,
                 "alive": alive,
+                "factions": factions,
             })
         } else {
             // `winner` is the surviving *team*; in a 1v1 (where every
@@ -260,6 +278,7 @@ impl Episode {
                 "winners": winners,
                 "alive": alive,
                 "seats": seats,
+                "factions": factions,
             })
         }
     }
@@ -279,6 +298,7 @@ pub fn serve() -> Result<()> {
             "names": oxide_sim::bot::FEATURE_NAMES.to_vec(),
             "features": FEATURE_COUNT,
             "actions": ACTION_COUNT,
+            "reset_factions": true,
         })
     )?;
     out.flush()?;
@@ -296,6 +316,7 @@ pub fn serve() -> Result<()> {
                 tier,
                 max_ticks,
                 scenario,
+                factions,
                 cadence,
             }) => match Episode::new(
                 seed,
@@ -303,6 +324,7 @@ pub fn serve() -> Result<()> {
                 tier,
                 max_ticks,
                 scenario.as_deref(),
+                factions.as_deref(),
                 cadence,
             ) {
                 Ok(mut e) => {
@@ -432,4 +454,100 @@ pub fn neural_cup(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn episode(factions: Option<&[Faction]>) -> Episode {
+        Episode::new(17, &[0, 1], Difficulty::Veteran, 100, None, factions, 8)
+            .expect("skirmish episode")
+    }
+
+    #[test]
+    fn reset_factions_are_optional_in_the_wire_contract() {
+        let old = serde_json::from_str::<Request>(
+            r#"{"cmd":"reset","seed":1,"control":[0,1],"max_ticks":100}"#,
+        )
+        .expect("old reset request");
+        match old {
+            Request::Reset { factions, .. } => assert!(factions.is_none()),
+            _ => panic!("parsed the wrong request"),
+        }
+
+        let new = serde_json::from_str::<Request>(
+            r#"{"cmd":"reset","seed":1,"control":[0,1],"factions":["cupric","ferrous"]}"#,
+        )
+        .expect("retinted reset request");
+        match new {
+            Request::Reset { factions, .. } => {
+                assert_eq!(factions, Some(vec![Faction::Cupric, Faction::Ferrous]))
+            }
+            _ => panic!("parsed the wrong request"),
+        }
+    }
+
+    #[test]
+    fn every_two_seat_faction_pair_reaches_state_and_observation() {
+        let faction_feature = oxide_sim::bot::FEATURE_NAMES
+            .iter()
+            .position(|name| *name == "faction")
+            .expect("gym contract carries faction");
+        for factions in [
+            [Faction::Ferrous, Faction::Ferrous],
+            [Faction::Ferrous, Faction::Cupric],
+            [Faction::Cupric, Faction::Ferrous],
+            [Faction::Cupric, Faction::Cupric],
+        ] {
+            let mut episode = episode(Some(&factions));
+            assert_eq!(episode.state.player(PlayerId(0)).faction, factions[0]);
+            assert_eq!(episode.state.player(PlayerId(1)).faction, factions[1]);
+
+            let reply = episode.reply();
+            assert_eq!(
+                reply["factions"],
+                serde_json::json!([factions[0], factions[1]])
+            );
+            let seats = reply["seats"].as_array().expect("seat observations");
+            for (seat, faction) in factions.into_iter().enumerate() {
+                let view = seats
+                    .iter()
+                    .find(|view| view["seat"] == seat as u8)
+                    .expect("controlled seat");
+                assert_eq!(
+                    view["features"][faction_feature],
+                    i64::from(faction == Faction::Cupric),
+                    "seat {seat} observation must report its retinted faction"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn omitted_factions_preserve_the_authored_rosters() {
+        let episode = episode(None);
+        assert_eq!(episode.state.player(PlayerId(0)).faction, Faction::Ferrous);
+        assert_eq!(episode.state.player(PlayerId(1)).faction, Faction::Cupric);
+    }
+
+    #[test]
+    fn a_partial_faction_list_is_rejected_instead_of_misapplied() {
+        let err = Episode::new(
+            17,
+            &[0],
+            Difficulty::Veteran,
+            100,
+            None,
+            Some(&[Faction::Cupric]),
+            8,
+        )
+        .err()
+        .expect("one faction cannot describe a two-seat scenario");
+        assert!(
+            err.to_string()
+                .contains("factions must name exactly 2 seats, got 1"),
+            "{err:#}"
+        );
+    }
 }
