@@ -1,8 +1,8 @@
 //! The balance probe: bot-vs-bot matches across the shipped maps,
-//! reporting cost-weighted army composition and its entropy — the
-//! measuring stick the 0.10 balance review reads. Spam shows up as a
-//! fat share and a thin entropy; an absent kind raises the weaker
-//! question (it may just be hard to learn).
+//! reporting cost-weighted and body-time-weighted army composition.
+//! Value share is the balance lens; body-time share catches a cheap
+//! unit dominating army presence while expensive specialists make the
+//! value mix look varied.
 //!
 //! The report is cohorted because a pooled mean answers questions
 //! nobody asked: the mean mix of two seats each spamming a different
@@ -174,6 +174,30 @@ pub fn balance_probe(
             spread.mean, spread.p10, spread.p25, spread.median
         );
     }
+    println!("\nbody-time mean army share (all seats):");
+    let mut count_rows: Vec<(&String, &f64)> = overall.mean_count_share.iter().collect();
+    count_rows.sort_by(|a, b| b.1.total_cmp(a.1));
+    for (kind, share) in count_rows {
+        println!("  {kind:<12} {:>5.1}%", share * 100.0);
+    }
+    println!(
+        "count mix entropy: {:.2} bits over {} seats",
+        overall.count_entropy_bits, overall.seats
+    );
+    if let (Some(entropy), Some(dominance)) =
+        (&overall.seat_count_entropy, &overall.seat_count_dominance)
+    {
+        println!(
+            "per-seat count entropy: mean {:.2} · p10 {:.2} · median {:.2} bits",
+            entropy.mean, entropy.p10, entropy.median
+        );
+        println!(
+            "largest body-time share per seat: mean {:.1}% · p90 {:.1}% · max {:.1}%",
+            dominance.mean * 100.0,
+            dominance.p90 * 100.0,
+            dominance.max * 100.0
+        );
+    }
 
     // What was finished, not just what was fielded: a roster that never
     // stands a Fabricator never had the advanced kinds to choose from.
@@ -222,7 +246,7 @@ pub fn balance_probe(
         let payload = serde_json::json!({
             // Bumped whenever a consumer (tools/train/fun_gate.py) would
             // need to read this file differently.
-            "schema": 2,
+            "schema": 3,
             "level": format!("{level:?}"),
             "artifact": artifact,
             "digest": format!("{digest:016x}"),
@@ -255,8 +279,8 @@ fn censored(agg: &Aggregate) -> f64 {
 
 fn print_cohort_header() {
     println!(
-        "  {:<20} {:>6} {:>6} {:>7} {:>7} {:>7}  top kind",
-        "cohort", "seats", "cens", "entropy", "p10", "median"
+        "  {:<20} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7} {:>7}  top body",
+        "cohort", "seats", "cens", "val H", "val p10", "body H", "body p10", "body p90"
     );
 }
 
@@ -265,7 +289,7 @@ fn print_cohort_header() {
 /// the thinnest seats scored.
 fn print_cohort_row(name: &str, agg: &Aggregate) {
     let top = agg
-        .mean_share
+        .mean_count_share
         .iter()
         .max_by(|a, b| a.1.total_cmp(b.1))
         .map(|(k, s)| format!("{k} {:.0}%", s * 100.0))
@@ -273,14 +297,18 @@ fn print_cohort_row(name: &str, agg: &Aggregate) {
     // An empty cohort has no entropy; printing 0.00 would read as the
     // one thing this table exists to flag.
     let cell = |v: Option<f64>| v.map_or_else(|| "-".to_string(), |v| format!("{v:.2}"));
-    let spread = agg.seat_entropy.as_ref();
+    let value_spread = agg.seat_entropy.as_ref();
+    let count_spread = agg.seat_count_entropy.as_ref();
+    let dominance = agg.seat_count_dominance.as_ref();
     println!(
-        "  {name:<20} {:>6} {:>5.1}% {:>7} {:>7} {:>7}  {top}",
+        "  {name:<20} {:>6} {:>5.1}% {:>7} {:>7} {:>7} {:>7} {:>7}  {top}",
         agg.seats,
         censored(agg),
-        cell(spread.map(|_| agg.entropy_bits)),
-        cell(spread.map(|s| s.p10)),
-        cell(spread.map(|s| s.median)),
+        cell(value_spread.map(|_| agg.entropy_bits)),
+        cell(value_spread.map(|s| s.p10)),
+        cell(count_spread.map(|_| agg.count_entropy_bits)),
+        cell(count_spread.map(|s| s.p10)),
+        cell(dominance.map(|s| s.p90)),
     );
 }
 
@@ -313,7 +341,7 @@ mod tests {
         let payload: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
         std::fs::remove_file(&out).ok();
-        assert_eq!(payload["schema"], 2);
+        assert_eq!(payload["schema"], 3);
         assert!(payload["overall"]["matches"].as_u64().unwrap() >= 25);
         // Nothing decides in 40 ticks, so the gate's own cohort is
         // empty — which the gate must be able to SEE, not infer.
@@ -322,6 +350,10 @@ mod tests {
         assert!(payload["decided"]["mean_share"].is_object());
         assert!(payload["decided"]["entropy_bits"].is_number());
         assert!(payload["overall"]["seat_entropy"]["p10"].is_number());
+        assert!(payload["decided"]["mean_count_share"].is_object());
+        assert!(payload["decided"]["count_entropy_bits"].is_number());
+        assert!(payload["overall"]["seat_count_entropy"]["p10"].is_number());
+        assert!(payload["overall"]["seat_count_dominance"]["p90"].is_number());
         for cohort in ["faction", "pace", "outcome", "map"] {
             assert!(
                 payload["cohorts"][cohort].is_object(),

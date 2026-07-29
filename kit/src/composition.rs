@@ -1,8 +1,8 @@
 //! Composition telemetry: what a match's armies were actually made of,
-//! cost-weighted — the balance review's measuring stick. The optimizer
-//! is a balance probe: a unit the bot spams implicates that unit's
-//! tuning, a unit it never fields raises a question (though absence is
-//! the weaker signal — some units are merely hard to learn).
+//! both cost-weighted and body-time-weighted. Value share is the balance
+//! review's measuring stick; body-time share catches a cheap unit
+//! dominating army presence while expensive specialists make the value
+//! mix look healthy.
 //!
 //! A record also states the terms it was measured under: how the match
 //! ended, whether the tick cap ended it, and the last sample on which
@@ -39,6 +39,12 @@ pub struct MatchComposition {
     /// seats each spamming a different kind average to a mix that looks
     /// diverse; only the per-seat figures show the spam.
     pub entropy_bits: Vec<f64>,
+    /// Per seat: unit-kind name -> integrated body-count share over the
+    /// sampled match. Every living unit adds one per sample regardless
+    /// of purchase price.
+    pub count_seats: Vec<BTreeMap<String, f64>>,
+    /// Per seat: Shannon entropy (bits) of its body-time mix.
+    pub count_entropy_bits: Vec<f64>,
     /// Per seat: building-kind name -> distinct buildings of that kind
     /// seen standing built at any sample. A rebuild after a loss counts
     /// twice (ids never repeat) and a site razed before it finished
@@ -89,7 +95,8 @@ pub fn sample_driven(
     ensure!(sample_every > 0, "sample stride must be greater than zero");
     let mut state = scenario.build()?;
     let seats = scenario.players.len();
-    let mut acc: Vec<BTreeMap<UnitKind, u64>> = vec![BTreeMap::new(); seats];
+    let mut value_acc: Vec<BTreeMap<UnitKind, u64>> = vec![BTreeMap::new(); seats];
+    let mut count_acc: Vec<BTreeMap<UnitKind, u64>> = vec![BTreeMap::new(); seats];
     let mut standing: Vec<BTreeSet<(BuildingKind, BuildingId)>> = vec![BTreeSet::new(); seats];
     let mut previous: Vec<(u64, usize)> = vec![(0, 0); seats];
     let mut last_progress_tick = 0;
@@ -103,7 +110,8 @@ pub fn sample_driven(
                 let seat = unit.player.0 as usize;
                 if seat < seats {
                     let cost = u64::from(unit.kind.stats().cost);
-                    *acc[seat].entry(unit.kind).or_default() += cost;
+                    *value_acc[seat].entry(unit.kind).or_default() += cost;
+                    *count_acc[seat].entry(unit.kind).or_default() += 1;
                     live[seat].0 += cost;
                 }
             }
@@ -125,26 +133,29 @@ pub fn sample_driven(
             break;
         }
     }
-    let shares: Vec<BTreeMap<String, f64>> = acc
-        .into_iter()
-        .map(|kinds| {
-            let total: u64 = kinds.values().sum();
-            kinds
-                .into_iter()
-                .map(|(kind, value)| {
-                    (
-                        kind.name().to_string(),
-                        if total == 0 {
-                            0.0
-                        } else {
-                            value as f64 / total as f64
-                        },
-                    )
-                })
-                .collect()
-        })
-        .collect();
+    let normalize = |kinds: BTreeMap<UnitKind, u64>| {
+        let total: u64 = kinds.values().sum();
+        kinds
+            .into_iter()
+            .map(|(kind, value)| {
+                (
+                    kind.name().to_string(),
+                    if total == 0 {
+                        0.0
+                    } else {
+                        value as f64 / total as f64
+                    },
+                )
+            })
+            .collect()
+    };
+    let shares: Vec<BTreeMap<String, f64>> = value_acc.into_iter().map(&normalize).collect();
     let entropy_bits = shares.iter().map(|seat| entropy(seat.values())).collect();
+    let count_seats: Vec<BTreeMap<String, f64>> = count_acc.into_iter().map(normalize).collect();
+    let count_entropy_bits = count_seats
+        .iter()
+        .map(|seat| entropy(seat.values()))
+        .collect();
     let buildings = standing
         .into_iter()
         .map(|kinds| {
@@ -165,6 +176,8 @@ pub fn sample_driven(
         seed: scenario.seed,
         seats: shares,
         entropy_bits,
+        count_seats,
+        count_entropy_bits,
         buildings,
         factions: state
             .players()
@@ -198,7 +211,8 @@ fn entropy<'a>(shares: impl Iterator<Item = &'a f64>) -> f64 {
 
 /// Nearest-rank quantile over an already-sorted series.
 fn quantile(sorted: &[f64], num: usize, den: usize) -> f64 {
-    sorted[(sorted.len() * num / den).min(sorted.len() - 1)]
+    let rank = (sorted.len() * num).div_ceil(den);
+    sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
 }
 
 /// How the per-seat entropies are spread. The mean of a cohort's seats
@@ -216,14 +230,21 @@ pub struct EntropySpread {
     pub median: f64,
 }
 
-/// Aggregates seat compositions across matches: mean cost-share per
-/// kind, plus the Shannon entropy of the mean mix (log base 2) — a
-/// one-number spam detector. A roster collapsed onto one kind scores
-/// 0; an even spread over 8 kinds scores 3.
-///
-/// The entropy of the mean is the historical series and stays the
-/// headline; it is also the number that hides a seat, so
-/// [`EntropySpread`] rides beside it.
+/// How dominant each seat's most common body was. The upper tail catches
+/// individual armies that a mean composition can hide.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DominanceSpread {
+    /// Mean of each seat's largest unit-count share.
+    pub mean: f64,
+    /// Ninetieth-percentile largest share.
+    pub p90: f64,
+    /// Largest share observed on any seat.
+    pub max: f64,
+}
+
+/// Aggregates seat compositions across matches under both value and
+/// body-time lenses. A roster collapsed onto one kind scores zero
+/// entropy; an even spread over eight kinds scores three bits.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Aggregate {
     /// Mean cost-share per kind name across every sampled seat.
@@ -233,6 +254,14 @@ pub struct Aggregate {
     /// The per-seat entropy distribution; `None` when no seat in the
     /// cohort ever fielded a unit.
     pub seat_entropy: Option<EntropySpread>,
+    /// Mean body-time share per kind name across every sampled seat.
+    pub mean_count_share: BTreeMap<String, f64>,
+    /// Shannon entropy (bits) of the mean body-time mix.
+    pub count_entropy_bits: f64,
+    /// Per-seat body-time entropy distribution.
+    pub seat_count_entropy: Option<EntropySpread>,
+    /// Distribution of the largest body-time share on each seat.
+    pub seat_count_dominance: Option<DominanceSpread>,
     /// Mean count of finished buildings per seat, by kind.
     pub mean_buildings: BTreeMap<String, f64>,
     /// Share of seats that finished at least one of that kind — the
@@ -260,10 +289,13 @@ pub fn aggregate_where(
     matches: &[MatchComposition],
     keep: impl Fn(&MatchComposition, usize) -> bool,
 ) -> Aggregate {
-    let mut sum: BTreeMap<String, f64> = BTreeMap::new();
+    let mut value_sum: BTreeMap<String, f64> = BTreeMap::new();
+    let mut count_sum: BTreeMap<String, f64> = BTreeMap::new();
     let mut building_sum: BTreeMap<String, u32> = BTreeMap::new();
     let mut building_seats: BTreeMap<String, usize> = BTreeMap::new();
     let mut entropies: Vec<f64> = Vec::new();
+    let mut count_entropies: Vec<f64> = Vec::new();
+    let mut count_dominance: Vec<f64> = Vec::new();
     let mut seats = 0usize;
     let (mut played, mut decided, mut capped) = (0usize, 0usize, 0usize);
     for m in matches {
@@ -275,9 +307,22 @@ pub fn aggregate_where(
             contributed = true;
             seats += 1;
             for (kind, share) in mix {
-                *sum.entry(kind.clone()).or_default() += share;
+                *value_sum.entry(kind.clone()).or_default() += share;
             }
             entropies.push(m.entropy_bits.get(seat).copied().unwrap_or_default());
+            if let Some(count_mix) = m.count_seats.get(seat) {
+                for (kind, share) in count_mix {
+                    *count_sum.entry(kind.clone()).or_default() += share;
+                }
+                count_entropies.push(m.count_entropy_bits.get(seat).copied().unwrap_or_default());
+                count_dominance.push(
+                    count_mix
+                        .values()
+                        .copied()
+                        .max_by(f64::total_cmp)
+                        .unwrap_or_default(),
+                );
+            }
             for (kind, count) in m.buildings.get(seat).into_iter().flatten() {
                 *building_sum.entry(kind.clone()).or_default() += count;
                 *building_seats.entry(kind.clone()).or_default() += 1;
@@ -293,20 +338,42 @@ pub fn aggregate_where(
         }
     }
     let per_seat = |v: f64| if seats == 0 { 0.0 } else { v / seats as f64 };
-    let mean_share: BTreeMap<String, f64> =
-        sum.into_iter().map(|(k, v)| (k, per_seat(v))).collect();
+    let mean_share: BTreeMap<String, f64> = value_sum
+        .into_iter()
+        .map(|(k, v)| (k, per_seat(v)))
+        .collect();
     let entropy_bits = entropy(mean_share.values());
+    let mean_count_share: BTreeMap<String, f64> = count_sum
+        .into_iter()
+        .map(|(k, v)| (k, per_seat(v)))
+        .collect();
+    let count_entropy_bits = entropy(mean_count_share.values());
     entropies.sort_by(f64::total_cmp);
-    let seat_entropy = (!entropies.is_empty()).then(|| EntropySpread {
-        mean: entropies.iter().sum::<f64>() / entropies.len() as f64,
-        p10: quantile(&entropies, 1, 10),
-        p25: quantile(&entropies, 1, 4),
-        median: quantile(&entropies, 1, 2),
+    count_entropies.sort_by(f64::total_cmp);
+    count_dominance.sort_by(f64::total_cmp);
+    let spread = |values: &[f64]| {
+        (!values.is_empty()).then(|| EntropySpread {
+            mean: values.iter().sum::<f64>() / values.len() as f64,
+            p10: quantile(values, 1, 10),
+            p25: quantile(values, 1, 4),
+            median: quantile(values, 1, 2),
+        })
+    };
+    let seat_entropy = spread(&entropies);
+    let seat_count_entropy = spread(&count_entropies);
+    let seat_count_dominance = (!count_dominance.is_empty()).then(|| DominanceSpread {
+        mean: count_dominance.iter().sum::<f64>() / count_dominance.len() as f64,
+        p90: quantile(&count_dominance, 9, 10),
+        max: *count_dominance.last().expect("non-empty by construction"),
     });
     Aggregate {
         mean_share,
         entropy_bits,
         seat_entropy,
+        mean_count_share,
+        count_entropy_bits,
+        seat_count_entropy,
+        seat_count_dominance,
         mean_buildings: building_sum
             .into_iter()
             .map(|(k, v)| (k, per_seat(f64::from(v))))
@@ -369,7 +436,9 @@ mod tests {
     /// Builds a record with everything but the mixes at their neutral
     /// values, so a test states only the fact it is about.
     fn record(seats: Vec<BTreeMap<String, f64>>) -> MatchComposition {
-        let entropy_bits = seats.iter().map(|s| entropy(s.values())).collect();
+        let entropy_bits: Vec<f64> = seats.iter().map(|s| entropy(s.values())).collect();
+        let count_seats = seats.clone();
+        let count_entropy_bits = entropy_bits.clone();
         MatchComposition {
             scenario: "x".into(),
             pace: String::new(),
@@ -378,6 +447,8 @@ mod tests {
             factions: vec!["ferrous".into(), "cupric".into()],
             entropy_bits,
             seats,
+            count_seats,
+            count_entropy_bits,
             ticks: 1,
             result: None,
             capped: true,
@@ -415,6 +486,16 @@ mod tests {
             let total: f64 = seat.values().sum();
             assert!((total - 1.0).abs() < 1e-9, "shares sum to one, got {total}");
         }
+        for seat in &m.count_seats {
+            if seat.is_empty() {
+                continue;
+            }
+            let total: f64 = seat.values().sum();
+            assert!(
+                (total - 1.0).abs() < 1e-9,
+                "count shares sum to one, got {total}"
+            );
+        }
     }
 
     /// The terms of the measurement: an undecided match says so, names
@@ -437,6 +518,7 @@ mod tests {
             assert_eq!(seat.get("foundry"), Some(&1), "each seat holds a Foundry");
         }
         assert_eq!(m.entropy_bits.len(), 2);
+        assert_eq!(m.count_entropy_bits.len(), 2);
     }
 
     #[test]
@@ -478,6 +560,11 @@ mod tests {
         let agg = aggregate(&[record(vec![BTreeMap::new(), BTreeMap::new()])]);
         assert_eq!((agg.seats, agg.matches, agg.capped), (0, 0, 0));
         assert!(agg.seat_entropy.is_none() && agg.mean_share.is_empty());
+        assert!(
+            agg.seat_count_entropy.is_none()
+                && agg.seat_count_dominance.is_none()
+                && agg.mean_count_share.is_empty()
+        );
     }
 
     /// Cohorts are seat-level: one match splits across two faction
@@ -531,9 +618,31 @@ mod tests {
     }
 
     #[test]
+    fn body_count_exposes_cheap_unit_spam_hidden_by_value() {
+        let mut m = record(vec![mix(&[("scuttler", 0.4), ("bombard", 0.6)])]);
+        m.count_seats[0] = mix(&[("scuttler", 0.84), ("bombard", 0.16)]);
+        m.count_entropy_bits[0] = entropy(m.count_seats[0].values());
+        let agg = aggregate(&[m]);
+        assert_eq!(agg.mean_share["scuttler"], 0.4);
+        assert_eq!(agg.mean_count_share["scuttler"], 0.84);
+        assert!(agg.count_entropy_bits < agg.entropy_bits);
+        let dominance = agg
+            .seat_count_dominance
+            .expect("one seat supplies a dominance reading");
+        assert_eq!(
+            (dominance.mean, dominance.p90, dominance.max),
+            (0.84, 0.84, 0.84)
+        );
+    }
+
+    #[test]
     fn quantiles_take_the_nearest_rank() {
         assert_eq!(quantile(&[7.0], 1, 10), 7.0);
-        assert_eq!(quantile(&[1.0, 2.0, 3.0, 4.0], 1, 2), 3.0);
+        assert_eq!(quantile(&[1.0, 2.0, 3.0, 4.0], 1, 2), 2.0);
         assert_eq!(quantile(&[0.0, 1.0, 2.0, 3.0, 4.0], 1, 10), 0.0);
+        assert_eq!(
+            quantile(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], 9, 10),
+            8.0
+        );
     }
 }
