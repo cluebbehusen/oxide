@@ -442,6 +442,56 @@ fn a_patient_is_never_its_own_welder() {
 }
 
 #[test]
+fn repair_unit_prefers_recoverable_value_over_raw_hp_deficit() {
+    use oxide_sim::UnitKind;
+
+    let scenario = weld_arena(vec![
+        spec(0, UnitKind::Harvester, 4, 2), // cheap, deeply wounded patient
+        spec(0, UnitKind::Harvester, 5, 2), // full-health welder
+        spec(0, UnitKind::Lancer, 6, 2),    // pricier, shallower wound
+    ]);
+    let state = scenario.build().unwrap();
+    let (cheap, valuable) = (state.units()[0].id, state.units()[2].id);
+    let cheap_hp = 10;
+    let valuable_hp = 30;
+    let mut json = serde_json::to_value(state).unwrap();
+    json["units"][0]["hp"] = serde_json::json!(cheap_hp);
+    json["units"][2]["hp"] = serde_json::json!(valuable_hp);
+    let state: oxide_sim::State = serde_json::from_value(json).unwrap();
+
+    let cheap_stats = UnitKind::Harvester.stats();
+    let valuable_stats = UnitKind::Lancer.stats();
+    let cheap_deficit = cheap_stats.max_hp - cheap_hp;
+    let valuable_deficit = valuable_stats.max_hp - valuable_hp;
+    assert!(
+        cheap_deficit > valuable_deficit,
+        "test premise: raw hp points favor the cheap patient"
+    );
+    assert!(
+        cheap_stats.cost * cheap_deficit / cheap_stats.max_hp
+            < valuable_stats.cost * valuable_deficit / valuable_stats.max_hp,
+        "test premise: recoverable purchase value favors the Lancer"
+    );
+
+    let mut gym = GymBot::new(PlayerId(0));
+    let commands = gym.step(&state, Action::RepairUnit);
+    assert!(
+        commands.iter().any(|command| matches!(
+            command.command,
+            Command::RepairUnit { target, .. } if target == valuable
+        )),
+        "the smaller, more valuable wound should win: {commands:?}"
+    );
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command.command,
+            Command::RepairUnit { target, .. } if target == cheap
+        )),
+        "raw hp deficit must not choose the cheaper wound"
+    );
+}
+
+#[test]
 fn build_repair_bay_lowers_to_an_accepted_foundation() {
     use oxide_sim::stats::BuildingKind;
     let mut scenario = Scenario::skirmish();
@@ -476,6 +526,86 @@ fn build_repair_bay_lowers_to_an_accepted_foundation() {
             .iter()
             .any(|b| b.kind == BuildingKind::RepairBay && b.player == PlayerId(0)),
         "the site stands"
+    );
+    let bay = state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == BuildingKind::RepairBay && b.player == PlayerId(0))
+        .unwrap()
+        .id;
+
+    let d = gym.decision(&state);
+    assert!(
+        !d.mask[Action::BuildRepairBay as usize],
+        "an in-progress Bay blocks a duplicate"
+    );
+    let mut duplicate_probe = state.clone();
+    duplicate_probe.tick(&gym.step(&state, Action::BuildRepairBay));
+    assert_eq!(
+        duplicate_probe
+            .buildings()
+            .iter()
+            .filter(|b| b.kind == BuildingKind::RepairBay && b.player == PlayerId(0))
+            .count(),
+        1,
+        "direct lowering cannot bypass the in-progress guard"
+    );
+
+    for _ in 0..500 {
+        state.tick(&[]);
+        if state.building(bay).is_some_and(|b| b.built) {
+            break;
+        }
+    }
+    assert!(
+        state.building(bay).is_some_and(|b| b.built),
+        "test premise: the first Bay completes"
+    );
+    let mut completed = GymBot::new(PlayerId(0));
+    assert!(
+        !completed.decision(&state).mask[Action::BuildRepairBay as usize],
+        "a completed Bay blocks a duplicate"
+    );
+    let mut duplicate_probe = state.clone();
+    duplicate_probe.tick(&completed.step(&state, Action::BuildRepairBay));
+    assert_eq!(
+        duplicate_probe
+            .buildings()
+            .iter()
+            .filter(|b| b.kind == BuildingKind::RepairBay && b.player == PlayerId(0))
+            .count(),
+        1,
+        "direct lowering cannot bypass the completed guard"
+    );
+
+    let salvager = state
+        .units()
+        .iter()
+        .find(|u| u.player == PlayerId(0) && u.kind == UnitKind::Harvester)
+        .unwrap()
+        .id;
+    state.tick(&[oxide_sim::PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Salvage {
+            units: vec![salvager],
+            building: bay,
+            queue: false,
+        },
+    }]);
+    for _ in 0..1_000 {
+        state.tick(&[]);
+        if state.building(bay).is_none() {
+            break;
+        }
+    }
+    assert!(
+        state.building(bay).is_none(),
+        "test premise: the original Bay is gone"
+    );
+    let mut rebuild = GymBot::new(PlayerId(0));
+    assert!(
+        rebuild.decision(&state).mask[Action::BuildRepairBay as usize],
+        "once the old Bay is gone, rebuilding becomes legal"
     );
 }
 

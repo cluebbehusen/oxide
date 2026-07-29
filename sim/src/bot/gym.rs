@@ -77,7 +77,7 @@ pub enum Action {
     Scout = 20,
     /// Strip the cheapest-and-least-useful own defense for scrap.
     Salvage = 21,
-    /// Send a harvester to weld the deepest-wound own machine.
+    /// Send a harvester to weld the highest-value own machine wound.
     RepairUnit = 22,
     /// Start a Repair Bay near home.
     BuildRepairBay = 23,
@@ -621,7 +621,8 @@ impl GymBot {
             mask[Action::BuildBastion as usize] = near_home(BuildingKind::Bastion);
             mask[Action::BuildArray as usize] = near_home(BuildingKind::Array);
             mask[Action::BuildReclaimer as usize] = near_home(BuildingKind::Reclaimer);
-            mask[Action::BuildRepairBay as usize] = near_home(BuildingKind::RepairBay);
+            mask[Action::BuildRepairBay as usize] =
+                !repair_bay_committed(&obs) && near_home(BuildingKind::RepairBay);
             // Repair and salvage never share a target: a patient an
             // own crew is stripping is not a patient (the sim evicts
             // the loser anyway; masking keeps the oscillator out of
@@ -811,9 +812,10 @@ impl GymBot {
                     Action::BuildRepairBay => BuildingKind::RepairBay,
                     _ => BuildingKind::Reclaimer,
                 };
-                if let Some(anchor) = free_builder(&obs, &enlisted)
-                    .then(|| self.policy.placement_near(&obs, kind, home))
-                    .flatten()
+                if (kind != BuildingKind::RepairBay || !repair_bay_committed(&obs))
+                    && let Some(anchor) = free_builder(&obs, &enlisted)
+                        .then(|| self.policy.placement_near(&obs, kind, home))
+                        .flatten()
                 {
                     self.policy.note_pending_site(anchor);
                     intents.push(Intent::Build { kind, anchor });
@@ -898,9 +900,9 @@ impl GymBot {
                 }
             }
             Action::RepairUnit => {
-                // Same pick as the mask promised: deepest wound first,
-                // ties toward the map origin then id, leashed to a
-                // welder actually nearby.
+                // Same pick as the mask promised: most recoverable
+                // purchase value first, then the map-origin/id ties,
+                // leashed to a welder actually nearby.
                 if let Some(unit) = unit_patient(&obs, &enlisted) {
                     intents.push(Intent::RepairUnit { unit });
                 }
@@ -1034,10 +1036,10 @@ fn rear_tile(world: &Observation) -> TilePos {
         .unwrap_or(TilePos::new(0, 0))
 }
 
-/// The weld verb's patient: the deepest-wound own ground machine (air
-/// patients refuse in the sim) with a free harvester inside
-/// [`REPAIR_UNIT_RADIUS`], ties toward the map origin then id — the
-/// building repair channel's pick discipline pointed at machines.
+/// The weld verb's patient: the own ground machine with the most
+/// purchase value recoverable from its wound (air patients refuse in
+/// the sim) and a free harvester inside [`REPAIR_UNIT_RADIUS`], ties
+/// toward the map origin then id.
 /// Fog-safe: own-state only. Both the mask and the lowering call this,
 /// so what the policy observed as legal is what the step emits.
 /// Whether a harvester is genuinely free for new labor: not on a site,
@@ -1052,6 +1054,19 @@ fn free_builder(obs: &Observation, enlisted: &[crate::ids::UnitId]) -> bool {
             && u.founding.is_none()
             && !enlisted.contains(&u.id)
     })
+}
+
+/// Whether another Repair Bay would duplicate one already standing,
+/// under construction, or walking out as a deferred claim. Once that
+/// commitment disappears, rebuilding is legal again.
+fn repair_bay_committed(obs: &Observation) -> bool {
+    obs.my_buildings
+        .iter()
+        .any(|b| b.kind == BuildingKind::RepairBay)
+        || obs.my_units.iter().any(|u| {
+            u.founding
+                .is_some_and(|(kind, _)| kind == BuildingKind::RepairBay)
+        })
 }
 
 fn unit_patient(obs: &Observation, enlisted: &[crate::ids::UnitId]) -> Option<crate::ids::UnitId> {
@@ -1071,12 +1086,23 @@ fn unit_patient(obs: &Observation, enlisted: &[crate::ids::UnitId]) -> Option<cr
             let stats = u.kind.stats();
             stats.domain == Domain::Ground && u.hp < stats.max_hp && welder_near(u)
         })
-        .map(|u| {
-            let deficit = u.kind.stats().max_hp - u.hp;
-            (std::cmp::Reverse(deficit), u.tile.y, u.tile.x, u.id)
+        .min_by(|a, b| {
+            let a_stats = a.kind.stats();
+            let b_stats = b.kind.stats();
+            let a_deficit = a_stats.max_hp - a.hp;
+            let b_deficit = b_stats.max_hp - b.hp;
+            // Compare cost*deficit/max exactly by cross multiplication.
+            // Repair pricing's common 850-permille factor cannot change
+            // this order.
+            let a_value_at_b_scale =
+                u64::from(a_stats.cost) * u64::from(a_deficit) * u64::from(b_stats.max_hp);
+            let b_value_at_a_scale =
+                u64::from(b_stats.cost) * u64::from(b_deficit) * u64::from(a_stats.max_hp);
+            b_value_at_a_scale
+                .cmp(&a_value_at_b_scale)
+                .then_with(|| (a.tile.y, a.tile.x, a.id).cmp(&(b.tile.y, b.tile.x, b.id)))
         })
-        .min()
-        .map(|(.., id)| id)
+        .map(|u| u.id)
 }
 
 fn home_tile(obs: &Observation) -> Option<TilePos> {
