@@ -87,7 +87,7 @@ mistakes at lower settings are misjudgments, not lobotomies. On the
 2v2 maps your teammate is that same mind, fighting beside you with
 shared sight.
 
-Eleven machines and seven buildings now. The shared core: **Harvesters**
+Eleven machines and eight buildings now. The shared core: **Harvesters**
 feed the economy, build, salvage battlefield wrecks, and weld wounded
 buildings and ground machines alike; **Sentinels** hold the line (and carry a weak anti-air
 poke); **Scuttlers** eat undefended harvest lines; **Lancers**
@@ -108,13 +108,16 @@ condition; the **Fabricator** unlocks everything advanced including
 the air wing; **Turrets** hold ground; **Flak Turrets** hold sky;
 the **Bastion** is artillery in a fortress shell — full reach needs a
 spotter; the **Array** is radar (true sight in close, unidentified
-blips out to its ring); the **Reclaimer** grinds a slow scrap trickle
-so a long war never fully starves; the **Repair Bay** is a field
+blips out to its ring); the **Reclaimer** grinds an early long-war scrap
+trickle; the **Repair Bay** is a field
 workshop — an unarmed ring that welds your wounded machines, ground
 and air alike, billed per hp from your bank at the same rate a
-harvester's torch charges. If your last Harvester is destroyed, a
-surviving Foundry slowly smelts just enough emergency scrap to train
-one replacement; automatic Repair Bays leave that reserve untouched.
+harvester's torch charges. After a very long war, every surviving
+Foundry also smelts a slow baseline trickle so an exhausted map cannot
+lock the game forever; a Reclaimer starts earlier and works two and a
+half times faster. If your last Harvester is destroyed, the Foundry
+switches to a much faster emergency flow until one replacement is
+affordable; automatic Repair Bays leave that reserve untouched.
 Deaths leave wreck salvage where
 machines fall — winning a fight and holding the ground pays twice,
 and throwing an army away literally funds the enemy. Construction

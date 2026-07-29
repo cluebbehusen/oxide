@@ -25,3 +25,4 @@ native Rust tournament of the quantized artifact
 | 0.13 (2026-07-28) | [the sim batch](2026-07-28-the-0.13-sim-batch.md) | the AFTER side, phase by phase and then the whole slate re-run: the roster at par, Hard's cadence re-meter, the cover-rule flip, the campaign's baseline |
 | 0.13 (2026-07-29) | [the weld campaign](2026-07-29-the-0.13-weld-campaign.md) | gym v6's from-scratch lineage, the canary record, the greedy weld probe — and the gate battery that said no twice: the frozen artifact stays |
 | 0.13 (2026-07-29) | [the incumbent-continuation campaign](2026-07-29-the-0.13-incumbent-continuation.md) | Q12 actor recovery, effect-seeded repair, body-count diversity, stall diagnosis, and the promoted dense winner |
+| 0.13 (2026-07-29) | [the strategy and balance lab](2026-07-29-the-0.13-strategy-and-balance-lab.md) | structure interventions, factorized control, deadlock economics, schema-6 fun gates, and the selectively revived release bot |
