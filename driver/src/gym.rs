@@ -12,10 +12,99 @@
 
 use anyhow::{Context, Result, bail};
 use oxide_sim::bot::{ACTION_COUNT, Action, Brain, Difficulty, FEATURE_COUNT, GYM_VERSION, GymBot};
+use oxide_sim::scenario::Scenario;
 use oxide_sim::state::GameResult;
 use oxide_sim::{Faction, PlayerId, State};
 use serde::Deserialize;
 use std::io::{BufRead, Write};
+
+/// Ordered west/east faction pair for a two-seat neural cup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DuelFactions([Faction; 2]);
+
+impl DuelFactions {
+    /// Compact ordered pair used by the CLI and JSON provenance.
+    pub fn code(self) -> &'static str {
+        match self.0 {
+            [Faction::Ferrous, Faction::Ferrous] => "ff",
+            [Faction::Ferrous, Faction::Cupric] => "fc",
+            [Faction::Cupric, Faction::Ferrous] => "cf",
+            [Faction::Cupric, Faction::Cupric] => "cc",
+        }
+    }
+
+    fn from_scenario(scenario: &Scenario) -> Result<Self> {
+        if scenario.players.len() != 2 {
+            bail!(
+                "neural-cup requires a 2-seat duel scenario, got {} seats",
+                scenario.players.len()
+            );
+        }
+        Ok(Self([
+            scenario.players[0].faction,
+            scenario.players[1].faction,
+        ]))
+    }
+
+    fn faction(self, seat: u8) -> Faction {
+        self.0[usize::from(seat)]
+    }
+}
+
+impl std::str::FromStr for DuelFactions {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "ff" => Ok(Self([Faction::Ferrous, Faction::Ferrous])),
+            "fc" => Ok(Self([Faction::Ferrous, Faction::Cupric])),
+            "cf" => Ok(Self([Faction::Cupric, Faction::Ferrous])),
+            "cc" => Ok(Self([Faction::Cupric, Faction::Cupric])),
+            _ => Err(format!(
+                "invalid faction pair {value:?}; expected ff, fc, cf, or cc"
+            )),
+        }
+    }
+}
+
+/// Runtime profile for a native quantized neural cup.
+#[derive(Debug, Clone, Copy)]
+pub struct NeuralCupProfile {
+    /// Decision cadence the network trained at.
+    pub cadence: u64,
+    /// Explicit hesitation rate per mille, or zero to derive it from skill.
+    pub blunder: u32,
+    /// Skill conditioning knob.
+    pub skill: u32,
+    /// Aggression conditioning knob.
+    pub aggression: u32,
+    /// Optional ordered roster override.
+    pub factions: Option<DuelFactions>,
+}
+
+fn faction_name(faction: Faction) -> &'static str {
+    match faction {
+        Faction::Ferrous => "ferrous",
+        Faction::Cupric => "cupric",
+    }
+}
+
+fn prepare_cup_scenario(
+    scenario: &str,
+    seed: u64,
+    factions: Option<DuelFactions>,
+) -> Result<(Scenario, DuelFactions)> {
+    let mut scenario = crate::runner::load_scenario(scenario)?;
+    scenario.seed = seed;
+    let authored = DuelFactions::from_scenario(&scenario)?;
+    let actual = factions.unwrap_or(authored);
+    if factions.is_some() {
+        for seat in 0..2 {
+            scenario.retint_seat(seat, actual.faction(seat as u8));
+        }
+    }
+    Ok((scenario, actual))
+}
 
 #[derive(Deserialize)]
 #[serde(tag = "cmd", rename_all = "kebab-case")]
@@ -358,13 +447,17 @@ pub fn serve() -> Result<()> {
 pub fn neural_cup(
     weights: &std::path::Path,
     seeds: u64,
-    cadence: u64,
     scenario: &str,
-    blunder: u32,
-    skill: u32,
-    aggression: u32,
+    profile: NeuralCupProfile,
 ) -> Result<()> {
     use oxide_sim::bot::{NeuralBot, QuantNet};
+    let NeuralCupProfile {
+        cadence,
+        blunder,
+        skill,
+        aggression,
+        factions,
+    } = profile;
     let json = std::fs::read_to_string(weights)
         .with_context(|| format!("reading {}", weights.display()))?;
     let net = QuantNet::from_json(&json).map_err(|e| anyhow::anyhow!(e))?;
@@ -372,7 +465,17 @@ pub fn neural_cup(
     // pasted into an experiments note answers "which weights" on its
     // own, long after the checkpoint path stops meaning anything.
     let digest = format!("{:016x}", net.digest());
-    eprintln!("artifact: {} · digest {digest}", weights.display());
+    let (_, actual_factions) = prepare_cup_scenario(scenario, 3000, factions)?;
+    let faction_source = if factions.is_some() {
+        "override"
+    } else {
+        "authored"
+    };
+    eprintln!(
+        "artifact: {} · digest {digest} · factions {} ({faction_source})",
+        weights.display(),
+        actual_factions.code()
+    );
     for tier in [
         Difficulty::Scrapheap,
         Difficulty::Standard,
@@ -387,10 +490,10 @@ pub fn neural_cup(
             .flat_map(|seed| [(seed, 0u8), (seed, 1u8)])
             .collect();
         let play = |&(seed, seat): &(u64, u8)| -> Result<(bool, bool, u64)> {
-            let mut sc = crate::runner::load_scenario(scenario)?;
-            sc.seed = seed;
+            let (sc, game_factions) = prepare_cup_scenario(scenario, seed, factions)?;
+            debug_assert_eq!(game_factions, actual_factions);
             let mut state = sc.build().context("scenario build")?;
-            let faction = sc.players[seat as usize].faction;
+            let faction = game_factions.faction(seat);
             let mut neural = NeuralBot::with_profile(
                 PlayerId(seat),
                 cadence,
@@ -433,23 +536,49 @@ pub fn neural_cup(
             }
         });
         let (mut wins, mut draws, mut ticks) = (0u64, 0u64, Vec::new());
-        for outcome in outcomes {
+        let mut seat_wins = [0u64; 2];
+        let mut seat_draws = [0u64; 2];
+        let mut seat_ticks = [Vec::new(), Vec::new()];
+        for ((_, seat), outcome) in pairs.iter().copied().zip(outcomes) {
             let (won, draw, tick) = outcome?;
             wins += u64::from(won);
             draws += u64::from(draw);
             ticks.push(tick);
+            seat_wins[usize::from(seat)] += u64::from(won);
+            seat_draws[usize::from(seat)] += u64::from(draw);
+            seat_ticks[usize::from(seat)].push(tick);
         }
         ticks.sort_unstable();
+        for values in &mut seat_ticks {
+            values.sort_unstable();
+        }
         let games = seeds * 2;
+        let by_seat: Vec<_> = (0..2)
+            .map(|seat| {
+                let seat = seat as u8;
+                let values = &seat_ticks[usize::from(seat)];
+                serde_json::json!({
+                    "seat": seat,
+                    "faction": faction_name(actual_factions.faction(seat)),
+                    "wins": seat_wins[usize::from(seat)],
+                    "draws": seat_draws[usize::from(seat)],
+                    "games": seeds,
+                    "median_ticks": values[values.len() / 2],
+                })
+            })
+            .collect();
         println!(
             "{}",
             serde_json::json!({
                 "opponent": format!("{tier:?}"),
                 "digest": digest,
+                "factions": actual_factions.code(),
+                "factions_source": faction_source,
                 "wins": wins,
                 "draws": draws,
                 "games": games,
                 "median_ticks": ticks[ticks.len() / 2],
+                "by_seat": by_seat,
             })
         );
     }
@@ -463,6 +592,72 @@ mod tests {
     fn episode(factions: Option<&[Faction]>) -> Episode {
         Episode::new(17, &[0, 1], Difficulty::Veteran, 100, None, factions, 8)
             .expect("skirmish episode")
+    }
+
+    #[test]
+    fn every_duel_faction_pair_parses_canonically() {
+        for (text, expected) in [
+            ("ff", [Faction::Ferrous, Faction::Ferrous]),
+            ("FC", [Faction::Ferrous, Faction::Cupric]),
+            ("cf", [Faction::Cupric, Faction::Ferrous]),
+            ("cc", [Faction::Cupric, Faction::Cupric]),
+        ] {
+            let pair = text.parse::<DuelFactions>().expect("valid pair");
+            assert_eq!(pair.0, expected);
+            assert_eq!(pair.code(), text.to_ascii_lowercase());
+        }
+    }
+
+    #[test]
+    fn invalid_duel_faction_pairs_are_rejected() {
+        for text in ["", "f", "fcc", "fx", "ferrous-cupric"] {
+            let err = text
+                .parse::<DuelFactions>()
+                .expect_err("invalid faction pair");
+            assert!(
+                err.contains("expected ff, fc, cf, or cc"),
+                "unexpected error for {text:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn cup_overrides_cover_both_factions_from_both_physical_seats() {
+        let mut seen = [[false; 2]; 2];
+        for text in ["ff", "fc", "cf", "cc"] {
+            let requested = text.parse::<DuelFactions>().expect("valid pair");
+            let (scenario, actual) = prepare_cup_scenario("skirmish", 41, Some(requested))
+                .expect("retinted cup scenario");
+            assert_eq!(actual, requested);
+            for (seat, seen_factions) in seen.iter_mut().enumerate() {
+                let faction = scenario.players[seat].faction;
+                assert_eq!(faction, requested.0[seat]);
+                seen_factions[usize::from(faction == Faction::Cupric)] = true;
+            }
+        }
+        assert_eq!(seen, [[true, true], [true, true]]);
+    }
+
+    #[test]
+    fn omitted_cup_factions_preserve_the_scenario_exactly() {
+        let mut authored = Scenario::skirmish();
+        authored.seed = 41;
+        let (prepared, actual) =
+            prepare_cup_scenario("skirmish", 41, None).expect("authored cup scenario");
+        assert_eq!(prepared, authored);
+        assert_eq!(actual.code(), "fc");
+    }
+
+    #[test]
+    fn cup_rejects_non_duel_scenarios_before_building() {
+        let mut scenario = Scenario::skirmish();
+        scenario.players.push(scenario.players[0].clone());
+        let err = DuelFactions::from_scenario(&scenario).expect_err("three-seat cup");
+        assert!(
+            err.to_string()
+                .contains("neural-cup requires a 2-seat duel scenario, got 3 seats"),
+            "{err:#}"
+        );
     }
 
     #[test]

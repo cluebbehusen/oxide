@@ -1,0 +1,46 @@
+//! Native quantized cup CLI coverage.
+
+use serde_json::Value;
+use std::path::PathBuf;
+use std::process::Command;
+
+#[test]
+fn faction_cup_reports_the_pair_and_each_physical_seat() {
+    let weights =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../sim/src/bot/ladder_weights.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
+        .args([
+            "neural-cup",
+            "--weights",
+            weights.to_str().expect("UTF-8 fixture path"),
+            "--seeds",
+            "1",
+            "--factions",
+            "cf",
+        ])
+        .output()
+        .expect("run neural cup");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+    assert!(stderr.contains("factions cf (override)"), "{stderr}");
+
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8 stdout");
+    let rows: Vec<Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("cup JSON row"))
+        .collect();
+    assert_eq!(rows.len(), 4);
+    for row in rows {
+        assert_eq!(row["factions"], "cf");
+        assert_eq!(row["factions_source"], "override");
+        assert_eq!(row["by_seat"][0]["seat"], 0);
+        assert_eq!(row["by_seat"][0]["faction"], "cupric");
+        assert_eq!(row["by_seat"][1]["seat"], 1);
+        assert_eq!(row["by_seat"][1]["faction"], "ferrous");
+    }
+}

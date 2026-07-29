@@ -364,6 +364,10 @@ enum Cmd {
         /// Aggression knob 0-1000 (personality conditioning input).
         #[arg(long, default_value_t = 500)]
         aggression: u32,
+        /// Override both duel rosters in west/east order (ff|fc|cf|cc).
+        /// Omission preserves the scenario's authored factions.
+        #[arg(long)]
+        factions: Option<oxide_driver::gym::DuelFactions>,
     },
     /// Exercise a candidate's repair verbs in deterministic wounded-state
     /// fixtures. Diagnostic only: observed, never rewarded.
@@ -849,8 +853,18 @@ fn main() -> Result<()> {
             blunder,
             skill,
             aggression,
+            factions,
         } => oxide_driver::gym::neural_cup(
-            &weights, seeds, cadence, &scenario, blunder, skill, aggression,
+            &weights,
+            seeds,
+            &scenario,
+            oxide_driver::gym::NeuralCupProfile {
+                cadence,
+                blunder,
+                skill,
+                aggression,
+                factions,
+            },
         )?,
         Cmd::RepairProbe {
             weights,

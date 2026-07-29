@@ -386,6 +386,8 @@ uv run league.py --name run --resume runs/prior.pt --anchor runs/prior.pt     --
 uv run tournament.py --ckpt runs/run/pool/ckpt-XXXXX.pt      # torch-side eval
 uv run export.py --ckpt <winner> --out runs/candidate.json   # Q12 artifact
 cargo run -p oxide-driver -- neural-cup --weights runs/candidate.json  # the gate
+# ff and cc isolate each roster across both physical seats; fc/cf cross the order
+cargo run -p oxide-driver -- neural-cup --weights runs/candidate.json --factions ff
 ```
 
 `--weights` loads a file the sim did not write, so `QuantNet::from_json`
@@ -400,7 +402,12 @@ time. Every artifact also carries a `digest()` — FNV over its parsed
 tensors and contract fields, blind to reformatting and to the
 `arch`/`update` metadata — and `balance-probe` and `neural-cup` print it
 on every result, so a composition table or a cup line pasted into
-`experiments/` answers "which weights" on its own.
+`experiments/` answers "which weights" on its own. The cup's optional
+`--factions ff|fc|cf|cc` retints a two-seat scenario before build and
+reports both the ordered pair and per-seat results; omission preserves
+the scenario's authored rosters. Use `ff` and `cc` to measure one roster
+across both physical seats, then `fc` and `cf` to expose roster-order
+interactions.
 
 Hard-won rules encoded in that stack: pick checkpoints by tournament,
 never recency — leagues are checkpoint farms with a shelf life
