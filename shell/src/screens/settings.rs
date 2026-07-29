@@ -24,22 +24,13 @@ pub enum Face {
     },
 }
 
-/// Where the screen was opened from — leaving returns there.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Origin {
-    /// The front door.
-    Home,
-    /// The pause menu of a live match; its payload waits intact so the
-    /// cursor comes back to the row that opened this screen.
-    Pause,
-}
-
 /// What a settings frame decided.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Out {
     /// Still tuning.
     Stay,
-    /// Back to wherever the screen was opened from (its [`Origin`]).
+    /// Back to wherever the screen was opened from — the coordinator
+    /// holds the displaced screen and restores it wholesale.
     Leave,
 }
 
@@ -182,24 +173,17 @@ pub struct SettingsScreen {
     pub face: Face,
     /// The face's live menu.
     pub menu: Menu,
-    /// Where leaving returns to.
-    pub origin: Origin,
     /// The screen's status line, if one is up.
     pub notice: Option<Notice>,
 }
 
 impl SettingsScreen {
-    /// Opens on the settings rows, returning Home on leave.
+    /// Opens on the settings rows. Where leaving lands is the
+    /// coordinator's business — it keeps the displaced screen.
     pub fn open(config: &Config) -> Self {
-        Self::open_from(config, Origin::Home)
-    }
-
-    /// Opens on the settings rows with an explicit return target.
-    pub fn open_from(config: &Config, origin: Origin) -> Self {
         Self {
             face: Face::Settings,
             menu: settings_menu(config),
-            origin,
             notice: None,
         }
     }

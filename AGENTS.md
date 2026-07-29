@@ -911,10 +911,14 @@ comparisons don't survive GPU churn, so CI never runs it.
   drawing and session wiring. The viewport is INJECTED once per frame
   (`render::set_viewport`); menus, chrome scale, and `Game::new` read
   the seam and never query the window (headless tests get 1280x800).
-  Since 0.13 Settings carries its origin (`open_from`: Home or Pause)
-  and leaving returns there — the pause menu grew a Settings row and
-  its payload waits intact, so the cursor comes back to the row that
-  left. Pause rows are an enum (`pause::Row`), never shifted indices:
+  Since 0.13 the coordinator (shell/src/app.rs) is an `App` struct
+  (everything that outlives a screen: game, tutorial, draft, config,
+  input) plus one payload-carrying `Screen` enum — a mode without its
+  screen's state is unrepresentable, so the old guard-and-repair arms
+  are gone rather than moved. The Settings variant carries the screen
+  it displaced (`back`) and leaving restores it wholesale — the pause
+  menu's payload waits intact, so the cursor comes back to the row
+  that left. Pause rows are an enum (`pause::Row`), never shifted indices:
   a new conditional row is one variant, not an index audit. Settings
   complaints live on the screen's own notice line drawn above the
   veil (a HUD toast dies under it), persisting until the next action;
