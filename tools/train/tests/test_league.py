@@ -34,16 +34,31 @@ from league import (
     comp_entropy,
     composition_probe,
     faction_knob,
+    generated_map_families,
+    load_incumbent_policy,
+    parse_map_mix,
     probe_canary,
+    q12_resume_provenance,
+    resolve_map_mix,
     rollout,
     sample_condition,
+    sample_map_family,
     style_alignment,
     style_bonus,
     tech_bonus_at,
     value_warmup_active,
+    warm_generated_maps,
 )
-from models import make_policy
-from oxide_gym import ACTIONS, FEATURE_NAMES, FEATURES, NET_FEATURES, Frame, SeatView
+from models import make_policy, save_policy
+from oxide_gym import (
+    ACTIONS,
+    FEATURE_NAMES,
+    FEATURES,
+    GYM_VERSION,
+    NET_FEATURES,
+    Frame,
+    SeatView,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -178,6 +193,134 @@ class TestSampleCondition:
         assert len(cond) == 3
 
 
+class TestMapMix:
+    def test_parser_normalizes_in_canonical_order(self) -> None:
+        assert parse_map_mix("grand=.50, fixed=.25, random=.25") == {
+            "fixed": 0.25,
+            "random": 0.25,
+            "grand": 0.5,
+        }
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "",
+            "fixed",
+            "small=1",
+            "fixed=one",
+            "fixed=-1",
+            "fixed=nan",
+            "fixed=0,random=0",
+            "fixed=1,fixed=2",
+        ],
+    )
+    def test_parser_rejects_ambiguous_or_non_positive_mixes(self, text: str) -> None:
+        with pytest.raises(argparse.ArgumentTypeError):
+            parse_map_mix(text)
+
+    def test_maps_compatibility_becomes_a_single_family_without_spending_rng(
+        self,
+    ) -> None:
+        assert resolve_map_mix("grand", None) == {"grand": 1.0}
+        actual = np.random.default_rng(9)
+        control = np.random.default_rng(9)
+        assert sample_map_family(actual, {"grand": 1.0}) == "grand"
+        assert actual.integers(1_000_000) == control.integers(1_000_000)
+
+    def test_mixed_draws_are_seeded_and_visit_each_family(self) -> None:
+        mix = parse_map_mix("fixed=.25,random=.25,grand=.50")
+        left = np.random.default_rng(81)
+        right = np.random.default_rng(81)
+        left_draws = [sample_map_family(left, mix) for _ in range(100)]
+        right_draws = [sample_map_family(right, mix) for _ in range(100)]
+        assert left_draws == right_draws
+        assert set(left_draws) == {"fixed", "random", "grand"}
+
+    def test_warmer_covers_every_active_generated_family(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[tuple[int, str, int, bool, str | None]] = []
+
+        def fake_generate(
+            seed: int,
+            out_dir: str,
+            players: int = 2,
+            teams: bool = False,
+            pace: str | None = None,
+        ) -> str:
+            calls.append((seed, out_dir, players, teams, pace))
+            return "unused"
+
+        monkeypatch.setattr(league, "_generate", fake_generate)
+        monkeypatch.setattr(league, "cache_dir", lambda name: name)
+        families = generated_map_families(
+            parse_map_mix("fixed=.25,random=.25,grand=.50"),
+            {"self": 0.5, "ffa": 0.2, "team2": 0.3},
+        )
+        assert families == ("random", "grand", "ffa", "team")
+
+        warm_generated_maps(100_007, families)
+
+        assert calls == [
+            (7, "oxide-maps-train", 2, False, None),
+            (7, "oxide-maps-train-grand", 2, False, "grand"),
+            (7, "oxide-maps-train4", 4, False, None),
+            (7, "oxide-maps-train2v2", 4, True, None),
+        ]
+
+
+class _ResetRecorder:
+    def __init__(self) -> None:
+        self.scenarios: list[str | None] = []
+
+    def reset(self, *_args: object, **kwargs: object) -> Frame:
+        self.scenarios.append(cast("str | None", kwargs.get("scenario")))
+        return Frame(False, 0, seats={0: _view(0.1), 1: _view(0.2)})
+
+
+class TestPerEpisodeMapSampling:
+    def test_duel_jobs_draw_the_same_seeded_family_sequence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fake_generate(
+            _seed: int,
+            _out_dir: str,
+            players: int = 2,
+            teams: bool = False,
+            pace: str | None = None,
+        ) -> str:
+            assert players == 2
+            assert not teams
+            return "grand" if pace == "grand" else "random"
+
+        monkeypatch.setattr(league, "generate", fake_generate)
+        mix = parse_map_mix("fixed=.25,random=.25,grand=.50")
+
+        def make_job() -> Job:
+            return Job(
+                cast("Worker", _ResetRecorder()),
+                "self",
+                0,
+                pathlib.Path("."),
+                np.random.default_rng(19),
+                "cpu",
+                map_mix=mix,
+            )
+
+        left = make_job()
+        right = make_job()
+        left_families = []
+        right_families = []
+        for seed in range(50_000, 50_080):
+            left.reset(seed)
+            right.reset(seed)
+            left_families.append(left.map_family)
+            right_families.append(right.map_family)
+
+        assert left_families == right_families
+        assert set(left_families) == {"fixed", "random", "grand"}
+
+
 class TestRollout:
     def test_the_batch_stays_rectangular_past_a_death(
         self, death_batch: tuple[np.ndarray, ...]
@@ -252,6 +395,113 @@ class TestJobSeatView:
         job.seat_view(0)  # remembered while alive
         job.frame = Frame(False, 16, seats={})  # seat 0 no longer reported
         assert job.seat_view(0) is live  # frozen, not a KeyError
+
+
+class TestIncumbentOpponent:
+    def test_active_lane_requires_an_exact_recovered_checkpoint(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        with pytest.raises(ValueError, match="requires --incumbent"):
+            load_incumbent_policy({"incumbent": 0.25}, None, "cpu")
+
+        policy = make_policy("mlp")
+        ordinary = tmp_path / "ordinary.pt"
+        save_policy(
+            policy,
+            "mlp",
+            ordinary,
+            {"gym_version": GYM_VERSION, "update": 10},
+        )
+        with pytest.raises(ValueError, match="exact Q12-recovered"):
+            load_incumbent_policy({"incumbent": 0.25}, str(ordinary), "cpu")
+
+        unfloored = tmp_path / "unfloored.pt"
+        save_policy(
+            policy,
+            "mlp",
+            unfloored,
+            {
+                "gym_version": GYM_VERSION,
+                "update": 10,
+                "q12_recovered": True,
+                "unfloored_actions": [22, 23],
+            },
+        )
+        with pytest.raises(ValueError, match="no unfloored actions"):
+            load_incumbent_policy({"incumbent": 0.25}, str(unfloored), "cpu")
+
+        recovered = tmp_path / "recovered.pt"
+        save_policy(
+            policy,
+            "mlp",
+            recovered,
+            {
+                "gym_version": GYM_VERSION,
+                "update": 10,
+                "q12_recovered": True,
+                "unfloored_actions": [],
+            },
+        )
+        loaded = load_incumbent_policy(
+            {"incumbent": 0.25},
+            str(recovered),
+            "cpu",
+        )
+        assert loaded is not None
+        assert not loaded.training
+
+    def test_incumbent_plays_the_frozen_actor_greedily(self) -> None:
+        policy = make_policy("mlp")
+        with torch.no_grad():
+            for parameter in policy.parameters():
+                parameter.zero_()
+            policy.pi.bias[7] = 3.0
+        policy.eval()
+        job = Job(
+            cast("Worker", _ScriptedWorker([])),
+            "incumbent",
+            0,
+            pathlib.Path("."),
+            np.random.default_rng(0),
+            "cpu",
+            incumbent=policy,
+        )
+        job.frame = Frame(False, 0, seats={0: _view(0.1), 1: _view(0.2)})
+
+        for seed in range(20):
+            torch.manual_seed(seed)
+            assert job.opponent_action("cpu") == {1: 7}
+
+    def test_past_lane_still_samples_its_checkpoint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        policy = make_policy("mlp")
+        policy.eval()
+        job = Job(
+            cast("Worker", _ScriptedWorker([])),
+            "past",
+            0,
+            pathlib.Path("."),
+            np.random.default_rng(0),
+            "cpu",
+        )
+        job.past = policy
+        job.frame = Frame(False, 0, seats={0: _view(0.1), 1: _view(0.2)})
+        sampled = []
+
+        def fake_sample(_distribution: object) -> torch.Tensor:
+            sampled.append(True)
+            return torch.tensor([5])
+
+        monkeypatch.setattr(torch.distributions.Categorical, "sample", fake_sample)
+        assert job.opponent_action("cpu") == {1: 5}
+        assert sampled == [True]
+
+    def test_resume_provenance_distinguishes_reconstructed_critics(self) -> None:
+        assert q12_resume_provenance({"q12_recovered": True})
+        assert not q12_resume_provenance({"q12_recovered": False})
+        assert not q12_resume_provenance({})
+        assert not q12_resume_provenance(None)
 
 
 class TestRolloutPipelining:
@@ -587,13 +837,22 @@ class TestRepairBonus:
 
 
 _PROBE_PAYLOAD = {
-    "schema": 2,
+    "schema": 3,
     "overall": {"matches": 50, "decided": 41, "capped": 9},
     "decided": {
         "seats": 82,
         "entropy_bits": 2.134,
         "seat_entropy": {"mean": 1.9, "p10": 1.42, "p25": 1.7, "median": 2.0},
         "mean_share": {"lancer": 0.599, "sentinel": 0.401},
+        "count_entropy_bits": 1.967,
+        "seat_count_entropy": {
+            "mean": 1.7,
+            "p10": 1.37,
+            "p25": 1.5,
+            "median": 1.8,
+        },
+        "seat_count_dominance": {"mean": 0.52, "p90": 0.641, "max": 0.82},
+        "mean_count_share": {"lancer": 0.301, "scuttler": 0.447},
         "mean_buildings": {"fabricator": 1.2},
         "seats_with_building": {"fabricator": 0.85, "repairbay": 0.125},
     },
@@ -608,14 +867,23 @@ class TestProbeCanary:
             "capped": 9,
             "entropy_bits": 2.13,
             "seat_p10": 1.42,
+            "count_entropy_bits": 1.97,
+            "seat_count_p10": 1.37,
+            "count_dominance_p90": 0.641,
             "unit_share": {"lancer": 0.599, "sentinel": 0.401},
+            "count_share": {"lancer": 0.301, "scuttler": 0.447},
             "building_share": {"fabricator": 0.85, "repairbay": 0.125},
         }
 
-    def test_an_empty_cohort_reports_no_p10_instead_of_crashing(self) -> None:
+    def test_an_empty_cohort_reports_no_spreads_instead_of_crashing(self) -> None:
         payload = json.loads(json.dumps(_PROBE_PAYLOAD))
         payload["decided"]["seat_entropy"] = None
-        assert probe_canary(payload)["seat_p10"] is None
+        payload["decided"]["seat_count_entropy"] = None
+        payload["decided"]["seat_count_dominance"] = None
+        row = probe_canary(payload)
+        assert row["seat_p10"] is None
+        assert row["seat_count_p10"] is None
+        assert row["count_dominance_p90"] is None
 
 
 class TestCompositionProbe:
@@ -649,6 +917,8 @@ class TestCompositionProbe:
         )
         assert row["decided"] == 41
         assert row["seat_p10"] == 1.42
+        assert row["seat_count_p10"] == 1.37
+        assert row["count_dominance_p90"] == 0.641
         probe_dir = tmp_path / "probe"
         assert (probe_dir / "ckpt-00100.pt").exists(), "the snapshot persists"
         weights = json.loads((probe_dir / "weights-00100.json").read_text())
@@ -663,11 +933,11 @@ class TestCompositionProbe:
 
     def test_an_old_probe_schema_is_refused(self, tmp_path: pathlib.Path) -> None:
         stale = json.loads(json.dumps(_PROBE_PAYLOAD))
-        stale["schema"] = 1
+        stale["schema"] = 2
         driver = self._fake_driver(tmp_path, stale)
         torch.manual_seed(0)
         policy = make_policy("mlp")
-        with pytest.raises(RuntimeError, match="schema 1"):
+        with pytest.raises(RuntimeError, match="schema 2"):
             composition_probe(policy, "mlp", 5, tmp_path, str(driver), "s", "medium", 1)
 
 

@@ -9,6 +9,8 @@ an opponent kind —
           train — the arms race lives here)
   past    a frozen checkpoint from this run's pool (stops cycling:
           you must still beat who you used to be)
+  incumbent
+          the recovered shipped actor, held fixed and played greedily
   tier    a scripted ladder bot (the anchor that keeps play grounded
           against sensible opponents, and the eventual yardstick)
   rusher  the scripted rush teacher (the known exploit, kept in the
@@ -56,6 +58,7 @@ from oxide_gym import (
 from ppo import gae, ppo_update
 
 TIERS = ["scrapheap", "standard", "veteran", "prime"]
+MAP_FAMILIES = ("fixed", "random", "grand")
 
 # Per-update phase clocks, drained into every log entry — optimization
 # without a stable meter is guessing. Keys: env_sec (worker RPC),
@@ -218,6 +221,120 @@ def bounded_style_coefficient(text: str) -> float:
     return value
 
 
+def parse_map_mix(text: str) -> dict[str, float]:
+    """Parses and normalizes weighted duel-map families.
+
+    Zero-weight entries are ignored. Returning families in canonical
+    order makes equivalent CLI strings produce the same seeded draws.
+    """
+    parsed: dict[str, float] = {}
+    for item in text.split(","):
+        try:
+            name, raw_weight = item.split("=", 1)
+        except ValueError as err:
+            raise argparse.ArgumentTypeError(
+                "map mix must be NAME=WEIGHT pairs separated by commas"
+            ) from err
+        name = name.strip()
+        if name not in MAP_FAMILIES:
+            allowed = ", ".join(MAP_FAMILIES)
+            raise argparse.ArgumentTypeError(
+                f"unknown map family {name!r}; expected one of {allowed}"
+            )
+        if name in parsed:
+            raise argparse.ArgumentTypeError(f"map family {name!r} appears twice")
+        try:
+            weight = float(raw_weight)
+        except ValueError as err:
+            raise argparse.ArgumentTypeError(
+                f"map weight for {name!r} must be a number"
+            ) from err
+        if not np.isfinite(weight) or weight < 0.0:
+            raise argparse.ArgumentTypeError(
+                f"map weight for {name!r} must be finite and non-negative"
+            )
+        parsed[name] = weight
+    total = sum(parsed.values())
+    if total <= 0.0:
+        raise argparse.ArgumentTypeError("map mix must have positive total weight")
+    return {
+        family: parsed[family] / total
+        for family in MAP_FAMILIES
+        if parsed.get(family, 0.0) > 0.0
+    }
+
+
+def resolve_map_mix(
+    maps: str,
+    map_mix: dict[str, float] | None,
+) -> dict[str, float]:
+    """Keeps the original ``--maps`` spelling as a one-family mix."""
+    if map_mix is not None:
+        return map_mix
+    if maps not in MAP_FAMILIES:
+        allowed = ", ".join(MAP_FAMILIES)
+        raise ValueError(f"unknown map family {maps!r}; expected one of {allowed}")
+    return {maps: 1.0}
+
+
+def sample_map_family(
+    rng: np.random.Generator,
+    map_mix: dict[str, float],
+) -> str:
+    """Draws one duel map family from a job-local deterministic stream."""
+    if len(map_mix) == 1:
+        # Preserve the old --maps stream exactly: a one-family curriculum
+        # never spent an RNG draw selecting what was already certain.
+        return next(iter(map_mix))
+    families = tuple(map_mix)
+    weights = np.asarray([map_mix[family] for family in families], dtype=float)
+    weights /= weights.sum()
+    return str(rng.choice(families, p=weights))
+
+
+def generated_map_families(
+    map_mix: dict[str, float],
+    opponent_mix: dict[str, float],
+) -> tuple[str, ...]:
+    """Generated cache families that active jobs can request."""
+    families = [
+        family for family in ("random", "grand") if map_mix.get(family, 0.0) > 0.0
+    ]
+    if opponent_mix.get("ffa", 0.0) > 0.0:
+        families.append("ffa")
+    if any(opponent_mix.get(kind, 0.0) > 0.0 for kind in ("team", "team2")):
+        families.append("team")
+    return tuple(families)
+
+
+def warm_generated_maps(seed: int, families: Iterable[str]) -> None:
+    """Populates every generated-map cache an active lane may use."""
+    for family in families:
+        if family == "random":
+            _generate(seed % 100_000, cache_dir("oxide-maps-train"))
+        elif family == "grand":
+            _generate(
+                seed % 100_000,
+                cache_dir("oxide-maps-train-grand"),
+                pace="grand",
+            )
+        elif family == "ffa":
+            _generate(
+                seed % 100_000,
+                cache_dir("oxide-maps-train4"),
+                players=4,
+            )
+        elif family == "team":
+            _generate(
+                seed % 100_000,
+                cache_dir("oxide-maps-train2v2"),
+                players=4,
+                teams=True,
+            )
+        else:
+            raise ValueError(f"cannot warm unknown generated map family {family!r}")
+
+
 def faction_knob(seat: int) -> int:
     """The seat's faction, by the map convention every shipped and
     generated scenario follows: even seats run Ferrous (0), odd seats
@@ -292,7 +409,8 @@ class Job:
     """One worker's permanent role. Roles are fixed for the run — the
     lane geometry must never change, because episodes span many rollouts
     and a trajectory stream has to stay contiguous. What varies per
-    episode is the detail: which tier, which past checkpoint."""
+    episode is the detail: map family, tier, and past checkpoint. The
+    incumbent policy itself stays fixed for the whole run."""
 
     def __init__(
         self,
@@ -303,6 +421,8 @@ class Job:
         rng: np.random.Generator,
         device: str,
         maps: str = "fixed",
+        map_mix: dict[str, float] | None = None,
+        incumbent: nn.Module | None = None,
     ) -> None:
         # seat: 0/1 for duel kinds; 0..3 for ffa.
         self.worker = worker
@@ -311,8 +431,11 @@ class Job:
         self.rng = rng
         self.device = device
         self.maps = maps
+        self.map_mix = resolve_map_mix(maps, map_mix)
         self.tier: str | None = None
         self.past: nn.Module | None = None
+        self.incumbent = incumbent
+        self.map_family: str | None = None
         self.frame: Frame | None = None
         self.conditions: dict[int, tuple[int, ...]] = {}
         # Team episodes truncate per seat: a dead learner's lane pads on
@@ -348,9 +471,15 @@ class Job:
         elif kind in ("tier", "ffa"):
             self.learner_seats = [seat]
             self.opp_seat = None
-        else:  # past | rusher: both seats controlled, one driven locally
+        elif kind in ("past", "rusher", "incumbent"):
+            # Both seats are controlled, with the opponent driven
+            # locally by a frozen policy or the scripted rush teacher.
             self.learner_seats = [seat]
             self.opp_seat = 1 - seat
+        else:
+            raise ValueError(f"unknown league opponent kind {kind!r}")
+        if kind == "incumbent" and incumbent is None:
+            raise ValueError("incumbent jobs require an incumbent checkpoint")
         self.style_total = dict.fromkeys(self.learner_seats, 0.0)
         self.style_steps = dict.fromkeys(self.learner_seats, 0)
 
@@ -390,9 +519,11 @@ class Job:
         self.style_steps = dict.fromkeys(self.learner_seats, 0)
         self.conditions = {s: sample_condition(self.rng, s) for s in self.learner_seats}
         scenario = None
-        if self.maps == "random":
+        if self.kind not in ("ffa", "team", "team2"):
+            self.map_family = sample_map_family(self.rng, self.map_mix)
+        if self.map_family == "random":
             scenario = generate(seed % 100_000, cache_dir("oxide-maps-train"))
-        elif self.maps == "grand":
+        elif self.map_family == "grand":
             # The pacing curriculum: 1v1 lanes on the big classes only,
             # where the shipped tens-of-minutes game lives. The ffa and
             # team arms below keep their own draws — four bases at vast
@@ -401,6 +532,7 @@ class Job:
                 seed % 100_000, cache_dir("oxide-maps-train-grand"), pace="grand"
             )
         if self.kind == "ffa":
+            self.map_family = "ffa"
             scenario = generate(
                 seed % 100_000, cache_dir("oxide-maps-train4"), players=4
             )
@@ -414,6 +546,7 @@ class Job:
             )
             return
         if self.kind in ("team", "team2"):
+            self.map_family = "team"
             scenario = generate(
                 seed % 100_000, cache_dir("oxide-maps-train2v2"), players=4, teams=True
             )
@@ -458,7 +591,19 @@ class Job:
         if self.opp_seat is None:
             return {}
         view = self.view.seats[self.opp_seat]
-        if self.kind == "rusher" or self.past is None:
+        if self.kind == "rusher":
+            return {self.opp_seat: rusher(view.raw, view.mask, self.view.tick)}
+        if self.kind == "incumbent":
+            policy = self.incumbent
+            if policy is None:
+                raise RuntimeError("incumbent job has no frozen policy")
+            with torch.no_grad():
+                logits, _ = policy(
+                    torch.as_tensor(view.obs[None], device=policy_device),
+                    torch.as_tensor(view.mask[None], device=policy_device),
+                )
+            return {self.opp_seat: int(logits.argmax(dim=1).item())}
+        if self.past is None:
             return {self.opp_seat: rusher(view.raw, view.mask, self.view.tick)}
         policy, device = self.past, policy_device
         with torch.no_grad():
@@ -477,6 +622,8 @@ def assign_roles(
     rng: np.random.Generator,
     device: str,
     maps: str = "fixed",
+    map_mix: dict[str, float] | None = None,
+    incumbent: nn.Module | None = None,
 ) -> list[Job]:
     """Splits the worker fleet by the mix (largest remainder), seats
     alternating; the assignment is permanent for the run."""
@@ -503,10 +650,48 @@ def assign_roles(
         seats = 4 if kind in ("ffa", "team") else 2
         for k in range(count):
             jobs.append(
-                Job(workers[i], kind, k % seats, pool_dir, streams[i], device, maps)
+                Job(
+                    workers[i],
+                    kind,
+                    k % seats,
+                    pool_dir,
+                    streams[i],
+                    device,
+                    maps,
+                    map_mix,
+                    incumbent,
+                )
             )
             i += 1
     return jobs
+
+
+def load_incumbent_policy(
+    mix: dict[str, float],
+    checkpoint: str | None,
+    device: str,
+) -> nn.Module | None:
+    """Loads the exact recovered Q12 actor when its lane is active."""
+    if mix.get("incumbent", 0.0) <= 0.0:
+        return None
+    if not checkpoint:
+        raise ValueError("an incumbent opponent mix requires --incumbent CHECKPOINT")
+    policy, blob = load_policy(checkpoint, device)
+    if blob.get("q12_recovered") is not True or blob.get("unfloored_actions") not in (
+        None,
+        [],
+    ):
+        raise ValueError(
+            "--incumbent must be an exact Q12-recovered checkpoint "
+            "with no unfloored actions"
+        )
+    policy.eval()
+    return policy
+
+
+def q12_resume_provenance(blob: dict | None) -> bool:
+    """Whether this invocation reconstructed its critic from a Q12 actor."""
+    return blob is not None and blob.get("q12_recovered") is True
 
 
 def rollout(
@@ -773,32 +958,38 @@ def evaluate(
 
 def probe_canary(payload: dict) -> dict:
     """One canary row from a `balance-probe --out` payload:
-    decisiveness, the decided cohort's mix entropy with its per-seat
-    p10, and unit AND building shares — read beside the rusher eval in
-    the run log. Observed, never rewarded: nothing here may feed a
-    loss term, or the probe stops being a measurement.
+    decisiveness, both value- and body-weighted mix readings, and unit
+    AND building shares — read beside the rusher eval in the run log.
+    Observed, never rewarded: nothing here may feed a loss term, or the
+    probe stops being a measurement.
 
     Judgment reads the DECIDED cohort like the fun gate does — a
     stalemate's army mix is evidence about a stalemate — while the
     decided/capped counts keep the decisiveness reading itself."""
     overall, decided = payload["overall"], payload["decided"]
     spread = decided.get("seat_entropy")
+    count_spread = decided.get("seat_count_entropy")
+    dominance = decided.get("seat_count_dominance")
     return {
         "matches": overall["matches"],
         "decided": overall["decided"],
         "capped": overall["capped"],
         "entropy_bits": round(decided["entropy_bits"], 2),
         "seat_p10": round(spread["p10"], 2) if spread else None,
+        "count_entropy_bits": round(decided["count_entropy_bits"], 2),
+        "seat_count_p10": round(count_spread["p10"], 2) if count_spread else None,
+        "count_dominance_p90": (round(dominance["p90"], 3) if dominance else None),
         "unit_share": {k: round(v, 3) for k, v in decided["mean_share"].items()},
+        "count_share": {k: round(v, 3) for k, v in decided["mean_count_share"].items()},
         "building_share": {
             k: round(v, 3) for k, v in decided["seats_with_building"].items()
         },
     }
 
 
-# The `--out` payload schema this loop reads; below it the decided
-# cohort does not exist (same seam fun_gate.py pins).
-PROBE_SCHEMA = 2
+# Schema 3 adds body-count shares, entropy, and dominance. Accepting an
+# older payload would silently erase the cheap-unit-spam canary.
+PROBE_SCHEMA = 3
 
 
 def composition_probe(
@@ -934,9 +1125,21 @@ def main() -> None:
         "— the pacing curriculum)",
     )
     ap.add_argument(
+        "--map-mix",
+        type=parse_map_mix,
+        default=None,
+        help="per-duel-episode map weights, for example "
+        "fixed=.25,random=.25,grand=.50; overrides --maps",
+    )
+    ap.add_argument(
         "--mix",
         default="self=0.45,past=0.20,tier=0.20,rusher=0.15",
         help="opponent kind weights",
+    )
+    ap.add_argument(
+        "--incumbent",
+        default=None,
+        help="exact Q12-recovered checkpoint used by an incumbent opponent lane",
     )
     ap.add_argument(
         "--probe-every",
@@ -960,10 +1163,17 @@ def main() -> None:
     pool_dir = run_dir / "pool"
     pool_dir.mkdir(parents=True, exist_ok=True)
     mix = {k: float(v) for k, v in (kv.split("=") for kv in args.mix.split(","))}
+    try:
+        map_mix = resolve_map_mix(args.maps, args.map_mix)
+        incumbent = load_incumbent_policy(mix, args.incumbent, device)
+    except ValueError as err:
+        ap.error(str(err))
 
     start_update = 0
+    resume_blob = None
     if args.resume:
         policy, blob = load_policy(args.resume, device)
+        resume_blob = blob
         arch = blob.get("arch", "mlp")
         # Continue the absolute clock for pool numbering and anchor
         # annealing so resuming cannot overwrite history. Critic warm-up
@@ -974,6 +1184,7 @@ def main() -> None:
     else:
         arch = args.arch
         policy = make_policy(arch)
+    resume_q12_recovered = q12_resume_provenance(resume_blob)
     opt = torch.optim.Adam(policy.parameters(), lr=args.lr)
     anchor = None
     if args.anchor:
@@ -995,36 +1206,21 @@ def main() -> None:
 
     seeds = seed_stream()
 
-    if args.maps in ("random", "grand"):
+    warm_families = generated_map_families(map_mix, mix)
+    if warm_families:
         # Cold-cache map generation costs a driver subprocess per map
         # (~34% of an update when the cache is empty). A daemon warmer
-        # stays a few seeds ahead of the cursor so the hot path only
-        # ever sees cache hits; generate() is atomic-rename safe, so
-        # the race with a foreground miss is harmless. Determinism is
-        # untouched: same seed, same file, whoever writes it.
+        # stays a few seeds ahead of the cursor across every active
+        # generated family, so the hot path only ever sees cache hits;
+        # generate() is atomic-rename safe, so a foreground race is
+        # harmless. Determinism is untouched: same seed, same file.
         def warm() -> None:
             warmed = 0
             while True:
                 target = consumed[0] + 1 + 2 * args.workers
                 while warmed < target:
                     warmed = max(warmed, consumed[0] + 1)
-                    if args.maps == "grand":
-                        _generate(
-                            warmed % 100_000,
-                            cache_dir("oxide-maps-train-grand"),
-                            pace="grand",
-                        )
-                    else:
-                        _generate(warmed % 100_000, cache_dir("oxide-maps-train"))
-                    _generate(
-                        warmed % 100_000, cache_dir("oxide-maps-train4"), players=4
-                    )
-                    _generate(
-                        warmed % 100_000,
-                        cache_dir("oxide-maps-train2v2"),
-                        players=4,
-                        teams=True,
-                    )
+                    warm_generated_maps(warmed, warm_families)
                     warmed += 1
                 time.sleep(0.25)
 
@@ -1032,7 +1228,16 @@ def main() -> None:
     log = (run_dir / "log.jsonl").open("a")
 
     try:
-        jobs = assign_roles(workers, mix, pool_dir, rng, device, args.maps)
+        jobs = assign_roles(
+            workers,
+            mix,
+            pool_dir,
+            rng,
+            device,
+            args.maps,
+            map_mix,
+            incumbent,
+        )
         for update in range(start_update + 1, start_update + args.updates + 1):
             t0 = time.time()
             TEL.clear()
@@ -1108,6 +1313,8 @@ def main() -> None:
             entry = {
                 "update": update,
                 "kinds": sorted(j.kind for j in jobs),
+                "map_mix": map_mix,
+                "resume_q12_recovered": resume_q12_recovered,
                 "episodes": len(finals),
                 "avg_final": round(float(np.mean(finals)), 3) if finals else None,
                 "ent": round(stats["ent"] / max(stats["batches"], 1), 3),
