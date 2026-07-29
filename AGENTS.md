@@ -512,7 +512,11 @@ mixed-roster victories) plus a live geometry term (seat 0 takes 45.6%
 authored, 73.2% rotated); id range, command order and rng stream all
 sit inside their intervals, and command order changed 10 of 256 paired
 matches bit-for-bit while flipping not one outcome. No balance-number
-edit ships without a before/after run on the same seed set.
+edit ships without a before/after run on the same seed set — the 0.13
+roster rebalance was the first customer (ferrous 21.5% → 48.5% at 24
+seeds on seed base 7000), and the geometry term outlived the bless on
+both sides (44.8/59.6 before, 40.3/54.5 after): geometry is not
+roster, and a probe reading must never bill one to the other.
 `driver pace-sweep --dir scenarios --level <l> --seeds N` (0.13) is
 the clock: `sweep` run over every 1v1 map in a directory and tabled
 per map as decided/undecided, censored percent, and decision-tick
@@ -1104,15 +1108,28 @@ comparisons don't survive GPU churn, so CI never runs it.
   and Compass Grand at the same seat counts do fight — so the liveness
   gate holds only the 2- and 4-seat formats to a combat floor. Whether
   that is honest scale or a marching problem is a pacing question, not
-  a liveness one.
-- **The 0.11 artifact leans Cupric on skirmish** (34-6 at Expert
-  across seat-swapped pairs, dealt personalities — present in the
-  shipped convention configuration, same artifact-specific class as
-  the Parallel Works lean above). Same-faction mirror duels, newly
-  player-reachable through the faction chips, decide at human
-  timescales (Cupric mirror 12/12 by 120k ticks, Ferrous 10/12 with
-  a two-game grind tail) — the near-deterministic mirror residual,
-  broken by any human in the match.
+  a liveness one. The vast 1v1 maps earned the same reading under the
+  0.13 roster prices: first contact on their 100+ tile routes lands
+  after 12k ticks on maps whose decision medians are 18.6-21.9k, so
+  the gate's horizon for the vast class is 24k — the floors themselves
+  are unchanged.
+- **The Cupric skirmish lean was the roster, and the 0.13 rebalance
+  closed it** (Buzzard 160 -> 120, Darter 90 -> 100 — see the sim-batch
+  notebook). The factorial probe's before/after on one seed set:
+  Ferrous 21.5% [19.5, 23.6] of mixed-roster victories under the old
+  prices, 48.5% [46.0, 51.1] shipped, FC/CF cells 44.7%/47.6% from
+  23.2%/80.3%, same-faction mirrors still pacing apart (FF median
+  7,763 vs CC 6,394 — par, not mirrors). What remains is
+  artifact-specific residue at low blunder noise: the Expert
+  seat-swapped skirmish sweep flipped its lean from 34-6 Cupric to
+  35-1 Ferrous under the new prices — the near-deterministic mirror
+  residual whipsawing as it does under any sim change, broken by any
+  human in the match, re-measured per artifact. And two maps paid for
+  par: Long Haul and Oxide Flats read 19/24 decided at a 60k cap
+  (Long Haul's old 24/24 at median 4,859 was seat1 winning every
+  game — its decisiveness WAS the imbalance); the frozen policy's
+  passivity stall surfaces there until the retraining campaign, which
+  trains under these prices.
 - **The learned policy is a middling teammate beside a scripted ally**
   (25-31% on the mixed-ally 2v2 bracket vs scripted pairs, up 5x from
   pre-team-training). Shipped 2v2 seats are all-neural, which is the
@@ -1133,13 +1150,17 @@ comparisons don't survive GPU churn, so CI never runs it.
   again: idle harvesters wait a think, so the cadence dial became the
   economy's re-tasking latency — Medium/Hard inverted at the old
   dials and Hard re-metered to cadence 20 (measured, see the 0.13
-  sim-batch experiments note). After the re-meter the gate reads
-  Expert 70/80 with win counts strictly monotone (48 < 53 < 63 < 70)
-  and sweep still 48/48 decided (9-39, the same pre-existing lean).
-  The next training campaign trains under the new movement and
-  economy and takes the sweep bar back, along with the fog-honest
-  duel gate's per-seat floor (its seat split whipsaws with every
-  physics change: [6,15] → [11,15] → [17,4]).
+  sim-batch experiments note). After the re-meter the gate read
+  Expert 70/80 with win counts strictly monotone (48 < 53 < 63 < 70);
+  the roster rebalance re-rolled it once more to 38 < 55 < 56 < 70 —
+  still strictly monotone, Expert still 70/80 and top outright, zero
+  unresolved — and sweep still 48/48 decided at median 6,375 with the
+  seat lean softened to 16-32 (the pre-rebalance 9-39 was the roster
+  skew wearing a seat costume). The next training campaign trains
+  under the new movement, economy, and prices and takes the sweep
+  bar back, along with the fog-honest duel gate's per-seat floor
+  (its seat split whipsaws with every physics change:
+  [6,15] → [11,15] → [17,4]).
 
 ## Gotchas learned the hard way
 

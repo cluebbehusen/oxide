@@ -359,7 +359,7 @@ const SENTINEL: UnitStats = UnitStats {
     speed: Fx::lit("0.11"), // 2.2 tiles/s — armies are slightly outrun by harvesters
     radius: Fx::lit("0.35"),
     cost: 90, // 0.10 balance: spam pays — four campaign rounds proved 75 optimal-by-flooding
-    train_ticks: 160, // 8 s
+    train_ticks: 150, // 7.5 s
     domain: Domain::Ground,
     weapons: &[
         WeaponStats {
@@ -501,8 +501,12 @@ const BUZZARD: UnitStats = UnitStats {
     max_hp: 110,
     speed: Fx::lit("0.10"), // 2.0 tiles/s
     radius: Fx::lit("0.4"),
-    cost: 160,
-    train_ticks: 240, // 12 s
+    // 0.13 balance: at 160 the durable flyer was strictly outclassed by
+    // the Darter (more dps at 56% the price) and fell out of play (0.8%
+    // of army value). 120 is arena par against a common Sentinel line:
+    // the Buzzard keeps more value, the Darter clears faster.
+    cost: 120,
+    train_ticks: 180, // 9 s
     domain: Domain::Air,
     weapons: &[WeaponStats {
         damage: 25,
@@ -522,8 +526,11 @@ const DARTER: UnitStats = UnitStats {
     max_hp: 55,
     speed: Fx::lit("0.17"), // 3.4 tiles/s — the fastest thing in the sky
     radius: Fx::lit("0.3"),
-    cost: 90,
-    train_ticks: 140, // 7 s
+    // 0.13 balance: 90 underpriced the speed — the factorial probe read
+    // Ferrous at 21.5% of mixed-roster victories, and taxing the Darter
+    // to 110 closed it to 46.9% without touching its cadence or hp.
+    cost: 100,
+    train_ticks: 150, // 7.5 s
     domain: Domain::Air,
     weapons: &[WeaponStats {
         damage: 8,

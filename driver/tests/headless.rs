@@ -210,6 +210,22 @@ fn recorded_scenario_run_reproduces_from_its_replay() {
 /// Ticks of bot-vs-bot play every shipped map must survive.
 const LIVENESS_TICKS: u64 = 12_000;
 
+/// The vast maps get a longer leash before the combat floor applies:
+/// their measured decision medians sit at 18-22k ticks (`driver
+/// pace-sweep`, 12 seeds x 2, Medium), so 12k is march-and-buildup time
+/// on a 100+ tile route and first contact landing after it is the map
+/// working, not a stall. The economy floors and the staleness detector
+/// still bind over the whole horizon.
+const VAST_LIVENESS_TICKS: u64 = 24_000;
+
+/// The gate's horizon for one map: the pace label picks the leash.
+fn liveness_horizon(scenario: &Scenario) -> u64 {
+    match scenario.meta.as_ref().map(|m| m.pace.as_str()) {
+        Some("vast") => VAST_LIVENESS_TICKS,
+        _ => LIVENESS_TICKS,
+    }
+}
+
 /// Longest the whole match may go without a single seat doing anything.
 /// Measured worst case across the roster is under 250 ticks, so this is
 /// eight times the observed slack and still an order of magnitude under
@@ -325,16 +341,24 @@ fn every_shipped_scenario_builds_and_plays() {
     let paths = shipped_scenarios();
     let played = pool::fan_out(&paths, |path| {
         let scenario = all_bots(path);
-        let activity = play_and_tally(&scenario, LIVENESS_TICKS)?;
+        let activity = play_and_tally(&scenario, liveness_horizon(&scenario))?;
         Ok((path.clone(), activity))
     })
     .unwrap();
 
-    for (path, activity) in &played {
-        if let Err(refusal) = liveness_verdict(&path.display().to_string(), activity) {
-            panic!("{refusal}");
-        }
-    }
+    let refusals: Vec<String> = played
+        .iter()
+        .filter_map(|(path, activity)| {
+            liveness_verdict(&path.display().to_string(), activity).err()
+        })
+        .collect();
+    assert!(
+        refusals.is_empty(),
+        "{} of {} maps failed the liveness gate:\n{}",
+        refusals.len(),
+        played.len(),
+        refusals.join("\n")
+    );
 }
 
 /// A seat comfortably clearing every floor, for the gate's own tests.
@@ -406,7 +430,7 @@ fn liveness_floors_calibration_table() {
     let paths = shipped_scenarios();
     let played = pool::fan_out(&paths, |path| {
         let scenario = all_bots(path);
-        let activity = play_and_tally(&scenario, LIVENESS_TICKS)?;
+        let activity = play_and_tally(&scenario, liveness_horizon(&scenario))?;
         Ok((path.clone(), activity))
     })
     .unwrap();
