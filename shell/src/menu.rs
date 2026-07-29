@@ -471,9 +471,17 @@ pub fn discover_scenarios() -> Vec<ScenarioEntry> {
         for path in paths {
             if let Ok(scenario) = Scenario::load(&path) {
                 let blurb = scenario.meta.as_ref().map(|m| {
+                    // The measured duration band rides beside the
+                    // geometric pace label it qualifies — one badge,
+                    // so the pair can never separate.
+                    let pace = match (m.pace.is_empty(), m.duration.is_empty()) {
+                        (false, false) => format!("{} · {}", m.pace, m.duration),
+                        (false, true) => m.pace.clone(),
+                        (true, _) => m.duration.clone(),
+                    };
                     // Only badges that exist: a missing field must
                     // not render as a dangling separator.
-                    let badges: Vec<&str> = [&m.pace, &m.mode, &m.richness]
+                    let badges: Vec<&str> = [&pace, &m.mode, &m.richness]
                         .into_iter()
                         .filter(|s| !s.is_empty())
                         .map(String::as_str)

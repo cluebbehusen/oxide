@@ -53,6 +53,12 @@ pub struct ScenarioMeta {
     /// It is not a clock reading; `driver pace-sweep` measures those.
     #[serde(default)]
     pub pace: String,
+    /// Measured duration band, e.g. "5-8 min": the p25-p75 decision
+    /// window from `driver pace-sweep` at Medium with the shipped
+    /// artifact. An artifact-stamped measurement, never a gate —
+    /// re-stamp it when a weights or balance bless moves the clock.
+    #[serde(default)]
+    pub duration: String,
     /// Mode support, e.g. "1v1" or "2v2".
     #[serde(default)]
     pub mode: String,

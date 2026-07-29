@@ -39,7 +39,8 @@ overlay shows your match-so-far numbers with Esc as the exit to the
 menu, and dismissing it leaves you spectating while your ally plays
 on. Play opens a thumbnail grid of every map,
 sectioned by format, each card carrying a fog-free, theme-graded
-preview — the selected map's blurb names its pace and scrap richness —
+preview — the selected map's blurb names its pace (with a measured
+typical-duration band on the 1v1 maps) and scrap richness —
 and every choice you make on the way to a
 match survives backing up a screen. Selected
 machines draw their weapon ranges (and radar rings); stalls and

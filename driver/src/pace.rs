@@ -18,8 +18,10 @@
 //! worth more here than the packing.
 //!
 //! Measurement only: the medians move with every artifact generation
-//! and every balance bless, so nothing gates on them and no label is
-//! derived from them.
+//! and every balance bless, so nothing gates on them. The one thing
+//! authored from this output is `ScenarioMeta.duration` — the browser's
+//! p25-p75 band, an artifact-stamped measurement re-stamped after any
+//! bless that moves the clock, never a gate.
 
 use crate::sweep::{SweepOutcome, SweepReport, quantile, run_sweep};
 use anyhow::{Context, Result};

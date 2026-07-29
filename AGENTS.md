@@ -587,9 +587,17 @@ against Cinder Steppe (large, 85) at 19:33. Each row is exactly what
 run one after another, each fanning its own matches, so a surprising
 row is reproducible with one command. Measurement only: the medians
 move with every artifact generation and every balance bless, so
-nothing gates on them and no label is derived from them. A duration
-badge beside `pace` in the browser is the standing follow-up, and it
-waits for the sim batch and the campaign or it ships stale.
+nothing gates on them. The browser's duration badge is authored FROM
+this instrument: `ScenarioMeta.duration` on every 1v1 map carries the
+p25-p75 decision window (Medium, 12 seeds x 2 orientations, 60k cap,
+seed base 7000) rounded outward to minutes, drawn beside the
+geometric `pace` label it qualifies. The bands are artifact-stamped
+measurements, never gates — they describe the shipped weights on the
+shipped balance, so re-run the sweep and re-stamp them after any
+weights or balance bless that moves the clock (they landed after the
+0.13 campaign settled which artifact ships). Meta never reaches
+`State::assemble`, so the stamping moved no hash fixture — proven
+unblessed.
 `driver bench` times a 500-unit mass battle locally
 (`--scenario scenarios/compass-grand.json` instead runs a shipped map
 with EVERY chair converted to a thinking Expert — the heaviest honest
