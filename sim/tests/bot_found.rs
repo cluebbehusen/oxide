@@ -175,6 +175,78 @@ fn the_gym_bot_founds_on_remembered_ground() {
     panic!("the walking claim never became a standing turret");
 }
 
+/// Walking founders are spoken for in the MASKS too: once every
+/// harvester walks a Found, the verbs that need a free builder must
+/// mask OFF. A mask that promises a verb the executive then refuses
+/// feeds the blunder picker untrained logits, and the silent build
+/// no-op would poison the pending-site ledger for a blameless anchor.
+#[test]
+fn walking_founders_mask_the_builder_verbs_off() {
+    let mut state = state_with_remembered_node();
+    let mut gym = GymBot::new(PlayerId(0));
+
+    // One harvester walks a deferred claim to the remembered node; the
+    // other takes a visible home-ring build and stands on its site —
+    // every builder busy, each through a different guard (founding for
+    // the walker, the site for the builder).
+    let first = gym.step(&state, Action::BuildTurret);
+    state.tick(&first);
+    let second = gym.step(&state, Action::BuildRepairBay);
+    state.tick(&second);
+    let founders = state
+        .units()
+        .iter()
+        .filter(|u| matches!(u.order, Order::Found { .. }))
+        .count();
+    let builders = state
+        .units()
+        .iter()
+        .filter(|u| matches!(u.order, Order::Build { .. }))
+        .count();
+    assert_eq!(
+        (founders, builders),
+        (1, 1),
+        "one walking claim and one standing site must occupy both hands"
+    );
+
+    let decision = gym.decision(&state);
+    for action in [
+        Action::BuildFabricator,
+        Action::BuildTurret,
+        Action::BuildRepairBay,
+    ] {
+        assert!(
+            !decision.mask[action as usize],
+            "{action:?} masked legal while every builder walks a Found — \
+             the mask and the lowering must share one judgment"
+        );
+    }
+    // The lowering refuses symmetrically: forcing a build emits nothing
+    // and records no pending site for audit_sites to poison later.
+    let pending_before = state
+        .units()
+        .iter()
+        .filter(|u| matches!(u.order, Order::Found { .. }))
+        .count();
+    let forced = gym.step(&state, Action::BuildRepairBay);
+    assert!(
+        forced
+            .iter()
+            .all(|pc| !matches!(pc.command, Command::Build { .. })),
+        "a build without a free builder must lower to nothing"
+    );
+    state.tick(&forced);
+    assert_eq!(
+        state
+            .units()
+            .iter()
+            .filter(|u| matches!(u.order, Order::Found { .. }))
+            .count(),
+        pending_before,
+        "the refused lowering must not have disturbed the walking claims"
+    );
+}
+
 /// A walking founder is spoken for: the Scout action must not strip
 /// its `Order::Found` program (a plain Move replaces the whole
 /// program, and the claim pays on arrival — losing it loses the site).

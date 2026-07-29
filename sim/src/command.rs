@@ -109,8 +109,9 @@ pub enum Command {
         /// placed, nothing charged, no route demanded until the founder
         /// stands beside ground it can see (an honest stall later, like
         /// a Move into fog). The shell arms this for explored-but-unseen
-        /// ground; bots deliberately do not emit it yet, so their play
-        /// is untouched by the mode's existence.
+        /// ground; the gym bot emits it exactly where the shell
+        /// would (a footprint tile out of current sight); the scripted
+        /// tiers never do, which is what keeps their anchors frozen.
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         defer: bool,
     },

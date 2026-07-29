@@ -588,9 +588,7 @@ impl GymBot {
                 |k: BuildingKind| k.stats().construction.is_some_and(|c| obs.scrap >= c.cost);
             // A build without a builder lowers to nothing — and worse,
             // the silent no-op gets the anchor blacklisted as refused.
-            let builder_free = obs.my_units.iter().any(|u| {
-                u.kind == UnitKind::Harvester && u.site.is_none() && !enlisted.contains(&u.id)
-            });
+            let builder_free = free_builder(&obs, &enlisted);
             mask[Action::BuildFabricator as usize] = builder_free
                 && build_cost(BuildingKind::Fabricator)
                 && !obs
@@ -761,9 +759,12 @@ impl GymBot {
                 &mut intents,
             ),
             Action::BuildFabricator => {
-                if let Some(anchor) =
-                    self.policy
-                        .placement_near(&obs, BuildingKind::Fabricator, home)
+                if let Some(anchor) = free_builder(&obs, &enlisted)
+                    .then(|| {
+                        self.policy
+                            .placement_near(&obs, BuildingKind::Fabricator, home)
+                    })
+                    .flatten()
                 {
                     self.policy.note_pending_site(anchor);
                     intents.push(Intent::Build {
@@ -778,9 +779,9 @@ impl GymBot {
                 } else {
                     BuildingKind::FlakTurret
                 };
-                if let Some(anchor) = self
-                    .policy
-                    .nearest_scrap(&obs, home)
+                if let Some(anchor) = free_builder(&obs, &enlisted)
+                    .then(|| self.policy.nearest_scrap(&obs, home))
+                    .flatten()
                     .and_then(|node| self.policy.placement_near(&obs, kind, node))
                 {
                     self.policy.note_pending_site(anchor);
@@ -797,7 +798,10 @@ impl GymBot {
                     Action::BuildRepairBay => BuildingKind::RepairBay,
                     _ => BuildingKind::Reclaimer,
                 };
-                if let Some(anchor) = self.policy.placement_near(&obs, kind, home) {
+                if let Some(anchor) = free_builder(&obs, &enlisted)
+                    .then(|| self.policy.placement_near(&obs, kind, home))
+                    .flatten()
+                {
                     self.policy.note_pending_site(anchor);
                     intents.push(Intent::Build { kind, anchor });
                 }
@@ -1023,11 +1027,26 @@ fn rear_tile(world: &Observation) -> TilePos {
 /// building repair channel's pick discipline pointed at machines.
 /// Fog-safe: own-state only. Both the mask and the lowering call this,
 /// so what the policy observed as legal is what the step emits.
+/// Whether a harvester is genuinely free for new labor: not on a site,
+/// not walking a deferred founding, not enlisted. The masks and the
+/// build lowerings share this one judgment — counting a walking
+/// founder promises a verb the executive then refuses, and the silent
+/// no-op poisons the pending-site ledger.
+fn free_builder(obs: &Observation, enlisted: &[crate::ids::UnitId]) -> bool {
+    obs.my_units.iter().any(|u| {
+        u.kind == UnitKind::Harvester
+            && u.site.is_none()
+            && u.founding.is_none()
+            && !enlisted.contains(&u.id)
+    })
+}
+
 fn unit_patient(obs: &Observation, enlisted: &[crate::ids::UnitId]) -> Option<crate::ids::UnitId> {
     let welder_near = |patient: &UnitObs| {
         obs.my_units.iter().any(|u| {
             u.kind == UnitKind::Harvester
                 && u.site.is_none()
+                && u.founding.is_none()
                 && u.id != patient.id
                 && !enlisted.contains(&u.id)
                 && u.tile.manhattan(patient.tile) <= REPAIR_UNIT_RADIUS
