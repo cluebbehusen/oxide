@@ -752,10 +752,22 @@ comparisons don't survive GPU churn, so CI never runs it.
   arriving founder sees — the arrival re-check also catches the one
   memory-proof collision, an allied scaffold on unseen ground, since
   unbuilt sites cast no vision); with nothing spent, Stop is the
-  cancel. The shell alone emits `defer` (amber ghost on remembered
-  ground, tinted from the intent predicate, never live state); bots
-  keep the strict predicate deliberately, so the mode is hash-inert
-  until the retraining campaign teaches them the verb.
+  cancel. The shell emits `defer` for the human (amber ghost on
+  remembered ground, tinted from the intent predicate, never live
+  state), and since Part B the gym bot lowers a Build the same way —
+  defer exactly when some footprint tile is out of current sight
+  (`LoweringRules::gym`, the reclaim-parity rule). A walking founder
+  is spoken for: the site audit waits on it instead of blacklisting
+  its anchor, and the labor choosers and scout pick keep off it. The
+  gym Scout arm also honors the think's claims (the labor-claims
+  trap's other half). The scripted `Brain` tiers keep the strict
+  instant claim and the unconditional Scout arm deliberately — they
+  are the ladder's frozen anchors, and the one-line shared Scout
+  guard measurably inverts both ladder gates — pinned byte-identical
+  across the change. The bot-side mode leaves the tick-2000 hash
+  fixtures untouched (proven unblessed); it shows at longer horizons
+  on the fogged maps, where remembered-node turrets found instead of
+  bouncing.
 - **Fog of war enforces exactly one thing in the sim**: targeted attacks
   need the issuer to *see* the victim. Rendering honors fog fully
   (unexplored void, explored dim, unseen enemies culled) but the debug

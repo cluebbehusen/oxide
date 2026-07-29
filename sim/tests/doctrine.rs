@@ -45,6 +45,7 @@ fn unit_obs(id: u32, player: u8, kind: UnitKind, x: i32, y: i32) -> UnitObs {
         carrying: 0,
         site: None,
         salvaging: None,
+        founding: None,
     }
 }
 

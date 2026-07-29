@@ -97,6 +97,12 @@ impl Orientation {
             .chain(o.enemy_units.iter_mut())
         {
             u.tile = self.tile(u.tile);
+            // A pending found's promise is a footprint, so its anchor
+            // flips like a building's — the site audit compares it
+            // against anchors recorded in oriented space.
+            if let Some((kind, anchor)) = u.founding.as_mut() {
+                *anchor = self.anchor(*anchor, kind.stats().size);
+            }
         }
         for b in o
             .my_buildings

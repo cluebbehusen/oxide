@@ -281,6 +281,7 @@ fn wounded_members_rotate_to_the_rear_permanently() {
         carrying: 0,
         site: None,
         salvaging: None,
+        founding: None,
     };
 
     let mut exec = Executive::new();

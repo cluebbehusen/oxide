@@ -12,7 +12,7 @@
 //! seat-oriented: a learned policy is honest and seat-symmetric by
 //! construction.
 
-use super::executive::{ArmyState, Executive, Intent};
+use super::executive::{ArmyState, Executive, Intent, LoweringRules};
 use super::observation::{Observation, UnitObs};
 use super::orient::Orientation;
 use super::utility::{Dials, UtilityPolicy};
@@ -922,7 +922,27 @@ impl GymBot {
         }
 
         let intents = orientation.emit(intents);
-        commands.extend(self.exec.apply(self.player, &world, &intents));
+        // Fog placement Part B — the reclaim-parity rule: the gym bot
+        // defers a Build exactly when the human's armed click would
+        // (some footprint tile not currently visible; the shell's
+        // `build_defer_needed` makes the same judgment), so remembered
+        // ground founds a walking claim instead of bouncing off the
+        // strict predicate's live-occupancy checks. Own vision is own
+        // knowledge, and the emitted intents are world-space like the
+        // commands. The gym rules also arm the Scout claim guard; the
+        // scripted tiers keep both amendments off — they are the
+        // ladder's anchors and must not move.
+        let vision = state.vision(self.player);
+        let defer_needed = |kind: BuildingKind, anchor: TilePos| {
+            let (w, h) = kind.stats().size;
+            (0..h).any(|dy| (0..w).any(|dx| !vision.visible(anchor.offset(dx, dy))))
+        };
+        commands.extend(self.exec.apply_with(
+            self.player,
+            &world,
+            &intents,
+            &LoweringRules::gym(&defer_needed),
+        ));
         commands
     }
 

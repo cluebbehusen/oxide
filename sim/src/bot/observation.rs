@@ -27,7 +27,9 @@ use serde::{Deserialize, Serialize};
 /// v5: `UnitObs` gained the required `salvaging` field (0.11) — v4
 /// recordings no longer deserialize, and claiming their version would
 /// have made the mismatch fail confusingly instead of cleanly.
-pub const OBSERVATION_VERSION: u32 = 5;
+/// v6: `UnitObs` gained the required `founding` field (0.13, fog
+/// placement Part B) — same rule.
+pub const OBSERVATION_VERSION: u32 = 6;
 
 /// One unit as a bot sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +58,12 @@ pub struct UnitObs {
     /// the repair channel reads it to keep the two verbs off one
     /// target; enemy work orders stay opaque).
     pub salvaging: Option<BuildingId>,
+    /// The deferred claim this unit is walking out to, if any (own
+    /// units only): the promised kind and footprint anchor of a live
+    /// [`Order::Found`]. A walking founder is spoken for — the site
+    /// audit waits on it and the labor choosers keep off it — and no
+    /// site exists to carry an id until the claim lands.
+    pub founding: Option<(BuildingKind, TilePos)>,
 }
 
 /// One building as a bot sees it. Enemy entries may be memories: `seen`
@@ -355,6 +363,10 @@ fn own_unit(u: &crate::state::Unit) -> UnitObs {
             Order::Salvage { building } => Some(building),
             _ => None,
         },
+        founding: match u.order {
+            Order::Found { kind, anchor } => Some((kind, anchor)),
+            _ => None,
+        },
     }
 }
 
@@ -369,6 +381,7 @@ fn enemy_unit(u: &crate::state::Unit) -> UnitObs {
         carrying: 0,     // nor their cargo manifests
         site: None,      // nor their work orders
         salvaging: None, // ditto
+        founding: None,  // ditto
     }
 }
 

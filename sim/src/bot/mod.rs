@@ -26,7 +26,7 @@ pub mod utility;
 
 pub use brain::Brain;
 pub use classic::Bot;
-pub use executive::{Army, ArmyId, ArmyState, Doctrine, Executive, Intent};
+pub use executive::{Army, ArmyId, ArmyState, Doctrine, Executive, Intent, LoweringRules};
 pub use gym::{ACTION_COUNT, Action, Decision, FEATURE_COUNT, FEATURE_NAMES, GYM_VERSION, GymBot};
 pub use neural::{
     DEALT_AGGRESSION_MAX, DEALT_AGGRESSION_MIN, DECISION_STREAM_BASE, LADDER_CADENCE, Level,

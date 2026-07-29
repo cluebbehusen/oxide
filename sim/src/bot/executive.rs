@@ -178,6 +178,50 @@ impl Default for Doctrine {
     }
 }
 
+/// Per-path lowering rules: the freedoms a command source grants
+/// [`Executive::apply_with`] beyond the scripted baseline. The scripted
+/// `Brain` tiers are the ladder's anchors and yardsticks — their
+/// lowering is frozen at [`LoweringRules::scripted`] so their measured
+/// behavior cannot move — while the gym path carries the two
+/// amendments that would move them: deferred founding (fog placement
+/// Part B) and the Scout-arm claim guard. The guard closes the
+/// labor-claims trap (an unconditional Scout replaces the whole
+/// program of a machine an earlier intent already bought); it stays
+/// off the scripted path because their scouting channel follows its
+/// construction claims, and guarding it measurably inverts both
+/// ladder gates.
+pub struct LoweringRules<'a> {
+    /// Judge whether a Build must defer its claim to arrival
+    /// ([`crate::Command::Build`]'s `defer`); `None` never defers.
+    defer_needed: Option<&'a dyn Fn(BuildingKind, TilePos) -> bool>,
+    /// Skip a Scout intent naming a unit an earlier intent claimed
+    /// this think.
+    scout_honors_claims: bool,
+}
+
+impl LoweringRules<'static> {
+    /// The frozen baseline the scripted tiers lower under: instant
+    /// claims only, Scout unconditional.
+    pub fn scripted() -> Self {
+        Self {
+            defer_needed: None,
+            scout_honors_claims: false,
+        }
+    }
+}
+
+impl<'a> LoweringRules<'a> {
+    /// The gym path's rules: `defer_needed` mirrors the judgment the
+    /// shell's armed click makes (some footprint tile not currently
+    /// visible), and Scout keeps off machines the think already spent.
+    pub fn gym(defer_needed: &'a dyn Fn(BuildingKind, TilePos) -> bool) -> Self {
+        Self {
+            defer_needed: Some(defer_needed),
+            scout_honors_claims: true,
+        }
+    }
+}
+
 /// The layer between policies and the sim. One per bot; carries across
 /// ticks (armies are memory, legitimately — a bot is a command source,
 /// not sim state).
@@ -221,13 +265,25 @@ impl Executive {
             .chain(self.rear.iter().copied())
     }
 
-    /// Applies a think's intents, in order, returning the commands they
-    /// lower to. Deterministic given (self, obs, intents).
+    /// Applies a think's intents under the scripted baseline rules —
+    /// see [`Executive::apply_with`].
     pub fn apply(
         &mut self,
         me: PlayerId,
         obs: &Observation,
         intents: &[Intent],
+    ) -> Vec<PlayerCommand> {
+        self.apply_with(me, obs, intents, &LoweringRules::scripted())
+    }
+
+    /// Applies a think's intents, in order, returning the commands they
+    /// lower to. Deterministic given (self, obs, intents, rules).
+    pub fn apply_with(
+        &mut self,
+        me: PlayerId,
+        obs: &Observation,
+        intents: &[Intent],
+        rules: &LoweringRules,
     ) -> Vec<PlayerCommand> {
         let mut out = Vec::new();
         // Units spoken for by an earlier intent in this same think — keeps
@@ -252,7 +308,7 @@ impl Executive {
                                 kind: *kind,
                                 anchor: *anchor,
                                 queue: false,
-                                defer: false,
+                                defer: rules.defer_needed.is_some_and(|f| f(*kind, *anchor)),
                             },
                         });
                     }
@@ -336,6 +392,14 @@ impl Executive {
                     }
                 }
                 Intent::Scout { unit, to } => {
+                    // A plain Move replaces the unit's whole program: a
+                    // Scout naming a machine an earlier intent already
+                    // bought would orphan a paid site or drop a weld.
+                    // Guarded on the gym path only — the scripted
+                    // tiers' scouting follows its construction claims.
+                    if rules.scout_honors_claims && claimed.contains(unit) {
+                        continue;
+                    }
                     claimed.push(*unit);
                     out.push(PlayerCommand {
                         player: me,
@@ -654,6 +718,11 @@ impl Executive {
             .filter(|u| {
                 u.kind == UnitKind::Harvester
                     && u.site.is_none()
+                    // A walking founder is as spoken for as a builder
+                    // on site: re-tasking it silently drops the
+                    // promised claim. Scripted tiers never defer, so
+                    // this arm is dead on their path.
+                    && u.founding.is_none()
                     && !enlisted.contains(&u.id)
                     && !claimed.contains(&u.id)
             })
