@@ -359,6 +359,13 @@ const SENTINEL: UnitStats = UnitStats {
     speed: Fx::lit("0.11"), // 2.2 tiles/s — armies are slightly outrun by harvesters
     radius: Fx::lit("0.35"),
     cost: 90, // 0.10 balance: spam pays — four campaign rounds proved 75 optimal-by-flooding
+    // 0.13 balance: 7.5 s, and load-bearing twice over despite the kind
+    // being faction-shared. Measured at 160 under the 0.13 economy:
+    // classic-bot long-haul stalls past the liveness horizon (8,245
+    // ticks of zero progress), and the mixed-roster marginal reads
+    // ferrous 37.3% [34.9, 39.8] against 48.5% at 150 — Ferrous fields
+    // the heavier Sentinel share, so the shared cadence is not
+    // faction-neutral in play.
     train_ticks: 150, // 7.5 s
     domain: Domain::Ground,
     weapons: &[
@@ -527,8 +534,9 @@ const DARTER: UnitStats = UnitStats {
     speed: Fx::lit("0.17"), // 3.4 tiles/s — the fastest thing in the sky
     radius: Fx::lit("0.3"),
     // 0.13 balance: 90 underpriced the speed — the factorial probe read
-    // Ferrous at 21.5% of mixed-roster victories, and taxing the Darter
-    // to 110 closed it to 46.9% without touching its cadence or hp.
+    // Ferrous at 21.5% of mixed-roster victories under the old prices.
+    // The shipped 100 (with the Sentinel at 150 ticks) measures 48.5%;
+    // the harsher 110 probe read 46.9% and was rejected as overshoot.
     cost: 100,
     train_ticks: 150, // 7.5 s
     domain: Domain::Air,

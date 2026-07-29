@@ -117,6 +117,19 @@ pub(super) fn found(
         unit.progress = 0;
         return;
     }
+    // The crew already FINISHED it: a late crewmate's founding is done,
+    // not stalled — falling through would read its own standing
+    // building as taken ground.
+    let done = state
+        .buildings
+        .iter()
+        .any(|b| b.anchor == anchor && b.kind == kind && b.player == me && b.built);
+    if done {
+        let unit = state.unit_mut(id).expect("caller checked");
+        unit.progress = 0;
+        unit.advance_queue();
+        return;
+    }
     let size = kind.stats().size;
     let tile = state.unit(id).expect("caller checked").tile();
     let inside = tile.x >= anchor.x

@@ -2083,6 +2083,61 @@ fn a_deferred_crew_founds_once_and_stacks() {
     );
 }
 
+/// A crewmate arriving after the crew already FINISHED the building is
+/// done, not stalled: its founding succeeded by other hands, and
+/// reading its own standing building as taken ground would mislabel
+/// success as failure.
+#[test]
+fn a_late_crewmate_finds_its_building_finished_and_calls_it_done() {
+    use oxide_sim::stats::BuildingKind;
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 12, 2),
+        // The straggler starts far enough back that the founder finishes
+        // the cheap turret before it arrives.
+        unit(0, UnitKind::Harvester, 2, 6),
+    ])
+    .build()
+    .unwrap();
+    let crew: Vec<UnitId> = state.units().iter().map(|u| u.id).collect();
+    let straggler = crew[1];
+    let spot = TilePos::new(12, 1);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: crew.clone(),
+            kind: BuildingKind::Turret,
+            anchor: spot,
+            queue: false,
+            defer: true,
+        },
+    )]);
+    run_until(&mut state, 2_000, |s, _| {
+        s.buildings().iter().any(|b| b.anchor == spot && b.built)
+    });
+    assert!(
+        state
+            .buildings()
+            .iter()
+            .any(|b| b.anchor == spot && b.built),
+        "the founder must finish before the straggler arrives for this test to bite"
+    );
+    let events = run_until(&mut state, 600, |s, _| {
+        s.unit(straggler)
+            .is_some_and(|u| matches!(u.order, Order::Idle))
+    });
+    assert!(
+        matches!(state.unit(straggler).unwrap().order, Order::Idle),
+        "the late crewmate ends done, not stalled"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(
+            e,
+            Event::OrderStalled { unit, .. } if *unit == straggler
+        )),
+        "success by other hands is not a stall"
+    );
+}
+
 /// A bank that ran dry before arrival stalls the founder with the
 /// existing own-state reason — affordability is judged when the ground
 /// is claimed, not when the intent is spoken.
