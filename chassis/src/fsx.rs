@@ -59,12 +59,15 @@ where
     guard.0 = None;
     // The rename itself lives in the directory; without syncing it a
     // power loss can roll the swap back to the OLD record (intact —
-    // never truncated — but stale). Unix-only: Windows cannot open a
-    // directory for fsync, and there the rename's durability rides
+    // never truncated — but stale). The failure propagates: a
+    // directory we just wrote into refusing to sync is a signal, and
+    // swallowing it would let a caller report durably-saved over a
+    // rename the disk never committed. Unix-only: Windows cannot open
+    // a directory for fsync, and there the rename's durability rides
     // the OS.
     #[cfg(unix)]
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::File::open(parent).and_then(|d| d.sync_all()).ok();
+        std::fs::File::open(parent).and_then(|d| d.sync_all())?;
     }
     Ok(())
 }

@@ -89,6 +89,16 @@ impl Client {
         let response = String::from_utf8(raw).context("shell response is not UTF-8")?;
         let envelope: ResponseEnvelope =
             serde_json::from_str(response.trim()).context("parsing shell response")?;
+        // id 0 is the transport speaking, not a reply: the server sends
+        // unsolicited refusals (connection cap, oversized frame) under
+        // it, and correlating first would bury the actionable message.
+        if envelope.id == 0 {
+            let message = envelope
+                .into_result()
+                .err()
+                .unwrap_or_else(|| "unsolicited transport notice".to_string());
+            bail!("shell refused the connection: {message}");
+        }
         if envelope.id != id {
             bail!("response id {} for request {id}", envelope.id);
         }

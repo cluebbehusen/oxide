@@ -1187,13 +1187,26 @@ async fn run() -> Result<()> {
                 Ok(_) => std::process::exit(0),
                 Err(err) => {
                     game.paused = true;
+                    // The dialog's home-vs-match classification must
+                    // see THROUGH screens opened from Pause: a quit
+                    // while Settings or Playback sits over a paused
+                    // match still has an unsaved match behind it, and
+                    // a Home-classified Cancel would strand it with no
+                    // route back.
+                    let over_a_match = matches!(mode, Mode::Playing | Mode::Pause)
+                        || settings
+                            .as_ref()
+                            .is_some_and(|s| s.origin == screens::settings::Origin::Pause)
+                        || playback.as_ref().is_some_and(|p| p.from_pause);
                     pause = Some(screens::pause::PauseScreen::open_save_failed(
                         err.player_line(),
                         screens::pause::LeaveVerb::Quit,
                         game.state.result().is_some(),
                         can_surrender(&game),
-                        !matches!(mode, Mode::Playing | Mode::Pause),
+                        !over_a_match,
                     ));
+                    settings = None;
+                    playback = None;
                     mode = Mode::Pause;
                 }
             }
@@ -1589,8 +1602,21 @@ fn handle_request(
             }
         }
         Request::InjectEvent { event } => {
-            injected.push(event);
-            Ok(Reply::Ok)
+            // The hardware funnel admits only printable ASCII into Text
+            // (input.rs char_event); injected events walk the identical
+            // path, so they honor the identical contract — a control
+            // byte or non-ASCII char is refused, not persisted into a
+            // save name the font cannot draw.
+            if let oxide_protocol::RawEvent::Text { ch } = event
+                && !('\u{20}'..='\u{7e}').contains(&ch)
+            {
+                Err(format!(
+                    "text event {ch:?} outside printable ASCII — the funnel refuses it"
+                ))
+            } else {
+                injected.push(event);
+                Ok(Reply::Ok)
+            }
         }
         Request::Screenshot { path } => {
             let path = path

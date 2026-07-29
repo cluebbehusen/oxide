@@ -66,8 +66,8 @@ fi
 # Smoke: the bundle must carry its pieces and tell the truth about its
 # version. set -eu turns any miss into a packaging failure.
 test -x "$APP/Contents/MacOS/Oxide"
-test -f "$APP/Contents/Resources/assets/atlas.png"
-test -f "$APP/Contents/Resources/assets/atlas.json"
+test -f "$APP/Contents/Resources/assets/sprites/atlas.png"
+test -f "$APP/Contents/Resources/assets/sprites/atlas.json"
 test -f "$APP/Contents/Resources/scenarios/skirmish.json"
 grep -q "<string>$VERSION</string>" "$APP/Contents/Info.plist"
 

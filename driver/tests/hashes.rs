@@ -164,13 +164,25 @@ fn shipped_scenarios_match_hash_fixtures() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/goldens/state-hashes.json");
 
     if std::env::var_os("BLESS").is_some() {
-        // A pre-stamp or absent fixture parses to None and blesses
-        // freely — that is the one-time migration path. A parseable one
-        // gates: same-version hash movement on an existing row is
-        // behavior drift wearing a stale version number.
-        let stored: Option<Fixture> = std::fs::read_to_string(&fixture)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok());
+        // An absent fixture or the recognized pre-stamp shape (a plain
+        // name-to-hash map) blesses freely — those are the one-time
+        // migration paths. Anything else that fails to parse is a
+        // CORRUPT fixture, and blessing over it would bypass the drift
+        // gate; refuse instead. A parseable one gates: same-version
+        // hash movement on an existing row is behavior drift wearing a
+        // stale version number.
+        let stored: Option<Fixture> = match std::fs::read_to_string(&fixture) {
+            Err(_) => None,
+            Ok(raw) => match serde_json::from_str::<Fixture>(&raw) {
+                Ok(parsed) => Some(parsed),
+                Err(_) if serde_json::from_str::<BTreeMap<String, String>>(&raw).is_ok() => None,
+                Err(err) => panic!(
+                    "fixture {} is corrupt ({err}) — refusing to bless over it; \
+                     inspect or restore it from git first",
+                    fixture.display()
+                ),
+            },
+        };
         let override_on = std::env::var_os("BLESS_SAME_VERSION").is_some();
         if let Err(refusal) = bless_gate(stored.as_ref(), &actual, override_on) {
             panic!("{refusal}");
