@@ -8,6 +8,7 @@ use crate::render;
 use anyhow::{Context, Result};
 use macroquad::prelude::*;
 use oxide_protocol::{Key, MouseButton, RawEvent};
+use oxide_sim::SIM_VERSION;
 
 /// A playback viewing session: the engine owns truth, the `Game` is a
 /// render vehicle whose state gets replaced after every advance — its
@@ -327,6 +328,86 @@ impl PlaybackSession {
     }
 }
 
+/// The viewer's half of the debug protocol's shared surface. The engine
+/// owns truth, so every state-shaped answer reads `engine.state`
+/// directly — no per-request clone into the render vehicle — and the
+/// driven clock seeks the record instead of simulating.
+impl oxide_protocol::DebugSession for PlaybackSession {
+    fn status(&self) -> oxide_protocol::StatusView {
+        // The clock the caller cares about is the transport's, not the
+        // render vehicle's disconnected fields.
+        oxide_protocol::StatusView {
+            tick: self.engine.state.current_tick(),
+            paused: self.paused,
+            speed: f64::from(self.speed),
+            scenario: self.game.scenario.name.clone(),
+            sim_version: SIM_VERSION.to_string(),
+            result: self.engine.state.result(),
+            recorded_commands: self.game.recorder.commands.len(),
+        }
+    }
+
+    fn state(&self) -> &oxide_sim::State {
+        &self.engine.state
+    }
+
+    fn advance(&mut self, ticks: u64) -> oxide_protocol::AdvancedView {
+        // Seek, don't advance: advance collects the interval's events
+        // for presentation, and a million-tick battle's worth of them is
+        // memory nobody will hear. The reply reports what actually ran —
+        // a replay near its end advances less than asked.
+        //
+        // An external transport op replaces any UI seek in flight: left
+        // pending, the stale target resumes next frame and rewinds the
+        // replay this reply just reported as advanced.
+        self.seeking = None;
+        let before = self.engine.position();
+        self.engine.seek(before.saturating_add(ticks));
+        self.game.drop_presentation();
+        self.game.state = self.engine.state.clone();
+        oxide_protocol::AdvancedView {
+            ticks: self.engine.position() - before,
+            tick: self.engine.state.current_tick(),
+            hash: oxide_protocol::hash_hex(self.engine.state.hash()),
+        }
+    }
+
+    fn present(&mut self, ticks: u64) -> oxide_protocol::PresentedView {
+        self.seeking = None;
+        let before = self.engine.position();
+        let mut events = Vec::new();
+        for _ in 0..ticks {
+            if self.engine.at_end() {
+                break;
+            }
+            // Mirror Game::present_ticks: the previous tick's transients
+            // age by one sim interval, while effects emitted by the
+            // newest tick stay fresh.
+            self.game.update_fx(game::TICK_DT);
+            let tick_events = self.engine.advance(1);
+            self.game.playback_present(&self.engine.state, &tick_events);
+            events.extend(tick_events);
+        }
+        oxide_protocol::PresentedView {
+            ticks: self.engine.position() - before,
+            tick: self.engine.state.current_tick(),
+            hash: oxide_protocol::hash_hex(self.engine.state.hash()),
+            events,
+        }
+    }
+
+    fn set_paused(&mut self, paused: bool) -> Result<(), String> {
+        self.paused = paused;
+        Ok(())
+    }
+
+    fn set_speed(&mut self, multiplier: f64) -> Result<(), String> {
+        oxide_protocol::check_speed(multiplier)?;
+        self.speed = multiplier as f32;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,6 +529,71 @@ mod tests {
             &mut mouse,
         );
         assert!(!pb.scrubbing, "release lets go");
+    }
+
+    #[test]
+    fn the_viewer_answers_the_shared_surface_exactly_like_a_resumed_live_session() {
+        // The invariant the save-is-a-replay design rests on: a replayed
+        // world and a live world resumed from the same record answer the
+        // protocol identically. Both go through the one shared
+        // dispatcher, so agreement here is agreement on the wire.
+        use oxide_protocol::{DebugSession, Reply, Request, StateFilter, dispatch_shared};
+        let scenario = oxide_sim::Scenario::skirmish();
+        let outcome = oxide_kit::runner::run_scenario(&scenario, 120, true, true).expect("run");
+        let mut replay = outcome.replay.expect("recorded");
+        replay.meta.ticks = Some(120);
+        let mut live = Game::from_replay(replay.clone()).expect("the record resumes live");
+        let mut pb = PlaybackSession::from_replay(replay).expect("the record opens for watching");
+        // The driven clock: the viewer seeks to the tick the resumed
+        // session re-simulated to, reporting what actually ran.
+        let Some(Ok(Reply::Advanced(advanced))) =
+            dispatch_shared(&mut pb, &Request::AdvanceTicks { ticks: 500 })
+        else {
+            panic!("advance is a shared request");
+        };
+        assert_eq!(
+            advanced.ticks, 120,
+            "a replay near its end advances less than asked"
+        );
+        assert_eq!(advanced.tick, 120);
+        for request in [
+            Request::StateHash,
+            Request::QueryState {
+                filter: StateFilter {
+                    map: true,
+                    ..StateFilter::default()
+                },
+            },
+            Request::QueryFogView {
+                player: oxide_sim::PlayerId(0),
+            },
+        ] {
+            let a = dispatch_shared(&mut live, &request).expect("shared");
+            let b = dispatch_shared(&mut pb, &request).expect("shared");
+            assert_eq!(a, b, "replies diverged on {request:?}");
+        }
+        // Status: one world, two transports. The world's fields agree;
+        // pause stance, speed, and the recorder are each transport's own
+        // (the viewer records nothing — it is read-only by construction).
+        let live_status = DebugSession::status(&live);
+        let viewer_status = DebugSession::status(&pb);
+        assert_eq!(live_status.tick, viewer_status.tick);
+        assert_eq!(live_status.scenario, viewer_status.scenario);
+        assert_eq!(live_status.sim_version, viewer_status.sim_version);
+        assert_eq!(live_status.result, viewer_status.result);
+        assert_eq!(viewer_status.recorded_commands, 0);
+        // The clock family answers on both, and refuses the same speeds
+        // in the same words.
+        for session in [&mut live as &mut dyn DebugSession, &mut pb] {
+            assert_eq!(
+                dispatch_shared(session, &Request::Pause),
+                Some(Ok(Reply::Ok))
+            );
+            let refusal = dispatch_shared(session, &Request::SetSpeed { multiplier: 1000.0 })
+                .expect("speed is shared")
+                .expect_err("1000x is out of range");
+            assert!(refusal.contains("outside 0.05..=64"));
+        }
     }
 
     #[test]

@@ -24,12 +24,14 @@
 
 pub mod framing;
 pub mod input;
+pub mod session;
 pub mod view;
 
 use oxide_sim::{Command, Event, PlayerCommand, PlayerId};
 use serde::{Deserialize, Serialize};
 
 pub use input::{Key, MouseButton, RawEvent};
+pub use session::{DebugSession, check_speed, dispatch_shared};
 pub use view::{
     BuildingView, CameraView, FogView, GhostView, PlayerView, RememberedTileView, StateFilter,
     StateView, StatusView, UiView, UnitView,

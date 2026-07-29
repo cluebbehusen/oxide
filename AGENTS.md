@@ -21,7 +21,7 @@ screenshots you read back and judge with your own eyes.
 |---|---|---|
 | `chassis` | `chassis/` | Reusable deterministic-sim toolkit: Q32.32 fixed point (`fx`), PCG32 (`rng`), FNV-1a state hashing over postcard bytes (`hash`), tile grid (`grid`), 8-dir A* (`path`), tick-stamped replay format (`replay`), atomic durable file writes (`fsx`). No game rules, no engine deps. |
 | `oxide-sim` | `sim/` | All Oxide game rules. `State::tick(&[PlayerCommand])` is the only way anything happens. The bots live here too, but *outside* the tick pipeline — command sources like the mouse: the shipped **neural ladder** (`bot::NeuralBot`, embedded quantized weights, Easy/Medium/Hard/Expert + a personality knob), the scripted `bot::Brain` tiers (fog-honest, training anchors and benchmarks), and the classic 0.6 `bot::Bot` (what replays without a `bot_config` reproduce). |
-| `oxide-protocol` | `protocol/` | The whole wire contract: JSON-lines envelope, tagged requests/replies, `RawEvent` input events (touch included for the future mobile shell), `StateView` (floats + ASCII map — legible, not exact; exactness is the hash's job), the fog-honest `FogView`, and the framed TCP transport loop (`framing`) both servers run. |
+| `oxide-protocol` | `protocol/` | The whole wire contract: JSON-lines envelope, tagged requests/replies, `RawEvent` input events (touch included for the future mobile shell), `StateView` (floats + ASCII map — legible, not exact; exactness is the hash's job), the fog-honest `FogView`, the framed TCP transport loop (`framing`) both servers run, and the `DebugSession` trait whose `dispatch_shared` is the ONE implementation of the shared request surface (state reads + the driven clock) every session kind — live game, replay viewer, headless session — answers through. |
 | `oxide-shell` | `shell/` | macroquad renderer, the single input funnel, HUD, debug server. Nothing here may affect game outcomes except by staging tick-stamped commands. |
 | `oxide-kit` | `kit/` | Shared engine-side toolkit: the headless scenario/replay `runner`, the replay `playback` engine (viewer and CLI), `stats` extraction (post-match screens, `replay-stats`), and the CPU software `render`er (tiny-skia) behind goldens and map previews. Exists so the shell never depends on the dev harness. |
 | `oxide-driver` | `driver/` | CLI harness: headless scenario runs, replay verification, byte-exact golden images, live-game client, the windowless `session` server, automated smoke test. A library too (`client`/`session`/`smoke`/`audit` plus re-exports of the kit modules). |
@@ -182,7 +182,12 @@ permanently in driven mode, which is exactly what an agent wants —
 `inject-*`, `overlay`) are refused in words rather than faked, and
 everything else answers identically to a live shell, per-reply, which
 `driver/tests/session_parity.rs` asserts (the headless half runs in
-CI; the spawned-shell half runs with the #[ignore]d battery).
+CI; the spawned-shell half runs with the #[ignore]d battery) — and
+since 0.13 agreement is structural, not scripted: all three session
+kinds (live game, replay viewer, headless session) answer the shared
+surface through one `oxide_protocol::DebugSession` dispatch, with
+window-shaped and mutating requests split off by capability and
+refused in words where a session cannot honestly serve them.
 `driver session` screenshots are the CPU schematic renderer, not the
 shell's frame — the reply says `"renderer":"cpu"` so nobody judges
 visual polish from the wrong picture. `query_state` stays

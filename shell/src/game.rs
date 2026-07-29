@@ -635,6 +635,20 @@ impl Game {
         hash_hex(self.state.hash())
     }
 
+    /// The transport's view of this session — also the live half of the
+    /// debug protocol's shared surface.
+    pub fn status_view(&self) -> oxide_protocol::StatusView {
+        oxide_protocol::StatusView {
+            tick: self.state.current_tick(),
+            paused: self.paused,
+            speed: self.speed,
+            scenario: self.scenario.name.clone(),
+            sim_version: SIM_VERSION.to_string(),
+            result: self.state.result(),
+            recorded_commands: self.recorder.commands.len(),
+        }
+    }
+
     /// The local player's fog view (what rendering and targeting honor).
     pub fn my_vision(&self) -> &oxide_sim::Vision {
         self.state.vision(self.human)
@@ -666,6 +680,49 @@ impl Game {
             Some(prev) => prev.lerp(now, alpha),
             None => now,
         }
+    }
+}
+
+/// The live session's half of the debug protocol's shared surface: real
+/// clock, real recorder, sim time driven through the same `do_tick`
+/// funnel every other command source uses.
+impl oxide_protocol::DebugSession for Game {
+    fn status(&self) -> oxide_protocol::StatusView {
+        self.status_view()
+    }
+
+    fn state(&self) -> &State {
+        &self.state
+    }
+
+    fn advance(&mut self, ticks: u64) -> oxide_protocol::AdvancedView {
+        self.advance_ticks(ticks);
+        oxide_protocol::AdvancedView {
+            ticks,
+            tick: self.state.current_tick(),
+            hash: self.hash_hex(),
+        }
+    }
+
+    fn present(&mut self, ticks: u64) -> oxide_protocol::PresentedView {
+        let events = self.present_ticks(ticks);
+        oxide_protocol::PresentedView {
+            ticks,
+            tick: self.state.current_tick(),
+            hash: self.hash_hex(),
+            events,
+        }
+    }
+
+    fn set_paused(&mut self, paused: bool) -> Result<(), String> {
+        self.paused = paused;
+        Ok(())
+    }
+
+    fn set_speed(&mut self, multiplier: f64) -> Result<(), String> {
+        oxide_protocol::check_speed(multiplier)?;
+        self.speed = multiplier;
+        Ok(())
     }
 }
 

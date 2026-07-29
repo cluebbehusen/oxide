@@ -17,7 +17,7 @@
 //! spent five repair arms defending states the types admitted.
 
 use crate::debug_server::IncomingRequest;
-use crate::game::{self, Game, GameReplay, SoundKind};
+use crate::game::{Game, GameReplay, SoundKind};
 use crate::menu::{Menu, PreviewCache};
 use crate::screens::home::HomeScreen;
 use crate::screens::pause::PauseScreen;
@@ -30,11 +30,10 @@ use anyhow::{Context, Result};
 use macroquad::audio::{PlaySoundParams, play_sound};
 use macroquad::prelude::*;
 use oxide_protocol::{
-    AdvancedView, CameraView, FogView, HashView, Key, MouseButton, OverlayView, PresentedView,
-    RawEvent, Reply, Request, ResponseEnvelope, SavedView, ScreenshotView, StateView, StatusView,
-    UiView,
+    CameraView, Key, MouseButton, OverlayView, RawEvent, Reply, Request, ResponseEnvelope,
+    SavedView, ScreenshotView, UiView,
 };
-use oxide_sim::{PlayerCommand, SIM_VERSION, Scenario};
+use oxide_sim::{PlayerCommand, Scenario};
 use std::sync::mpsc::{Receiver, Sender};
 
 /// Which screen owns input this frame, holding that screen's state in
@@ -1208,163 +1207,81 @@ fn write_png(image: &Image, path: &str) -> Result<(u32, u32)> {
     Ok((u32::from(image.width), u32::from(image.height)))
 }
 
+/// The mutating verbs a read-only viewer refuses wholesale — commands
+/// and session swaps would act through the replay onto the hidden match
+/// behind it.
+fn viewer_refuses(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::SendCommand { .. }
+            | Request::LoadScenario { .. }
+            | Request::LoadReplay { .. }
+            | Request::SaveReplay { .. }
+    )
+}
+
 /// Answers one debug request. Screenshots are parked; everything else
 /// responds immediately, between frames, against a settled world.
 ///
-/// Two dispatchers by design, for now: a playback screen answers the
-/// state-shaped questions for the replayed world first, then the live
-/// arm serves everything that fell through. Unifying them behind one
-/// session trait is its own change, after the headless session exists
-/// to generalize over.
+/// One dispatcher over every session kind: the shared surface (state
+/// reads, the driven clock) goes through
+/// [`oxide_protocol::dispatch_shared`] against whichever session owns
+/// the screen — the replay viewer when it is up, the live game
+/// otherwise. What remains here is window-shaped (camera, UI, input,
+/// screenshots, the overlay), answered for the screen the window shows,
+/// or live-mutating (commands, loads, saves), refused wholesale while
+/// the viewer owns the screen.
 fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen, ui_view: &UiView) {
     let IncomingRequest { id, request, reply } = incoming;
-    // A viewer session owns the screen: state-shaped questions and the
-    // driven clock answer for the REPLAYED world, not the hidden match
-    // behind it.
-    if let Screen::Playback(pb) = &mut *screen {
-        if pb.game.state.current_tick() != pb.engine.position() {
-            pb.game.state = pb.engine.state.clone();
-        }
-        let handled: Option<Result<Reply, String>> = match &request {
-            Request::Status => {
-                // The clock the caller cares about is the transport's,
-                // not the hidden Game's disconnected fields.
-                let mut view = status_view(&pb.game);
-                view.paused = pb.paused;
-                view.speed = f64::from(pb.speed);
-                Some(Ok(Reply::Status(view)))
-            }
-            Request::QueryState { filter } => Some(Ok(Reply::State(StateView::capture(
-                &pb.game.state,
-                *filter,
-            )))),
-            Request::QueryFogView { player } => {
-                Some(if (player.0 as usize) < pb.game.state.players().len() {
-                    Ok(Reply::Fog(FogView::capture(&pb.game.state, *player)))
-                } else {
-                    Err(format!("no such player {player}"))
-                })
-            }
-            Request::StateHash => Some(Ok(Reply::Hash(HashView {
-                tick: pb.game.state.current_tick(),
-                hash: oxide_protocol::hash_hex(pb.game.state.hash()),
-            }))),
-            Request::AdvanceTicks { ticks } => {
-                // Same cap as the live clock, and the reply reports what
-                // actually ran — a replay near its end advances less
-                // than asked. Seek, don't advance: advance collects the
-                // interval's events for presentation, and a million-tick
-                // battle's worth of them is memory nobody will hear.
-                let requested = (*ticks).min(oxide_protocol::MAX_ADVANCE_TICKS);
-                // An external transport op replaces any UI seek in
-                // flight: left pending, the stale target resumes next
-                // frame and rewinds the replay this reply just reported
-                // as advanced.
-                pb.seeking = None;
-                let before = pb.engine.position();
-                pb.engine.seek(before.saturating_add(requested));
-                pb.game.drop_presentation();
-                pb.game.state = pb.engine.state.clone();
-                Some(Ok(Reply::Advanced(AdvancedView {
-                    ticks: pb.engine.position() - before,
-                    tick: pb.game.state.current_tick(),
-                    hash: oxide_protocol::hash_hex(pb.game.state.hash()),
-                })))
-            }
-            Request::PresentTicks { ticks } => {
-                let requested = (*ticks).min(oxide_protocol::MAX_PRESENT_TICKS);
-                pb.seeking = None;
-                let before = pb.engine.position();
-                let mut events = Vec::new();
-                for _ in 0..requested {
-                    if pb.engine.at_end() {
-                        break;
-                    }
-                    // Mirror Game::present_ticks: the previous tick's
-                    // transients age by one sim interval, while effects
-                    // emitted by the newest tick stay fresh.
-                    pb.game.update_fx(game::TICK_DT);
-                    let tick_events = pb.engine.advance(1);
-                    pb.game.playback_present(&pb.engine.state, &tick_events);
-                    events.extend(tick_events);
-                }
-                Some(Ok(Reply::Presented(PresentedView {
-                    ticks: pb.engine.position() - before,
-                    tick: pb.game.state.current_tick(),
-                    hash: oxide_protocol::hash_hex(pb.game.state.hash()),
-                    events,
-                })))
-            }
-            Request::Pause => {
-                pb.paused = true;
-                Some(Ok(Reply::Ok))
-            }
-            Request::Resume => {
-                pb.paused = false;
-                Some(Ok(Reply::Ok))
-            }
-            Request::SetSpeed { multiplier } => {
-                if multiplier.is_finite() && (0.05..=64.0).contains(multiplier) {
-                    pb.speed = *multiplier as f32;
-                    Some(Ok(Reply::Ok))
-                } else {
-                    Some(Err(format!("speed multiplier {multiplier} out of range")))
-                }
-            }
-            Request::QueryCamera => {
-                let (lo, hi) = pb.game.camera.world_rect();
-                Some(Ok(Reply::Camera(CameraView {
-                    center: [
-                        f64::from(pb.game.camera.center.x),
-                        f64::from(pb.game.camera.center.y),
-                    ],
-                    zoom: f64::from(pb.game.camera.zoom),
-                    viewport: [f64::from(screen_width()), f64::from(screen_height())],
-                    world_rect: [
-                        f64::from(lo.x),
-                        f64::from(lo.y),
-                        f64::from(hi.x),
-                        f64::from(hi.y),
-                    ],
-                })))
-            }
-            Request::ToggleOverlay => {
-                pb.game.overlay = !pb.game.overlay;
-                Some(Ok(Reply::Overlay(OverlayView {
-                    enabled: pb.game.overlay,
-                })))
-            }
-            // The viewer is read-only: refusing beats acknowledging a
-            // request that would silently mutate the hidden match.
-            Request::SendCommand { .. }
-            | Request::LoadScenario { .. }
-            | Request::LoadReplay { .. }
-            | Request::SaveReplay { .. } => Some(Err(
-                "the viewer is read-only; leave playback first".to_string(),
-            )),
-            _ => None,
+    let shared = {
+        let session: &mut dyn oxide_protocol::DebugSession = match &mut *screen {
+            Screen::Playback(pb) => &mut **pb,
+            _ => &mut app.game,
         };
-        if let Some(outcome) = handled {
-            let envelope = match outcome {
-                Ok(inner) => ResponseEnvelope::ok(id, inner),
-                Err(error) => ResponseEnvelope::err(id, error),
+        oxide_protocol::dispatch_shared(session, &request)
+    };
+    if let Some(outcome) = shared {
+        // Resuming implies gameplay: leave the pause menu too, or the
+        // sim runs behind a menu that still claims it is paused —
+        // Settings opened over a paused match included. A screen
+        // transition, not a session operation, which is why it lives
+        // with the screen's owner instead of inside the trait. (While
+        // the viewer owns the screen no pause menu can be up, so this
+        // matches nothing there.)
+        if matches!(request, Request::Resume) && outcome.is_ok() {
+            let over_pause = match &*screen {
+                Screen::Pause(_) => true,
+                Screen::Settings { back, .. } => matches!(**back, Screen::Pause(_)),
+                _ => false,
             };
-            let _ = reply.send(envelope);
-            return;
+            if over_pause {
+                *screen = Screen::Playing;
+                app.input.reset_transient();
+            }
         }
+        let envelope = match outcome {
+            Ok(inner) => ResponseEnvelope::ok(id, inner),
+            Err(error) => ResponseEnvelope::err(id, error),
+        };
+        reply.send(envelope).ok();
+        return;
+    }
+    // The viewer is read-only: refusing beats acknowledging a request
+    // that would silently mutate the hidden match.
+    if matches!(&*screen, Screen::Playback(_)) && viewer_refuses(&request) {
+        let refusal = "the viewer is read-only; leave playback first".to_string();
+        reply.send(ResponseEnvelope::err(id, refusal)).ok();
+        return;
     }
     let game = &mut app.game;
     let outcome: Result<Reply, String> = match request {
-        Request::Status => Ok(Reply::Status(status_view(game))),
-        Request::QueryState { filter } => Ok(Reply::State(StateView::capture(&game.state, filter))),
-        Request::QueryFogView { player } => {
-            if (player.0 as usize) < game.state.players().len() {
-                Ok(Reply::Fog(FogView::capture(&game.state, player)))
-            } else {
-                Err(format!("no such player {player}"))
-            }
-        }
         Request::QueryCamera => {
+            // Window-shaped answers describe the screen the window
+            // shows — the viewer's render vehicle during playback.
+            let game = match &*screen {
+                Screen::Playback(pb) => &pb.game,
+                _ => &*game,
+            };
             let (lo, hi) = game.camera.world_rect();
             Ok(Reply::Camera(CameraView {
                 center: [
@@ -1382,57 +1299,15 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
             }))
         }
         Request::QueryUi => Ok(Reply::Ui(ui_view.clone())),
-        Request::StateHash => Ok(Reply::Hash(HashView {
-            tick: game.state.current_tick(),
-            hash: game.hash_hex(),
-        })),
-        Request::AdvanceTicks { ticks } => {
-            let ticks = ticks.min(oxide_protocol::MAX_ADVANCE_TICKS);
-            game.advance_ticks(ticks);
-            Ok(Reply::Advanced(AdvancedView {
-                ticks,
-                tick: game.state.current_tick(),
-                hash: game.hash_hex(),
-            }))
-        }
-        Request::PresentTicks { ticks } => {
-            let ticks = ticks.min(oxide_protocol::MAX_PRESENT_TICKS);
-            let events = game.present_ticks(ticks);
-            Ok(Reply::Presented(PresentedView {
-                ticks,
-                tick: game.state.current_tick(),
-                hash: game.hash_hex(),
-                events,
-            }))
-        }
-        Request::Pause => {
-            game.paused = true;
-            Ok(Reply::Ok)
-        }
-        Request::Resume => {
-            game.paused = false;
-            // Resuming implies gameplay: leave the pause menu too, or the
-            // sim runs behind a menu that still claims it is paused —
-            // Settings opened over a paused match included, or the sim
-            // would run under a screen that never ticks it.
-            let over_pause = match &*screen {
-                Screen::Pause(_) => true,
-                Screen::Settings { back, .. } => matches!(**back, Screen::Pause(_)),
-                _ => false,
+        Request::ToggleOverlay => {
+            let game = match &mut *screen {
+                Screen::Playback(pb) => &mut pb.game,
+                _ => game,
             };
-            if over_pause {
-                *screen = Screen::Playing;
-                app.input.reset_transient();
-            }
-            Ok(Reply::Ok)
-        }
-        Request::SetSpeed { multiplier } => {
-            if multiplier.is_finite() && (0.05..=64.0).contains(&multiplier) {
-                game.speed = multiplier;
-                Ok(Reply::Ok)
-            } else {
-                Err(format!("speed multiplier {multiplier} outside 0.05..=64"))
-            }
+            game.overlay = !game.overlay;
+            Ok(Reply::Overlay(OverlayView {
+                enabled: game.overlay,
+            }))
         }
         Request::SendCommand { player, command } => {
             if (player.0 as usize) < game.state.players().len() {
@@ -1460,17 +1335,16 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
             }
         }
         Request::Screenshot { path } => {
-            let path = path
-                .unwrap_or_else(|| format!("screenshots/tick-{}.png", game.state.current_tick()));
+            // The default name carries the tick of the world the frame
+            // will actually show — the replayed one during playback.
+            let shown_tick = match &*screen {
+                Screen::Playback(pb) => pb.engine.state.current_tick(),
+                _ => game.state.current_tick(),
+            };
+            let path = path.unwrap_or_else(|| format!("screenshots/tick-{shown_tick}.png"));
             app.pending_shots
                 .push(PendingScreenshot { id, path, reply });
             return; // responds after the frame renders
-        }
-        Request::ToggleOverlay => {
-            game.overlay = !game.overlay;
-            Ok(Reply::Overlay(OverlayView {
-                enabled: game.overlay,
-            }))
         }
         Request::LoadScenario { path } => Scenario::load(&path)
             .map_err(|err| format!("loading {path}: {err}"))
@@ -1494,7 +1368,7 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
                 *game = keep_flags(fresh, game);
                 *screen = Screen::Playing;
                 app.input.reset_session();
-                Reply::Status(status_view(game))
+                Reply::Status(game.status_view())
             }),
         Request::SaveReplay { path } => {
             game.recorder.meta.ticks = Some(game.state.current_tick());
@@ -1512,24 +1386,26 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
                 Err(err) => Err(format!("saving replay: {err}")),
             }
         }
+        // The shared surface was answered above; listing it keeps this
+        // match exhaustive, so a new protocol request forces a decision
+        // about which side of the capability split it lives on.
+        Request::Status
+        | Request::QueryState { .. }
+        | Request::QueryFogView { .. }
+        | Request::StateHash
+        | Request::AdvanceTicks { .. }
+        | Request::PresentTicks { .. }
+        | Request::Pause
+        | Request::Resume
+        | Request::SetSpeed { .. } => {
+            unreachable!("shared requests are answered by dispatch_shared")
+        }
     };
     let response = match outcome {
         Ok(ok) => ResponseEnvelope::ok(id, ok),
         Err(err) => ResponseEnvelope::err(id, err),
     };
     reply.send(response).ok();
-}
-
-fn status_view(game: &Game) -> StatusView {
-    StatusView {
-        tick: game.state.current_tick(),
-        paused: game.paused,
-        speed: game.speed,
-        scenario: game.scenario.name.clone(),
-        sim_version: SIM_VERSION.to_string(),
-        result: game.state.result(),
-        recorded_commands: game.recorder.commands.len(),
-    }
 }
 
 #[cfg(test)]

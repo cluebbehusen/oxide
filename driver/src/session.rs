@@ -21,8 +21,8 @@ use anyhow::{Context, Result};
 use chassis::replay::Replay;
 use oxide_protocol::framing::{IncomingRequest, Limits, incoming};
 use oxide_protocol::{
-    AdvancedView, FogView, HashView, PresentedView, Reply, Request, ResponseEnvelope, SavedView,
-    ScreenshotView, StateView, StatusView, hash_hex,
+    AdvancedView, DebugSession, PresentedView, Reply, Request, ResponseEnvelope, SavedView,
+    ScreenshotView, StatusView, dispatch_shared, hash_hex,
 };
 use oxide_sim::bot::{SeatBot, seat_bots};
 use oxide_sim::{Event, PlayerCommand, SIM_VERSION, Scenario, State};
@@ -131,70 +131,15 @@ impl Session {
         self.state.tick(&commands).events
     }
 
-    fn status(&self) -> StatusView {
-        StatusView {
-            tick: self.state.current_tick(),
-            // No wall clock exists here: sim time moves only on request,
-            // which reads as permanently paused — the same stance a
-            // driven-mode shell reports.
-            paused: true,
-            speed: 1.0,
-            scenario: self.scenario.name.clone(),
-            sim_version: SIM_VERSION.to_string(),
-            result: self.state.result(),
-            recorded_commands: self.recorder.commands.len(),
-        }
-    }
-
-    /// Answers one request. Every protocol method is either implemented
-    /// or refused with the reason — never silently acknowledged.
+    /// Answers one request. The shared surface (state reads, the driven
+    /// clock) goes through the one protocol dispatcher; every remaining
+    /// method is either implemented here or refused with the reason —
+    /// never silently acknowledged.
     pub fn handle(&mut self, request: Request) -> Result<Reply, String> {
-        const NO_CLOCK: &str = "the headless session has no wall clock; sim time moves only through \
-             advance_ticks and present_ticks";
+        if let Some(outcome) = dispatch_shared(self, &request) {
+            return outcome;
+        }
         match request {
-            Request::Status => Ok(Reply::Status(self.status())),
-            Request::QueryState { filter } => {
-                Ok(Reply::State(StateView::capture(&self.state, filter)))
-            }
-            Request::QueryFogView { player } => {
-                if (player.0 as usize) < self.state.players().len() {
-                    Ok(Reply::Fog(FogView::capture(&self.state, player)))
-                } else {
-                    Err(format!("no such player {player}"))
-                }
-            }
-            Request::StateHash => Ok(Reply::Hash(HashView {
-                tick: self.state.current_tick(),
-                hash: hash_hex(self.state.hash()),
-            })),
-            Request::AdvanceTicks { ticks } => {
-                let ticks = ticks.min(oxide_protocol::MAX_ADVANCE_TICKS);
-                for _ in 0..ticks {
-                    self.step();
-                }
-                Ok(Reply::Advanced(AdvancedView {
-                    ticks,
-                    tick: self.state.current_tick(),
-                    hash: hash_hex(self.state.hash()),
-                }))
-            }
-            Request::PresentTicks { ticks } => {
-                // With no shell there are no transient effects to age;
-                // headless, this is "advance and return the events" —
-                // deliberately the same sim result as the shell's
-                // presented step, which is what the parity test pins.
-                let ticks = ticks.min(oxide_protocol::MAX_PRESENT_TICKS);
-                let mut events = Vec::new();
-                for _ in 0..ticks {
-                    events.extend(self.step());
-                }
-                Ok(Reply::Presented(PresentedView {
-                    ticks,
-                    tick: self.state.current_tick(),
-                    hash: hash_hex(self.state.hash()),
-                    events,
-                }))
-            }
             Request::SendCommand { player, command } => {
                 if (player.0 as usize) < self.state.players().len() {
                     self.pending.push(PlayerCommand { player, command });
@@ -264,8 +209,22 @@ impl Session {
                  already omniscient"
                     .to_string(),
             ),
-            Request::Pause | Request::Resume => Err(NO_CLOCK.to_string()),
-            Request::SetSpeed { .. } => Err(NO_CLOCK.to_string()),
+            // The shared surface was answered above (the clock family
+            // refused from inside the clock methods); listing it keeps
+            // this match exhaustive, so a new protocol request forces a
+            // decision about which side of the capability split it
+            // lives on.
+            Request::Status
+            | Request::QueryState { .. }
+            | Request::QueryFogView { .. }
+            | Request::StateHash
+            | Request::AdvanceTicks { .. }
+            | Request::PresentTicks { .. }
+            | Request::Pause
+            | Request::Resume
+            | Request::SetSpeed { .. } => {
+                unreachable!("shared requests are answered by dispatch_shared")
+            }
         }
     }
 
@@ -288,6 +247,68 @@ impl Session {
             // from the wrong renderer.
             renderer: "cpu".to_string(),
         }))
+    }
+}
+
+const NO_CLOCK: &str = "the headless session has no wall clock; sim time moves only through \
+     advance_ticks and present_ticks";
+
+/// The clockless third of the debug-session family: always in driven
+/// mode, so the pause family is refused from inside the clock methods.
+/// With no shell there are no transient effects to age — `present`
+/// degenerates to "advance and return the events", deliberately the
+/// same sim result as the shell's presented step, which is what the
+/// parity suite pins.
+impl DebugSession for Session {
+    fn status(&self) -> StatusView {
+        StatusView {
+            tick: self.state.current_tick(),
+            // No wall clock exists here: sim time moves only on request,
+            // which reads as permanently paused — the same stance a
+            // driven-mode shell reports.
+            paused: true,
+            speed: 1.0,
+            scenario: self.scenario.name.clone(),
+            sim_version: SIM_VERSION.to_string(),
+            result: self.state.result(),
+            recorded_commands: self.recorder.commands.len(),
+        }
+    }
+
+    fn state(&self) -> &State {
+        &self.state
+    }
+
+    fn advance(&mut self, ticks: u64) -> AdvancedView {
+        for _ in 0..ticks {
+            self.step();
+        }
+        AdvancedView {
+            ticks,
+            tick: self.state.current_tick(),
+            hash: hash_hex(self.state.hash()),
+        }
+    }
+
+    fn present(&mut self, ticks: u64) -> PresentedView {
+        let mut events = Vec::new();
+        for _ in 0..ticks {
+            events.extend(self.step());
+        }
+        PresentedView {
+            ticks,
+            tick: self.state.current_tick(),
+            hash: hash_hex(self.state.hash()),
+            events,
+        }
+    }
+
+    fn set_paused(&mut self, _paused: bool) -> Result<(), String> {
+        Err(NO_CLOCK.to_string())
+    }
+
+    fn set_speed(&mut self, _multiplier: f64) -> Result<(), String> {
+        Err(NO_CLOCK.to_string())
     }
 }
 
