@@ -33,15 +33,19 @@ from league import (
     bounded_style_coefficient,
     comp_entropy,
     composition_probe,
+    expand_faction_pair,
     faction_knob,
     generated_map_families,
     load_incumbent_policy,
+    parse_faction_mix,
     parse_map_mix,
     probe_canary,
     q12_resume_provenance,
+    resolve_faction_mix,
     resolve_map_mix,
     rollout,
     sample_condition,
+    sample_faction_pair,
     sample_map_family,
     style_alignment,
     style_bonus,
@@ -182,15 +186,19 @@ class TestSampleCondition:
 
     def test_faction_is_the_seats_honest_side_never_sampled(self) -> None:
         rng = np.random.default_rng(7)
-        for seat in (0, 1, 2, 3):
+        for faction in (0, 1000):
             for _ in range(100):
-                _, _, faction = sample_condition(rng, seat)
-                assert faction == faction_knob(seat)
+                _, _, actual = sample_condition(rng, faction)
+                assert actual == faction
 
     def test_the_condition_is_exactly_a_three_tuple(self) -> None:
         cond = sample_condition(np.random.default_rng(0), 0)
         assert isinstance(cond, tuple)
         assert len(cond) == 3
+
+    def test_rejects_a_condition_that_lies_about_the_roster(self) -> None:
+        with pytest.raises(ValueError, match="0 or 1000"):
+            sample_condition(np.random.default_rng(0), 1)
 
 
 class TestMapMix:
@@ -269,12 +277,71 @@ class TestMapMix:
         ]
 
 
+class TestFactionMix:
+    def test_parser_normalizes_in_canonical_order(self) -> None:
+        assert parse_faction_mix("CC=.50, ff=.25, fc=.125, cf=.125") == {
+            "ff": 0.25,
+            "fc": 0.125,
+            "cf": 0.125,
+            "cc": 0.5,
+        }
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "",
+            "fc",
+            "ferrous-cupric=1",
+            "fx=1",
+            "fc=one",
+            "fc=-1",
+            "fc=nan",
+            "ff=0,fc=0",
+            "fc=1,FC=2",
+        ],
+    )
+    def test_parser_rejects_ambiguous_or_non_positive_mixes(self, text: str) -> None:
+        with pytest.raises(argparse.ArgumentTypeError):
+            parse_faction_mix(text)
+
+    def test_default_preserves_the_authored_pair_without_spending_rng(self) -> None:
+        mix = resolve_faction_mix(None)
+        assert mix == {"fc": 1.0}
+        actual = np.random.default_rng(9)
+        control = np.random.default_rng(9)
+        assert sample_faction_pair(actual, mix) == "fc"
+        assert actual.integers(1_000_000) == control.integers(1_000_000)
+
+    def test_mixed_draws_are_seeded_and_visit_every_pair(self) -> None:
+        mix = parse_faction_mix("ff=.25,fc=.25,cf=.25,cc=.25")
+        left = np.random.default_rng(81)
+        right = np.random.default_rng(81)
+        left_draws = [sample_faction_pair(left, mix) for _ in range(100)]
+        right_draws = [sample_faction_pair(right, mix) for _ in range(100)]
+        assert left_draws == right_draws
+        assert set(left_draws) == {"ff", "fc", "cf", "cc"}
+
+    @pytest.mark.parametrize(
+        ("pair", "seats", "expected"),
+        [
+            ("fc", 2, "fc"),
+            ("cf", 4, "cfcf"),
+        ],
+    )
+    def test_pair_expands_to_full_seat_order(
+        self, pair: str, seats: int, expected: str
+    ) -> None:
+        assert expand_faction_pair(pair, seats) == expected
+
+
 class _ResetRecorder:
     def __init__(self) -> None:
         self.scenarios: list[str | None] = []
+        self.resets: list[dict[str, object]] = []
 
     def reset(self, *_args: object, **kwargs: object) -> Frame:
         self.scenarios.append(cast("str | None", kwargs.get("scenario")))
+        self.resets.append(dict(kwargs))
         return Frame(False, 0, seats={0: _view(0.1), 1: _view(0.2)})
 
 
@@ -319,6 +386,83 @@ class TestPerEpisodeMapSampling:
 
         assert left_families == right_families
         assert set(left_families) == {"fixed", "random", "grand"}
+
+
+class TestPerEpisodeFactionSampling:
+    @pytest.mark.parametrize(
+        ("kind", "seat", "pair", "expected_code", "expected_conditions"),
+        [
+            ("self", 0, "cf", "cf", {0: 1000, 1: 0}),
+            ("past", 0, "cc", "cc", {0: 1000, 1: 1000}),
+            ("team", 0, "cf", "cfcf", {0: 1000, 2: 1000}),
+            ("team2", 1, "fc", "fcfc", {2: 0}),
+            ("ffa", 3, "fc", "fcfc", {3: 1000}),
+        ],
+    )
+    def test_reset_passes_full_roster_and_faction_correct_conditions(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        kind: str,
+        seat: int,
+        pair: str,
+        expected_code: str,
+        expected_conditions: dict[int, int],
+    ) -> None:
+        monkeypatch.setattr(league, "generate", lambda *_args, **_kwargs: "generated")
+        worker = _ResetRecorder()
+        job = Job(
+            cast("Worker", worker),
+            kind,
+            seat,
+            pathlib.Path("."),
+            np.random.default_rng(19),
+            "cpu",
+            faction_mix={pair: 1.0},
+        )
+        job.reset(50_000)
+
+        reset = worker.resets[-1]
+        assert reset["factions"] == expected_code
+        conditions = cast("dict[int, tuple[int, ...]]", reset["conditions"])
+        assert {s: condition[2] for s, condition in conditions.items()} == (
+            expected_conditions
+        )
+        assert {s: condition[2] for s, condition in job.conditions.items()} == {
+            s: faction
+            for s, faction in expected_conditions.items()
+            if s in job.learner_seats
+        }
+
+    def test_episode_sequence_is_deterministic_and_not_tied_to_seat_parity(
+        self,
+    ) -> None:
+        mix = parse_faction_mix("ff=.25,fc=.25,cf=.25,cc=.25")
+
+        def make_job() -> tuple[Job, _ResetRecorder]:
+            worker = _ResetRecorder()
+            return (
+                Job(
+                    cast("Worker", worker),
+                    "self",
+                    0,
+                    pathlib.Path("."),
+                    np.random.default_rng(23),
+                    "cpu",
+                    faction_mix=mix,
+                ),
+                worker,
+            )
+
+        left, left_worker = make_job()
+        right, right_worker = make_job()
+        for seed in range(50_000, 50_040):
+            left.reset(seed)
+            right.reset(seed)
+
+        left_codes = [cast("str", reset["factions"]) for reset in left_worker.resets]
+        right_codes = [cast("str", reset["factions"]) for reset in right_worker.resets]
+        assert left_codes == right_codes
+        assert set(left_codes) == {"ff", "fc", "cf", "cc"}
 
 
 class TestRollout:

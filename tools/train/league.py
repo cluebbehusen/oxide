@@ -59,6 +59,7 @@ from ppo import gae, ppo_update
 
 TIERS = ["scrapheap", "standard", "veteran", "prime"]
 MAP_FAMILIES = ("fixed", "random", "grand")
+FACTION_PAIRS = ("ff", "fc", "cf", "cc")
 
 # Per-update phase clocks, drained into every log entry — optimization
 # without a stable meter is guessing. Keys: env_sec (worker RPC),
@@ -264,6 +265,83 @@ def parse_map_mix(text: str) -> dict[str, float]:
     }
 
 
+def parse_faction_mix(text: str) -> dict[str, float]:
+    """Parses and normalizes weighted two-seat faction pairings.
+
+    Pairings are ordered west/east. Four-seat modes repeat the sampled
+    pair in seat order, so ``cf`` becomes ``cfcf``. Canonical output
+    order makes equivalent CLI strings spend the seeded stream alike.
+    """
+    parsed: dict[str, float] = {}
+    for item in text.split(","):
+        try:
+            pair, raw_weight = item.split("=", 1)
+        except ValueError as err:
+            raise argparse.ArgumentTypeError(
+                "faction mix must be PAIR=WEIGHT entries separated by commas"
+            ) from err
+        pair = pair.strip().lower()
+        if pair not in FACTION_PAIRS:
+            allowed = ", ".join(FACTION_PAIRS)
+            raise argparse.ArgumentTypeError(
+                f"unknown faction pair {pair!r}; expected one of {allowed}"
+            )
+        if pair in parsed:
+            raise argparse.ArgumentTypeError(f"faction pair {pair!r} appears twice")
+        try:
+            weight = float(raw_weight)
+        except ValueError as err:
+            raise argparse.ArgumentTypeError(
+                f"faction weight for {pair!r} must be a number"
+            ) from err
+        if not np.isfinite(weight) or weight < 0.0:
+            raise argparse.ArgumentTypeError(
+                f"faction weight for {pair!r} must be finite and non-negative"
+            )
+        parsed[pair] = weight
+    total = sum(parsed.values())
+    if total <= 0.0:
+        raise argparse.ArgumentTypeError("faction mix must have positive total weight")
+    return {
+        pair: parsed[pair] / total
+        for pair in FACTION_PAIRS
+        if parsed.get(pair, 0.0) > 0.0
+    }
+
+
+def resolve_faction_mix(
+    faction_mix: dict[str, float] | None,
+) -> dict[str, float]:
+    """Uses the authored Ferrous/Cupric convention when unspecified."""
+    return faction_mix if faction_mix is not None else {"fc": 1.0}
+
+
+def sample_faction_pair(
+    rng: np.random.Generator,
+    faction_mix: dict[str, float],
+) -> str:
+    """Draws one faction pairing from a job-local deterministic stream."""
+    if len(faction_mix) == 1:
+        # The default authored pairing predates faction randomization.
+        # Do not perturb established seeded rollouts to choose a certainty.
+        return next(iter(faction_mix))
+    pairs = tuple(faction_mix)
+    weights = np.asarray([faction_mix[pair] for pair in pairs], dtype=float)
+    weights /= weights.sum()
+    return str(rng.choice(pairs, p=weights))
+
+
+def expand_faction_pair(pair: str, seats: int) -> str:
+    """Expands a sampled duel pairing to the scenario's full seat order."""
+    if pair not in FACTION_PAIRS:
+        raise ValueError(f"unknown faction pair {pair!r}")
+    if seats <= 0 or seats % 2 != 0:
+        raise ValueError(
+            f"faction pairs require a positive even seat count, got {seats}"
+        )
+    return pair * (seats // 2)
+
+
 def resolve_map_mix(
     maps: str,
     map_mix: dict[str, float] | None,
@@ -343,12 +421,17 @@ def faction_knob(seat: int) -> int:
     return 0 if seat % 2 == 0 else 1000
 
 
-def sample_condition(rng: np.random.Generator, seat: int) -> tuple[int, int, int]:
+def sample_condition(
+    rng: np.random.Generator,
+    faction: int,
+) -> tuple[int, int, int]:
     """Per-episode knobs: skill favors the strong end (that end must
     stay sharpest) but visits the whole range; aggression is uniform;
-    faction follows the seat."""
+    faction is the episode's sampled actual roster."""
+    if faction not in (0, 1000):
+        raise ValueError(f"faction knob must be 0 or 1000, got {faction}")
     skill = int(rng.choice([1000, 1000, 850, 700, 550, 400]))
-    return skill, int(rng.integers(0, 1001)), faction_knob(seat)
+    return skill, int(rng.integers(0, 1001)), faction
 
 
 def maybe_blunder(
@@ -423,6 +506,7 @@ class Job:
         maps: str = "fixed",
         map_mix: dict[str, float] | None = None,
         incumbent: nn.Module | None = None,
+        faction_mix: dict[str, float] | None = None,
     ) -> None:
         # seat: 0/1 for duel kinds; 0..3 for ffa.
         self.worker = worker
@@ -432,10 +516,12 @@ class Job:
         self.device = device
         self.maps = maps
         self.map_mix = resolve_map_mix(maps, map_mix)
+        self.faction_mix = resolve_faction_mix(faction_mix)
         self.tier: str | None = None
         self.past: nn.Module | None = None
         self.incumbent = incumbent
         self.map_family: str | None = None
+        self.faction_code: str | None = None
         self.frame: Frame | None = None
         self.conditions: dict[int, tuple[int, ...]] = {}
         # Team episodes truncate per seat: a dead learner's lane pads on
@@ -517,7 +603,17 @@ class Job:
         self.built_bay = set()
         self.style_total = dict.fromkeys(self.learner_seats, 0.0)
         self.style_steps = dict.fromkeys(self.learner_seats, 0)
-        self.conditions = {s: sample_condition(self.rng, s) for s in self.learner_seats}
+        seats = 4 if self.kind in ("ffa", "team", "team2") else 2
+        pair = sample_faction_pair(self.rng, self.faction_mix)
+        self.faction_code = expand_faction_pair(pair, seats)
+        faction_knobs = {
+            seat: 1000 if code == "c" else 0
+            for seat, code in enumerate(self.faction_code)
+        }
+        self.conditions = {
+            seat: sample_condition(self.rng, faction_knobs[seat])
+            for seat in self.learner_seats
+        }
         scenario = None
         if self.kind not in ("ffa", "team", "team2"):
             self.map_family = sample_map_family(self.rng, self.map_mix)
@@ -543,7 +639,9 @@ class Job:
                 tier=self.tier,
                 conditions=self.conditions,
                 scenario=scenario,
+                factions=self.faction_code,
             )
+            self._sync_worker_conditions()
             return
         if self.kind in ("team", "team2"):
             self.map_family = "team"
@@ -557,7 +655,9 @@ class Job:
                 tier=self.tier,
                 conditions=self.conditions,
                 scenario=scenario,
+                factions=self.faction_code,
             )
+            self._sync_worker_conditions()
             return
         if self.kind == "tier":
             self.tier = TIERS[int(self.rng.integers(len(TIERS)))]
@@ -567,7 +667,9 @@ class Job:
                 tier=self.tier or "veteran",
                 conditions=self.conditions,
                 scenario=scenario,
+                factions=self.faction_code,
             )
+            self._sync_worker_conditions()
             return
         if self.kind == "past":
             pool = sorted(self.pool_dir.glob("ckpt-*.pt"))
@@ -581,10 +683,28 @@ class Job:
         all_conds = dict(self.conditions)
         if self.opp_seat is not None:
             # Frozen opponents play straight, under their honest faction.
-            all_conds[self.opp_seat] = (1000, 500, faction_knob(self.opp_seat))
+            all_conds[self.opp_seat] = (
+                1000,
+                500,
+                faction_knobs[self.opp_seat],
+            )
         self.frame = self.worker.reset(
-            seed, control=(0, 1), conditions=all_conds, scenario=scenario
+            seed,
+            control=(0, 1),
+            conditions=all_conds,
+            scenario=scenario,
+            factions=self.faction_code,
         )
+        self._sync_worker_conditions()
+
+    def _sync_worker_conditions(self) -> None:
+        """Keeps learner metadata aligned with Rust-corrected conditions."""
+        corrected = getattr(self.worker, "conditions", None)
+        if not isinstance(corrected, dict):
+            return
+        for seat in self.learner_seats:
+            if seat in corrected:
+                self.conditions[seat] = corrected[seat]
 
     def opponent_action(self, policy_device: str) -> dict[int, int]:
         """Actions for locally-driven seats (empty for self/tier)."""
@@ -624,6 +744,7 @@ def assign_roles(
     maps: str = "fixed",
     map_mix: dict[str, float] | None = None,
     incumbent: nn.Module | None = None,
+    faction_mix: dict[str, float] | None = None,
 ) -> list[Job]:
     """Splits the worker fleet by the mix (largest remainder), seats
     alternating; the assignment is permanent for the run."""
@@ -660,6 +781,7 @@ def assign_roles(
                     maps,
                     map_mix,
                     incumbent,
+                    faction_mix,
                 )
             )
             i += 1
@@ -1132,6 +1254,13 @@ def main() -> None:
         "fixed=.25,random=.25,grand=.50; overrides --maps",
     )
     ap.add_argument(
+        "--faction-mix",
+        type=parse_faction_mix,
+        default=None,
+        help="per-episode ordered faction-pair weights, for example "
+        "ff=.25,fc=.25,cf=.25,cc=.25; four-seat modes repeat the pair",
+    )
+    ap.add_argument(
         "--mix",
         default="self=0.45,past=0.20,tier=0.20,rusher=0.15",
         help="opponent kind weights",
@@ -1165,6 +1294,7 @@ def main() -> None:
     mix = {k: float(v) for k, v in (kv.split("=") for kv in args.mix.split(","))}
     try:
         map_mix = resolve_map_mix(args.maps, args.map_mix)
+        faction_mix = resolve_faction_mix(args.faction_mix)
         incumbent = load_incumbent_policy(mix, args.incumbent, device)
     except ValueError as err:
         ap.error(str(err))
@@ -1237,6 +1367,7 @@ def main() -> None:
             args.maps,
             map_mix,
             incumbent,
+            faction_mix,
         )
         for update in range(start_update + 1, start_update + args.updates + 1):
             t0 = time.time()
@@ -1314,6 +1445,7 @@ def main() -> None:
                 "update": update,
                 "kinds": sorted(j.kind for j in jobs),
                 "map_mix": map_mix,
+                "faction_mix": faction_mix,
                 "resume_q12_recovered": resume_q12_recovered,
                 "episodes": len(finals),
                 "avg_final": round(float(np.mean(finals)), 3) if finals else None,
