@@ -1063,38 +1063,44 @@ pub(crate) fn draw_rally_marker(game: &Game) {
 }
 
 pub(crate) fn draw_drag_rect(game: &Game, input: &InputState) {
-    if let Some(origin) = input.drag_origin {
-        let now = input.mouse;
-        if origin.distance(now) > crate::input::drag_threshold(ui_scale()) {
-            let lo = origin.min(now);
-            let size = (origin - now).abs();
-            draw_rectangle_lines(lo.x, lo.y, size.x, size.y, 1.5, BONE);
-            draw_rectangle(
-                lo.x,
-                lo.y,
-                size.x,
-                size.y,
-                Color::new(0.9, 0.88, 0.84, 0.08),
+    let Some(origin) = input.drag_origin else {
+        return;
+    };
+    let now = input.mouse;
+    let feedback = crate::input::drag_feedback(origin, now, ui_scale());
+    if feedback == crate::input::DragFeedback::Still {
+        return;
+    }
+    let lo = origin.min(now);
+    let size = (origin - now).abs();
+    draw_rectangle_lines(lo.x, lo.y, size.x, size.y, 1.5, BONE);
+    draw_rectangle(
+        lo.x,
+        lo.y,
+        size.x,
+        size.y,
+        Color::new(0.9, 0.88, 0.84, 0.08),
+    );
+    if feedback != crate::input::DragFeedback::Selection {
+        return;
+    }
+    // Live preview starts only once release would commit a box-select.
+    let a = game.camera.to_world(lo);
+    let b = game.camera.to_world(lo + size);
+    for unit in game.state.units() {
+        if unit.player != game.human {
+            continue;
+        }
+        let p = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
+        if p.x >= a.x && p.x <= b.x && p.y >= a.y && p.y <= b.y {
+            let screen = game.camera.to_screen(p);
+            draw_circle_lines(
+                screen.x,
+                screen.y,
+                unit.kind.stats().radius.to_num::<f32>() * game.camera.zoom + 3.0,
+                1.5,
+                BONE_FAINT,
             );
-            // Live preview: who would this select?
-            let a = game.camera.to_world(lo);
-            let b = game.camera.to_world(lo + size);
-            for unit in game.state.units() {
-                if unit.player != game.human {
-                    continue;
-                }
-                let p = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
-                if p.x >= a.x && p.x <= b.x && p.y >= a.y && p.y <= b.y {
-                    let screen = game.camera.to_screen(p);
-                    draw_circle_lines(
-                        screen.x,
-                        screen.y,
-                        unit.kind.stats().radius.to_num::<f32>() * game.camera.zoom + 3.0,
-                        1.5,
-                        BONE_FAINT,
-                    );
-                }
-            }
         }
     }
 }

@@ -260,18 +260,19 @@ replayable end-to-end and can never desync from its own history. The
 trade-off: replays only reproduce on the sim version that wrote them.
 
 The shell wraps all of this: quitting a live match autosaves it and
-Home offers Continue; the pause menu's Save Game writes a named save
-whenever you like (the name rides in the record's metadata, so no
-filename rules to trip over); the Saves & Replays shelf lists every
+Home offers Continue; while a match is running, the pause menu's Save
+Game writes a named save (the name rides in the record's metadata, so
+no filename rules to trip over); the Saves & Replays shelf lists every
 record with honest version badges in two sections — saves load back
 into a live session, finished matches watch — and any row deletes
-with a deliberate double-X. Once a match is decided the pause
-menu's Watch Replay plays it back (replays are an end-of-match
+with a deliberate double-X. Once a match is decided, Save Game gives
+way to Watch Replay, which plays it back (replays are an end-of-match
 affair — mid-match playback would scout the enemy through the fog);
 and `--watch file.json` opens any record in the
-read-only viewer — pause, seek both directions, speed steps, free
-camera. Seeking backward restores an in-memory checkpoint and
-re-simulates, so the viewer can never diverge from the record.
+read-only viewer — pause, seek both directions,
+0.5x/1x/2x/4x/8x speed steps, free camera. Seeking backward restores
+an in-memory checkpoint and re-simulates, so the viewer can never
+diverge from the record.
 
 Saves land atomically (a crash mid-write can never truncate a record),
 and a save that fails — full disk, read-only folder — says so: quit

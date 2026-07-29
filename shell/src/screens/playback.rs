@@ -132,7 +132,7 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2) {
         return;
     }
     let full = format!(
-        "PLAYBACK  {} / {}  ·  {}x{}  ·  Space pause · PgUp/PgDn seek · Home/End · 1/2/3 speed · Esc leave",
+        "PLAYBACK  {} / {}  ·  {}x{}  ·  Space pause · PgUp/PgDn seek · Home/End · 1-5 speed · Esc leave",
         pb.engine.position(),
         pb.engine.total(),
         pb.speed,
@@ -246,7 +246,9 @@ impl PlaybackSession {
                     Key::End => seek_to = Some(self.engine.total()),
                     Key::Num1 => self.speed = 0.5,
                     Key::Num2 => self.speed = 1.0,
-                    Key::Num3 => self.speed = 4.0,
+                    Key::Num3 => self.speed = 2.0,
+                    Key::Num4 => self.speed = 4.0,
+                    Key::Num5 => self.speed = 8.0,
                     Key::Up => self.held[0] = true,
                     Key::Down => self.held[1] = true,
                     Key::Left => self.held[2] = true,
@@ -469,8 +471,19 @@ mod tests {
         assert!(!pb.paused);
         key(&mut pb, Key::Space);
         assert!(pb.paused, "space pauses");
-        key(&mut pb, Key::Num3);
-        assert!((pb.speed - 4.0).abs() < f32::EPSILON, "3 is 4x");
+        for (key_code, speed) in [
+            (Key::Num1, 0.5),
+            (Key::Num2, 1.0),
+            (Key::Num3, 2.0),
+            (Key::Num4, 4.0),
+            (Key::Num5, 8.0),
+        ] {
+            key(&mut pb, key_code);
+            assert!(
+                (pb.speed - speed).abs() < f32::EPSILON,
+                "{key_code:?} selects {speed}x"
+            );
+        }
         key(&mut pb, Key::End);
         assert_eq!(pb.engine.position(), 60, "End seeks to the tail");
         key(&mut pb, Key::Home);

@@ -2256,6 +2256,41 @@ fn the_type_strip_cuts_a_mixed_selection_both_ways() {
     );
 }
 
+#[test]
+fn drag_feedback_starts_before_box_selection_does() {
+    let origin = vec2(100.0, 100.0);
+    assert_eq!(
+        drag_feedback(origin, origin, 1.0),
+        DragFeedback::Still,
+        "an idle press draws nothing"
+    );
+    assert_eq!(
+        drag_feedback(origin, origin + vec2(1.0, 0.0), 1.0),
+        DragFeedback::Outline,
+        "the first movement draws the box"
+    );
+    assert_eq!(
+        drag_feedback(origin, origin + vec2(6.0, 0.0), 1.0),
+        DragFeedback::Outline,
+        "the click boundary remains visual feedback only"
+    );
+    assert_eq!(
+        drag_feedback(origin, origin + vec2(6.1, 0.0), 1.0),
+        DragFeedback::Selection,
+        "unit preview begins exactly when release would box-select"
+    );
+    assert_eq!(
+        drag_feedback(origin, origin + vec2(12.0, 0.0), 2.0),
+        DragFeedback::Outline,
+        "the semantic boundary still follows UI scale"
+    );
+    assert_eq!(
+        drag_feedback(origin, origin + vec2(12.1, 0.0), 2.0),
+        DragFeedback::Selection,
+        "scaled movement beyond the boundary previews the selection"
+    );
+}
+
 /// A mouse already in flight when the button lands: the press must
 /// anchor the box where it LANDED, and the box must be drawable on the
 /// very frame of the press. The polled adapter could do neither — it

@@ -1,5 +1,5 @@
-//! The pause menu and its destructive-choice confirmation — one screen
-//! object. Windowless update; the main loop performs the session verbs
+//! The pause menu and its confirmation dialogs — one screen object.
+//! Windowless update; the main loop performs the session verbs
 //! (resume, watch, settings, restart, main menu, quit) and draws.
 
 use crate::game::SoundKind;
@@ -15,7 +15,8 @@ use oxide_protocol::{Key, RawEvent};
 pub enum Row {
     /// Back to the match.
     Resume,
-    /// Write a named save (non-destructive; never confirms).
+    /// Write a named save while the match is still running
+    /// (non-destructive; never confirms).
     SaveGame,
     /// Watch the session so far (decided matches only).
     WatchReplay,
@@ -48,13 +49,16 @@ impl Row {
 }
 
 /// The rows the current match state offers, in display order. Watch
-/// Replay belongs to decided matches; Surrender to running ones where
-/// the seat still has a voice — a resigned or eliminated spectator is
-/// shown no verb the sim would only reject.
+/// Replay belongs to decided matches; Save Game and Surrender to
+/// running ones, with Surrender further limited to a seat that still
+/// has a voice — a resigned or eliminated spectator is shown no verb
+/// the sim would only reject.
 fn rows(finished: bool, can_surrender: bool) -> Vec<Row> {
-    let mut rows = vec![Row::Resume, Row::SaveGame];
+    let mut rows = vec![Row::Resume];
     if finished {
         rows.push(Row::WatchReplay);
+    } else {
+        rows.push(Row::SaveGame);
     }
     rows.push(Row::Settings);
     if !finished && can_surrender {
@@ -74,8 +78,8 @@ pub enum LeaveVerb {
     Quit,
 }
 
-/// What a pause frame decided. Destructive verbs only ever emerge
-/// after the confirmation step.
+/// What a pause frame decided. Confirmed verbs only ever emerge after
+/// the confirmation step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Out {
     /// Still paused.
@@ -112,15 +116,15 @@ pub enum Out {
     Home,
 }
 
-/// The pause screen: its menu, plus the armed destructive row while
-/// the confirmation dialog is up.
+/// The pause screen: its menu, plus the armed row while a confirmation
+/// dialog is up.
 pub struct PauseScreen {
     /// The live menu (pause rows, the two-row confirm dialog, or the
     /// save-failure dialog).
     pub menu: Menu,
     /// The displayed rows, in menu order.
     rows: Vec<Row>,
-    /// Which destructive row is awaiting confirmation, if any.
+    /// Which row is awaiting confirmation, if any.
     confirming: Option<Row>,
     /// The save-failure dialog, if a leave verb's autosave refused.
     save_failed: Option<SaveFailed>,
@@ -154,8 +158,8 @@ struct SaveFailed {
 
 fn confirm_menu(row: Row) -> Menu {
     let verb = row.label();
-    // Cancel sits first and preselected: confirming destruction takes
-    // a deliberate second motion, never a double-tap.
+    // Cancel sits first and preselected: a consequential choice takes a
+    // deliberate second motion, never a double-tap.
     Menu::new(
         format!("{}?", verb.to_uppercase()),
         vec!["Cancel".to_string(), verb.to_string()],
@@ -278,12 +282,12 @@ impl PauseScreen {
         } else if self.naming.is_some() {
             "type a name · Enter saves · Esc cancels"
         } else if let Some(row) = self.confirming {
-            // Surrender ends the match rather than discarding it — its
-            // dialog names the real consequence.
-            if row == Row::Surrender {
-                "this concedes the match"
-            } else {
-                "this throws the current match away"
+            match row {
+                Row::Surrender => "this concedes the match",
+                Row::Restart => "progress is discarded and the match starts over",
+                Row::MainMenu => "the match is saved before returning home",
+                Row::Quit => "the match is saved before quitting",
+                Row::Resume | Row::SaveGame | Row::WatchReplay | Row::Settings => scenario_name,
             }
         } else if let Some(notice) = &self.notice {
             notice
@@ -407,11 +411,11 @@ impl PauseScreen {
             Some(Row::SaveGame) => Out::SaveGame,
             Some(Row::WatchReplay) => Out::WatchReplay,
             Some(Row::Settings) => Out::Settings,
-            Some(destructive) => {
-                // Surrender, Restart, Main Menu, and Quit all end or
-                // throw away a live match — each asks first.
-                self.confirming = Some(destructive);
-                self.menu = confirm_menu(destructive);
+            Some(confirmed) => {
+                // Surrender, Restart, Main Menu, and Quit each ask
+                // before carrying out their distinct consequence.
+                self.confirming = Some(confirmed);
+                self.menu = confirm_menu(confirmed);
                 Out::Stay
             }
             None if escaped => Out::Resume,
@@ -455,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn destructive_rows_confirm_with_cancel_preselected() {
+    fn consequential_rows_confirm_with_cancel_preselected() {
         let mut p = PauseScreen::open(false, true);
         assert_eq!(activate(&mut p, "Restart"), Out::Stay, "Restart only arms");
         assert!(p.confirming(), "the dialog is up");
@@ -478,6 +482,19 @@ mod tests {
     }
 
     #[test]
+    fn confirmation_copy_names_the_real_consequence() {
+        for (label, consequence) in [
+            ("Restart", "progress is discarded and the match starts over"),
+            ("Main Menu", "the match is saved before returning home"),
+            ("Quit", "the match is saved before quitting"),
+        ] {
+            let mut p = PauseScreen::open(false, true);
+            assert_eq!(activate(&mut p, label), Out::Stay, "{label} only arms");
+            assert_eq!(p.subtitle("map"), consequence, "{label} consequence");
+        }
+    }
+
+    #[test]
     fn escape_resumes_from_the_menu_but_only_cancels_the_dialog() {
         let mut p = PauseScreen::open(false, true);
         assert_eq!(drive(&mut p, Key::Escape), Out::Resume);
@@ -495,6 +512,10 @@ mod tests {
     #[test]
     fn resume_needs_no_confirmation_and_watch_exists_only_after_the_end() {
         let mut p = PauseScreen::open(true, false);
+        assert!(
+            !p.menu.items.iter().any(|i| i == "Save Game"),
+            "a finished match is a replay, not a resumable named save"
+        );
         assert_eq!(drive(&mut p, Key::Enter), Out::Resume);
         let mut p = PauseScreen::open(true, false);
         assert_eq!(activate(&mut p, "Watch Replay"), Out::WatchReplay);
@@ -504,6 +525,10 @@ mod tests {
         assert!(
             !p.menu.items.iter().any(|i| i == "Watch Replay"),
             "mid-match playback would be a fog-free scout of the enemy"
+        );
+        assert!(
+            p.menu.items.iter().any(|i| i == "Save Game"),
+            "a running match can be saved by name"
         );
         assert_eq!(activate(&mut p, "Restart"), Out::Stay, "Restart arms");
         assert!(p.confirming());
@@ -570,23 +595,21 @@ mod tests {
 
     #[test]
     fn save_game_never_confirms_and_bare_enter_saves_the_suggestion() {
-        for finished in [false, true] {
-            let mut p = PauseScreen::open(finished, true);
-            assert_eq!(activate(&mut p, "Save Game"), Out::SaveGame);
-            assert!(!p.confirming(), "saving destroys nothing — no dialog");
-            p.begin_naming("skirmish · t100".to_string());
-            assert!(p.naming());
-            assert_eq!(
-                p.menu.items[0], "skirmish · t100_",
-                "prefilled, with a static caret"
-            );
-            // The Start-preselected doctrine: Enter alone commits the
-            // suggested name without any typing.
-            assert_eq!(
-                drive(&mut p, Key::Enter),
-                Out::Save("skirmish · t100".to_string())
-            );
-        }
+        let mut p = PauseScreen::open(false, true);
+        assert_eq!(activate(&mut p, "Save Game"), Out::SaveGame);
+        assert!(!p.confirming(), "saving destroys nothing — no dialog");
+        p.begin_naming("skirmish · t100".to_string());
+        assert!(p.naming());
+        assert_eq!(
+            p.menu.items[0], "skirmish · t100_",
+            "prefilled, with a static caret"
+        );
+        // The Start-preselected doctrine: Enter alone commits the
+        // suggested name without any typing.
+        assert_eq!(
+            drive(&mut p, Key::Enter),
+            Out::Save("skirmish · t100".to_string())
+        );
     }
 
     #[test]

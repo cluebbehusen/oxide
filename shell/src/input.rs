@@ -14,7 +14,7 @@ use oxide_protocol::{Key, MouseButton, RawEvent};
 use oxide_sim::{Command, UnitId};
 
 /// Logical pixels of mouse travel under which a press+release counts as a
-/// click (scaled by dpi at use).
+/// click (scaled with the user-facing UI at use).
 const CLICK_SLOP: f32 = 6.0;
 
 fn click_slop(ui: f32) -> f32 {
@@ -25,6 +25,28 @@ fn click_slop(ui: f32) -> f32 {
 /// exactly what selects as one.
 pub fn drag_threshold(ui: f32) -> f32 {
     click_slop(ui)
+}
+
+/// How much feedback a live selection drag should show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DragFeedback {
+    /// The pointer has not moved from the press.
+    Still,
+    /// The pointer moved, but release would still count as a click.
+    Outline,
+    /// Release would box-select, so preview the units inside too.
+    Selection,
+}
+
+/// Classifies visual drag feedback without changing click-vs-drag semantics.
+pub(crate) fn drag_feedback(origin: Vec2, at: Vec2, ui: f32) -> DragFeedback {
+    if origin == at {
+        DragFeedback::Still
+    } else if origin.distance(at) <= drag_threshold(ui) {
+        DragFeedback::Outline
+    } else {
+        DragFeedback::Selection
+    }
 }
 
 /// World-unit pick radius around a unit's center.
