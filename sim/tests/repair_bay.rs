@@ -193,6 +193,76 @@ fn the_aura_heals_the_ring_to_whole_and_bills_the_welders_exact_price() {
 }
 
 #[test]
+fn overlapping_bays_stack_the_heal_and_telescope_the_bill_once() {
+    // Two bays whose auras both cover the patient's parking spot: the
+    // heals stack (2 hp per pulse) and the bill must telescope across
+    // them as ONE meter — each bay pricing from start-of-tick hp
+    // double-charged (or skipped) the shared interval.
+    let mut scenario = arena(
+        vec![
+            unit(0, UnitKind::Harvester, FAR.x, FAR.y),
+            unit(1, UnitKind::Scuttler, 17, 10),
+        ],
+        [Faction::Ferrous, Faction::Cupric],
+        500,
+        true,
+    );
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::RepairBay,
+        x: BAY_ANCHOR.0 + 3,
+        y: BAY_ANCHOR.1,
+    });
+    let mut state = scenario.build().unwrap();
+    assert_eq!(
+        state
+            .buildings()
+            .iter()
+            .filter(|b| b.kind == BuildingKind::RepairBay && b.built)
+            .count(),
+        2,
+        "the second bay must actually stand"
+    );
+    let (patient, raider) = (state.units()[0].id, state.units()[1].id);
+    let hurt = wound(&mut state, patient, raider, 20);
+    let bank = state.player(PlayerId(0)).scrap;
+    // Park between the two footprints, inside both auras.
+    let overlap = TilePos::new(BAY_ANCHOR.0 + 2, BAY_ANCHOR.1 + 3);
+    state.tick(&[walk(0, vec![patient], overlap)]);
+    // The march grazes single-coverage fringe (auras heal walkers
+    // too), so anchor the stacking measurement to ARRIVAL, then to a
+    // pulse boundary.
+    run_until(&mut state, 2_000, |s, _| {
+        s.unit(patient).unwrap().tile() == overlap
+            && s.unit(patient).unwrap().order == oxide_sim::Order::Idle
+    });
+    run_until(&mut state, 32, |s, _| {
+        s.current_tick()
+            .is_multiple_of(oxide_sim::stats::REPAIR_BAY_PERIOD)
+    });
+    // One full pulse window with both auras engaged heals two steps.
+    let h0 = state.unit(patient).unwrap().hp;
+    let max = UnitKind::Harvester.stats().max_hp;
+    if h0 + 2 * oxide_sim::stats::REPAIR_BAY_STEP <= max {
+        for _ in 0..oxide_sim::stats::REPAIR_BAY_PERIOD {
+            state.tick(&[]);
+        }
+        assert_eq!(
+            state.unit(patient).unwrap().hp,
+            h0 + 2 * oxide_sim::stats::REPAIR_BAY_STEP,
+            "both auras must stack on the shared patient"
+        );
+    }
+    run_until(&mut state, 4_000, |s, _| s.unit(patient).unwrap().hp == max);
+    let billed = bank - state.player(PlayerId(0)).scrap;
+    assert_eq!(
+        billed,
+        aura_bill(UnitKind::Harvester, hurt, max),
+        "overlapping auras must bill the meter exactly once end to end"
+    );
+}
+
+#[test]
 fn a_broke_owner_gets_no_healing() {
     let units = vec![
         unit(0, UnitKind::Harvester, FAR.x, FAR.y),

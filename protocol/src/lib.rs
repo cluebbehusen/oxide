@@ -59,6 +59,13 @@ pub const ADVANCE_TICKS_PER_BUDGET_SECOND: u64 = 1_000;
 /// legitimate request comes within three orders of magnitude of this.
 pub const MAX_FRAME_BYTES: usize = 1 << 20;
 
+/// Ceiling on a RESPONSE line a client should accept. Requests are
+/// hand-sized and [`MAX_FRAME_BYTES`] bounds them; replies scale with
+/// the world (a deep `query_state`, a long presented-event drain), so
+/// the client's ceiling is generous rather than symmetric — a server
+/// never refuses its own legal reply.
+pub const MAX_RESPONSE_BYTES: usize = 64 << 20;
+
 /// Everything a client can ask of a running shell.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]

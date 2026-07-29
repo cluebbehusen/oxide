@@ -18,6 +18,8 @@ import numpy as np
 import pytest
 import torch
 
+import league
+import oxide_gym
 from league import (
     BUILD_BAY_ACTION,
     FAB_BUILT,
@@ -656,3 +658,23 @@ class TestTerminalObservations:
         assert rew[2][1] == pytest.approx(-1.0 + 0.05), (
             "dead seat: the frozen last view carried its fab"
         )
+
+
+def test_the_potential_prices_wounds_like_buildings() -> None:
+    """Welding converts scrap into hp; the wound claim at a third keeps
+    that a value TRANSFER in the potential, not free creation — the
+    same rule my_building_value bought for Salvage."""
+    base = [0] * oxide_gym.FEATURES
+    base[league.F["my_strength"]] = 300
+
+    wounded = list(base)
+    wounded[league.F["damaged_unit_value"]] = 90
+    assert league.potential(wounded) == pytest.approx(
+        league.potential(base) + (90 / 3.0) / 500.0
+    ), "a wounded army holds a third-rate claim on its lost material"
+
+    # A weld that recovers exactly the strength the wound's scrap buys
+    # at the same third is potential-neutral: value moved forms.
+    healed = list(base)
+    healed[league.F["my_strength"]] = 300 + 30
+    assert league.potential(healed) == pytest.approx(league.potential(wounded))

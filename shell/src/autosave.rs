@@ -156,24 +156,42 @@ fn write_named(game: &Game, name: &str, dir: &Path, saved_at: u64) -> Result<Pat
     record.meta.kind = Some("save".to_string());
     record.meta.saved_at = Some(saved_at);
     let path = free_path(dir, "save", game.state.current_tick(), game.scenario.seed);
-    record.save(&path).map_err(|source| SaveError::Write {
-        path: path.clone(),
-        source,
-    })?;
+    if let Err(source) = record.save(&path) {
+        // The reservation placeholder must not survive a failed write:
+        // an empty .json on the shelf helps nobody.
+        std::fs::remove_file(&path).ok();
+        return Err(SaveError::Write { path, source });
+    }
     Ok(path)
 }
 
-/// A collision-free `{prefix}-{tick}` path in `dir`: same-tick records
-/// from other sessions walk a seed-suffixed counter instead of being
-/// overwritten.
+/// A collision-free `{prefix}-{tick}` path in `dir`, RESERVED by
+/// `create_new` (O_EXCL): a bare `exists()` probe races a second
+/// session saving the same tick — both pass, and the later atomic
+/// rename silently overwrites the first player's record. The zero-byte
+/// claim is replaced by the atomic write that follows (and removed if
+/// that write fails).
 fn free_path(dir: &Path, prefix: &str, tick: u64, seed: u64) -> PathBuf {
     let mut path = dir.join(format!("{prefix}-{tick:010}.json"));
     let mut n = 0u32;
-    while path.exists() && n < 1000 {
+    loop {
+        match std::fs::File::create_new(&path) {
+            Ok(_) => return path,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            // Unwritable directory and friends: hand the candidate
+            // back and let the real write report the real error.
+            Err(_) => return path,
+        }
         n += 1;
+        if n >= 1000 {
+            // Practically unreachable; the pid ends the walk uniquely.
+            return dir.join(format!(
+                "{prefix}-{tick:010}-{seed}-p{}.json",
+                std::process::id()
+            ));
+        }
         path = dir.join(format!("{prefix}-{tick:010}-{seed}-{n}.json"));
     }
-    path
 }
 
 /// Wall-clock provenance for record metadata — never consumed by any

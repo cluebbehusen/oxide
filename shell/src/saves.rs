@@ -106,7 +106,12 @@ fn scan(dir: &std::path::Path, out: &mut Vec<(std::time::SystemTime, ReplayEntry
         let modified = replay
             .meta
             .saved_at
-            .map(|secs| std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+            // checked: a copied or hand-edited record can carry any
+            // u64, and an out-of-range timestamp must fall back to
+            // mtime, not panic the whole shelf scan.
+            .and_then(|secs| {
+                std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(secs))
+            })
             .or_else(|| std::fs::metadata(&path).and_then(|m| m.modified()).ok())
             .unwrap_or(std::time::UNIX_EPOCH);
         let date = modified

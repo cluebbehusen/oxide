@@ -309,6 +309,50 @@ fn a_walking_patient_is_chased_not_welded() {
 }
 
 #[test]
+fn a_move_landing_mid_weld_rides_no_farewell_heal() {
+    // Stationarity is intent: the tick a Move lands, the patient's
+    // order is set but its path is not built until its own brain runs
+    // — on the parity where the welder thinks first, path.is_none()
+    // used to let one heal ride the departure. Both parities must
+    // refuse it.
+    for offset in [0u32, 1u32] {
+        let mut state = arena(cast()).build().unwrap();
+        let (welder, patient, raider) = (
+            state.units()[0].id,
+            state.units()[1].id,
+            state.units()[2].id,
+        );
+        let hurt = wound(&mut state, patient, raider, 40);
+        state.tick(&[cmd(
+            0,
+            Command::RepairUnit {
+                units: vec![welder],
+                target: patient,
+                queue: false,
+            },
+        )]);
+        run_until(&mut state, 600, |s, _| s.unit(patient).unwrap().hp > hurt);
+        for _ in 0..offset {
+            state.tick(&[]);
+        }
+        let before = state.unit(patient).unwrap().hp;
+        state.tick(&[cmd(
+            0,
+            Command::Move {
+                units: vec![patient],
+                goal: TilePos::new(12, 2),
+                queue: false,
+            },
+        )]);
+        assert_eq!(
+            state.unit(patient).unwrap().hp,
+            before,
+            "no heal may land on the departure tick (offset {offset})"
+        );
+    }
+}
+
+#[test]
 fn fire_wins_the_tick_and_the_dead_forfeit_their_welds() {
     // A patient under enough fire dies mid-weld: buffered heals land
     // only on machines the volley left standing, so the torch never

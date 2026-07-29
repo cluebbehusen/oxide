@@ -68,22 +68,26 @@ impl Client {
         self.writer.write_all(line.as_bytes())?;
         self.writer.flush()?;
 
-        // Bounded like the server side: a wedged or hostile peer that
-        // streams a newline-free response must not grow this
-        // allocation without limit.
+        // Bounded, but at the RESPONSE ceiling: replies legitimately
+        // dwarf the request-line cap (a deep query_state is not a
+        // hand-typed line), while a wedged or hostile peer still must
+        // not grow this allocation without limit.
         let mut raw = Vec::new();
         let read = std::io::BufRead::read_until(
-            &mut std::io::Read::take(&mut self.reader, oxide_protocol::MAX_FRAME_BYTES as u64 + 1),
+            &mut std::io::Read::take(
+                &mut self.reader,
+                oxide_protocol::MAX_RESPONSE_BYTES as u64 + 1,
+            ),
             b'\n',
             &mut raw,
         )?;
         if read == 0 {
             bail!("shell closed the connection");
         }
-        if raw.len() > oxide_protocol::MAX_FRAME_BYTES {
+        if raw.len() > oxide_protocol::MAX_RESPONSE_BYTES {
             bail!(
-                "shell response exceeded the {} byte frame limit",
-                oxide_protocol::MAX_FRAME_BYTES
+                "shell response exceeded the {} byte response limit",
+                oxide_protocol::MAX_RESPONSE_BYTES
             );
         }
         let response = String::from_utf8(raw).context("shell response is not UTF-8")?;

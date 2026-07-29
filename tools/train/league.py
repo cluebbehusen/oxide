@@ -111,11 +111,16 @@ def potential(raw: list[int]) -> float:
     # cost (roughly the strength their price buys in units), so
     # Salvage moves value between forms instead of climbing a
     # unit-only potential for free — sell-Bastion-train-scuttlers was
-    # monotone positive before this term existed.
+    # monotone positive before this term existed. Wounds enter at the
+    # same third for the same reason: healing raises hp-weighted
+    # strength while spending scrap, and without the wound claim the
+    # weld verbs read as free material creation — the v6 slot exists
+    # precisely to price what welding recovers.
     my_strength = raw[F["my_strength"]]
     harvesters = raw[F["my_harvesters"]]
     buildings = raw[F["my_building_value"]] / 3.0
-    return (my_strength + 25 * harvesters + buildings) / 500.0
+    wounds = raw[F["damaged_unit_value"]] / 3.0
+    return (my_strength + 25 * harvesters + buildings + wounds) / 500.0
 
 
 def style_reward(raw: list[int], aggression: int) -> float:

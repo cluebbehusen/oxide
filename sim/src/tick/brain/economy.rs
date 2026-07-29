@@ -282,7 +282,16 @@ pub(super) fn repair_unit(
     // Reading the patient's path mid-phase is deliberate: both machines
     // are the same seat's, so the parity-alternating brain order leaks
     // no cross-seat edge, and the read is a pure function of the tick.
-    let (t_pos, t_tile, t_walking) = (t.pos, t.tile(), t.path.is_some());
+    // Stationarity is INTENT, not just a standing path: a Move that
+    // landed this very tick has set the order while the patient's
+    // brain (later in id order) has not yet built its path, and
+    // path.is_some() alone would let one heal ride the departure.
+    let t_walking = t.path.is_some()
+        || matches!(
+            t.order,
+            Order::Move { .. } | Order::AttackMove { .. } | Order::Found { .. }
+        );
+    let (t_pos, t_tile) = (t.pos, t.tile());
     let stats = t.kind.stats();
     let (basis, ramp, ramp_ticks) = (stats.cost, stats.max_hp, stats.train_ticks);
     let reach = crate::stats::REPAIR_REACH;

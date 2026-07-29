@@ -1307,6 +1307,21 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                     .push((crate::game::SoundKind::Denied, None));
                 return true;
             };
+            // A machine cannot weld itself: if the picked patient is
+            // the only selected welder, the sim would reject after the
+            // ping — refuse honestly at arm time instead.
+            let has_other_welder = game.selection.units.iter().any(|id| {
+                *id != target
+                    && game.state.unit(*id).is_some_and(|u| {
+                        u.kind == oxide_sim::UnitKind::Harvester && u.player == game.human
+                    })
+            });
+            if !has_other_welder {
+                game.toast("weld needs another harvester in hand");
+                game.sounds_pending
+                    .push((crate::game::SoundKind::Denied, None));
+                return true;
+            }
             let units = game.selection.units.clone();
             game.issue(Command::RepairUnit {
                 units,

@@ -477,6 +477,9 @@ fn building_view_redacted(b: &Building) -> BuildingView {
         queue: None,
         ticks_remaining: None,
         rally: None,
+        // A scaffold's stage is drawn on every screen; a BUILT
+        // producer's meter is training progress no enemy panel shows.
+        progress: if b.built { 0 } else { b.progress },
         ..building_view(b)
     }
 }
@@ -618,6 +621,9 @@ mod tests {
                     assert_eq!(b.queue, None);
                     assert_eq!(b.ticks_remaining, None);
                     assert_eq!(b.rally, None);
+                    if b.built {
+                        assert_eq!(b.progress, 0, "training progress is fog's to hide");
+                    }
                 }
                 return;
             }

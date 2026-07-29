@@ -405,6 +405,11 @@ fn repair_bay_aura(state: &mut State, heals: &mut Vec<PendingUnitHeal>) {
         .map(|b| b.id)
         .collect();
     let radius = crate::stats::REPAIR_BAY_RADIUS;
+    // Steps already in flight per patient this pulse: overlapping
+    // auras stack in resolution, so a later bay must price from the
+    // hp earlier bays already queued — reading start-of-tick hp made
+    // every bay bill (or skip) the same first interval.
+    let mut in_flight: std::collections::BTreeMap<UnitId, u32> = std::collections::BTreeMap::new();
     for bay in bays {
         let Some(b) = state.building(bay) else {
             continue;
@@ -424,17 +429,23 @@ fn repair_bay_aura(state: &mut State, heals: &mut Vec<PendingUnitHeal>) {
         for id in patients {
             let u = state.unit(id).expect("just filtered");
             let stats = u.kind.stats();
-            let step = crate::stats::REPAIR_BAY_STEP.min(stats.max_hp - u.hp);
+            let queued = in_flight.get(&id).copied().unwrap_or(0);
+            let healed = (u.hp + queued).min(stats.max_hp);
+            let step = crate::stats::REPAIR_BAY_STEP.min(stats.max_hp - healed);
+            if step == 0 {
+                continue; // earlier bays already carry this one to whole
+            }
             let millis = |hp: u32| -> u64 {
                 u64::from(hp) * u64::from(stats.cost) * crate::stats::REPAIR_COST_PERMILLE
                     / u64::from(stats.max_hp)
             };
-            let due = millis(u.hp + step).div_ceil(1000) - millis(u.hp).div_ceil(1000);
+            let due = millis(healed + step).div_ceil(1000) - millis(healed).div_ceil(1000);
             let bank = state.player(owner).scrap;
             if u64::from(bank) < due {
                 continue; // broke for this patient; cheaper coins may still land
             }
             state.player_mut(owner).scrap = bank - due as u32;
+            in_flight.insert(id, queued + step);
             heals.push(PendingUnitHeal {
                 unit: id,
                 step,
