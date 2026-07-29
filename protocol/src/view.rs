@@ -97,15 +97,21 @@ pub struct UnitView {
     pub hp: u32,
     /// Scrap on board.
     pub carrying: u32,
-    /// Current intent, as the sim's own tagged serialization.
-    pub order: Order,
+    /// Current intent, as the sim's own tagged serialization. `None`
+    /// means intent is not knowable through this view — the fog view
+    /// redacts hostile programs; a player sees a machine, never its
+    /// mind. Omniscient captures always fill it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<Order>,
     /// Orders waiting behind the active one, in execution order — agents
     /// verify queues and patrol circuits from this, not just a count.
+    /// Empty whenever `order` is redacted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queue: Vec<Order>,
-    /// Whether the queue loops (a patrol circuit).
-    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
-    pub patrolling: bool,
+    /// Whether the queue loops (a patrol circuit); `None` when intent
+    /// is redacted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patrolling: Option<bool>,
 }
 
 /// One building.
@@ -121,8 +127,11 @@ pub struct BuildingView {
     pub anchor: [i32; 2],
     /// Hit points.
     pub hp: u32,
-    /// Production queue, front first.
-    pub queue: Vec<UnitKind>,
+    /// Production queue, front first. `None` means not knowable
+    /// through this view (the fog view redacts hostile production);
+    /// omniscient captures always fill it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<Vec<UnitKind>>,
     /// Ticks until `queue[0]` finishes (absent when idle).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ticks_remaining: Option<u32>,
@@ -248,7 +257,13 @@ impl FogView {
                 .units()
                 .iter()
                 .filter(|u| !state.hostile(player, u.player) || vision.visible(u.tile()))
-                .map(unit_view)
+                .map(|u| {
+                    if state.hostile(player, u.player) {
+                        unit_view_redacted(u)
+                    } else {
+                        unit_view(u)
+                    }
+                })
                 .collect(),
             buildings: state
                 .buildings()
@@ -256,7 +271,13 @@ impl FogView {
                 .filter(|b| {
                     !state.hostile(player, b.player) || b.tiles().any(|t| vision.visible(t))
                 })
-                .map(building_view)
+                .map(|b| {
+                    if state.hostile(player, b.player) {
+                        building_view_redacted(b)
+                    } else {
+                        building_view(b)
+                    }
+                })
                 .collect(),
             ghosts: vision
                 .ghosts()
@@ -413,9 +434,21 @@ fn unit_view(u: &Unit) -> UnitView {
         tile: [u.tile().x, u.tile().y],
         hp: u.hp,
         carrying: u.carrying,
-        order: u.order,
+        order: Some(u.order),
         queue: u.queue.iter().copied().collect(),
-        patrolling: u.looping,
+        patrolling: Some(u.looping),
+    }
+}
+
+/// A hostile machine as the viewer actually sees it: body, position,
+/// wounds, and visible cargo — never its mind. Orders, queue, and the
+/// patrol flag are what fog exists to hide.
+fn unit_view_redacted(u: &Unit) -> UnitView {
+    UnitView {
+        order: None,
+        queue: Vec::new(),
+        patrolling: None,
+        ..unit_view(u)
     }
 }
 
@@ -426,7 +459,7 @@ fn building_view(b: &Building) -> BuildingView {
         kind: b.kind,
         anchor: [b.anchor.x, b.anchor.y],
         hp: b.hp,
-        queue: b.queue.iter().copied().collect(),
+        queue: Some(b.queue.iter().copied().collect()),
         ticks_remaining: b
             .queue
             .front()
@@ -434,6 +467,17 @@ fn building_view(b: &Building) -> BuildingView {
         rally: b.rally.map(|r| [r.x, r.y]),
         built: b.built,
         progress: b.progress,
+    }
+}
+
+/// A hostile building as the viewer sees it: hull, scaffold stage, and
+/// wounds — never its production queue or rally point.
+fn building_view_redacted(b: &Building) -> BuildingView {
+    BuildingView {
+        queue: None,
+        ticks_remaining: None,
+        rally: None,
+        ..building_view(b)
     }
 }
 
@@ -541,6 +585,48 @@ mod tests {
     }
 
     #[test]
+    fn the_fog_view_shows_hostile_bodies_but_never_their_minds() {
+        let mut state = oxide_sim::Scenario::skirmish().build().unwrap();
+        // March a seat-1 machine into seat 0's sight so a hostile row
+        // exists, with a live order program behind it.
+        let intruder = state
+            .units()
+            .iter()
+            .find(|u| u.player.0 == 1)
+            .expect("seat 1 has starting units")
+            .id;
+        let own_tile = state.units()[0].tile();
+        state.tick(&[oxide_sim::PlayerCommand {
+            player: oxide_sim::PlayerId(1),
+            command: oxide_sim::Command::Move {
+                units: vec![intruder],
+                goal: own_tile,
+                queue: false,
+            },
+        }]);
+        for _ in 0..2_000 {
+            let fog = FogView::capture(&state, oxide_sim::PlayerId(0));
+            if let Some(row) = fog.units.iter().find(|u| u.player == 1) {
+                assert_eq!(row.order, None, "a hostile program is fog's to hide");
+                assert!(row.queue.is_empty());
+                assert_eq!(row.patrolling, None);
+                let own = fog.units.iter().find(|u| u.player == 0).unwrap();
+                assert!(own.order.is_some(), "own intent stays first-class");
+                // Hostile buildings under sight carry no production
+                // intelligence either.
+                for b in fog.buildings.iter().filter(|b| b.player == 1) {
+                    assert_eq!(b.queue, None);
+                    assert_eq!(b.ticks_remaining, None);
+                    assert_eq!(b.rally, None);
+                }
+                return;
+            }
+            state.tick(&[]);
+        }
+        panic!("the intruder never reached seat 0's sight");
+    }
+
+    #[test]
     fn unit_view_exposes_queued_orders() {
         let mut state = oxide_sim::Scenario::skirmish().build().unwrap();
         let mover = state.units()[0].id;
@@ -557,7 +643,7 @@ mod tests {
         }]);
         let view = StateView::capture(&state, StateFilter::default());
         let u = view.units.iter().find(|u| u.id == mover.0).unwrap();
-        assert!(u.patrolling);
+        assert_eq!(u.patrolling, Some(true));
         assert_eq!(u.queue.len(), 2, "the remaining circuit legs are visible");
     }
 
@@ -574,7 +660,7 @@ mod tests {
         }]);
         let view = StateView::capture(&state, StateFilter::default());
         let b = view.buildings.iter().find(|b| b.id == foundry.0).unwrap();
-        assert_eq!(b.queue, vec![UnitKind::Harvester]);
+        assert_eq!(b.queue.as_deref(), Some([UnitKind::Harvester].as_slice()));
         let remaining = b.ticks_remaining.unwrap();
         assert!(remaining > 0 && remaining <= UnitKind::Harvester.stats().train_ticks);
     }
