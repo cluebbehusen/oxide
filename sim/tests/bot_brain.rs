@@ -238,13 +238,13 @@ fn the_army_lifecycle_stages_pushes_engages_and_withdraws() {
 }
 
 #[test]
-fn wounded_members_rotate_to_the_rear_permanently() {
+fn wounded_members_rejoin_after_full_repair() {
     // Executive semantics, pinned against a synthetic observation (the
     // executive is a pure function of what it is shown): a member below
     // the 35% pullback line and out of contact is Move-ordered to the
-    // rear, dropped from the army, and never re-drafted; a wounded
-    // member still in a fight is left in the line — the executive never
-    // thins a live engagement.
+    // rear and dropped from the army; a wounded member still in a fight
+    // is left in the line, and a fully healed rear member can be drafted
+    // again.
     use oxide_sim::UnitId;
     use oxide_sim::bot::UnitObs;
 
@@ -335,7 +335,45 @@ fn wounded_members_rotate_to_the_rear_permanently() {
     for army in exec.armies() {
         assert!(
             !army.members.contains(&UnitId(0)),
-            "the rear line stays the rear line"
+            "a wounded rear-line member stays out of drafts"
         );
     }
+
+    // The frozen scripted path retains even an externally healed rear
+    // member, so its ladder behavior does not move.
+    let healed = obs_with(vec![sentinel(0, 0, 1, 1, 100), sentinel(1, 0, 4, 2, 100)]);
+    let _ = exec.maintain(me, &healed, TilePos::new(1, 1));
+    let _ = exec.apply(
+        me,
+        &healed,
+        &[Intent::FormArmy {
+            staging: TilePos::new(5, 3),
+            size: 5,
+        }],
+    );
+    assert!(
+        exec.armies()
+            .iter()
+            .all(|army| !army.members.contains(&UnitId(0))),
+        "scripted maintenance preserves the frozen rear line"
+    );
+
+    // A repair-capable policy releases the unit at full health. A
+    // partial repair would leave it enlisted there and avoid oscillating
+    // around the pullback threshold.
+    let _ = exec.maintain_repair_capable(me, &healed, TilePos::new(1, 1));
+    let _ = exec.apply(
+        me,
+        &healed,
+        &[Intent::FormArmy {
+            staging: TilePos::new(5, 3),
+            size: 5,
+        }],
+    );
+    assert!(
+        exec.armies()
+            .iter()
+            .any(|army| army.members.contains(&UnitId(0))),
+        "a fully healed veteran returns to the draft pool"
+    );
 }

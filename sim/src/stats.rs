@@ -825,6 +825,22 @@ pub const FOUNDRY_RECOVERY_PERIOD: u64 = 10;
 /// charged 25-47% and would have made salvage refunds a printer).
 pub const REPAIR_COST_PERMILLE: u64 = 850;
 
+pub(crate) fn unit_repair_debit(kind: UnitKind, progress: u32) -> u32 {
+    let stats = kind.stats();
+    let owed = |ticks: u32| {
+        let welded = u64::from(stats.max_hp) * u64::from(ticks) / u64::from(stats.train_ticks);
+        welded * u64::from(stats.cost) * REPAIR_COST_PERMILLE / u64::from(stats.max_hp)
+    };
+    u32::try_from(owed(progress + 1).div_ceil(1000) - owed(progress).div_ceil(1000))
+        .expect("one unit-repair tick debit fits u32")
+}
+
+pub(crate) fn unit_repair_opening_debit(kind: UnitKind) -> u32 {
+    let stats = kind.stats();
+    let first_weld_tick = stats.train_ticks.div_ceil(stats.max_hp);
+    unit_repair_debit(kind, first_weld_tick - 1)
+}
+
 /// Per-mille of a building's cost refunded per hp drained by salvage
 /// (against max_hp). A full-health salvage banks exactly cost*800/1000.
 pub const SALVAGE_REFUND_PERMILLE: u64 = 800;

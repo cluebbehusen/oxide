@@ -289,7 +289,7 @@ impl GymBot {
         self.remember(&world);
         let rear = rear_tile(&world);
         let mut projected = self.exec.clone();
-        let _ = projected.maintain(self.player, &world, rear);
+        let _ = projected.maintain_repair_capable(self.player, &world, rear);
         let obs = orientation.observe(&world);
         let home = home_tile(&obs);
         let armies: Vec<_> = projected
@@ -642,8 +642,7 @@ impl GymBot {
             // v6: the weld turns on machines. The patient pick carries
             // its own welder check (a free harvester inside the leash),
             // so `builder_free` alone would both under- and over-claim.
-            mask[Action::RepairUnit as usize] =
-                obs.scrap > 0 && unit_patient(&obs, &enlisted).is_some();
+            mask[Action::RepairUnit as usize] = unit_patient(&obs, &enlisted).is_some();
             mask[Action::AirRaid as usize] = enemy_site.is_some()
                 && obs.my_units.iter().any(|u| {
                     let stats = u.kind.stats();
@@ -689,7 +688,7 @@ impl GymBot {
     pub fn step(&mut self, state: &State, action: Action) -> Vec<PlayerCommand> {
         let (world, orientation) = self.observe(state);
         let rear = rear_tile(&world);
-        let mut commands = self.exec.maintain(self.player, &world, rear);
+        let mut commands = self.exec.maintain_repair_capable(self.player, &world, rear);
 
         let obs = orientation.observe(&world);
         let Some(home) = home_tile(&obs) else {
@@ -902,7 +901,8 @@ impl GymBot {
             Action::RepairUnit => {
                 // Same pick as the mask promised: most recoverable
                 // purchase value first, then the map-origin/id ties,
-                // leashed to a welder actually nearby.
+                // leashed to a welder actually nearby and funded
+                // through its first paid step.
                 if let Some(unit) = unit_patient(&obs, &enlisted) {
                     intents.push(Intent::RepairUnit { unit });
                 }
@@ -1039,8 +1039,8 @@ fn rear_tile(world: &Observation) -> TilePos {
 /// The weld verb's patient: the own ground machine with the most
 /// purchase value recoverable from its wound (air patients refuse in
 /// the sim), a free harvester inside [`REPAIR_UNIT_RADIUS`], and another
-/// free harvester left for the economy, ties toward the map origin then
-/// id.
+/// free harvester left for the economy, with enough bank for its first
+/// paid weld step; ties toward the map origin then id.
 /// Fog-safe: own-state only. Both the mask and the lowering call this,
 /// so what the policy observed as legal is what the step emits.
 /// Whether a harvester is genuinely free for new labor: not on a site,
@@ -1086,7 +1086,10 @@ fn unit_patient(obs: &Observation, enlisted: &[crate::ids::UnitId]) -> Option<cr
         .iter()
         .filter(|u| {
             let stats = u.kind.stats();
-            stats.domain == Domain::Ground && u.hp < stats.max_hp && welder_near(u)
+            stats.domain == Domain::Ground
+                && u.hp < stats.max_hp
+                && obs.scrap >= crate::stats::unit_repair_opening_debit(u.kind)
+                && welder_near(u)
         })
         .min_by(|a, b| {
             let a_stats = a.kind.stats();

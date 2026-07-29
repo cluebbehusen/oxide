@@ -135,23 +135,16 @@ pub enum Intent {
     },
 }
 
-/// Fraction of max hp below which a member is rotated out of its army to
-/// the rear — permanently. Gym v6 put the weld verb on the bot's menu,
-/// but this doctrine still prices wounds as unhealable: the shipped
-/// bridge artifact never welds, and a doctrine that assumes healing goes
-/// wrong two ways (`rear` never releases ids, and a welded veteran
-/// should re-draft). Re-pricing pullback and the rout margin for a
-/// policy that actually heals is the retraining campaign's work —
-/// measured, not assumed.
+/// Fraction of max hp below which a member is rotated out of its army.
+/// A fully healed rear-line veteran becomes draftable again; requiring
+/// full health prevents pullback/re-draft oscillation around this line.
 const PULLBACK_NUM: u32 = 35;
 const PULLBACK_DEN: u32 = 100;
 
 /// Withdraw only from catastrophe: below half the local enemy strength.
-/// Nothing in this world outruns its pursuers and nothing the bot does
-/// heals, so a merely-losing fight finished on the spot costs less than
-/// a rout — disengaging under fire is free damage handed to the enemy.
-/// This margin shares the pullback rule's expiry: bot-reachable healing
-/// re-prices the rout.
+/// Nothing in this world outruns its pursuers, so a merely-losing fight
+/// finished on the spot costs less than a rout — disengaging under fire
+/// is free damage handed to the enemy.
 const WITHDRAW_MARGIN_NUM: u32 = 1;
 const WITHDRAW_MARGIN_DEN: u32 = 2;
 /// Radius (tiles) around the army centroid scored as "the fight".
@@ -229,8 +222,8 @@ impl<'a> LoweringRules<'a> {
 pub struct Executive {
     armies: Vec<Army>,
     next_army: u32,
-    /// Rear-line members rotated out for good (kept so re-drafts skip
-    /// them; pruned when they die).
+    /// Rear-line members kept out of drafts. Repair-capable policies
+    /// release them at full health; frozen scripted paths retain them.
     rear: Vec<UnitId>,
     /// Which combat habits this executive practices.
     doctrine: Doctrine,
@@ -555,21 +548,47 @@ impl Executive {
         out
     }
 
-    /// The per-think housekeeping no policy should have to ask for: prune
-    /// the dead, rotate the wounded to the rear, advance army states, and
-    /// withdraw from fights that have turned. `rear` is where the wounded
-    /// go — somewhere behind the lines, not the army's rally (which may
-    /// be the fight itself). Returns the commands the transitions demand.
+    /// The frozen scripted path's per-think housekeeping. Rear-line
+    /// veterans remain reserved even if an external effect heals them.
     pub fn maintain(
         &mut self,
         me: PlayerId,
         obs: &Observation,
         rear: TilePos,
     ) -> Vec<PlayerCommand> {
+        self.maintain_with_rejoin(me, obs, rear, false)
+    }
+
+    /// Per-think housekeeping for a policy that can deliberately heal
+    /// units. A fully healed rear-line veteran returns to the draft pool.
+    pub fn maintain_repair_capable(
+        &mut self,
+        me: PlayerId,
+        obs: &Observation,
+        rear: TilePos,
+    ) -> Vec<PlayerCommand> {
+        self.maintain_with_rejoin(me, obs, rear, true)
+    }
+
+    /// Prune the dead, rotate the wounded to the rear, advance army
+    /// states, and withdraw from fights that have turned. `rear` is
+    /// behind the lines, not the army's rally (which may be the fight).
+    fn maintain_with_rejoin(
+        &mut self,
+        me: PlayerId,
+        obs: &Observation,
+        rear: TilePos,
+        rejoin_healed: bool,
+    ) -> Vec<PlayerCommand> {
         let mut out = Vec::new();
         let doctrine = self.doctrine;
         let alive = |id: UnitId| obs.my_units.iter().any(|u| u.id == id);
-        self.rear.retain(|id| alive(*id));
+        self.rear.retain(|id| {
+            obs.my_units
+                .iter()
+                .find(|u| u.id == *id)
+                .is_some_and(|u| !rejoin_healed || u.hp < u.kind.stats().max_hp)
+        });
         for army in &mut self.armies {
             army.members.retain(|id| alive(*id));
             if army.members.is_empty() {
@@ -577,10 +596,10 @@ impl Executive {
             }
             let in_contact = enemies_near(obs, &army.members, CONTACT_RADIUS);
 
-            // Rotate the badly wounded out — permanently — but only
-            // between fights. Mid-engagement a wounded machine still
-            // deals full damage, and at equal speeds it cannot escape a
-            // pursuer anyway; pulling it then just thins the line.
+            // Rotate the badly wounded out, but only between fights.
+            // Mid-engagement a wounded machine still deals full damage,
+            // and at equal speeds it cannot escape a pursuer anyway;
+            // pulling it then just thins the line.
             if doctrine.pullback && !in_contact {
                 let mut pulled: Vec<UnitId> = Vec::new();
                 army.members.retain(|id| {

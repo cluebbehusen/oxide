@@ -470,6 +470,51 @@ fn repair_unit_preserves_one_economy_worker() {
 }
 
 #[test]
+fn repair_unit_requires_its_first_paid_step() {
+    use oxide_sim::UnitKind;
+
+    let scenario = weld_arena(vec![
+        spec(0, UnitKind::Harvester, 4, 2),
+        spec(0, UnitKind::Harvester, 5, 2),
+        spec(0, UnitKind::Sentinel, 6, 2), // patient: opening debit is 2
+    ]);
+    let state_at = |scrap| {
+        let mut scenario = scenario.clone();
+        scenario.players[0].scrap = scrap;
+        let state = scenario.build().unwrap();
+        let mut json = serde_json::to_value(state).unwrap();
+        json["units"][2]["hp"] = serde_json::json!(20);
+        serde_json::from_value::<oxide_sim::State>(json).unwrap()
+    };
+
+    let mut gym = GymBot::new(PlayerId(0));
+    let state = state_at(1);
+    let d = gym.decision(&state);
+    assert!(
+        !d.mask[Action::RepairUnit as usize],
+        "one scrap cannot reach a Sentinel weld's first paid hp step"
+    );
+    assert!(
+        !gym.step(&state, Action::RepairUnit)
+            .iter()
+            .any(|command| matches!(command.command, Command::RepairUnit { .. })),
+        "lowering must keep the same affordability check as the mask"
+    );
+
+    let state = state_at(2);
+    assert!(
+        gym.decision(&state).mask[Action::RepairUnit as usize],
+        "the exact opening debit arms the action"
+    );
+    assert!(
+        gym.step(&state, Action::RepairUnit)
+            .iter()
+            .any(|command| matches!(command.command, Command::RepairUnit { .. })),
+        "the exact opening debit lowers to a weld"
+    );
+}
+
+#[test]
 fn repair_unit_prefers_recoverable_value_over_raw_hp_deficit() {
     use oxide_sim::UnitKind;
 

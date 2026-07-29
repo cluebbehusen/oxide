@@ -291,9 +291,9 @@ pub(super) fn repair_unit(
             t.order,
             Order::Move { .. } | Order::AttackMove { .. } | Order::Found { .. }
         );
-    let (t_pos, t_tile) = (t.pos, t.tile());
+    let (t_pos, t_tile, t_kind) = (t.pos, t.tile(), t.kind);
     let stats = t.kind.stats();
-    let (basis, ramp, ramp_ticks) = (stats.cost, stats.max_hp, stats.train_ticks);
+    let (ramp, ramp_ticks) = (stats.max_hp, stats.train_ticks);
     let reach = crate::stats::REPAIR_REACH;
     let unit = state.unit(id).expect("caller checked");
     let in_reach = unit.pos.dist_sq(t_pos) <= reach * reach;
@@ -303,11 +303,7 @@ pub(super) fn repair_unit(
         // foundation), the clock is its training time, the basis its
         // price. Same ceiling prepay, same survival of no-op reissues.
         let p = metered(unit.progress);
-        let owed_millis = |ticks: u32| -> u64 {
-            let welded = u64::from(ramp) * u64::from(ticks) / u64::from(ramp_ticks);
-            welded * u64::from(basis) * crate::stats::REPAIR_COST_PERMILLE / u64::from(stats.max_hp)
-        };
-        let due = owed_millis(p + 1).div_ceil(1000) - owed_millis(p).div_ceil(1000);
+        let due = u64::from(crate::stats::unit_repair_debit(t_kind, p));
         if due > 0 {
             if u64::from(state.player(me).scrap) < due {
                 // Broke stalls the torch.

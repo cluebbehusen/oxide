@@ -354,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn report_carries_provenance_shape_and_the_incumbents_zero_use_baseline() {
+    fn report_carries_provenance_shape_and_the_embedded_policy_snapshot() {
         let path = incumbent_path("shape");
         let report = run_probe(&path, 512).unwrap();
         std::fs::remove_file(&path).ok();
@@ -364,7 +364,7 @@ mod tests {
         );
         assert_eq!(report.cases.len(), 8);
         assert_eq!(report.totals.repair_unit_commands, 0);
-        assert_eq!(report.totals.repair_bay_build_attempts, 0);
+        assert_eq!(report.totals.repair_bay_build_attempts, 8);
         assert_eq!(report.totals.repair_bay_completions, 0);
         assert!(!report.totals.actual_healing);
         assert_eq!(report.totals.cases_with_healing, 0);
