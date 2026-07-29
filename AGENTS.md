@@ -637,10 +637,13 @@ since the tick's spatial index took over collision pair-finding and
 target acquisition and vision's memory reconciliation fused to one
 walk; the 500-unit mass battle reads 12,600 — so no perf window is
 open). The refused optimizations are on the record too: the
-tile-to-building index and the span-scoped vision clear both live in
-`experiments/` (the 0.13 perf ledger) with the profiled shares and
-the trigger conditions — hit those numbers before re-proposing
-either. CI asserts only hash-identity at scale. The 0.10 pacing findings and levers live in
+tile-to-building index and the span-scoped vision clear were both
+REFUSED by the 2026-07 profile — `State::passable` is ~8% of the
+post-index tick with buildings peaking in the teens (the index pays
+past ~60 standing buildings, where A* expansion is the real cost),
+and vision's span stamping dwarfs the clear the scoped variant would
+remove (revisit past 124x78 maps or more than 2 teams). Hit those
+numbers before re-proposing either. CI asserts only hash-identity at scale. The 0.10 pacing findings and levers live in
 `experiments/` (the per-era lab notebook — its README indexes the
 campaigns); matches target tens of minutes (the `vast` map class
 and the foundry-durability bless exist for this; the lancer's
