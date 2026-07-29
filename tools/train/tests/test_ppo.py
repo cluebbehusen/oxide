@@ -6,8 +6,11 @@ representable in binary floating point, so the literals below are exact,
 not rounded."""
 
 import numpy as np
+import torch
 
-from ppo import gae
+from models import make_policy
+from oxide_gym import ACTIONS, NET_FEATURES
+from ppo import gae, ppo_update
 
 
 class TestGae:
@@ -67,3 +70,58 @@ class TestGae:
 
         np.testing.assert_allclose(adv[:, 0], [-2.75, -15.0, -7.0], atol=1e-9)
         np.testing.assert_allclose(adv[:, 1], [4.78125, 1.125, -1.5], atol=1e-9)
+
+
+class TestCriticWarmup:
+    def test_value_only_learning_leaves_every_actor_coefficient_bit_identical(
+        self,
+    ) -> None:
+        torch.manual_seed(7)
+        policy = make_policy("mlp")
+        optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        rng = np.random.default_rng(7)
+        rows = 256
+        obs = rng.normal(size=(rows, NET_FEATURES)).astype(np.float32)
+        mask = np.ones((rows, ACTIONS), dtype=bool)
+        with torch.no_grad():
+            logits, values_before = policy(
+                torch.as_tensor(obs),
+                torch.as_tensor(mask),
+            )
+            actions = logits.argmax(dim=1)
+            old_logp = torch.log_softmax(logits, dim=1).gather(1, actions[:, None])[
+                :, 0
+            ]
+        actor_before = {
+            name: parameter.detach().clone()
+            for name, parameter in policy.named_parameters()
+            if not name.startswith("v.")
+        }
+        batch = (
+            obs,
+            mask,
+            actions.numpy(),
+            old_logp.numpy(),
+            np.ones(rows, dtype=np.float32),
+            np.full(rows, 5.0, dtype=np.float32),
+        )
+
+        ppo_update(
+            policy,
+            optimizer,
+            batch,
+            "cpu",
+            epochs=2,
+            minibatch=rows,
+            value_only=True,
+        )
+
+        for name, before in actor_before.items():
+            assert torch.equal(policy.state_dict()[name], before), name
+        with torch.no_grad():
+            logits_after, values_after = policy(
+                torch.as_tensor(obs),
+                torch.as_tensor(mask),
+            )
+        assert torch.equal(logits_after, logits)
+        assert not torch.equal(values_after, values_before), "the critic must learn"

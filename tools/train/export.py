@@ -17,7 +17,7 @@ import json
 import numpy as np
 import torch
 
-from models import load_policy
+from models import Mlp, load_policy
 from oxide_gym import ACTIONS, CONDITION_DIMS, FEATURES, GYM_VERSION, SCALES
 
 Q = 12  # fractional bits
@@ -37,12 +37,14 @@ def quant(t: torch.Tensor) -> list:
     return (t.detach().numpy() * (1 << Q)).round().astype(int).tolist()
 
 
-def export(ckpt: str, out: str) -> tuple[int, str | None]:
-    """Quantizes `ckpt` to the Q12 artifact at `out`; returns the
-    parameter count and recorded arch. Importable so league.py's
-    in-loop composition probe can export a snapshot without a
-    subprocess."""
-    policy, blob = load_policy(ckpt)
+def build_artifact(policy: Mlp, blob: dict) -> dict:
+    """Builds the Q12 artifact payload for an already-loaded policy.
+
+    Keeping construction separate from file I/O gives the inverse
+    conversion a single authoritative round-trip check: a recovered
+    actor is accepted only when this function reproduces every
+    semantic field of its source artifact.
+    """
     policy.eval()
 
     linears = [m for m in policy.trunk.modules() if isinstance(m, torch.nn.Linear)]
@@ -86,7 +88,7 @@ def export(ckpt: str, out: str) -> tuple[int, str | None]:
         if peak > MAX_COEFF:
             raise SystemExit(f"{name} peaks at {peak}, over the +/-{MAX_COEFF} ceiling")
 
-    artifact = {
+    return {
         "gym_version": GYM_VERSION,
         "arch": blob.get("arch"),
         "update": blob.get("update"),
@@ -99,8 +101,19 @@ def export(ckpt: str, out: str) -> tuple[int, str | None]:
         "layers": layers,
         "head": head,
     }
+
+
+def export(ckpt: str, out: str) -> tuple[int, str | None]:
+    """Quantizes `ckpt` to the Q12 artifact at `out`; returns the
+    parameter count and recorded arch. Importable so league.py's
+    in-loop composition probe can export a snapshot without a
+    subprocess."""
+    policy, blob = load_policy(ckpt)
+    artifact = build_artifact(policy, blob)
     with open(out, "w") as f:
         json.dump(artifact, f)
+    layers = artifact["layers"]
+    head = artifact["head"]
     n = sum(len(lay["w"]) * len(lay["w"][0]) + len(lay["b"]) for lay in layers)
     n += len(head["w"]) * len(head["w"][0]) + len(head["b"])
     return n, blob.get("arch")

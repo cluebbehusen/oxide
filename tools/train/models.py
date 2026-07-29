@@ -28,11 +28,16 @@ class Mlp(nn.Module):
         self.v = nn.Linear(last, 1)
 
     def forward(
-        self, obs: torch.Tensor, mask: torch.Tensor
+        self,
+        obs: torch.Tensor,
+        mask: torch.Tensor,
+        *,
+        detach_value_trunk: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         h = self.trunk(obs)
         logits = self.pi(h).masked_fill(~mask, float("-inf"))
-        return logits, self.v(h).squeeze(-1)
+        value_h = h.detach() if detach_value_trunk else h
+        return logits, self.v(value_h).squeeze(-1)
 
 
 def make_policy(arch: str) -> Mlp:

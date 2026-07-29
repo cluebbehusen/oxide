@@ -8,6 +8,7 @@ update learns from them. The rollout tests drive the real Job/Lane/
 seat_view machinery and a real (tiny) policy; only the subprocess Worker
 is scripted."""
 
+import argparse
 import itertools
 import json
 import pathlib
@@ -23,18 +24,23 @@ import oxide_gym
 from league import (
     BUILD_BAY_ACTION,
     FAB_BUILT,
+    MAX_STYLE_BONUS,
     REPAIR_ACTION,
     SHAPE_K,
     TEL,
     F,
     Job,
+    bounded_style_coefficient,
     comp_entropy,
     composition_probe,
     faction_knob,
     probe_canary,
     rollout,
     sample_condition,
+    style_alignment,
+    style_bonus,
     tech_bonus_at,
+    value_warmup_active,
 )
 from models import make_policy
 from oxide_gym import ACTIONS, FEATURE_NAMES, FEATURES, NET_FEATURES, Frame, SeatView
@@ -301,6 +307,44 @@ class TestTechBonusSchedule:
         assert tech_bonus_at(0.08, 0, 0) == 0.0
 
 
+class TestValueWarmupSchedule:
+    def test_a_resumed_run_warms_relative_to_its_parent_update(self) -> None:
+        assert value_warmup_active(1301, 1300, 15)
+        assert value_warmup_active(1315, 1300, 15)
+        assert not value_warmup_active(1316, 1300, 15)
+
+    def test_zero_disables_warmup(self) -> None:
+        assert not value_warmup_active(1, 0, 0)
+
+
+class TestBoundedStyleBonus:
+    def test_alignment_matches_the_requested_posture(self) -> None:
+        pushing = [0] * FEATURES
+        pushing[F["army_state"]] = 2
+        defending = [0] * FEATURES
+        defending[F["army_state"]] = 0
+
+        assert style_alignment(pushing, 1000) == 1.0
+        assert style_alignment(defending, 0) == 1.0
+        assert style_alignment(pushing, 0) == -1.0
+        assert style_alignment(defending, 1000) == -1.0
+
+    def test_episode_length_cannot_increase_the_bonus(self) -> None:
+        assert style_bonus(1.0, 1, MAX_STYLE_BONUS) == MAX_STYLE_BONUS
+        assert style_bonus(40_000.0, 40_000, MAX_STYLE_BONUS) == MAX_STYLE_BONUS
+        assert style_bonus(-40_000.0, 40_000, MAX_STYLE_BONUS) == -MAX_STYLE_BONUS
+
+    def test_zero_disables_the_bonus(self) -> None:
+        assert style_bonus(1.0, 1, 0.0) == 0.0
+        assert style_bonus(0.0, 0, MAX_STYLE_BONUS) == 0.0
+
+    def test_cli_coefficient_is_finite_and_bounded(self) -> None:
+        assert bounded_style_coefficient("0.1") == MAX_STYLE_BONUS
+        for value in ("-0.001", "0.1001", "nan", "inf"):
+            with pytest.raises(argparse.ArgumentTypeError):
+                bounded_style_coefficient(value)
+
+
 def _tech_view(fab: int) -> SeatView:
     view = _view(0.5)
     view.raw[FAB_BUILT] = fab
@@ -317,6 +361,51 @@ class _ResettingWorker(_ScriptedWorker):
 
     def reset(self, *_args: object, **_kwargs: object) -> Frame:
         return self._reset_frame
+
+
+def _style_view(army_state: int) -> SeatView:
+    view = _view(0.5)
+    view.raw[F["army_state"]] = army_state
+    return view
+
+
+class TestStyleShaping:
+    def test_style_is_absent_per_step_and_paid_once_at_the_terminal(self) -> None:
+        pushing = _style_view(2)
+        defending = _style_view(0)
+        frames = [
+            Frame(False, 16, seats={0: pushing, 1: defending}),
+            Frame(True, 32, winners=[0], seats={0: pushing, 1: defending}),
+        ]
+        fresh = Frame(False, 48, seats={0: _view(0.1), 1: _view(0.1)})
+        worker = cast("Worker", _ResettingWorker(frames, fresh))
+        job = Job(worker, "self", 0, pathlib.Path("."), np.random.default_rng(0), "cpu")
+        job.frame = Frame(False, 0, seats={0: pushing, 1: defending})
+        job.conditions = {
+            0: (1000, 1000, 0),
+            1: (1000, 0, 1000),
+        }
+        torch.manual_seed(0)
+        policy = make_policy("mlp")
+        policy.eval()
+        TEL.clear()
+
+        batch, _last_val, finals = rollout(
+            policy,
+            [job],
+            itertools.repeat(0),
+            2,
+            "cpu",
+            style_coefficient=MAX_STYLE_BONUS,
+        )
+        rewards = batch[5]
+
+        assert rewards[0][0] == pytest.approx(-1e-4)
+        assert rewards[0][1] == pytest.approx(-1e-4)
+        assert rewards[1][0] == pytest.approx(1.0 + MAX_STYLE_BONUS)
+        assert rewards[1][1] == pytest.approx(-1.0 + MAX_STYLE_BONUS)
+        assert sorted(finals) == [-1.0, 1.0], "telemetry finals stay pure"
+        assert TEL["style_bonus"] == pytest.approx(2 * MAX_STYLE_BONUS)
 
 
 class TestOwnTechShaping:

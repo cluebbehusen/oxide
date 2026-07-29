@@ -94,13 +94,11 @@ def generate(
 # what the agent happens to know about the enemy.
 SHAPE_K = 0.05
 
-# Style shaping: a per-step nudge that makes the aggression knob mean
-# something. Aggressive settings are paid for being out fighting (army
-# state Pushing/Engaging); turtle settings for standing home defense.
-# Sized so a full game's worth of style adds up to the order of the
-# terminal reward — style must be able to argue with winning, or the
-# greedy policy plays one line at every knob setting.
-STYLE_K = 0.0025
+# Style shaping is disabled by default. When explicitly enabled, the
+# episode's mean posture alignment becomes ONE terminal adjustment,
+# capped below the win/loss reward. The retired per-step reward could
+# accumulate +6.25 by the tick cap and directly paid a turtle to stall.
+MAX_STYLE_BONUS = 0.1
 
 
 F = {name: i for i, name in enumerate(FEATURE_NAMES)}
@@ -123,10 +121,22 @@ def potential(raw: list[int]) -> float:
     return (my_strength + 25 * harvesters + buildings + wounds) / 500.0
 
 
-def style_reward(raw: list[int], aggression: int) -> float:
+def style_alignment(raw: list[int], aggression: int) -> float:
+    """Signed posture agreement for one observation, in [-1, 1]."""
     lean = (aggression - 500) / 500.0
     out_fighting = 1.0 if raw[F["army_state"]] in (2, 3) else -1.0
-    return STYLE_K * lean * out_fighting
+    return max(-1.0, min(1.0, lean * out_fighting))
+
+
+def style_bonus(total: float, steps: int, coefficient: float) -> float:
+    """A duration-invariant terminal style adjustment capped at 0.1."""
+    if steps <= 0 or coefficient == 0.0:
+        return 0.0
+    mean = max(-1.0, min(1.0, total / steps))
+    return max(
+        -MAX_STYLE_BONUS,
+        min(MAX_STYLE_BONUS, coefficient * mean),
+    )
 
 
 FAB_BUILT = FEATURE_NAMES.index("fab_built")
@@ -182,6 +192,12 @@ def tech_bonus_at(base: float, rel_update: int, span: int) -> float:
     return base * max(0.0, 1.0 - rel_update / span)
 
 
+def value_warmup_active(update: int, start_update: int, warmup: int) -> bool:
+    """Whether this update belongs to this invocation's critic warm-up."""
+    relative = update - start_update
+    return warmup > 0 and 1 <= relative <= warmup
+
+
 def unit_interval(text: str) -> float:
     """argparse type for decay factors: finite, in [0, 1]. A negative
     decay flips the KL sign on odd updates and actively rewards
@@ -189,6 +205,16 @@ def unit_interval(text: str) -> float:
     value = float(text)
     if not np.isfinite(value) or not 0.0 <= value <= 1.0:
         raise argparse.ArgumentTypeError(f"decay must be finite in [0, 1], got {text}")
+    return value
+
+
+def bounded_style_coefficient(text: str) -> float:
+    """Argparse type for the episode-level style bonus ceiling."""
+    value = float(text)
+    if not np.isfinite(value) or not 0.0 <= value <= MAX_STYLE_BONUS:
+        raise argparse.ArgumentTypeError(
+            f"style coefficient must be finite in [0, {MAX_STYLE_BONUS}], got {text}"
+        )
     return value
 
 
@@ -325,6 +351,8 @@ class Job:
         else:  # past | rusher: both seats controlled, one driven locally
             self.learner_seats = [seat]
             self.opp_seat = 1 - seat
+        self.style_total = dict.fromkeys(self.learner_seats, 0.0)
+        self.style_steps = dict.fromkeys(self.learner_seats, 0)
 
     @property
     def view(self) -> Frame:
@@ -342,6 +370,11 @@ class Job:
             return live
         return self.last_views[seat]
 
+    def note_style(self, seat: int, raw: list[int]) -> None:
+        """Adds one posture sample to this seat's episode accumulator."""
+        self.style_total[seat] += style_alignment(raw, self.conditions[seat][1])
+        self.style_steps[seat] += 1
+
     def reset(self, seed: int) -> None:
         TEL["resets"] += 1
         with timed("reset_sec"):
@@ -353,6 +386,8 @@ class Job:
         self.salvaged = set()
         self.repaired = set()
         self.built_bay = set()
+        self.style_total = dict.fromkeys(self.learner_seats, 0.0)
+        self.style_steps = dict.fromkeys(self.learner_seats, 0)
         self.conditions = {s: sample_condition(self.rng, s) for s in self.learner_seats}
         scenario = None
         if self.maps == "random":
@@ -484,6 +519,7 @@ def rollout(
     mix_bonus: float = 0.0,
     salvage_bonus: float = 0.0,
     repair_bonus: float = 0.0,
+    style_coefficient: float = 0.0,
 ) -> tuple[tuple[np.ndarray, ...], np.ndarray, list[float]]:
     lanes = {(id(j), s): Lane(j.worker, s) for j in jobs for s in j.learner_seats}
     finished_rewards = []
@@ -572,6 +608,7 @@ def rollout(
                 j.frame = frame
                 for s in j.learner_seats:
                     lane = lanes[(id(j), s)]
+                    j.note_style(s, j.seat_view(s).raw)
                     # The shaping rides only the training reward;
                     # finished_rewards stays the pure game outcome so
                     # avg_final telemetry compares across runs. The
@@ -607,6 +644,13 @@ def rollout(
                         h = comp_entropy(j.seat_view(s).raw)
                         TEL["mix_ent"] += h
                         mut_bonus += mix_bonus * min(h, 2.0) / 2.0
+                    episode_style = style_bonus(
+                        j.style_total[s],
+                        j.style_steps[s],
+                        style_coefficient,
+                    )
+                    mut_bonus += episode_style
+                    TEL["style_bonus"] += episode_style
                     # Close the potential on the true final position:
                     # without this delta, a salvage (or an army loss)
                     # landing on the terminal cadence escaped the
@@ -633,12 +677,9 @@ def rollout(
                         lane.done.append(False)
                         continue
                     raw = frame.seats[s].raw
+                    j.note_style(s, raw)
                     pot = potential(raw)
-                    lane.rew.append(
-                        -1e-4
-                        + SHAPE_K * (pot - lane.last_pot)
-                        + style_reward(raw, j.conditions[s][1])
-                    )
+                    lane.rew.append(-1e-4 + SHAPE_K * (pot - lane.last_pot))
                     lane.done.append(False)
                     lane.last_pot = pot
                 j.frame = frame
@@ -838,6 +879,14 @@ def main() -> None:
         "decayed anchor lets PPO grind imitation-taught tech back out)",
     )
     ap.add_argument(
+        "--style-coef",
+        type=bounded_style_coefficient,
+        default=0.0,
+        help="bounded terminal personality bonus in 0..=0.1; the "
+        "episode's mean posture alignment earns at most this amount. "
+        "0 disables (default).",
+    )
+    ap.add_argument(
         "--tech-bonus",
         type=float,
         default=0.0,
@@ -916,9 +965,11 @@ def main() -> None:
     if args.resume:
         policy, blob = load_policy(args.resume, device)
         arch = blob.get("arch", "mlp")
-        # Continue the run's clock: pool numbering, value warm-up, and
-        # anchor annealing all key off the absolute update, so resuming
-        # must not rewind them (or overwrite pool history).
+        # Continue the absolute clock for pool numbering and anchor
+        # annealing so resuming cannot overwrite history. Critic warm-up
+        # deliberately uses this invocation's relative clock below: a
+        # recovered shipped actor has no critic, whatever update its
+        # artifact records.
         start_update = int(blob.get("update", 0) or 0)
     else:
         arch = args.arch
@@ -1018,6 +1069,7 @@ def main() -> None:
                 mix_bonus=mb,
                 salvage_bonus=sb,
                 repair_bonus=rb,
+                style_coefficient=args.style_coef,
             )
             rollout_sec = time.time() - t0
             obs_b, mask_b, act_b, logp_b, val_b, rew_b, done_b, valid_b = batch
@@ -1044,7 +1096,11 @@ def main() -> None:
                 opt,
                 flat,
                 device,
-                value_only=update <= args.value_warmup,
+                value_only=value_warmup_active(
+                    update,
+                    start_update,
+                    args.value_warmup,
+                ),
                 anchor=anchor,
                 anchor_coef=args.anchor_coef * (args.anchor_decay**update),
             )
@@ -1078,6 +1134,8 @@ def main() -> None:
                 entry["salvage_bonus"] = round(sb, 4)
             if args.repair_bonus:
                 entry["repair_bonus"] = round(rb, 4)
+            if args.style_coef:
+                entry["style_coef"] = args.style_coef
             if update % args.pool_every == 0:
                 save_policy(
                     policy,

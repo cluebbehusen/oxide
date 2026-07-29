@@ -3,9 +3,14 @@ the first collapsed run taught us — a KL early stop so fine-tuning
 can't sprint away from a working policy, and an optional policy freeze
 for value warm-up."""
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import torch
 from torch import nn
+
+if TYPE_CHECKING:
+    from models import Mlp
 
 
 def gae(
@@ -35,7 +40,7 @@ def gae(
 
 
 def ppo_update(
-    policy: nn.Module,
+    policy: Mlp,
     opt: torch.optim.Optimizer,
     batch: tuple[np.ndarray, ...],
     device: str,
@@ -45,7 +50,7 @@ def ppo_update(
     ent_coef: float = 0.002,
     kl_stop: float = 0.03,
     value_only: bool = False,
-    anchor: nn.Module | None = None,
+    anchor: Mlp | None = None,
     anchor_coef: float = 0.05,
 ) -> dict[str, float]:
     obs, mask, act, logp_old, adv, ret = (
@@ -58,7 +63,15 @@ def ppo_update(
         np.random.shuffle(idx)
         for start in range(0, len(idx), minibatch):
             mb = idx[start : start + minibatch]
-            logits, value = policy(obs[mb], mask[mb])
+            # A recovered Q12 artifact has no critic. During its value
+            # warm-up the trunk must remain an exact actor: detaching
+            # the value path lets only `v` learn while the policy logits
+            # and every actor coefficient stay bit-identical.
+            logits, value = policy(
+                obs[mb],
+                mask[mb],
+                detach_value_trunk=value_only,
+            )
             dist = torch.distributions.Categorical(logits=logits)
             logp = dist.log_prob(act[mb])
             kl = float((logp_old[mb] - logp).mean().detach())
