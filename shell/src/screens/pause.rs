@@ -539,7 +539,7 @@ mod tests {
     #[test]
     fn the_save_failure_dialog_preselects_cancel_and_returns_to_the_verb() {
         let mut p = PauseScreen::open_save_failed(
-            "could not save: the disk refused the file".to_string(),
+            "could not save: unable to write the save file".to_string(),
             LeaveVerb::Quit,
             false,
             true,

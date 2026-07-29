@@ -130,6 +130,11 @@ pub struct Panel {
     /// entity's owner, not the viewer (an inspected Cupric ally must
     /// not draw in Ferrous rust).
     pub faction: oxide_sim::Faction,
+    /// Static weapon facts for a singly selected unit. These are drawn
+    /// without a hover and deliberately contain no order, target, or
+    /// cooldown state, so inspecting a visible enemy reveals capability
+    /// without revealing intent.
+    pub combat: Vec<String>,
     /// Command cards.
     pub cards: Vec<Card>,
     /// Queue thumbnails (production or orders).
@@ -172,36 +177,36 @@ pub fn subject_unit(game: &Game) -> Option<oxide_sim::UnitId> {
 /// One-line flavor per unit kind — tooltip and codex copy.
 pub fn unit_flavor(kind: UnitKind) -> &'static str {
     match kind {
-        UnitKind::Harvester => {
-            "Hauls scrap, raises buildings, welds repairs. The economy on treads."
-        }
-        UnitKind::Sentinel => "Line infantry. Holds ground and pokes back at the sky.",
-        UnitKind::Scuttler => "Fast raider. Eats undefended harvest lines.",
-        UnitKind::Lancer => "Rail sniper. Outranges turrets; melts if reached.",
-        UnitKind::Bombard => "Artillery. Fires beyond its sight; needs a spotter.",
-        UnitKind::Flakhound => "Tracked anti-air. The sky answers to it.",
-        UnitKind::Buzzard => "Heavy ground-attack flyer.",
-        UnitKind::Talon => "Air-superiority hunter.",
-        UnitKind::Stinger => "Cheap anti-air crawler.",
-        UnitKind::Darter => "Darting ground-attack flyer.",
-        UnitKind::Wisp => "Swarm interceptor. Owns no ground, only sky.",
+        UnitKind::Harvester => "Collects scrap, constructs buildings, and repairs units.",
+        UnitKind::Sentinel => "General-purpose unit with ground and anti-air weapons.",
+        UnitKind::Scuttler => "Fast ground raider effective against exposed Harvesters.",
+        UnitKind::Lancer => "Long-range ground sniper; vulnerable at close range.",
+        UnitKind::Bombard => "Long-range artillery that needs allied vision to fire.",
+        UnitKind::Flakhound => "Tracked anti-air unit.",
+        UnitKind::Buzzard => "Heavy aircraft that attacks ground targets.",
+        UnitKind::Talon => "Heavy air-superiority fighter.",
+        UnitKind::Stinger => "Low-cost ground anti-air unit.",
+        UnitKind::Darter => "Fast aircraft that attacks ground targets.",
+        UnitKind::Wisp => "Fast interceptor that attacks air targets only.",
     }
 }
 
 /// One-line flavor per building kind.
 pub fn building_flavor(kind: BuildingKind) -> &'static str {
     match kind {
-        BuildingKind::Foundry => "Trains the basics. Lose every Foundry and the seat falls.",
-        BuildingKind::Fabricator => "Unlocks the advanced roster and the air wing.",
-        BuildingKind::Turret => {
-            "Static ground defense. Holds a line by standing on it - the answer to a swarm."
+        BuildingKind::Foundry => {
+            "Trains Harvesters and Sentinels. Losing all Foundries eliminates you."
         }
-        BuildingKind::FlakTurret => "Static anti-air. The roof over your harvest line.",
-        BuildingKind::Bastion => "Siege gun emplacement. Arcs shells beyond its sight.",
-        BuildingKind::Array => "Radar mast. True sight close, nameless contacts far.",
-        BuildingKind::Reclaimer => "Slow-drips scrap from the ground it stands on.",
+        BuildingKind::Fabricator => "Unlocks advanced ground units and aircraft.",
+        BuildingKind::Turret => "Static defense that attacks ground units.",
+        BuildingKind::FlakTurret => "Static defense that attacks aircraft.",
+        BuildingKind::Bastion => "Long-range artillery emplacement that needs allied vision.",
+        BuildingKind::Array => {
+            "Reveals terrain within 9 tiles and detects hostile units within 16."
+        }
+        BuildingKind::Reclaimer => "Generates 1 scrap every 1.5 seconds.",
         BuildingKind::RepairBay => {
-            "Welds nearby wounded machines. Sustain costs scrap, not torches."
+            "Automatically repairs friendly ground units within 4 tiles. Repairs consume scrap."
         }
     }
 }
@@ -217,26 +222,36 @@ pub fn weapon_lines(kind: UnitKind) -> Vec<String> {
                 w.targets.covers(oxide_sim::stats::Domain::Ground),
                 w.targets.covers(oxide_sim::stats::Domain::Air),
             ) {
-                (true, true) => "ground+air",
+                (true, true) => "ground and air",
                 (true, false) => "ground",
                 (false, true) => "air",
                 (false, false) => "nothing",
             };
             let flavor = if w.projectile {
-                ", live shell"
+                " · projectile"
             } else if w.indirect {
-                ", indirect"
+                " · indirect"
             } else {
                 ""
             };
-            let splash = if w.splash.is_some() { ", splash" } else { "" };
+            let splash = if w.splash.is_some() { " · splash" } else { "" };
             format!(
-                "{} dmg / {:.1} range vs {targets}{flavor}{splash}",
+                "{} damage · {:.1} range · targets {targets}{flavor}{splash}",
                 w.damage,
                 w.range.to_num::<f32>(),
             )
         })
         .collect()
+}
+
+/// Always-visible combat facts for a selected unit.
+pub fn combat_lines(kind: UnitKind) -> Vec<String> {
+    let lines = weapon_lines(kind);
+    if lines.is_empty() {
+        vec!["unarmed".to_string()]
+    } else {
+        lines
+    }
 }
 
 /// The subject an order chip may show, plus the lines that name it —
@@ -327,33 +342,33 @@ fn order_card(game: &Game, order: &Order, active: bool, own: bool) -> Card {
         Order::Idle => (
             VerbIcon::Idle,
             "Idle",
-            "Standing by; fighters auto-engage in aggro range.",
+            "Idle; armed units attack nearby enemies automatically.",
         ),
-        Order::Move { .. } => (
-            VerbIcon::Move,
-            "Move",
-            "Walking; oblivious to enemies on the way.",
-        ),
+        Order::Move { .. } => (VerbIcon::Move, "Move", "Moving without engaging enemies."),
         Order::Harvest { .. } => (
             VerbIcon::Harvest,
             "Harvest",
-            "Working a scrap node, hauling home.",
+            "Collecting scrap and returning it to a Foundry.",
         ),
         Order::Attack { .. } => (
             VerbIcon::Attack,
             "Attack",
             "Chasing one target until it is gone.",
         ),
-        Order::Build { .. } => (VerbIcon::Build, "Build", "Standing up a construction site."),
+        Order::Build { .. } => (
+            VerbIcon::Build,
+            "Build",
+            "Constructing the selected building.",
+        ),
         Order::Repair { .. } => (
             VerbIcon::Repair,
             "Repair",
-            "Welding a damaged building; costs a trickle.",
+            "Repairing a damaged building; consumes scrap.",
         ),
         Order::AttackMove { .. } => (
             VerbIcon::AttackMove,
             "Attack-move",
-            "Marching; engages everything met.",
+            "Moving while engaging enemies along the route.",
         ),
         Order::Salvage { .. } => (
             VerbIcon::Salvage,
@@ -363,12 +378,12 @@ fn order_card(game: &Game, order: &Order, active: bool, own: bool) -> Card {
         Order::Found { .. } => (
             VerbIcon::Build,
             "Found",
-            "Walking out to claim remembered ground; pays on arrival.",
+            "Moving to the build site. Scrap is charged when construction begins.",
         ),
         Order::RepairUnit { .. } => (
             VerbIcon::Repair,
             "Weld",
-            "Welding a damaged machine; costs a trickle.",
+            "Repairing a damaged unit; consumes scrap.",
         ),
     };
     let subject = if own {
@@ -461,12 +476,13 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             sub: format!("{}/{} hp", building.hp, stats.max_hp),
             portrait: CardIcon::Building(building.kind),
             faction: game.state.player(owner).faction,
+            combat: Vec::new(),
             cards: Vec::new(),
             queue: Vec::new(),
             queue_label: "queue".to_string(),
         };
         if owner != game.human {
-            // Foreign buildings inspect read-only: an ally's works say
+            // Foreign buildings inspect read-only: an allied building says
             // whose they are; a hostile shows hp and kind, nothing
             // more — no queue chips, no cards, no rally, no reach
             // into anyone's production.
@@ -479,16 +495,13 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             if !hostile {
                 panel.cards.push(Card {
                     icon: CardIcon::Verb(VerbIcon::Idle),
-                    title: "Ally works".into(),
+                    title: "Ally building".into(),
                     cost: None,
                     hotkey: String::new(),
                     action: CardAction::None,
                     enabled: true,
                     why: None,
-                    desc: vec![
-                        "Read-only: allies coordinate by position,".into(),
-                        "not by each other's controls.".into(),
-                    ],
+                    desc: vec!["Read-only: allied buildings cannot be controlled.".into()],
                     progress: None,
                 });
             }
@@ -548,7 +561,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
                 action: CardAction::ClearRally(building.id),
                 enabled: true,
                 why: None,
-                desc: vec!["Fresh units gather at the doorstep again.".into()],
+                desc: vec!["New units will remain near the producer.".into()],
                 progress: None,
             });
         }
@@ -585,8 +598,6 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
     let first = units.iter().find(|u| u.id == subject_id)?;
     let owner = first.player;
     let has_builder = units.iter().any(|u| u.kind == UnitKind::Harvester);
-    let mut desc = vec![unit_flavor(first.kind).to_string()];
-    desc.extend(weapon_lines(first.kind));
     let mut panel = Panel {
         title: if units.len() == 1 {
             first.kind.name().to_uppercase()
@@ -614,6 +625,11 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         },
         portrait: CardIcon::Unit(first.kind),
         faction: game.state.player(owner).faction,
+        combat: if units.len() == 1 {
+            combat_lines(first.kind)
+        } else {
+            Vec::new()
+        },
         cards: Vec::new(),
         queue: Vec::new(),
         queue_label: if units.len() == 1 {
@@ -624,10 +640,9 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         },
     };
     if owner != game.human {
-        // Foreign units inspect read-only. An ally shows its orders —
-        // that was the ask: see what your teammate is doing — while a
-        // hostile shows hp and kind only: its order state is intent the
-        // fog never licensed (zero chips, a test pins it).
+        // Foreign units inspect read-only. Static weapon facts are safe
+        // for any visible unit. An ally also shows its orders, while a
+        // hostile's order state remains hidden because it reveals intent.
         let hostile = game.state.hostile(game.human, owner);
         panel.sub = format!(
             "{} · {}",
@@ -696,8 +711,8 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         enabled: true,
         why: None,
         desc: vec![
-            "Arm, then click ground: walk there WITHOUT".into(),
-            "engaging. The recall when a fight must wait.".into(),
+            "Move to the selected ground without attacking".into(),
+            "or acquiring targets.".into(),
         ],
         progress: None,
     });
@@ -725,8 +740,8 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             enabled: true,
             why: None,
             desc: vec![
-                "Arm, then click an own built building to strip it".into(),
-                "for a partial refund. Foundries refuse.".into(),
+                "Select a completed friendly building to dismantle".into(),
+                "for a partial refund. Foundries cannot be salvaged.".into(),
             ],
             progress: None,
         });
@@ -741,8 +756,8 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             enabled: true,
             why: None,
             desc: vec![
-                "Arm, then click a damaged own ground unit to weld".into(),
-                "it back up (billed per hp against its cost).".into(),
+                "Select a damaged friendly ground unit to repair it.".into(),
+                "Each restored hit point consumes scrap.".into(),
             ],
             progress: None,
         });
@@ -863,8 +878,8 @@ mod tests {
         assert!(panel.queue.is_empty(), "nothing queued yet");
         // The harvester is unarmed — its card carries no weapon line;
         // the sentinel's carries both of its guns.
-        assert!(!panel.cards[0].desc.iter().any(|l| l.contains("dmg")));
-        assert!(panel.cards[1].desc.iter().any(|l| l.contains("dmg")));
+        assert!(!panel.cards[0].desc.iter().any(|l| l.contains("damage")));
+        assert!(panel.cards[1].desc.iter().any(|l| l.contains("damage")));
     }
 
     #[test]
@@ -930,6 +945,11 @@ mod tests {
         assert_eq!(panel.cards[0].title, "Stop");
         assert_eq!(panel.cards[1].title, "Run");
         assert_eq!(panel.cards[2].title, "Patrol");
+        assert_eq!(
+            panel.combat,
+            vec!["unarmed"],
+            "an unarmed unit still gives an explicit combat answer"
+        );
         let builds: Vec<_> = panel
             .cards
             .iter()
@@ -1104,10 +1124,50 @@ mod tests {
     fn weapon_lines_read_from_the_stats_table() {
         let sentinel = weapon_lines(oxide_sim::UnitKind::Sentinel);
         assert_eq!(sentinel.len(), 2, "main gun and the anti-air poke");
-        assert!(sentinel[0].contains("vs ground"));
-        assert!(sentinel[1].contains("vs air"));
+        assert!(sentinel[0].contains("damage"));
+        assert!(sentinel[0].contains("range"));
+        assert!(sentinel[0].contains("targets ground"));
+        assert!(sentinel[1].contains("targets air"));
         let bombard = weapon_lines(oxide_sim::UnitKind::Bombard);
-        assert!(bombard[0].contains("live shell"));
+        assert!(bombard[0].contains("projectile"));
         assert!(bombard[0].contains("splash"));
+    }
+
+    #[test]
+    fn a_single_unit_exposes_static_combat_facts_but_a_group_does_not() {
+        let mut game = game();
+        let sentinel = game
+            .state
+            .units()
+            .iter()
+            .find(|u| u.player == game.human && u.kind == UnitKind::Sentinel)
+            .expect("starting sentinel")
+            .id;
+        game.selection.units = vec![sentinel];
+        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        assert_eq!(panel.combat.len(), 2, "one line per weapon");
+        assert!(panel.combat.iter().all(|line| line.contains("damage")));
+        assert!(panel.combat.iter().all(|line| line.contains("range")));
+        assert!(
+            panel
+                .combat
+                .iter()
+                .any(|line| line.contains("targets ground"))
+        );
+        assert!(panel.combat.iter().any(|line| line.contains("targets air")));
+
+        let harvester = game
+            .state
+            .units()
+            .iter()
+            .find(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+            .expect("starting harvester")
+            .id;
+        game.selection.units = vec![sentinel, harvester];
+        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        assert!(
+            panel.combat.is_empty(),
+            "mixed selections keep their compact type summary"
+        );
     }
 }

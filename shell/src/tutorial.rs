@@ -44,42 +44,42 @@ pub const STEPS: [Step; 6] = [
         ],
     },
     Step {
-        title: "Put it to work",
+        title: "Gather scrap",
         body: &[
-            "Select a harvester and right-click a scrap pile.",
-            "The lesson ends when its first load reaches your Foundry.",
-            "The red IDLE count up top is who's loafing; N cycles them.",
+            "Select a Harvester and right-click a scrap pile.",
+            "Wait for its first load to reach your Foundry.",
+            "The red IDLE count shows available Harvesters; press N to select one.",
         ],
     },
     Step {
-        title: "Raise a building",
+        title: "Build a structure",
         body: &[
-            "Pick a DIFFERENT harvester · keep the first one hauling.",
+            "Select a second Harvester and leave the first one mining.",
             "Click a structure card (or B, then a digit),",
             "then click open ground. Red tint means you can't build there.",
             "Hold Shift to chain: keep placing, and each build queues up.",
         ],
     },
     Step {
-        title: "Arm yourself",
+        title: "Train a combat unit",
         body: &[
-            "Train a fighter: a Sentinel from the Foundry holds ground.",
-            "The Fabricator (a build card) unlocks the whole roster.",
-            "Hover any card to see how a machine fights.",
+            "Train a Sentinel at the Foundry.",
+            "Build a Fabricator to unlock advanced units and aircraft.",
+            "Select any visible unit to see its damage, range, and valid targets.",
         ],
     },
     Step {
-        title: "March with intent",
+        title: "Use attack-move",
         body: &[
-            "Right-click ground with a fighter selected: that's attack-move.",
-            "Your machines engage whatever they meet on the way.",
+            "Right-click ground with a combat unit selected to attack-move.",
+            "Units move toward the destination and engage enemies they encounter.",
         ],
     },
     Step {
-        title: "The rest is yours",
+        title: "Win the match",
         body: &[
-            "Esc pauses: restart, head back Home, or bow out.",
-            "Destroy every enemy Foundry to win. Good hunting.",
+            "Press Esc to pause, save, restart, return Home, or surrender.",
+            "Destroy all enemy Foundries to win.",
         ],
     },
 ];

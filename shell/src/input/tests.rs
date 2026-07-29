@@ -979,9 +979,10 @@ fn an_ally_selection_reads_its_orders_but_takes_none() {
     assert_eq!(game.selection.units, vec![ally], "allies are selectable");
 
     // The panel is read-only: no command cards; a single ally shows
-    // its order chips.
+    // static combat capability and its order chips.
     let panel = crate::panel::build(&game, &input.bindings).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on an ally panel");
+    assert_eq!(panel.combat, vec!["unarmed"]);
     assert!(!panel.queue.is_empty(), "the ally's orders show");
     assert_eq!(
         panel.faction,
@@ -1030,11 +1031,15 @@ fn a_hostile_selection_inspects_and_leaks_nothing() {
     apply_events(&mut game, &mut input, &click(screen.x, screen.y));
     assert_eq!(game.selection.units, vec![foe], "a visible foe inspects");
 
-    // hp and kind only: zero cards, zero chips — order state is intent
-    // the fog never licensed.
+    // Static kind-level combat facts are safe to inspect. Command cards
+    // and order chips stay absent because order state reveals intent.
     let panel = crate::panel::build(&game, &input.bindings).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on a hostile panel");
     assert!(panel.queue.is_empty(), "no order chips on a hostile panel");
+    assert_eq!(panel.combat.len(), 1);
+    assert!(panel.combat[0].contains("damage"));
+    assert!(panel.combat[0].contains("range"));
+    assert!(panel.combat[0].contains("targets ground"));
 
     // And no breadcrumbs, whatever program the enemy runs.
     let unit = game.state.unit(foe).unwrap();

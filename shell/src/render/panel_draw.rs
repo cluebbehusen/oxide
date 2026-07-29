@@ -43,10 +43,21 @@ pub(crate) fn draw_panel(
     let per_row = (((available + gap) / (cw + gap)).floor() as usize).max(1);
     let shown = panel.cards.len().min(16);
     let rows = shown.div_ceil(per_row).max(1);
-    let band_h = (20.0 * s + rows as f32 * (ch + 4.0 * s)).max(120.0 * s);
+    let combat_h = if panel.combat.is_empty() {
+        0.0
+    } else {
+        (20.0 + 15.0 * panel.combat.len() as f32) * s
+    };
+    let band_h = (20.0 * s + combat_h + rows as f32 * (ch + 4.0 * s)).max(120.0 * s);
     let top = screen_height() - band_h;
     let used_cols = shown.min(per_row).max(1) as f32;
-    let band_w = (cards_x + used_cols * (cw + gap)).max(220.0 * s) + 6.0 * s;
+    let cards_w = (cards_x + used_cols * (cw + gap)).max(220.0 * s) + 6.0 * s;
+    let combat_w = panel
+        .combat
+        .iter()
+        .map(|line| measure_text(line, None, (12.0 * s) as u16, 1.0).width)
+        .fold(0.0, f32::max);
+    let band_w = cards_w.max((cards_x + combat_w + 12.0 * s).min(right));
     // Opaque, unlike the translucent HUD panels: machines drifting
     // beneath the band would ghost through the cards. Top and right
     // edges get the same line — a content-width band needs a corner,
@@ -161,6 +172,29 @@ pub(crate) fn draw_panel(
         TEXT_SECONDARY,
     );
 
+    // A single unit publishes its static combat capability without a
+    // hover. The model contains kind-level weapon facts only, never a
+    // live target, current cooldown, or private order state.
+    if !panel.combat.is_empty() {
+        draw_text("COMBAT", cards_x, top + 15.0 * s, 10.0 * s, TEXT_SECONDARY);
+        let max_width = (band_w - cards_x - 12.0 * s).max(40.0 * s);
+        for (i, line) in panel.combat.iter().enumerate() {
+            let mut font_size = 12.0 * s;
+            let mut dims = measure_text(line, None, font_size as u16, 1.0);
+            while dims.width > max_width && font_size > 8.0 * s {
+                font_size -= 0.5 * s;
+                dims = measure_text(line, None, font_size as u16, 1.0);
+            }
+            draw_text(
+                line,
+                cards_x,
+                top + (31.0 + 15.0 * i as f32) * s,
+                font_size,
+                TEXT_PRIMARY,
+            );
+        }
+    }
+
     // Command cards, wrapping into as many rows as the width demands.
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut cards = [(zero, CardAction::None); 16];
@@ -169,7 +203,7 @@ pub(crate) fn draw_panel(
         let (row, col) = (i / per_row, i % per_row);
         let rect = Rect::new(
             cards_x + col as f32 * (cw + gap),
-            top + 10.0 * s + row as f32 * (ch + 4.0 * s),
+            top + 10.0 * s + combat_h + row as f32 * (ch + 4.0 * s),
             cw,
             ch,
         );
