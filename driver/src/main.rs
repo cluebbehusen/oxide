@@ -365,6 +365,19 @@ enum Cmd {
         #[arg(long, default_value_t = 500)]
         aggression: u32,
     },
+    /// Exercise a candidate's repair verbs in deterministic wounded-state
+    /// fixtures. Diagnostic only: observed, never rewarded.
+    RepairProbe {
+        /// Exported weights JSON (tools/train/export.py).
+        #[arg(long)]
+        weights: PathBuf,
+        /// Tick cap for each deterministic seat/faction/seed case.
+        #[arg(long, default_value_t = 4_000, value_parser = clap::value_parser!(u64).range(1..))]
+        ticks: u64,
+        /// Also write the JSON report here.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Automated end-to-end check against a live shell.
     Smoke {
         /// Shell debug-server address.
@@ -839,6 +852,11 @@ fn main() -> Result<()> {
         } => oxide_driver::gym::neural_cup(
             &weights, seeds, cadence, &scenario, blunder, skill, aggression,
         )?,
+        Cmd::RepairProbe {
+            weights,
+            ticks,
+            out,
+        } => oxide_driver::repair_probe::repair_probe(&weights, ticks, out.as_deref())?,
         Cmd::Smoke { addr, spawn } => smoke::run(&addr, spawn)?,
         Cmd::Shots {
             port,

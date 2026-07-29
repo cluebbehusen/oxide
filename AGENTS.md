@@ -517,6 +517,13 @@ Fabricator-gated kinds asks whether the tree was climbed at all, and
 `--min-top-tech-share` (0.03) on the LARGEST single tech kind asks
 whether anything on it was worth building — many individually
 negligible kinds can clear the first bar and still fail the second.
+`driver repair-probe --weights <artifact>` complements those broad
+matches with eight deterministic wounded-state cases crossing seed,
+physical seat, and faction. It reports RepairUnit commands, Repair Bay
+attempts/completions, damaged purchase value, and observed healing,
+alongside the artifact digest. This is a diagnostic, never a reward:
+the shipped v6 actor scores exact zero use and zero healing, which is
+the baseline a continuation must move.
 `driver matchup --a kind:n --b kind:n` fights
 hand-picked armies twice on a clean arena, swapping their physical seats;
 use comparable starting costs when testing counters. It reports each leg's
