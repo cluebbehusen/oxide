@@ -13,7 +13,7 @@
 //! construction.
 
 use super::executive::{ArmyState, Executive, Intent};
-use super::observation::Observation;
+use super::observation::{Observation, UnitObs};
 use super::orient::Orientation;
 use super::utility::{Dials, UtilityPolicy};
 use crate::command::PlayerCommand;
@@ -24,7 +24,7 @@ use chassis::grid::TilePos;
 
 /// Bump when actions or features change shape — recorded checkpoints
 /// and shipped weights must refuse mismatched worlds.
-pub const GYM_VERSION: u32 = 5;
+pub const GYM_VERSION: u32 = 6;
 
 /// The macro menu, one action per think. Training slots are
 /// role-indexed where the factions differ: one action means "train my
@@ -77,13 +77,25 @@ pub enum Action {
     Scout = 20,
     /// Strip the cheapest-and-least-useful own defense for scrap.
     Salvage = 21,
+    /// Send a harvester to weld the deepest-wound own machine.
+    RepairUnit = 22,
+    /// Start a Repair Bay near home.
+    BuildRepairBay = 23,
 }
 
 /// Number of actions in [`Action`].
-pub const ACTION_COUNT: usize = 22;
+pub const ACTION_COUNT: usize = 24;
 
 /// Number of entries in the feature vector.
-pub const FEATURE_COUNT: usize = 64;
+pub const FEATURE_COUNT: usize = 65;
+
+/// How far (Manhattan tiles) a free harvester may stand from a wounded
+/// machine for [`Action::RepairUnit`] to consider it a patient. The
+/// wounded rotate to the rear and the welders live on the economy
+/// line, so a home-front weld is always in range — while a patient
+/// only reachable by a cross-map march never masks the verb on: a
+/// wounded machine can walk, and chasing one is not a weld.
+pub const REPAIR_UNIT_RADIUS: i32 = 12;
 
 /// One name per feature index, emitted in the gym hello and asserted
 /// by the trainer — Rust/Python index skew fails loudly at handshake
@@ -153,6 +165,7 @@ pub const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
     "incoming_shells",
     "my_shells_in_flight",
     "my_building_value",
+    "damaged_unit_value",
 ];
 
 /// Salvage's fixed liquidation order: cheapest and least useful
@@ -195,6 +208,8 @@ impl Action {
             19 => Action::Recall,
             20 => Action::Scout,
             21 => Action::Salvage,
+            22 => Action::RepairUnit,
+            23 => Action::BuildRepairBay,
             _ => Action::Idle,
         }
     }
@@ -532,6 +547,21 @@ impl GymBot {
                         .map_or(0i64, |c| i64::from(c.cost))
                 })
                 .sum::<i64>(),
+            // v6: scrap locked in own ground wounds — what RepairUnit
+            // recovers and what a Repair Bay amortizes against.
+            // my_strength conflates count with wounds (hp-weighted
+            // dps), so without this term a policy cannot tell a small
+            // army from a battered one, and the trainer has no
+            // fog-safe potential to price the recovered value with —
+            // my_building_value's role for Salvage, played for welds.
+            obs.my_units
+                .iter()
+                .filter(|u| u.kind.stats().domain == Domain::Ground && u.hp < u.kind.stats().max_hp)
+                .map(|u| {
+                    let stats = u.kind.stats();
+                    i64::from(stats.cost) * i64::from(stats.max_hp - u.hp) / i64::from(stats.max_hp)
+                })
+                .sum::<i64>(),
         ];
 
         let mut mask = [false; ACTION_COUNT];
@@ -593,6 +623,7 @@ impl GymBot {
             mask[Action::BuildBastion as usize] = near_home(BuildingKind::Bastion);
             mask[Action::BuildArray as usize] = near_home(BuildingKind::Array);
             mask[Action::BuildReclaimer as usize] = near_home(BuildingKind::Reclaimer);
+            mask[Action::BuildRepairBay as usize] = near_home(BuildingKind::RepairBay);
             // Repair and salvage never share a target: a patient an
             // own crew is stripping is not a patient (the sim evicts
             // the loser anyway; masking keeps the oscillator out of
@@ -609,6 +640,11 @@ impl GymBot {
                     .my_buildings
                     .iter()
                     .any(|b| b.built && SALVAGE_PRIORITY.contains(&b.kind));
+            // v6: the weld turns on machines. The patient pick carries
+            // its own welder check (a free harvester inside the leash),
+            // so `builder_free` alone would both under- and over-claim.
+            mask[Action::RepairUnit as usize] =
+                obs.scrap > 0 && unit_patient(&obs, &enlisted).is_some();
             mask[Action::AirRaid as usize] = enemy_site.is_some()
                 && obs.my_units.iter().any(|u| {
                     let stats = u.kind.stats();
@@ -751,10 +787,14 @@ impl GymBot {
                     intents.push(Intent::Build { kind, anchor });
                 }
             }
-            Action::BuildBastion | Action::BuildArray | Action::BuildReclaimer => {
+            Action::BuildBastion
+            | Action::BuildArray
+            | Action::BuildReclaimer
+            | Action::BuildRepairBay => {
                 let kind = match action {
                     Action::BuildBastion => BuildingKind::Bastion,
                     Action::BuildArray => BuildingKind::Array,
+                    Action::BuildRepairBay => BuildingKind::RepairBay,
                     _ => BuildingKind::Reclaimer,
                 };
                 if let Some(anchor) = self.policy.placement_near(&obs, kind, home) {
@@ -838,6 +878,14 @@ impl GymBot {
             Action::Recall => {
                 for a in &armies {
                     intents.push(Intent::RecallArmy { army: a.id });
+                }
+            }
+            Action::RepairUnit => {
+                // Same pick as the mask promised: deepest wound first,
+                // ties toward the map origin then id, leashed to a
+                // welder actually nearby.
+                if let Some(unit) = unit_patient(&obs, &enlisted) {
+                    intents.push(Intent::RepairUnit { unit });
                 }
             }
             Action::Scout => {
@@ -947,6 +995,36 @@ fn rear_tile(world: &Observation) -> TilePos {
         .min_by_key(|b| b.id)
         .map(|b| b.anchor)
         .unwrap_or(TilePos::new(0, 0))
+}
+
+/// The weld verb's patient: the deepest-wound own ground machine (air
+/// patients refuse in the sim) with a free harvester inside
+/// [`REPAIR_UNIT_RADIUS`], ties toward the map origin then id — the
+/// building repair channel's pick discipline pointed at machines.
+/// Fog-safe: own-state only. Both the mask and the lowering call this,
+/// so what the policy observed as legal is what the step emits.
+fn unit_patient(obs: &Observation, enlisted: &[crate::ids::UnitId]) -> Option<crate::ids::UnitId> {
+    let welder_near = |patient: &UnitObs| {
+        obs.my_units.iter().any(|u| {
+            u.kind == UnitKind::Harvester
+                && u.site.is_none()
+                && u.id != patient.id
+                && !enlisted.contains(&u.id)
+                && u.tile.manhattan(patient.tile) <= REPAIR_UNIT_RADIUS
+        })
+    };
+    obs.my_units
+        .iter()
+        .filter(|u| {
+            let stats = u.kind.stats();
+            stats.domain == Domain::Ground && u.hp < stats.max_hp && welder_near(u)
+        })
+        .map(|u| {
+            let deficit = u.kind.stats().max_hp - u.hp;
+            (std::cmp::Reverse(deficit), u.tile.y, u.tile.x, u.id)
+        })
+        .min()
+        .map(|(.., id)| id)
 }
 
 fn home_tile(obs: &Observation) -> Option<TilePos> {

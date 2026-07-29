@@ -347,12 +347,21 @@ in via `PlayerSpec.bot_config`; a seat without one gets the legacy
 rule-cascade bot, which is what keeps pre-0.7 replays reproducing
 (that bot is team-blind by design — team seats must set a config).
 
-The gym contract (v5) is 64 named integer features and 22 masked
+The gym contract (v6) is 65 named integer features and 24 masked
 macro actions (Salvage appended in 0.11 — the reclaim-parity rule:
 human verbs and bot verbs stay in lockstep — with a fixed
 cheapest-first lowering that never touches the Fabricator or
 Foundry, and my_building_value joining the features so the potential
-can price liquidation instead of scoring it as free reward); training slots are role-indexed where the factions
+can price liquidation instead of scoring it as free reward; 0.13
+appends the parity pair for unit welding — RepairUnit lowers to the
+deepest-wound own ground machine with a free harvester inside a
+12-tile leash, mirroring the building channel's pick discipline, the
+Repair Bay takes a build slot beside the other emplacements, and
+damaged_unit_value joins the features because my_strength conflates
+count with wounds and a potential term must price what welding
+recovers; the shipped artifact is the widen bridge of the 0.11
+weights — zero columns, unreachable floors — so every fixture held
+unblessed); training slots are role-indexed where the factions
 differ, so one action space serves both rosters. Since v4 every
 positional feature rides as relative 0-1000 against the actual map
 dimensions (fixed scales broke on the large map classes), map dims

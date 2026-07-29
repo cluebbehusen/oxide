@@ -121,6 +121,12 @@ pub enum Intent {
         /// The building coming down.
         building: crate::ids::BuildingId,
     },
+    /// Weld a wounded own machine (the executive picks the welder; the
+    /// patient never joins its own crew).
+    RepairUnit {
+        /// The wounded machine.
+        unit: UnitId,
+    },
     /// Throw every idle ground-attack flyer at a target — a strike, not
     /// an army: no lifecycle, no withdraw call, just wings and a place.
     RaidAir {
@@ -130,11 +136,13 @@ pub enum Intent {
 }
 
 /// Fraction of max hp below which a member is rotated out of its army to
-/// the rear — permanently: nothing the BOT can do heals a machine (the
-/// harvester weld verb is player-only until a gym contract carries it),
-/// so cycling the wounded back in just feeds the grinder. The moment any
-/// heal verb becomes bot-reachable this doctrine goes wrong two ways:
-/// `rear` never releases ids, and a welded veteran should re-draft.
+/// the rear — permanently. Gym v6 put the weld verb on the bot's menu,
+/// but this doctrine still prices wounds as unhealable: the shipped
+/// bridge artifact never welds, and a doctrine that assumes healing goes
+/// wrong two ways (`rear` never releases ids, and a welded veteran
+/// should re-draft). Re-pricing pullback and the rout margin for a
+/// policy that actually heals is the retraining campaign's work —
+/// measured, not assumed.
 const PULLBACK_NUM: u32 = 35;
 const PULLBACK_DEN: u32 = 100;
 
@@ -378,6 +386,27 @@ impl Executive {
                         });
                     }
                 }
+                Intent::RepairUnit { unit } => {
+                    let tile = obs.my_units.iter().find(|u| u.id == *unit).map(|u| u.tile);
+                    // The patient must not be drafted as its own welder:
+                    // the sim strips it from the crew and would reject
+                    // the emptied command.
+                    let mut barred = claimed.clone();
+                    barred.push(*unit);
+                    if let Some(tile) = tile
+                        && let Some(welder) = self.free_harvester(obs, tile, &barred)
+                    {
+                        claimed.push(welder);
+                        out.push(PlayerCommand {
+                            player: me,
+                            command: Command::RepairUnit {
+                                units: vec![welder],
+                                target: *unit,
+                                queue: false,
+                            },
+                        });
+                    }
+                }
                 Intent::RaidAir { target } => {
                     let enlisted: Vec<UnitId> = self.enlisted().collect();
                     let wings: Vec<UnitId> = obs
@@ -582,19 +611,27 @@ impl Executive {
     pub(super) fn labor_claims(&self, obs: &Observation, intents: &[Intent]) -> Vec<UnitId> {
         let mut claimed: Vec<UnitId> = Vec::new();
         for intent in intents {
-            // The three labor intents are the ones whose worker the
-            // policy never names; a new one belongs in this list too.
-            let anchor = match intent {
-                Intent::Build { anchor, .. } => Some(*anchor),
-                Intent::Repair { building } | Intent::Salvage { building } => obs
-                    .my_buildings
-                    .iter()
-                    .find(|b| b.id == *building)
-                    .map(|b| b.anchor),
-                _ => None,
+            // The labor intents are the ones whose worker the policy
+            // never names; a new one belongs in this list too.
+            let (anchor, patient) = match intent {
+                Intent::Build { anchor, .. } => (Some(*anchor), None),
+                Intent::Repair { building } | Intent::Salvage { building } => (
+                    obs.my_buildings
+                        .iter()
+                        .find(|b| b.id == *building)
+                        .map(|b| b.anchor),
+                    None,
+                ),
+                Intent::RepairUnit { unit } => (
+                    obs.my_units.iter().find(|u| u.id == *unit).map(|u| u.tile),
+                    Some(*unit),
+                ),
+                _ => (None, None),
             };
+            let mut barred = claimed.clone();
+            barred.extend(patient);
             if let Some(anchor) = anchor
-                && let Some(unit) = self.free_harvester(obs, anchor, &claimed)
+                && let Some(unit) = self.free_harvester(obs, anchor, &barred)
             {
                 claimed.push(unit);
             }

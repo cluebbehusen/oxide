@@ -16,9 +16,9 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-FEATURES = 64
-ACTIONS = 22
-GYM_VERSION = 5
+FEATURES = 65
+ACTIONS = 24
+GYM_VERSION = 6
 # Conditioning dims appended to the gym features as network input:
 # skill (0-1000; 1000 = full strength), aggression (0-1000; 500 =
 # balanced), and faction (0 = ferrous, 1000 = cupric). The world
@@ -107,6 +107,10 @@ SCALE_BY_NAME: dict[str, float] = {
     # liquidate, and the potential term that stops selling a Bastion
     # from reading as free dense reward.
     "my_building_value": 500,
+    # v6: scrap locked in own ground wounds — what RepairUnit recovers
+    # and what a Repair Bay amortizes against; the potential term that
+    # prices welding by the wound it heals.
+    "damaged_unit_value": 500,
 }
 FEATURE_NAMES = list(SCALE_BY_NAME.keys())
 SCALES = np.array([SCALE_BY_NAME[n] for n in FEATURE_NAMES], dtype=np.float32)

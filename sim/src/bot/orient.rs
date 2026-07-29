@@ -178,7 +178,8 @@ impl Orientation {
                 keep @ (Intent::TrainAt { .. }
                 | Intent::RecallArmy { .. }
                 | Intent::Repair { .. }
-                | Intent::Salvage { .. }) => keep,
+                | Intent::Salvage { .. }
+                | Intent::RepairUnit { .. }) => keep,
             })
             .collect()
     }

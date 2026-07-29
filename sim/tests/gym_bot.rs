@@ -162,6 +162,219 @@ fn salvage_masks_honestly_and_lowers_cheapest_first() {
     );
 }
 
+/// A long corridor for the v6 weld verb: p0's foundry west, p1's east,
+/// far enough apart that a welder can stand outside the patient leash.
+fn weld_arena(units: Vec<oxide_sim::scenario::UnitSpec>) -> Scenario {
+    let mut map = vec![format!("#{}#", ".".repeat(38)); 9];
+    map[0] = "#".repeat(40);
+    map[8] = "#".repeat(40);
+    map[1] = format!("#1{}#", ".".repeat(37));
+    map[6] = format!("#{}2{}#", ".".repeat(35), ".".repeat(2));
+    Scenario {
+        name: "weld-corridor".into(),
+        seed: 42,
+        map,
+        players: (0..2)
+            .map(|i| oxide_sim::scenario::PlayerSpec {
+                name: ["Ferrous", "Cupric"][i].into(),
+                faction: [oxide_sim::Faction::Ferrous, oxide_sim::Faction::Cupric][i],
+                team: None,
+                scrap: 200,
+                bot: false,
+                bot_config: None,
+            })
+            .collect(),
+        units,
+        buildings: Vec::new(),
+        meta: None,
+    }
+}
+
+fn spec(player: u8, kind: oxide_sim::UnitKind, x: i32, y: i32) -> oxide_sim::scenario::UnitSpec {
+    oxide_sim::scenario::UnitSpec { player, kind, x, y }
+}
+
+/// Chews the patient down below `floor` hp with the raider, then walks
+/// the raider home so the wound sits still for the decision under test.
+fn wound(
+    state: &mut oxide_sim::State,
+    patient: oxide_sim::UnitId,
+    raider: oxide_sim::UnitId,
+    floor: u32,
+) {
+    use chassis::grid::TilePos;
+    let orders = |units: Vec<oxide_sim::UnitId>, goal: TilePos| {
+        vec![oxide_sim::PlayerCommand {
+            player: PlayerId(1),
+            command: oxide_sim::Command::Move {
+                units,
+                goal,
+                queue: false,
+            },
+        }]
+    };
+    state.tick(&orders(vec![raider], TilePos::new(6, 2)));
+    for _ in 0..2_000 {
+        state.tick(&[]);
+        if state.unit(patient).unwrap().hp <= floor {
+            break;
+        }
+    }
+    state.tick(&orders(vec![raider], TilePos::new(34, 4)));
+    for _ in 0..2_000 {
+        state.tick(&[]);
+        if state.unit(raider).unwrap().tile() == TilePos::new(34, 4) {
+            break;
+        }
+    }
+    let hp = state.unit(patient).unwrap().hp;
+    let max = state.unit(patient).unwrap().kind.stats().max_hp;
+    assert!(hp > 0 && hp < max, "test premise: a live, weldable wound");
+}
+
+#[test]
+fn repair_unit_masks_on_the_leash_and_welds_the_wound() {
+    use chassis::grid::TilePos;
+    use oxide_sim::UnitKind;
+    // Patient near home, welder parked far beyond the leash.
+    let scenario = weld_arena(vec![
+        spec(0, UnitKind::Harvester, 4, 2),  // patient
+        spec(0, UnitKind::Harvester, 28, 2), // welder, out on the corridor
+        spec(1, UnitKind::Scuttler, 34, 4),  // raider
+    ]);
+    let mut state = scenario.build().unwrap();
+    let (patient, welder, raider) = (
+        state.units()[0].id,
+        state.units()[1].id,
+        state.units()[2].id,
+    );
+    let mut gym = GymBot::new(PlayerId(0));
+    let d = gym.decision(&state);
+    assert!(
+        !d.mask[Action::RepairUnit as usize],
+        "no wound, no weld verb"
+    );
+    assert_eq!(d.features[64], 0, "an unwounded roster locks no scrap");
+
+    wound(&mut state, patient, raider, 40);
+    let hurt = state.unit(patient).unwrap().hp;
+    let stats = UnitKind::Harvester.stats();
+    let d = gym.decision(&state);
+    assert_eq!(
+        d.features[64],
+        i64::from(stats.cost) * i64::from(stats.max_hp - hurt) / i64::from(stats.max_hp),
+        "the v6 feature prices the wound whether or not the verb is legal"
+    );
+    assert!(
+        !d.mask[Action::RepairUnit as usize],
+        "a welder 24 tiles away is not on the leash — masking it on would lie"
+    );
+
+    // Walk the welder home; the mask must flip on with the geometry.
+    state.tick(&[oxide_sim::PlayerCommand {
+        player: PlayerId(0),
+        command: oxide_sim::Command::Move {
+            units: vec![welder],
+            goal: TilePos::new(10, 2),
+            queue: false,
+        },
+    }]);
+    for _ in 0..2_000 {
+        state.tick(&[]);
+        if state.unit(welder).unwrap().tile() == TilePos::new(10, 2) {
+            break;
+        }
+    }
+    let d = gym.decision(&state);
+    assert!(
+        d.mask[Action::RepairUnit as usize],
+        "wound plus a welder inside the leash arms the verb"
+    );
+    let commands = gym.step(&state, Action::RepairUnit);
+    assert!(
+        commands.iter().any(|c| matches!(
+            &c.command,
+            oxide_sim::Command::RepairUnit { units, target, .. }
+                if *target == patient && units.contains(&welder)
+        )),
+        "the lowering sends the welder at the patient: {commands:?}"
+    );
+    // And the sim honors it end to end: the wound closes. Only the
+    // weld ticks — the chore channel may prospect the idle patient,
+    // and a walking patient outpaces the proof, not the verb.
+    let weld: Vec<_> = commands
+        .into_iter()
+        .filter(|c| matches!(&c.command, oxide_sim::Command::RepairUnit { .. }))
+        .collect();
+    state.tick(&weld);
+    for _ in 0..1_000 {
+        state.tick(&[]);
+        if state.unit(patient).unwrap().hp > hurt {
+            return;
+        }
+    }
+    panic!("the weld never landed an hp");
+}
+
+#[test]
+fn a_patient_is_never_its_own_welder() {
+    use oxide_sim::UnitKind;
+    // One harvester total: wounded, site-free, and by the builder_free
+    // rule a "free harvester" — but it cannot crew its own weld, so the
+    // mask must stay off.
+    let scenario = weld_arena(vec![
+        spec(0, UnitKind::Harvester, 4, 2), // patient, the only harvester
+        spec(1, UnitKind::Scuttler, 34, 4), // raider
+    ]);
+    let mut state = scenario.build().unwrap();
+    let (patient, raider) = (state.units()[0].id, state.units()[1].id);
+    wound(&mut state, patient, raider, 40);
+    let mut gym = GymBot::new(PlayerId(0));
+    let d = gym.decision(&state);
+    assert!(
+        !d.mask[Action::RepairUnit as usize],
+        "the wounded harvester is a patient, not a crew"
+    );
+}
+
+#[test]
+fn build_repair_bay_lowers_to_an_accepted_foundation() {
+    use oxide_sim::stats::BuildingKind;
+    let mut scenario = Scenario::skirmish();
+    scenario.players[0].scrap = 400;
+    let mut state = scenario.build().unwrap();
+    let mut gym = GymBot::new(PlayerId(0));
+    let d = gym.decision(&state);
+    assert!(
+        d.mask[Action::BuildRepairBay as usize],
+        "scrap and a free builder arm the bay slot"
+    );
+    let commands = gym.step(&state, Action::BuildRepairBay);
+    assert!(
+        commands.iter().any(|c| matches!(
+            &c.command,
+            oxide_sim::Command::Build { kind, .. } if *kind == BuildingKind::RepairBay
+        )),
+        "the training slot founds a bay: {commands:?}"
+    );
+    let report = state.tick(&commands);
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|e| matches!(e, oxide_sim::Event::CommandRejected { .. })),
+        "the lowered foundation validates: {:?}",
+        report.events
+    );
+    assert!(
+        state
+            .buildings()
+            .iter()
+            .any(|b| b.kind == BuildingKind::RepairBay && b.player == PlayerId(0)),
+        "the site stands"
+    );
+}
+
 #[test]
 fn the_repair_channel_leaves_salvage_targets_alone() {
     // The two verbs must never share a target: with the only wounded
