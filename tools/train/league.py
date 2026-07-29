@@ -1109,8 +1109,9 @@ def probe_canary(payload: dict) -> dict:
     }
 
 
-# Schema 3 adds body-count shares, entropy, and dominance. Accepting an
-# older payload would silently erase the cheap-unit-spam canary.
+# Schema 3 adds body-time shares, entropy, and dominance. The consumer
+# requires its exact contract so a future reshape cannot be read as if
+# the old keys retained their meaning.
 PROBE_SCHEMA = 3
 
 
@@ -1158,10 +1159,10 @@ def composition_probe(
     )
     payload = json.loads(out.read_text())
     schema = payload.get("schema", 1)
-    if schema < PROBE_SCHEMA:
+    if schema != PROBE_SCHEMA:
         raise RuntimeError(
             f"probe payload is schema {schema}, this loop reads {PROBE_SCHEMA} "
-            "— rebuild the driver"
+            "exactly — use the matching driver"
         )
     return probe_canary(payload)
 

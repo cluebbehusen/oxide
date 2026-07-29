@@ -1084,6 +1084,15 @@ class TestCompositionProbe:
         with pytest.raises(RuntimeError, match="schema 2"):
             composition_probe(policy, "mlp", 5, tmp_path, str(driver), "s", "medium", 1)
 
+    def test_a_future_probe_schema_is_refused(self, tmp_path: pathlib.Path) -> None:
+        future = json.loads(json.dumps(_PROBE_PAYLOAD))
+        future["schema"] = 4
+        driver = self._fake_driver(tmp_path, future)
+        torch.manual_seed(0)
+        policy = make_policy("mlp")
+        with pytest.raises(RuntimeError, match="schema 4"):
+            composition_probe(policy, "mlp", 5, tmp_path, str(driver), "s", "medium", 1)
+
 
 class TestTerminalObservations:
     """v5: done frames carry observations for living seats, and the
