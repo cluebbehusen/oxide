@@ -452,8 +452,14 @@ objective still prices as lossy ships as trained runner-up logits,
 not a usage quota — forcing usage past the game's own economics is
 the "weird ML" line the campaign doctrine refuses to cross. The 0.13
 contract stage extends both instruments: one `--repair-bonus` seeds
-the v6 weld pair on the tech-bonus schedule (RepairUnit and the
-Repair Bay each earn it once per episode), and `--probe-every` plays
+the v6 weld pair on the tech-bonus schedule (actual field-welded hp
+and a completed Repair Bay each earn it once per episode — sampled
+actions and unfinished scaffolds earn nothing). The gym carries those
+successful effects beside, never inside, the 65 policy features, so
+the artifact stays v6 while the trainer can distinguish work from
+intent. `--structure-bonus` applies the same annealed, once-per-kind
+seeding to completed Turrets and Arrays, capped at 0.02 each; and
+`--probe-every` plays
 the fun gate's composition probe in-loop — every N updates the
 league snapshots the checkpoint, exports it to Q12, and runs
 `balance-probe` over the shipped slate, logging decisiveness,

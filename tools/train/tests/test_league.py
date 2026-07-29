@@ -22,14 +22,13 @@ import torch
 import league
 import oxide_gym
 from league import (
-    BUILD_BAY_ACTION,
     FAB_BUILT,
     MAX_STYLE_BONUS,
-    REPAIR_ACTION,
     SHAPE_K,
     TEL,
     F,
     Job,
+    bounded_structure_bonus,
     bounded_style_coefficient,
     comp_entropy,
     composition_probe,
@@ -61,6 +60,7 @@ from oxide_gym import (
     GYM_VERSION,
     NET_FEATURES,
     Frame,
+    SeatEffects,
     SeatView,
 )
 
@@ -912,9 +912,7 @@ def _forced_view(action: int) -> SeatView:
 
 
 class TestRepairBonus:
-    """The v6 seeding: one --repair-bonus flag pays each weld verb the
-    seat picked this episode, independently — tracked like Salvage,
-    annealed on the same schedule, invisible to telemetry finals."""
+    """The v6 seeding pays successful work, never sampled intent."""
 
     def _rollout(
         self, initial: Frame, frames: list[Frame], steps: int
@@ -933,51 +931,145 @@ class TestRepairBonus:
         )
         return batch[5], finals
 
-    def test_each_weld_verb_pays_the_bonus_once(self) -> None:
-        initial = Frame(
-            False,
-            0,
-            seats={
-                0: _forced_view(REPAIR_ACTION),
-                1: _forced_view(BUILD_BAY_ACTION),
+    def test_each_successful_weld_effect_pays_once(self) -> None:
+        initial = Frame(False, 0, seats={0: _forced_view(0), 1: _forced_view(0)})
+        terminal = Frame(
+            True,
+            16,
+            winners=[0],
+            effects={
+                0: SeatEffects(
+                    repair_unit_commands=1,
+                    repair_unit_hp_restored=12,
+                    unit_hp_restored=12,
+                ),
+                1: SeatEffects(buildings_completed=("repair_bay",)),
             },
         )
-        rew, finals = self._rollout(initial, [Frame(True, 16, winners=[0])], 1)
+        rew, finals = self._rollout(initial, [terminal], 1)
         assert rew[0][0] == pytest.approx(1.0 + 0.05), "the field weld pays"
         assert rew[0][1] == pytest.approx(-1.0 + 0.05), "the Bay pays, even in defeat"
         assert sorted(finals) == [-1.0, 1.0], "telemetry finals stay pure"
         assert TEL["ep_repair"] == 1
         assert TEL["ep_bay"] == 1
 
-    def test_a_seat_that_picked_both_verbs_earns_both(self) -> None:
-        initial = Frame(
-            False, 0, seats={0: _forced_view(REPAIR_ACTION), 1: _forced_view(0)}
+    def test_a_sampled_or_lowered_verb_without_an_effect_earns_nothing(self) -> None:
+        initial = Frame(False, 0, seats={0: _forced_view(22), 1: _forced_view(0)})
+        terminal = Frame(
+            True,
+            16,
+            winners=[0],
+            effects={0: SeatEffects(repair_unit_commands=1)},
         )
+        rew, _finals = self._rollout(initial, [terminal], 1)
+        assert rew[0][0] == pytest.approx(1.0)
+        assert TEL["ep_repair_commanded"] == 1
+        assert TEL["ep_repair"] == 0
+
+    def test_a_seat_that_completes_both_effects_earns_both(self) -> None:
+        initial = Frame(False, 0, seats={0: _forced_view(0), 1: _forced_view(0)})
         frames = [
             Frame(
                 False,
                 16,
-                seats={0: _forced_view(BUILD_BAY_ACTION), 1: _forced_view(0)},
+                seats={0: _forced_view(0), 1: _forced_view(0)},
+                effects={
+                    0: SeatEffects(
+                        repair_unit_commands=1,
+                        repair_unit_hp_restored=8,
+                        unit_hp_restored=8,
+                    )
+                },
             ),
-            Frame(True, 32, winners=[0]),
+            Frame(
+                True,
+                32,
+                winners=[0],
+                effects={0: SeatEffects(buildings_completed=("repair_bay",))},
+            ),
         ]
         rew, _finals = self._rollout(initial, frames, 2)
         assert rew[1][0] == pytest.approx(1.0 + 0.10), "both verbs, both bonuses"
         assert rew[1][1] == pytest.approx(-1.0), "an idle seat earns nothing"
 
     def test_the_flags_reset_at_the_episode_boundary(self) -> None:
-        initial = Frame(
-            False,
-            0,
-            seats={0: _forced_view(REPAIR_ACTION), 1: _forced_view(REPAIR_ACTION)},
-        )
-        frames = [Frame(True, 16, winners=[0]), Frame(True, 32, winners=[0])]
+        initial = Frame(False, 0, seats={0: _forced_view(0), 1: _forced_view(0)})
+        frames = [
+            Frame(
+                True,
+                16,
+                winners=[0],
+                effects={
+                    0: SeatEffects(
+                        repair_unit_commands=1,
+                        repair_unit_hp_restored=8,
+                        unit_hp_restored=8,
+                    ),
+                    1: SeatEffects(
+                        repair_unit_commands=1,
+                        repair_unit_hp_restored=8,
+                        unit_hp_restored=8,
+                    ),
+                },
+            ),
+            Frame(True, 32, winners=[0]),
+        ]
         rew, _finals = self._rollout(initial, frames, 2)
         assert rew[0][0] == pytest.approx(1.0 + 0.05)
         # Episode 2 picked nothing (the fresh frame forces Idle); a
         # stale flag would let one early weld pay rent forever.
         assert rew[1][0] == pytest.approx(1.0)
         assert rew[1][1] == pytest.approx(-1.0)
+
+
+class TestStructureBonus:
+    def test_distinct_completed_turret_and_array_each_pay_once(self) -> None:
+        initial = Frame(False, 0, seats={0: _forced_view(0), 1: _forced_view(0)})
+        frames = [
+            Frame(
+                False,
+                16,
+                seats={0: _forced_view(0), 1: _forced_view(0)},
+                effects={0: SeatEffects(buildings_completed=("turret",))},
+            ),
+            Frame(
+                True,
+                32,
+                winners=[0],
+                effects={
+                    0: SeatEffects(buildings_completed=("turret", "array")),
+                    1: SeatEffects(buildings_completed=("repair_bay",)),
+                },
+            ),
+        ]
+        fresh = Frame(False, 99, seats={0: _forced_view(0), 1: _forced_view(0)})
+        worker = cast("Worker", _ResettingWorker(frames, fresh))
+        job = Job(worker, "self", 0, pathlib.Path("."), np.random.default_rng(0), "cpu")
+        job.frame = initial
+        job.conditions = {0: (1000, 500, 0), 1: (1000, 500, 1000)}
+        policy = make_policy("mlp")
+        policy.eval()
+        TEL.clear()
+
+        batch, _last_val, _finals = rollout(
+            policy,
+            [job],
+            itertools.repeat(0),
+            2,
+            "cpu",
+            structure_bonus=0.02,
+        )
+        rewards = batch[5]
+        assert rewards[1][0] == pytest.approx(1.04)
+        assert rewards[1][1] == pytest.approx(-1.0)
+        assert TEL["ep_build_turret"] == 1
+        assert TEL["ep_build_array"] == 1
+
+    def test_cli_bonus_is_finite_and_capped_per_kind(self) -> None:
+        assert bounded_structure_bonus("0.02") == 0.02
+        for value in ("-0.001", "0.0201", "nan", "inf"):
+            with pytest.raises(argparse.ArgumentTypeError):
+                bounded_structure_bonus(value)
 
 
 _PROBE_PAYLOAD = {

@@ -13,7 +13,7 @@ import contextlib
 import json
 import subprocess
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
 
@@ -21,6 +21,28 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 type FactionName = Literal["ferrous", "cupric"]
+type BuildingName = Literal[
+    "foundry",
+    "turret",
+    "fabricator",
+    "flak_turret",
+    "bastion",
+    "array",
+    "reclaimer",
+    "repair_bay",
+]
+BUILDING_NAMES = frozenset(
+    {
+        "foundry",
+        "turret",
+        "fabricator",
+        "flak_turret",
+        "bastion",
+        "array",
+        "reclaimer",
+        "repair_bay",
+    }
+)
 
 FEATURES = 65
 ACTIONS = 24
@@ -230,6 +252,21 @@ class SeatView:
         return faction_knob_from_features(self.raw)
 
 
+@dataclass(frozen=True)
+class SeatEffects:
+    """Own-state effects observed during one Rust decision interval.
+
+    These are training telemetry, not policy inputs. In particular, the
+    repair bonuses consume completed work rather than rewarding a sampled
+    action that lowering or the sim may have rejected.
+    """
+
+    repair_unit_commands: int = 0
+    unit_hp_restored: int = 0
+    repair_unit_hp_restored: int = 0
+    buildings_completed: tuple[BuildingName, ...] = ()
+
+
 @dataclass
 class Frame:
     done: bool
@@ -239,6 +276,7 @@ class Frame:
     alive: list[int] | None = None  # controlled seats still standing
     seats: dict[int, SeatView] = field(default_factory=dict)
     factions: list[FactionName] | None = None  # every scenario seat, in order
+    effects: dict[int, SeatEffects] = field(default_factory=dict)
 
     def reward(self, seat: int) -> float:
         """Terminal reward for `seat` (call when done). A team win pays
@@ -251,6 +289,29 @@ class Frame:
         if self.alive is not None and seat not in self.alive:
             return -1.0
         return DRAW_REWARD
+
+
+def parse_effects(reply: dict) -> dict[int, SeatEffects]:
+    """Parses the optional v6 effect-telemetry extension."""
+    effects: dict[int, SeatEffects] = {}
+    for raw in reply.get("effects", []):
+        seat = int(raw["seat"])
+        if seat in effects:
+            raise RuntimeError(f"duplicate effect telemetry for seat {seat}")
+        completed = tuple(raw.get("buildings_completed", ()))
+        unknown = set(completed).difference(BUILDING_NAMES)
+        if unknown:
+            raise RuntimeError(
+                f"unknown completed building kinds from Rust: {sorted(unknown)}"
+            )
+        typed_completed = cast("tuple[BuildingName, ...]", completed)
+        effects[seat] = SeatEffects(
+            repair_unit_commands=int(raw.get("repair_unit_commands", 0)),
+            unit_hp_restored=int(raw.get("unit_hp_restored", 0)),
+            repair_unit_hp_restored=int(raw.get("repair_unit_hp_restored", 0)),
+            buildings_completed=typed_completed,
+        )
+    return effects
 
 
 class Worker:
@@ -285,6 +346,12 @@ class Worker:
                 f"rust: {hello.get('names')} vs python: {FEATURE_NAMES}"
             )
         self._supports_reset_factions = hello.get("reset_factions") is True
+        self._supports_effect_telemetry = hello.get("effect_telemetry") is True
+
+    @property
+    def supports_effect_telemetry(self) -> bool:
+        """Whether replies carry the optional successful-effect sideband."""
+        return self._supports_effect_telemetry
 
     def _rpc(self, request: dict) -> Frame:
         self.send(request)
@@ -316,6 +383,7 @@ class Worker:
                 winners=reply.get("winners"),
                 alive=reply.get("alive"),
                 factions=self.factions,
+                effects=parse_effects(reply),
             )
             # v5: terminal frames carry observations for living
             # controlled seats — evidence for terminal shaping (the
@@ -325,7 +393,12 @@ class Worker:
                 seat, view = self._seat_view(s)
                 frame.seats[seat] = view
             return frame
-        frame = Frame(False, reply["tick"], factions=self.factions)
+        frame = Frame(
+            False,
+            reply["tick"],
+            factions=self.factions,
+            effects=parse_effects(reply),
+        )
         for s in reply["seats"]:
             seat, view = self._seat_view(s)
             frame.seats[seat] = view

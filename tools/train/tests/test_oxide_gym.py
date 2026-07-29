@@ -20,6 +20,37 @@ class TestFeatureContract:
         assert oxide_gym.CONDITION_DIMS == 3
 
 
+class TestEffectTelemetry:
+    def test_successful_effects_are_typed(self) -> None:
+        effects = oxide_gym.parse_effects(
+            {
+                "effects": [
+                    {
+                        "seat": 1,
+                        "repair_unit_commands": 2,
+                        "unit_hp_restored": 13,
+                        "repair_unit_hp_restored": 8,
+                        "buildings_completed": ["turret", "repair_bay"],
+                    }
+                ]
+            }
+        )
+        assert effects[1] == oxide_gym.SeatEffects(
+            repair_unit_commands=2,
+            unit_hp_restored=13,
+            repair_unit_hp_restored=8,
+            buildings_completed=("turret", "repair_bay"),
+        )
+
+    def test_unknown_or_duplicate_effect_rows_fail_loudly(self) -> None:
+        with pytest.raises(RuntimeError, match="unknown completed"):
+            oxide_gym.parse_effects(
+                {"effects": [{"seat": 0, "buildings_completed": ["moon_base"]}]}
+            )
+        with pytest.raises(RuntimeError, match="duplicate"):
+            oxide_gym.parse_effects({"effects": [{"seat": 0}, {"seat": 0}]})
+
+
 def faction_features(name: oxide_gym.FactionName) -> list[int]:
     features = [0] * oxide_gym.FEATURES
     features[oxide_gym.FACTION_FEATURE] = int(name == "cupric")

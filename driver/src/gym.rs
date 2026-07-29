@@ -13,9 +13,9 @@
 use anyhow::{Context, Result, bail};
 use oxide_sim::bot::{ACTION_COUNT, Action, Brain, Difficulty, FEATURE_COUNT, GYM_VERSION, GymBot};
 use oxide_sim::scenario::Scenario;
-use oxide_sim::state::GameResult;
-use oxide_sim::{Faction, PlayerId, State};
-use serde::Deserialize;
+use oxide_sim::state::{GameResult, Order};
+use oxide_sim::{BuildingKind, Command, Event, Faction, PlayerCommand, PlayerId, State, UnitId};
+use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Write};
 
 /// Ordered west/east faction pair for a two-seat neural cup.
@@ -152,11 +152,119 @@ fn default_cadence() -> u64 {
     8
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct SeatEffects {
+    seat: u8,
+    repair_unit_commands: u64,
+    unit_hp_restored: u64,
+    repair_unit_hp_restored: u64,
+    buildings_completed: Vec<BuildingKind>,
+}
+
+impl SeatEffects {
+    fn new(seat: PlayerId) -> Self {
+        Self {
+            seat: seat.0,
+            repair_unit_commands: 0,
+            unit_hp_restored: 0,
+            repair_unit_hp_restored: 0,
+            buildings_completed: Vec::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.repair_unit_commands = 0;
+        self.unit_hp_restored = 0;
+        self.repair_unit_hp_restored = 0;
+        self.buildings_completed.clear();
+    }
+}
+
+fn stationary_repair_patient(unit: &oxide_sim::state::Unit) -> bool {
+    unit.path.is_none()
+        && !matches!(
+            unit.order,
+            Order::Move { .. } | Order::AttackMove { .. } | Order::Found { .. }
+        )
+}
+
+fn repair_bay_covers(state: &State, player: PlayerId, target: UnitId) -> bool {
+    let Some(patient) = state.unit(target) else {
+        return false;
+    };
+    let radius = oxide_sim::stats::REPAIR_BAY_RADIUS;
+    state.buildings().iter().any(|building| {
+        building.player == player
+            && building.kind == BuildingKind::RepairBay
+            && building.built
+            && building.hp > 0
+            && building.closest_point_to(patient.pos).dist_sq(patient.pos) <= radius * radius
+    })
+}
+
+fn active_weld_targets(
+    state: &State,
+    controlled: &[PlayerId],
+    commands: &[PlayerCommand],
+) -> Vec<(PlayerId, UnitId)> {
+    let reach = oxide_sim::stats::REPAIR_REACH;
+    let mut targets: Vec<(PlayerId, UnitId)> = state
+        .units()
+        .iter()
+        .filter(|welder| controlled.contains(&welder.player) && welder.path.is_none())
+        .filter_map(|welder| {
+            let Order::RepairUnit { unit: target } = welder.order else {
+                return None;
+            };
+            let patient = state.unit(target)?;
+            (patient.player == welder.player
+                && stationary_repair_patient(patient)
+                && welder.pos.dist_sq(patient.pos) <= reach * reach
+                && !repair_bay_covers(state, welder.player, target))
+            .then_some((welder.player, target))
+        })
+        .collect();
+    for command in commands {
+        let Command::RepairUnit {
+            units,
+            target,
+            queue,
+        } = &command.command
+        else {
+            continue;
+        };
+        if *queue || !controlled.contains(&command.player) {
+            continue;
+        }
+        let Some(patient) = state.unit(*target).filter(|patient| {
+            patient.player == command.player && stationary_repair_patient(patient)
+        }) else {
+            continue;
+        };
+        let assigned_in_reach = units.iter().any(|&unit| {
+            state.unit(unit).is_some_and(|welder| {
+                welder.player == command.player
+                    && welder.kind == oxide_sim::UnitKind::Harvester
+                    && welder.id != *target
+                    && welder.path.is_none()
+                    && welder.pos.dist_sq(patient.pos) <= reach * reach
+            })
+        });
+        if assigned_in_reach && !repair_bay_covers(state, command.player, *target) {
+            targets.push((command.player, *target));
+        }
+    }
+    targets.sort_unstable();
+    targets.dedup();
+    targets
+}
+
 struct Episode {
     state: State,
     gyms: Vec<GymBot>,
     opponents: Vec<Brain>,
     max_ticks: u64,
+    effects: Vec<SeatEffects>,
 }
 
 impl Episode {
@@ -201,11 +309,16 @@ impl Episode {
             .filter(|s| !control.contains(s))
             .map(|s| Brain::for_tier(PlayerId(s), seed, tier))
             .collect();
+        let effects = control
+            .iter()
+            .map(|&seat| SeatEffects::new(PlayerId(seat)))
+            .collect();
         Ok(Self {
             state,
             gyms,
             opponents,
             max_ticks,
+            effects,
         })
     }
 
@@ -246,6 +359,72 @@ impl Episode {
         self.gyms[0].cadence()
     }
 
+    fn note_events(&mut self, events: &[Event]) {
+        for event in events {
+            let Event::BuildingCompleted { player, kind, .. } = event else {
+                continue;
+            };
+            if let Some(effect) = self
+                .effects
+                .iter_mut()
+                .find(|effect| effect.seat == player.0)
+            {
+                effect.buildings_completed.push(*kind);
+            }
+        }
+    }
+
+    fn tick_with_effects(&mut self, commands: &[PlayerCommand]) {
+        let controlled: Vec<PlayerId> = self
+            .effects
+            .iter()
+            .map(|effect| PlayerId(effect.seat))
+            .collect();
+        let before: Vec<(PlayerId, UnitId, u32)> = self
+            .state
+            .units()
+            .iter()
+            .filter(|unit| controlled.contains(&unit.player))
+            .map(|unit| (unit.player, unit.id, unit.hp))
+            .collect();
+        let repair_targets = active_weld_targets(&self.state, &controlled, commands);
+        for command in commands {
+            let Some(effect) = self
+                .effects
+                .iter_mut()
+                .find(|effect| effect.seat == command.player.0)
+            else {
+                continue;
+            };
+            if matches!(&command.command, Command::RepairUnit { .. }) {
+                effect.repair_unit_commands += 1;
+            }
+        }
+
+        let report = self.state.tick(commands);
+
+        for (player, unit, hp) in before {
+            let Some(restored) = self
+                .state
+                .unit(unit)
+                .map(|after| u64::from(after.hp.saturating_sub(hp)))
+                .filter(|restored| *restored > 0)
+            else {
+                continue;
+            };
+            let effect = self
+                .effects
+                .iter_mut()
+                .find(|effect| effect.seat == player.0)
+                .expect("snapshot belongs to a controlled seat");
+            effect.unit_hp_restored += restored;
+            if repair_targets.binary_search(&(player, unit)).is_ok() {
+                effect.repair_unit_hp_restored += restored;
+            }
+        }
+        self.note_events(&report.events);
+    }
+
     /// Applies the trainer's actions at the current decision tick, then
     /// advances to the next decision tick (or the end).
     fn step(&mut self, actions: &[usize]) -> Result<()> {
@@ -261,6 +440,9 @@ impl Episode {
                 actions.len()
             );
         }
+        for effect in &mut self.effects {
+            effect.clear();
+        }
         let mut commands = Vec::new();
         for (&idx, action) in live.iter().zip(actions) {
             commands.extend(self.gyms[idx].step(&self.state, Action::from_index(*action)));
@@ -268,13 +450,13 @@ impl Episode {
         for op in self.opponents.iter_mut() {
             commands.extend(op.act(&self.state));
         }
-        self.state.tick(&commands);
+        self.tick_with_effects(&commands);
         while self.live() && !self.state.current_tick().is_multiple_of(self.cadence()) {
             let mut commands = Vec::new();
             for op in self.opponents.iter_mut() {
                 commands.extend(op.act(&self.state));
             }
-            self.state.tick(&commands);
+            self.tick_with_effects(&commands);
         }
         Ok(())
     }
@@ -320,6 +502,7 @@ impl Episode {
                 "seats": seats,
                 "alive": alive,
                 "factions": factions,
+                "effects": &self.effects,
             })
         } else {
             // `winner` is the surviving *team*; in a 1v1 (where every
@@ -368,9 +551,22 @@ impl Episode {
                 "alive": alive,
                 "seats": seats,
                 "factions": factions,
+                "effects": &self.effects,
             })
         }
     }
+}
+
+fn hello() -> serde_json::Value {
+    serde_json::json!({
+        "ready": true,
+        "version": GYM_VERSION,
+        "names": oxide_sim::bot::FEATURE_NAMES.to_vec(),
+        "features": FEATURE_COUNT,
+        "actions": ACTION_COUNT,
+        "reset_factions": true,
+        "effect_telemetry": true,
+    })
 }
 
 /// Runs the stdio loop until EOF or a quit command.
@@ -378,18 +574,7 @@ pub fn serve() -> Result<()> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    writeln!(
-        out,
-        "{}",
-        serde_json::json!({
-            "ready": true,
-            "version": GYM_VERSION,
-            "names": oxide_sim::bot::FEATURE_NAMES.to_vec(),
-            "features": FEATURE_COUNT,
-            "actions": ACTION_COUNT,
-            "reset_factions": true,
-        })
-    )?;
+    writeln!(out, "{}", hello())?;
     out.flush()?;
 
     let mut episode: Option<Episode> = None;
@@ -592,6 +777,155 @@ mod tests {
     fn episode(factions: Option<&[Faction]>) -> Episode {
         Episode::new(17, &[0, 1], Difficulty::Veteran, 100, None, factions, 8)
             .expect("skirmish episode")
+    }
+
+    fn wound_sentinel(episode: &mut Episode, player: PlayerId) -> UnitId {
+        let (index, id, max_hp) = episode
+            .state
+            .units()
+            .iter()
+            .enumerate()
+            .find(|(_, unit)| unit.player == player && unit.kind == oxide_sim::UnitKind::Sentinel)
+            .map(|(index, unit)| (index, unit.id, unit.kind.stats().max_hp))
+            .expect("seat starts with a sentinel");
+        let mut value = serde_json::to_value(&episode.state).expect("serialize state");
+        value["units"][index]["hp"] = serde_json::json!((max_hp / 3).max(1));
+        episode.state = serde_json::from_value(value).expect("valid wounded state");
+        id
+    }
+
+    #[test]
+    fn hello_and_reset_reply_advertise_zeroed_effect_telemetry() {
+        let hello = hello();
+        assert_eq!(hello["effect_telemetry"], true);
+        assert_eq!(hello["version"], GYM_VERSION);
+        assert_eq!(hello["features"], FEATURE_COUNT);
+        assert_eq!(hello["actions"], ACTION_COUNT);
+
+        let mut episode = episode(None);
+        let reply = episode.reply();
+        assert_eq!(
+            reply["effects"],
+            serde_json::json!([
+                {
+                    "seat": 0,
+                    "repair_unit_commands": 0,
+                    "unit_hp_restored": 0,
+                    "repair_unit_hp_restored": 0,
+                    "buildings_completed": [],
+                },
+                {
+                    "seat": 1,
+                    "repair_unit_commands": 0,
+                    "unit_hp_restored": 0,
+                    "repair_unit_hp_restored": 0,
+                    "buildings_completed": [],
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn repair_effects_accumulate_across_the_whole_decision_interval() {
+        let mut episode = Episode::new(17, &[0], Difficulty::Veteran, 300, None, None, 64)
+            .expect("skirmish episode");
+        wound_sentinel(&mut episode, PlayerId(0));
+        let reset = episode.reply();
+        assert_eq!(reset["effects"][0]["unit_hp_restored"], 0);
+
+        episode
+            .step(&[Action::RepairUnit as usize])
+            .expect("legal repair action");
+
+        assert_eq!(episode.state.current_tick(), 64);
+        assert_eq!(episode.effects[0].repair_unit_commands, 1);
+        assert!(episode.effects[0].unit_hp_restored > 0);
+        assert_eq!(
+            episode.effects[0].repair_unit_hp_restored,
+            episode.effects[0].unit_hp_restored
+        );
+        assert!(episode.effects[0].buildings_completed.is_empty());
+        let reply = episode.reply();
+        assert_eq!(
+            reply["effects"][0]["repair_unit_hp_restored"],
+            episode.effects[0].repair_unit_hp_restored
+        );
+    }
+
+    #[test]
+    fn repair_bay_healing_is_not_attributed_to_a_repair_unit_order() {
+        let mut scenario = Scenario::skirmish();
+        let welder = scenario
+            .units
+            .iter_mut()
+            .find(|unit| unit.player == 0 && unit.kind == oxide_sim::UnitKind::Harvester)
+            .expect("seat starts with a harvester");
+        (welder.x, welder.y) = (8, 7);
+        scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+            player: 0,
+            kind: BuildingKind::RepairBay,
+            x: 4,
+            y: 7,
+        });
+        let state = scenario.build().expect("repair bay fixture");
+        let mut episode = episode(None);
+        episode.state = state;
+        let target = wound_sentinel(&mut episode, PlayerId(0));
+        let welder = episode
+            .state
+            .units()
+            .iter()
+            .find(|unit| {
+                unit.player == PlayerId(0)
+                    && unit.kind == oxide_sim::UnitKind::Harvester
+                    && unit.tile() == chassis::grid::TilePos::new(8, 7)
+            })
+            .map(|unit| unit.id)
+            .expect("nearby welder");
+
+        episode.tick_with_effects(&[PlayerCommand {
+            player: PlayerId(0),
+            command: Command::RepairUnit {
+                units: vec![welder],
+                target,
+                queue: false,
+            },
+        }]);
+
+        assert!(episode.effects[0].unit_hp_restored > 0);
+        assert_eq!(episode.effects[0].repair_unit_hp_restored, 0);
+        assert_eq!(episode.effects[0].repair_unit_commands, 1);
+    }
+
+    #[test]
+    fn completed_building_kinds_are_exact_and_seat_scoped() {
+        let mut episode = episode(None);
+        episode.note_events(&[
+            Event::BuildingCompleted {
+                building: oxide_sim::BuildingId(90),
+                player: PlayerId(1),
+                kind: BuildingKind::RepairBay,
+            },
+            Event::BuildingCompleted {
+                building: oxide_sim::BuildingId(91),
+                player: PlayerId(0),
+                kind: BuildingKind::Array,
+            },
+            Event::BuildingCompleted {
+                building: oxide_sim::BuildingId(92),
+                player: PlayerId(0),
+                kind: BuildingKind::Turret,
+            },
+        ]);
+        let reply = episode.reply();
+        assert_eq!(
+            reply["effects"][0]["buildings_completed"],
+            serde_json::json!(["array", "turret"])
+        );
+        assert_eq!(
+            reply["effects"][1]["buildings_completed"],
+            serde_json::json!(["repair_bay"])
+        );
     }
 
     #[test]

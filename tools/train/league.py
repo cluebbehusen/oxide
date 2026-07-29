@@ -146,10 +146,18 @@ def style_bonus(total: float, steps: int, coefficient: float) -> float:
 FAB_BUILT = FEATURE_NAMES.index("fab_built")
 # Action index the gym assigns Salvage (v5's appended verb).
 SALVAGE_ACTION = 21
-# The v6 weld pair, appended in this order: unit repair and the
-# Repair Bay's build slot.
+BUILD_TURRET_ACTION = 10
+BUILD_ARRAY_ACTION = 13
 REPAIR_ACTION = 22
 BUILD_BAY_ACTION = 23
+# Successful completions seeded by --structure-bonus. Fabricators have
+# their established tech bonus, Foundries are not constructible, and the
+# Repair Bay belongs to the repair bonus.
+SEEDED_STRUCTURES = (
+    "turret",
+    "array",
+)
+MAX_STRUCTURE_KIND_BONUS = 0.02
 
 # The agent's own army-count features with rough unit costs (varied
 # roles use the midpoint of their two faction kinds) — the same
@@ -218,6 +226,17 @@ def bounded_style_coefficient(text: str) -> float:
     if not np.isfinite(value) or not 0.0 <= value <= MAX_STYLE_BONUS:
         raise argparse.ArgumentTypeError(
             f"style coefficient must be finite in [0, {MAX_STYLE_BONUS}], got {text}"
+        )
+    return value
+
+
+def bounded_structure_bonus(text: str) -> float:
+    """Argparse type for the per-kind successful-structure seed."""
+    value = float(text)
+    if not np.isfinite(value) or not 0.0 <= value <= MAX_STRUCTURE_KIND_BONUS:
+        raise argparse.ArgumentTypeError(
+            "structure bonus must be finite in "
+            f"[0, {MAX_STRUCTURE_KIND_BONUS}], got {text}"
         )
     return value
 
@@ -535,9 +554,13 @@ class Job:
         # episode. Lives on the Job, not the Lane, because episodes span
         # rollout windows and Lanes are recreated per window.
         self.salvaged: set[int] = set()
-        # Learner seats that picked each v6 weld verb this episode —
-        # the --repair-bonus evidence, tracked exactly like salvaged.
+        # Learner seats that produced a real field-weld effect this
+        # episode. Commands are tracked separately: a sampled action or
+        # a walking welder is not yet recovered value.
+        self.repair_commanded: set[int] = set()
         self.repaired: set[int] = set()
+        # Repair Bay credit waits for BuildingCompleted, not a sampled
+        # build action or a scaffold that died unfinished.
         self.built_bay: set[int] = set()
         if kind == "self":
             self.learner_seats = [0, 1]
@@ -566,6 +589,9 @@ class Job:
             raise ValueError(f"unknown league opponent kind {kind!r}")
         if kind == "incumbent" and incumbent is None:
             raise ValueError("incumbent jobs require an incumbent checkpoint")
+        self.completed_structures: dict[int, set[str]] = {
+            seat: set() for seat in self.learner_seats
+        }
         self.style_total = dict.fromkeys(self.learner_seats, 0.0)
         self.style_steps = dict.fromkeys(self.learner_seats, 0)
 
@@ -599,8 +625,10 @@ class Job:
         self.dead = set()
         self.last_views = {}
         self.salvaged = set()
+        self.repair_commanded = set()
         self.repaired = set()
         self.built_bay = set()
+        self.completed_structures = {seat: set() for seat in self.learner_seats}
         self.style_total = dict.fromkeys(self.learner_seats, 0.0)
         self.style_steps = dict.fromkeys(self.learner_seats, 0)
         seats = 4 if self.kind in ("ffa", "team", "team2") else 2
@@ -826,6 +854,7 @@ def rollout(
     mix_bonus: float = 0.0,
     salvage_bonus: float = 0.0,
     repair_bonus: float = 0.0,
+    structure_bonus: float = 0.0,
     style_coefficient: float = 0.0,
 ) -> tuple[tuple[np.ndarray, ...], np.ndarray, list[float]]:
     lanes = {(id(j), s): Lane(j.worker, s) for j in jobs for s in j.learner_seats}
@@ -894,10 +923,14 @@ def rollout(
                 )
                 if acts[s] == SALVAGE_ACTION:
                     j.salvaged.add(s)
+                elif acts[s] == BUILD_TURRET_ACTION:
+                    TEL["turret_action_samples"] += 1
+                elif acts[s] == BUILD_ARRAY_ACTION:
+                    TEL["array_action_samples"] += 1
                 elif acts[s] == REPAIR_ACTION:
-                    j.repaired.add(s)
+                    TEL["repair_action_samples"] += 1
                 elif acts[s] == BUILD_BAY_ACTION:
-                    j.built_bay.add(s)
+                    TEL["bay_action_samples"] += 1
             acts.update(j.opponent_action(device))
             all_acts.append(acts)
         with timed("env_sec"):
@@ -906,6 +939,21 @@ def rollout(
         for j in jobs:
             with timed("env_sec"):
                 frame = j.worker.recv()
+            for s, effects in frame.effects.items():
+                if s not in j.learner_seats:
+                    continue
+                if effects.repair_unit_commands > 0:
+                    j.repair_commanded.add(s)
+                    TEL["repair_commands"] += effects.repair_unit_commands
+                if effects.repair_unit_hp_restored > 0:
+                    j.repaired.add(s)
+                    TEL["repair_hp"] += effects.repair_unit_hp_restored
+                if effects.unit_hp_restored > 0:
+                    TEL["unit_hp_restored"] += effects.unit_hp_restored
+                completed = set(effects.buildings_completed)
+                j.completed_structures[s].update(completed)
+                if "repair_bay" in completed:
+                    j.built_bay.add(s)
             if frame.done:
                 # v5: the terminal frame carries observations for
                 # living seats. Install it as the live frame BEFORE any
@@ -933,17 +981,24 @@ def rollout(
                         # picked action), annealed to zero so the true
                         # objective decides whether the verb survives.
                         mut_bonus += salvage_bonus
-                    # One flag seeds both v6 weld verbs, each paying
-                    # independently — a policy that found only the Bay
-                    # (or only the field weld) still gets that verb
-                    # seeded, and the anneal hands both back to the
-                    # game's own economics.
+                    if s in j.repair_commanded:
+                        TEL["ep_repair_commanded"] += 1
+                    # One flag seeds both v6 weld effects, each paying
+                    # independently. A policy earns nothing for merely
+                    # sampling an action, issuing a walking order, or
+                    # leaving a Bay scaffold unfinished.
                     if s in j.repaired:
                         TEL["ep_repair"] += 1
                         mut_bonus += repair_bonus
                     if s in j.built_bay:
                         TEL["ep_bay"] += 1
                         mut_bonus += repair_bonus
+                    completed_structures = j.completed_structures[s].intersection(
+                        SEEDED_STRUCTURES
+                    )
+                    for kind in sorted(completed_structures):
+                        TEL[f"ep_build_{kind}"] += 1
+                        mut_bonus += structure_bonus
                     if mix_bonus > 0.0:
                         # The seat's frozen last view carries its final
                         # army; two bits (a real three-way mix) earns
@@ -1227,10 +1282,19 @@ def main() -> None:
         "--repair-bonus",
         type=float,
         default=0.0,
-        help="terminal bonus paid per v6 weld verb the seat picked this "
-        "episode (RepairUnit and Build RepairBay each earn it once; "
-        "own-state only, fog-safe); annealed on the --tech-anneal "
-        "schedule. 0 disables.",
+        help="terminal bonus paid per successful v6 weld effect this "
+        "episode (field-welded hp and a completed Repair Bay each earn "
+        "it once; own-state only, fog-safe); annealed on the "
+        "--tech-anneal schedule. 0 disables.",
+    )
+    ap.add_argument(
+        "--structure-bonus",
+        type=bounded_structure_bonus,
+        default=0.0,
+        help="terminal bonus paid once per distinct completed tactical "
+        "structure kind (Turret and Array); capped at 0.02 per kind "
+        "and annealed on the "
+        "--tech-anneal schedule. 0 disables.",
     )
     ap.add_argument(
         "--mix-bonus",
@@ -1322,6 +1386,15 @@ def main() -> None:
         anchor, _ = load_policy(args.anchor, device)
         anchor.eval()
     workers = [Worker(args.driver) for _ in range(args.workers)]
+    if (args.repair_bonus or args.structure_bonus) and any(
+        not worker.supports_effect_telemetry for worker in workers
+    ):
+        for worker in workers:
+            worker.close()
+        raise RuntimeError(
+            "effect-seeded training requires a gym driver that advertises "
+            "effect_telemetry"
+        )
     rng = np.random.default_rng(0)
 
     # A one-cell cursor the warmer reads without locking: worst case it
@@ -1396,6 +1469,11 @@ def main() -> None:
                 update - start_update - 1,
                 args.tech_anneal or args.updates,
             )
+            ub = tech_bonus_at(
+                args.structure_bonus,
+                update - start_update - 1,
+                args.tech_anneal or args.updates,
+            )
             batch, last_val, finals = rollout(
                 policy,
                 jobs,
@@ -1406,6 +1484,7 @@ def main() -> None:
                 mix_bonus=mb,
                 salvage_bonus=sb,
                 repair_bonus=rb,
+                structure_bonus=ub,
                 style_coefficient=args.style_coef,
             )
             rollout_sec = time.time() - t0
@@ -1459,12 +1538,7 @@ def main() -> None:
                 "update_sec": round(time.time() - t_update, 2),
                 "decisions_s": round(decisions / max(rollout_sec, 1e-9)),
                 **{
-                    k: (
-                        int(v)
-                        if k
-                        in ("resets", "ep_teched", "ep_salvage", "ep_repair", "ep_bay")
-                        else round(v, 2)
-                    )
+                    k: (int(v) if k == "resets" or k.startswith("ep_") else round(v, 2))
                     for k, v in sorted(TEL.items())
                 },
             }
@@ -1474,6 +1548,8 @@ def main() -> None:
                 entry["salvage_bonus"] = round(sb, 4)
             if args.repair_bonus:
                 entry["repair_bonus"] = round(rb, 4)
+            if args.structure_bonus:
+                entry["structure_bonus"] = round(ub, 4)
             if args.style_coef:
                 entry["style_coef"] = args.style_coef
             if update % args.pool_every == 0:

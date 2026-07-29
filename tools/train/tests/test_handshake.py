@@ -27,10 +27,13 @@ pytestmark = pytest.mark.skipif(
 def test_the_handshake_and_one_masked_step() -> None:
     worker = Worker(os.environ["OXIDE_DRIVER_BIN"])
     try:
+        assert worker.supports_effect_telemetry
         frame = worker.reset(seed=11, max_ticks=200)
         assert not frame.done
         assert frame.tick == 0
         (seat,) = worker.control
+        assert frame.effects[seat].unit_hp_restored == 0
+        assert frame.effects[seat].buildings_completed == ()
         view = frame.seats[seat]
         assert len(view.raw) == FEATURES
         assert view.mask.shape == (ACTIONS,)
@@ -40,6 +43,7 @@ def test_the_handshake_and_one_masked_step() -> None:
         after = worker.step({seat: legal})
         assert after.tick > frame.tick
         assert after.done or seat in after.seats
+        assert seat in after.effects
     finally:
         worker.close()
 
