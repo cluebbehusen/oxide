@@ -220,12 +220,17 @@ const STACKED_DIRS: [Vec2Fx; 8] = [
 /// correction as a slide (see [`correction_dirs`]) instead of a pure
 /// radial push. Snapshotted once for all passes — corrections can
 /// stale it by at most one step, which only softens the slide.
-pub(super) fn resolve_collisions(state: &mut State, travel: &[Vec2Fx]) {
+pub(super) fn resolve_collisions(
+    state: &mut State,
+    travel: &[Vec2Fx],
+    index: &mut super::spatial::UnitIndex,
+) {
     // Direction alternates by tick parity — Gauss-Seidel's sequential
     // application must not always favor the same ids (see brain::run).
     let reversed = state.tick % 2 == 1;
+    let mut spent: Vec<Fx> = Vec::new();
     for _ in 0..COLLISION_ITERATIONS {
-        if !relaxation_pass(state, reversed, travel) {
+        if !relaxation_pass(state, reversed, travel, index, &mut spent) {
             break;
         }
     }
@@ -275,7 +280,13 @@ fn correction_dirs(away: Vec2Fx, travel: Vec2Fx, partner_head_on: bool) -> [Opti
 /// forever. Sequential application cannot cancel, so jams always evolve.
 /// Dead units are skipped: a corpse should not shove the living on its
 /// removal tick.
-fn relaxation_pass(state: &mut State, reversed: bool, travel: &[Vec2Fx]) -> bool {
+fn relaxation_pass(
+    state: &mut State,
+    reversed: bool,
+    travel: &[Vec2Fx],
+    index: &mut super::spatial::UnitIndex,
+    spent: &mut Vec<Fx>,
+) -> bool {
     let n = state.units.len();
     if n < 2 {
         return false;
@@ -285,109 +296,99 @@ fn relaxation_pass(state: &mut State, reversed: bool, travel: &[Vec2Fx]) -> bool
     // Buckets are snapshotted at pass start; corrections are small enough
     // (≤ COLLISION_MAX_STEP) that a newly-adjacent pair simply waits for
     // the next pass.
-    let mut by_tile: Vec<(TilePos, usize)> = state
-        .units
-        .iter()
-        .enumerate()
-        .filter(|(_, u)| u.hp > 0)
-        .map(|(i, u)| (u.tile(), i))
-        .collect();
-    by_tile.sort_unstable_by_key(|&(t, i)| (t.y, t.x, i));
+    index.rebuild(&state.units, state.map.height());
 
-    let order: Vec<usize> = if reversed {
-        (0..n).rev().collect()
-    } else {
-        (0..n).collect()
-    };
     let mut any_overlap = false;
     // Per-unit displacement budget for this pass. Clamping only per pair
     // lets a unit in k overlaps move k × the cap — dense stacks visibly
     // exploded outward. Spent distance is tracked per unit instead, so the
     // cap in stats.rs means what it says.
-    let mut spent = vec![Fx::ZERO; n];
-    for i in order {
+    spent.clear();
+    spent.resize(n, Fx::ZERO);
+    for k in 0..n {
+        let i = if reversed { n - 1 - k } else { k };
         if state.units[i].hp == 0 {
             continue;
         }
         let home = state.units[i].tile();
         for dy in -1..=1 {
-            for dx in -1..=1 {
-                let tile = home.offset(dx, dy);
-                let start = by_tile.partition_point(|&(t, _)| (t.y, t.x) < (tile.y, tile.x));
-                for &(_, j) in by_tile[start..].iter().take_while(|&&(t, _)| t == tile) {
-                    if j <= i {
-                        continue; // each pair once, in (i, j) id order
-                    }
-                    let (pos_i, radius_i, id_i, dom_i) = {
-                        let u = &state.units[i];
-                        (u.pos, u.kind.stats().radius, u.id, u.kind.stats().domain)
+            // The row span walks the 3-tile window in ascending
+            // (x, slot) order — the same candidate sequence the old
+            // tile-by-tile bucket walk produced, which Gauss-Seidel's
+            // immediate application makes load-bearing.
+            for &(_, j) in index.row_span(home.y + dy, home.x - 1, home.x + 1) {
+                if j <= i {
+                    continue; // each pair once, in (i, j) id order
+                }
+                let (pos_i, radius_i, id_i, dom_i) = {
+                    let u = &state.units[i];
+                    (u.pos, u.kind.stats().radius, u.id, u.kind.stats().domain)
+                };
+                let (pos_j, radius_j, id_j, dom_j) = {
+                    let u = &state.units[j];
+                    (u.pos, u.kind.stats().radius, u.id, u.kind.stats().domain)
+                };
+                // Bodies only collide within their own layer: a flyer
+                // and a crawler occupy the same tile without touching.
+                if dom_i != dom_j {
+                    continue;
+                }
+                let min_dist = radius_i + radius_j;
+                let delta = pos_j - pos_i;
+                let dist_sq = delta.length_sq();
+                if dist_sq >= min_dist * min_dist {
+                    continue;
+                }
+                any_overlap = true;
+                let dist = sqrt(dist_sq);
+                // Perfectly stacked pairs keep the fixed-direction
+                // radial split — there is no geometry to slide on.
+                let (dir, overlap, stacked) = if dist == Fx::ZERO {
+                    let pick = ((id_i.0 ^ id_j.0) % 8) as usize;
+                    (STACKED_DIRS[pick], min_dist, true)
+                } else {
+                    (delta / dist, min_dist - dist, false)
+                };
+                // Anchored units (working in place) yield a sliver;
+                // movers absorb the correction and flow around them.
+                let (share_i, share_j) =
+                    match (is_anchored(&state.units[i]), is_anchored(&state.units[j])) {
+                        (true, false) => (ANCHORED_PUSH_SHARE, Fx::ONE - ANCHORED_PUSH_SHARE),
+                        (false, true) => (Fx::ONE - ANCHORED_PUSH_SHARE, ANCHORED_PUSH_SHARE),
+                        _ => (chassis::fx::HALF, chassis::fx::HALF),
                     };
-                    let (pos_j, radius_j, id_j, dom_j) = {
-                        let u = &state.units[j];
-                        (u.pos, u.kind.stats().radius, u.id, u.kind.stats().domain)
-                    };
-                    // Bodies only collide within their own layer: a flyer
-                    // and a crawler occupy the same tile without touching.
-                    if dom_i != dom_j {
-                        continue;
-                    }
-                    let min_dist = radius_i + radius_j;
-                    let delta = pos_j - pos_i;
-                    let dist_sq = delta.length_sq();
-                    if dist_sq >= min_dist * min_dist {
-                        continue;
-                    }
-                    any_overlap = true;
-                    let dist = sqrt(dist_sq);
-                    // Perfectly stacked pairs keep the fixed-direction
-                    // radial split — there is no geometry to slide on.
-                    let (dir, overlap, stacked) = if dist == Fx::ZERO {
-                        let pick = ((id_i.0 ^ id_j.0) % 8) as usize;
-                        (STACKED_DIRS[pick], min_dist, true)
-                    } else {
-                        (delta / dist, min_dist - dist, false)
-                    };
-                    // Anchored units (working in place) yield a sliver;
-                    // movers absorb the correction and flow around them.
-                    let (share_i, share_j) =
-                        match (is_anchored(&state.units[i]), is_anchored(&state.units[j])) {
-                            (true, false) => (ANCHORED_PUSH_SHARE, Fx::ONE - ANCHORED_PUSH_SHARE),
-                            (false, true) => (Fx::ONE - ANCHORED_PUSH_SHARE, ANCHORED_PUSH_SHARE),
-                            _ => (chassis::fx::HALF, chassis::fx::HALF),
-                        };
-                    let (away_i, away_j) = (-dir, dir);
-                    let closing_i = travel[i].x * away_i.x + travel[i].y * away_i.y < Fx::ZERO;
-                    let closing_j = travel[j].x * away_j.x + travel[j].y * away_j.y < Fx::ZERO;
-                    let dirs_j = if stacked {
-                        [Some(away_j), None, None]
-                    } else {
-                        correction_dirs(away_j, travel[j], closing_i)
-                    };
-                    let dirs_i = if stacked {
-                        [Some(away_i), None, None]
-                    } else {
-                        correction_dirs(away_i, travel[i], closing_j)
-                    };
-                    let step_j = (overlap * share_j).min(COLLISION_MAX_STEP - spent[j]);
-                    if step_j > Fx::ZERO {
-                        for cand in dirs_j.into_iter().flatten() {
-                            let to = pos_j + cand * step_j;
-                            if state.passable_for(dom_j, TilePos::containing(to)) {
-                                state.units[j].pos = to;
-                                spent[j] += step_j;
-                                break;
-                            }
+                let (away_i, away_j) = (-dir, dir);
+                let closing_i = travel[i].x * away_i.x + travel[i].y * away_i.y < Fx::ZERO;
+                let closing_j = travel[j].x * away_j.x + travel[j].y * away_j.y < Fx::ZERO;
+                let dirs_j = if stacked {
+                    [Some(away_j), None, None]
+                } else {
+                    correction_dirs(away_j, travel[j], closing_i)
+                };
+                let dirs_i = if stacked {
+                    [Some(away_i), None, None]
+                } else {
+                    correction_dirs(away_i, travel[i], closing_j)
+                };
+                let step_j = (overlap * share_j).min(COLLISION_MAX_STEP - spent[j]);
+                if step_j > Fx::ZERO {
+                    for cand in dirs_j.into_iter().flatten() {
+                        let to = pos_j + cand * step_j;
+                        if state.passable_for(dom_j, TilePos::containing(to)) {
+                            state.units[j].pos = to;
+                            spent[j] += step_j;
+                            break;
                         }
                     }
-                    let step_i = (overlap * share_i).min(COLLISION_MAX_STEP - spent[i]);
-                    if step_i > Fx::ZERO {
-                        for cand in dirs_i.into_iter().flatten() {
-                            let to = pos_i + cand * step_i;
-                            if state.passable_for(dom_i, TilePos::containing(to)) {
-                                state.units[i].pos = to;
-                                spent[i] += step_i;
-                                break;
-                            }
+                }
+                let step_i = (overlap * share_i).min(COLLISION_MAX_STEP - spent[i]);
+                if step_i > Fx::ZERO {
+                    for cand in dirs_i.into_iter().flatten() {
+                        let to = pos_i + cand * step_i;
+                        if state.passable_for(dom_i, TilePos::containing(to)) {
+                            state.units[i].pos = to;
+                            spent[i] += step_i;
+                            break;
                         }
                     }
                 }

@@ -12,7 +12,7 @@ use chassis::grid::TilePos;
 /// leash is set here (and refreshed by retaliation), never by player
 /// commands: an explicit attack is a commitment, and `assign` clears
 /// any tether the moment a command lands.
-pub(super) fn idle(state: &mut State, id: UnitId) {
+pub(super) fn idle(state: &mut State, index: &super::super::spatial::UnitIndex, id: UnitId) {
     // A guard back at its post cools down before it looks for the next
     // fight; the leash clears when the cooldown drains — and the guard
     // is instantly STATIONED again (it verifiably stood the whole
@@ -35,7 +35,7 @@ pub(super) fn idle(state: &mut State, id: UnitId) {
         }
         return;
     }
-    if let Some(target) = acquire_target(state, id) {
+    if let Some(target) = acquire_target(state, index, id) {
         let unit = state.unit_mut(id).expect("caller checked");
         let anchor = unit.tile();
         let stationed = unit.settled >= crate::stats::LEASH_STATION_TICKS;
@@ -65,8 +65,14 @@ pub(super) fn idle(state: &mut State, id: UnitId) {
 
 /// March toward the goal, but engage anything that shows up on the way;
 /// the attack order remembers the goal and hands it back afterwards.
-pub(super) fn attack_move(state: &mut State, id: UnitId, goal: TilePos, events: &mut Vec<Event>) {
-    if let Some(target) = acquire_target(state, id) {
+pub(super) fn attack_move(
+    state: &mut State,
+    index: &super::super::spatial::UnitIndex,
+    id: UnitId,
+    goal: TilePos,
+    events: &mut Vec<Event>,
+) {
+    if let Some(target) = acquire_target(state, index, id) {
         let unit = state.unit_mut(id).expect("caller checked");
         unit.order = Order::Attack {
             target,

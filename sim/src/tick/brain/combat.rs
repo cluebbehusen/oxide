@@ -301,7 +301,18 @@ fn chase_stand_ins(
 /// units before buildings, ties to the lowest id. `None` for pacifists,
 /// empty horizons, and everything outside the weapon masks (a flak
 /// crawler never picks a fight with infantry it cannot shoot).
-pub(super) fn acquire_target(state: &State, id: UnitId) -> Option<Target> {
+///
+/// Unit candidates come from the phase's spatial `index` instead of a
+/// full scan: everything within aggro range of `pos` stands within
+/// `floor(aggro) + 1` tiles Chebyshev of its tile (the extra tile
+/// covers both bodies' sub-tile offsets), so the window is a strict
+/// superset of the old scan's survivors — and the pick is a `min` over
+/// `(dist_sq, id)`, which no scan order can move.
+pub(super) fn acquire_target(
+    state: &State,
+    index: &super::super::spatial::UnitIndex,
+    id: UnitId,
+) -> Option<Target> {
     let unit = state.unit(id).expect("caller checked");
     let stats = unit.kind.stats();
     if !stats.can_fight() {
@@ -310,15 +321,22 @@ pub(super) fn acquire_target(state: &State, id: UnitId) -> Option<Target> {
     let (pos, me) = (unit.pos, unit.player);
     let aggro_sq = stats.aggro_range * stats.aggro_range;
 
-    let unit_target = state
-        .units
-        .iter()
-        .filter(|u| {
-            state.hostile(me, u.player) && u.hp > 0 && stats.can_target(u.kind.stats().domain)
-        })
-        .map(|u| (pos.dist_sq(u.pos), u.id))
-        .filter(|(d, _)| *d <= aggro_sq)
-        .min();
+    let home = unit.tile();
+    let reach = stats.aggro_range.floor().to_num::<i32>() + 1;
+    let mut unit_target: Option<(chassis::fx::Fx, UnitId)> = None;
+    for dy in -reach..=reach {
+        for &(_, slot) in index.row_span(home.y + dy, home.x - reach, home.x + reach) {
+            let u = &state.units[slot];
+            if !state.hostile(me, u.player) || u.hp == 0 || !stats.can_target(u.kind.stats().domain)
+            {
+                continue;
+            }
+            let d = pos.dist_sq(u.pos);
+            if d <= aggro_sq && unit_target.is_none_or(|best| (d, u.id) < best) {
+                unit_target = Some((d, u.id));
+            }
+        }
+    }
     if let Some((_, uid)) = unit_target {
         return Some(Target::Unit(uid));
     }
@@ -339,8 +357,10 @@ pub(super) fn acquire_target(state: &State, id: UnitId) -> Option<Target> {
 /// shots are buffered. A vanished target — or one no carried weapon can
 /// cover — hands control back to the remembered attack-move (or idle,
 /// where auto-acquire finds the next fight).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn attack(
     state: &mut State,
+    index: &super::super::spatial::UnitIndex,
     id: UnitId,
     target: Target,
     resume: Option<TilePos>,
@@ -367,7 +387,7 @@ pub(super) fn attack(
     // units), so marching armies fight back instead of tunnel-visioning.
     if resume.is_some()
         && matches!(target, Target::Building(_))
-        && let Some(better @ Target::Unit(_)) = acquire_target(state, id)
+        && let Some(better @ Target::Unit(_)) = acquire_target(state, index, id)
     {
         let unit = state.unit_mut(id).expect("caller checked");
         unit.order = Order::Attack {
@@ -807,5 +827,175 @@ pub(super) fn target_standing(state: &State, target: Target) -> bool {
     match target {
         Target::Unit(u) => state.unit(u).is_some_and(|u| u.hp > 0),
         Target::Building(b) => state.building(b).is_some_and(|b| b.hp > 0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::spatial::UnitIndex;
+    use super::*;
+    use crate::command::{Command, PlayerCommand};
+    use crate::scenario::{PlayerSpec, Scenario, UnitSpec};
+    use crate::state::Faction;
+    use crate::stats::UnitKind;
+
+    /// The pre-index acquisition, kept verbatim as the reference: a full
+    /// scan of the unit list. The indexed window prunes candidates and
+    /// must never change the pick.
+    fn linear_acquire(state: &State, id: UnitId) -> Option<Target> {
+        let unit = state.unit(id).expect("caller checked");
+        let stats = unit.kind.stats();
+        if !stats.can_fight() {
+            return None;
+        }
+        let (pos, me) = (unit.pos, unit.player);
+        let aggro_sq = stats.aggro_range * stats.aggro_range;
+        let unit_target = state
+            .units
+            .iter()
+            .filter(|u| {
+                state.hostile(me, u.player) && u.hp > 0 && stats.can_target(u.kind.stats().domain)
+            })
+            .map(|u| (pos.dist_sq(u.pos), u.id))
+            .filter(|(d, _)| *d <= aggro_sq)
+            .min();
+        if let Some((_, uid)) = unit_target {
+            return Some(Target::Unit(uid));
+        }
+        if !stats.can_target(Domain::Ground) {
+            return None;
+        }
+        state
+            .buildings
+            .iter()
+            .filter(|b| state.hostile(me, b.player) && b.hp > 0)
+            .map(|b| (pos.dist_sq(b.closest_point_to(pos)), b.id))
+            .filter(|(d, _)| *d <= aggro_sq)
+            .min()
+            .map(|(_, bid)| Target::Building(bid))
+    }
+
+    fn seat(name: &str, faction: Faction) -> PlayerSpec {
+        PlayerSpec {
+            name: name.into(),
+            faction,
+            team: None,
+            scrap: 0,
+            bot: false,
+            bot_config: None,
+        }
+    }
+
+    /// Two mixed armies crossing an open arena, compared pick-for-pick
+    /// against the linear scan every tick — range edges, weapon-mask
+    /// misses (flak vs ground, ground-only vs flyers), dying candidates,
+    /// and the building fallback near the far Foundry all churn as the
+    /// fronts meet and melt.
+    #[test]
+    fn indexed_acquisition_matches_the_linear_scan() {
+        let width = 31usize;
+        let height = 19usize;
+        let mut rows = vec![vec!['#'; width]; height];
+        for row in rows.iter_mut().take(height - 1).skip(1) {
+            for cell in row.iter_mut().take(width - 1).skip(1) {
+                *cell = '.';
+            }
+        }
+        rows[1][1] = '1';
+        rows[height - 3][width - 3] = '2';
+        let west: &[UnitKind] = &[
+            UnitKind::Sentinel,
+            UnitKind::Sentinel,
+            UnitKind::Scuttler,
+            UnitKind::Lancer,
+            UnitKind::Flakhound,
+            UnitKind::Buzzard,
+            UnitKind::Talon,
+            UnitKind::Harvester,
+        ];
+        let east: &[UnitKind] = &[
+            UnitKind::Sentinel,
+            UnitKind::Sentinel,
+            UnitKind::Scuttler,
+            UnitKind::Lancer,
+            UnitKind::Stinger,
+            UnitKind::Darter,
+            UnitKind::Wisp,
+            UnitKind::Harvester,
+        ];
+        let mut units = Vec::new();
+        for (i, &kind) in west.iter().enumerate() {
+            let (dx, dy) = ((i as i32) % 4, (i as i32) / 4);
+            units.push(UnitSpec {
+                player: 0,
+                kind,
+                x: 3 + dx * 2,
+                y: 4 + dy * 2,
+            });
+        }
+        for (i, &kind) in east.iter().enumerate() {
+            let (dx, dy) = ((i as i32) % 4, (i as i32) / 4);
+            units.push(UnitSpec {
+                player: 1,
+                kind,
+                x: 27 - dx * 2,
+                y: 14 - dy * 2,
+            });
+        }
+        let scenario = Scenario {
+            name: "acquisition-differential".into(),
+            seed: 7,
+            map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),
+            players: vec![
+                seat("West", Faction::Ferrous),
+                seat("East", Faction::Cupric),
+            ],
+            units,
+            buildings: Vec::new(),
+            meta: None,
+        };
+        let mut state = scenario.build().expect("arena builds");
+        let march = |state: &State, player: u8, goal: TilePos| -> PlayerCommand {
+            PlayerCommand {
+                player: PlayerId(player),
+                command: Command::AttackMove {
+                    units: state
+                        .units
+                        .iter()
+                        .filter(|u| u.player == PlayerId(player))
+                        .map(|u| u.id)
+                        .collect(),
+                    goal,
+                    queue: false,
+                },
+            }
+        };
+        let opening = [
+            march(&state, 0, TilePos::new(27, 15)),
+            march(&state, 1, TilePos::new(3, 3)),
+        ];
+        state.tick(&opening);
+
+        let mut index = UnitIndex::new();
+        let mut picks = 0usize;
+        for _ in 0..400 {
+            state.tick(&[]);
+            index.rebuild(&state.units, state.map.height());
+            for unit in &state.units {
+                if unit.hp == 0 {
+                    continue;
+                }
+                let indexed = acquire_target(&state, &index, unit.id);
+                assert_eq!(
+                    indexed,
+                    linear_acquire(&state, unit.id),
+                    "unit {:?} at tick {}",
+                    unit.id,
+                    state.tick
+                );
+                picks += usize::from(indexed.is_some());
+            }
+        }
+        assert!(picks > 100, "the armies never met ({picks} picks)");
     }
 }

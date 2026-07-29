@@ -84,7 +84,16 @@ struct PendingFounding {
     anchor: chassis::grid::TilePos,
 }
 
-pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
+pub(super) fn run(
+    state: &mut State,
+    index: &mut super::spatial::UnitIndex,
+    events: &mut Vec<Event>,
+) {
+    // One index serves every acquisition window this phase: brains
+    // decide against the start-of-tick world — positions, hp, and the
+    // unit list itself hold still until resolution — so a snapshot
+    // taken here stays exact for the whole decision loop.
+    index.rebuild(&state.units, state.map.height());
     let mut hits: Vec<PendingHit> = Vec::new();
     let mut builds: Vec<PendingHpGain> = Vec::new();
     let mut heals: Vec<PendingUnitHeal> = Vec::new();
@@ -111,13 +120,20 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         }
         let order = state.unit(id).expect("just seen").order;
         match order {
-            Order::Idle => idle(state, id),
+            Order::Idle => idle(state, index, id),
             Order::Move { goal } => walk(state, id, goal, events),
             Order::Harvest { node } => harvest(state, id, node, events),
-            Order::Attack { target, resume } => {
-                attack(state, id, target, resume, events, &mut hits, &mut launches)
-            }
-            Order::AttackMove { goal } => attack_move(state, id, goal, events),
+            Order::Attack { target, resume } => attack(
+                state,
+                index,
+                id,
+                target,
+                resume,
+                events,
+                &mut hits,
+                &mut launches,
+            ),
+            Order::AttackMove { goal } => attack_move(state, index, id, goal, events),
             Order::Build { site } => build(state, id, site, events, &mut builds),
             Order::Repair { building } => repair(state, id, building, events, &mut builds),
             Order::Salvage { building } => salvage(state, id, building, events, &mut drains),

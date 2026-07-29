@@ -36,6 +36,7 @@ mod brain;
 mod commands;
 mod movement;
 mod production;
+mod spatial;
 
 use crate::command::PlayerCommand;
 use crate::event::{Event, TickReport};
@@ -52,12 +53,17 @@ impl State {
         let tick = self.tick;
         let mut events = Vec::new();
         if self.result.is_none() {
+            // One spatial index serves the tick's unit-neighborhood
+            // queries (acquisition windows, collision pairs). A scratch
+            // local on purpose: the pipeline rebuilds it at each use
+            // point, and it must never ride on `State` (see `spatial`).
+            let mut index = spatial::UnitIndex::new();
             commands::apply(self, commands, &mut events);
             production::run(self, &mut events);
-            brain::run(self, &mut events);
+            brain::run(self, &mut index, &mut events);
             movement::evict_claimed_ground(self);
             let travel = movement::run(self);
-            movement::resolve_collisions(self, &travel);
+            movement::resolve_collisions(self, &travel, &mut index);
             cleanup(self, &mut events);
             if self.tick.is_multiple_of(crate::stats::WRECK_DECAY_TICKS) {
                 self.map.decay_wrecks();
