@@ -541,11 +541,15 @@ with EVERY chair converted to a thinking Expert — the heaviest honest
 shape; the earlier 3,073 ticks/s figure benched seven minds around an
 idle authored human seat, the 5,044 figure averaged free post-victory
 ticks, and since 0.13 the timed loop stops at the decision — the
-honest eight-mind live-game number is 4,370 ticks/s (~220x realtime)
+honest eight-mind live-game number is 4,530 ticks/s (~225x realtime)
 since the tick's spatial index took over collision pair-finding and
-target acquisition, 1.6x over the full scans it replaced; the 500-unit
-mass battle reads 11,800, 1.5x — so no perf window is open); CI
-asserts only hash-identity at scale. The 0.10 pacing findings and levers live in
+target acquisition and vision's memory reconciliation fused to one
+walk; the 500-unit mass battle reads 12,600 — so no perf window is
+open). The refused optimizations are on the record too: the
+tile-to-building index and the span-scoped vision clear both live in
+`experiments/` (the 0.13 perf ledger) with the profiled shares and
+the trigger conditions — hit those numbers before re-proposing
+either. CI asserts only hash-identity at scale. The 0.10 pacing findings and levers live in
 `experiments/` (the per-era lab notebook — its README indexes the
 campaigns); matches target tens of minutes (the `vast` map class
 and the foundry-durability bless exist for this; the lancer's
