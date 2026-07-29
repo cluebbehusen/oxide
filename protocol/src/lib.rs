@@ -1,5 +1,6 @@
 //! The debug protocol: how anything outside the process drives a running
-//! shell.
+//! shell — or the windowless `oxide-driver session` speaking the same
+//! vocabulary.
 //!
 //! Wire format is JSON Lines over TCP — one request object per line, one
 //! response object per line, correlated by `id`:
@@ -16,9 +17,12 @@
 //! sim and is fingerprinted by the state hash), hashes come as hex strings
 //! (u64s don't survive every JSON tool), and the map comes back as ASCII.
 //!
-//! This crate is types only — no sockets. The shell serves it, the driver
-//! speaks it, and both stay in lockstep by construction.
+//! This crate is the wire contract whole: the types AND the framed
+//! transport loop ([`framing`]) every server runs. The shell serves it,
+//! the driver speaks it (and serves it headless), and all of them stay in
+//! lockstep by construction.
 
+pub mod framing;
 pub mod input;
 pub mod view;
 
@@ -27,7 +31,8 @@ use serde::{Deserialize, Serialize};
 
 pub use input::{Key, MouseButton, RawEvent};
 pub use view::{
-    BuildingView, CameraView, PlayerView, StateFilter, StateView, StatusView, UiView, UnitView,
+    BuildingView, CameraView, FogView, GhostView, PlayerView, RememberedTileView, StateFilter,
+    StateView, StatusView, UiView, UnitView,
 };
 
 /// Default TCP port for `--debug-server`.
@@ -38,6 +43,13 @@ pub const MAX_ADVANCE_TICKS: u64 = 1_000_000;
 
 /// Largest presentation-preserving step the shell will execute at once.
 pub const MAX_PRESENT_TICKS: u64 = 120;
+
+/// Ticks per second both sides budget for a synchronous advance —
+/// deliberately conservative against the harness benchmarks, so a slow
+/// machine still finishes inside the deadline. The client derives its
+/// read timeout from this and the server its reply deadline; sharing one
+/// figure is what keeps the two from ever disagreeing about a legal wait.
+pub const ADVANCE_TICKS_PER_BUDGET_SECOND: u64 = 1_000;
 
 /// Longest request line a server accepts, newline excluded. A line that
 /// runs past it is answered with an error naming the limit and the
@@ -56,6 +68,14 @@ pub enum Request {
         /// Which sections to include.
         #[serde(default)]
         filter: StateFilter,
+    },
+    /// The world as one seat honestly knows it: visibility mask, entities
+    /// filtered to current sight, ghost memories, remembered salvage, and
+    /// radar contacts. The fog-safe counterpart to the omniscient
+    /// [`Request::QueryState`] — what lets an agent play fair.
+    QueryFogView {
+        /// The seat whose knowledge to report.
+        player: PlayerId,
     },
     /// Camera position, zoom, and visible world rectangle.
     QueryCamera,
@@ -141,6 +161,8 @@ pub enum Reply {
     Status(StatusView),
     /// Answer to [`Request::QueryState`].
     State(StateView),
+    /// Answer to [`Request::QueryFogView`].
+    Fog(FogView),
     /// Answer to [`Request::QueryCamera`].
     Camera(CameraView),
     /// Answer to [`Request::QueryUi`].
@@ -195,12 +217,21 @@ pub struct PresentedView {
 /// Where a screenshot landed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScreenshotView {
-    /// PNG path (relative to the shell's working directory unless absolute).
+    /// PNG path (relative to the server's working directory unless absolute).
     pub path: String,
     /// Pixel width.
     pub width: u32,
     /// Pixel height.
     pub height: u32,
+    /// Which renderer produced the pixels: `"gpu"` is the shell's real
+    /// frame, `"cpu"` the headless session's schematic tiny-skia render.
+    /// An agent judging visual polish must know which one it is reading.
+    #[serde(default = "gpu_renderer")]
+    pub renderer: String,
+}
+
+fn gpu_renderer() -> String {
+    "gpu".to_string()
 }
 
 /// Overlay toggle result.
@@ -362,25 +393,26 @@ mod tests {
         match request {
             Request::Status => 0,
             Request::QueryState { .. } => 1,
-            Request::QueryCamera => 2,
-            Request::QueryUi => 3,
-            Request::StateHash => 4,
-            Request::AdvanceTicks { .. } => 5,
-            Request::PresentTicks { .. } => 6,
-            Request::Pause => 7,
-            Request::Resume => 8,
-            Request::SetSpeed { .. } => 9,
-            Request::SendCommand { .. } => 10,
-            Request::InjectEvent { .. } => 11,
-            Request::Screenshot { .. } => 12,
-            Request::ToggleOverlay => 13,
-            Request::LoadScenario { .. } => 14,
-            Request::LoadReplay { .. } => 15,
-            Request::SaveReplay { .. } => 16,
+            Request::QueryFogView { .. } => 2,
+            Request::QueryCamera => 3,
+            Request::QueryUi => 4,
+            Request::StateHash => 5,
+            Request::AdvanceTicks { .. } => 6,
+            Request::PresentTicks { .. } => 7,
+            Request::Pause => 8,
+            Request::Resume => 9,
+            Request::SetSpeed { .. } => 10,
+            Request::SendCommand { .. } => 11,
+            Request::InjectEvent { .. } => 12,
+            Request::Screenshot { .. } => 13,
+            Request::ToggleOverlay => 14,
+            Request::LoadScenario { .. } => 15,
+            Request::LoadReplay { .. } => 16,
+            Request::SaveReplay { .. } => 17,
         }
     }
 
-    const REQUEST_VARIANTS: usize = 17;
+    const REQUEST_VARIANTS: usize = 18;
 
     /// Contiguous index per [`Reply`] variant, in declaration order.
     fn reply_tag(reply: &Reply) -> usize {
@@ -388,18 +420,19 @@ mod tests {
             Reply::Ok => 0,
             Reply::Status(_) => 1,
             Reply::State(_) => 2,
-            Reply::Camera(_) => 3,
-            Reply::Ui(_) => 4,
-            Reply::Hash(_) => 5,
-            Reply::Advanced(_) => 6,
-            Reply::Presented(_) => 7,
-            Reply::Screenshot(_) => 8,
-            Reply::Overlay(_) => 9,
-            Reply::Saved(_) => 10,
+            Reply::Fog(_) => 3,
+            Reply::Camera(_) => 4,
+            Reply::Ui(_) => 5,
+            Reply::Hash(_) => 6,
+            Reply::Advanced(_) => 7,
+            Reply::Presented(_) => 8,
+            Reply::Screenshot(_) => 9,
+            Reply::Overlay(_) => 10,
+            Reply::Saved(_) => 11,
         }
     }
 
-    const REPLY_VARIANTS: usize = 11;
+    const REPLY_VARIANTS: usize = 12;
 
     /// Contiguous index per [`Command`] variant, in declaration order.
     /// The sim's verbs ride this wire through [`Request::SendCommand`],
@@ -500,6 +533,9 @@ mod tests {
             Request::Status,
             Request::QueryState {
                 filter: StateFilter::default(),
+            },
+            Request::QueryFogView {
+                player: PlayerId(0),
             },
             Request::QueryCamera,
             Request::QueryUi,
@@ -661,6 +697,7 @@ mod tests {
                 recorded_commands: 3,
             }),
             Reply::State(full),
+            Reply::Fog(FogView::capture(&state, PlayerId(0))),
             Reply::Camera(CameraView {
                 center: [1.0, 2.0],
                 zoom: 32.0,
@@ -700,6 +737,7 @@ mod tests {
                 path: "shots/x.png".into(),
                 width: 800,
                 height: 600,
+                renderer: "cpu".into(),
             }),
             Reply::Overlay(OverlayView { enabled: true }),
             Reply::Saved(SavedView {

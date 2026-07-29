@@ -2,7 +2,10 @@
 //! sequential request/response.
 
 use anyhow::{Context, Result, bail};
-use oxide_protocol::{MAX_ADVANCE_TICKS, Reply, Request, RequestEnvelope, ResponseEnvelope};
+use oxide_protocol::{
+    ADVANCE_TICKS_PER_BUDGET_SECOND, MAX_ADVANCE_TICKS, Reply, Request, RequestEnvelope,
+    ResponseEnvelope,
+};
 use std::io::{BufReader, Write};
 use std::net::TcpStream;
 use std::time::Duration;
@@ -10,17 +13,14 @@ use std::time::Duration;
 /// Normal protocol calls should fail promptly when a peer stalls.
 const ORDINARY_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Long advances are synchronous and their cost depends on the scenario.
-/// Budgeting at 1,000 ticks/second is deliberately conservative relative
-/// to the harness benchmarks while retaining a finite deadline.
-const ADVANCE_TICKS_PER_TIMEOUT_SECOND: u64 = 1_000;
-
 fn read_timeout_for(request: &Request) -> Duration {
     match request {
         Request::AdvanceTicks { ticks } => {
+            // Budgeted from the protocol's shared figure, so this side's
+            // deadline can never undercut the server's own.
             let seconds = (*ticks)
                 .min(MAX_ADVANCE_TICKS)
-                .div_ceil(ADVANCE_TICKS_PER_TIMEOUT_SECOND);
+                .div_ceil(ADVANCE_TICKS_PER_BUDGET_SECOND);
             ORDINARY_READ_TIMEOUT.saturating_add(Duration::from_secs(seconds))
         }
         _ => ORDINARY_READ_TIMEOUT,
@@ -35,8 +35,8 @@ pub struct Client {
 }
 
 impl Client {
-    /// Connects to a shell's `--debug-server` socket, e.g.
-    /// `127.0.0.1:4123`.
+    /// Connects to a debug-protocol server, e.g. `127.0.0.1:4123` —
+    /// a shell's `--debug-server` or a windowless `oxide-driver session`.
     pub fn connect(addr: &str) -> Result<Self> {
         let stream =
             TcpStream::connect(addr).with_context(|| format!("connecting to shell at {addr}"))?;

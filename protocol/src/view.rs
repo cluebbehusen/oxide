@@ -5,7 +5,8 @@
 //! floats, the map as ASCII with entities overlaid. Anything that needs
 //! exactness should use the state hash, not a view.
 
-use oxide_sim::{Building, Faction, GameResult, Order, State, Unit, UnitKind};
+use chassis::grid::TilePos;
+use oxide_sim::{Building, Faction, GameResult, Order, PlayerId, State, Unit, UnitKind};
 use serde::{Deserialize, Serialize};
 
 /// Which sections [`StateView`] should include. Map defaults off — it is by
@@ -137,6 +138,142 @@ pub struct BuildingView {
     /// Construction or training progress ticks.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub progress: u32,
+}
+
+/// The world as one seat honestly knows it — the fog-safe counterpart to
+/// the omniscient [`StateView`]. Everything here reads the sim's own
+/// [`oxide_sim::Vision`], so the view can never leak what fog hides: live
+/// entities appear only under current sight, memories carry no more than
+/// the seat last saw, and radar contacts are bare tiles.
+///
+/// Both servers (the shell and the headless session) build this through
+/// [`FogView::capture`], so live and headless answers cannot drift.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FogView {
+    /// Current tick. Deliberately no hash — a partial view has no
+    /// canonical fingerprint; exactness stays with [`StateView`].
+    pub tick: u64,
+    /// The seat this knowledge belongs to.
+    pub player: u8,
+    /// One row per map row, one char per tile: `' '` never seen, `'.'`
+    /// explored but currently dark, `'*'` visible right now.
+    pub mask: Vec<String>,
+    /// Own and allied units always (team sight is standing); hostile
+    /// units only while their tile is visible.
+    pub units: Vec<UnitView>,
+    /// Own and allied buildings always; hostile buildings only while
+    /// some footprint tile is visible (their ghost record below mirrors
+    /// live state at the same time — that is the sim's refresh rule).
+    pub buildings: Vec<BuildingView>,
+    /// Enemy buildings as last seen: frozen memories once sight is lost.
+    pub ghosts: Vec<GhostView>,
+    /// Remembered scrap amounts on explored ground (nonzero only). Live
+    /// amounts on visible tiles, beliefs elsewhere — the sim remembers
+    /// them the same way.
+    pub scrap: Vec<RememberedTileView>,
+    /// Remembered wreck salvage, same treatment as scrap.
+    pub wrecks: Vec<RememberedTileView>,
+    /// Radar blips: bare tiles, no kind, no owner — detection without
+    /// identification, exactly what the Array's outer ring grants.
+    pub contacts: Vec<[i32; 2]>,
+}
+
+/// An enemy building as one seat remembers it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GhostView {
+    /// Remembered kind.
+    pub kind: oxide_sim::BuildingKind,
+    /// Remembered owner index.
+    pub owner: u8,
+    /// Top-left footprint tile `[x, y]`.
+    pub anchor: [i32; 2],
+    /// Hit points as last seen.
+    pub hp: u32,
+    /// Whether it looked finished when last seen.
+    pub built: bool,
+}
+
+/// A remembered salvage amount at a tile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RememberedTileView {
+    /// Tile `[x, y]`.
+    pub tile: [i32; 2],
+    /// Amount as last seen.
+    pub amount: u32,
+}
+
+impl FogView {
+    /// Captures what `player` currently knows of `state`.
+    pub fn capture(state: &State, player: PlayerId) -> Self {
+        let vision = state.vision(player);
+        let (width, height) = (state.map().width(), state.map().height());
+        let mut mask = Vec::with_capacity(height as usize);
+        let mut scrap = Vec::new();
+        let mut wrecks = Vec::new();
+        for y in 0..height {
+            let mut row = String::with_capacity(width as usize);
+            for x in 0..width {
+                let pos = TilePos::new(x, y);
+                row.push(if vision.visible(pos) {
+                    '*'
+                } else if vision.explored(pos) {
+                    '.'
+                } else {
+                    ' '
+                });
+                if vision.explored(pos) {
+                    let remembered = vision.remembered_scrap(pos);
+                    if remembered > 0 {
+                        scrap.push(RememberedTileView {
+                            tile: [x, y],
+                            amount: remembered,
+                        });
+                    }
+                    let remembered = vision.remembered_wreck(pos);
+                    if remembered > 0 {
+                        wrecks.push(RememberedTileView {
+                            tile: [x, y],
+                            amount: remembered,
+                        });
+                    }
+                }
+            }
+            mask.push(row);
+        }
+        Self {
+            tick: state.current_tick(),
+            player: player.0,
+            mask,
+            units: state
+                .units()
+                .iter()
+                .filter(|u| !state.hostile(player, u.player) || vision.visible(u.tile()))
+                .map(unit_view)
+                .collect(),
+            buildings: state
+                .buildings()
+                .iter()
+                .filter(|b| {
+                    !state.hostile(player, b.player) || b.tiles().any(|t| vision.visible(t))
+                })
+                .map(building_view)
+                .collect(),
+            ghosts: vision
+                .ghosts()
+                .iter()
+                .map(|g| GhostView {
+                    kind: g.kind,
+                    owner: g.owner.0,
+                    anchor: [g.anchor.x, g.anchor.y],
+                    hp: g.hp,
+                    built: g.built,
+                })
+                .collect(),
+            scrap,
+            wrecks,
+            contacts: vision.contacts().iter().map(|t| [t.x, t.y]).collect(),
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -362,6 +499,45 @@ mod tests {
         assert!(slim.map.is_none());
         assert!(!slim.hash.is_empty() && slim.hash.starts_with("0x"));
         assert_eq!(slim.hash, full.hash, "views never perturb state");
+    }
+
+    #[test]
+    fn the_fog_view_reports_only_what_the_seat_has_seen() {
+        let state = oxide_sim::Scenario::skirmish().build().unwrap();
+        let fog = FogView::capture(&state, PlayerId(0));
+        let omniscient = StateView::capture(&state, StateFilter::default());
+
+        // At tick zero the enemy base is dark: the honest view carries
+        // strictly less than the omniscient one.
+        assert!(fog.units.len() < omniscient.units.len());
+        assert!(fog.buildings.len() < omniscient.buildings.len());
+        assert!(fog.ghosts.is_empty(), "nothing hostile has been seen yet");
+
+        let mask_at = |tile: [i32; 2]| {
+            fog.mask[tile[1] as usize]
+                .chars()
+                .nth(tile[0] as usize)
+                .expect("tile inside the mask")
+        };
+        let flat: String = fog.mask.concat();
+        assert!(
+            flat.contains('*') && flat.contains(' '),
+            "the opening view has both sight and darkness"
+        );
+        for unit in fog.units.iter().filter(|u| u.player != 0) {
+            assert_eq!(
+                mask_at(unit.tile),
+                '*',
+                "a reported hostile must sit on visible ground"
+            );
+        }
+        for entry in fog.scrap.iter().chain(&fog.wrecks) {
+            assert_ne!(
+                mask_at(entry.tile),
+                ' ',
+                "remembered salvage never leaks from unexplored ground"
+            );
+        }
     }
 
     #[test]

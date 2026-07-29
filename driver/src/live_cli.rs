@@ -21,6 +21,12 @@ pub(crate) enum LiveCmd {
         #[arg(long)]
         map: bool,
     },
+    /// The world as one seat honestly knows it: visibility mask, entities
+    /// under current sight, ghost memories, remembered salvage, contacts.
+    Fog {
+        /// The seat whose knowledge to report.
+        player: u8,
+    },
     /// Camera pose and visible world rect.
     Camera,
     /// Shell mode and active menu state.
@@ -379,6 +385,9 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
                 map,
                 ..StateFilter::default()
             },
+        },
+        LiveCmd::Fog { player } => Request::QueryFogView {
+            player: PlayerId(player),
         },
         LiveCmd::Camera => Request::QueryCamera,
         LiveCmd::Ui => Request::QueryUi,

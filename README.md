@@ -179,11 +179,13 @@ chassis/    reusable deterministic-sim toolkit: Q32.32 fixed point, PCG32,
 sim/        oxide-sim — every game rule, pure and headless. One entry point:
             State::tick(commands). No floats, no clocks, no hash maps.
 protocol/   debug-protocol types (JSON lines) + agent-readable state views
+            + the framed TCP transport both servers share
 shell/      macroquad renderer, single input funnel, debug server. Disposable.
 kit/        Shared toolkit: headless runner, replay playback + stats,
             the CPU software renderer behind goldens and previews
 driver/     CLI harness: headless runs, replay verification, byte-exact
-            golden images (CPU-rendered), live-game client, smoke test
+            golden images (CPU-rendered), live-game client, the
+            windowless session server, smoke test
 scenarios/  match definitions with ASCII maps
 tools/      sprite + sound generators (Python — uv run tools/gen_*.py)
 assets/     the generated sprites and sounds, committed
@@ -217,9 +219,15 @@ cargo run -p oxide-driver -- replay replays/session.json   # → same hash
 cargo run -p oxide-driver -- live load-replay replays/session.json  # resume
 ```
 
-`live --help` lists the rest (state queries with ASCII maps, key/click
-injection, camera, overlay, scenario loading). `smoke --spawn` runs the
-whole sequence as an automated check.
+`live --help` lists the rest (state queries with ASCII maps, fog-honest
+per-seat views, key/click injection, camera, overlay, scenario loading).
+`smoke --spawn` runs the whole sequence as an automated check.
+
+No window at all: `cargo run -p oxide-driver -- session` serves the same
+protocol windowless (no GPU, sim time moves only on request), and every
+`live` verb above works against it unchanged — screenshots come from the
+CPU renderer, and a parity test holds the two servers to identical
+answers.
 
 ## Testing
 

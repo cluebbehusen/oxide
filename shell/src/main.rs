@@ -64,6 +64,13 @@ struct Args {
     #[arg(long, default_value_t = oxide_protocol::DEFAULT_PORT)]
     port: u16,
 
+    /// Seconds a silent debug connection may sit before it is closed.
+    /// Generous by default — a paused driven-mode agent legitimately
+    /// parks between commands; raise it for parked-overnight sessions.
+    #[arg(long, requires = "debug_server", default_value_t = 30 * 60,
+          value_parser = clap::value_parser!(u64).range(1..))]
+    debug_idle_timeout: u64,
+
     /// Start with the sim clock stopped: time advances only via the debug
     /// socket (driven mode). Rendering still runs.
     #[arg(long)]

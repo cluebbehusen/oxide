@@ -21,10 +21,10 @@ screenshots you read back and judge with your own eyes.
 |---|---|---|
 | `chassis` | `chassis/` | Reusable deterministic-sim toolkit: Q32.32 fixed point (`fx`), PCG32 (`rng`), FNV-1a state hashing over postcard bytes (`hash`), tile grid (`grid`), 8-dir A* (`path`), tick-stamped replay format (`replay`), atomic durable file writes (`fsx`). No game rules, no engine deps. |
 | `oxide-sim` | `sim/` | All Oxide game rules. `State::tick(&[PlayerCommand])` is the only way anything happens. The bots live here too, but *outside* the tick pipeline — command sources like the mouse: the shipped **neural ladder** (`bot::NeuralBot`, embedded quantized weights, Easy/Medium/Hard/Expert + a personality knob), the scripted `bot::Brain` tiers (fog-honest, training anchors and benchmarks), and the classic 0.6 `bot::Bot` (what replays without a `bot_config` reproduce). |
-| `oxide-protocol` | `protocol/` | Debug-protocol types: JSON-lines envelope, tagged requests/replies, `RawEvent` input events (touch included for the future mobile shell), and `StateView` (floats + ASCII map — legible, not exact; exactness is the hash's job). |
+| `oxide-protocol` | `protocol/` | The whole wire contract: JSON-lines envelope, tagged requests/replies, `RawEvent` input events (touch included for the future mobile shell), `StateView` (floats + ASCII map — legible, not exact; exactness is the hash's job), the fog-honest `FogView`, and the framed TCP transport loop (`framing`) both servers run. |
 | `oxide-shell` | `shell/` | macroquad renderer, the single input funnel, HUD, debug server. Nothing here may affect game outcomes except by staging tick-stamped commands. |
 | `oxide-kit` | `kit/` | Shared engine-side toolkit: the headless scenario/replay `runner`, the replay `playback` engine (viewer and CLI), `stats` extraction (post-match screens, `replay-stats`), and the CPU software `render`er (tiny-skia) behind goldens and map previews. Exists so the shell never depends on the dev harness. |
-| `oxide-driver` | `driver/` | CLI harness: headless scenario runs, replay verification, byte-exact golden images, live-game client, automated smoke test. A library too (`client`/`smoke`/`audit` plus re-exports of the kit modules). |
+| `oxide-driver` | `driver/` | CLI harness: headless scenario runs, replay verification, byte-exact golden images, live-game client, the windowless `session` server, automated smoke test. A library too (`client`/`session`/`smoke`/`audit` plus re-exports of the kit modules). |
 
 Built for reuse in a later, bigger game: `chassis` wholesale, the protocol's
 envelope/raw-event design, the driver's harness patterns. Game-specific and
@@ -165,9 +165,36 @@ driver live inject-wheel 2.0       # events enter the real input funnel
 driver live inject-key escape      # opens the pause menu — menus share
 driver live inject-key enter       # the input funnel too
 driver live inject-text "my save"  # types into the save-name field
+driver live fog 0                  # seat 0's honest world: mask, ghosts,
+                                   # remembered salvage, radar contacts
 driver live save-replay replays/session.json
 driver replay replays/session.json # must print the same hash as live
 driver live load-replay replays/session.json      # resume = load a save
+```
+
+The same session, no window at all: `driver session` serves the
+identical protocol windowless — a persistent headless match backed by
+the kit runner, so every `driver live` verb above works against it
+unchanged (it binds the shell's default port; `--port`, `--scenario`,
+and `--idle-timeout` dial it). No GPU, no wall clock: the session is
+permanently in driven mode, which is exactly what an agent wants —
+`pause`/`resume`/`speed` and the window verbs (`camera`, `ui`,
+`inject-*`, `overlay`) are refused in words rather than faked, and
+everything else answers identically to a live shell, per-reply, which
+`driver/tests/session_parity.rs` asserts (the headless half runs in
+CI; the spawned-shell half runs with the #[ignore]d battery).
+`driver session` screenshots are the CPU schematic renderer, not the
+shell's frame — the reply says `"renderer":"cpu"` so nobody judges
+visual polish from the wrong picture. `query_state` stays
+deliberately omniscient (QA view); `fog <seat>` is the first-class
+fog-honest counterpart on both servers, built by one shared
+`FogView::capture` so live and headless answers cannot drift.
+
+```sh
+cargo run -p oxide-driver -- session &              # windowless server on 4123
+driver live status                                  # every live verb works
+driver live advance 5000 && driver live fog 1
+driver live screenshot -o screenshots/map.png       # CPU render, whole map
 ```
 
 Save states are replays, by design: `load_replay` rebuilds the scenario,
@@ -178,12 +205,17 @@ them) and load time proportional to session length, which at thousands of
 ticks per second is noise. If sessions ever get long enough to hurt,
 revisit with a snapshot+suffix-log hybrid — and keep the recorder valid.
 
-The socket is bounded (shell/src/debug_server.rs): eight connections at
-once — a ninth is told so in an error envelope and closed — request lines
-capped at `oxide_protocol::MAX_FRAME_BYTES`, and a connection idle for
-half an hour is dropped, which is deliberately far longer than a paused
-driven-mode session ever parks. Undecodable bytes answer like any other
-bad request instead of vanishing.
+The socket is bounded (`oxide_protocol::framing`, the one transport
+both servers run): eight connections at once — a ninth is told so in an
+error envelope and closed — request lines capped at
+`oxide_protocol::MAX_FRAME_BYTES`, and a connection idle for half an
+hour is dropped, which is deliberately far longer than a paused
+driven-mode session ever parks (`--debug-idle-timeout` on the shell,
+`--idle-timeout` on `driver session`, raises it for parked-overnight
+agents). Undecodable bytes answer like any other bad request instead
+of vanishing. Both sides budget synchronous advances from one figure,
+`oxide_protocol::ADVANCE_TICKS_PER_BUDGET_SECOND`, so client deadline
+and server reply deadline cannot disagree.
 
 Headless, no window needed:
 

@@ -30,8 +30,9 @@ use anyhow::{Context, Result};
 use macroquad::audio::{PlaySoundParams, play_sound};
 use macroquad::prelude::*;
 use oxide_protocol::{
-    AdvancedView, CameraView, HashView, Key, MouseButton, OverlayView, PresentedView, RawEvent,
-    Reply, Request, ResponseEnvelope, SavedView, ScreenshotView, StateView, StatusView, UiView,
+    AdvancedView, CameraView, FogView, HashView, Key, MouseButton, OverlayView, PresentedView,
+    RawEvent, Reply, Request, ResponseEnvelope, SavedView, ScreenshotView, StateView, StatusView,
+    UiView,
 };
 use oxide_sim::{PlayerCommand, SIM_VERSION, Scenario};
 use std::sync::mpsc::{Receiver, Sender};
@@ -338,7 +339,11 @@ pub(crate) async fn run(args: Args) -> Result<()> {
     prevent_quit();
 
     let debug_rx: Option<Receiver<IncomingRequest>> = if args.debug_server {
-        let rx = crate::debug_server::spawn(args.port)?;
+        let limits = oxide_protocol::framing::Limits {
+            idle_timeout: std::time::Duration::from_secs(args.debug_idle_timeout),
+            ..Default::default()
+        };
+        let rx = crate::debug_server::spawn(args.port, limits)?;
         mark("debug server up");
         Some(rx)
     } else {
@@ -984,6 +989,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                             path: shot.path,
                             width,
                             height,
+                            renderer: "gpu".to_string(),
                         }),
                     ),
                     Err(err) => ResponseEnvelope::err(shot.id, format!("screenshot: {err:#}")),
@@ -1232,6 +1238,13 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
                 &pb.game.state,
                 *filter,
             )))),
+            Request::QueryFogView { player } => {
+                Some(if (player.0 as usize) < pb.game.state.players().len() {
+                    Ok(Reply::Fog(FogView::capture(&pb.game.state, *player)))
+                } else {
+                    Err(format!("no such player {player}"))
+                })
+            }
             Request::StateHash => Some(Ok(Reply::Hash(HashView {
                 tick: pb.game.state.current_tick(),
                 hash: oxide_protocol::hash_hex(pb.game.state.hash()),
@@ -1344,6 +1357,13 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
     let outcome: Result<Reply, String> = match request {
         Request::Status => Ok(Reply::Status(status_view(game))),
         Request::QueryState { filter } => Ok(Reply::State(StateView::capture(&game.state, filter))),
+        Request::QueryFogView { player } => {
+            if (player.0 as usize) < game.state.players().len() {
+                Ok(Reply::Fog(FogView::capture(&game.state, player)))
+            } else {
+                Err(format!("no such player {player}"))
+            }
+        }
         Request::QueryCamera => {
             let (lo, hi) = game.camera.world_rect();
             Ok(Reply::Camera(CameraView {

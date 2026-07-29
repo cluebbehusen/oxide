@@ -9,8 +9,10 @@
 //!   golden-image tests compare bytes instead of tuning tolerances. The GPU
 //!   never enters the picture.
 //! - [`client`] speaks the debug protocol to a live shell over TCP.
+//! - [`session`] *serves* that same protocol windowless: a persistent
+//!   headless match every `driver live` verb can drive without a GPU.
 //!
-//! The binary (`oxide-driver`) wraps all three in a CLI; see README.
+//! The binary (`oxide-driver`) wraps them all in a CLI; see README.
 
 pub mod audit;
 pub mod auto;
@@ -20,6 +22,7 @@ pub mod factorial;
 pub mod gym;
 pub mod pace;
 pub mod pool;
+pub mod session;
 pub mod shots;
 pub mod smoke;
 pub mod sweep;

@@ -322,6 +322,22 @@ enum Cmd {
         #[command(subcommand)]
         cmd: LiveCmd,
     },
+    /// Serve the debug protocol windowless: a persistent headless match
+    /// (no GPU, no wall clock — always driven mode) that every
+    /// `driver live` verb can drive. Screenshots are CPU schematic
+    /// renders of the whole map.
+    Session {
+        /// TCP port to listen on (the shell's default, so `driver live`
+        /// needs no --addr when only one server runs).
+        #[arg(long, default_value_t = oxide_protocol::DEFAULT_PORT)]
+        port: u16,
+        /// Starting scenario path, or "skirmish" for the built-in map.
+        #[arg(long, default_value = "skirmish")]
+        scenario: String,
+        /// Seconds a silent connection may sit before it is closed.
+        #[arg(long, default_value_t = 30 * 60, value_parser = clap::value_parser!(u64).range(1..))]
+        idle_timeout: u64,
+    },
     /// Serve training episodes over stdio (newline-delimited JSON).
     Gym,
     /// Tournament a quantized policy artifact against the scripted
@@ -802,6 +818,15 @@ fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&reply)?);
             }
         }
+        Cmd::Session {
+            port,
+            scenario,
+            idle_timeout,
+        } => oxide_driver::session::serve(
+            port,
+            &scenario,
+            std::time::Duration::from_secs(idle_timeout),
+        )?,
         Cmd::Gym => oxide_driver::gym::serve()?,
         Cmd::NeuralCup {
             weights,
