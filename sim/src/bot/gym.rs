@@ -1038,8 +1038,9 @@ fn rear_tile(world: &Observation) -> TilePos {
 
 /// The weld verb's patient: the own ground machine with the most
 /// purchase value recoverable from its wound (air patients refuse in
-/// the sim) and a free harvester inside [`REPAIR_UNIT_RADIUS`], ties
-/// toward the map origin then id.
+/// the sim), a free harvester inside [`REPAIR_UNIT_RADIUS`], and another
+/// free harvester left for the economy, ties toward the map origin then
+/// id.
 /// Fog-safe: own-state only. Both the mask and the lowering call this,
 /// so what the policy observed as legal is what the step emits.
 /// Whether a harvester is genuinely free for new labor: not on a site,
@@ -1071,14 +1072,15 @@ fn repair_bay_committed(obs: &Observation) -> bool {
 
 fn unit_patient(obs: &Observation, enlisted: &[crate::ids::UnitId]) -> Option<crate::ids::UnitId> {
     let welder_near = |patient: &UnitObs| {
-        obs.my_units.iter().any(|u| {
+        let mut available = obs.my_units.iter().filter(|u| {
             u.kind == UnitKind::Harvester
                 && u.site.is_none()
                 && u.founding.is_none()
                 && u.id != patient.id
                 && !enlisted.contains(&u.id)
-                && u.tile.manhattan(patient.tile) <= REPAIR_UNIT_RADIUS
-        })
+        });
+        available.clone().count() >= 2
+            && available.any(|u| u.tile.manhattan(patient.tile) <= REPAIR_UNIT_RADIUS)
     };
     obs.my_units
         .iter()

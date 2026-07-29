@@ -344,13 +344,14 @@ fn repair_unit_masks_on_the_leash_and_welds_the_wound() {
     let scenario = weld_arena(vec![
         spec(0, UnitKind::Harvester, 4, 2),  // patient
         spec(0, UnitKind::Harvester, 28, 2), // welder, out on the corridor
+        spec(0, UnitKind::Harvester, 28, 4), // economy worker
         spec(1, UnitKind::Scuttler, 34, 4),  // raider
     ]);
     let mut state = scenario.build().unwrap();
     let (patient, welder, raider) = (
         state.units()[0].id,
         state.units()[1].id,
-        state.units()[2].id,
+        state.units()[3].id,
     );
     let mut gym = GymBot::new(PlayerId(0));
     let d = gym.decision(&state);
@@ -438,6 +439,33 @@ fn a_patient_is_never_its_own_welder() {
     assert!(
         !d.mask[Action::RepairUnit as usize],
         "the wounded harvester is a patient, not a crew"
+    );
+}
+
+#[test]
+fn repair_unit_preserves_one_economy_worker() {
+    use oxide_sim::UnitKind;
+
+    let scenario = weld_arena(vec![
+        spec(0, UnitKind::Harvester, 5, 2), // sole economy worker
+        spec(0, UnitKind::Lancer, 6, 2),    // patient
+    ]);
+    let state = scenario.build().unwrap();
+    let mut json = serde_json::to_value(state).unwrap();
+    json["units"][1]["hp"] = serde_json::json!(20);
+    let state: oxide_sim::State = serde_json::from_value(json).unwrap();
+
+    let mut gym = GymBot::new(PlayerId(0));
+    let d = gym.decision(&state);
+    assert!(
+        !d.mask[Action::RepairUnit as usize],
+        "the last economy worker must not be drafted as a welder"
+    );
+    assert!(
+        !gym.step(&state, Action::RepairUnit)
+            .iter()
+            .any(|command| matches!(command.command, Command::RepairUnit { .. })),
+        "lowering must keep the same economy reserve as the mask"
     );
 }
 
