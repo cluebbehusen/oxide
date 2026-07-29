@@ -423,8 +423,9 @@ impl Executive {
                 }
                 Intent::AssignHarvest { unit, node } => {
                     // A unit an earlier intent claimed (a chosen builder,
-                    // a scout) must not be re-tasked by a chore.
-                    if !claimed.contains(unit) {
+                    // a scout) or one already held in an army/rear line
+                    // must not be re-tasked by a chore.
+                    if !claimed.contains(unit) && !self.enlisted().any(|id| id == *unit) {
                         claimed.push(*unit);
                         out.push(PlayerCommand {
                             player: me,
@@ -505,7 +506,27 @@ impl Executive {
                     if let Some(tile) = tile
                         && let Some(welder) = self.free_harvester(obs, tile, &barred)
                     {
+                        // Rotate an enlisted patient out before later
+                        // Push/Recall intents lower. Merely claiming it
+                        // protects Scout and FormArmy, but army commands
+                        // address their existing membership wholesale
+                        // and would replace the weld in the same tick.
+                        for army in &mut self.armies {
+                            army.members.retain(|member| member != unit);
+                        }
+                        self.armies.retain(|army| !army.members.is_empty());
+                        if !self.rear.contains(unit) {
+                            self.rear.push(*unit);
+                            self.rear.sort_unstable();
+                        }
+                        // The patient must stay put for the weld to land.
+                        // Reserve it from every later non-army intent too.
+                        claimed.push(*unit);
                         claimed.push(welder);
+                        out.push(PlayerCommand {
+                            player: me,
+                            command: Command::Stop { units: vec![*unit] },
+                        });
                         out.push(PlayerCommand {
                             player: me,
                             command: Command::RepairUnit {

@@ -14,7 +14,6 @@ fn harvester_gathers_and_deposits() {
         .build()
         .unwrap();
     let worker = state.units()[0].id;
-    let scrap_before = state.player(PlayerId(0)).scrap;
     state.tick(&[cmd(
         0,
         Command::Harvest {
@@ -24,8 +23,16 @@ fn harvester_gathers_and_deposits() {
         },
     )]);
     // Walk there (~10 tiles), extract 10 scrap (100 ticks), walk home, drop.
-    let events = run_until(&mut state, 600, |s, _| {
-        s.player(PlayerId(0)).scrap > scrap_before
+    let events = run_until(&mut state, 600, |_, events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                Event::ScrapDeposited {
+                    player: PlayerId(0),
+                    amount
+                } if *amount > 0
+            )
+        })
     });
     assert!(events.iter().any(
         |e| matches!(e, Event::ScrapDeposited { player: PlayerId(0), amount } if *amount > 0)
@@ -132,17 +139,31 @@ fn a_stranded_foundry_trickles_only_the_replacement_harvesters_price() {
     assert_eq!(
         capped.player(PlayerId(0)).scrap,
         UnitKind::Harvester.stats().cost,
-        "the emergency Foundry is a restart, not passive income"
+        "the fast recovery stops; baseline income starts only in the late game"
     );
 }
 
 #[test]
-fn live_queued_and_resigned_harvest_lines_get_no_recovery_credit() {
+fn live_and_queued_harvest_lines_receive_only_slow_baseline_income() {
     let mut live = arena(vec![unit(0, UnitKind::Harvester, 3, 2)]);
     live.players[0].scrap = 0;
     let mut live = live.build().unwrap();
+    for _ in 0..oxide_sim::stats::FOUNDRY_BASELINE_START_TICK - 1 {
+        live.tick(&[]);
+    }
+    assert_eq!(
+        live.player(PlayerId(0)).scrap,
+        0,
+        "the free floor does not distort the opening or midgame"
+    );
     live.tick(&[]);
-    assert_eq!(live.player(PlayerId(0)).scrap, 0);
+    assert_eq!(live.player(PlayerId(0)).scrap, 1);
+    for _ in 0..oxide_sim::stats::FOUNDRY_BASELINE_PERIOD - 1 {
+        live.tick(&[]);
+    }
+    assert_eq!(live.player(PlayerId(0)).scrap, 1);
+    live.tick(&[]);
+    assert_eq!(live.player(PlayerId(0)).scrap, 2);
 
     let mut queued = arena(Vec::new());
     queued.players[0].scrap = UnitKind::Harvester.stats().cost;
@@ -167,7 +188,17 @@ fn live_queued_and_resigned_harvest_lines_get_no_recovery_credit() {
     assert_eq!(
         queued.player(PlayerId(0)).scrap,
         0,
-        "a prepaid Harvester in training already is the recovery"
+        "a prepaid Harvester suppresses fast recovery but not baseline income"
+    );
+    while queued.current_tick() < oxide_sim::stats::FOUNDRY_BASELINE_START_TICK - 1 {
+        queued.tick(&[]);
+    }
+    assert_eq!(queued.player(PlayerId(0)).scrap, 0);
+    queued.tick(&[]);
+    assert_eq!(
+        queued.player(PlayerId(0)).scrap,
+        1,
+        "the queued or completed replacement does not suppress the late floor"
     );
 
     let mut resigned = arena(Vec::new());
@@ -178,6 +209,16 @@ fn live_queued_and_resigned_harvest_lines_get_no_recovery_credit() {
         resigned.player(PlayerId(0)).scrap,
         0,
         "a conceded seat cannot bank a comeback"
+    );
+    let mut value = serde_json::to_value(resigned).unwrap();
+    value["tick"] = (oxide_sim::stats::FOUNDRY_BASELINE_START_TICK - 1).into();
+    value["result"] = serde_json::Value::Null;
+    let mut resigned: oxide_sim::State = serde_json::from_value(value).unwrap();
+    resigned.tick(&[]);
+    assert_eq!(
+        resigned.player(PlayerId(0)).scrap,
+        0,
+        "the late floor never credits a resigned seat"
     );
 }
 

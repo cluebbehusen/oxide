@@ -16,7 +16,14 @@ import os
 
 import pytest
 
-from oxide_gym import ACTIONS, FEATURES, Worker, normalize_factions
+from oxide_gym import (
+    ACTION_HEADS,
+    ACTIONS,
+    FEATURES,
+    Worker,
+    condition_from_profile,
+    normalize_factions,
+)
 
 pytestmark = pytest.mark.skipif(
     "OXIDE_DRIVER_BIN" not in os.environ,
@@ -33,14 +40,19 @@ def test_the_handshake_and_one_masked_step() -> None:
         assert frame.tick == 0
         (seat,) = worker.control
         assert frame.effects[seat].unit_hp_restored == 0
+        assert frame.effects[seat].buildings_salvaged == 0
         assert frame.effects[seat].buildings_completed == ()
         view = frame.seats[seat]
         assert len(view.raw) == FEATURES
         assert view.mask.shape == (ACTIONS,)
         assert view.mask.any(), "at least one action must be legal at tick 0"
 
-        legal = int(view.mask.argmax())
-        after = worker.step({seat: legal})
+        plan = (
+            next(action for action in ACTION_HEADS[0] if view.mask[action]),
+            next(action for action in ACTION_HEADS[1] if view.mask[action]),
+            next(action for action in ACTION_HEADS[2] if view.mask[action]),
+        )
+        after = worker.step({seat: plan})
         assert after.tick > frame.tick
         assert after.done or seat in after.seats
         assert seat in after.effects
@@ -59,10 +71,10 @@ def test_reset_retints_every_faction_pair_and_conditions_follow_rust() -> None:
                 max_ticks=200,
                 factions=code,
                 # Deliberately lie in both directions. The wrapper must
-                # replace this final knob from Rust's observation.
+                # replace the faction knob from Rust's observation.
                 conditions={
-                    0: (1000, 500, 1000),
-                    1: (1000, 500, 0),
+                    0: condition_from_profile(1000, 500, 1000),
+                    1: condition_from_profile(1000, 500, 0),
                 },
             )
             assert frame.factions == expected
@@ -71,7 +83,7 @@ def test_reset_retints_every_faction_pair_and_conditions_follow_rust() -> None:
                 knob = 1000 if faction == "cupric" else 0
                 assert view.faction == faction
                 assert view.faction_knob == knob
-                assert worker.conditions[seat][-1] == knob
-                assert view.obs[-1] == knob / 1000
+                assert worker.conditions[seat][2] == knob
+                assert view.obs[FEATURES + 2] == knob / 1000
     finally:
         worker.close()

@@ -23,8 +23,11 @@ import pathlib
 import subprocess
 import tempfile
 import threading
+from functools import lru_cache
 
 import numpy as np
+
+from lineage import content_digest
 
 # Bump when _carve's output distribution changes (sizes, terrain
 # alphabet, densities): cache identity is schema + mode + seed.
@@ -325,6 +328,33 @@ def cache_name(seed: int, players: int, teams: bool, pace: str | None) -> str:
     return f"gen{tag}{pace_tag}-s{MAPGEN_SCHEMA}-{seed}.json"
 
 
+@lru_cache
+def _driver_cache_tag(driver: str) -> str:
+    """Separates maps accepted under different simulation binaries."""
+    return content_digest(driver).removeprefix("sha256:")[:16]
+
+
+def _matches_current_generator(
+    cached: object,
+    seed: int,
+    players: int,
+    teams: bool,
+    pace: str | None,
+) -> bool:
+    """Whether cached bytes are one current deterministic retry candidate."""
+    if not isinstance(cached, dict):
+        return False
+    cached_seed = cached.get("seed")
+    if not isinstance(cached_seed, int) or isinstance(cached_seed, bool):
+        return False
+    delta = cached_seed - seed
+    retry_stride = 10_000_019
+    if delta < 0 or delta % retry_stride != 0:
+        return False
+    attempt = delta // retry_stride
+    return attempt < 16 and cached == _carve(cached_seed, players, teams, pace)
+
+
 def generate(
     seed: int,
     out_dir: str,
@@ -339,11 +369,25 @@ def generate(
     (`Scenario::build` rejects sealed maps) before it is cached —
     a bad draw retries deterministically on a derived seed, and only
     validated files ever land in the cache."""
-    out = pathlib.Path(out_dir)
+    out = pathlib.Path(out_dir) / f"validator-{_driver_cache_tag(driver)}"
     out.mkdir(parents=True, exist_ok=True)
     path = out / cache_name(seed, players, teams, pace)
     if path.exists():
-        return str(path)
+        try:
+            cached_bytes = path.read_bytes()
+            cached = json.loads(cached_bytes)
+        except OSError, UnicodeDecodeError, json.JSONDecodeError:
+            cached_bytes = None
+            cached = None
+        if _matches_current_generator(cached, seed, players, teams, pace):
+            return str(path)
+        # Only remove the bytes inspected above. A foreground reset and
+        # warmer may repair the same stale entry concurrently.
+        try:
+            if cached_bytes is None or path.read_bytes() == cached_bytes:
+                path.unlink(missing_ok=True)
+        except OSError:
+            pass
     for attempt in range(16):
         candidate = _carve(seed + attempt * 10_000_019, players, teams, pace)
         # Unique per caller: the map warmer and a foreground reset may

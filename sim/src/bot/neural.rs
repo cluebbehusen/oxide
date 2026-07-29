@@ -10,13 +10,17 @@
 //! fractional bits), so promotion tournaments run against *this* bot,
 //! not the torch checkpoint.
 
-use super::gym::{ACTION_COUNT, Action, Decision, FEATURE_COUNT, GYM_VERSION, GymBot};
+use super::gym::{
+    ACTION_COUNT, ACTION_HEADS, ActionPlan, Decision, FEATURE_COUNT, GYM_VERSION, GymBot,
+};
 use crate::command::PlayerCommand;
 use crate::ids::PlayerId;
 use crate::state::Faction;
 use crate::state::State;
 use chassis::rng::Pcg32;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
+use std::fmt::Write as _;
 use std::sync::OnceLock;
 
 /// The decision cadence the shipped ladder network trained at.
@@ -28,34 +32,46 @@ pub const LADDER_CADENCE: u64 = 16;
 /// and measure whether the seat-bound assignment carries an advantage.
 pub const DECISION_STREAM_BASE: u64 = 3000;
 
+/// Skill, aggression, faction, and a four-way strategy one-hot.
+pub const CONDITIONING_COUNT: usize = 7;
+
 /// Floor of the seed-dealt personality range. An explicit `aggression`
 /// pick may use the full 0..=1000 conditioning the network trained
-/// under; the deal narrows it. Below this floor the trained style is a
-/// deep turtle — paid during training for its army NOT fighting — and
-/// a dealt one reads as a bot that never attacks (the 0.12 playtest
-/// complaint; the open deal measured 15/48 undecided on the skirmish
-/// sweep). The extremes stay reachable through explicit picks, on
-/// purpose.
+/// under; the deal narrows it to two measured-safe styles. Industry
+/// profiles supply the Reclaimer-heavy economic variety that the
+/// combined-arms profile lacks, while the pressure quartile has a sharp
+/// failure at its 750 boundary. The extremes stay reachable through
+/// explicit picks for experiments and custom matches.
 pub const DEALT_AGGRESSION_MIN: u32 = 250;
-/// Ceiling of the seed-dealt personality range — trims the mirror
-/// extreme of [`DEALT_AGGRESSION_MIN`]'s turtle.
-pub const DEALT_AGGRESSION_MAX: u32 = 900;
+/// Ceiling of the seed-dealt personality range. The deal skips the
+/// unmeasured transition between its two style bands and every profile
+/// above this point; the first measured inactive tail appeared at 625.
+pub const DEALT_AGGRESSION_MAX: u32 = 600;
+
+const DEALT_INDUSTRY_MAX: u32 = 399;
+const DEALT_COMBINED_MIN: u32 = 500;
 
 /// Deals the personality a seat plays when its scenario config leaves
-/// `aggression` unset: uniform in the dealt range, deterministic from
-/// the scenario seed. The one definition — driver probes call this
-/// instead of replicating the stream.
+/// `aggression` unset: three chances in five of an industry style and
+/// two in five of combined arms, uniform inside the selected band and
+/// deterministic from the scenario seed. The slight industry lean keeps
+/// Reclaimers in ordinary matches without giving up the turret/Array
+/// profile. The one definition — driver probes call this instead of
+/// replicating the stream.
 pub fn deal_aggression(scenario_seed: u64, player: PlayerId) -> u32 {
-    DEALT_AGGRESSION_MIN
-        + Pcg32::new(scenario_seed, 4000 + u64::from(player.0))
-            .next_below(DEALT_AGGRESSION_MAX - DEALT_AGGRESSION_MIN + 1)
+    let mut rng = Pcg32::new(scenario_seed, 4000 + u64::from(player.0));
+    if rng.next_below(5) < 3 {
+        DEALT_AGGRESSION_MIN + rng.next_below(DEALT_INDUSTRY_MAX - DEALT_AGGRESSION_MIN + 1)
+    } else {
+        DEALT_COMBINED_MIN + rng.next_below(DEALT_AGGRESSION_MAX - DEALT_COMBINED_MIN + 1)
+    }
 }
 
-/// The shipped difficulty ladder: one trained network, four skill-knob
-/// settings calibrated against the scripted tiers (Easy loses to even
-/// the gentlest scripted bot; Expert sweeps them all). Difficulty is a
-/// dial into one mind, not four different minds — mistakes stay
-/// human-shaped at every rung.
+/// The shipped difficulty ladder: one trained network, four execution
+/// handicaps calibrated against the scripted tiers. Difficulty changes
+/// hesitation and reaction cadence, while the network receives the
+/// measured strong conditioning for the selected strategy. This keeps a
+/// non-monotonic learned conditioning input from inverting named levels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Level {
@@ -73,13 +89,11 @@ impl Level {
     /// All levels, gentlest first.
     pub const LADDER: [Level; 4] = [Level::Easy, Level::Medium, Level::Hard, Level::Expert];
 
-    /// The skill-knob setting this level plays at. Recalibrated for the
-    /// 0.10 artifact under hesitation blunders (Easy dithers away 35%
-    /// of its decision windows, Medium 19%, Hard 7.5%). Every rung
-    /// keeps the varied full-tech game — that invariance is the point
-    /// of the hesitation model; the old wrong-action blunders spent
-    /// the Fabricator fund and collapsed every degraded level into
-    /// sentinel spam.
+    /// The historical raw skill profile for dial-isolation experiments.
+    /// Named ladder play does not feed this value to the network: learned
+    /// skill conditioning is not monotonic, so [`NeuralBot::ladder`] uses
+    /// a measured strategy-specific condition and takes only hesitation
+    /// and cadence from the level.
     pub fn skill(self) -> u32 {
         match self {
             Level::Easy => 300,
@@ -89,37 +103,38 @@ impl Level {
         }
     }
 
-    /// How often this level thinks, in ticks — the second difficulty
-    /// dial: lower minds think slower. Calibrated against the scripted
-    /// yardsticks, because head-to-head mirrors stopped ordering under
-    /// the 0.10 balance: patience wins there, so a slower thinker
-    /// turtles into a tech advantage and "handicaps" cancel out.
-    /// Against aggression — scripted tiers, human rushes — reaction
-    /// lag costs what it should. The in-tree ladder test is the
-    /// 80-match pace-ordering tripwire; `driver yardstick` is the
-    /// wide instrument (0.12 read: 34 < 42 < 46 < 48 of 48, and every
-    /// probed "stronger Medium" dial measured weaker — the skill knob
-    /// is trained conditioning, not a pure handicap, so these dials
-    /// sit at a measured local optimum; see the 0.12 experiments
-    /// note before moving them).
+    /// Decision windows skipped by this level, per mille. Unlike the raw
+    /// profile API's legacy zero sentinel, this is an exact rate: Expert
+    /// therefore represents zero hesitation rather than deriving it from
+    /// the policy-conditioning skill.
+    pub fn hesitation_permille(self) -> u32 {
+        match self {
+            Level::Easy => 350,
+            Level::Medium => 190,
+            Level::Hard => 5,
+            Level::Expert => 0,
+        }
+    }
+
+    /// How often this level thinks, in ticks — the second execution
+    /// handicap. Calibrated against aggressive scripted yardsticks,
+    /// because slower neural mirrors can turtle into an advantage and
+    /// hide an inverted ladder. The response has sharp local optima, so
+    /// the 160-match, two-style gate and a disjoint-seed holdout measure
+    /// these exact values rather than assuming faster is always stronger.
     pub fn cadence(self) -> u64 {
         match self {
             Level::Easy => 56,
-            // 36 until 0.12: at 36, symmetric Medium mirrors stalled
-            // 14/48 on skirmish; at 26 that drops to 2/48 at par
-            // yardstick strength (81 vs 82 of 96) and decisions land
-            // ~15% sooner. The response is non-monotonic — 30
-            // measured WORSE on both instruments (32/48, and it
-            // resurrected the Standard-stall blemish) — so don't
-            // interpolate; re-measure.
-            Level::Medium => 26,
-            // The repair-lifecycle continuation reads 51/80 at cadence
-            // 16, below Medium's 55. Cadence 17 restores the intended
-            // order at 60/80 while the 850 skill conditioning and its
-            // hesitation remain the handicap separating Hard from
-            // Expert's 70/80.
-            Level::Hard => 17,
-            Level::Expert => 16,
+            // Re-metered after ladder policy conditioning was decoupled
+            // from difficulty. At 36, Medium stays strictly between Easy
+            // and Hard on both the pinned two-style yardstick and a
+            // disjoint-seed holdout; 26 collapses that holdout margin.
+            Level::Medium => 36,
+            // The upper rungs share the measured 28-tick local optimum;
+            // Hard's small exact hesitation is the only remaining
+            // handicap, keeping wins and pace ordered on both slates.
+            Level::Hard => 28,
+            Level::Expert => 28,
         }
     }
 }
@@ -202,6 +217,199 @@ struct ArtifactDto {
     tanh_lut: Vec<i32>,
     layers: Vec<LayerDto>,
     head: LayerDto,
+    #[serde(default)]
+    lineage: Option<serde_json::Value>,
+}
+
+const LINEAGE_SCHEMA: u64 = 1;
+const SHA256_PREFIX: &str = "sha256:";
+
+fn is_sha256(value: &str) -> bool {
+    value.strip_prefix(SHA256_PREFIX).is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+fn write_python_json_string(output: &mut String, value: &str) {
+    output.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\u{0008}' => output.push_str("\\b"),
+            '\u{000c}' => output.push_str("\\f"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            ' '..='~' => output.push(character),
+            character if u32::from(character) <= 0xffff => {
+                write!(output, "\\u{:04x}", u32::from(character))
+                    .expect("writing into a String cannot fail");
+            }
+            character => {
+                let scalar = u32::from(character) - 0x1_0000;
+                let high = 0xd800 + (scalar >> 10);
+                let low = 0xdc00 + (scalar & 0x3ff);
+                write!(output, "\\u{high:04x}\\u{low:04x}")
+                    .expect("writing into a String cannot fail");
+            }
+        }
+    }
+    output.push('"');
+}
+
+fn write_python_json_number(output: &mut String, number: &serde_json::Number) {
+    let rendered = number.to_string();
+    if let Some(exponent_at) = rendered.find(['e', 'E']) {
+        let (mantissa, exponent) = rendered.split_at(exponent_at);
+        let exponent = exponent[1..]
+            .parse::<i32>()
+            .expect("serde_json rendered a valid exponent");
+        output.push_str(mantissa);
+        write!(output, "e{exponent:+03}").expect("writing into a String cannot fail");
+        return;
+    }
+
+    // serde_json's formatter deliberately keeps decimal exponent -5 in
+    // fixed notation; CPython's repr, which lineage.py hashes, switches
+    // to scientific notation below -4. The upper fixed boundary (15)
+    // already agrees.
+    let (sign, unsigned) = rendered
+        .strip_prefix('-')
+        .map_or(("", rendered.as_str()), |unsigned| ("-", unsigned));
+    if let Some(fraction) = unsigned.strip_prefix("0.")
+        && let Some(first_nonzero) = fraction.bytes().position(|byte| byte != b'0')
+        && first_nonzero == 4
+    {
+        let significant = &fraction[first_nonzero..];
+        output.push_str(sign);
+        output.push(char::from(significant.as_bytes()[0]));
+        if significant.len() > 1 {
+            output.push('.');
+            output.push_str(&significant[1..]);
+        }
+        output.push_str("e-05");
+        return;
+    }
+    output.push_str(&rendered);
+}
+
+fn write_python_canonical_json(output: &mut String, value: &serde_json::Value) {
+    match value {
+        serde_json::Value::Null => output.push_str("null"),
+        serde_json::Value::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
+        serde_json::Value::Number(number) => write_python_json_number(output, number),
+        serde_json::Value::String(value) => write_python_json_string(output, value),
+        serde_json::Value::Array(values) => {
+            output.push('[');
+            for (index, value) in values.iter().enumerate() {
+                if index != 0 {
+                    output.push(',');
+                }
+                write_python_canonical_json(output, value);
+            }
+            output.push(']');
+        }
+        serde_json::Value::Object(values) => {
+            output.push('{');
+            let mut entries: Vec<_> = values.iter().collect();
+            entries.sort_unstable_by_key(|(key, _)| *key);
+            for (index, (key, value)) in entries.into_iter().enumerate() {
+                if index != 0 {
+                    output.push(',');
+                }
+                write_python_json_string(output, key);
+                output.push(':');
+                write_python_canonical_json(output, value);
+            }
+            output.push('}');
+        }
+    }
+}
+
+fn validate_lineage(value: &serde_json::Value) -> Result<(), String> {
+    let manifest = value
+        .as_object()
+        .ok_or_else(|| "lineage metadata must be an object".to_string())?;
+    let lineage_id = manifest
+        .get("lineage_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "lineage metadata must carry a lineage_id".to_string())?;
+    if !is_sha256(lineage_id) {
+        return Err("lineage_id must be a SHA-256 digest".into());
+    }
+    if manifest.get("schema").and_then(serde_json::Value::as_u64) != Some(LINEAGE_SCHEMA) {
+        return Err(format!(
+            "unsupported lineage schema {:?}; expected {LINEAGE_SCHEMA}",
+            manifest.get("schema")
+        ));
+    }
+    if !manifest
+        .get("phase")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|phase| !phase.is_empty())
+    {
+        return Err("lineage phase must be a non-empty string".into());
+    }
+    if manifest
+        .get("phase_start_update")
+        .and_then(serde_json::Value::as_u64)
+        .is_none()
+    {
+        return Err("lineage phase_start_update must be a non-negative integer".into());
+    }
+    if !manifest
+        .get("hyperparameters")
+        .is_some_and(serde_json::Value::is_object)
+    {
+        return Err("lineage hyperparameters must be an object".into());
+    }
+    let inputs = manifest
+        .get("inputs")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "lineage inputs must be an object".to_string())?;
+    for (role, identity) in inputs {
+        if role.is_empty() {
+            return Err("lineage input roles must be non-empty strings".into());
+        }
+        let identity = identity
+            .as_object()
+            .ok_or_else(|| format!("lineage input {role:?} must be an object"))?;
+        if !identity
+            .get("content_sha256")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(is_sha256)
+        {
+            return Err(format!(
+                "lineage input {role:?} must carry a SHA-256 content digest"
+            ));
+        }
+        if identity
+            .get("lineage_id")
+            .is_some_and(|upstream| !upstream.as_str().is_some_and(is_sha256))
+        {
+            return Err(format!(
+                "lineage input {role:?} carries an invalid upstream lineage id"
+            ));
+        }
+    }
+
+    let mut payload = manifest.clone();
+    payload.remove("lineage_id");
+    let mut canonical = String::new();
+    write_python_canonical_json(&mut canonical, &serde_json::Value::Object(payload));
+    let digest = Sha256::digest(canonical.as_bytes());
+    let mut expected = String::from(SHA256_PREFIX);
+    for byte in digest {
+        write!(expected, "{byte:02x}").expect("writing into a String cannot fail");
+    }
+    if expected != lineage_id {
+        return Err("lineage_id does not match the lineage manifest".into());
+    }
+    Ok(())
 }
 
 /// A quantized policy network: trunk of tanh layers plus a logit head.
@@ -234,6 +442,9 @@ impl QuantNet {
     /// integer kernel total: see the numeric contract above.
     pub fn from_json(json: &str) -> Result<Self, String> {
         let dto: ArtifactDto = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        if let Some(lineage) = &dto.lineage {
+            validate_lineage(lineage)?;
+        }
         if dto.gym_version != GYM_VERSION {
             return Err(format!(
                 "weights speak gym v{}, sim speaks v{GYM_VERSION}",
@@ -245,6 +456,12 @@ impl QuantNet {
         }
         if dto.features != FEATURE_COUNT || dto.actions != ACTION_COUNT {
             return Err("feature/action shape mismatch".into());
+        }
+        if dto.conditioning != CONDITIONING_COUNT {
+            return Err(format!(
+                "conditioning is {} wide, gym v{GYM_VERSION} requires {CONDITIONING_COUNT}",
+                dto.conditioning
+            ));
         }
         // The width ceiling must gate the raw scalar BEFORE the add: a
         // hostile `conditioning` near usize::MAX would otherwise
@@ -416,20 +633,46 @@ impl QuantNet {
         Self::affine(&self.head.0, &self.head.1, &act)
     }
 
-    /// Greedy masked action: the highest-logit legal action, ties to
-    /// the lowest index; Idle if somehow nothing is legal.
-    pub fn act(&self, decision: &Decision, knobs: &[i64]) -> Action {
+    /// Greedy masked action plan: one highest-logit legal choice per
+    /// head, ties to the first action in that head's declared order.
+    pub fn act(&self, decision: &Decision, knobs: &[i64]) -> ActionPlan {
         let logits = self.logits(&decision.features, knobs);
-        let mut best: Option<(i64, usize)> = None;
-        for (i, legal) in decision.mask.iter().enumerate() {
-            if !legal {
-                continue;
+        let mut choices = ActionPlan::default().indices();
+        for (head_index, head) in ACTION_HEADS.iter().enumerate() {
+            let mut best: Option<(i64, usize)> = None;
+            for &action in *head {
+                if decision.mask[action] && best.is_none_or(|(value, _)| logits[action] > value) {
+                    best = Some((logits[action], action));
+                }
             }
-            if best.is_none_or(|(v, _)| logits[i] > v) {
-                best = Some((logits[i], i));
+            if let Some((_, action)) = best {
+                choices[head_index] = action;
             }
         }
-        Action::from_index(best.map_or(0, |(_, i)| i))
+        ActionPlan::from_indices(choices)
+    }
+}
+
+fn profile_knobs(skill: u32, aggression: u32, faction: Faction) -> Vec<i64> {
+    let strategy = match aggression {
+        0..=249 => 0,
+        250..=499 => 1,
+        500..=749 => 2,
+        _ => 3,
+    };
+    let mut knobs = vec![
+        i64::from(skill),
+        i64::from(aggression),
+        i64::from(faction == Faction::Cupric) * 1000,
+    ];
+    knobs.extend((0..4).map(|index| if index == strategy { 1000 } else { 0 }));
+    knobs
+}
+
+fn ladder_policy_skill(aggression: u32) -> u32 {
+    match aggression {
+        250..=499 => 620,
+        _ => 1000,
     }
 }
 
@@ -466,8 +709,10 @@ impl NeuralBot {
     /// seat's faction feed the network's conditioning inputs (extras are
     /// truncated for artifacts with fewer knobs); skill also derives the
     /// forced-blunder rate unless `blunder_permille` overrides it
-    /// (nonzero). The rng is seeded from the scenario like every other
-    /// bot — replays hold.
+    /// (nonzero). This preserves the raw experimental API's legacy zero
+    /// sentinel; [`Self::with_profile_hesitation`] accepts an exact zero.
+    /// The rng is seeded from the scenario like every other bot — replays
+    /// hold.
     #[allow(clippy::too_many_arguments)]
     pub fn with_profile(
         player: PlayerId,
@@ -492,6 +737,35 @@ impl NeuralBot {
         )
     }
 
+    /// A raw experimental profile with an explicit hesitation override.
+    /// `None` derives hesitation from `skill`; `Some(0)` means no
+    /// hesitation. Named ladder and candidate-gate paths use this exact
+    /// form so their execution handicap is independent of policy
+    /// conditioning.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_profile_hesitation(
+        player: PlayerId,
+        cadence: u64,
+        net: QuantNet,
+        skill: u32,
+        aggression: u32,
+        faction: Faction,
+        hesitation_permille: Option<u32>,
+        scenario_seed: u64,
+    ) -> Self {
+        Self::profile(
+            player,
+            cadence,
+            net,
+            skill,
+            aggression,
+            faction,
+            hesitation_permille,
+            scenario_seed,
+            DECISION_STREAM_BASE + u64::from(player.0),
+        )
+    }
+
     /// [`Self::with_profile`] with the hesitation rng's stream selector
     /// named outright instead of derived from the seat. Every shipped
     /// path takes the derived stream; an explicit one exists so a
@@ -509,25 +783,39 @@ impl NeuralBot {
         scenario_seed: u64,
         stream: u64,
     ) -> Self {
+        Self::profile(
+            player,
+            cadence,
+            net,
+            skill,
+            aggression,
+            faction,
+            (blunder_permille > 0).then_some(blunder_permille),
+            scenario_seed,
+            stream,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn profile(
+        player: PlayerId,
+        cadence: u64,
+        net: QuantNet,
+        skill: u32,
+        aggression: u32,
+        faction: Faction,
+        hesitation_permille: Option<u32>,
+        scenario_seed: u64,
+        stream: u64,
+    ) -> Self {
         let skill = skill.min(1000);
         let derived = (1000 - skill) / 2; // matches the training mapping
-        let blunder = if blunder_permille > 0 {
-            blunder_permille.min(1000)
-        } else {
-            derived
-        };
-        let faction_knob = match faction {
-            Faction::Ferrous => 0,
-            Faction::Cupric => 1000,
-        };
+        let blunder = hesitation_permille.unwrap_or(derived).min(1000);
+        let aggression = aggression.min(1000);
         Self {
             gym: GymBot::with_cadence(player, cadence),
             net,
-            knobs: vec![
-                i64::from(skill),
-                i64::from(aggression.min(1000)),
-                faction_knob,
-            ],
+            knobs: profile_knobs(skill, aggression, faction),
             blunder_permille: blunder,
             rng: Pcg32::new(scenario_seed, stream),
         }
@@ -544,16 +832,112 @@ impl NeuralBot {
         aggression: Option<u32>,
         faction: Faction,
     ) -> Self {
-        let aggression = aggression.unwrap_or_else(|| deal_aggression(scenario_seed, player));
-        Self::with_profile(
+        Self::ladder_with_net(
             player,
-            level.cadence(),
-            QuantNet::ladder().clone(),
-            level.skill(),
+            scenario_seed,
+            level,
             aggression,
             faction,
-            0,
+            QuantNet::ladder().clone(),
+        )
+    }
+
+    /// Applies the shipped ladder wrapper to an arbitrary quantized
+    /// network. Promotion gates use this constructor so a candidate is
+    /// measured with the same style-conditioned policy skill and named
+    /// execution handicap it will receive after embedding.
+    pub fn ladder_with_net(
+        player: PlayerId,
+        scenario_seed: u64,
+        level: Level,
+        aggression: Option<u32>,
+        faction: Faction,
+        net: QuantNet,
+    ) -> Self {
+        Self::ladder_with_net_at_cadence(
+            player,
             scenario_seed,
+            level,
+            aggression,
+            faction,
+            net,
+            level.cadence(),
+        )
+    }
+
+    /// Applies the named ladder profile to an arbitrary network while
+    /// selecting the hesitation rng stream explicitly. The factorial
+    /// fairness diagnostic uses this to exchange only the seat-bound
+    /// stream; ordinary play derives the stream from the player.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ladder_with_net_at_stream(
+        player: PlayerId,
+        scenario_seed: u64,
+        level: Level,
+        aggression: Option<u32>,
+        faction: Faction,
+        net: QuantNet,
+        stream: u64,
+    ) -> Self {
+        Self::ladder_with_net_at_cadence_and_stream(
+            player,
+            scenario_seed,
+            level,
+            aggression,
+            faction,
+            net,
+            level.cadence(),
+            stream,
+        )
+    }
+
+    /// The ladder wrapper with only its decision cadence overridden.
+    /// This keeps cadence-isolation probes honest without reverting the
+    /// named level's hesitation or strategy-specific policy condition.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ladder_with_net_at_cadence(
+        player: PlayerId,
+        scenario_seed: u64,
+        level: Level,
+        aggression: Option<u32>,
+        faction: Faction,
+        net: QuantNet,
+        cadence: u64,
+    ) -> Self {
+        Self::ladder_with_net_at_cadence_and_stream(
+            player,
+            scenario_seed,
+            level,
+            aggression,
+            faction,
+            net,
+            cadence,
+            DECISION_STREAM_BASE + u64::from(player.0),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn ladder_with_net_at_cadence_and_stream(
+        player: PlayerId,
+        scenario_seed: u64,
+        level: Level,
+        aggression: Option<u32>,
+        faction: Faction,
+        net: QuantNet,
+        cadence: u64,
+        stream: u64,
+    ) -> Self {
+        let aggression = aggression.unwrap_or_else(|| deal_aggression(scenario_seed, player));
+        Self::profile(
+            player,
+            cadence,
+            net,
+            ladder_policy_skill(aggression),
+            aggression,
+            faction,
+            Some(level.hesitation_permille()),
+            scenario_seed,
+            stream,
         )
     }
 
@@ -588,7 +972,7 @@ impl NeuralBot {
             return Vec::new();
         }
         let decision = self.gym.decision(state);
-        let mut action = self.net.act(&decision, &self.knobs);
+        let mut plan = self.net.act(&decision, &self.knobs);
         if self.blunder_permille > 0 && self.rng.next_below(1000) < self.blunder_permille {
             // A blunder is HESITATION — the commander lets a decision
             // window pass — not a wrong action. The 0.10 campaign
@@ -600,9 +984,9 @@ impl NeuralBot {
             // varied game. Idling loses tempo — a real handicap that
             // still orders the ladder — without structurally
             // forbidding long plays.
-            action = Action::Idle;
+            plan = ActionPlan::default();
         }
-        self.gym.step(state, action)
+        self.gym.step_plan(state, plan)
     }
 }
 
@@ -636,5 +1020,141 @@ mod tests {
             .checked_mul(127)
             .expect("the tanh interpolation at the table's ceiling");
         assert!(i64::from(MAX_LUT) + (interpolated >> 7) < MAX_ACT);
+    }
+
+    #[test]
+    fn strategy_conditioning_uses_deterministic_aggression_quartiles() {
+        for (aggression, strategy) in [
+            (0, 0),
+            (249, 0),
+            (250, 1),
+            (499, 1),
+            (500, 2),
+            (749, 2),
+            (750, 3),
+            (1000, 3),
+        ] {
+            let knobs = profile_knobs(800, aggression, Faction::Cupric);
+            assert_eq!(knobs.len(), CONDITIONING_COUNT);
+            assert_eq!(&knobs[..3], &[800, i64::from(aggression), 1000]);
+            assert_eq!(
+                &knobs[3..],
+                &(0..4)
+                    .map(|index| if index == strategy { 1000 } else { 0 })
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn automatic_personalities_stay_inside_the_promoted_safe_window() {
+        let mut saw_industry = false;
+        let mut saw_combined = false;
+        let mut industry_count = 0;
+        for seed in 0..10_000 {
+            let aggression = deal_aggression(seed, PlayerId((seed % 2) as u8));
+            assert!((DEALT_AGGRESSION_MIN..=DEALT_AGGRESSION_MAX).contains(&aggression));
+            assert!(
+                aggression <= DEALT_INDUSTRY_MAX || aggression >= DEALT_COMBINED_MIN,
+                "the unsupported transition band must never be dealt"
+            );
+            saw_industry |= aggression <= DEALT_INDUSTRY_MAX;
+            saw_combined |= aggression >= DEALT_COMBINED_MIN;
+            industry_count += u32::from(aggression <= DEALT_INDUSTRY_MAX);
+        }
+        assert!(
+            saw_industry && saw_combined,
+            "the deterministic deal reaches both promoted styles"
+        );
+        assert!(
+            (5_700..=6_300).contains(&industry_count),
+            "the deal remains close to its three-in-five industry weight: {industry_count}/10000"
+        );
+    }
+
+    #[test]
+    fn named_levels_use_strategy_skill_and_level_execution_handicaps() {
+        for level in Level::LADDER {
+            for (aggression, policy_skill) in [(300, 620), (550, 1000)] {
+                let named = NeuralBot::ladder_with_net(
+                    PlayerId(0),
+                    17,
+                    level,
+                    Some(aggression),
+                    Faction::Ferrous,
+                    QuantNet::ladder().clone(),
+                );
+                assert_eq!(named.knobs[0], policy_skill);
+                assert_eq!(named.blunder_permille, level.hesitation_permille());
+                assert_eq!(named.gym.cadence(), level.cadence());
+
+                let explicit_stream = NeuralBot::ladder_with_net_at_stream(
+                    PlayerId(0),
+                    17,
+                    level,
+                    Some(aggression),
+                    Faction::Ferrous,
+                    QuantNet::ladder().clone(),
+                    DECISION_STREAM_BASE,
+                );
+                assert_eq!(explicit_stream.knobs, named.knobs);
+                assert_eq!(explicit_stream.blunder_permille, named.blunder_permille);
+                assert_eq!(explicit_stream.gym.cadence(), named.gym.cadence());
+                assert_eq!(explicit_stream.rng, named.rng);
+            }
+        }
+    }
+
+    #[test]
+    fn named_ladder_stream_override_changes_only_the_hesitation_stream() {
+        let named = NeuralBot::ladder_with_net(
+            PlayerId(0),
+            17,
+            Level::Medium,
+            Some(550),
+            Faction::Ferrous,
+            QuantNet::ladder().clone(),
+        );
+        let crossed = NeuralBot::ladder_with_net_at_stream(
+            PlayerId(0),
+            17,
+            Level::Medium,
+            Some(550),
+            Faction::Ferrous,
+            QuantNet::ladder().clone(),
+            DECISION_STREAM_BASE + 1,
+        );
+        assert_eq!(crossed.knobs, named.knobs);
+        assert_eq!(crossed.blunder_permille, named.blunder_permille);
+        assert_eq!(crossed.gym.cadence(), named.gym.cadence());
+        assert_ne!(crossed.rng, named.rng);
+    }
+
+    #[test]
+    fn exact_zero_hesitation_does_not_change_the_legacy_profile_api() {
+        let legacy = NeuralBot::with_profile(
+            PlayerId(0),
+            LADDER_CADENCE,
+            QuantNet::ladder().clone(),
+            620,
+            300,
+            Faction::Ferrous,
+            0,
+            17,
+        );
+        let exact = NeuralBot::with_profile_hesitation(
+            PlayerId(0),
+            LADDER_CADENCE,
+            QuantNet::ladder().clone(),
+            620,
+            300,
+            Faction::Ferrous,
+            Some(0),
+            17,
+        );
+
+        assert_eq!(legacy.blunder_permille, 190);
+        assert_eq!(exact.blunder_permille, 0);
+        assert_eq!(legacy.knobs, exact.knobs);
     }
 }

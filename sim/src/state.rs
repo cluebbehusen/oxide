@@ -410,6 +410,62 @@ impl State {
         self.tick
     }
 
+    /// Whether an active seat can currently receive recurring automatic
+    /// scrap that it can spend. This includes a completed Reclaimer, the
+    /// late Foundry baseline once its start boundary is reached, and the
+    /// faster Foundry recovery for a stranded harvest line.
+    ///
+    /// A resigned seat or one without a completed Foundry cannot turn
+    /// autonomous remnant income into a recovered economy, so neither is
+    /// reported as active here.
+    pub fn recovery_income_active(&self, player: PlayerId) -> bool {
+        if self.player(player).resigned
+            || !self.buildings.iter().any(|building| {
+                building.player == player
+                    && building.hp > 0
+                    && building.built
+                    && building.kind == BuildingKind::Foundry
+            })
+        {
+            return false;
+        }
+
+        let reclaimer = self.buildings.iter().any(|building| {
+            building.player == player
+                && building.hp > 0
+                && building.built
+                && building.kind == BuildingKind::Reclaimer
+        });
+        let baseline = self.tick.saturating_add(1) >= crate::stats::FOUNDRY_BASELINE_START_TICK;
+        let emergency = self.player(player).scrap < UnitKind::Harvester.stats().cost
+            && self.harvester_recovery_needed(player);
+        reclaimer || baseline || emergency
+    }
+
+    /// Whether a living Foundry owns neither a live Harvester nor a prepaid
+    /// one in a live production queue.
+    pub(crate) fn harvester_recovery_needed(&self, player: PlayerId) -> bool {
+        !self.player(player).resigned
+            && self.buildings.iter().any(|building| {
+                building.player == player
+                    && building.hp > 0
+                    && building.built
+                    && building.kind == BuildingKind::Foundry
+            })
+            && !self.units.iter().any(|unit| {
+                unit.player == player && unit.hp > 0 && unit.kind == UnitKind::Harvester
+            })
+            && !self.buildings.iter().any(|building| {
+                building.player == player
+                    && building.hp > 0
+                    && building.built
+                    && building
+                        .queue
+                        .iter()
+                        .any(|kind| *kind == UnitKind::Harvester)
+            })
+    }
+
     /// Terrain and scrap.
     pub fn map(&self) -> &Map {
         &self.map

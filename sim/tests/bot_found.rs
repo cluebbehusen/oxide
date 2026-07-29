@@ -189,9 +189,13 @@ fn walking_founders_mask_the_builder_verbs_off() {
     // other takes a visible home-ring build and stands on its site —
     // every builder busy, each through a different guard (founding for
     // the walker, the site for the builder).
-    let first = gym.step(&state, Action::BuildTurret);
+    // Stand the paid home site first. The capital planner deliberately
+    // permits only one unpaid walking claim at a time, so reversing
+    // these two orders would correctly reserve the distant Turret
+    // before accepting another project.
+    let first = gym.step(&state, Action::BuildRepairBay);
     state.tick(&first);
-    let second = gym.step(&state, Action::BuildRepairBay);
+    let second = gym.step(&state, Action::BuildTurret);
     state.tick(&second);
     let founders = state
         .units()

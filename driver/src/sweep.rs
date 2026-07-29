@@ -261,15 +261,16 @@ fn play(
     })
 }
 
-/// One side of a duel: a ladder rung, optionally with candidate
-/// skill/cadence overrides — the re-metering experiments probe points
-/// between the shipped rungs. Personality stays the shipped per-seat
-/// deal; blunder derives from skill, as shipped.
+/// One side of a duel: a named ladder rung, optionally with raw
+/// candidate skill or cadence overrides. Without a skill override the
+/// bot keeps the named rung's exact hesitation and strategy-conditioned
+/// policy skill; supplying a skill opts into the legacy raw profile
+/// whose hesitation derives from that skill.
 #[derive(Debug, Clone, Serialize)]
 pub struct DuelSide {
     /// The base rung.
     pub level: Level,
-    /// Skill-knob override (None: the rung's own).
+    /// Raw skill-knob override (None: the named strategy condition).
     pub skill: Option<u32>,
     /// Cadence override (None: the rung's own).
     pub cadence: Option<u64>,
@@ -299,16 +300,37 @@ impl DuelSide {
         faction: oxide_sim::Faction,
         aggression: u32,
     ) -> NeuralBot {
-        NeuralBot::with_profile(
-            player,
-            self.cadence.unwrap_or_else(|| self.level.cadence()),
-            QuantNet::ladder().clone(),
-            self.skill.unwrap_or_else(|| self.level.skill()),
-            aggression,
-            faction,
-            0,
-            seed,
-        )
+        if let Some(skill) = self.skill {
+            NeuralBot::with_profile(
+                player,
+                self.cadence.unwrap_or_else(|| self.level.cadence()),
+                QuantNet::ladder().clone(),
+                skill,
+                aggression,
+                faction,
+                0,
+                seed,
+            )
+        } else if let Some(cadence) = self.cadence {
+            NeuralBot::ladder_with_net_at_cadence(
+                player,
+                seed,
+                self.level,
+                Some(aggression),
+                faction,
+                QuantNet::ladder().clone(),
+                cadence,
+            )
+        } else {
+            NeuralBot::ladder_with_net(
+                player,
+                seed,
+                self.level,
+                Some(aggression),
+                faction,
+                QuantNet::ladder().clone(),
+            )
+        }
     }
 }
 
@@ -869,6 +891,28 @@ pub fn yardstick_slate_report(
 mod tests {
     use super::*;
 
+    fn assert_same_command_source(
+        mut actual: NeuralBot,
+        mut expected: NeuralBot,
+        seed: u64,
+        label: &str,
+    ) {
+        let mut sc = crate::runner::load_scenario("skirmish").unwrap();
+        sc.seed = seed;
+        let mut state = sc.build().unwrap();
+        for _ in 0..400 {
+            let actual_commands = actual.act(&state);
+            let expected_commands = expected.act(&state);
+            assert_eq!(
+                actual_commands,
+                expected_commands,
+                "{label} at tick {}",
+                state.current_tick()
+            );
+            state.tick(&expected_commands);
+        }
+    }
+
     /// Two seeds, both orientations, a cap far too small to decide:
     /// the plumbing must account for every job and mirror the
     /// personality pairs exactly.
@@ -905,6 +949,83 @@ mod tests {
         assert_eq!(
             report.a_wins + report.b_wins + report.draws + report.undecided,
             4
+        );
+    }
+
+    /// A side without a raw skill override is the shipped named
+    /// profile, including the strategy-specific policy skill and the
+    /// level's exact hesitation. Check both strategy bands explicitly:
+    /// a seed-dealt industry-only sample could hide the old raw-Medium
+    /// coincidence at skill 620.
+    #[test]
+    fn default_duel_sides_are_exact_named_profiles_for_both_strategies() {
+        let seed = 17;
+        let player = PlayerId(0);
+        let faction = oxide_sim::Faction::Ferrous;
+        for level in Level::LADDER {
+            let side = DuelSide {
+                level,
+                skill: None,
+                cadence: None,
+            };
+            for aggression in [300, 550] {
+                assert_same_command_source(
+                    side.bot_with_aggression(player, seed, faction, aggression),
+                    NeuralBot::ladder(player, seed, level, Some(aggression), faction),
+                    seed,
+                    &format!("{level:?} aggression {aggression}"),
+                );
+            }
+        }
+    }
+
+    /// Cadence-only probes retain named semantics, while an explicit
+    /// skill still opts into the historical raw profile used by
+    /// re-metering experiments.
+    #[test]
+    fn duel_side_overrides_keep_their_declared_semantics() {
+        let seed = 19;
+        let player = PlayerId(0);
+        let faction = oxide_sim::Faction::Ferrous;
+        let cadence_only = DuelSide {
+            level: Level::Hard,
+            skill: None,
+            cadence: Some(32),
+        };
+        assert_same_command_source(
+            cadence_only.bot_with_aggression(player, seed, faction, 550),
+            NeuralBot::ladder_with_net_at_cadence(
+                player,
+                seed,
+                Level::Hard,
+                Some(550),
+                faction,
+                QuantNet::ladder().clone(),
+                32,
+            ),
+            seed,
+            "cadence-only named profile",
+        );
+
+        let raw = DuelSide {
+            level: Level::Medium,
+            skill: Some(700),
+            cadence: Some(30),
+        };
+        assert_same_command_source(
+            raw.bot_with_aggression(player, seed, faction, 550),
+            NeuralBot::with_profile(
+                player,
+                30,
+                QuantNet::ladder().clone(),
+                700,
+                550,
+                faction,
+                0,
+                seed,
+            ),
+            seed,
+            "explicit raw profile",
         );
     }
 

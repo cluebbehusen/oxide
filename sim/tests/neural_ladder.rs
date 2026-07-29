@@ -1,20 +1,24 @@
 //! The shipped ladder holds: embedded weights load, every named level
-//! outpaces the one below it against the scripted yardstick slate
-//! (seat-swapped; wins first, then victory pace with losses priced at
-//! the horizon — deliberately NOT neural head-to-head, which rewards
-//! patience), and ladder matches reproduce bit-identically — the
-//! neural tiers live inside replays like any other command source.
+//! outpaces the one below it against the scripted yardstick slate at
+//! both shipped style centers (seat-swapped; wins first, then victory
+//! pace with losses priced at the horizon — deliberately NOT neural
+//! head-to-head, which rewards patience), and ladder matches reproduce
+//! bit-identically — the neural tiers live inside replays like any
+//! other command source.
 
-use oxide_sim::bot::{Brain, Difficulty, Level, NeuralBot, QuantNet};
+use oxide_sim::bot::{Brain, CONDITIONING_COUNT, Difficulty, Level, NeuralBot, QuantNet};
 use oxide_sim::state::GameResult;
 use oxide_sim::{PlayerId, Scenario};
+
+const YARDSTICK_STYLE_CENTERS: [u32; 2] = [300, 550];
 
 fn ladder_match(hi: Level, lo: Level, hi_seat: u8, seed: u64) -> (Option<bool>, u64) {
     let mut scenario = Scenario::skirmish();
     scenario.seed = seed;
     let mut state = scenario.build().unwrap();
     let lo_seat = 1 - hi_seat;
-    // Fixed balanced personalities: this test isolates the skill knob.
+    // The combined-arms center avoids the strategy boundary while this
+    // diagnostic isolates the named execution handicaps.
     // The faction knob is honest, never assumed from the rung: a bot
     // conditioned on the roster it is not holding also orders kinds
     // `apply_train` rejects, so a seated-wrong diagnostic measures a
@@ -23,14 +27,14 @@ fn ladder_match(hi: Level, lo: Level, hi_seat: u8, seed: u64) -> (Option<bool>, 
         PlayerId(hi_seat),
         seed,
         hi,
-        Some(500),
+        Some(550),
         scenario.players[usize::from(hi_seat)].faction,
     );
     let mut b = NeuralBot::ladder(
         PlayerId(lo_seat),
         seed,
         lo,
-        Some(500),
+        Some(550),
         scenario.players[usize::from(lo_seat)].faction,
     );
     for _ in 0..40_000u32 {
@@ -47,11 +51,16 @@ fn ladder_match(hi: Level, lo: Level, hi_seat: u8, seed: u64) -> (Option<bool>, 
 #[test]
 fn embedded_weights_parse() {
     let net = QuantNet::ladder();
-    assert_eq!(net.conditioning(), 3, "the ladder network is conditioned");
+    assert_eq!(
+        net.conditioning(),
+        CONDITIONING_COUNT,
+        "the ladder network carries the full profile condition"
+    );
 }
 
 /// Wins and total victory ticks for `level` against every scripted
-/// tier over the pinned seed set — the ladder's external yardstick.
+/// tier and both dealt style centers over the pinned seed set — the
+/// ladder's external yardstick.
 /// A loss counts the full 40k-tick horizon toward the total, so the
 /// tick sum subsumes the win count at the losing end and stays a
 /// single monotone instrument. Every match is an independent
@@ -59,11 +68,10 @@ fn embedded_weights_parse() {
 /// totals are order-free.
 fn yardstick(level: Level) -> (u32, u64) {
     use oxide_sim::state::GameResult as GR;
-    // Ten seeds across every tier: the 0.12 pursuit-tether work
-    // re-rolled enough chaotic match outcomes to show the old
-    // 24-match sample inverting rungs the 80-match truth still
-    // ordered — the wider slate is the stable instrument the ladder
-    // deserves.
+    // Ten seeds across every tier and two style centers: the 0.12
+    // pursuit-tether work re-rolled enough chaotic outcomes to show
+    // the old 24-match sample inverting rungs. The 160-match truth is
+    // the stable instrument the ladder deserves.
     const SEEDS: [u64; 10] = [3000, 3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009];
     let slate: [(Difficulty, &[u64]); 4] = [
         (Difficulty::Scrapheap, &SEEDS),
@@ -72,24 +80,26 @@ fn yardstick(level: Level) -> (u32, u64) {
         (Difficulty::Prime, &SEEDS),
     ];
     let mut matches = Vec::new();
-    for (tier, seeds) in slate {
-        for &seed in seeds {
-            for seat in [0u8, 1] {
-                matches.push((tier, seed, seat));
+    for aggression in YARDSTICK_STYLE_CENTERS {
+        for (tier, seeds) in slate {
+            for &seed in seeds {
+                for seat in [0u8, 1] {
+                    matches.push((tier, seed, seat, aggression));
+                }
             }
         }
     }
     std::thread::scope(|scope| {
         let handles: Vec<_> = matches
             .into_iter()
-            .map(|(tier, seed, seat)| {
+            .map(|(tier, seed, seat, aggression)| {
                 scope.spawn(move || {
                     let mut sc = Scenario::skirmish();
                     sc.seed = seed;
                     let mut state = sc.build().unwrap();
                     let faction = sc.players[seat as usize].faction;
                     let mut bot =
-                        NeuralBot::ladder(PlayerId(seat), seed, level, Some(500), faction);
+                        NeuralBot::ladder(PlayerId(seat), seed, level, Some(aggression), faction);
                     let mut opp = Brain::for_tier(PlayerId(1 - seat), seed, tier);
                     let horizon = 40_000u32;
                     let mut end = u64::from(horizon);
@@ -127,20 +137,13 @@ fn the_ladder_orders_against_the_scripted_yardsticks() {
     // player feels is how each level handles AGGRESSION, and the
     // scripted tiers are the fixed yardstick for exactly that.
     //
-    // Pace of victory is the PRIMARY instrument (a loss counts the
-    // full horizon, so it subsumes the win count): every rung must
-    // put the identical slate away strictly faster than the rung
-    // below, and Expert must hold the top win count outright. The
-    // 0.12 movement overhaul (pursuit tether + collision slide)
-    // re-rolled every bot-vs-bot match: un-ground movement helps the
-    // scripted tiers' massed pushes most, and the shipped policy
-    // trained under the old physics — Expert's outright SWEEP of the
-    // slate (and strict count monotonicity between middle rungs) is
-    // expected back only with the next training campaign, which
-    // trains under the new movement. Deterministic on the pinned
-    // seeds — a fact about the shipped sim, not a statistical claim.
+    // Pace of victory is the primary instrument (a loss counts the
+    // full horizon, so it subsumes win count), but every rung must also
+    // win strictly more matches than the one below it. Deterministic on
+    // the pinned seeds — a fact about the shipped sim, not a statistical
+    // claim.
     let totals: Vec<(u32, u64)> = Level::LADDER.iter().map(|l| yardstick(*l)).collect();
-    let max = 80u32; // 4 tiers x 10 seeds x 2 seats
+    let max = 160u32; // 2 styles x 4 tiers x 10 seeds x 2 seats
     // Published, not just asserted: the separation the assertions read
     // is a table a maintainer re-metering the rungs needs in front of
     // them. `cargo test -p oxide-sim --test neural_ladder -- --nocapture`.
@@ -151,6 +154,10 @@ fn the_ladder_orders_against_the_scripted_yardsticks() {
         println!("  {rung:<8} wins {wins:>2}/{max}  ·  tick total {ticks:>9}");
     }
     for pair in totals.windows(2) {
+        assert!(
+            pair[0].0 < pair[1].0,
+            "a higher rung must win more of the same slate: {totals:?} of {max}"
+        );
         assert!(
             pair[0].1 > pair[1].1,
             "a higher rung must put the same slate away faster: {totals:?} of {max}"
@@ -202,9 +209,10 @@ fn a_seeded_random_personality_is_deterministic() {
 }
 
 /// Diagnostic, not a gate: prints every adjacent pair's head-to-head
-/// record over a wide seed set, for recalibrating `Level::skill()`
-/// against real measurements instead of a four-game sample. Run with
-/// `cargo test -p oxide-sim --test neural_ladder -- --ignored --nocapture`.
+/// record over a wide seed set, for recalibrating the named execution
+/// handicaps against real measurements instead of a four-game sample.
+/// Run with `cargo test -p oxide-sim --test neural_ladder -- --ignored
+/// --nocapture`.
 #[test]
 #[ignore = "diagnostic: prints pair records for recalibration work"]
 fn ladder_pair_records() {

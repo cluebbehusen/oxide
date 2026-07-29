@@ -12,20 +12,34 @@
 
 use anyhow::{Context, Result};
 use oxide_kit::composition::{self, Aggregate, MatchComposition};
-use oxide_sim::bot::Level;
+use oxide_sim::bot::{Difficulty, Level};
 use oxide_sim::scenario::BotConfig;
 
-/// The candidate-probe dials that decompose the skill knob into its
-/// parts — conditioning, blunder rate, think cadence — so experiments
-/// can move one at a time. Shipped play always moves them together
-/// through `Level`.
+/// Candidate-probe overrides for conditioning, hesitation, and think
+/// cadence. Without a raw conditioning or hesitation override,
+/// candidates use the same strategy-specific policy condition and
+/// level handicap as the shipped ladder.
 pub struct ProbeDials {
-    /// Raw conditioning override (None: the level's own skill).
+    /// Run the scripted utility controller at this tier instead of the
+    /// neural ladder.
+    pub scripted: Option<Difficulty>,
+    /// Raw conditioning override. `None` keeps the ladder's
+    /// strategy-specific policy condition.
     pub skill: Option<u32>,
-    /// Explicit blunder rate per mille (0: derive from skill).
-    pub blunder: u32,
+    /// Personality override (None: deal the shipped seed-derived value).
+    pub aggression: Option<u32>,
+    /// Exact hesitation rate per mille. Supplying this, including zero,
+    /// opts into a raw experimental profile; `None` keeps the named
+    /// level's handicap.
+    pub blunder: Option<u32>,
     /// Think cadence override (None: the level's own cadence).
     pub cadence: Option<u64>,
+}
+
+impl ProbeDials {
+    fn uses_raw_profile(&self) -> bool {
+        self.skill.is_some() || self.blunder.is_some()
+    }
 }
 
 /// Runs the probe over every scenario in `dir` and prints the verdict;
@@ -39,6 +53,10 @@ pub fn balance_probe(
     weights: Option<&str>,
     out: Option<&str>,
 ) -> Result<()> {
+    anyhow::ensure!(
+        dials.scripted.is_none() || weights.is_none(),
+        "--scripted-tier and --weights are mutually exclusive"
+    );
     // A candidate artifact probes exactly like the embedded one, just
     // with its net loaded from disk — the fun gate runs this before a
     // campaign checkpoint is ever embedded.
@@ -70,44 +88,22 @@ pub fn balance_probe(
         for player in sc.players.iter_mut() {
             player.bot = true;
             // Shipped-match configuration: the chosen level, with
-            // the personality dealt from the scenario seed — the
-            // game players actually fight.
+            // the personality dealt from the scenario seed unless the
+            // probe explicitly isolates one personality.
             player.bot_config = Some(BotConfig {
                 level,
-                aggression: None,
+                aggression: dials.aggression,
             });
         }
-        let m = match &net {
-            None => composition::sample_match(&sc, max_ticks, 20)
-                .with_context(|| format!("sampling {}", sc.name))?,
-            Some(net) => {
-                use oxide_sim::bot::NeuralBot;
-                let mut bots: Vec<NeuralBot> = sc
+        let m = match (dials.scripted, &net) {
+            (Some(tier), _) => {
+                use oxide_sim::bot::Brain;
+                let mut bots: Vec<Brain> = sc
                     .players
                     .iter()
                     .enumerate()
-                    .map(|(seat, player)| {
-                        // Exactly the shipped ladder profile unless a
-                        // dial is explicitly overridden: the level's
-                        // own cadence and the seed-dealt personality
-                        // (the shipped dealing itself, not a copy).
-                        // Probing a candidate at a flat cadence-16 /
-                        // aggression-500 profile once gated a faster,
-                        // blander bot than the one embedding ships.
-                        let aggression = oxide_sim::bot::deal_aggression(
-                            sc.seed,
-                            oxide_sim::PlayerId(seat as u8),
-                        );
-                        NeuralBot::with_profile(
-                            oxide_sim::PlayerId(seat as u8),
-                            dials.cadence.unwrap_or_else(|| level.cadence()),
-                            net.clone(),
-                            dials.skill.unwrap_or_else(|| level.skill()),
-                            aggression,
-                            player.faction,
-                            dials.blunder,
-                            sc.seed,
-                        )
+                    .map(|(seat, _)| {
+                        Brain::for_tier(oxide_sim::PlayerId(seat as u8), sc.seed, tier)
                     })
                     .collect();
                 composition::sample_driven(&sc, max_ticks, 20, |state| {
@@ -115,7 +111,69 @@ pub fn balance_probe(
                     for bot in bots.iter_mut() {
                         commands.extend(bot.act(state));
                     }
-                    state.tick(&commands);
+                    state.tick(&commands)
+                })
+                .with_context(|| format!("sampling {}", sc.name))?
+            }
+            (None, None) => composition::sample_match(&sc, max_ticks, 20)
+                .with_context(|| format!("sampling {}", sc.name))?,
+            (None, Some(net)) => {
+                use oxide_sim::bot::NeuralBot;
+                let mut bots: Vec<NeuralBot> = sc
+                    .players
+                    .iter()
+                    .enumerate()
+                    .map(|(seat, player)| {
+                        // Exactly the shipped ladder profile unless a
+                        // raw skill or hesitation dial is explicitly
+                        // overridden. A cadence-only probe still keeps
+                        // the named level's hesitation and
+                        // strategy-conditioned policy skill.
+                        let aggression = dials.aggression.unwrap_or_else(|| {
+                            oxide_sim::bot::deal_aggression(
+                                sc.seed,
+                                oxide_sim::PlayerId(seat as u8),
+                            )
+                        });
+                        if dials.uses_raw_profile() {
+                            NeuralBot::with_profile_hesitation(
+                                oxide_sim::PlayerId(seat as u8),
+                                dials.cadence.unwrap_or_else(|| level.cadence()),
+                                net.clone(),
+                                dials.skill.unwrap_or_else(|| level.skill()),
+                                aggression,
+                                player.faction,
+                                dials.blunder,
+                                sc.seed,
+                            )
+                        } else if let Some(cadence) = dials.cadence {
+                            NeuralBot::ladder_with_net_at_cadence(
+                                oxide_sim::PlayerId(seat as u8),
+                                sc.seed,
+                                level,
+                                Some(aggression),
+                                player.faction,
+                                net.clone(),
+                                cadence,
+                            )
+                        } else {
+                            NeuralBot::ladder_with_net(
+                                oxide_sim::PlayerId(seat as u8),
+                                sc.seed,
+                                level,
+                                Some(aggression),
+                                player.faction,
+                                net.clone(),
+                            )
+                        }
+                    })
+                    .collect();
+                composition::sample_driven(&sc, max_ticks, 20, |state| {
+                    let mut commands = Vec::new();
+                    for bot in bots.iter_mut() {
+                        commands.extend(bot.act(state));
+                    }
+                    state.tick(&commands)
                 })
                 .with_context(|| format!("sampling {}", sc.name))?
             }
@@ -125,7 +183,7 @@ pub fn balance_probe(
             m.scenario,
             m.seed,
             m.ticks,
-            if m.capped { "capped" } else { "decided" }
+            match_status(&m)
         );
         Ok(m)
     })?;
@@ -133,12 +191,20 @@ pub fn balance_probe(
     // Provenance: a composition table is evidence about ONE artifact,
     // and a candidate's file name outlives neither the campaign nor
     // the run directory. The digest does.
-    let (artifact, digest) = match (&net, weights) {
-        (Some(net), Some(path)) => (path.to_string(), net.digest()),
+    let (artifact, digest) = match (dials.scripted, &net, weights) {
+        (Some(tier), _, _) => (format!("scripted {tier:?}"), "scripted".to_string()),
+        (None, Some(net), Some(path)) => (path.to_string(), format!("{:016x}", net.digest())),
         _ => (
             "embedded ladder".to_string(),
-            oxide_sim::bot::QuantNet::ladder().digest(),
+            format!("{:016x}", oxide_sim::bot::QuantNet::ladder().digest()),
         ),
+    };
+    let profile = if dials.scripted.is_some() {
+        "scripted"
+    } else if dials.uses_raw_profile() {
+        "raw"
+    } else {
+        "ladder"
     };
 
     let overall = composition::aggregate(&matches);
@@ -147,7 +213,7 @@ pub fn balance_probe(
         "\nBALANCE PROBE  ·  {} maps x {seeds} seeds  ·  level {level:?}",
         paths.len()
     );
-    println!("artifact: {artifact} · digest {digest:016x}");
+    println!("artifact: {artifact} · digest {digest}");
     println!(
         "{} matches · {} decided / {} capped by the {max_ticks}-tick cap ({:.1}% censored)",
         overall.matches,
@@ -155,14 +221,14 @@ pub fn balance_probe(
         overall.capped,
         censored(&overall)
     );
-    println!("\ncost-weighted mean army share (all seats):");
+    println!("\nall-unit cost-weighted mean roster share (diagnostic):");
     let mut rows: Vec<(&String, &f64)> = overall.mean_share.iter().collect();
     rows.sort_by(|a, b| b.1.total_cmp(a.1));
     for (kind, share) in rows {
         println!("  {kind:<12} {:>5.1}%", share * 100.0);
     }
     println!(
-        "mix entropy: {:.2} bits over {} seats",
+        "all-unit mix entropy: {:.2} bits over {} seats",
         overall.entropy_bits, overall.seats
     );
     if let Some(spread) = &overall.seat_entropy {
@@ -174,14 +240,14 @@ pub fn balance_probe(
             spread.mean, spread.p10, spread.p25, spread.median
         );
     }
-    println!("\nbody-time mean army share (all seats):");
+    println!("\nall-unit body-time mean roster share (diagnostic):");
     let mut count_rows: Vec<(&String, &f64)> = overall.mean_count_share.iter().collect();
     count_rows.sort_by(|a, b| b.1.total_cmp(a.1));
     for (kind, share) in count_rows {
         println!("  {kind:<12} {:>5.1}%", share * 100.0);
     }
     println!(
-        "count mix entropy: {:.2} bits over {} seats",
+        "all-unit count mix entropy: {:.2} bits over {} seats",
         overall.count_entropy_bits, overall.seats
     );
     if let (Some(entropy), Some(dominance)) =
@@ -199,9 +265,39 @@ pub fn balance_probe(
         );
     }
 
+    println!("\ncompetitive-lifetime combat value share:");
+    let mut combat_rows: Vec<(&String, &f64)> = overall.mean_combat_share.iter().collect();
+    combat_rows.sort_by(|a, b| b.1.total_cmp(a.1));
+    for (kind, share) in combat_rows {
+        println!("  {kind:<12} {:>5.1}%", share * 100.0);
+    }
+    println!(
+        "combat mix entropy: {:.2} bits over {} seats",
+        overall.combat_entropy_bits, overall.combat_seats
+    );
+    println!("\ncompetitive-lifetime combat body-time share:");
+    let mut combat_count_rows: Vec<(&String, &f64)> =
+        overall.mean_combat_count_share.iter().collect();
+    combat_count_rows.sort_by(|a, b| b.1.total_cmp(a.1));
+    for (kind, share) in combat_count_rows {
+        println!("  {kind:<12} {:>5.1}%", share * 100.0);
+    }
+    if let (Some(entropy), Some(dominance)) = (
+        &overall.seat_combat_count_entropy,
+        &overall.seat_combat_count_dominance,
+    ) {
+        println!(
+            "combat body entropy: {:.2} bits · per-seat p10 {:.2} · \
+             largest-share p90 {:.1}%",
+            overall.combat_count_entropy_bits,
+            entropy.p10,
+            dominance.p90 * 100.0
+        );
+    }
+
     // What was finished, not just what was fielded: a roster that never
     // stands a Fabricator never had the advanced kinds to choose from.
-    println!("\nfinished buildings per seat (mean · share of seats that stood one):");
+    println!("\nfinished buildings per all-unit seat (all-time diagnostic):");
     for (kind, mean) in &overall.mean_buildings {
         let reach = overall
             .seats_with_building
@@ -210,9 +306,23 @@ pub fn balance_probe(
             .unwrap_or_default();
         println!("  {kind:<12} {mean:>5.2} · {:>5.1}%", reach * 100.0);
     }
+    println!("\ncompetitive-lifetime buildings (mean · reach):");
+    for (kind, mean) in &overall.competitive_mean_buildings {
+        let reach = overall
+            .competitive_seats_with_building
+            .get(kind)
+            .copied()
+            .unwrap_or_default();
+        println!("  {kind:<12} {mean:>5.2} · {:>5.1}%", reach * 100.0);
+    }
 
-    // A capped stalemate's army mix is evidence about a stalemate. The
-    // decided cohort is the one a promotion gate should read.
+    // Promotion judges every seat's competitive lifetime. Losing seats
+    // keep their pre-defeat history; the sampler stops their combat
+    // clock once they resign or lose their completed Foundry.
+    println!("\nall competitive lifetimes:");
+    print_cohort_header();
+    print_cohort_row("overall", &overall);
+
     println!("\ndecided matches only:");
     print_cohort_header();
     print_cohort_row("decided", &decided);
@@ -246,12 +356,20 @@ pub fn balance_probe(
         let payload = serde_json::json!({
             // Bumped whenever a consumer (tools/train/fun_gate.py) would
             // need to read this file differently.
-            "schema": 3,
+            "schema": 6,
             "level": format!("{level:?}"),
             "artifact": artifact,
-            "digest": format!("{digest:016x}"),
+            "digest": digest,
+            "profile": profile,
             "seeds": seeds,
             "max_ticks": max_ticks,
+            "dials": {
+                "scripted": dials.scripted.map(|tier| format!("{tier:?}")),
+                "skill": dials.skill,
+                "aggression": dials.aggression,
+                "blunder": dials.blunder.unwrap_or(0),
+                "cadence": dials.cadence,
+            },
             "overall": overall,
             "decided": decided,
             "cohorts": {
@@ -277,6 +395,37 @@ fn censored(agg: &Aggregate) -> f64 {
     }
 }
 
+fn match_status(m: &MatchComposition) -> String {
+    if !m.capped {
+        return "decided".to_string();
+    }
+    let seats = m
+        .final_economy
+        .seats
+        .iter()
+        .enumerate()
+        .map(|(index, seat)| {
+            format!(
+                "p{index}:b{} h{}+{}q r{} f{}{}",
+                seat.bank_scrap,
+                seat.living_harvesters,
+                seat.queued_harvesters,
+                seat.completed_reclaimers,
+                seat.living_foundries,
+                if seat.resigned { " resigned" } else { "" }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "capped · combat age {}t · economy age {}t · roster age {}t · salvage {} · {seats}",
+        m.ticks.saturating_sub(m.activity.last_combat_tick),
+        m.ticks.saturating_sub(m.activity.last_economy_tick),
+        m.ticks.saturating_sub(m.last_progress_tick),
+        m.final_economy.remaining_map_salvage
+    )
+}
+
 fn print_cohort_header() {
     println!(
         "  {:<20} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7} {:>7}  top body",
@@ -289,7 +438,7 @@ fn print_cohort_header() {
 /// the thinnest seats scored.
 fn print_cohort_row(name: &str, agg: &Aggregate) {
     let top = agg
-        .mean_count_share
+        .mean_combat_count_share
         .iter()
         .max_by(|a, b| a.1.total_cmp(b.1))
         .map(|(k, s)| format!("{k} {:.0}%", s * 100.0))
@@ -297,16 +446,16 @@ fn print_cohort_row(name: &str, agg: &Aggregate) {
     // An empty cohort has no entropy; printing 0.00 would read as the
     // one thing this table exists to flag.
     let cell = |v: Option<f64>| v.map_or_else(|| "-".to_string(), |v| format!("{v:.2}"));
-    let value_spread = agg.seat_entropy.as_ref();
-    let count_spread = agg.seat_count_entropy.as_ref();
-    let dominance = agg.seat_count_dominance.as_ref();
+    let value_spread = agg.seat_combat_entropy.as_ref();
+    let count_spread = agg.seat_combat_count_entropy.as_ref();
+    let dominance = agg.seat_combat_count_dominance.as_ref();
     println!(
         "  {name:<20} {:>6} {:>5.1}% {:>7} {:>7} {:>7} {:>7} {:>7}  {top}",
-        agg.seats,
+        agg.combat_seats,
         censored(agg),
-        cell(value_spread.map(|_| agg.entropy_bits)),
+        cell(value_spread.map(|_| agg.combat_entropy_bits)),
         cell(value_spread.map(|s| s.p10)),
-        cell(count_spread.map(|_| agg.count_entropy_bits)),
+        cell(count_spread.map(|_| agg.combat_count_entropy_bits)),
         cell(count_spread.map(|s| s.p10)),
         cell(dominance.map(|s| s.p90)),
     );
@@ -315,6 +464,31 @@ fn print_cohort_row(name: &str, agg: &Aggregate) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_raw_overrides_are_distinct_from_the_candidate_ladder_profile() {
+        let mut dials = ProbeDials {
+            scripted: None,
+            skill: None,
+            aggression: None,
+            blunder: None,
+            cadence: None,
+        };
+        assert!(!dials.uses_raw_profile());
+
+        dials.blunder = Some(0);
+        assert!(
+            dials.uses_raw_profile(),
+            "an explicit zero requests exact zero hesitation"
+        );
+
+        dials.blunder = None;
+        dials.skill = Some(Level::Expert.skill());
+        assert!(
+            dials.uses_raw_profile(),
+            "even a numerically familiar skill is an explicit raw profile"
+        );
+    }
 
     /// The `--out` payload is a contract with `tools/train/fun_gate.py`,
     /// which reads it by key and cannot fail loudly on a reshape — so
@@ -328,8 +502,13 @@ mod tests {
             dir,
             Level::Easy,
             &ProbeDials {
+                // This is a payload-shape test, so use the scripted
+                // controller and keep it independent of whichever
+                // generated ladder artifact is mid-regeneration.
+                scripted: Some(Difficulty::Scrapheap),
                 skill: None,
-                blunder: 0,
+                aggression: None,
+                blunder: None,
                 cadence: None,
             },
             1,
@@ -341,10 +520,10 @@ mod tests {
         let payload: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
         std::fs::remove_file(&out).ok();
-        assert_eq!(payload["schema"], 3);
+        assert_eq!(payload["schema"], 6);
         assert!(payload["overall"]["matches"].as_u64().unwrap() >= 25);
-        // Nothing decides in 40 ticks, so the gate's own cohort is
-        // empty — which the gate must be able to SEE, not infer.
+        // Nothing decides in 40 ticks, so the diagnostic decided cohort
+        // is empty — which consumers must be able to see, not infer.
         assert_eq!(payload["decided"]["seats"], 0);
         assert_eq!(payload["decided"]["matches"], 0);
         assert!(payload["decided"]["mean_share"].is_object());
@@ -353,6 +532,18 @@ mod tests {
         assert!(payload["decided"]["mean_count_share"].is_object());
         assert!(payload["decided"]["count_entropy_bits"].is_number());
         assert!(payload["overall"]["seat_count_entropy"]["p10"].is_number());
+        // The gate reads only these parallel combat fields. The old
+        // all-unit maps above remain diagnostics and include Harvesters.
+        assert!(payload["overall"]["combat_seats"].as_u64().unwrap() > 0);
+        assert!(payload["overall"]["mean_combat_share"].is_object());
+        assert!(payload["overall"]["combat_entropy_bits"].is_number());
+        assert!(payload["overall"]["seat_combat_entropy"]["p10"].is_number());
+        assert!(payload["overall"]["mean_combat_count_share"].is_object());
+        assert!(payload["overall"]["combat_count_entropy_bits"].is_number());
+        assert!(payload["overall"]["seat_combat_count_entropy"]["p10"].is_number());
+        assert!(payload["overall"]["seat_combat_count_dominance"]["p90"].is_number());
+        assert!(payload["overall"]["competitive_seats_with_building"].is_object());
+        assert!(payload["dials"]["aggression"].is_null());
         assert!(payload["overall"]["seat_count_dominance"]["p90"].is_number());
         for cohort in ["faction", "pace", "outcome", "map"] {
             assert!(
@@ -364,5 +555,45 @@ mod tests {
         let first = &payload["matches"][0];
         assert!(first["capped"].as_bool().unwrap() && first["result"].is_null());
         assert!(first["last_progress_tick"].as_u64().unwrap() > 0);
+        for key in [
+            "last_combat_tick",
+            "last_economy_tick",
+            "attack_hits",
+            "turret_shots",
+            "shell_shots",
+            "deliveries",
+            "delivered_scrap",
+            "units_trained",
+            "buildings_completed",
+        ] {
+            assert!(first["activity"][key].is_u64(), "{key} is reported");
+        }
+        assert!(
+            first["final_economy"]["remaining_map_salvage"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        let economy_seats = first["final_economy"]["seats"].as_array().unwrap();
+        assert_eq!(economy_seats.len(), 2);
+        for seat in economy_seats {
+            for key in [
+                "resigned",
+                "recovery_income_active",
+                "bank_scrap",
+                "living_harvesters",
+                "queued_harvesters",
+                "completed_reclaimers",
+                "living_foundries",
+            ] {
+                if matches!(key, "resigned" | "recovery_income_active") {
+                    assert!(seat[key].is_boolean(), "{key} is reported per seat");
+                } else {
+                    assert!(seat[key].is_u64(), "{key} is reported per seat");
+                }
+            }
+        }
+        assert!(first["seats"][0]["harvester"].is_number());
+        assert!(first["combat_seats"][0]["harvester"].is_null());
     }
 }

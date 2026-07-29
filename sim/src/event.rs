@@ -87,6 +87,20 @@ pub enum Event {
         /// Scrap added to the bank.
         amount: u32,
     },
+    /// A wounded machine received hp from one repair source.
+    ///
+    /// This reports only hp accepted by the shared resolver after damage
+    /// and max-hp clamping. It is output telemetry, not replay input.
+    UnitRepaired {
+        /// The repaired machine.
+        unit: UnitId,
+        /// The machine's owner.
+        player: PlayerId,
+        /// What supplied the repair.
+        source: UnitRepairSource,
+        /// Hp actually accepted from this source.
+        amount: u32,
+    },
     /// A scrap node ran out.
     NodeDepleted {
         /// The now-empty tile.
@@ -186,6 +200,22 @@ pub enum Event {
     PlayerResigned {
         /// The seat that gave up.
         player: PlayerId,
+    },
+}
+
+/// The source of an accepted unit repair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum UnitRepairSource {
+    /// A Harvester's field welder.
+    FieldWelder {
+        /// The Harvester doing the work.
+        unit: UnitId,
+    },
+    /// A Repair Bay aura pulse.
+    RepairBay {
+        /// The Repair Bay supplying the pulse.
+        building: BuildingId,
     },
 }
 

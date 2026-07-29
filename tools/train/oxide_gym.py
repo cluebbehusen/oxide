@@ -44,19 +44,28 @@ BUILDING_NAMES = frozenset(
     }
 )
 
-FEATURES = 65
-ACTIONS = 24
-GYM_VERSION = 6
+FEATURES = 81
+ACTIONS = 26
+GYM_VERSION = 7
+# Each decision is one independent choice from each action head. The
+# indices remain global flat-head rows so checkpoints and exported
+# artifacts still carry one 26-row affine policy head.
+PRODUCTION_HEAD = (0, 1, 2, 3, 4, 5, 6, 7, 8)
+CONSTRUCTION_HEAD = (24, 9, 10, 11, 12, 13, 14, 15, 21, 22, 23)
+OPERATION_HEAD = (25, 16, 17, 18, 19, 20)
+ACTION_HEADS = (PRODUCTION_HEAD, CONSTRUCTION_HEAD, OPERATION_HEAD)
+ACTION_PLAN_DIMS = len(ACTION_HEADS)
+type ActionPlan = tuple[int, int, int]
 # Conditioning dims appended to the gym features as network input:
 # skill (0-1000; 1000 = full strength), aggression (0-1000; 500 =
-# balanced), and faction (0 = ferrous, 1000 = cupric). The world
-# features come from Rust; the knobs are the bot's own configuration,
-# so the wrapper appends them.
-CONDITION_DIMS = 3
+# balanced), faction (0 = ferrous, 1000 = cupric), and a four-way
+# strategy one-hot derived from aggression. The world features come
+# from Rust; the knobs are the bot's own configuration, so the wrapper
+# appends them.
+CONDITION_DIMS = 7
 NET_FEATURES = FEATURES + CONDITION_DIMS
 
 DRAW_REWARD = -0.3
-STEP_COST = 1e-4
 # Decision stride in sim ticks. 16 halves the credit-assignment horizon
 # relative to the bots' own 8 — macro decisions don't need finer.
 CADENCE = 16
@@ -139,6 +148,24 @@ SCALE_BY_NAME: dict[str, float] = {
     # and what a Repair Bay amortizes against; the potential term that
     # prices welding by the wound it heals.
     "damaged_unit_value": 500,
+    # v7: economy, commitment, and survivability context for the
+    # factorized production/construction/operation decision.
+    "known_salvage_value": 2_000,
+    "near_home_salvage_value": 1_000,
+    "nearest_salvage_distance": 200,
+    "idle_harvesters": 8,
+    "carried_scrap": 200,
+    "queued_unit_value": 1_000,
+    "construction_site_value": 1_000,
+    "my_unit_health_value": 2_000,
+    "my_building_health_value": 1_000,
+    "my_bastions_built": 2,
+    "my_repair_bays_built": 1,
+    "my_construction_sites": 4,
+    "home_enemy_pressure": 500,
+    "nearest_enemy_distance": 200,
+    "construction_plan": 7,
+    "construction_reserve": 250,
 }
 FEATURE_NAMES = list(SCALE_BY_NAME.keys())
 SCALES = np.array([SCALE_BY_NAME[n] for n in FEATURE_NAMES], dtype=np.float32)
@@ -215,6 +242,39 @@ def faction_knob_from_features(features: list[int]) -> int:
     return 1000 if faction_name_from_features(features) == "cupric" else 0
 
 
+def strategy_one_hot(aggression: int) -> tuple[int, int, int, int]:
+    """Maps aggression quartiles to fortify/industry/combined/pressure."""
+    if aggression < 0 or aggression > 1000:
+        raise ValueError(f"aggression must be in 0..1000, got {aggression}")
+    bucket = min(aggression // 250, 3)
+    return (
+        1000 if bucket == 0 else 0,
+        1000 if bucket == 1 else 0,
+        1000 if bucket == 2 else 0,
+        1000 if bucket == 3 else 0,
+    )
+
+
+def condition_from_profile(
+    skill: int,
+    aggression: int,
+    faction: int,
+) -> tuple[int, int, int, int, int, int, int]:
+    """Builds the complete v7 network condition for one bot profile."""
+    if skill < 0 or skill > 1000:
+        raise ValueError(f"skill must be in 0..1000, got {skill}")
+    if faction not in (0, 1000):
+        raise ValueError(f"faction must be 0 or 1000, got {faction}")
+    return (skill, aggression, faction, *strategy_one_hot(aggression))
+
+
+def policy_skill_for_aggression(aggression: int) -> int:
+    """Returns the learned skill condition used by the shipped ladder wrapper."""
+    if aggression < 0 or aggression > 1000:
+        raise ValueError(f"aggression must be in 0..1000, got {aggression}")
+    return 620 if 250 <= aggression <= 499 else 1000
+
+
 def honest_condition(
     condition: tuple[int, ...], features: list[int]
 ) -> tuple[int, ...]:
@@ -222,17 +282,37 @@ def honest_condition(
     with the faction Rust observed after scenario retinting."""
     if len(condition) != CONDITION_DIMS:
         raise ValueError(f"expected {CONDITION_DIMS} knobs, got {condition}")
-    return (*condition[:-1], faction_knob_from_features(features))
+    return (
+        condition[0],
+        condition[1],
+        faction_knob_from_features(features),
+        *condition[3:],
+    )
 
 
 def with_condition(obs: np.ndarray, condition: tuple[int, ...]) -> np.ndarray:
-    """Appends normalized (skill, aggression, faction) knobs to a
-    feature row. Faction rides as 0 (ferrous) or 1000 (cupric) so every
-    knob shares the /1000 scale."""
+    """Appends the normalized seven-knob strategy condition."""
     if len(condition) != CONDITION_DIMS:
         raise ValueError(f"expected {CONDITION_DIMS} knobs, got {condition}")
     knobs = np.asarray(condition, dtype=np.float32) / 1000.0
     return np.concatenate([obs, knobs])
+
+
+def validate_action_plan(plan: tuple[int, ...] | list[int]) -> ActionPlan:
+    """Validates one plan of global indices against its three heads."""
+    if len(plan) != ACTION_PLAN_DIMS:
+        raise ValueError(
+            f"action plan must contain {ACTION_PLAN_DIMS} global indices, got {plan}"
+        )
+    normalized = tuple(int(action) for action in plan)
+    for head_index, (action, head) in enumerate(
+        zip(normalized, ACTION_HEADS, strict=True)
+    ):
+        if action not in head:
+            raise ValueError(
+                f"action {action} does not belong to action head {head_index}: {head}"
+            )
+    return cast("ActionPlan", normalized)
 
 
 @dataclass
@@ -257,13 +337,14 @@ class SeatEffects:
     """Own-state effects observed during one Rust decision interval.
 
     These are training telemetry, not policy inputs. In particular, the
-    repair bonuses consume completed work rather than rewarding a sampled
-    action that lowering or the sim may have rejected.
+    repair and salvage bonuses consume completed work rather than rewarding
+    a sampled action that lowering or the sim may have rejected.
     """
 
     repair_unit_commands: int = 0
     unit_hp_restored: int = 0
     repair_unit_hp_restored: int = 0
+    buildings_salvaged: int = 0
     buildings_completed: tuple[BuildingName, ...] = ()
 
 
@@ -271,6 +352,10 @@ class SeatEffects:
 class Frame:
     done: bool
     tick: int
+    # True only when the gym's tick budget ended a still-live match.
+    # This is an artificial MDP boundary: living seats receive a neutral
+    # outcome and the trainer bootstraps their terminal observations.
+    truncated: bool = False
     winner: int | None = None  # winning TEAM id, or None for a draw/cap
     winners: list[int] | None = None  # seats on the winning team
     alive: list[int] | None = None  # controlled seats still standing
@@ -281,13 +366,16 @@ class Frame:
     def reward(self, seat: int) -> float:
         """Terminal reward for `seat` (call when done). A team win pays
         every seat on the team; elimination is a loss even if the game
-        rages on (or the teammate later wins it)."""
+        rages on (or the teammate later wins it). A living seat at an
+        artificial tick boundary is neutral, not a penalized draw."""
         if self.winners is not None and len(self.winners) > 0:
             return 1.0 if seat in self.winners else -1.0
         if self.winner is not None:
             return 1.0 if self.winner == seat else -1.0
         if self.alive is not None and seat not in self.alive:
             return -1.0
+        if self.truncated:
+            return 0.0
         return DRAW_REWARD
 
 
@@ -309,6 +397,7 @@ def parse_effects(reply: dict) -> dict[int, SeatEffects]:
             repair_unit_commands=int(raw.get("repair_unit_commands", 0)),
             unit_hp_restored=int(raw.get("unit_hp_restored", 0)),
             repair_unit_hp_restored=int(raw.get("repair_unit_hp_restored", 0)),
+            buildings_salvaged=int(raw.get("buildings_salvaged", 0)),
             buildings_completed=typed_completed,
         )
     return effects
@@ -340,6 +429,12 @@ class Worker:
         if hello.get("actions") != ACTIONS:
             got = hello.get("actions")
             raise RuntimeError(f"action-count mismatch: rust {got} vs python {ACTIONS}")
+        expected_heads = [list(head) for head in ACTION_HEADS]
+        if hello.get("action_heads") != expected_heads:
+            raise RuntimeError(
+                "action-head mismatch between Rust and Python — "
+                f"rust: {hello.get('action_heads')} vs python: {expected_heads}"
+            )
         if hello.get("names") != FEATURE_NAMES:
             raise RuntimeError(
                 "feature-name mismatch between Rust and Python — "
@@ -379,6 +474,7 @@ class Worker:
             frame = Frame(
                 done=True,
                 tick=reply["tick"],
+                truncated=bool(reply["truncated"]),
                 winner=reply["winner"],
                 winners=reply.get("winners"),
                 alive=reply.get("alive"),
@@ -471,17 +567,19 @@ class Worker:
             req["factions"] = self.requested_factions
         return self._rpc(req)
 
-    def step(self, actions: dict[int, int]) -> Frame:
-        """Actions keyed by seat, in control order. Seats absent from
+    def step(self, actions: dict[int, ActionPlan]) -> Frame:
+        """Action plans keyed by seat, in control order. Seats absent from
         the dict send nothing — the driver expects exactly one action
-        per *living* controlled seat, and a dead teammate's seat has
+        plan per *living* controlled seat, and a dead teammate's seat has
         dropped out of the frame."""
         self.send_step(actions)
         return self.recv()
 
-    def send_step(self, actions: dict[int, int]) -> None:
+    def send_step(self, actions: dict[int, ActionPlan]) -> None:
         """The write half of `step`, for pipelining across workers."""
-        ordered = [int(actions[s]) for s in self.control if s in actions]
+        ordered = [
+            list(validate_action_plan(actions[s])) for s in self.control if s in actions
+        ]
         self.send({"cmd": "step", "actions": ordered})
 
     def close(self) -> None:

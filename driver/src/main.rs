@@ -81,15 +81,24 @@ enum Cmd {
         /// Ladder level to probe ("easy".."expert").
         #[arg(long, default_value = "medium")]
         level: String,
-        /// Raw skill-knob override 0-1000 (candidate --weights probes
-        /// only; locates points between the shipped levels).
+        /// Probe the scripted utility controller at this tier instead
+        /// ("scrapheap", "standard", "veteran", or "prime").
+        #[arg(long)]
+        scripted_tier: Option<String>,
+        /// Raw skill-conditioning override 0-1000 (candidate --weights
+        /// probes only). Omission uses the ladder's measured condition
+        /// for the selected personality strategy.
         #[arg(long)]
         skill: Option<u32>,
-        /// Explicit blunder rate per mille (candidate probes only;
-        /// 0 derives from skill — separates the two dials the skill
-        /// knob normally moves together).
-        #[arg(long, default_value_t = 0)]
-        blunder: u32,
+        /// Personality override 0-1000. Omission uses the same
+        /// seed-derived deal as a shipped match.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(0..=1000))]
+        aggression: Option<u32>,
+        /// Exact hesitation rate per mille (candidate probes only).
+        /// Supplying zero explicitly means no hesitation; omission uses
+        /// the named level's handicap.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(0..=1000))]
+        blunder: Option<u32>,
         /// Think cadence in ticks (candidate probes only; defaults to
         /// the probed level's own cadence so a candidate measures the
         /// profile it would actually ship at).
@@ -341,7 +350,7 @@ enum Cmd {
     /// Serve training episodes over stdio (newline-delimited JSON).
     Gym,
     /// Tournament a quantized policy artifact against the scripted
-    /// tiers (the promotion gate measures the shipped integer bot).
+    /// tiers and rush canary (the gate measures the shipped integer bot).
     NeuralCup {
         /// Exported weights JSON (tools/train/export.py).
         #[arg(long)]
@@ -349,20 +358,27 @@ enum Cmd {
         /// Seeds per matchup (each played from both seats).
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
         seeds: u64,
-        /// Decision cadence the network trained at.
-        #[arg(long, default_value_t = 16)]
-        cadence: u64,
+        /// Tick cap for each tournament game.
+        #[arg(long, default_value_t = 40_000, value_parser = clap::value_parser!(u64).range(1..))]
+        ticks: u64,
+        /// Raw decision-cadence override. Omission uses Expert's named
+        /// cadence while keeping the candidate on the ladder profile.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        cadence: Option<u64>,
         /// Scenario path, or "skirmish".
         #[arg(long, default_value = "skirmish")]
         scenario: String,
-        /// Blunder rate per mille (0 = derive from skill).
-        #[arg(long, default_value_t = 0)]
-        blunder: u32,
-        /// Skill knob 0-1000 (conditioning input + derived blunders).
-        #[arg(long, default_value_t = 1000)]
-        skill: u32,
-        /// Aggression knob 0-1000 (personality conditioning input).
-        #[arg(long, default_value_t = 500)]
+        /// Exact hesitation rate per mille. Supplying this, including
+        /// zero, selects a raw profile; omission uses Expert's handicap.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(0..=1000))]
+        blunder: Option<u32>,
+        /// Raw skill conditioning 0-1000. Supplying it selects a raw
+        /// profile; omission uses the measured strategy condition.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(0..=1000))]
+        skill: Option<u32>,
+        /// Aggression conditioning input. The default is the center of
+        /// the shipped combined-arms band.
+        #[arg(long, default_value_t = 550)]
         aggression: u32,
         /// Override both duel rosters in west/east order (ff|fc|cf|cc).
         /// Omission preserves the scenario's authored factions.
@@ -425,6 +441,16 @@ fn parse_level(level: &str) -> Result<oxide_sim::bot::Level> {
         "hard" => oxide_sim::bot::Level::Hard,
         "expert" => oxide_sim::bot::Level::Expert,
         other => anyhow::bail!("unknown level '{other}'"),
+    })
+}
+
+fn parse_difficulty(tier: &str) -> Result<oxide_sim::bot::Difficulty> {
+    Ok(match tier {
+        "scrapheap" => oxide_sim::bot::Difficulty::Scrapheap,
+        "standard" => oxide_sim::bot::Difficulty::Standard,
+        "veteran" => oxide_sim::bot::Difficulty::Veteran,
+        "prime" => oxide_sim::bot::Difficulty::Prime,
+        other => anyhow::bail!("unknown scripted tier '{other}'"),
     })
 }
 
@@ -624,7 +650,9 @@ fn main() -> Result<()> {
         Cmd::BalanceProbe {
             dir,
             level,
+            scripted_tier,
             skill,
+            aggression,
             blunder,
             cadence,
             seeds,
@@ -637,7 +665,9 @@ fn main() -> Result<()> {
                 &dir,
                 level,
                 &oxide_driver::balance::ProbeDials {
+                    scripted: scripted_tier.as_deref().map(parse_difficulty).transpose()?,
                     skill,
+                    aggression,
                     blunder,
                     cadence,
                 },
@@ -848,6 +878,7 @@ fn main() -> Result<()> {
         Cmd::NeuralCup {
             weights,
             seeds,
+            ticks,
             cadence,
             scenario,
             blunder,
@@ -860,6 +891,7 @@ fn main() -> Result<()> {
             &scenario,
             oxide_driver::gym::NeuralCupProfile {
                 cadence,
+                max_ticks: ticks,
                 blunder,
                 skill,
                 aggression,

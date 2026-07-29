@@ -15,6 +15,8 @@ fn faction_cup_reports_the_pair_and_each_physical_seat() {
             weights.to_str().expect("UTF-8 fixture path"),
             "--seeds",
             "1",
+            "--ticks",
+            "1",
             "--factions",
             "cf",
         ])
@@ -34,13 +36,53 @@ fn faction_cup_reports_the_pair_and_each_physical_seat() {
         .lines()
         .map(|line| serde_json::from_str(line).expect("cup JSON row"))
         .collect();
-    assert_eq!(rows.len(), 4);
+    assert_eq!(rows.len(), 5);
+    let opponents: Vec<_> = rows
+        .iter()
+        .map(|row| row["opponent"].as_str().expect("opponent name"))
+        .collect();
+    assert_eq!(
+        opponents,
+        ["Scrapheap", "Standard", "Veteran", "Prime", "Rusher"]
+    );
     for row in rows {
+        assert_eq!(row["profile"], "ladder");
         assert_eq!(row["factions"], "cf");
         assert_eq!(row["factions_source"], "override");
+        assert_eq!(row["max_ticks"], 1);
         assert_eq!(row["by_seat"][0]["seat"], 0);
         assert_eq!(row["by_seat"][0]["faction"], "cupric");
         assert_eq!(row["by_seat"][1]["seat"], 1);
         assert_eq!(row["by_seat"][1]["faction"], "ferrous");
     }
+
+    let raw = Command::new(env!("CARGO_BIN_EXE_oxide-driver"))
+        .args([
+            "neural-cup",
+            "--weights",
+            weights.to_str().expect("UTF-8 fixture path"),
+            "--seeds",
+            "1",
+            "--ticks",
+            "1",
+            "--blunder",
+            "0",
+        ])
+        .output()
+        .expect("run raw-profile neural cup");
+    assert!(
+        raw.status.success(),
+        "{}",
+        String::from_utf8_lossy(&raw.stderr)
+    );
+    let rows: Vec<Value> = String::from_utf8(raw.stdout)
+        .expect("UTF-8 stdout")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("cup JSON row"))
+        .collect();
+    assert_eq!(rows.len(), 5);
+    assert!(
+        rows.iter().all(|row| row["profile"] == "raw"),
+        "an explicitly supplied zero is an exact raw override"
+    );
 }

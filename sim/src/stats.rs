@@ -807,14 +807,28 @@ pub const RADAR_DETECT_RADIUS: i32 = 16;
 pub const SHELL_SPEED: Fx = Fx::lit("0.30");
 
 /// Ticks per scrap credited by each built Reclaimer. At this rate the
-/// building repays its own price in roughly four minutes — insurance and
+/// building repays its own price in roughly three minutes — insurance and
 /// a stalemate valve, never an opening.
-pub const RECLAIMER_PERIOD: u64 = 30;
+pub const RECLAIMER_PERIOD: u64 = 24;
 
 /// Ticks per emergency scrap credited by a surviving Foundry after its
 /// owner's last Harvester is gone. The credit stops at the price of a new
 /// Harvester and never runs while one is already training.
 pub const FOUNDRY_RECOVERY_PERIOD: u64 = 10;
+
+/// Ticks per baseline scrap credited by a living player's Foundry.
+///
+/// This is the economy's last-resort clock: exhausted nodes and a destroyed
+/// Reclaimer may make progress slow, but can never make the match
+/// unrecoverable. Credit is per player rather than per Foundry, so extra
+/// bases add resilience without multiplying the free income.
+pub const FOUNDRY_BASELINE_PERIOD: u64 = 60;
+
+/// The baseline Foundry income begins only after the normal opening and
+/// midgame economy have had time to matter. Reclaimers remain the efficient
+/// insurance investment; this late floor exists only to make a long match
+/// recoverable.
+pub const FOUNDRY_BASELINE_START_TICK: u64 = 12_000;
 
 /// Per-mille of a building's cost billed per hp welded (against max_hp).
 /// The three economy verbs price strictly build > repair > salvage:

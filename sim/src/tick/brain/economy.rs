@@ -330,6 +330,7 @@ pub(super) fn repair_unit(
                 step,
                 player: me,
                 paid: due as u32,
+                source: crate::event::UnitRepairSource::FieldWelder { unit: id },
             });
         }
     } else {

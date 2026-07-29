@@ -17,6 +17,7 @@ import json
 import numpy as np
 import torch
 
+from lineage import export_lineage
 from models import Mlp, load_policy
 from oxide_gym import ACTIONS, CONDITION_DIMS, FEATURES, GYM_VERSION, SCALES
 
@@ -57,8 +58,8 @@ def build_artifact(policy: Mlp, blob: dict) -> dict:
     lut = (np.tanh(xs) * (1 << Q)).round().astype(int).tolist()
 
     # feature -> Q12 normalization: (feature * recip) >> Q with
-    # recip = round(2^(2Q) / scale). Conditioning knobs (skill,
-    # aggression) ride at the end with scale 1000, matching
+    # recip = round(2^(2Q) / scale). All seven conditioning knobs ride
+    # at the end with scale 1000, matching
     # oxide_gym.with_condition.
     recips = [round((1 << (2 * Q)) / float(s)) for s in SCALES]
     recips += [round((1 << (2 * Q)) / 1000.0)] * CONDITION_DIMS
@@ -88,7 +89,7 @@ def build_artifact(policy: Mlp, blob: dict) -> dict:
         if peak > MAX_COEFF:
             raise SystemExit(f"{name} peaks at {peak}, over the +/-{MAX_COEFF} ceiling")
 
-    return {
+    artifact = {
         "gym_version": GYM_VERSION,
         "arch": blob.get("arch"),
         "update": blob.get("update"),
@@ -101,6 +102,10 @@ def build_artifact(policy: Mlp, blob: dict) -> dict:
         "layers": layers,
         "head": head,
     }
+    lineage = export_lineage(blob)
+    if lineage is not None:
+        artifact["lineage"] = lineage
+    return artifact
 
 
 def export(ckpt: str, out: str) -> tuple[int, str | None]:

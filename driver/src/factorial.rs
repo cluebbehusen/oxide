@@ -652,15 +652,13 @@ fn play(
     let mut bots: Vec<NeuralBot> = (0u8..2)
         .map(|seat| {
             let stream_seat = if crossed { 1 - seat } else { seat };
-            NeuralBot::with_profile_stream(
+            NeuralBot::ladder_with_net_at_stream(
                 PlayerId(seat),
-                level.cadence(),
-                QuantNet::ladder().clone(),
-                level.skill(),
-                aggression[usize::from(seat)],
-                sc.players[usize::from(seat)].faction,
-                0,
                 seed,
+                level,
+                Some(aggression[usize::from(seat)]),
+                sc.players[usize::from(seat)].faction,
+                QuantNet::ladder().clone(),
                 DECISION_STREAM_BASE + u64::from(stream_seat),
             )
         })
@@ -884,34 +882,56 @@ mod tests {
         }
     }
 
-    /// The all-baseline cell must BE the shipped game, or every reading
-    /// against it is a reading against a different world.
+    /// The all-baseline cell must BE the shipped game for both named
+    /// strategy conditions. Medium's historical raw skill happens to
+    /// equal the industry condition, so a single industry-only seed
+    /// would not catch a diagnostic that bypassed the named wrapper.
     #[test]
     fn the_baseline_cell_reproduces_the_shipped_bot_path() {
-        let mut sc = crate::runner::load_scenario("skirmish").unwrap();
-        sc.seed = 7_000;
-        for player in &mut sc.players {
-            player.bot = true;
-            player.bot_config = Some(BotConfig {
-                level: Level::Medium,
-                aggression: None,
-            });
+        let base = crate::runner::load_scenario("skirmish").unwrap();
+        let industry_seed = (0..10_000)
+            .find(|&seed| {
+                [0u8, 1]
+                    .map(|seat| deal_aggression(seed, PlayerId(seat)))
+                    .into_iter()
+                    .all(|aggression| (250..=399).contains(&aggression))
+            })
+            .expect("the deterministic deal reaches an all-industry pair");
+        let combined_seed = (0..10_000)
+            .find(|&seed| {
+                [0u8, 1]
+                    .map(|seat| deal_aggression(seed, PlayerId(seat)))
+                    .into_iter()
+                    .all(|aggression| (500..=600).contains(&aggression))
+            })
+            .expect("the deterministic deal reaches an all-combined pair");
+
+        for level in Level::LADDER {
+            for seed in [industry_seed, combined_seed] {
+                let mut sc = base.clone();
+                sc.seed = seed;
+                for player in &mut sc.players {
+                    player.bot = true;
+                    player.bot_config = Some(BotConfig {
+                        level,
+                        aggression: None,
+                    });
+                }
+                let mut state = sc.build().unwrap();
+                let mut bots = seat_bots(&sc);
+                for _ in 0..200 {
+                    crate::runner::step(&mut state, &mut bots, None);
+                }
+                let probed = play(&base, level, seed, [0; FACTOR_COUNT], 200).unwrap();
+                assert_eq!(
+                    probed.hash,
+                    state.hash(),
+                    "{level:?} at dealt personalities {:?}",
+                    probed.aggression
+                );
+                assert_eq!(probed.ticks, state.current_tick());
+            }
         }
-        let mut state = sc.build().unwrap();
-        let mut bots = seat_bots(&sc);
-        for _ in 0..200 {
-            crate::runner::step(&mut state, &mut bots, None);
-        }
-        let probed = play(
-            &crate::runner::load_scenario("skirmish").unwrap(),
-            Level::Medium,
-            7_000,
-            [0; FACTOR_COUNT],
-            200,
-        )
-        .unwrap();
-        assert_eq!(probed.hash, state.hash());
-        assert_eq!(probed.ticks, state.current_tick());
     }
 
     /// Every cell is played on every seed, every match lands in exactly

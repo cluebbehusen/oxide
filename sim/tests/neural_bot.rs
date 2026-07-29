@@ -12,6 +12,8 @@ use oxide_sim::{PlayerId, Scenario};
 /// masking are checkable by inspection.
 fn tiny_artifact() -> serde_json::Value {
     let features = oxide_sim::bot::FEATURE_COUNT;
+    let conditioning = oxide_sim::bot::CONDITIONING_COUNT;
+    let inputs = features + conditioning;
     let actions = oxide_sim::bot::ACTION_COUNT;
     // recips = 2^24 / 1 (scale 1 per feature); trunk: one 4-wide layer
     // reading features 0..4; head maps those 4 to the first 4 actions.
@@ -20,7 +22,7 @@ fn tiny_artifact() -> serde_json::Value {
     let lut: Vec<i32> = (0..=512).map(|i| (i - 256) * 16).collect();
     let trunk_w: Vec<Vec<i32>> = (0..4)
         .map(|o| {
-            let mut row = vec![0; features];
+            let mut row = vec![0; inputs];
             row[o] = 4096;
             row
         })
@@ -38,8 +40,9 @@ fn tiny_artifact() -> serde_json::Value {
         "gym_version": oxide_sim::bot::GYM_VERSION,
         "q_bits": 12,
         "features": features,
+        "conditioning": conditioning,
         "actions": actions,
-        "recips": vec![1 << 24; features],
+        "recips": vec![1 << 24; inputs],
         "tanh_lut": lut,
         "layers": [{"w": trunk_w, "b": vec![0; 4]}],
         "head": {"w": head_w, "b": vec![0; actions]},
@@ -52,7 +55,7 @@ fn tiny_net() -> QuantNet {
 
 #[test]
 fn masked_argmax_is_exact_and_deterministic() {
-    use oxide_sim::bot::{ACTION_COUNT, Action, Decision, FEATURE_COUNT};
+    use oxide_sim::bot::{ACTION_COUNT, Action, ActionPlan, Decision, FEATURE_COUNT};
     let net = tiny_net();
     // Feature 2 is the largest → logit 2 wins where legal.
     let mut features = [0i64; FEATURE_COUNT];
@@ -61,17 +64,31 @@ fn masked_argmax_is_exact_and_deterministic() {
     features[2] = 3;
     let mut mask = [true; ACTION_COUNT];
     let d = Decision { features, mask };
-    assert_eq!(net.act(&d, &[]), Action::TrainSentinel); // index 2
+    assert_eq!(
+        net.act(&d, &[0; oxide_sim::bot::CONDITIONING_COUNT]),
+        ActionPlan {
+            production: Action::TrainSentinel,
+            construction: Action::NoConstruction,
+            operation: Action::NoOperation,
+        }
+    ); // production index 2
     // Masking index 2 falls back to the next best, index 1.
     mask[2] = false;
     let d = Decision { features, mask };
-    assert_eq!(net.act(&d, &[]), Action::TrainHarvester);
-    // Nothing legal → Idle, not a panic.
+    assert_eq!(
+        net.act(&d, &[0; oxide_sim::bot::CONDITIONING_COUNT])
+            .production,
+        Action::TrainHarvester
+    );
+    // Nothing legal → the all-head no-op plan, not a panic.
     let d = Decision {
         features,
         mask: [false; ACTION_COUNT],
     };
-    assert_eq!(net.act(&d, &[]), Action::Idle);
+    assert_eq!(
+        net.act(&d, &[0; oxide_sim::bot::CONDITIONING_COUNT]),
+        ActionPlan::default()
+    );
 }
 
 #[test]
@@ -79,11 +96,13 @@ fn shape_and_version_drift_is_refused() {
     let mut bad = serde_json::json!({
         "gym_version": 999, "q_bits": 12,
         "features": oxide_sim::bot::FEATURE_COUNT,
+        "conditioning": oxide_sim::bot::CONDITIONING_COUNT,
         "actions": oxide_sim::bot::ACTION_COUNT,
-        "recips": vec![1; oxide_sim::bot::FEATURE_COUNT], "tanh_lut": vec![0; 513],
+        "recips": vec![1; oxide_sim::bot::FEATURE_COUNT + oxide_sim::bot::CONDITIONING_COUNT],
+        "tanh_lut": vec![0; 513],
         "layers": [],
         "head": {
-            "w": vec![vec![0; oxide_sim::bot::FEATURE_COUNT]; oxide_sim::bot::ACTION_COUNT],
+            "w": vec![vec![0; oxide_sim::bot::FEATURE_COUNT + oxide_sim::bot::CONDITIONING_COUNT]; oxide_sim::bot::ACTION_COUNT],
             "b": vec![0; oxide_sim::bot::ACTION_COUNT],
         },
     });
@@ -99,6 +118,7 @@ fn shape_and_version_drift_is_refused() {
 #[test]
 fn numeric_drift_is_refused_and_the_offending_tensor_is_named() {
     let features = oxide_sim::bot::FEATURE_COUNT;
+    let inputs = features + oxide_sim::bot::CONDITIONING_COUNT;
     let actions = oxide_sim::bot::ACTION_COUNT;
     let mut cases: Vec<(&str, serde_json::Value)> = Vec::new();
 
@@ -148,7 +168,7 @@ fn numeric_drift_is_refused_and_the_offending_tensor_is_named() {
     // end to end, so only the ceiling refuses it.
     let wide = 4097;
     let mut art = tiny_artifact();
-    art["layers"] = serde_json::json!([{"w": vec![vec![0; features]; wide], "b": vec![0; wide]}]);
+    art["layers"] = serde_json::json!([{"w": vec![vec![0; inputs]; wide], "b": vec![0; wide]}]);
     art["head"] = serde_json::json!({"w": vec![vec![0; wide]; actions], "b": vec![0; actions]});
     cases.push(("layer 0 is 4097 wide", art));
 
@@ -173,12 +193,13 @@ fn numeric_drift_is_refused_and_the_offending_tensor_is_named() {
 #[test]
 fn boundary_values_are_accepted() {
     let features = oxide_sim::bot::FEATURE_COUNT;
+    let conditioning = oxide_sim::bot::CONDITIONING_COUNT;
     let actions = oxide_sim::bot::ACTION_COUNT;
     let lut: Vec<i32> = (0..=512)
         .map(|i| if i % 2 == 0 { 1 << 13 } else { -(1 << 13) })
         .collect();
     let mut layers = vec![serde_json::json!({
-        "w": vec![vec![1 << 20; features]; 4], "b": vec![-(1 << 20); 4],
+        "w": vec![vec![1 << 20; features + conditioning]; 4], "b": vec![-(1 << 20); 4],
     })];
     layers.resize(
         16,
@@ -188,8 +209,9 @@ fn boundary_values_are_accepted() {
         "gym_version": oxide_sim::bot::GYM_VERSION,
         "q_bits": 12,
         "features": features,
+        "conditioning": conditioning,
         "actions": actions,
-        "recips": vec![1i64 << 26; features],
+        "recips": vec![1i64 << 26; features + conditioning],
         "tanh_lut": lut,
         "layers": layers,
         "head": {"w": vec![vec![1 << 20; 4]; actions], "b": vec![1 << 20; actions]},
@@ -205,7 +227,7 @@ fn boundary_values_are_accepted() {
 fn a_maxed_out_artifact_infers_on_saturated_features_without_overflow() {
     let features = oxide_sim::bot::FEATURE_COUNT;
     let actions = oxide_sim::bot::ACTION_COUNT;
-    let conditioning = 3;
+    let conditioning = oxide_sim::bot::CONDITIONING_COUNT;
     let width = 4096; // the accepted ceiling
     let coeff = 1 << 20;
     let row = |n: usize| -> Vec<i32> {
@@ -292,6 +314,54 @@ fn the_digest_follows_coefficients_not_formatting() {
     nudged["layers"][0]["w"][0][0] = 4097.into();
     let nudged = QuantNet::from_json(&nudged.to_string()).unwrap().digest();
     assert_ne!(base, nudged, "one coefficient must move the digest");
+}
+
+#[test]
+fn lineage_is_verified_but_does_not_enter_the_gameplay_digest() {
+    let legacy = tiny_artifact();
+    let base = QuantNet::from_json(&legacy.to_string()).unwrap().digest();
+
+    // Generated by tools/train/lineage.py. The edge values pin the
+    // cross-language canonical form: ensure_ascii strings, surrogate
+    // pairs, signed zero, padded exponents, and both notation boundaries.
+    let python_lineage: serde_json::Value = serde_json::from_str(
+        r#"{"hyperparameters":{"below":1e-06,"label":"\u00e9\u007f","lower_fixed":0.0001,"lower_scientific":1e-05,"negative_zero":-0.0,"rounding_edge":9.999999999999999e-05,"upper_fixed":1000000000000000.0,"upper_scientific":1e+16},"inputs":{"source":{"content_sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},"lineage_id":"sha256:d395b2633e76e8b5b38977b912cc396abb410c3a51802599afa0dd0a00e22d6b","phase":"revival-\ud83d\ude00","phase_start_update":0,"schema":1}"#,
+    )
+    .unwrap();
+    let mut attributed = legacy.clone();
+    attributed["lineage"] = python_lineage;
+    assert_eq!(
+        base,
+        QuantNet::from_json(&attributed.to_string())
+            .unwrap()
+            .digest(),
+        "Python and Rust must agree on lineage canonicalization"
+    );
+
+    let shipped: serde_json::Value =
+        serde_json::from_str(include_str!("../src/bot/ladder_weights.json")).unwrap();
+    let lineage = shipped["lineage"].clone();
+    assert!(
+        lineage.is_object(),
+        "the shipped artifact carries provenance"
+    );
+
+    let mut attributed = legacy;
+    attributed["lineage"] = lineage;
+    let attributed_digest = QuantNet::from_json(&attributed.to_string())
+        .unwrap()
+        .digest();
+    assert_eq!(
+        base, attributed_digest,
+        "provenance must not change gameplay identity"
+    );
+
+    attributed["lineage"]["phase"] = "forged-history".into();
+    let error = QuantNet::from_json(&attributed.to_string()).unwrap_err();
+    assert!(
+        error.contains("lineage_id does not match"),
+        "tampered provenance was refused for the wrong reason: {error}"
+    );
 }
 
 /// The full pipeline: exported weights drive a deterministic match.

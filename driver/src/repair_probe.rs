@@ -363,14 +363,14 @@ mod tests {
             format!("{:016x}", QuantNet::ladder().digest())
         );
         assert_eq!(report.cases.len(), 8);
-        assert_eq!(report.totals.repair_unit_commands, 0);
-        assert_eq!(report.totals.repair_bay_build_attempts, 8);
+        assert_eq!(report.totals.repair_unit_commands, 96);
+        assert_eq!(report.totals.repair_bay_build_attempts, 0);
         assert_eq!(report.totals.repair_bay_completions, 0);
-        assert!(!report.totals.actual_healing);
-        assert_eq!(report.totals.cases_with_healing, 0);
-        assert_eq!(
-            report.totals.initial_damaged_purchase_value,
+        assert!(report.totals.actual_healing);
+        assert_eq!(report.totals.cases_with_healing, 8);
+        assert!(
             report.totals.final_damaged_purchase_value
+                < report.totals.initial_damaged_purchase_value
         );
 
         let json = serde_json::to_value(report).unwrap();

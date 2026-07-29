@@ -27,10 +27,14 @@ pub mod utility;
 pub use brain::Brain;
 pub use classic::Bot;
 pub use executive::{Army, ArmyId, ArmyState, Doctrine, Executive, Intent, LoweringRules};
-pub use gym::{ACTION_COUNT, Action, Decision, FEATURE_COUNT, FEATURE_NAMES, GYM_VERSION, GymBot};
+pub use gym::{
+    ACTION_COUNT, ACTION_HEADS, Action, ActionPlan, CONSTRUCTION_ACTIONS,
+    CONSTRUCTION_PLAN_TIMEOUT_TICKS, Decision, FEATURE_COUNT, FEATURE_NAMES, GYM_VERSION, GymBot,
+    OPERATION_ACTIONS, PRODUCTION_ACTIONS,
+};
 pub use neural::{
-    DEALT_AGGRESSION_MAX, DEALT_AGGRESSION_MIN, DECISION_STREAM_BASE, LADDER_CADENCE, Level,
-    NeuralBot, QuantNet, deal_aggression,
+    CONDITIONING_COUNT, DEALT_AGGRESSION_MAX, DEALT_AGGRESSION_MIN, DECISION_STREAM_BASE,
+    LADDER_CADENCE, Level, NeuralBot, QuantNet, deal_aggression,
 };
 pub use observation::{BuildingObs, Observation, UnitObs};
 pub use orient::Orientation;

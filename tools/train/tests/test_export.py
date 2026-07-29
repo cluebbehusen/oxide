@@ -15,7 +15,8 @@ import numpy as np
 import torch
 
 import export
-from models import make_policy, save_policy
+from lineage import build_lineage, checkpoint_metadata
+from models import factorized_greedy, load_policy, make_policy, save_policy
 from oxide_gym import (
     ACTIONS,
     CONDITION_DIMS,
@@ -67,6 +68,12 @@ class TestMain:
     ) -> None:
         torch.manual_seed(123)
         policy = make_policy("mlp")
+        with torch.no_grad():
+            # Give each head a stable winner so the parity check covers
+            # factorized selection as well as raw logit fidelity.
+            policy.pi.bias[8] += 2.0
+            policy.pi.bias[23] += 2.5
+            policy.pi.bias[20] += 3.0
         policy.eval()
         ckpt = tmp_path / "net.pt"
         save_policy(policy, "mlp", ckpt)
@@ -79,6 +86,10 @@ class TestMain:
         )
         export.main()
         art = json.loads(out.read_text())
+        assert art["features"] == 81
+        assert art["conditioning"] == 7
+        assert art["actions"] == 26
+        assert len(art["head"]["w"]) == ACTIONS
 
         rng = np.random.default_rng(0)
         max_err = 0.0
@@ -98,9 +109,55 @@ class TestMain:
 
             int_logits = np.asarray(_int_logits(art, features, knobs)) / (1 << Q)
             max_err = max(max_err, float(np.max(np.abs(int_logits - float_logits))))
+            float_plan = factorized_greedy(logits_f)[0]
+            int_plan = factorized_greedy(
+                torch.as_tensor(int_logits[None], dtype=torch.float32)
+            )[0]
+            assert torch.equal(int_plan, float_plan)
 
         # Q12 resolution is 2^-12 ~= 2.4e-4; two 128-wide tanh layers plus the
         # input requantization accumulate a few multiples of that per logit.
         # A gap this small is quantization noise; anything larger is a broken
         # forward (wrong shift, transposed weights, mis-scaled input).
         assert max_err < 5e-3
+
+    def test_export_propagates_lineage_without_changing_semantic_weights(
+        self, tmp_path: Path
+    ) -> None:
+        torch.manual_seed(7)
+        policy = make_policy("mlp")
+        lineage = build_lineage(
+            phase="league",
+            phase_start_update=75,
+            hyperparameters={"updates": 30, "lr": 1e-4},
+        )
+        plain_ckpt = tmp_path / "plain.pt"
+        save_policy(
+            policy,
+            "mlp",
+            plain_ckpt,
+            {"gym_version": 7, "update": 105},
+        )
+        traced_ckpt = tmp_path / "traced.pt"
+        save_policy(
+            policy,
+            "mlp",
+            traced_ckpt,
+            checkpoint_metadata(
+                lineage,
+                {"gym_version": 7, "update": 105},
+            ),
+        )
+        _reloaded, blob = load_policy(str(traced_ckpt))
+        assert blob["lineage"] == lineage
+
+        plain_out = tmp_path / "plain.json"
+        traced_out = tmp_path / "traced.json"
+        export.export(str(plain_ckpt), str(plain_out))
+        export.export(str(traced_ckpt), str(traced_out))
+        plain = json.loads(plain_out.read_text())
+        traced = json.loads(traced_out.read_text())
+        assert traced["lineage"] == lineage
+        assert {
+            key: value for key, value in traced.items() if key != "lineage"
+        } == plain

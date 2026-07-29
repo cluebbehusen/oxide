@@ -13,12 +13,12 @@ raising their bias from -8 to 0, after the exact round-trip has passed.
 
 Usage (from tools/train/):
     uv run dequantize.py \
-      --weights ../../sim/src/bot/ladder_weights.json \
-      --out runs/incumbent-v6-exact.pt
+      --weights runs/candidate-v7.json \
+      --out runs/incumbent-v7-exact.pt
     uv run dequantize.py \
-      --weights ../../sim/src/bot/ladder_weights.json \
-      --out runs/incumbent-v6-trainable.pt \
-      --unfloor-actions 22,23
+      --weights runs/candidate-v7.json \
+      --out runs/incumbent-v7-trainable.pt \
+      --unfloor-actions <new-action-indices>
 """
 
 import argparse
@@ -29,6 +29,7 @@ from typing import cast
 import torch
 
 from export import Q, build_artifact
+from lineage import build_lineage, checkpoint_metadata, input_identity
 from models import Mlp, make_policy, save_policy
 from oxide_gym import ACTIONS, CONDITION_DIMS, FEATURES, GYM_VERSION
 
@@ -133,9 +134,12 @@ def recover_actor(artifact: dict) -> tuple[Mlp, dict]:
 
     blob = {
         "arch": arch,
+        "critic_ready": False,
         "gym_version": GYM_VERSION,
         "update": artifact.get("update"),
     }
+    if "lineage" in artifact:
+        blob["lineage"] = artifact["lineage"]
     roundtrip = build_artifact(policy, blob)
     source = _semantic_view(artifact)
     recovered = _semantic_view(roundtrip)
@@ -178,17 +182,27 @@ def dequantize(
     if actions:
         unfloor_actions(policy, artifact, actions)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    save_policy(
-        policy,
-        blob["arch"],
-        out_path,
-        {
-            "gym_version": blob["gym_version"],
-            "update": blob["update"],
-            "q12_recovered": True,
-            "unfloored_actions": list(actions),
-        },
-    )
+    metadata = {
+        "critic_ready": False,
+        "gym_version": blob["gym_version"],
+        "update": blob["update"],
+        "q12_recovered": True,
+        "unfloored_actions": list(actions),
+    }
+    if actions:
+        lineage = build_lineage(
+            phase="q12-unfloor",
+            phase_start_update=int(blob.get("update", 0) or 0),
+            hyperparameters={
+                "gym_version": GYM_VERSION,
+                "unfloored_actions": list(actions),
+            },
+            inputs={"source": input_identity(weights_path, blob)},
+        )
+        metadata = checkpoint_metadata(lineage, metadata)
+    elif "lineage" in blob:
+        metadata["lineage"] = blob["lineage"]
+    save_policy(policy, blob["arch"], out_path, metadata)
 
 
 def main() -> None:

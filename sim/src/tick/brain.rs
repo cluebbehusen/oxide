@@ -60,6 +60,9 @@ struct PendingUnitHeal {
     /// the WHOLE step lands past the hp ceiling, exactly like a
     /// building weld's coin.
     paid: u32,
+    /// The exact producer, carried through resolution for output-only
+    /// accepted-hp telemetry.
+    source: crate::event::UnitRepairSource,
 }
 
 /// A buffered hp drain — salvage work — resolved with the gains as one
@@ -308,7 +311,7 @@ fn resolve_hits(
             }
         }
     }
-    resolve_unit_heals(state, heals);
+    resolve_unit_heals(state, heals, events);
     for hit in &hits {
         if let Target::Unit(uid) = hit.victim
             && target_standing(state, hit.attacker)
@@ -329,7 +332,7 @@ fn resolve_hits(
 /// gets its prepaid coin back (the marginal welder's partially
 /// accepted step keeps its ceil-billed fraction); and per unit the
 /// gains net into one delta clamped once to max_hp.
-fn resolve_unit_heals(state: &mut State, heals: Vec<PendingUnitHeal>) {
+fn resolve_unit_heals(state: &mut State, heals: Vec<PendingUnitHeal>, events: &mut Vec<Event>) {
     let mut rooms: Vec<(UnitId, i64)> = Vec::new();
     for heal in &heals {
         let Some(u) = state.unit(heal.unit).filter(|u| u.hp > 0) else {
@@ -343,6 +346,7 @@ fn resolve_unit_heals(state: &mut State, heals: Vec<PendingUnitHeal>) {
                 rooms.len() - 1
             }
         };
+        let accepted = rooms[i].1.clamp(0, i64::from(heal.step)) as u32;
         if rooms[i].1 <= 0 {
             // Every gain consumes room; only the refund cares what was
             // paid — the same rule the building ledger learned when a
@@ -353,6 +357,14 @@ fn resolve_unit_heals(state: &mut State, heals: Vec<PendingUnitHeal>) {
             }
         } else {
             rooms[i].1 -= i64::from(heal.step);
+        }
+        if accepted > 0 {
+            events.push(Event::UnitRepaired {
+                unit: heal.unit,
+                player: heal.player,
+                source: heal.source,
+                amount: accepted,
+            });
         }
     }
     let mut sums: Vec<(UnitId, i64)> = Vec::new();
@@ -461,6 +473,7 @@ fn repair_bay_aura(state: &mut State, heals: &mut Vec<PendingUnitHeal>) {
                 step,
                 player: owner,
                 paid: due as u32,
+                source: crate::event::UnitRepairSource::RepairBay { building: bay },
             });
         }
     }

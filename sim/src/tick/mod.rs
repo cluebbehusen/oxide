@@ -52,25 +52,7 @@ use chassis::path::astar;
 /// its owner has neither a Harvester in the world nor one prepaid in a live
 /// production queue.
 fn harvester_recovery_needed(state: &State, player: crate::ids::PlayerId) -> bool {
-    !state.player(player).resigned
-        && state.buildings.iter().any(|b| {
-            b.player == player
-                && b.hp > 0
-                && b.built
-                && b.kind == crate::stats::BuildingKind::Foundry
-        })
-        && !state
-            .units
-            .iter()
-            .any(|u| u.player == player && u.hp > 0 && u.kind == crate::stats::UnitKind::Harvester)
-        && !state.buildings.iter().any(|b| {
-            b.player == player
-                && b.hp > 0
-                && b.built
-                && b.queue
-                    .iter()
-                    .any(|kind| *kind == crate::stats::UnitKind::Harvester)
-        })
+    state.harvester_recovery_needed(player)
 }
 
 impl State {
