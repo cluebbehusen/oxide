@@ -568,7 +568,11 @@ fn apply_build(
         // like a Move into fog. Affordability is judged at arrival
         // too: the bank when the ground is claimed is the bank that
         // matters.
-        if state.place_intent_refusal(player, kind, anchor).is_some() {
+        let replaced_units = if queue { &[][..] } else { crew.as_slice() };
+        if state
+            .place_intent_refusal_replacing(player, kind, anchor, replaced_units)
+            .is_some()
+        {
             return Err(RejectReason::BadSite);
         }
         let mut landed = 0;

@@ -230,19 +230,20 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::UnproducibleQueueEntry(_) => 25,
         E::BuildingOutsideEnvelope(_) => 26,
         E::IncoherentSalvageLedger(_) => 27,
-        E::ForeignShellOwner(_) => 28,
-        E::ShellOutsideEnvelope(_) => 29,
-        E::UnmintedShellShooter(_) => 30,
-        E::ForeignGhostOwner(_) => 31,
-        E::FriendlyGhost(_) => 32,
-        E::GhostOutsideEnvelope(_) => 33,
-        E::UnsortedGhosts(_) => 34,
-        E::ContactOutsideEnvelope(_) => 35,
-        E::UnsortedContacts(_) => 36,
+        E::LiveBuildingMarkedSalvaged(_) => 28,
+        E::ForeignShellOwner(_) => 29,
+        E::ShellOutsideEnvelope(_) => 30,
+        E::UnmintedShellShooter(_) => 31,
+        E::ForeignGhostOwner(_) => 32,
+        E::FriendlyGhost(_) => 33,
+        E::GhostOutsideEnvelope(_) => 34,
+        E::UnsortedGhosts(_) => 35,
+        E::ContactOutsideEnvelope(_) => 36,
+        E::UnsortedContacts(_) => 37,
     }
 }
 
-const ROWS: usize = 37;
+const ROWS: usize = 38;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -283,6 +284,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::UnproducibleQueueEntry(BuildingId(0)),
         E::BuildingOutsideEnvelope(BuildingId(0)),
         E::IncoherentSalvageLedger(BuildingId(0)),
+        E::LiveBuildingMarkedSalvaged(BuildingId(0)),
         E::ForeignShellOwner(0),
         E::ShellOutsideEnvelope(0),
         E::UnmintedShellShooter(0),
@@ -484,6 +486,11 @@ fn every_checklist_row_refuses_its_forgery() {
             "salvage credited against a building nothing stripped",
             |d| d["buildings"][0]["salvage_credited"] = json!(50),
             "building b0 carries an incoherent salvage ledger",
+        ),
+        (
+            "a live building marked as already salvaged",
+            |d| d["buildings"][0]["salvaged"] = json!(true),
+            "building b0 is still live but marked salvaged",
         ),
         (
             "a shell fired by a seat off the table",

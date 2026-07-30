@@ -1764,6 +1764,212 @@ fn a_deferred_build_founds_on_arrival() {
     assert!(!events.is_empty(), "the deferred site completes normally");
 }
 
+/// Reissuing a deferred claim with replacement semantics must be accepted:
+/// the selected founder's old claim is the program being replaced, not a
+/// competing reservation.
+#[test]
+fn reissuing_a_deferred_build_ignores_the_selected_founders_claim() {
+    use oxide_sim::stats::BuildingKind;
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 12, 2)])
+        .build()
+        .unwrap();
+    let builder = state.units()[0].id;
+    let spot = TilePos::new(12, 1);
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![builder],
+            goal: TilePos::new(2, 6),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| !s.can_see(PlayerId(0), spot));
+    assert!(state.vision(PlayerId(0)).explored(spot));
+
+    let deferred = |queue| Command::Build {
+        units: vec![builder],
+        kind: BuildingKind::Turret,
+        anchor: spot,
+        queue,
+        defer: true,
+    };
+    let first = state.tick(&[cmd(0, deferred(false))]);
+    assert!(
+        !first
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::CommandRejected { .. }))
+    );
+    let queued = state.tick(&[cmd(0, deferred(true))]);
+    assert!(queued.events.iter().any(|event| matches!(
+        event,
+        Event::CommandRejected {
+            reason: RejectReason::BadSite,
+            ..
+        }
+    )));
+    assert!(
+        state.unit(builder).unwrap().queue.is_empty(),
+        "a queued reissue preserves the current claim instead of duplicating it"
+    );
+
+    let second = state.tick(&[cmd(0, deferred(false))]);
+    assert!(
+        !second
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::CommandRejected { .. })),
+        "a replacement command must not collide with the claim it replaces"
+    );
+    assert_eq!(
+        state.unit(builder).unwrap().order,
+        Order::Found {
+            kind: BuildingKind::Turret,
+            anchor: spot,
+        }
+    );
+}
+
+/// Retargeting a replacement command may overlap the selected founder's old
+/// footprint because that old claim disappears when the new program lands.
+#[test]
+fn retargeting_a_deferred_build_ignores_the_replaced_footprint() {
+    use oxide_sim::stats::BuildingKind;
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 12, 2)])
+        .build()
+        .unwrap();
+    let builder = state.units()[0].id;
+    let old_spot = TilePos::new(12, 1);
+    let new_spot = TilePos::new(13, 1);
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![builder],
+            goal: TilePos::new(2, 6),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| {
+        !s.can_see(PlayerId(0), old_spot) && !s.can_see(PlayerId(0), new_spot)
+    });
+    assert!(state.vision(PlayerId(0)).explored(new_spot));
+
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Fabricator,
+            anchor: old_spot,
+            queue: false,
+            defer: true,
+        },
+    )]);
+    assert_eq!(
+        state.unit(builder).unwrap().order,
+        Order::Found {
+            kind: BuildingKind::Fabricator,
+            anchor: old_spot,
+        }
+    );
+    let report = state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Fabricator,
+            anchor: new_spot,
+            queue: false,
+            defer: true,
+        },
+    )]);
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::CommandRejected { .. })),
+        "the selected founder's overlapping old claim is being replaced"
+    );
+    assert_eq!(
+        state.unit(builder).unwrap().order,
+        Order::Found {
+            kind: BuildingKind::Fabricator,
+            anchor: new_spot,
+        }
+    );
+}
+
+/// Claims owned by harvesters outside the replacement selection remain real
+/// reservations and must continue to protect their footprints.
+#[test]
+fn a_deferred_build_respects_an_unselected_founders_claim() {
+    use oxide_sim::stats::BuildingKind;
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 12, 2),
+        unit(0, UnitKind::Harvester, 13, 2),
+    ])
+    .build()
+    .unwrap();
+    let first = state.units()[0].id;
+    let second = state.units()[1].id;
+    let old_spot = TilePos::new(12, 1);
+    let overlapping_spot = TilePos::new(13, 1);
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![first, second],
+            goal: TilePos::new(2, 6),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |s, _| {
+        !s.can_see(PlayerId(0), old_spot) && !s.can_see(PlayerId(0), overlapping_spot)
+    });
+
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![first],
+            kind: BuildingKind::Fabricator,
+            anchor: old_spot,
+            queue: false,
+            defer: true,
+        },
+    )]);
+    assert_eq!(
+        state.unit(first).unwrap().order,
+        Order::Found {
+            kind: BuildingKind::Fabricator,
+            anchor: old_spot,
+        }
+    );
+    let report = state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![second],
+            kind: BuildingKind::Fabricator,
+            anchor: overlapping_spot,
+            queue: false,
+            defer: true,
+        },
+    )]);
+    assert!(report.events.iter().any(|event| matches!(
+        event,
+        Event::CommandRejected {
+            reason: RejectReason::BadSite,
+            ..
+        }
+    )));
+    assert!(
+        !matches!(
+            state.unit(second).unwrap().order,
+            Order::Found {
+                kind: BuildingKind::Fabricator,
+                anchor,
+            } if anchor == overlapping_spot
+        ),
+        "an unselected founder's claim must not be replaced"
+    );
+}
+
 /// Ground honestly taken while the founder walked: the arrival re-check
 /// discovers the blocker with the founder's own eyes, drops the program
 /// with the fog-safe stall, and never charges a coin.

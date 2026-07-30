@@ -537,7 +537,8 @@ impl State {
     ///   [`crate::stats::ORDER_QUEUE_CAP`], every coordinate inside the
     ///   envelope, every entity named by an order actually minted.
     /// - Buildings: the same, plus a queue this kind can produce for this
-    ///   seat's faction and a coherent salvage ledger.
+    ///   seat's faction, a coherent salvage ledger, and no live salvage
+    ///   marker.
     /// - Shells: coordinates inside the envelope, shooter minted.
     /// - Vision: ghost owners in the table and hostile to the viewer,
     ///   ghosts and contacts in canonical order, all of it inside the
@@ -702,6 +703,9 @@ impl State {
             }
             if !salvage_ledger_coherent(b) {
                 return Err(E::IncoherentSalvageLedger(b.id));
+            }
+            if b.salvaged {
+                return Err(E::LiveBuildingMarkedSalvaged(b.id));
             }
         }
 
@@ -1038,6 +1042,20 @@ impl State {
         kind: BuildingKind,
         anchor: TilePos,
     ) -> Option<PlaceRefusal> {
+        self.place_intent_refusal_replacing(player, kind, anchor, &[])
+    }
+
+    /// The intent verdict for a non-queued build that replaces the programs
+    /// of `units`. Claims belonging to live own harvesters in that selection
+    /// leave with those programs and therefore do not reserve ground against
+    /// the replacement. Claims from every other unit remain blockers.
+    pub fn place_intent_refusal_replacing(
+        &self,
+        player: PlayerId,
+        kind: BuildingKind,
+        anchor: TilePos,
+        units: &[UnitId],
+    ) -> Option<PlaceRefusal> {
         if kind.stats().construction.is_none() {
             return Some(PlaceRefusal::NotConstructible);
         }
@@ -1085,6 +1103,7 @@ impl State {
         let claimed = self.units.iter().any(|u| {
             u.player == player
                 && u.hp > 0
+                && !(u.kind.stats().harvest.is_some() && units.contains(&u.id))
                 && std::iter::once(&u.order).chain(u.queue.iter()).any(|o| {
                     matches!(o, Order::Found { kind: k, anchor: a }
                     if (0..h).any(|dy| (0..w).any(|dx| {
@@ -1482,6 +1501,10 @@ pub enum StateIntegrityError {
     /// stripped from it.
     #[error("building {0} carries an incoherent salvage ledger")]
     IncoherentSalvageLedger(BuildingId),
+    /// A live building carries the transient marker cleanup uses to
+    /// distinguish a completed salvage from combat destruction.
+    #[error("building {0} is still live but marked salvaged")]
+    LiveBuildingMarkedSalvaged(BuildingId),
     /// A shell in flight is owned by a player outside the table.
     #[error("shell {0} is owned by a player outside the table")]
     ForeignShellOwner(usize),

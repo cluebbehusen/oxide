@@ -5,21 +5,19 @@
 use super::*;
 
 /// The armed building follows the cursor as a translucent footprint —
-/// the tint and the command share `State::place_intent_refusal`, so
-/// what looks legal is legal. Three states: green founds this instant,
-/// amber founds on arrival (part of the footprint is remembered ground,
-/// judged from memory — never live state, so the tint can't be a
-/// hidden-enemy detector), red is refused.
+/// the tint and the command share the shell's queue-aware placement
+/// verdict, so what looks legal is legal. Three states: green founds
+/// this instant, amber founds on arrival (part of the footprint is
+/// remembered ground, judged from memory — never live state, so the
+/// tint can't be a hidden-enemy detector), red is refused.
 pub(crate) fn draw_placement_ghost(game: &Game, sprites: &Sprites, input: &InputState) {
     let Some(kind) = input.placing else { return };
     let world = game.camera.to_world(input.mouse);
     let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     let zoom = game.camera.zoom;
     let (w, h) = kind.stats().size;
-    let ok = game
-        .state
-        .place_intent_refusal(game.human, kind, anchor)
-        .is_none();
+    let queue = input.placing_stroke.is_some() || input.resolver.shift_held();
+    let ok = crate::input::placement_refusal(game, kind, anchor, queue).is_none();
     let screen = game
         .camera
         .to_screen(vec2(anchor.x as f32, anchor.y as f32));

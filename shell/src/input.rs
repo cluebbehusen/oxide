@@ -169,6 +169,29 @@ pub(crate) fn build_defer_needed(
     (0..h).any(|dy| (0..w).any(|dx| !game.state.vision(game.human).visible(anchor.offset(dx, dy))))
 }
 
+/// Unit programs a non-queued build will replace. Queued builds preserve
+/// every live claim because they append behind the current program.
+fn replaced_build_units(game: &Game, queue: bool) -> &[UnitId] {
+    if queue { &[] } else { &game.selection.units }
+}
+
+/// The placement verdict matching the command this shell will stage.
+/// Replacement clicks may reuse claims their selected harvesters abandon;
+/// Shift clicks and drag stamps remain conservative.
+pub(crate) fn placement_refusal(
+    game: &Game,
+    kind: oxide_sim::BuildingKind,
+    anchor: TilePos,
+    queue: bool,
+) -> Option<oxide_sim::PlaceRefusal> {
+    game.state.place_intent_refusal_replacing(
+        game.human,
+        kind,
+        anchor,
+        replaced_build_units(game, queue),
+    )
+}
+
 /// Scrap the staged-but-undrained Build commands will actually charge
 /// when the tick takes them — summed per command, never count-times-
 /// current-kind: a paused shell accumulates strokes of DIFFERENT
@@ -177,8 +200,9 @@ pub(crate) fn build_defer_needed(
 /// (live [`oxide_sim::Order::Found`] programs, deduplicated per
 /// promised corner) count too: they pay on arrival, and a stroke that
 /// ignored them could stage ten intents on three turrets' worth of
-/// scrap.
-fn pending_build_bill(game: &Game) -> u32 {
+/// scrap. A replacing click excludes claims carried only by the selected
+/// harvesters because that click clears their programs before they can pay.
+fn pending_build_bill(game: &Game, queue: bool) -> u32 {
     let staged: u32 = game
         .pending
         .iter()
@@ -197,8 +221,11 @@ fn pending_build_bill(game: &Game) -> u32 {
             _ => None,
         })
         .sum();
+    let replaced = replaced_build_units(game, queue);
     let mut claims: Vec<(oxide_sim::BuildingKind, TilePos)> = Vec::new();
-    for unit in game.state.units().iter().filter(|u| u.player == game.human) {
+    for unit in game.state.units().iter().filter(|u| {
+        u.player == game.human && !(u.kind.stats().harvest.is_some() && replaced.contains(&u.id))
+    }) {
         for order in std::iter::once(&unit.order).chain(unit.queue.iter()) {
             if let oxide_sim::Order::Found { kind, anchor } = order
                 && !claims.contains(&(*kind, *anchor))
@@ -221,8 +248,14 @@ fn pending_build_bill(game: &Game) -> u32 {
 /// a pending found's ground at all — so without this a stamp
 /// overlapping an earlier promise would acknowledge with a ping and
 /// then die when that claim lands. Footprints are compared
-/// kind-by-kind — strokes can stack different building sizes.
-fn overlaps_pending_site(game: &Game, kind: oxide_sim::BuildingKind, anchor: TilePos) -> bool {
+/// kind-by-kind — strokes can stack different building sizes. A non-queued
+/// click excludes live claims its selected harvesters will replace.
+fn overlaps_pending_site(
+    game: &Game,
+    kind: oxide_sim::BuildingKind,
+    anchor: TilePos,
+    queue: bool,
+) -> bool {
     let (w, h) = kind.stats().size;
     let hits = |a: TilePos, staged: oxide_sim::BuildingKind| {
         let (sw, sh) = staged.stats().size;
@@ -236,12 +269,16 @@ fn overlaps_pending_site(game: &Game, kind: oxide_sim::BuildingKind, anchor: Til
         } => hits(*a, *staged),
         _ => false,
     });
+    let replaced = replaced_build_units(game, queue);
     staged
         || game
             .state
             .units()
             .iter()
-            .filter(|u| u.player == game.human)
+            .filter(|u| {
+                u.player == game.human
+                    && !(u.kind.stats().harvest.is_some() && replaced.contains(&u.id))
+            })
             .any(|u| {
                 std::iter::once(&u.order).chain(u.queue.iter()).any(
                     |o| matches!(o, oxide_sim::Order::Found { kind: k, anchor: a } if hits(*a, *k)),
@@ -798,20 +835,17 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     // to half its length (the re-review's measured
                     // catch); reserving nothing let a fast drag stage
                     // a wall the seat can't pay for.
-                    let reserved = pending_build_bill(game);
+                    let reserved = pending_build_bill(game, true);
                     let affordable =
                         game.state.player(game.human).scrap >= cost.saturating_add(reserved);
                     // The cap is the BUILDER's remaining headroom, not
                     // a flat count: a Shift stroke inherits the queue
                     // it appends behind.
                     if !overlaps
-                        && !overlaps_pending_site(game, kind, anchor)
+                        && !overlaps_pending_site(game, kind, anchor, true)
                         && affordable
                         && stroke.queued < oxide_sim::stats::ORDER_QUEUE_CAP
-                        && game
-                            .state
-                            .place_intent_refusal(game.human, kind, anchor)
-                            .is_none()
+                        && placement_refusal(game, kind, anchor, true).is_none()
                     {
                         let units = game.selection.units.clone();
                         game.issue(Command::Build {
@@ -1183,6 +1217,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
         } else if !click_on_hud(game, p) {
             let world = game.camera.to_world(p);
             let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+            let queue = input.resolver.shift_held();
             // The ghost already showed red; a misclick must not throw
             // away the armed mode on top of it. The toast names the
             // actual blocker — "needs open ground" while your own
@@ -1190,7 +1225,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             // Explored-but-unseen ground is judged by the same intent
             // predicate the ghost tints from — memory, never live
             // state — so Fog here means genuinely unscouted.
-            if let Some(refusal) = game.state.place_intent_refusal(game.human, kind, anchor) {
+            if let Some(refusal) = placement_refusal(game, kind, anchor, queue) {
                 use oxide_sim::PlaceRefusal;
                 game.toast(match refusal {
                     PlaceRefusal::Fog => "can't build there: you haven't scouted that ground",
@@ -1209,7 +1244,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             // refuses like any other blocker — live state can't see it
             // while the shell is paused, and the sim would reject the
             // stamp the moment the earlier site claims the footprint.
-            if overlaps_pending_site(game, kind, anchor) {
+            if overlaps_pending_site(game, kind, anchor, queue) {
                 game.toast("can't build there: ground already spoken for");
                 game.sounds_pending
                     .push((crate::game::SoundKind::Denied, None));
@@ -1220,7 +1255,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             // broke click gets the honest toast, not an
             // acknowledgment ping followed by a sim rejection.
             let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
-            let bill = pending_build_bill(game);
+            let bill = pending_build_bill(game, queue);
             if game.state.player(game.human).scrap < cost.saturating_add(bill) {
                 game.toast(format!("not enough scrap for a {}", kind.name()));
                 game.sounds_pending
@@ -1233,7 +1268,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             // honest refusal as the broke click, mode stays armed.
             // (stroke_queued reads sim state, which this frame's issue
             // hasn't touched — before or after the stamp, same answer.)
-            let depth = stroke_queued(game, input.resolver.shift_held());
+            let depth = stroke_queued(game, queue);
             if depth > oxide_sim::stats::ORDER_QUEUE_CAP {
                 game.toast("that builder's order queue is full");
                 game.sounds_pending
@@ -1248,7 +1283,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                 units,
                 kind,
                 anchor,
-                queue: input.resolver.shift_held(),
+                queue,
                 // Remembered ground defers the claim: the crew walks
                 // out and founds on arrival, paying then. Same click,
                 // two claim timings — the amber ghost already said

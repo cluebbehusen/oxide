@@ -3143,3 +3143,111 @@ fn a_click_on_remembered_ground_defers_and_unscouted_refuses() {
     assert_eq!(game.pending.len(), 1, "unscouted ground stages nothing");
     assert!(input.placing.is_some(), "the refusal keeps the mode armed");
 }
+
+#[test]
+fn a_plain_placement_replaces_the_selected_claim_while_shift_preserves_it() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let builder = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+        .expect("skirmish authors a harvester")
+        .id;
+    let kind = oxide_sim::BuildingKind::Fabricator;
+    let old_spot = TilePos::new(10, 4);
+    let new_spot = TilePos::new(11, 4);
+    for spot in [old_spot, new_spot] {
+        assert!(
+            game.state
+                .place_intent_refusal(game.human, kind, spot)
+                .is_none(),
+            "premise: the visible site starts open"
+        );
+    }
+    let report = game.state.tick(&[PlayerCommand {
+        player: game.human,
+        command: Command::Build {
+            units: vec![builder],
+            kind,
+            anchor: old_spot,
+            queue: false,
+            defer: true,
+        },
+    }]);
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| matches!(event, oxide_sim::Event::CommandRejected { .. }))
+    );
+    assert!(matches!(
+        game.state.unit(builder).unwrap().order,
+        oxide_sim::Order::Found {
+            kind: claimed_kind,
+            anchor,
+        } if claimed_kind == kind && anchor == old_spot
+    ));
+    assert!(
+        game.state.buildings().iter().all(|b| b.anchor != old_spot),
+        "the founder is still walking, so only its claim occupies the ground"
+    );
+
+    game.selection.units = vec![builder];
+    input.placing = Some(kind);
+    game.camera.center = vec2(new_spot.x as f32 + 0.5, new_spot.y as f32 + 0.5);
+    game.camera.pan(Vec2::ZERO);
+    let p = game
+        .camera
+        .to_screen(vec2(new_spot.x as f32 + 0.5, new_spot.y as f32 + 0.5));
+
+    assert_eq!(
+        placement_refusal(&game, kind, new_spot, true),
+        Some(oxide_sim::PlaceRefusal::Building),
+        "Shift appends, so the live claim remains a blocker"
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::Shift },
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+            RawEvent::KeyUp { key: Key::Shift },
+        ],
+    );
+    assert!(
+        game.pending.is_empty(),
+        "the conservative Shift preflight stages no duplicate claim"
+    );
+    assert!(input.placing.is_some(), "the refused click stays armed");
+
+    assert_eq!(
+        placement_refusal(&game, kind, new_spot, false),
+        None,
+        "a plain click abandons the selected founder's old claim"
+    );
+    apply_events(&mut game, &mut input, &click(p.x, p.y));
+    assert_eq!(
+        game.pending.len(),
+        1,
+        "claim, overlap, and scrap preflights all account for replacement"
+    );
+    assert!(matches!(
+        game.pending[0].command,
+        Command::Build {
+            anchor,
+            queue: false,
+            ..
+        } if anchor == new_spot
+    ));
+}

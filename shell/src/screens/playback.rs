@@ -363,6 +363,7 @@ impl oxide_protocol::DebugSession for PlaybackSession {
         // pending, the stale target resumes next frame and rewinds the
         // replay this reply just reported as advanced.
         self.seeking = None;
+        self.accum = 0.0;
         let before = self.engine.position();
         self.engine.seek(before.saturating_add(ticks));
         self.game.drop_presentation();
@@ -376,6 +377,7 @@ impl oxide_protocol::DebugSession for PlaybackSession {
 
     fn present(&mut self, ticks: u64) -> oxide_protocol::PresentedView {
         self.seeking = None;
+        self.accum = 0.0;
         let before = self.engine.position();
         let mut events = Vec::new();
         for _ in 0..ticks {
@@ -617,5 +619,41 @@ mod tests {
         let mut mouse = vec2(0.0, 0.0);
         pb.update(&[], 1.0, vec2(1280.0, 800.0), false, 1.0, &mut mouse);
         assert_eq!(pb.engine.position(), before, "a paused viewer holds still");
+    }
+
+    #[test]
+    fn driven_steps_discard_partial_wall_clock_debt() {
+        use oxide_protocol::DebugSession;
+
+        for present in [false, true] {
+            let mut pb = session();
+            pb.accum = game::TICK_DT * 0.75;
+
+            if present {
+                DebugSession::present(&mut pb, 1);
+            } else {
+                DebugSession::advance(&mut pb, 1);
+            }
+
+            assert_eq!(
+                pb.accum, 0.0,
+                "a driven step must reset the viewer clock like a live session"
+            );
+            let after_step = pb.engine.position();
+            let mut mouse = vec2(0.0, 0.0);
+            pb.update(
+                &[],
+                game::TICK_DT * 0.3,
+                vec2(1280.0, 800.0),
+                false,
+                1.0,
+                &mut mouse,
+            );
+            assert_eq!(
+                pb.engine.position(),
+                after_step,
+                "a sub-tick frame after a driven step must not consume old debt"
+            );
+        }
     }
 }
