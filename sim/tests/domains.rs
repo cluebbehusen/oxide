@@ -528,6 +528,7 @@ fn hovering_machines_do_not_block_foundations() {
             kind: BuildingKind::Turret,
             anchor: TilePos::new(5, 5),
             queue: false,
+            defer: false,
         },
     )]);
     assert!(
@@ -552,6 +553,7 @@ fn training_is_gated_to_the_seats_faction() {
             kind: BuildingKind::Fabricator,
             anchor: TilePos::new(5, 1),
             queue: false,
+            defer: false,
         },
     )]);
     run_until(&mut state, 500, |_, events| {
@@ -683,6 +685,7 @@ fn radar_blips_detect_without_identifying_or_authorizing() {
             kind: BuildingKind::Array,
             anchor: TilePos::new(4, 2),
             queue: false,
+            defer: false,
         },
     )]);
     run_until(&mut state, 500, |_, events| {

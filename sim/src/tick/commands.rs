@@ -3,7 +3,9 @@
 //! Commands mutate *intent* (orders, queues) and nothing else — the later
 //! phases do the actual work. Invalid commands are dropped with a
 //! [`Event::CommandRejected`]; per-unit problems (a dead id in an otherwise
-//! fine selection) are skipped silently, matching how an RTS should feel.
+//! fine selection) are skipped silently, matching how an RTS should feel — a
+//! repeated id among them, which [`canonical_units`] folds away at dispatch
+//! before any handler sees the list.
 
 use super::domain_goal;
 use crate::command::{Command, PlayerCommand, RejectReason};
@@ -28,11 +30,13 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
         }
         // The eliminated don't give orders (matters in 3+ player games —
         // two-player matches freeze on the result before this can bite).
-        // Alive means a standing Foundry, matching the victory rule.
-        if !state
-            .buildings
-            .iter()
-            .any(|b| b.player == pc.player && b.kind == crate::stats::BuildingKind::Foundry)
+        // Alive means a standing Foundry and no concession, matching the
+        // victory rule — which also makes a second Surrender reject here.
+        if state.players[pc.player.0 as usize].resigned
+            || !state
+                .buildings
+                .iter()
+                .any(|b| b.player == pc.player && b.kind == crate::stats::BuildingKind::Foundry)
         {
             events.push(Event::CommandRejected {
                 player: pc.player,
@@ -42,40 +46,49 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
         }
         let outcome = match &pc.command {
             Command::Move { units, goal, queue } => {
-                apply_move(state, pc.player, units, *goal, *queue)
+                apply_move(state, pc.player, &canonical_units(units), *goal, *queue)
             }
             Command::Attack {
                 units,
                 target,
                 queue,
-            } => apply_attack(state, pc.player, units, *target, *queue),
+            } => apply_attack(state, pc.player, &canonical_units(units), *target, *queue),
             Command::AttackMove { units, goal, queue } => {
-                apply_attack_move(state, pc.player, units, *goal, *queue)
+                apply_attack_move(state, pc.player, &canonical_units(units), *goal, *queue)
             }
             Command::Harvest { units, node, queue } => {
-                apply_harvest(state, pc.player, units, *node, *queue)
+                apply_harvest(state, pc.player, &canonical_units(units), *node, *queue)
             }
             Command::Patrol { units, waypoints } => {
-                apply_patrol(state, pc.player, units, waypoints)
+                apply_patrol(state, pc.player, &canonical_units(units), waypoints)
             }
             Command::Build {
                 units,
                 kind,
                 anchor,
                 queue,
-            } => apply_build(state, pc.player, units, *kind, *anchor, *queue),
+                defer,
+            } => apply_build(
+                state,
+                pc.player,
+                &canonical_units(units),
+                *kind,
+                *anchor,
+                *queue,
+                *defer,
+            ),
             Command::Cancel { building } => apply_cancel(state, pc.player, *building, events),
             Command::Repair {
                 units,
                 building,
                 queue,
-            } => apply_repair(state, pc.player, units, *building, *queue),
+            } => apply_repair(state, pc.player, &canonical_units(units), *building, *queue),
             Command::Salvage {
                 units,
                 building,
                 queue,
-            } => apply_salvage(state, pc.player, units, *building, *queue),
-            Command::Stop { units } => apply_stop(state, pc.player, units),
+            } => apply_salvage(state, pc.player, &canonical_units(units), *building, *queue),
+            Command::Stop { units } => apply_stop(state, pc.player, &canonical_units(units)),
             Command::Train { building, kind } => apply_train(state, pc.player, *building, *kind),
             Command::CancelTrain { building, index } => {
                 apply_cancel_train(state, pc.player, *building, *index)
@@ -83,6 +96,12 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
             Command::SetRally { building, rally } => {
                 apply_set_rally(state, pc.player, *building, *rally)
             }
+            Command::Surrender => apply_surrender(state, pc.player, events),
+            Command::RepairUnit {
+                units,
+                target,
+                queue,
+            } => apply_repair_unit(state, pc.player, &canonical_units(units), *target, *queue),
         };
         if let Err(reason) = outcome {
             events.push(Event::CommandRejected {
@@ -91,6 +110,22 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
             });
         }
     }
+}
+
+/// A command's unit list read as the SET it means: id-ordered, each id
+/// once. Every unit-bearing command passes through here at dispatch, so no
+/// handler can double-apply a repeated id — a duplicate used to append a
+/// second queued leg, and on an idle unit it appended a clone of the order
+/// it had just been given. Ownership filtering stays in the handlers, whose
+/// `NoValidUnits` reporting also weighs what a unit can do.
+///
+/// The recorded command keeps the client's bytes; this is how the sim
+/// *interprets* a list, not a rewrite of it.
+fn canonical_units(ids: &[UnitId]) -> Vec<UnitId> {
+    let mut ids = ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
 }
 
 /// Iterates the subset of `ids` that exist and belong to `player`, applying
@@ -113,17 +148,51 @@ fn for_owned_units(
     applied
 }
 
-/// The units of `ids` that exist and belong to `player`, deduplicated and
-/// in id order — the deterministic basis for spread-goal assignment.
+/// [`for_owned_units`] narrowed to the labor crew — the three economy
+/// verbs all address the same harvesters, and each reports `NoValidUnits`
+/// when the selection holds none.
+fn for_owned_workers(
+    state: &mut State,
+    player: PlayerId,
+    ids: &[UnitId],
+    mut f: impl FnMut(&mut crate::state::Unit),
+) -> usize {
+    let mut applied = 0;
+    for &id in ids {
+        if let Some(unit) = state.unit_mut(id)
+            && unit.player == player
+            && unit.kind.stats().harvest.is_some()
+        {
+            f(unit);
+            applied += 1;
+        }
+    }
+    applied
+}
+
+/// The units of `ids` that exist and belong to `player` — the deterministic
+/// basis for spread-goal assignment. Order and uniqueness come from the
+/// canonical list dispatch built; filtering preserves both.
 fn accepted_units(state: &State, player: PlayerId, ids: &[UnitId]) -> Vec<UnitId> {
-    let mut accepted: Vec<UnitId> = ids
-        .iter()
+    ids.iter()
         .copied()
         .filter(|id| state.unit(*id).is_some_and(|u| u.player == player))
-        .collect();
-    accepted.sort_unstable();
-    accepted.dedup();
-    accepted
+        .collect()
+}
+
+/// Any command is the player (or bot) speaking: whatever tether a
+/// self-acquired fight put on this machine ends here, and station
+/// keeping restarts — a commanded machine is on assignment, not
+/// standing a post. Runs UNCONDITIONALLY at the head of every verb
+/// that writes a unit's program ([`assign`], [`assign_circuit`],
+/// [`apply_stop`]) — before `assign`'s no-op early return, because a
+/// player re-ordering the exact attack the unit already picked itself
+/// compares equal, returns early, and would otherwise silently keep
+/// the leash on an explicit commitment. A new program-writing verb
+/// must pass through here too, not restate the contract inline.
+fn end_station_keeping(unit: &mut crate::state::Unit) {
+    unit.leash = None;
+    unit.settled = 0;
 }
 
 /// Hands a unit its next order: replacing wipes any queued program;
@@ -132,16 +201,7 @@ fn accepted_units(state: &State, player: PlayerId, ids: &[UnitId]) -> Vec<UnitId
 /// order actually landed — a full queue drops the append, and the caller
 /// reports it instead of pretending.
 fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) -> bool {
-    // Any command is the player (or bot) speaking: whatever tether a
-    // self-acquired fight put on this machine, it ends here —
-    // UNCONDITIONALLY, before the no-op early return below. A player
-    // re-ordering the exact attack the unit already picked itself
-    // compares equal, returns early, and without this line would
-    // silently keep the leash on an explicit commitment. Station
-    // keeping restarts too: a commanded machine is on assignment,
-    // not standing a post.
-    unit.leash = None;
-    unit.settled = 0;
+    end_station_keeping(unit);
     if queue && !matches!(unit.order, Order::Idle) {
         if unit.queue.len() < ORDER_QUEUE_CAP {
             unit.queue.push_back(order);
@@ -166,6 +226,20 @@ fn assign(unit: &mut crate::state::Unit, order: Order, queue: bool) -> bool {
     unit.path = None;
     unit.progress = 0;
     true
+}
+
+/// Hands a unit a whole looping circuit wholesale — patrol's shape:
+/// first leg active, the rest queued, path and progress reset. The
+/// caller validates the route; `legs` must be non-empty. Shares
+/// [`end_station_keeping`] with [`assign`] so the command contract
+/// cannot drift between program writers.
+fn assign_circuit(unit: &mut crate::state::Unit, mut legs: impl Iterator<Item = Order>) {
+    end_station_keeping(unit);
+    unit.order = legs.next().expect("caller validated a non-empty route");
+    unit.queue = legs.collect();
+    unit.looping = true;
+    unit.path = None;
+    unit.progress = 0;
 }
 
 /// The first `count` tiles open to `domain`, ring-scanned outward from
@@ -373,19 +447,12 @@ fn apply_harvest(
     if !live && !remembered {
         return Err(RejectReason::NotANode);
     }
-    let mut applied = 0;
     let mut landed = 0;
-    for &id in units {
-        if let Some(unit) = state.unit_mut(id)
-            && unit.player == player
-            && unit.kind.stats().harvest.is_some()
-        {
-            if assign(unit, Order::Harvest { node }, queue) {
-                landed += 1;
-            }
-            applied += 1;
+    let applied = for_owned_workers(state, player, units, |unit| {
+        if assign(unit, Order::Harvest { node }, queue) {
+            landed += 1;
         }
-    }
+    });
     if applied == 0 {
         return Err(RejectReason::NoValidUnits);
     }
@@ -427,23 +494,14 @@ fn apply_patrol(
         for id in ids {
             let unit = state.unit_mut(id).expect("filtered above");
             let can_fight = unit.kind.stats().can_fight();
-            let mut legs = snapped.iter().map(|&goal| {
+            let legs = snapped.iter().map(|&goal| {
                 if can_fight {
                     Order::AttackMove { goal }
                 } else {
                     Order::Move { goal }
                 }
             });
-            unit.order = legs.next().expect("validated non-empty");
-            unit.queue = legs.collect();
-            unit.looping = true;
-            unit.path = None;
-            unit.progress = 0;
-            // Patrol writes the program directly instead of through
-            // `assign`, so it must keep assign's side of the tether
-            // contract itself: a command ends station keeping.
-            unit.leash = None;
-            unit.settled = 0;
+            assign_circuit(unit, legs);
         }
     }
     if !routed {
@@ -452,10 +510,14 @@ fn apply_patrol(
     Ok(())
 }
 
-/// Claims the site immediately (full price, footprint blocks) and sends
-/// the first accepted harvester to stand it up. Aiming at an existing own
-/// unfinished site resumes it instead — that's how a dead builder's work
-/// gets picked back up.
+/// Claims the site immediately (full price, footprint blocks) and
+/// commits the whole accepted crew: the first accepted harvester founds
+/// the site — pays, proves a doorstep is reachable — and every other
+/// accepted harvester takes the same Build order (builders stack).
+/// Aiming at an existing own unfinished site resumes it instead —
+/// that's how a dead builder's work gets picked back up. With `defer`,
+/// nothing is claimed now: the crew takes [`Order::Found`] and the
+/// founder claims through [`found_site`] on arrival.
 fn apply_build(
     state: &mut State,
     player: PlayerId,
@@ -463,36 +525,32 @@ fn apply_build(
     kind: crate::stats::BuildingKind,
     anchor: TilePos,
     queue: bool,
+    defer: bool,
 ) -> Result<(), RejectReason> {
     if !in_envelope(state, anchor) {
         return Err(RejectReason::OutOfBounds);
     }
-    let builder = accepted_units(state, player, units)
+    // The crew: every accepted harvester, in id order. `crew[0]` is the
+    // founder — the same unit the fresh-placement path always chose.
+    let crew: Vec<UnitId> = accepted_units(state, player, units)
         .into_iter()
-        .find(|id| {
+        .filter(|id| {
             state
                 .unit(*id)
                 .is_some_and(|u| u.kind.stats().harvest.is_some())
         })
-        .ok_or(RejectReason::NoValidUnits)?;
+        .collect();
+    let &builder = crew.first().ok_or(RejectReason::NoValidUnits)?;
 
-    // Resume an existing site of ours at this anchor? Every accepted
-    // harvester joins — builders stack, and a dead builder's work is
-    // picked back up by however many hands the player sends.
+    // Resume an existing site of ours at this anchor? Every hand joins —
+    // builders stack, and a dead builder's work is picked back up by
+    // however many hands the player sends.
     let existing = state
         .buildings
         .iter()
         .find(|b| b.anchor == anchor && b.kind == kind && b.player == player && !b.built)
         .map(|b| b.id);
     if let Some(site) = existing {
-        let crew: Vec<UnitId> = accepted_units(state, player, units)
-            .into_iter()
-            .filter(|id| {
-                state
-                    .unit(*id)
-                    .is_some_and(|u| u.kind.stats().harvest.is_some())
-            })
-            .collect();
         let mut landed = 0;
         for id in crew {
             if let Some(unit) = state.unit_mut(id)
@@ -503,105 +561,143 @@ fn apply_build(
         }
         return (landed > 0).then_some(()).ok_or(RejectReason::QueueFull);
     }
-    let site = match existing {
-        Some(site) => site,
-        None => {
-            let cost = kind.stats().construction.ok_or(RejectReason::BadSite)?.cost;
-            if !state.can_place(player, kind, anchor) {
-                return Err(RejectReason::BadSite);
-            }
-            if state.player(player).scrap < cost {
-                return Err(RejectReason::NotEnoughScrap);
-            }
-            // Place first, then prove the builder can actually reach a
-            // doorstep *around the now-blocking footprint* — otherwise
-            // undo for free. Charging for a site nobody can ever touch
-            // would burn 80% of the price through the hp-scaled refund.
-            let site = state.place_site(player, kind, anchor);
-            let from = state.unit(builder).expect("filtered above").tile();
-            let size = kind.stats().size;
-            // The canonical doorstep: lowest-(y, x) reachable
-            // perimeter tile. One deterministic tile, because it
-            // doubles as where an under-feet builder steps when the
-            // foundation claims its ground. (A* tolerates a blocked
-            // start, so a builder standing inside the fresh footprint
-            // routes out of it like any unit on newly claimed ground.)
-            let doorstep = super::rect_adjacent_tiles(anchor, size)
-                .filter(|&t| state.passable(t))
-                .filter(|&t| from == t || super::astar_for(state, from, t).is_some())
-                .min_by_key(|t| (t.y, t.x));
-            let Some(doorstep) = doorstep else {
-                state.retract_site(site);
-                return Err(RejectReason::UnreachableGoal);
-            };
-            // Assign BEFORE paying: a builder whose order queue is
-            // full must reject the whole command with the site
-            // retracted and nothing spent — the old code discarded
-            // this result and could charge for a site nobody was
-            // ordered to build.
-            let unit = state.unit_mut(builder).expect("filtered above");
-            if !assign(unit, Order::Build { site }, queue) {
-                state.retract_site(site);
-                return Err(RejectReason::QueueFull);
-            }
-            state.player_mut(player).scrap -= cost;
-            // The accepted foundation buries whatever wreck salvage lay
-            // there (only now — a rejected site must leave no trace).
-            let size = kind.stats().size;
-            for dy in 0..size.1 {
-                for dx in 0..size.0 {
-                    state.map.clear_wreck(anchor.offset(dx, dy));
-                }
-            }
-            // Friendly machines make way as the site claims the
-            // ground: no sim rule expects a resting unit on a claimed
-            // footprint. The builder steps to the doorstep (its work
-            // position); every other friendly inside — allies
-            // included — deals round-robin onto the passable perimeter
-            // ring in (y, x) order, id order among the displaced.
-            // Strictly after the last rejection path and the payment —
-            // a rejected command must not move the state hash
-            // (retract_site's contract). Hostiles can't be here:
-            // can_place refused them.
-            let ring: Vec<TilePos> = {
-                let mut ring: Vec<TilePos> = super::rect_adjacent_tiles(anchor, size)
-                    .filter(|&t| state.passable(t))
-                    .collect();
-                ring.sort_unstable_by_key(|t| (t.y, t.x));
-                ring
-            };
-            let inside = |t: TilePos| {
-                t.x >= anchor.x
-                    && t.x < anchor.x + size.0
-                    && t.y >= anchor.y
-                    && t.y < anchor.y + size.1
-            };
-            let mut dealt = 0usize;
-            for i in 0..state.units.len() {
-                let u = &state.units[i];
-                if u.hp == 0
-                    || u.kind.stats().domain != crate::stats::Domain::Ground
-                    || !inside(u.tile())
-                {
-                    continue;
-                }
-                let to = if u.id == builder {
-                    doorstep
-                } else if let Some(&t) = ring.get(dealt % ring.len().max(1)) {
-                    dealt += 1;
-                    t
-                } else {
-                    continue; // no perimeter at all: leave it; collision resolves
-                };
-                let unit = &mut state.units[i];
-                unit.pos = to.center();
-                unit.path = None;
-            }
-            site
+    if defer {
+        // The deferred mode: validate against the issuer's KNOWLEDGE,
+        // then hand out intent. No site, no charge, no route demand —
+        // an unroutable claim stalls honestly at walk time, exactly
+        // like a Move into fog. Affordability is judged at arrival
+        // too: the bank when the ground is claimed is the bank that
+        // matters.
+        let replaced_units = if queue { &[][..] } else { crew.as_slice() };
+        if state
+            .place_intent_refusal_replacing(player, kind, anchor, replaced_units)
+            .is_some()
+        {
+            return Err(RejectReason::BadSite);
         }
-    };
-    let _ = site;
+        let mut landed = 0;
+        for id in crew {
+            if let Some(unit) = state.unit_mut(id)
+                && assign(unit, Order::Found { kind, anchor }, queue)
+            {
+                landed += 1;
+            }
+        }
+        return (landed > 0).then_some(()).ok_or(RejectReason::QueueFull);
+    }
+    if !state.can_place(player, kind, anchor) {
+        return Err(RejectReason::BadSite);
+    }
+    let site = found_site(state, player, builder, kind, anchor, |state, site| {
+        // Assign BEFORE paying: a founder whose order queue is
+        // full must reject the whole command with the site
+        // retracted and nothing spent — the old code discarded
+        // this result and could charge for a site nobody was
+        // ordered to build.
+        let unit = state.unit_mut(builder).expect("filtered above");
+        assign(unit, Order::Build { site }, queue)
+    })?;
+    // The rest of the crew joins best-effort, in id order: an
+    // individual full queue drops that hand, never the command —
+    // the founder alone gates acceptance.
+    for &id in crew.iter().skip(1) {
+        if let Some(unit) = state.unit_mut(id) {
+            let _ = assign(unit, Order::Build { site }, queue);
+        }
+    }
     Ok(())
+}
+
+/// The one ground-claiming path: place the site, prove a doorstep,
+/// commit the builder, pay, bury wreck, and deal walk-less friendlies
+/// onto the perimeter. Every rejection retracts the site and leaves no
+/// trace on the hash. Serves the instant command path and the deferred
+/// founder's arrival identically — `commit_builder` is each caller's
+/// own way of putting the founder to work (`false` aborts with the
+/// site retracted and nothing spent). The caller has already proved
+/// the placement predicate appropriate to its information: `can_place`
+/// for instant builds, the arrival re-check for deferred ones.
+pub(super) fn found_site(
+    state: &mut State,
+    player: PlayerId,
+    builder: UnitId,
+    kind: crate::stats::BuildingKind,
+    anchor: TilePos,
+    commit_builder: impl FnOnce(&mut State, crate::ids::BuildingId) -> bool,
+) -> Result<crate::ids::BuildingId, RejectReason> {
+    let cost = kind.stats().construction.ok_or(RejectReason::BadSite)?.cost;
+    if state.player(player).scrap < cost {
+        return Err(RejectReason::NotEnoughScrap);
+    }
+    // Place first, then prove the founder can actually reach a
+    // doorstep *around the now-blocking footprint* — otherwise
+    // undo for free. Charging for a site nobody can ever touch
+    // would burn 80% of the price through the hp-scaled refund.
+    // (A* tolerates a blocked start, so a founder standing inside
+    // the fresh footprint routes out of it like any unit on newly
+    // claimed ground.)
+    let site = state.place_site(player, kind, anchor);
+    let from = state.unit(builder).expect("caller checked").tile();
+    let size = kind.stats().size;
+    let reachable = super::rect_adjacent_tiles(anchor, size)
+        .filter(|&t| state.passable(t))
+        .any(|t| from == t || super::astar_for(state, from, t).is_some());
+    if !reachable {
+        state.retract_site(site);
+        return Err(RejectReason::UnreachableGoal);
+    }
+    if !commit_builder(state, site) {
+        state.retract_site(site);
+        return Err(RejectReason::QueueFull);
+    }
+    state.player_mut(player).scrap -= cost;
+    // The accepted foundation buries whatever wreck salvage lay
+    // there (only now — a rejected site must leave no trace).
+    for dy in 0..size.1 {
+        for dx in 0..size.0 {
+            state.map.clear_wreck(anchor.offset(dx, dy));
+        }
+    }
+    // Friendly machines make way as the site claims the ground: no
+    // sim rule expects a resting unit on a claimed footprint. Since
+    // 0.13 they WALK off — the builders' own approach and the
+    // phase-5 eviction pre-pass both route out of the footprint —
+    // so only a body with NO escape route takes the instant deal
+    // onto the passable perimeter ring, round-robin in (y, x)
+    // order, id order among the dealt: nothing may end up inside a
+    // finished building. Strictly after the last rejection path and
+    // the payment — a rejected command must not move the state hash
+    // (retract_site's contract). Hostiles can't be here: the
+    // caller's placement predicate refused them.
+    let ring: Vec<TilePos> = {
+        let mut ring: Vec<TilePos> = super::rect_adjacent_tiles(anchor, size)
+            .filter(|&t| state.passable(t))
+            .collect();
+        ring.sort_unstable_by_key(|t| (t.y, t.x));
+        ring
+    };
+    let inside = |t: TilePos| {
+        t.x >= anchor.x && t.x < anchor.x + size.0 && t.y >= anchor.y && t.y < anchor.y + size.1
+    };
+    let mut dealt = 0usize;
+    for i in 0..state.units.len() {
+        let u = &state.units[i];
+        if u.hp == 0 || u.kind.stats().domain != crate::stats::Domain::Ground || !inside(u.tile()) {
+            continue;
+        }
+        let (unit_kind, tile) = (u.kind, u.tile());
+        if super::movement::escape_route(state, unit_kind, tile).is_some() {
+            continue; // it can walk; the eviction pre-pass sees to it
+        }
+        let Some(&to) = ring.get(dealt % ring.len().max(1)) else {
+            continue; // no perimeter at all: leave it; collision resolves
+        };
+        dealt += 1;
+        let unit = &mut state.units[i];
+        unit.pos = to.center();
+        unit.path = None;
+    }
+    Ok(site)
 }
 
 /// Salvage an unfinished site: refund scales with its current health, so
@@ -654,18 +750,11 @@ fn apply_repair(
         return Err(RejectReason::InvalidTarget);
     }
     let mut landed = 0;
-    let mut applied = 0;
-    for &id in units {
-        if let Some(unit) = state.unit_mut(id)
-            && unit.player == player
-            && unit.kind.stats().harvest.is_some()
-        {
-            if assign(unit, Order::Repair { building }, queue) {
-                landed += 1;
-            }
-            applied += 1;
+    let applied = for_owned_workers(state, player, units, |unit| {
+        if assign(unit, Order::Repair { building }, queue) {
+            landed += 1;
         }
-    }
+    });
     if applied == 0 {
         return Err(RejectReason::NoValidUnits);
     }
@@ -701,18 +790,11 @@ fn apply_salvage(
         return Err(RejectReason::InvalidTarget);
     }
     let mut landed = 0;
-    let mut applied = 0;
-    for &id in units {
-        if let Some(unit) = state.unit_mut(id)
-            && unit.player == player
-            && unit.kind.stats().harvest.is_some()
-        {
-            if assign(unit, Order::Salvage { building }, queue) {
-                landed += 1;
-            }
-            applied += 1;
+    let applied = for_owned_workers(state, player, units, |unit| {
+        if assign(unit, Order::Salvage { building }, queue) {
+            landed += 1;
         }
-    }
+    });
     if applied == 0 {
         return Err(RejectReason::NoValidUnits);
     }
@@ -720,6 +802,41 @@ fn apply_salvage(
         return Err(RejectReason::QueueFull);
     }
     purge_opposing_verb(state, player, building, Verb::Repair);
+    Ok(())
+}
+
+/// Unit welding is for wounded, own, GROUND machines. Air patients
+/// refuse (a harvester cannot stand where a flyer hovers; the ring
+/// stand-in machinery is a chase tool, not a service bay), the healthy
+/// leave nothing to do, and the patient never joins its own crew.
+/// No eviction rule: nothing else targets a friendly unit, and the
+/// patient's own orders are deliberately untouched — welding is the
+/// crew's job, not a hold order on the wounded.
+fn apply_repair_unit(
+    state: &mut State,
+    player: PlayerId,
+    units: &[UnitId],
+    target: UnitId,
+    queue: bool,
+) -> Result<(), RejectReason> {
+    let t = state.unit(target).ok_or(RejectReason::InvalidTarget)?;
+    let stats = t.kind.stats();
+    if t.player != player || t.hp == 0 || t.hp >= stats.max_hp || stats.domain != Domain::Ground {
+        return Err(RejectReason::InvalidTarget);
+    }
+    let crew: Vec<UnitId> = units.iter().copied().filter(|&id| id != target).collect();
+    let mut landed = 0;
+    let applied = for_owned_workers(state, player, &crew, |unit| {
+        if assign(unit, Order::RepairUnit { unit: target }, queue) {
+            landed += 1;
+        }
+    });
+    if applied == 0 {
+        return Err(RejectReason::NoValidUnits);
+    }
+    if landed == 0 {
+        return Err(RejectReason::QueueFull);
+    }
     Ok(())
 }
 
@@ -759,8 +876,7 @@ fn purge_opposing_verb(
 
 fn apply_stop(state: &mut State, player: PlayerId, units: &[UnitId]) -> Result<(), RejectReason> {
     let applied = for_owned_units(state, player, units, |u| {
-        u.leash = None;
-        u.settled = 0;
+        end_station_keeping(u);
         u.clear_program();
     });
     (applied > 0)
@@ -835,6 +951,20 @@ fn apply_train(
         .expect("checked above")
         .queue
         .push_back(kind);
+    Ok(())
+}
+
+/// Concession is a fact, not a macro for razing the base: one flag the
+/// victory check and the command gate both read. Commands are phase 1
+/// and victory phase 10, so a decisive surrender ends the match on its
+/// own tick.
+fn apply_surrender(
+    state: &mut State,
+    player: PlayerId,
+    events: &mut Vec<Event>,
+) -> Result<(), RejectReason> {
+    state.player_mut(player).resigned = true;
+    events.push(Event::PlayerResigned { player });
     Ok(())
 }
 

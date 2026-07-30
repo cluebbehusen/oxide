@@ -14,7 +14,7 @@ use oxide_protocol::{Key, MouseButton, RawEvent};
 use oxide_sim::{Command, UnitId};
 
 /// Logical pixels of mouse travel under which a press+release counts as a
-/// click (scaled by dpi at use).
+/// click (scaled with the user-facing UI at use).
 const CLICK_SLOP: f32 = 6.0;
 
 fn click_slop(ui: f32) -> f32 {
@@ -25,6 +25,28 @@ fn click_slop(ui: f32) -> f32 {
 /// exactly what selects as one.
 pub fn drag_threshold(ui: f32) -> f32 {
     click_slop(ui)
+}
+
+/// How much feedback a live selection drag should show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DragFeedback {
+    /// The pointer has not moved from the press.
+    Still,
+    /// The pointer moved, but release would still count as a click.
+    Outline,
+    /// Release would box-select, so preview the units inside too.
+    Selection,
+}
+
+/// Classifies visual drag feedback without changing click-vs-drag semantics.
+pub(crate) fn drag_feedback(origin: Vec2, at: Vec2, ui: f32) -> DragFeedback {
+    if origin == at {
+        DragFeedback::Still
+    } else if origin.distance(at) <= drag_threshold(ui) {
+        DragFeedback::Outline
+    } else {
+        DragFeedback::Selection
+    }
 }
 
 /// World-unit pick radius around a unit's center.
@@ -83,6 +105,9 @@ pub struct InputState {
     /// Armed salvage: the next left-click on an own built building
     /// sends the selected harvesters to strip it.
     pub(crate) salvaging: bool,
+    /// Armed unit weld: the next left-click on a damaged own ground
+    /// unit sends the selected harvesters to weld it.
+    pub(crate) repairing: bool,
     /// Armed run: the next ground click sends the selection walking
     /// obliviously — no engaging, no auto-acquire en route.
     pub(crate) running: bool,
@@ -118,142 +143,155 @@ pub struct InputState {
     pub(crate) resolver: ActionResolver,
 }
 
-/// A live drag-to-place stroke: the anchors stamped so far (the
-/// overlap guard) and the predicted `queue.len()` of the builder the
-/// sim will pick. `commands::assign` appends while
-/// `queue.len() < ORDER_QUEUE_CAP` and the ACTIVE order sits OUTSIDE
-/// the queue, so a replacing stroke owns the cap plus that slot while
-/// a Shift stroke inherits whatever the builder already carries.
-/// Predicted forward because staged stamps have not reached the unit
-/// yet — re-reading live state mid-stroke would count them twice.
+/// A live drag-to-place stroke: the anchors stamped so far, used to avoid
+/// overlapping the same gesture with itself. Queue headroom comes from the
+/// projected command phase so commands staged during the stroke take effect.
 pub(crate) struct PlacingStroke {
     anchors: Vec<TilePos>,
-    queued: usize,
 }
 
-/// Scrap the staged-but-undrained Build commands will actually charge
-/// when the tick takes them — summed per command, never count-times-
-/// current-kind: a paused shell accumulates strokes of DIFFERENT
-/// kinds across frames, and a Build aimed at an own unfinished site
-/// is a free resume, not a purchase.
-fn pending_build_bill(game: &Game) -> u32 {
-    game.pending
-        .iter()
-        .filter_map(|pc| match &pc.command {
-            Command::Build { kind, anchor, .. } => {
-                let resume = game
-                    .state
-                    .building_at(*anchor)
-                    .is_some_and(|b| b.player == game.human && !b.built);
-                if resume {
-                    None
-                } else {
-                    kind.stats().construction.map(|c| c.cost)
+/// Whether a build at `anchor` must defer its claim: some footprint
+/// tile is not currently visible to the human. Decides both the amber
+/// ghost and the `defer` flag the armed click emits — one judgment,
+/// two surfaces.
+pub(crate) fn build_defer_needed(
+    game: &Game,
+    kind: oxide_sim::BuildingKind,
+    anchor: TilePos,
+) -> bool {
+    let (w, h) = kind.stats().size;
+    (0..h).any(|dy| (0..w).any(|dx| !game.state.vision(game.human).visible(anchor.offset(dx, dy))))
+}
+
+/// Unit programs a non-queued build will replace. Queued builds preserve
+/// every claim because they append behind the current program.
+fn replaced_build_units(game: &Game, queue: bool) -> &[UnitId] {
+    if queue { &[] } else { &game.selection.units }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingBuildFunds {
+    scrap: u32,
+    reserved: u32,
+}
+
+impl PendingBuildFunds {
+    fn available(self) -> u32 {
+        self.scrap.saturating_sub(self.reserved)
+    }
+}
+
+struct PendingBuildProjection {
+    refusal: Option<oxide_sim::PlaceRefusal>,
+    funds: PendingBuildFunds,
+    queue_has_room: bool,
+}
+
+/// Projects the exact command phase once for every placement surface:
+/// ground, bank, and the founder's program all read the same accepted batch.
+/// Future prices are held only for deferred claims still surviving after
+/// replacement; immediate sites and other paid commands already moved the
+/// projected bank.
+fn pending_build_projection(
+    game: &Game,
+    kind: oxide_sim::BuildingKind,
+    anchor: TilePos,
+    queue: bool,
+) -> PendingBuildProjection {
+    pending_build_projection_for(
+        game,
+        kind,
+        anchor,
+        queue,
+        build_defer_needed(game, kind, anchor),
+    )
+}
+
+fn pending_build_projection_for(
+    game: &Game,
+    kind: oxide_sim::BuildingKind,
+    anchor: TilePos,
+    queue: bool,
+    defer: bool,
+) -> PendingBuildProjection {
+    let replaced = replaced_build_units(game, queue);
+    game.state.inspect_command_phase(&game.pending, |state| {
+        let refusal = if state.accepts_commands(game.human) {
+            state.place_intent_refusal_replacing(game.human, kind, anchor, replaced)
+        } else {
+            Some(oxide_sim::PlaceRefusal::NotConstructible)
+        };
+        let mut claims = Vec::new();
+        for unit in state.units().iter().filter(|unit| {
+            unit.player == game.human
+                && !(unit.kind.stats().harvest.is_some() && replaced.contains(&unit.id))
+        }) {
+            for order in std::iter::once(&unit.order).chain(unit.queue.iter()) {
+                if let oxide_sim::Order::Found { kind, anchor } = order
+                    && !state.has_own_unfinished_site(game.human, *kind, *anchor)
+                    && !claims.contains(&(*kind, *anchor))
+                {
+                    claims.push((*kind, *anchor));
                 }
             }
-            _ => None,
-        })
-        .sum()
-}
-
-/// Whether a footprint of `kind` at `anchor` intersects any
-/// staged-but-undrained Build's footprint. Live state cannot see
-/// those sites while the shell is paused, so without this a stamp
-/// overlapping an earlier stroke's site would acknowledge with a
-/// ping and then die rejected when that site claims the ground.
-/// Footprints are compared kind-by-kind — paused strokes can stack
-/// different building sizes.
-fn overlaps_pending_site(game: &Game, kind: oxide_sim::BuildingKind, anchor: TilePos) -> bool {
-    let (w, h) = kind.stats().size;
-    game.pending.iter().any(|pc| match &pc.command {
-        Command::Build {
-            kind: staged,
-            anchor: a,
-            ..
-        } => {
-            let (sw, sh) = staged.stats().size;
-            anchor.x < a.x + sw && a.x < anchor.x + w && anchor.y < a.y + sh && a.y < anchor.y + h
         }
-        _ => false,
+        let reserved = claims
+            .iter()
+            .filter_map(|(kind, _)| kind.stats().construction.map(|stats| stats.cost))
+            .fold(0_u32, u32::saturating_add);
+        let crew: Vec<_> = state
+            .units()
+            .iter()
+            .filter(|unit| {
+                unit.player == game.human
+                    && unit.kind.stats().harvest.is_some()
+                    && game.selection.units.contains(&unit.id)
+            })
+            .collect();
+        let can_assign = |unit: &&oxide_sim::Unit| {
+            !queue
+                || matches!(unit.order, oxide_sim::Order::Idle)
+                || unit.queue.len() < oxide_sim::stats::ORDER_QUEUE_CAP
+        };
+        let queue_has_room = if defer {
+            crew.iter().any(can_assign)
+        } else {
+            crew.first().is_some_and(can_assign)
+        };
+        PendingBuildProjection {
+            refusal,
+            funds: PendingBuildFunds {
+                scrap: state
+                    .scrap(game.human)
+                    .expect("the live human seat remains in the projection"),
+                reserved,
+            },
+            queue_has_room,
+        }
     })
 }
 
-/// The builder's queue depth once this stroke's FIRST stamp has
-/// landed — the sim gives a new site to the lowest-id own harvester in
-/// the selection (`accepted_units` sorts). Without Shift the stamp
-/// wipes the program; with Shift it appends, except onto an idle
-/// builder, where it takes the free active slot. Live state alone is
-/// not enough: a paused shell stages whole strokes — and any other
-/// queued orders — without the sim ever draining them, so every
-/// pending command that will mutate this builder's program is
-/// replayed on top: appends deepen, replacements reset to the active
-/// slot, Stop clears, Patrol installs its whole circuit.
-fn stroke_queued(game: &Game, shift: bool) -> usize {
-    if !shift {
-        return 0;
-    }
-    let chosen_builder = |units: &[oxide_sim::UnitId]| {
-        units
-            .iter()
-            .copied()
-            .filter(|id| {
-                game.state
-                    .unit(*id)
-                    .is_some_and(|u| u.player == game.human && u.kind.stats().harvest.is_some())
-            })
-            .min()
-    };
-    let Some(builder) = chosen_builder(&game.selection.units).and_then(|id| game.state.unit(id))
-    else {
-        return 0;
-    };
-    let mut depth =
-        builder.queue.len() + usize::from(!matches!(builder.order, oxide_sim::Order::Idle));
-    for pc in &game.pending {
-        // Build assigns only the sim's chosen builder; every other
-        // unit order lands on each listed unit (an Attack degrades to
-        // a walk for a pacifist harvester, but it still occupies the
-        // program). Appends saturate at the cap the way assign drops
-        // them.
-        let mine = |units: &[oxide_sim::UnitId]| units.contains(&builder.id);
-        match &pc.command {
-            Command::Build { units, queue, .. } if chosen_builder(units) == Some(builder.id) => {
-                depth = if *queue {
-                    (depth + 1).min(oxide_sim::stats::ORDER_QUEUE_CAP + 1)
-                } else {
-                    1
-                };
-            }
-            Command::Move { units, queue, .. }
-            | Command::AttackMove { units, queue, .. }
-            | Command::Attack { units, queue, .. }
-            | Command::Harvest { units, queue, .. }
-            | Command::Repair { units, queue, .. }
-            | Command::Salvage { units, queue, .. }
-                if mine(units) =>
-            {
-                depth = if *queue {
-                    (depth + 1).min(oxide_sim::stats::ORDER_QUEUE_CAP + 1)
-                } else {
-                    1
-                };
-            }
-            Command::Stop { units } if mine(units) => depth = 0,
-            Command::Patrol { units, waypoints } if mine(units) => depth = waypoints.len(),
-            _ => {}
-        }
-    }
-    depth
+/// The placement verdict matching the command this shell will stage.
+/// Replacement clicks may reuse claims their selected harvesters abandon;
+/// Shift clicks and drag stamps preserve them.
+pub(crate) fn placement_refusal(
+    game: &Game,
+    kind: oxide_sim::BuildingKind,
+    anchor: TilePos,
+    queue: bool,
+) -> Option<oxide_sim::PlaceRefusal> {
+    pending_build_projection(game, kind, anchor, queue).refusal
 }
 
 /// Everything a harvester can put in the ground, in palette order — the
 /// digit keys index straight into this.
-pub(crate) const BUILD_PALETTE: [oxide_sim::BuildingKind; 6] = [
+pub(crate) const BUILD_PALETTE: [oxide_sim::BuildingKind; 7] = [
     oxide_sim::BuildingKind::Turret,
     oxide_sim::BuildingKind::FlakTurret,
     oxide_sim::BuildingKind::Bastion,
     oxide_sim::BuildingKind::Array,
     oxide_sim::BuildingKind::Reclaimer,
+    oxide_sim::BuildingKind::RepairBay,
     oxide_sim::BuildingKind::Fabricator,
 ];
 
@@ -272,6 +310,7 @@ impl InputState {
             placing: None,
             placing_stroke: None,
             salvaging: false,
+            repairing: false,
             running: false,
             build_menu: false,
             ui: 1.0,
@@ -307,6 +346,7 @@ impl InputState {
         self.placing = None;
         self.placing_stroke = None;
         self.salvaging = false;
+        self.repairing = false;
         self.running = false;
     }
 
@@ -319,6 +359,7 @@ impl InputState {
         self.placing = None;
         self.placing_stroke = None;
         self.salvaging = false;
+        self.repairing = false;
         self.running = false;
         self.build_menu = false;
         self.touches.clear();
@@ -341,7 +382,7 @@ impl InputState {
     }
 }
 
-const KEY_MAP: [(Key, mq::KeyCode); 42] = [
+const KEY_MAP: [(Key, mq::KeyCode); 43] = [
     (Key::Up, mq::KeyCode::Up),
     (Key::Down, mq::KeyCode::Down),
     (Key::Left, mq::KeyCode::Left),
@@ -384,6 +425,7 @@ const KEY_MAP: [(Key, mq::KeyCode); 42] = [
     (Key::W, mq::KeyCode::W),
     (Key::Y, mq::KeyCode::Y),
     (Key::Z, mq::KeyCode::Z),
+    (Key::Backspace, mq::KeyCode::Backspace),
 ];
 
 /// Converts this frame's hardware input into events. Purely a poll→event
@@ -480,13 +522,48 @@ impl macroquad::miniquad::EventHandler for PointerStream {
     /// below.
     fn touch_event(&mut self, _phase: macroquad::miniquad::TouchPhase, _id: u64, _x: f32, _y: f32) {
     }
+
+    /// Typed characters, layout- and shift-resolved by the OS — a
+    /// Key-to-character table would get every non-US layout wrong.
+    /// Printable ASCII only, filtered AT INGEST: the menu font is
+    /// Latin-1 and UI strings stay ASCII, so nothing downstream ever
+    /// needs its own filter.
+    fn char_event(
+        &mut self,
+        character: char,
+        _keymods: macroquad::miniquad::KeyMods,
+        _repeat: bool,
+    ) {
+        if ('\u{20}'..='\u{7e}').contains(&character) {
+            self.events.push(RawEvent::Text { ch: character });
+        }
+    }
+}
+
+// A fingertip must arrive ONCE, as a touch — macroquad otherwise
+// mirrors every touch into synthetic mouse events and the same
+// finger would both pan the camera and drag a box.
+static TOUCH_SETUP: std::sync::Once = std::sync::Once::new();
+// The subscriber is registered on demand so an automation shell —
+// which never polls hardware — never accumulates a queue it won't
+// drain. Hardware shells must arm BEFORE the prologue instead:
+// macroquad's register_input_subscriber starts an empty queue, so
+// every event dispatched earlier is fanned out to no one and gone —
+// with lazy-only arming, anything clicked or typed while assets and
+// the autosave scan ran inside frame 1 was silently discarded.
+static POINTER_SUB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+/// Subscribes to the hardware input stream now, so events arriving
+/// before the first [`poll_events`] queue instead of vanishing. Call
+/// at the top of the frame future, before any prologue work; never
+/// call from an automation shell. `poll_events` still self-arms as a
+/// fallback and keeps its first-poll cursor seed either way.
+pub fn arm_hardware() {
+    TOUCH_SETUP.call_once(|| mq::simulate_mouse_with_touch(false));
+    POINTER_SUB.get_or_init(mq::utils::register_input_subscriber);
 }
 
 pub fn poll_events() -> Vec<RawEvent> {
-    // A fingertip must arrive ONCE, as a touch — macroquad otherwise
-    // mirrors every touch into synthetic mouse events and the same
-    // finger would both pan the camera and drag a box.
-    static TOUCH_SETUP: std::sync::Once = std::sync::Once::new();
     TOUCH_SETUP.call_once(|| mq::simulate_mouse_with_touch(false));
     let mut events = Vec::new();
     for touch in mq::touches() {
@@ -496,20 +573,17 @@ pub fn poll_events() -> Vec<RawEvent> {
         }
     }
     // Pointer events in true arrival order, each with its own position.
-    // Registration is lazy so an automation shell — which never polls
-    // hardware — never accumulates a subscriber queue it won't drain.
-    static POINTER_SUB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    let first_poll = POINTER_SUB.get().is_none();
     let sub = *POINTER_SUB.get_or_init(mq::utils::register_input_subscriber);
-    if first_poll {
-        // The fresh subscriber queue is empty and a stationary cursor
-        // will never fill it: seed the stream with the position the
-        // pointer already holds, or edge pan and wheel zoom anchor at
-        // (0, 0) until the first real motion. mouse_position() is
+    static FIRST_POLL: std::sync::Once = std::sync::Once::new();
+    FIRST_POLL.call_once(|| {
+        // However early the subscriber was armed, a stationary cursor
+        // never queues a baseline: seed the stream with the position
+        // the pointer already holds, or edge pan and wheel zoom anchor
+        // at (0, 0) until the first real motion. mouse_position() is
         // already logical (macroquad divides its dpi out).
         let (x, y) = mq::mouse_position();
         events.push(RawEvent::MouseMove { x, y });
-    }
+    });
     let mut stream = PointerStream::new(macroquad::miniquad::window::dpi_scale());
     mq::utils::repeat_all_miniquad_input(&mut stream, sub);
     events.append(&mut stream.events);
@@ -609,7 +683,12 @@ use select::{
 /// chrome, the arrow otherwise. Pure — the loop applies it.
 pub fn desired_cursor(game: &Game, input: &InputState) -> macroquad::miniquad::CursorIcon {
     use macroquad::miniquad::CursorIcon;
-    if input.placing.is_some() || input.patrol_route.is_some() || input.salvaging || input.running {
+    if input.placing.is_some()
+        || input.patrol_route.is_some()
+        || input.salvaging
+        || input.repairing
+        || input.running
+    {
         return CursorIcon::Crosshair;
     }
     let layout = game.layout.get();
@@ -670,25 +749,19 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         .iter()
                         .any(|a| (a.x - anchor.x).abs() < w && (a.y - anchor.y).abs() < h);
                     let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
-                    // Reserve only the stamps the tick hasn't CHARGED
-                    // yet: the frame loop drains pending into the sim
-                    // mid-drag, and the bank already reflects
-                    // everything drained. Reserving the whole stroke
-                    // billed those stamps twice and cut a funded wall
-                    // to half its length (the re-review's measured
-                    // catch); reserving nothing let a fast drag stage
-                    // a wall the seat can't pay for.
-                    let reserved = pending_build_bill(game);
-                    let affordable =
-                        game.state.player(game.human).scrap >= cost.saturating_add(reserved);
-                    // The cap is the BUILDER's remaining headroom, not
-                    // a flat count: a Shift stroke inherits the queue
-                    // it appends behind.
+                    let projection = pending_build_projection(game, kind, anchor, true);
+                    // The projected bank already reflects every paid
+                    // pending command; only surviving deferred claims
+                    // need a future-price reserve. That keeps a fast
+                    // drag honest without billing a drained stamp twice.
+                    let affordable = projection.funds.available() >= cost;
+                    // The cap is the BUILDER's projected headroom, not
+                    // a stroke-local count: a command staged while the
+                    // button is held can clear or fill the program.
                     if !overlaps
-                        && !overlaps_pending_site(game, kind, anchor)
                         && affordable
-                        && stroke.queued < oxide_sim::stats::ORDER_QUEUE_CAP
-                        && game.state.can_place(game.human, kind, anchor)
+                        && projection.queue_has_room
+                        && projection.refusal.is_none()
                     {
                         let units = game.selection.units.clone();
                         game.issue(Command::Build {
@@ -696,10 +769,12 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                             kind,
                             anchor,
                             queue: true,
+                            // A stroke can cross the vision skirt: each
+                            // stamp defers or founds on its own ground.
+                            defer: build_defer_needed(game, kind, anchor),
                         });
                         game.ping(world, PingKind::Rally);
                         stroke.anchors.push(anchor);
-                        stroke.queued += 1;
                     }
                 }
             }
@@ -934,6 +1009,11 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                     _ => {}
                 }
             }
+            RawEvent::Text { .. } => {
+                // Typed characters exist for menu text fields (the
+                // save-name flow); gameplay deliberately has no text
+                // consumer — letters reach the world as semantic keys.
+            }
             RawEvent::TouchUp { id, x, y } => {
                 let p = vec2(x, y);
                 let Some(pos) = input.touches.iter().position(|(tid, _)| *tid == id) else {
@@ -1052,14 +1132,19 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
         } else if !click_on_hud(game, p) {
             let world = game.camera.to_world(p);
             let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+            let queue = input.resolver.shift_held();
+            let projection = pending_build_projection(game, kind, anchor, queue);
             // The ghost already showed red; a misclick must not throw
             // away the armed mode on top of it. The toast names the
             // actual blocker — "needs open ground" while your own
             // harvester stands on the tile taught nobody anything.
-            if let Some(refusal) = game.state.place_refusal(game.human, kind, anchor) {
+            // Explored-but-unseen ground is judged by the same intent
+            // predicate the ghost tints from — memory, never live
+            // state — so Fog here means genuinely unscouted.
+            if let Some(refusal) = projection.refusal {
                 use oxide_sim::PlaceRefusal;
                 game.toast(match refusal {
-                    PlaceRefusal::Fog => "can't build there: ground not in sight",
+                    PlaceRefusal::Fog => "can't build there: you haven't scouted that ground",
                     PlaceRefusal::Terrain => "can't build there: impassable ground",
                     PlaceRefusal::Building => "can't build there: something already stands there",
                     PlaceRefusal::Unit => {
@@ -1071,23 +1156,12 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                     .push((crate::game::SoundKind::Denied, None));
                 return true;
             }
-            // Ground already spoken for by a staged-but-undrained site
-            // refuses like any other blocker — live state can't see it
-            // while the shell is paused, and the sim would reject the
-            // stamp the moment the earlier site claims the footprint.
-            if overlaps_pending_site(game, kind, anchor) {
-                game.toast("can't build there: ground already spoken for");
-                game.sounds_pending
-                    .push((crate::game::SoundKind::Denied, None));
-                return true;
-            }
-            // The opening stamp affords itself (plus whatever staged
-            // builds the tick hasn't charged) before it fires — a
-            // broke click gets the honest toast, not an
+            // Judge the opening stamp after the exact pending command
+            // phase, with future prices held for surviving deferred
+            // claims. A broke click gets the honest toast, not an
             // acknowledgment ping followed by a sim rejection.
             let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
-            let bill = pending_build_bill(game);
-            if game.state.player(game.human).scrap < cost.saturating_add(bill) {
+            if projection.funds.available() < cost {
                 game.toast(format!("not enough scrap for a {}", kind.name()));
                 game.sounds_pending
                     .push((crate::game::SoundKind::Denied, None));
@@ -1097,10 +1171,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             // Shift click onto a crew already at the order-queue cap
             // would ping and then die in the sim as QueueFull. Same
             // honest refusal as the broke click, mode stays armed.
-            // (stroke_queued reads sim state, which this frame's issue
-            // hasn't touched — before or after the stamp, same answer.)
-            let depth = stroke_queued(game, input.resolver.shift_held());
-            if depth > oxide_sim::stats::ORDER_QUEUE_CAP {
+            if !projection.queue_has_room {
                 game.toast("that builder's order queue is full");
                 game.sounds_pending
                     .push((crate::game::SoundKind::Denied, None));
@@ -1114,7 +1185,12 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                 units,
                 kind,
                 anchor,
-                queue: input.resolver.shift_held(),
+                queue,
+                // Remembered ground defers the claim: the crew walks
+                // out and founds on arrival, paying then. Same click,
+                // two claim timings — the amber ghost already said
+                // which this stamp is.
+                defer: build_defer_needed(game, kind, anchor),
             });
             game.ping(world, PingKind::Rally);
             // The stroke opens: dragging stamps more of the same kind,
@@ -1122,7 +1198,6 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             // Shift's call, decided at MouseUp.
             input.placing_stroke = Some(PlacingStroke {
                 anchors: vec![anchor],
-                queued: depth,
             });
         }
         return true;
@@ -1155,6 +1230,65 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.ping(world, PingKind::Harvest);
             if !input.resolver.shift_held() {
                 input.salvaging = false;
+            }
+        }
+        return true;
+    }
+    if input.repairing {
+        // Same manners as salvage: minimap jumps the camera, a
+        // misclick keeps the mode armed, Shift chains welds behind the
+        // crew's program.
+        if let Some(world) = crate::render::minimap_world_at(game, p) {
+            game.camera.center = world;
+            game.camera.pan(Vec2::ZERO); // re-clamp
+        } else if !click_on_hud(game, p) {
+            let world = game.camera.to_world(p);
+            let patient = game
+                .state
+                .units()
+                .iter()
+                .filter(|u| {
+                    u.player == game.human
+                        && u.hp > 0
+                        && u.hp < u.kind.stats().max_hp
+                        && u.kind.stats().domain == oxide_sim::stats::Domain::Ground
+                })
+                .map(|u| {
+                    let at = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
+                    (at.distance(world), u.id)
+                })
+                .filter(|(d, _)| *d <= PICK_RADIUS)
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            let Some((_, target)) = patient else {
+                game.toast("weld wants a damaged own ground unit");
+                game.sounds_pending
+                    .push((crate::game::SoundKind::Denied, None));
+                return true;
+            };
+            // A machine cannot weld itself: if the picked patient is
+            // the only selected welder, the sim would reject after the
+            // ping — refuse honestly at arm time instead.
+            let has_other_welder = game.selection.units.iter().any(|id| {
+                *id != target
+                    && game.state.unit(*id).is_some_and(|u| {
+                        u.kind == oxide_sim::UnitKind::Harvester && u.player == game.human
+                    })
+            });
+            if !has_other_welder {
+                game.toast("weld needs another harvester in hand");
+                game.sounds_pending
+                    .push((crate::game::SoundKind::Denied, None));
+                return true;
+            }
+            let units = game.selection.units.clone();
+            game.issue(Command::RepairUnit {
+                units,
+                target,
+                queue: input.resolver.shift_held(),
+            });
+            game.ping(world, PingKind::Harvest);
+            if !input.resolver.shift_held() {
+                input.repairing = false;
             }
         }
         return true;

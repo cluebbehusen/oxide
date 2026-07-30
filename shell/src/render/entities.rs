@@ -4,25 +4,31 @@
 
 use super::*;
 
-/// The armed building follows the cursor as a translucent footprint,
-/// green-lit where the sim would accept it — the tint and the command
-/// share `State::can_place`, so what looks legal is legal.
+/// The armed building follows the cursor as a translucent footprint —
+/// the tint and the command share the shell's queue-aware placement
+/// verdict, so what looks legal is legal. Three states: green founds
+/// this instant, amber founds on arrival (part of the footprint is
+/// remembered ground, judged from memory — never live state, so the
+/// tint can't be a hidden-enemy detector), red is refused.
 pub(crate) fn draw_placement_ghost(game: &Game, sprites: &Sprites, input: &InputState) {
     let Some(kind) = input.placing else { return };
     let world = game.camera.to_world(input.mouse);
     let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     let zoom = game.camera.zoom;
     let (w, h) = kind.stats().size;
-    let ok = game.state.can_place(game.human, kind, anchor);
+    let queue = input.placing_stroke.is_some() || input.resolver.shift_held();
+    let ok = crate::input::placement_refusal(game, kind, anchor, queue).is_none();
     let screen = game
         .camera
         .to_screen(vec2(anchor.x as f32, anchor.y as f32));
     let dest = vec2(w as f32 * zoom, h as f32 * zoom);
     let faction = game.state.player(game.human).faction;
-    let tint = if ok {
-        Color::new(0.7, 1.0, 0.75, 0.55)
-    } else {
+    let tint = if !ok {
         Color::new(1.0, 0.45, 0.4, 0.55)
+    } else if crate::input::build_defer_needed(game, kind, anchor) {
+        Color::new(1.0, 0.85, 0.45, 0.55)
+    } else {
+        Color::new(0.7, 1.0, 0.75, 0.55)
     };
     draw_texture_ex(
         sprites.texture(),
@@ -35,6 +41,41 @@ pub(crate) fn draw_placement_ghost(game: &Game, sprites: &Sprites, input: &Input
             ..Default::default()
         },
     );
+}
+
+/// Every deferred claim the human's crews are walking out to, drawn as
+/// a faint amber footprint on its promised ground — the promise made
+/// visible, deduplicated per (kind, anchor) across the crew.
+pub(crate) fn draw_pending_founds(game: &Game, sprites: &Sprites) {
+    let zoom = game.camera.zoom;
+    let faction = game.state.player(game.human).faction;
+    let mut drawn: Vec<(oxide_sim::BuildingKind, TilePos)> = Vec::new();
+    for unit in game.state.units().iter().filter(|u| u.player == game.human) {
+        for order in std::iter::once(&unit.order).chain(unit.queue.iter()) {
+            let oxide_sim::Order::Found { kind, anchor } = order else {
+                continue;
+            };
+            if drawn.contains(&(*kind, *anchor)) {
+                continue;
+            }
+            drawn.push((*kind, *anchor));
+            let (w, h) = kind.stats().size;
+            let screen = game
+                .camera
+                .to_screen(vec2(anchor.x as f32, anchor.y as f32));
+            draw_texture_ex(
+                sprites.texture(),
+                screen.x,
+                screen.y,
+                Color::new(1.0, 0.85, 0.45, 0.3),
+                DrawTextureParams {
+                    dest_size: Some(vec2(w as f32 * zoom, h as f32 * zoom)),
+                    source: Some(sprites.building(*kind, faction)),
+                    ..Default::default()
+                },
+            );
+        }
+    }
 }
 
 /// Queued waypoints of the selection, drawn as a faint chain; a patrol
@@ -62,7 +103,9 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
         oxide_sim::Order::Harvest { .. } => Color::new(0.85, 0.64, 0.25, 0.55),
         oxide_sim::Order::Build { .. }
         | oxide_sim::Order::Repair { .. }
-        | oxide_sim::Order::Salvage { .. } => Color::new(0.25, 0.58, 0.51, 0.55),
+        | oxide_sim::Order::Salvage { .. }
+        | oxide_sim::Order::RepairUnit { .. }
+        | oxide_sim::Order::Found { .. } => Color::new(0.25, 0.58, 0.51, 0.55),
         oxide_sim::Order::Idle => BONE_FAINT,
     };
     let goal_of = |order: &oxide_sim::Order| {
@@ -70,9 +113,12 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
             oxide_sim::Order::Move { goal } | oxide_sim::Order::AttackMove { goal } => *goal,
             oxide_sim::Order::Harvest { node } => *node,
             oxide_sim::Order::Build { site } => game.state.building(*site)?.anchor,
+            oxide_sim::Order::Found { anchor, .. } => *anchor,
             oxide_sim::Order::Repair { building } | oxide_sim::Order::Salvage { building } => {
                 game.state.building(*building)?.anchor
             }
+            // A weld patient is the viewer's own machine — always seen.
+            oxide_sim::Order::RepairUnit { unit } => game.state.unit(*unit)?.tile(),
             oxide_sim::Order::Attack { target, .. } => {
                 // A chase target draws only while its ground is
                 // seen — the victim may have slipped back into fog.
@@ -374,7 +420,8 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
             let pulse = if reduced_motion() {
                 0.5
             } else {
-                ((get_time() * 2.6 + f64::from(building.id.0)).sin() * 0.5 + 0.5) as f32
+                ((f64::from(game.fx_time()) * 2.6 + f64::from(building.id.0)).sin() * 0.5 + 0.5)
+                    as f32
             };
             let glow = match faction {
                 oxide_sim::Faction::Ferrous => Color::new(0.97, 0.62, 0.45, 0.10 + 0.10 * pulse),
@@ -471,7 +518,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 // The radar sweeps its ring — damped to a steady mast.
                 oxide_sim::BuildingKind::Array => {
                     if !reduced_motion() {
-                        let sweep = (get_time() * 1.1) as f32 % (2.0 * std::f32::consts::PI);
+                        let sweep = game.fx_time() * 1.1 % (2.0 * std::f32::consts::PI);
                         let reach = zoom * 4.0;
                         let tip = center + vec2(sweep.cos(), sweep.sin()) * reach;
                         draw_line(
@@ -489,7 +536,8 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                     let pulse = if reduced_motion() {
                         0.5
                     } else {
-                        ((get_time() * 1.7 + f64::from(building.id.0)).sin() * 0.5 + 0.5) as f32
+                        ((f64::from(game.fx_time()) * 1.7 + f64::from(building.id.0)).sin() * 0.5
+                            + 0.5) as f32
                     };
                     draw_circle(
                         center.x,
@@ -501,7 +549,8 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 // The fabricator's work light blinks.
                 oxide_sim::BuildingKind::Fabricator => {
                     let on = reduced_motion()
-                        || ((get_time() * 1.4 + f64::from(building.id.0)).fract() < 0.5);
+                        || ((f64::from(game.fx_time()) * 1.4 + f64::from(building.id.0)).fract()
+                            < 0.5);
                     if on {
                         draw_circle(
                             screen.x + dest.x * 0.82,
@@ -878,6 +927,98 @@ pub(crate) fn draw_blips(game: &Game) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildingRangeKind {
+    Weapon,
+    Vision,
+    Radar,
+    Repair,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum BuildingRangeShape {
+    Circle { center: Vec2, radius: f32 },
+    FootprintOffset { min: Vec2, max: Vec2, radius: f32 },
+}
+
+impl BuildingRangeShape {
+    fn outer_bounds(self) -> (Vec2, Vec2) {
+        match self {
+            Self::Circle { center, radius } => {
+                let reach = vec2(radius, radius);
+                (center - reach, center + reach)
+            }
+            Self::FootprintOffset { min, max, radius } => {
+                let reach = vec2(radius, radius);
+                (min - reach, max + reach)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct BuildingRange {
+    kind: BuildingRangeKind,
+    shape: BuildingRangeShape,
+}
+
+/// One range vocabulary serves selected buildings and placement ghosts.
+/// Keeping the visit pure makes omissions testable without a graphics
+/// context and avoids allocating in the frame loop.
+fn visit_building_ranges(
+    anchor: Vec2,
+    kind: oxide_sim::BuildingKind,
+    mut visit: impl FnMut(BuildingRange),
+) {
+    let stats = kind.stats();
+    let size = vec2(stats.size.0 as f32, stats.size.1 as f32);
+    let center = anchor + size * 0.5;
+    if let Some(weapon) = stats.weapons.first() {
+        visit(BuildingRange {
+            kind: BuildingRangeKind::Weapon,
+            shape: BuildingRangeShape::Circle {
+                center,
+                radius: weapon.range.to_num::<f32>(),
+            },
+        });
+        if weapon.range.to_num::<f32>() > stats.vision as f32 {
+            visit(BuildingRange {
+                kind: BuildingRangeKind::Vision,
+                shape: BuildingRangeShape::Circle {
+                    center,
+                    radius: stats.vision as f32,
+                },
+            });
+        }
+    }
+    if kind == oxide_sim::BuildingKind::Array {
+        visit(BuildingRange {
+            kind: BuildingRangeKind::Vision,
+            shape: BuildingRangeShape::Circle {
+                center,
+                radius: stats.vision as f32,
+            },
+        });
+        visit(BuildingRange {
+            kind: BuildingRangeKind::Radar,
+            shape: BuildingRangeShape::Circle {
+                center,
+                radius: oxide_sim::stats::RADAR_DETECT_RADIUS as f32,
+            },
+        });
+    }
+    if kind == oxide_sim::BuildingKind::RepairBay {
+        visit(BuildingRange {
+            kind: BuildingRangeKind::Repair,
+            shape: BuildingRangeShape::FootprintOffset {
+                min: anchor,
+                max: anchor + size,
+                radius: oxide_sim::stats::REPAIR_BAY_RADIUS.to_num::<f32>(),
+            },
+        });
+    }
+}
+
 pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
     let s = ui_scale();
     let ring = |world: Vec2, radius: f32, color: Color| {
@@ -893,10 +1034,45 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
             color,
         );
     };
+    let footprint_offset = |min: Vec2, max: Vec2, radius: f32, color: Color| {
+        if radius <= 0.0 {
+            return;
+        }
+        let (outer_min, outer_max) =
+            (BuildingRangeShape::FootprintOffset { min, max, radius }).outer_bounds();
+        let min = game.camera.to_screen(min);
+        let max = game.camera.to_screen(max);
+        let outer_min = game.camera.to_screen(outer_min);
+        let outer_max = game.camera.to_screen(outer_max);
+        let radius = radius * game.camera.zoom;
+        let thickness = 1.5 * s;
+
+        draw_line(min.x, outer_min.y, max.x, outer_min.y, thickness, color);
+        draw_line(min.x, outer_max.y, max.x, outer_max.y, thickness, color);
+        draw_line(outer_min.x, min.y, outer_min.x, max.y, thickness, color);
+        draw_line(outer_max.x, min.y, outer_max.x, max.y, thickness, color);
+
+        const CORNER_SEGMENTS: usize = 12;
+        let corner = |center: Vec2, start: f32| {
+            let sweep = std::f32::consts::FRAC_PI_2;
+            let mut previous = center + vec2(start.cos(), start.sin()) * radius;
+            for segment in 1..=CORNER_SEGMENTS {
+                let angle = start + sweep * segment as f32 / CORNER_SEGMENTS as f32;
+                let next = center + vec2(angle.cos(), angle.sin()) * radius;
+                draw_line(previous.x, previous.y, next.x, next.y, thickness, color);
+                previous = next;
+            }
+        };
+        corner(min, std::f32::consts::PI);
+        corner(vec2(max.x, min.y), std::f32::consts::FRAC_PI_2 * 3.0);
+        corner(max, 0.0);
+        corner(vec2(min.x, max.y), std::f32::consts::FRAC_PI_2);
+    };
     let weapon_color = Color::new(0.85, 0.32, 0.29, 0.55);
     let sidearm_color = Color::new(0.85, 0.32, 0.29, 0.30);
     let vision_color = Color::new(0.91, 0.89, 0.85, 0.25);
     let radar_color = Color::new(0.25, 0.58, 0.51, 0.45);
+    let repair_color = Color::new(0.38, 0.78, 0.48, 0.48);
 
     let unit_rings = |world: Vec2, stats: &oxide_sim::stats::UnitStats| {
         for (i, weapon) in stats.weapons.iter().enumerate() {
@@ -912,22 +1088,21 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
             ring(world, stats.vision as f32, vision_color);
         }
     };
-    let building_rings = |world: Vec2, kind: oxide_sim::BuildingKind| {
-        let stats = kind.stats();
-        if let Some(weapon) = stats.weapons.first() {
-            ring(world, weapon.range.to_num::<f32>(), weapon_color);
-            if weapon.range.to_num::<f32>() > stats.vision as f32 {
-                ring(world, stats.vision as f32, vision_color);
+    let building_rings = |anchor: Vec2, kind: oxide_sim::BuildingKind| {
+        visit_building_ranges(anchor, kind, |range| {
+            let color = match range.kind {
+                BuildingRangeKind::Weapon => weapon_color,
+                BuildingRangeKind::Vision => vision_color,
+                BuildingRangeKind::Radar => radar_color,
+                BuildingRangeKind::Repair => repair_color,
+            };
+            match range.shape {
+                BuildingRangeShape::Circle { center, radius } => ring(center, radius, color),
+                BuildingRangeShape::FootprintOffset { min, max, radius } => {
+                    footprint_offset(min, max, radius, color);
+                }
             }
-        }
-        if kind == oxide_sim::BuildingKind::Array {
-            ring(world, stats.vision as f32, vision_color);
-            ring(
-                world,
-                oxide_sim::stats::RADAR_DETECT_RADIUS as f32,
-                radar_color,
-            );
-        }
+        });
     };
 
     for id in game.selection.units.iter().take(DECOR_CAP) {
@@ -941,19 +1116,16 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
     if let Some(id) = game.selection.building
         && let Some(building) = game.state.building(id)
     {
-        let center = building.center();
         building_rings(
-            vec2(center.x.to_num::<f32>(), center.y.to_num::<f32>()),
+            vec2(building.anchor.x as f32, building.anchor.y as f32),
             building.kind,
         );
     }
     // The armed placement ghost carries its rings to the cursor.
     if let Some(kind) = input.placing {
         let world = game.camera.to_world(input.mouse);
-        let size = kind.stats().size;
         let anchor = vec2(world.x.floor(), world.y.floor());
-        let center = anchor + vec2(size.0 as f32 * 0.5, size.1 as f32 * 0.5);
-        building_rings(center, kind);
+        building_rings(anchor, kind);
     }
 }
 
@@ -1015,38 +1187,102 @@ pub(crate) fn draw_rally_marker(game: &Game) {
 }
 
 pub(crate) fn draw_drag_rect(game: &Game, input: &InputState) {
-    if let Some(origin) = input.drag_origin {
-        let now = input.mouse;
-        if origin.distance(now) > crate::input::drag_threshold(ui_scale()) {
-            let lo = origin.min(now);
-            let size = (origin - now).abs();
-            draw_rectangle_lines(lo.x, lo.y, size.x, size.y, 1.5, BONE);
-            draw_rectangle(
-                lo.x,
-                lo.y,
-                size.x,
-                size.y,
-                Color::new(0.9, 0.88, 0.84, 0.08),
-            );
-            // Live preview: who would this select?
-            let a = game.camera.to_world(lo);
-            let b = game.camera.to_world(lo + size);
-            for unit in game.state.units() {
-                if unit.player != game.human {
-                    continue;
-                }
-                let p = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
-                if p.x >= a.x && p.x <= b.x && p.y >= a.y && p.y <= b.y {
-                    let screen = game.camera.to_screen(p);
-                    draw_circle_lines(
-                        screen.x,
-                        screen.y,
-                        unit.kind.stats().radius.to_num::<f32>() * game.camera.zoom + 3.0,
-                        1.5,
-                        BONE_FAINT,
-                    );
-                }
-            }
+    let Some(origin) = input.drag_origin else {
+        return;
+    };
+    let now = input.mouse;
+    let feedback = crate::input::drag_feedback(origin, now, ui_scale());
+    if feedback == crate::input::DragFeedback::Still {
+        return;
+    }
+    let lo = origin.min(now);
+    let size = (origin - now).abs();
+    draw_rectangle_lines(lo.x, lo.y, size.x, size.y, 1.5, BONE);
+    draw_rectangle(
+        lo.x,
+        lo.y,
+        size.x,
+        size.y,
+        Color::new(0.9, 0.88, 0.84, 0.08),
+    );
+    if feedback != crate::input::DragFeedback::Selection {
+        return;
+    }
+    // Live preview starts only once release would commit a box-select.
+    let a = game.camera.to_world(lo);
+    let b = game.camera.to_world(lo + size);
+    for unit in game.state.units() {
+        if unit.player != game.human {
+            continue;
         }
+        let p = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
+        if p.x >= a.x && p.x <= b.x && p.y >= a.y && p.y <= b.y {
+            let screen = game.camera.to_screen(p);
+            draw_circle_lines(
+                screen.x,
+                screen.y,
+                unit.kind.stats().radius.to_num::<f32>() * game.camera.zoom + 3.0,
+                1.5,
+                BONE_FAINT,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repair_bay_uses_the_exact_footprint_offset_aura() {
+        let anchor = vec2(10.0, 20.0);
+        let mut ranges = Vec::new();
+        visit_building_ranges(anchor, oxide_sim::BuildingKind::RepairBay, |range| {
+            ranges.push(range);
+        });
+
+        let [range] = ranges.as_slice() else {
+            panic!("Repair Bay should expose exactly one range: {ranges:?}");
+        };
+        assert_eq!(range.kind, BuildingRangeKind::Repair);
+        let radius = oxide_sim::stats::REPAIR_BAY_RADIUS.to_num::<f32>();
+        let size = oxide_sim::BuildingKind::RepairBay.stats().size;
+        let footprint_max = anchor + vec2(size.0 as f32, size.1 as f32);
+        assert_eq!(
+            range.shape,
+            BuildingRangeShape::FootprintOffset {
+                min: anchor,
+                max: footprint_max,
+                radius,
+            }
+        );
+        assert_eq!(
+            range.shape.outer_bounds(),
+            (
+                anchor - vec2(radius, radius),
+                footprint_max + vec2(radius, radius),
+            )
+        );
+    }
+
+    #[test]
+    fn weapon_ranges_remain_centered_circles() {
+        let anchor = vec2(10.0, 20.0);
+        let kind = oxide_sim::BuildingKind::Turret;
+        let mut ranges = Vec::new();
+        visit_building_ranges(anchor, kind, |range| ranges.push(range));
+
+        let weapon = ranges
+            .iter()
+            .find(|range| range.kind == BuildingRangeKind::Weapon)
+            .expect("a Turret exposes its weapon range");
+        let size = kind.stats().size;
+        assert_eq!(
+            weapon.shape,
+            BuildingRangeShape::Circle {
+                center: anchor + vec2(size.0 as f32, size.1 as f32) * 0.5,
+                radius: kind.stats().weapons[0].range.to_num::<f32>(),
+            }
+        );
     }
 }

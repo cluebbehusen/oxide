@@ -1,11 +1,13 @@
 //! Map-audit gates: every shipped scenario must keep its pace label,
-//! spawn fairness, and artillery pressure honest — the measuring stick
-//! from `driver map-audit` turned into a tripwire. Terrain on existing
-//! maps is frozen (hash fixtures move only by addition); these gates
-//! bind labels and future maps, not history.
+//! spawn fairness, artillery pressure, and mirrored authoring honest —
+//! the measuring stick from `driver map-audit` turned into a tripwire.
+//! Terrain on existing maps is frozen (hash fixtures move only by
+//! addition); these gates bind labels and future maps, not history.
 
+use chassis::grid::TilePos;
 use oxide_driver::audit::audit;
-use oxide_sim::Scenario;
+use oxide_sim::map::Map;
+use oxide_sim::{BuildingKind, PlayerId, Scenario};
 use std::path::PathBuf;
 
 fn shipped() -> Vec<(String, Scenario)> {
@@ -170,6 +172,156 @@ fn spawns_are_fair_to_every_seat() {
                 }
             }
             n => panic!("{name}: unexpected seat count {n}"),
+        }
+    }
+}
+
+#[test]
+fn every_map_mirrors_its_paired_seats_entry_by_entry() {
+    // The authoring rule the 0.7 mirror bug broke: a paired seat's
+    // starting units must be the entry-by-entry 180-degree image of its
+    // partner's, because ids are handed out in list order and every
+    // id-order tie-break downstream inherits that order.
+    //
+    // The pairing is derived from the map, not assumed: rotating a
+    // Foundry anchor 180 degrees lands on exactly one other anchor, and
+    // that relation is an involution. It reads {0<->1} on duels,
+    // {0<->3, 1<->2} or {0<->2, 1<->3} on the 4p maps, and
+    // {i <-> n-1-i} on the 6p/8p lane stacks — one rule for all of them.
+    //
+    // Kinds compare by Role, not by kind: a launch-time retint and any
+    // future faction-varied starting unit must still read as a mirror.
+    for (name, scenario) in shipped() {
+        let (map, anchors) =
+            Map::parse(&scenario.map).unwrap_or_else(|e| panic!("{name}: map parses ({e})"));
+        let (w, h) = (map.width(), map.height());
+
+        // Anchor digits are already ground by the time Map::parse is
+        // done, so this is the terrain symmetry the pairing rests on —
+        // scrap amounts and cosmetic rubble included.
+        for (pos, tile) in map.iter() {
+            let image = TilePos {
+                x: w - 1 - pos.x,
+                y: h - 1 - pos.y,
+            };
+            assert_eq!(
+                map.tile(image),
+                Some(tile),
+                "{name}: tile ({}, {}) is not the image of its mirror",
+                pos.x,
+                pos.y
+            );
+        }
+
+        let (fw, fh) = BuildingKind::Foundry.stats().size;
+        let anchor = |seat: PlayerId| {
+            anchors
+                .iter()
+                .find(|(p, _)| *p == seat)
+                .map(|(_, at)| *at)
+                .unwrap_or_else(|| panic!("{name}: seat {} has no Foundry anchor", seat.0))
+        };
+        // An anchor names the footprint's top-left, so its image sits a
+        // footprint in from the rotated corner.
+        let partner = |seat: PlayerId| {
+            let at = anchor(seat);
+            let image = TilePos {
+                x: w - fw - at.x,
+                y: h - fh - at.y,
+            };
+            anchors
+                .iter()
+                .find(|(_, a)| *a == image)
+                .map(|(p, _)| *p)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{name}: seat {}'s anchor rotates onto ({}, {}), where no seat sits",
+                        seat.0, image.x, image.y
+                    )
+                })
+        };
+
+        let state = scenario.build().expect("shipped maps build");
+        for index in 0..scenario.players.len() {
+            let seat = PlayerId(index as u8);
+            let mirror = partner(seat);
+            assert_ne!(mirror, seat, "{name}: seat {index} is its own mirror");
+            assert_eq!(
+                partner(mirror),
+                seat,
+                "{name}: the anchor pairing is not an involution at seat {index}"
+            );
+            // A seat mirroring its own teammate would hand one team both
+            // halves of the map's symmetry and leave the other pair
+            // fighting across it.
+            assert!(
+                state.hostile(seat, mirror),
+                "{name}: seat {index} mirrors teammate seat {}",
+                mirror.0
+            );
+            assert_eq!(
+                state.players()[index].scrap,
+                state.players()[mirror.0 as usize].scrap,
+                "{name}: seat {index} banks differently from its mirror"
+            );
+
+            let mine: Vec<_> = scenario
+                .units
+                .iter()
+                .filter(|u| u.player == seat.0)
+                .collect();
+            let theirs: Vec<_> = scenario
+                .units
+                .iter()
+                .filter(|u| u.player == mirror.0)
+                .collect();
+            assert_eq!(
+                mine.len(),
+                theirs.len(),
+                "{name}: seat {index} starts {} units against its mirror's {}",
+                mine.len(),
+                theirs.len()
+            );
+            for (k, (a, b)) in mine.iter().zip(&theirs).enumerate() {
+                assert_eq!(
+                    (b.x, b.y),
+                    (w - 1 - a.x, h - 1 - a.y),
+                    "{name}: seat {index}'s unit #{k} is not placed opposite its mirror's",
+                );
+                assert_eq!(
+                    a.kind.role(),
+                    b.kind.role(),
+                    "{name}: seat {index}'s unit #{k} fills a different role than its mirror's"
+                );
+            }
+
+            let mine: Vec<_> = scenario
+                .buildings
+                .iter()
+                .filter(|b| b.player == seat.0)
+                .collect();
+            let theirs: Vec<_> = scenario
+                .buildings
+                .iter()
+                .filter(|b| b.player == mirror.0)
+                .collect();
+            assert_eq!(
+                mine.len(),
+                theirs.len(),
+                "{name}: seat {index} starts a different number of structures than its mirror"
+            );
+            for (k, (a, b)) in mine.iter().zip(&theirs).enumerate() {
+                assert_eq!(
+                    a.kind, b.kind,
+                    "{name}: seat {index}'s structure #{k} differs in kind from its mirror's"
+                );
+                let (bw, bh) = a.kind.stats().size;
+                assert_eq!(
+                    (b.x, b.y),
+                    (w - bw - a.x, h - bh - a.y),
+                    "{name}: seat {index}'s structure #{k} is not placed opposite its mirror's"
+                );
+            }
         }
     }
 }

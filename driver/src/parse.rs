@@ -81,6 +81,7 @@ pub(crate) enum BuildingKindArg {
     Bastion,
     Array,
     Reclaimer,
+    RepairBay,
 }
 
 impl From<BuildingKindArg> for oxide_sim::BuildingKind {
@@ -92,6 +93,7 @@ impl From<BuildingKindArg> for oxide_sim::BuildingKind {
             BuildingKindArg::Bastion => oxide_sim::BuildingKind::Bastion,
             BuildingKindArg::Array => oxide_sim::BuildingKind::Array,
             BuildingKindArg::Reclaimer => oxide_sim::BuildingKind::Reclaimer,
+            BuildingKindArg::RepairBay => oxide_sim::BuildingKind::RepairBay,
         }
     }
 }
@@ -138,6 +140,7 @@ pub(crate) fn parse_key(s: &str) -> Result<Key> {
         "home" => Key::Home,
         "end" => Key::End,
         "escape" | "esc" => Key::Escape,
+        "backspace" => Key::Backspace,
         "space" => Key::Space,
         "f1" => Key::F1,
         "shift" => Key::Shift,

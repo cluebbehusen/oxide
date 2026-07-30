@@ -83,6 +83,47 @@ pub fn touch_pad(rect: Rect, ui: f32) -> Rect {
     )
 }
 
+/// Which side of the rect it describes a tooltip prefers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TooltipSide {
+    /// Above the anchor, left edges aligned — the command band's rule:
+    /// the cards sit in a row, so the space above them is free.
+    Above,
+    /// Right of the anchor, centered on it — the orders dock's rule:
+    /// the dock hugs the left edge and stacks upward, so "above" would
+    /// land on the neighbouring chip instead of open screen.
+    RightOf,
+}
+
+/// Places a tooltip box against the rect it describes. `gap` is the
+/// clearance from the anchor AND the margin held against the window
+/// edges, so callers pass it already ui-scaled.
+///
+/// Clamping is the point: a tall box on a short window pins under the
+/// top bar rather than climbing off screen, and a wide box near the
+/// right edge slides back inside. A box with nowhere to fit pins to
+/// the top — a clipped tail beats a clipped header.
+pub fn tooltip_origin(
+    anchor: Rect,
+    size: Vec2,
+    side: TooltipSide,
+    viewport: Vec2,
+    top_bar_h: f32,
+    gap: f32,
+) -> Vec2 {
+    let (x, y) = match side {
+        TooltipSide::Above => (anchor.x, anchor.y - size.y - gap),
+        TooltipSide::RightOf => (
+            anchor.x + anchor.w + gap,
+            anchor.y + (anchor.h - size.y) * 0.5,
+        ),
+    };
+    let max_x = (viewport.x - size.x - gap).max(0.0);
+    let min_y = top_bar_h + gap;
+    let max_y = (viewport.y - size.y - gap).max(min_y);
+    Vec2::new(x.clamp(0.0, max_x), y.clamp(min_y, max_y))
+}
+
 impl LayoutModel {
     /// Computes the frame's chrome geometry. `panel_top` is the band's
     /// top edge (`f32::INFINITY` when no panel is shown).
@@ -182,5 +223,70 @@ mod tests {
         let m = compute_at(f32::INFINITY, 2.0);
         assert!(!m.chrome_owns(vec2(600.0, 799.0)));
         assert!(m.chrome_owns(vec2(600.0, 30.0)), "the top bar always owns");
+    }
+
+    const VIEW: Vec2 = Vec2::new(1280.0, 800.0);
+
+    #[test]
+    fn a_dock_tooltip_tracks_the_chip_it_describes() {
+        // Two chips of a full dock, hundreds of px apart: each tooltip
+        // centers on ITS chip. Pinning to the band drew both beside the
+        // bottom one.
+        let size = Vec2::new(240.0, 90.0);
+        let top = Rect::new(8.0, 300.0, 44.0, 44.0);
+        let bottom = Rect::new(8.0, 620.0, 44.0, 44.0);
+        let a = tooltip_origin(top, size, TooltipSide::RightOf, VIEW, 32.0, 6.0);
+        let b = tooltip_origin(bottom, size, TooltipSide::RightOf, VIEW, 32.0, 6.0);
+        assert_eq!(a.x, 58.0, "clear of the dock, not under the pointer");
+        assert_eq!(a.y + size.y * 0.5, top.y + top.h * 0.5);
+        assert_eq!(b.y + size.y * 0.5, bottom.y + bottom.h * 0.5);
+    }
+
+    #[test]
+    fn a_tall_tooltip_stops_at_the_top_bar() {
+        // A five-line tooltip raised from a chip near the top of a
+        // short window: the header must stay readable, so the box pins
+        // below the bar instead of going negative.
+        let chip = Rect::new(8.0, 90.0, 44.0, 44.0);
+        let size = Vec2::new(240.0, 200.0);
+        let o = tooltip_origin(
+            chip,
+            size,
+            TooltipSide::RightOf,
+            Vec2::new(1024.0, 400.0),
+            32.0,
+            6.0,
+        );
+        assert_eq!(o.y, 38.0, "top bar + gap");
+        // Taller than the window has room for: still the top, never a
+        // max that fell below the min.
+        let o = tooltip_origin(
+            chip,
+            Vec2::new(240.0, 900.0),
+            TooltipSide::RightOf,
+            Vec2::new(1024.0, 400.0),
+            32.0,
+            6.0,
+        );
+        assert_eq!(o.y, 38.0);
+    }
+
+    #[test]
+    fn a_wide_tooltip_slides_back_inside_the_window() {
+        let card = Rect::new(1150.0, 700.0, 66.0, 80.0);
+        let size = Vec2::new(300.0, 60.0);
+        let o = tooltip_origin(card, size, TooltipSide::Above, VIEW, 32.0, 6.0);
+        assert_eq!(o.x, 974.0, "1280 - 300 - 6");
+        assert_eq!(o.y, 634.0, "above the card, not above the band");
+        // Wider than the window: pinned left, never a negative origin.
+        let o = tooltip_origin(
+            card,
+            Vec2::new(2000.0, 60.0),
+            TooltipSide::Above,
+            VIEW,
+            32.0,
+            6.0,
+        );
+        assert_eq!(o.x, 0.0);
     }
 }

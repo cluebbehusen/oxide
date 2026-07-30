@@ -1,5 +1,6 @@
 //! The debug protocol: how anything outside the process drives a running
-//! shell.
+//! shell — or the windowless `oxide-driver session` speaking the same
+//! vocabulary.
 //!
 //! Wire format is JSON Lines over TCP — one request object per line, one
 //! response object per line, correlated by `id`:
@@ -16,22 +17,54 @@
 //! sim and is fingerprinted by the state hash), hashes come as hex strings
 //! (u64s don't survive every JSON tool), and the map comes back as ASCII.
 //!
-//! This crate is types only — no sockets. The shell serves it, the driver
-//! speaks it, and both stay in lockstep by construction.
+//! This crate is the wire contract whole: the types AND the framed
+//! transport loop ([`framing`]) every server runs. The shell serves it,
+//! the driver speaks it (and serves it headless), and all of them stay in
+//! lockstep by construction.
 
+pub mod framing;
 pub mod input;
+pub mod session;
 pub mod view;
 
-use oxide_sim::{Command, PlayerCommand, PlayerId};
+use oxide_sim::{Command, Event, PlayerCommand, PlayerId};
 use serde::{Deserialize, Serialize};
 
 pub use input::{Key, MouseButton, RawEvent};
+pub use session::{DebugSession, check_speed, dispatch_shared};
 pub use view::{
-    BuildingView, CameraView, PlayerView, StateFilter, StateView, StatusView, UiView, UnitView,
+    BuildingView, CameraView, FogView, GhostView, PlayerView, RememberedTileView, StateFilter,
+    StateView, StatusView, UiView, UnitView,
 };
 
 /// Default TCP port for `--debug-server`.
 pub const DEFAULT_PORT: u16 = 4123;
+
+/// Largest fast-forward request the shell will execute in one operation.
+pub const MAX_ADVANCE_TICKS: u64 = 1_000_000;
+
+/// Largest presentation-preserving step the shell will execute at once.
+pub const MAX_PRESENT_TICKS: u64 = 120;
+
+/// Ticks per second both sides budget for a synchronous advance —
+/// deliberately conservative against the harness benchmarks, so a slow
+/// machine still finishes inside the deadline. The client derives its
+/// read timeout from this and the server its reply deadline; sharing one
+/// figure is what keeps the two from ever disagreeing about a legal wait.
+pub const ADVANCE_TICKS_PER_BUDGET_SECOND: u64 = 1_000;
+
+/// Longest request line a server accepts, newline excluded. A line that
+/// runs past it is answered with an error naming the limit and the
+/// connection is closed — framing has to bound its own allocation, and no
+/// legitimate request comes within three orders of magnitude of this.
+pub const MAX_FRAME_BYTES: usize = 1 << 20;
+
+/// Ceiling on a RESPONSE line a client should accept. Requests are
+/// hand-sized and [`MAX_FRAME_BYTES`] bounds them; replies scale with
+/// the world (a deep `query_state`, a long presented-event drain), so
+/// the client's ceiling is generous rather than symmetric — a server
+/// never refuses its own legal reply.
+pub const MAX_RESPONSE_BYTES: usize = 64 << 20;
 
 /// Everything a client can ask of a running shell.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -45,6 +78,15 @@ pub enum Request {
         #[serde(default)]
         filter: StateFilter,
     },
+    /// The world as one seat honestly knows it: its own economy and command
+    /// eligibility, visibility mask, entities filtered to current sight,
+    /// ghost memories, remembered salvage, and radar contacts. The fog-safe
+    /// counterpart to the omniscient [`Request::QueryState`] — what lets an
+    /// agent play fair.
+    QueryFogView {
+        /// The seat whose knowledge to report.
+        player: PlayerId,
+    },
     /// Camera position, zoom, and visible world rectangle.
     QueryCamera,
     /// Shell mode and active menu state.
@@ -52,10 +94,18 @@ pub enum Request {
     /// The canonical state fingerprint at the current tick.
     StateHash,
     /// Run sim ticks now (bots included), regardless of pause state, then
-    /// report the resulting tick and hash. Requests above one million
-    /// ticks are capped; the reply's `ticks` field reports what actually
-    /// ran.
+    /// report the resulting tick and hash. Requests above
+    /// [`MAX_ADVANCE_TICKS`] are capped; the reply's `ticks` field reports
+    /// what actually ran.
     AdvanceTicks {
+        /// How many ticks to run.
+        ticks: u64,
+    },
+    /// Run a small number of ticks without suppressing presentation, then
+    /// return every sim event produced. This is the deterministic way for
+    /// an agent to observe command rejection, shots, deaths, and transient
+    /// shell feedback. Requests above [`MAX_PRESENT_TICKS`] are capped.
+    PresentTicks {
         /// How many ticks to run.
         ticks: u64,
     },
@@ -121,6 +171,8 @@ pub enum Reply {
     Status(StatusView),
     /// Answer to [`Request::QueryState`].
     State(StateView),
+    /// Answer to [`Request::QueryFogView`].
+    Fog(FogView),
     /// Answer to [`Request::QueryCamera`].
     Camera(CameraView),
     /// Answer to [`Request::QueryUi`].
@@ -129,6 +181,8 @@ pub enum Reply {
     Hash(HashView),
     /// Answer to [`Request::AdvanceTicks`].
     Advanced(AdvancedView),
+    /// Answer to [`Request::PresentTicks`].
+    Presented(PresentedView),
     /// Answer to [`Request::Screenshot`].
     Screenshot(ScreenshotView),
     /// Answer to [`Request::ToggleOverlay`].
@@ -157,15 +211,37 @@ pub struct AdvancedView {
     pub hash: String,
 }
 
+/// Result of a presentation-preserving step.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PresentedView {
+    /// Ticks actually run.
+    pub ticks: u64,
+    /// Tick counter afterwards.
+    pub tick: u64,
+    /// State hash afterwards, as hex.
+    pub hash: String,
+    /// Events emitted across the interval, in tick and event order.
+    pub events: Vec<Event>,
+}
+
 /// Where a screenshot landed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScreenshotView {
-    /// PNG path (relative to the shell's working directory unless absolute).
+    /// PNG path (relative to the server's working directory unless absolute).
     pub path: String,
     /// Pixel width.
     pub width: u32,
     /// Pixel height.
     pub height: u32,
+    /// Which renderer produced the pixels: `"gpu"` is the shell's real
+    /// frame, `"cpu"` the headless session's schematic tiny-skia render.
+    /// An agent judging visual polish must know which one it is reading.
+    #[serde(default = "gpu_renderer")]
+    pub renderer: String,
+}
+
+fn gpu_renderer() -> String {
+    "gpu".to_string()
 }
 
 /// Overlay toggle result.
@@ -301,28 +377,106 @@ mod tests {
         back.request
     }
 
-    #[test]
-    fn requests_roundtrip() {
-        for req in [
-            Request::Status,
-            Request::QueryState {
-                filter: StateFilter::default(),
-            },
-            Request::QueryUi,
-            Request::AdvanceTicks { ticks: 99 },
-            Request::SendCommand {
-                player: PlayerId(0),
-                command: Command::Stop {
-                    units: vec![UnitId(3)],
-                },
-            },
-            Request::InjectEvent {
-                event: RawEvent::Wheel { delta: -1.0 },
-            },
-            Request::Screenshot { path: None },
-        ] {
-            assert_eq!(roundtrip(&req), req);
+    /// Exactly one sample per wire-enum variant. Paired with an exhaustive
+    /// tag match, a new variant cannot reach the wire unexercised: the match
+    /// stops compiling until it is indexed, and this stops passing until it
+    /// is sampled.
+    pub(crate) fn assert_every_tag_sampled(
+        tags: impl IntoIterator<Item = usize>,
+        variants: usize,
+        what: &str,
+    ) {
+        let mut samples = vec![0usize; variants];
+        for tag in tags {
+            samples[tag] += 1;
         }
+        for (tag, count) in samples.iter().enumerate() {
+            assert_eq!(
+                *count, 1,
+                "{what} variant {tag} has {count} samples; every variant needs exactly one"
+            );
+        }
+    }
+
+    /// Contiguous index per [`Request`] variant, in declaration order.
+    fn request_tag(request: &Request) -> usize {
+        match request {
+            Request::Status => 0,
+            Request::QueryState { .. } => 1,
+            Request::QueryFogView { .. } => 2,
+            Request::QueryCamera => 3,
+            Request::QueryUi => 4,
+            Request::StateHash => 5,
+            Request::AdvanceTicks { .. } => 6,
+            Request::PresentTicks { .. } => 7,
+            Request::Pause => 8,
+            Request::Resume => 9,
+            Request::SetSpeed { .. } => 10,
+            Request::SendCommand { .. } => 11,
+            Request::InjectEvent { .. } => 12,
+            Request::Screenshot { .. } => 13,
+            Request::ToggleOverlay => 14,
+            Request::LoadScenario { .. } => 15,
+            Request::LoadReplay { .. } => 16,
+            Request::SaveReplay { .. } => 17,
+        }
+    }
+
+    const REQUEST_VARIANTS: usize = 18;
+
+    /// Contiguous index per [`Reply`] variant, in declaration order.
+    fn reply_tag(reply: &Reply) -> usize {
+        match reply {
+            Reply::Ok => 0,
+            Reply::Status(_) => 1,
+            Reply::State(_) => 2,
+            Reply::Fog(_) => 3,
+            Reply::Camera(_) => 4,
+            Reply::Ui(_) => 5,
+            Reply::Hash(_) => 6,
+            Reply::Advanced(_) => 7,
+            Reply::Presented(_) => 8,
+            Reply::Screenshot(_) => 9,
+            Reply::Overlay(_) => 10,
+            Reply::Saved(_) => 11,
+        }
+    }
+
+    const REPLY_VARIANTS: usize = 12;
+
+    /// Contiguous index per [`Command`] variant, in declaration order.
+    /// The sim's verbs ride this wire through [`Request::SendCommand`],
+    /// so they carry the same obligation as the protocol's own enums: a
+    /// new verb stops this match compiling until it is indexed, and the
+    /// sample test stops passing until it is exercised on the wire.
+    fn command_tag(command: &Command) -> usize {
+        match command {
+            Command::Move { .. } => 0,
+            Command::Attack { .. } => 1,
+            Command::AttackMove { .. } => 2,
+            Command::Harvest { .. } => 3,
+            Command::Patrol { .. } => 4,
+            Command::Stop { .. } => 5,
+            Command::Train { .. } => 6,
+            Command::Build { .. } => 7,
+            Command::Cancel { .. } => 8,
+            Command::Repair { .. } => 9,
+            Command::Salvage { .. } => 10,
+            Command::CancelTrain { .. } => 11,
+            Command::SetRally { .. } => 12,
+            Command::Surrender => 13,
+            Command::RepairUnit { .. } => 14,
+        }
+    }
+
+    const COMMAND_VARIANTS: usize = 15;
+
+    #[test]
+    fn an_omitted_screenshot_path_survives_the_roundtrip() {
+        // The sampled variant carries a path; its defaulted form is pinned
+        // here, since serde only writes what is present.
+        let req = Request::Screenshot { path: None };
+        assert_eq!(roundtrip(&req), req);
     }
 
     #[test]
@@ -353,6 +507,29 @@ mod tests {
         assert_eq!(hash_hex(0x1234), "0x0000000000001234");
     }
 
+    #[test]
+    fn an_empty_visible_window_is_zero_zero_not_absent() {
+        // main_menu's grid reports the run of cards actually drawn; a
+        // window showing none is `[0, 0]`, which must stay distinct on
+        // the wire from a mode with no menu (absent field). Scrolled
+        // windows report a real sub-range, not `[0, items.len()]`.
+        let ui = UiView {
+            mode: "main_menu".into(),
+            title: Some("OXIDE".into()),
+            selected: Some(0),
+            items: vec!["Skirmish".into()],
+            visible_range: Some([0, 0]),
+            hover: None,
+            chrome: None,
+        };
+        let json = serde_json::to_string(&ResponseEnvelope::ok(3, Reply::Ui(ui.clone()))).unwrap();
+        assert!(
+            json.contains(r#""visible_range":[0,0]"#),
+            "the empty window rides the wire explicitly: {json}"
+        );
+        assert_eq!(reply_roundtrip(&Reply::Ui(ui.clone())), Reply::Ui(ui));
+    }
+
     fn reply_roundtrip(reply: &Reply) -> Reply {
         let json = serde_json::to_string(&ResponseEnvelope::ok(9, reply.clone())).unwrap();
         let back: ResponseEnvelope = serde_json::from_str(&json).unwrap();
@@ -367,10 +544,14 @@ mod tests {
             Request::QueryState {
                 filter: StateFilter::default(),
             },
+            Request::QueryFogView {
+                player: PlayerId(0),
+            },
             Request::QueryCamera,
             Request::QueryUi,
             Request::StateHash,
             Request::AdvanceTicks { ticks: 12 },
+            Request::PresentTicks { ticks: 2 },
             Request::Pause,
             Request::Resume,
             Request::SetSpeed { multiplier: 2.5 },
@@ -397,8 +578,11 @@ mod tests {
                 path: "replays/y.json".into(),
             },
         ];
-        // A new method with no entry here escapes the wire round-trip.
-        assert_eq!(requests.len(), 16);
+        assert_every_tag_sampled(
+            requests.iter().map(request_tag),
+            REQUEST_VARIANTS,
+            "request",
+        );
         for req in requests {
             assert_eq!(
                 roundtrip(&req),
@@ -406,6 +590,99 @@ mod tests {
                 "request variant did not survive: {req:?}"
             );
         }
+    }
+
+    #[test]
+    fn every_command_variant_survives_the_send_command_wire() {
+        use chassis::grid::TilePos;
+        use oxide_sim::{BuildingId, BuildingKind, Target, UnitKind};
+        let commands = vec![
+            Command::Move {
+                units: vec![UnitId(1)],
+                goal: TilePos::new(3, 4),
+                queue: true,
+            },
+            Command::Attack {
+                units: vec![UnitId(2)],
+                target: Target::Building(BuildingId(1)),
+                queue: false,
+            },
+            Command::AttackMove {
+                units: vec![UnitId(3)],
+                goal: TilePos::new(5, 6),
+                queue: false,
+            },
+            Command::Harvest {
+                units: vec![UnitId(4)],
+                node: TilePos::new(7, 2),
+                queue: false,
+            },
+            Command::Patrol {
+                units: vec![UnitId(5)],
+                waypoints: vec![TilePos::new(1, 1), TilePos::new(2, 2)],
+            },
+            Command::Stop {
+                units: vec![UnitId(6)],
+            },
+            Command::Train {
+                building: BuildingId(0),
+                kind: UnitKind::Harvester,
+            },
+            Command::Build {
+                units: vec![UnitId(7)],
+                kind: BuildingKind::Turret,
+                anchor: TilePos::new(9, 9),
+                queue: false,
+                defer: false,
+            },
+            Command::Cancel {
+                building: BuildingId(2),
+            },
+            Command::Repair {
+                units: vec![UnitId(8)],
+                building: BuildingId(3),
+                queue: false,
+            },
+            Command::Salvage {
+                units: vec![UnitId(9)],
+                building: BuildingId(4),
+                queue: false,
+            },
+            Command::CancelTrain {
+                building: BuildingId(5),
+                index: 1,
+            },
+            Command::SetRally {
+                building: BuildingId(6),
+                rally: Some(TilePos::new(4, 4)),
+            },
+            Command::Surrender,
+            Command::RepairUnit {
+                units: vec![UnitId(10)],
+                target: UnitId(11),
+                queue: false,
+            },
+        ];
+        assert_every_tag_sampled(
+            commands.iter().map(command_tag),
+            COMMAND_VARIANTS,
+            "command",
+        );
+        for command in commands {
+            let req = Request::SendCommand {
+                player: PlayerId(0),
+                command,
+            };
+            assert_eq!(
+                roundtrip(&req),
+                req,
+                "command variant did not survive: {req:?}"
+            );
+        }
+        // Unit variants ride as a bare tag — the exact string a client
+        // sends for a concession.
+        let json = serde_json::to_string(&Command::Surrender).unwrap();
+        assert_eq!(json, r#"{"type":"surrender"}"#);
     }
 
     #[test]
@@ -430,6 +707,7 @@ mod tests {
                 recorded_commands: 3,
             }),
             Reply::State(full),
+            Reply::Fog(FogView::capture(&state, PlayerId(0))),
             Reply::Camera(CameraView {
                 center: [1.0, 2.0],
                 zoom: 32.0,
@@ -456,10 +734,20 @@ mod tests {
                 tick: 15,
                 hash: hash_hex(0xabcd),
             }),
+            Reply::Presented(PresentedView {
+                ticks: 2,
+                tick: 17,
+                hash: hash_hex(0xbcde),
+                events: vec![Event::CommandRejected {
+                    player: PlayerId(0),
+                    reason: oxide_sim::command::RejectReason::BadSite,
+                }],
+            }),
             Reply::Screenshot(ScreenshotView {
                 path: "shots/x.png".into(),
                 width: 800,
                 height: 600,
+                renderer: "cpu".into(),
             }),
             Reply::Overlay(OverlayView { enabled: true }),
             Reply::Saved(SavedView {
@@ -467,8 +755,7 @@ mod tests {
                 commands: 42,
             }),
         ];
-        // A new reply kind with no entry here escapes the wire round-trip.
-        assert_eq!(replies.len(), 10);
+        assert_every_tag_sampled(replies.iter().map(reply_tag), REPLY_VARIANTS, "reply");
         for reply in replies {
             assert_eq!(
                 reply_roundtrip(&reply),

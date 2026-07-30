@@ -29,6 +29,43 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         }
     }
 
+    // A living player always has a slow way back into the game, even
+    // after the map's salvage is exhausted. A destroyed harvest line
+    // uses the faster recovery cadence until one replacement Harvester
+    // is affordable. Credit is per seat, not per Foundry: extra bases
+    // improve resilience without multiplying the free income.
+    let completed_ticks = state.tick.saturating_add(1);
+    let baseline_tick = completed_ticks >= crate::stats::FOUNDRY_BASELINE_START_TICK
+        && completed_ticks.is_multiple_of(crate::stats::FOUNDRY_BASELINE_PERIOD);
+    let recovery_tick = state
+        .tick
+        .is_multiple_of(crate::stats::FOUNDRY_RECOVERY_PERIOD);
+    if baseline_tick || recovery_tick {
+        let harvester_cost = UnitKind::Harvester.stats().cost;
+        let credits: Vec<PlayerId> = state
+            .players
+            .iter()
+            .enumerate()
+            .map(|(index, _)| PlayerId(index as u8))
+            .filter(|player| {
+                let recovery = state.player(*player).scrap < harvester_cost
+                    && super::harvester_recovery_needed(state, *player);
+                let baseline = !state.player(*player).resigned
+                    && state.buildings.iter().any(|building| {
+                        building.player == *player
+                            && building.hp > 0
+                            && building.built
+                            && building.kind == crate::stats::BuildingKind::Foundry
+                    });
+                (recovery && recovery_tick) || (baseline && baseline_tick)
+            })
+            .collect();
+        for player in credits {
+            let bank = &mut state.player_mut(player).scrap;
+            *bank = bank.saturating_add(1);
+        }
+    }
+
     let ids: Vec<_> = state.buildings.iter().map(|b| b.id).collect();
     for id in ids {
         let Some(b) = state.building_mut(id) else {

@@ -8,6 +8,10 @@
 //! ```sh
 //! cargo test -p oxide-driver --test menu_ux -- --ignored --test-threads 1
 //! ```
+//!
+//! Every spawned shell gets its own scratch HOME and platform-specific
+//! config/data roots. The guard removes that tree only after the child
+//! has exited, so even autosave-producing walks cannot touch real data.
 
 use anyhow::{Result, bail};
 use oxide_driver::auto::{
@@ -15,24 +19,77 @@ use oxide_driver::auto::{
 };
 use oxide_driver::client::Client;
 use oxide_protocol::{Key, MouseButton, RawEvent, Request};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_HOME: AtomicU64 = AtomicU64::new(0);
+
+/// Owns both the spawned shell and its isolated HOME. Dropping the
+/// shell first matters: a final autosave must finish before the
+/// scratch tree is removed.
+struct MenuShellGuard {
+    shell: Option<ShellGuard>,
+    home: PathBuf,
+}
+
+impl Drop for MenuShellGuard {
+    fn drop(&mut self) {
+        drop(self.shell.take());
+        if let Err(error) = std::fs::remove_dir_all(&self.home)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!(
+                "warning: could not remove menu UX scratch HOME {}: {error}",
+                self.home.display()
+            );
+        }
+    }
+}
+
+fn scratch_home(port: u16) -> Result<PathBuf> {
+    loop {
+        let id = NEXT_HOME.fetch_add(1, Ordering::Relaxed);
+        let home =
+            std::env::temp_dir().join(format!("oxide-menu-ux-{}-{port}-{id}", std::process::id()));
+        match std::fs::create_dir(&home) {
+            Ok(()) => return Ok(home),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
 
 /// Spawns an automation-mode shell (via the shared harness vocabulary)
 /// and walks Home -> Play so tests operate on the scenario list (the
 /// widget with enough rows to scroll).
-fn spawn_at_map_list(port: u16) -> Result<(ShellGuard, Client)> {
+fn spawn_at_map_list(port: u16) -> Result<(MenuShellGuard, Client)> {
     let (guard, mut client) = spawn(port)?;
-    // By label, never by blind Enter: with autosaves on this machine,
-    // Home's first row is Continue and Enter would resume a match.
+    // By label, never by blind Enter: if a fixture later adds an
+    // autosave, Home's first row becomes Continue.
     activate_labeled(&mut client, "play")?;
     Ok((guard, client))
 }
 
-fn spawn(port: u16) -> Result<(ShellGuard, Client)> {
-    spawn_shell(&SpawnOptions {
+fn spawn(port: u16) -> Result<(MenuShellGuard, Client)> {
+    let home = scratch_home(port)?;
+    let spawned = spawn_shell(&SpawnOptions {
         port,
         paused: false,
-        home: None,
-    })
+        home: Some(home.clone()),
+    });
+    match spawned {
+        Ok((shell, client)) => Ok((
+            MenuShellGuard {
+                shell: Some(shell),
+                home,
+            },
+            client,
+        )),
+        Err(error) => {
+            std::fs::remove_dir_all(home).ok();
+            Err(error)
+        }
+    }
 }
 
 fn hover(client: &mut Client, x: f32, y: f32) -> Result<()> {
@@ -179,8 +236,7 @@ fn menu_rows_activate_on_release_not_on_press() -> Result<()> {
 fn every_screen_transition_answers_the_walk() -> Result<()> {
     // One pass over the whole screen graph, asserting the shell's own
     // mode report at each hop. Navigation is by row LABEL, never by
-    // index: Home's rows shift with resumable state, and the walk must
-    // not depend on this machine's autosaves.
+    // index: Home's rows shift with resumable state.
     let (_guard, mut client) = spawn(4143)?;
     assert_mode(&mut client, "home", "boot")?;
 
@@ -221,6 +277,16 @@ fn every_screen_transition_answers_the_walk() -> Result<()> {
     // Cancel must sit preselected: bare Enter declines the destruction.
     press_key(&mut client, Key::Enter)?;
     assert_mode(&mut client, "pause_menu", "confirm > default is Cancel")?;
+    // Settings opens over the paused match and leaving returns to the
+    // SAME pause menu — the payload waits intact, not a fresh Home.
+    activate_labeled(&mut client, "settings")?;
+    assert_mode(&mut client, "settings", "Pause > Settings")?;
+    activate_labeled(&mut client, "controls")?;
+    assert_mode(&mut client, "controls", "pause-origin Settings > Controls")?;
+    press_key(&mut client, Key::Escape)?;
+    assert_mode(&mut client, "settings", "Controls > Esc")?;
+    press_key(&mut client, Key::Escape)?;
+    assert_mode(&mut client, "pause_menu", "Settings > Esc returns to pause")?;
     activate_labeled(&mut client, "main menu")?;
     activate_labeled(&mut client, "main menu")?;
     assert_mode(&mut client, "home", "pause > Main Menu confirmed")?;
@@ -233,16 +299,9 @@ fn a_modifier_held_on_another_screen_still_captures_its_chord() -> Result<()> {
     // The 0.9 regression: Controls tracked modifier edges only inside
     // its own arm, so a Ctrl pressed in Settings read as unheld and a
     // rebind captured a bare key. Modifier truth is global now, and
-    // this walks the exact failing path. The spawned shell gets a
-    // throwaway HOME so the rebind persists into a temp config, never
-    // this machine's real one.
-    let tmp = std::env::temp_dir().join(format!("oxide-menu-ux-{}", std::process::id()));
-    std::fs::create_dir_all(&tmp)?;
-    let (_guard, mut client) = spawn_shell(&SpawnOptions {
-        port: 4144,
-        paused: false,
-        home: Some(tmp.clone()),
-    })?;
+    // this walks the exact failing path. The shared spawn helper keeps
+    // the persisted rebind inside this test's scratch HOME.
+    let (_guard, mut client) = spawn(4144)?;
 
     activate_labeled(&mut client, "settings")?;
     // Ctrl goes down HERE, on the Settings screen...
@@ -269,6 +328,5 @@ fn a_modifier_held_on_another_screen_still_captures_its_chord() -> Result<()> {
             view.items
         );
     }
-    std::fs::remove_dir_all(&tmp).ok();
     Ok(())
 }

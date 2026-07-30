@@ -67,6 +67,10 @@ pub enum BuildingKind {
     /// Grinds ambient debris into a scrap trickle. Slow to repay itself;
     /// the reason a match can outlive its scrap patches.
     Reclaimer,
+    /// Field workshop: an unarmed aura that welds own wounded machines —
+    /// ground and air alike — inside its ring, billed per hp from the
+    /// owner's bank at repair pricing.
+    RepairBay,
 }
 
 /// A movement medium. Ground units path and collide on the terrain grid;
@@ -132,7 +136,7 @@ pub struct WeaponStats {
     /// the direct hit.
     pub splash: Option<Fx>,
     /// Indirect fire arcs over terrain: the line-of-sight trace that lets
-    /// rock and buildings block direct shots is skipped.
+    /// rock block direct shots is skipped.
     pub indirect: bool,
     /// The shot is a real projectile: a Shell entity travels to the
     /// victim's fire-time position and resolves on arrival — dodgeable
@@ -355,7 +359,14 @@ const SENTINEL: UnitStats = UnitStats {
     speed: Fx::lit("0.11"), // 2.2 tiles/s — armies are slightly outrun by harvesters
     radius: Fx::lit("0.35"),
     cost: 90, // 0.10 balance: spam pays — four campaign rounds proved 75 optimal-by-flooding
-    train_ticks: 160, // 8 s
+    // 0.13 balance: 7.5 s, and load-bearing twice over despite the kind
+    // being faction-shared. Measured at 160 under the 0.13 economy:
+    // classic-bot long-haul stalls past the liveness horizon (8,245
+    // ticks of zero progress), and the mixed-roster marginal reads
+    // ferrous 37.3% [34.9, 39.8] against 48.5% at 150 — Ferrous fields
+    // the heavier Sentinel share, so the shared cadence is not
+    // faction-neutral in play.
+    train_ticks: 150, // 7.5 s
     domain: Domain::Ground,
     weapons: &[
         WeaponStats {
@@ -497,8 +508,12 @@ const BUZZARD: UnitStats = UnitStats {
     max_hp: 110,
     speed: Fx::lit("0.10"), // 2.0 tiles/s
     radius: Fx::lit("0.4"),
-    cost: 160,
-    train_ticks: 240, // 12 s
+    // 0.13 balance: at 160 the durable flyer was strictly outclassed by
+    // the Darter (more dps at 56% the price) and fell out of play (0.8%
+    // of army value). 120 is arena par against a common Sentinel line:
+    // the Buzzard keeps more value, the Darter clears faster.
+    cost: 120,
+    train_ticks: 180, // 9 s
     domain: Domain::Air,
     weapons: &[WeaponStats {
         damage: 25,
@@ -518,8 +533,12 @@ const DARTER: UnitStats = UnitStats {
     max_hp: 55,
     speed: Fx::lit("0.17"), // 3.4 tiles/s — the fastest thing in the sky
     radius: Fx::lit("0.3"),
-    cost: 90,
-    train_ticks: 140, // 7 s
+    // 0.13 balance: 90 underpriced the speed — the factorial probe read
+    // Ferrous at 21.5% of mixed-roster victories under the old prices.
+    // The shipped 100 (with the Sentinel at 150 ticks) measures 48.5%;
+    // the harsher 110 probe read 46.9% and was rejected as overshoot.
+    cost: 100,
+    train_ticks: 150, // 7.5 s
     domain: Domain::Air,
     weapons: &[WeaponStats {
         damage: 8,
@@ -696,6 +715,18 @@ const RECLAIMER: BuildingStats = BuildingStats {
     }),
 };
 
+const REPAIR_BAY: BuildingStats = BuildingStats {
+    max_hp: 400,
+    size: (2, 2),
+    vision: 5,
+    produces: &[],
+    weapons: &[],
+    construction: Some(ConstructionStats {
+        cost: 200,
+        build_ticks: 350,
+    }),
+};
+
 impl UnitKind {
     /// Static stats for this kind.
     pub const fn stats(self) -> &'static UnitStats {
@@ -726,6 +757,7 @@ impl BuildingKind {
             BuildingKind::Bastion => "bastion",
             BuildingKind::Array => "array",
             BuildingKind::Reclaimer => "reclaimer",
+            BuildingKind::RepairBay => "repair bay",
         }
     }
 
@@ -739,6 +771,7 @@ impl BuildingKind {
             BuildingKind::Bastion => &BASTION,
             BuildingKind::Array => &ARRAY,
             BuildingKind::Reclaimer => &RECLAIMER,
+            BuildingKind::RepairBay => &REPAIR_BAY,
         }
     }
 }
@@ -757,9 +790,10 @@ pub const WRECK_VALUE_DEN: u32 = 100;
 pub const FOUNDRY_WRECK_VALUE: u32 = 300;
 
 /// Ticks between global wreck-decay steps (every wreck tile loses one
-/// salvage per step). Battlefield scrap is a fresh-battle prize, not a
-/// bank.
-pub const WRECK_DECAY_TICKS: u64 = 40;
+/// salvage per step). Battlefield scrap is a prize that outlives the
+/// battle — worth a deliberate trip minutes later — but never a
+/// permanent bank.
+pub const WRECK_DECAY_TICKS: u64 = 300;
 
 /// Outer detection ring of the Array, in tiles: hostile units inside it
 /// but out of true sight appear as blips — a tile, no kind, no owner.
@@ -773,9 +807,28 @@ pub const RADAR_DETECT_RADIUS: i32 = 16;
 pub const SHELL_SPEED: Fx = Fx::lit("0.30");
 
 /// Ticks per scrap credited by each built Reclaimer. At this rate the
-/// building repays its own price in roughly four minutes — insurance and
+/// building repays its own price in roughly three minutes — insurance and
 /// a stalemate valve, never an opening.
-pub const RECLAIMER_PERIOD: u64 = 30;
+pub const RECLAIMER_PERIOD: u64 = 24;
+
+/// Ticks per emergency scrap credited by a surviving Foundry after its
+/// owner's last Harvester is gone. The credit stops at the price of a new
+/// Harvester and never runs while one is already training.
+pub const FOUNDRY_RECOVERY_PERIOD: u64 = 10;
+
+/// Ticks per baseline scrap credited by a living player's Foundry.
+///
+/// This is the economy's last-resort clock: exhausted nodes and a destroyed
+/// Reclaimer may make progress slow, but can never make the match
+/// unrecoverable. Credit is per player rather than per Foundry, so extra
+/// bases add resilience without multiplying the free income.
+pub const FOUNDRY_BASELINE_PERIOD: u64 = 60;
+
+/// The baseline Foundry income begins only after the normal opening and
+/// midgame economy have had time to matter. Reclaimers remain the efficient
+/// insurance investment; this late floor exists only to make a long match
+/// recoverable.
+pub const FOUNDRY_BASELINE_START_TICK: u64 = 12_000;
 
 /// Per-mille of a building's cost billed per hp welded (against max_hp).
 /// The three economy verbs price strictly build > repair > salvage:
@@ -786,9 +839,47 @@ pub const RECLAIMER_PERIOD: u64 = 30;
 /// charged 25-47% and would have made salvage refunds a printer).
 pub const REPAIR_COST_PERMILLE: u64 = 850;
 
+pub(crate) fn unit_repair_debit(kind: UnitKind, progress: u32) -> u32 {
+    let stats = kind.stats();
+    let owed = |ticks: u32| {
+        let welded = u64::from(stats.max_hp) * u64::from(ticks) / u64::from(stats.train_ticks);
+        welded * u64::from(stats.cost) * REPAIR_COST_PERMILLE / u64::from(stats.max_hp)
+    };
+    u32::try_from(owed(progress + 1).div_ceil(1000) - owed(progress).div_ceil(1000))
+        .expect("one unit-repair tick debit fits u32")
+}
+
+pub(crate) fn unit_repair_opening_debit(kind: UnitKind) -> u32 {
+    let stats = kind.stats();
+    let first_weld_tick = stats.train_ticks.div_ceil(stats.max_hp);
+    unit_repair_debit(kind, first_weld_tick - 1)
+}
+
 /// Per-mille of a building's cost refunded per hp drained by salvage
 /// (against max_hp). A full-health salvage banks exactly cost*800/1000.
 pub const SALVAGE_REFUND_PERMILLE: u64 = 800;
+
+/// How close a welder must stand to a wounded machine for the torch to
+/// hold, in tiles between body centers — body contact, a hair over the
+/// widest radius pair, and well under any weapon's reach. Unit welds
+/// have no footprint to be adjacent to; this is their adjacency.
+pub const REPAIR_REACH: Fx = Fx::lit("1.2");
+
+/// Reach of the Repair Bay's welding aura, in tiles from the nearest
+/// point of its footprint — a base ring, not battlefield cover: shorter
+/// than every siege weapon's reach, so the counter to a healed defense
+/// is standing outside it.
+pub const REPAIR_BAY_RADIUS: Fx = Fx::lit("4.0");
+
+/// Ticks between Repair Bay aura pulses. With [`REPAIR_BAY_STEP`] this
+/// sets the sustain rate per patient: 1 hp / 8 ticks — around a quarter
+/// of one Turret's damage rate, so an aura never out-heals focused
+/// fire; its value is breadth (every wounded machine in the ring heals
+/// at once) and never needing a harvester's torch time.
+pub const REPAIR_BAY_PERIOD: u64 = 8;
+
+/// Hp each aura pulse offers each patient in the ring.
+pub const REPAIR_BAY_STEP: u32 = 1;
 
 /// Welding ramp for the Foundry, which has no construction stats to
 /// borrow one from.
@@ -814,12 +905,21 @@ pub const ORDER_QUEUE_CAP: usize = 32;
 pub const PATH_EXPANSION_CAP: u32 = 20_000;
 
 /// When a harvest node runs dry, harvesters look for a replacement within
-/// this Chebyshev radius of the old node.
-pub const RETARGET_RADIUS: i32 = 10;
+/// this Chebyshev radius of the old node. Sized to the widest contiguous
+/// scrap deposit on any shipped map: the harvester finishes the deposit
+/// it was sent to, then reports for orders — marching to a different
+/// patch is the owner's call, surfaced through the idle-harvester flow.
+pub const RETARGET_RADIUS: i32 = 2;
 
 /// When a Move command lands on an impassable tile, the goal snaps to the
 /// nearest passable tile within this radius (else the command is rejected).
 pub const GOAL_SNAP_RADIUS: i32 = 3;
+
+/// How far the footprint-eviction pre-pass ring-scans for a walkable
+/// escape tile. Any real escape starts on an adjacent open tile (A*
+/// cannot leave a fully sealed one), so the reach only pads for
+/// corner-cut geometry around the footprint.
+pub const EVICT_SCAN_RADIUS: i32 = 3;
 
 /// Relaxation passes of collision resolution per tick. More passes settle
 /// dense crowds faster; each pass is a full pairwise sweep.

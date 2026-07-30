@@ -13,17 +13,14 @@ use crate::menu::{PreviewCache, ScenarioEntry, discover_scenarios};
 use crate::screens::browser::{Browser, Out as BrowserOut};
 use anyhow::{Context, Result};
 use macroquad::prelude::{
-    Color, DrawTextureParams, Rect, Vec2, color_u8, draw_circle, draw_circle_lines, draw_rectangle,
+    Color, DrawTextureParams, Rect, Vec2, draw_circle, draw_circle_lines, draw_rectangle,
     draw_rectangle_lines, draw_text, draw_texture_ex, measure_text, vec2,
 };
 use oxide_protocol::{Key, MouseButton, RawEvent};
 use oxide_sim::Scenario;
 use std::path::PathBuf;
 
-const TITLE_COLOR: Color = color_u8!(196, 87, 59, 255);
-const ITEM_COLOR: Color = color_u8!(214, 210, 196, 255);
-const DIM: Color = color_u8!(214, 210, 196, 120);
-const PANEL: Color = color_u8!(20, 20, 24, 230);
+use crate::theme::{SURFACE_MENU, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE};
 
 /// One seat's dials in the draft.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -69,6 +66,21 @@ pub fn effective_faction(
         .get(seat)
         .and_then(|p| faction_override(p.faction_choice))
         .unwrap_or(scenario.players[seat].faction)
+}
+
+/// The name a seat will actually play under: the authored name run
+/// through the launcher's own retint rule when a faction chip
+/// overrides the roster. Lives beside [`effective_faction`] so the
+/// card's disc and its label can't drift apart again. (Duplicate-name
+/// ordinals are launch's business; the preview shows the pre-ordinal
+/// name.)
+pub fn effective_name(scenario: &Scenario, draft: &NewMatchDraft, seat: usize) -> String {
+    let spec = &scenario.players[seat];
+    oxide_sim::scenario::retinted_name(
+        &spec.name,
+        spec.faction,
+        effective_faction(scenario, draft, seat),
+    )
 }
 
 /// Everything New Match has chosen so far. The draft outlives every
@@ -632,7 +644,7 @@ impl Wizard {
             (view.x - tdims.width) * 0.5,
             64.0 * ui,
             tsize,
-            TITLE_COLOR,
+            TEXT_TITLE,
         );
         let sub = format!("{} - pick your seat; tune each opponent", scenario.name);
         let sdims = measure_text(&sub, None, (18.0 * ui) as u16, 1.0);
@@ -641,11 +653,11 @@ impl Wizard {
             (view.x - sdims.width) * 0.5,
             92.0 * ui,
             18.0 * ui,
-            DIM,
+            TEXT_SECONDARY,
         );
 
         for (label, rect) in &layout.headings {
-            draw_text(label, rect.x, rect.y + rect.h * 0.7, 17.0 * ui, TITLE_COLOR);
+            draw_text(label, rect.x, rect.y + rect.h * 0.7, 17.0 * ui, TEXT_TITLE);
             let dims = measure_text(label, None, (17.0 * ui) as u16, 1.0);
             draw_rectangle(
                 rect.x + dims.width + 12.0 * ui,
@@ -657,10 +669,10 @@ impl Wizard {
         }
         for (pos, rect) in layout.seats.iter().enumerate() {
             let seat = order[pos];
-            let spec = &scenario.players[seat];
+            let display = effective_name(scenario, draft, seat);
             let selected = self.setup_sel == pos;
             let is_you = seat == draft.seat_choice;
-            draw_rectangle(rect.x, rect.y, rect.w, rect.h, PANEL);
+            draw_rectangle(rect.x, rect.y, rect.w, rect.h, SURFACE_MENU);
             draw_rectangle_lines(
                 rect.x,
                 rect.y,
@@ -668,7 +680,7 @@ impl Wizard {
                 rect.h,
                 if selected { 2.5 } else { 1.0 },
                 if selected {
-                    TITLE_COLOR
+                    TEXT_TITLE
                 } else {
                     Color::new(0.6, 0.6, 0.65, 0.3)
                 },
@@ -696,16 +708,16 @@ impl Wizard {
             );
             let mut name_font = (16.0 * ui).min(rect.h * 0.62);
             let name_room = (layout.cells[pos][0].w - 48.0 * ui).max(20.0);
-            let nw = measure_text(&spec.name, None, name_font as u16, 1.0).width;
+            let nw = measure_text(&display, None, name_font as u16, 1.0).width;
             if nw > name_room {
                 name_font = (name_font * name_room / nw).max(8.0);
             }
             draw_text(
-                &spec.name,
+                &display,
                 rect.x + 44.0 * ui,
                 cy + name_font * 0.35,
                 name_font,
-                ITEM_COLOR,
+                TEXT_PRIMARY,
             );
             if is_you {
                 let tag = "your seat";
@@ -717,7 +729,7 @@ impl Wizard {
                     fac.x - tdims.width - 14.0 * ui,
                     cy + tag_font * 0.35,
                     tag_font,
-                    DIM,
+                    TEXT_SECONDARY,
                 );
             }
             // The inline dials: boxed value chips; the cursor's cell
@@ -749,7 +761,7 @@ impl Wizard {
                     chip.h,
                     if on_cell { 2.0 } else { 1.0 },
                     if on_cell {
-                        TITLE_COLOR
+                        TEXT_TITLE
                     } else {
                         Color::new(0.6, 0.6, 0.65, 0.35)
                     },
@@ -767,7 +779,11 @@ impl Wizard {
                     chip.x + (chip.w - ldims.width) * 0.5,
                     chip.y + chip.h * 0.5 + font * 0.35,
                     font,
-                    if on_cell { ITEM_COLOR } else { DIM },
+                    if on_cell {
+                        TEXT_PRIMARY
+                    } else {
+                        TEXT_SECONDARY
+                    },
                 );
             }
             // The seat-zone cell cursor: a soft inner line under
@@ -777,9 +793,9 @@ impl Wizard {
                 draw_rectangle(
                     zone.x + 44.0 * ui,
                     cy + name_font * 0.55,
-                    measure_text(&spec.name, None, name_font as u16, 1.0).width,
+                    measure_text(&display, None, name_font as u16, 1.0).width,
                     1.5,
-                    TITLE_COLOR,
+                    TEXT_TITLE,
                 );
             }
         }
@@ -790,7 +806,7 @@ impl Wizard {
             layout.start.y,
             layout.start.w,
             layout.start.h,
-            PANEL,
+            SURFACE_MENU,
         );
         draw_rectangle_lines(
             layout.start.x,
@@ -798,7 +814,11 @@ impl Wizard {
             layout.start.w,
             layout.start.h,
             if start_selected { 3.0 } else { 1.5 },
-            if start_selected { TITLE_COLOR } else { DIM },
+            if start_selected {
+                TEXT_TITLE
+            } else {
+                TEXT_SECONDARY
+            },
         );
         let label = "Start match";
         let ldims = measure_text(label, None, (20.0 * ui) as u16, 1.0);
@@ -807,7 +827,11 @@ impl Wizard {
             layout.start.x + (layout.start.w - ldims.width) * 0.5,
             layout.start.y + layout.start.h * 0.66,
             20.0 * ui,
-            if start_selected { ITEM_COLOR } else { DIM },
+            if start_selected {
+                TEXT_PRIMARY
+            } else {
+                TEXT_SECONDARY
+            },
         );
 
         // The map, large, with every chair marked.
@@ -823,7 +847,7 @@ impl Wizard {
                 y - 8.0 * ui,
                 pw + 16.0 * ui,
                 ph + 16.0 * ui,
-                PANEL,
+                SURFACE_MENU,
             );
             draw_texture_ex(
                 tex,
@@ -860,7 +884,7 @@ impl Wizard {
             (view.x - hdims.width) * 0.5,
             view.y - 20.0 * ui,
             16.0 * ui,
-            DIM,
+            TEXT_SECONDARY,
         );
     }
 
@@ -891,20 +915,20 @@ impl Wizard {
                         seat_display_order(sc)
                             .into_iter()
                             .map(|seat| {
-                                let spec = &sc.players[seat];
+                                let name = effective_name(sc, draft, seat);
                                 let plan = draft.seats[seat];
                                 if seat == draft.seat_choice {
                                     format!(
                                         "{}. {} (you) · {}",
                                         seat + 1,
-                                        spec.name,
+                                        name,
                                         FACTION_CHIP_ITEMS[plan.faction_choice]
                                     )
                                 } else {
                                     format!(
                                         "{}. {} · {} · {} · {}",
                                         seat + 1,
-                                        spec.name,
+                                        name,
                                         DIFFICULTY_ITEMS[plan.level_choice],
                                         PERSONALITY_ITEMS[plan.personality_choice],
                                         FACTION_CHIP_ITEMS[plan.faction_choice]
@@ -917,6 +941,26 @@ impl Wizard {
                 items.push("Start match".to_string());
                 ("MATCH SETUP".to_string(), items, self.setup_sel)
             }
+        }
+    }
+
+    /// The half-open item-index range actually on screen — QueryUi's
+    /// `visible_range`, computed from the same injected viewport the
+    /// frame drew with. The map grid reads the browser's real layout
+    /// (visible cards are a contiguous run of entry indices; a window
+    /// showing none reports `[0, 0]`). Setup reports every row:
+    /// [`setup_layout`] fits the full roster and the Start button at
+    /// every supported size — no scrolling, by construction.
+    pub fn ui_visible_range(&self, draft: &NewMatchDraft, view: Vec2, ui: f32) -> [usize; 2] {
+        match self.step {
+            Step::Map => {
+                let layout = self.browser.layout(&self.entries, view, ui);
+                match (layout.cards.first(), layout.cards.last()) {
+                    (Some(&(first, _)), Some(&(last, _))) => [first, last + 1],
+                    _ => [0, 0],
+                }
+            }
+            Step::Setup => [0, self.ui_surface(draft).1.len()],
         }
     }
 
@@ -1254,5 +1298,137 @@ mod tests {
     fn seat_anchors_reads_the_authored_digits() {
         let map: Vec<String> = vec!["####".into(), "#1.#".into(), "#.2#".into()];
         assert_eq!(seat_anchors(&map), vec![(0, (1, 1)), (1, (2, 2))]);
+    }
+
+    #[test]
+    fn the_setup_card_and_its_protocol_row_show_the_retinted_name() {
+        let mut draft = NewMatchDraft::default();
+        draft.set_scenario(Scenario::skirmish(), None);
+        let sc = draft.scenario.as_deref().unwrap().clone();
+
+        // Auto keeps the authored names, both seats.
+        assert_eq!(effective_name(&sc, &draft, 0), "Ferrous");
+        assert_eq!(effective_name(&sc, &draft, 1), "Cupric");
+
+        // Overrides retint the label with the disc, both directions.
+        draft.seats[0].faction_choice = 2; // Cupric
+        draft.seats[1].faction_choice = 1; // Ferrous
+        assert_eq!(effective_name(&sc, &draft, 0), "Cupric");
+        assert_eq!(effective_name(&sc, &draft, 1), "Ferrous");
+
+        // QueryUi speaks the same name: the card and the automation
+        // surface can't disagree.
+        let mut w = Wizard::open(&draft);
+        w.step = Step::Setup;
+        let (_, items, _) = w.ui_surface(&draft);
+        assert_eq!(items[0], "1. Cupric (you) · Cupric");
+        assert!(
+            items[1].starts_with("2. Ferrous · "),
+            "the AI row leads with the effective name: {}",
+            items[1]
+        );
+    }
+
+    #[test]
+    fn the_previewed_name_is_the_launched_name() {
+        // The regression guard: the preview reads the SAME rule launch
+        // applies (Scenario::retint_seat). Reimplementing the rename in
+        // the shell — where a name without a faction word diverges —
+        // fails here.
+        let mut draft = NewMatchDraft::default();
+        draft.set_scenario(Scenario::skirmish(), None);
+        draft.seats[0].faction_choice = 2; // Cupric
+        draft.seats[1].faction_choice = 1; // Ferrous
+        let sc = draft.scenario.as_deref().unwrap().clone();
+        for seat in 0..sc.players.len() {
+            let previewed = effective_name(&sc, &draft, seat);
+            let mut launched = sc.clone();
+            launched.retint_seat(seat, effective_faction(&sc, &draft, seat));
+            assert_eq!(
+                previewed, launched.players[seat].name,
+                "seat {seat}: the card promised a name launch didn't deliver"
+            );
+        }
+    }
+
+    fn grid_entries(n: usize) -> Vec<ScenarioEntry> {
+        (0..n)
+            .map(|i| ScenarioEntry {
+                seats: 2,
+                label: format!("m{i}"),
+                blurb: None,
+                path: Some(PathBuf::from(format!("m{i}.json"))),
+                theme: String::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_map_grids_visible_range_is_the_real_window() {
+        let mut draft = NewMatchDraft::default();
+        let mut w = Wizard::open(&draft);
+        w.entries = grid_entries(24);
+        w.browser = Browser::new();
+
+        // A small window clips the grid; the range must say so and
+        // must contain the selection End just scrolled to.
+        crate::render::set_viewport(640.0, 400.0);
+        drive(&mut w, &mut draft, Key::End);
+        let view = crate::render::viewport();
+        let ui = crate::render::ui_scale();
+        let [first, past] = w.ui_visible_range(&draft, view, ui);
+        assert!(past <= w.entries.len());
+        assert!(
+            past - first < w.entries.len(),
+            "a 640x400 window cannot show all 24 cards ([{first}, {past}])"
+        );
+        assert!(
+            (first..past).contains(&w.browser.selected),
+            "the selection sits inside the reported window"
+        );
+
+        // A huge window shows the whole shelf; the resize guard runs
+        // on the next handled frame, like the live loop.
+        crate::render::set_viewport(2000.0, 4000.0);
+        let mut mouse = vec2(0.0, 0.0);
+        let _ = w.update(
+            &[RawEvent::MouseMove { x: 0.0, y: 0.0 }],
+            &mut mouse,
+            &mut draft,
+            &mut Vec::new(),
+        );
+        let view = crate::render::viewport();
+        let ui = crate::render::ui_scale();
+        assert_eq!(
+            w.ui_visible_range(&draft, view, ui),
+            [0, w.entries.len()],
+            "a window tall enough for everything reports everything"
+        );
+    }
+
+    #[test]
+    fn an_empty_grid_reports_an_empty_window() {
+        let draft = NewMatchDraft::default();
+        let mut w = Wizard::open(&draft);
+        w.entries.clear();
+        let view = crate::render::viewport();
+        let ui = crate::render::ui_scale();
+        assert_eq!(w.ui_visible_range(&draft, view, ui), [0, 0]);
+    }
+
+    #[test]
+    fn setup_reports_every_row_and_matches_its_own_surface() {
+        // setup_layout fits the full roster and Start at every
+        // supported size — its test pins that — so the range is the
+        // whole item list even at the smallest window.
+        let mut draft = NewMatchDraft::default();
+        let mut w = Wizard::open(&draft);
+        pick_first_map(&mut w, &mut draft);
+        assert_eq!(w.step, Step::Setup);
+        crate::render::set_viewport(640.0, 400.0);
+        let view = crate::render::viewport();
+        let ui = crate::render::ui_scale();
+        let len = w.ui_surface(&draft).1.len();
+        assert_eq!(w.ui_visible_range(&draft, view, ui), [0, len]);
     }
 }

@@ -121,6 +121,12 @@ pub enum Intent {
         /// The building coming down.
         building: crate::ids::BuildingId,
     },
+    /// Weld a wounded own machine (the executive picks the welder; the
+    /// patient never joins its own crew).
+    RepairUnit {
+        /// The wounded machine.
+        unit: UnitId,
+    },
     /// Throw every idle ground-attack flyer at a target — a strike, not
     /// an army: no lifecycle, no withdraw call, just wings and a place.
     RaidAir {
@@ -129,16 +135,16 @@ pub enum Intent {
     },
 }
 
-/// Fraction of max hp below which a member is rotated out of its army to
-/// the rear — permanently: nothing heals in this world, and cycling the
-/// wounded back in just feeds the grinder.
+/// Fraction of max hp below which a member is rotated out of its army.
+/// A fully healed rear-line veteran becomes draftable again; requiring
+/// full health prevents pullback/re-draft oscillation around this line.
 const PULLBACK_NUM: u32 = 35;
 const PULLBACK_DEN: u32 = 100;
 
 /// Withdraw only from catastrophe: below half the local enemy strength.
-/// Nothing in this world outruns its pursuers and nothing heals, so a
-/// merely-losing fight finished on the spot costs less than a rout —
-/// disengaging under fire is free damage handed to the enemy.
+/// Nothing in this world outruns its pursuers, so a merely-losing fight
+/// finished on the spot costs less than a rout — disengaging under fire
+/// is free damage handed to the enemy.
 const WITHDRAW_MARGIN_NUM: u32 = 1;
 const WITHDRAW_MARGIN_DEN: u32 = 2;
 /// Radius (tiles) around the army centroid scored as "the fight".
@@ -165,6 +171,50 @@ impl Default for Doctrine {
     }
 }
 
+/// Per-path lowering rules: the freedoms a command source grants
+/// [`Executive::apply_with`] beyond the scripted baseline. The scripted
+/// `Brain` tiers are the ladder's anchors and yardsticks — their
+/// lowering is frozen at [`LoweringRules::scripted`] so their measured
+/// behavior cannot move — while the gym path carries the two
+/// amendments that would move them: deferred founding (fog placement
+/// Part B) and the Scout-arm claim guard. The guard closes the
+/// labor-claims trap (an unconditional Scout replaces the whole
+/// program of a machine an earlier intent already bought); it stays
+/// off the scripted path because their scouting channel follows its
+/// construction claims, and guarding it measurably inverts both
+/// ladder gates.
+pub struct LoweringRules<'a> {
+    /// Judge whether a Build must defer its claim to arrival
+    /// ([`crate::Command::Build`]'s `defer`); `None` never defers.
+    defer_needed: Option<&'a dyn Fn(BuildingKind, TilePos) -> bool>,
+    /// Skip a Scout intent naming a unit an earlier intent claimed
+    /// this think.
+    scout_honors_claims: bool,
+}
+
+impl LoweringRules<'static> {
+    /// The frozen baseline the scripted tiers lower under: instant
+    /// claims only, Scout unconditional.
+    pub fn scripted() -> Self {
+        Self {
+            defer_needed: None,
+            scout_honors_claims: false,
+        }
+    }
+}
+
+impl<'a> LoweringRules<'a> {
+    /// The gym path's rules: `defer_needed` mirrors the judgment the
+    /// shell's armed click makes (some footprint tile not currently
+    /// visible), and Scout keeps off machines the think already spent.
+    pub fn gym(defer_needed: &'a dyn Fn(BuildingKind, TilePos) -> bool) -> Self {
+        Self {
+            defer_needed: Some(defer_needed),
+            scout_honors_claims: true,
+        }
+    }
+}
+
 /// The layer between policies and the sim. One per bot; carries across
 /// ticks (armies are memory, legitimately — a bot is a command source,
 /// not sim state).
@@ -172,8 +222,8 @@ impl Default for Doctrine {
 pub struct Executive {
     armies: Vec<Army>,
     next_army: u32,
-    /// Rear-line members rotated out for good (kept so re-drafts skip
-    /// them; pruned when they die).
+    /// Rear-line members kept out of drafts. Repair-capable policies
+    /// release them at full health; frozen scripted paths retain them.
     rear: Vec<UnitId>,
     /// Which combat habits this executive practices.
     doctrine: Doctrine,
@@ -208,13 +258,77 @@ impl Executive {
             .chain(self.rear.iter().copied())
     }
 
-    /// Applies a think's intents, in order, returning the commands they
-    /// lower to. Deterministic given (self, obs, intents).
+    /// Reserves a stranded economy's bank and queues its replacement
+    /// Harvester as soon as the reserve is whole.
+    ///
+    /// `None` means ordinary play. `Some([])` means the seat is still
+    /// saving (or its Foundry queue is temporarily full); callers must
+    /// skip policy spending for this think. A non-empty vector is the
+    /// one emergency Train command. Keeping this below the policies is
+    /// deliberate: recovery is an executive safety rule, not something
+    /// every scripted and learned policy must rediscover.
+    pub(crate) fn harvester_recovery(
+        &self,
+        me: PlayerId,
+        obs: &Observation,
+    ) -> Option<Vec<PlayerCommand>> {
+        let has_harvester = obs.my_units.iter().any(|u| u.kind == UnitKind::Harvester);
+        let queued_harvester = obs
+            .my_queues
+            .iter()
+            .flatten()
+            .any(|kind| *kind == UnitKind::Harvester);
+        let has_foundry = obs
+            .my_buildings
+            .iter()
+            .any(|b| b.kind == BuildingKind::Foundry && b.built);
+        if has_harvester || queued_harvester || !has_foundry {
+            return None;
+        }
+
+        let mut commands = Vec::new();
+        if obs.scrap >= UnitKind::Harvester.stats().cost
+            && let Some((_, foundry)) = obs
+                .my_buildings
+                .iter()
+                .enumerate()
+                .filter(|(qi, b)| {
+                    b.kind == BuildingKind::Foundry
+                        && b.built
+                        && obs.my_queues[*qi].len() < crate::stats::QUEUE_CAP
+                })
+                .min_by_key(|(_, b)| b.id)
+        {
+            commands.push(PlayerCommand {
+                player: me,
+                command: Command::Train {
+                    building: foundry.id,
+                    kind: UnitKind::Harvester,
+                },
+            });
+        }
+        Some(commands)
+    }
+
+    /// Applies a think's intents under the scripted baseline rules —
+    /// see [`Executive::apply_with`].
     pub fn apply(
         &mut self,
         me: PlayerId,
         obs: &Observation,
         intents: &[Intent],
+    ) -> Vec<PlayerCommand> {
+        self.apply_with(me, obs, intents, &LoweringRules::scripted())
+    }
+
+    /// Applies a think's intents, in order, returning the commands they
+    /// lower to. Deterministic given (self, obs, intents, rules).
+    pub fn apply_with(
+        &mut self,
+        me: PlayerId,
+        obs: &Observation,
+        intents: &[Intent],
+        rules: &LoweringRules,
     ) -> Vec<PlayerCommand> {
         let mut out = Vec::new();
         // Units spoken for by an earlier intent in this same think — keeps
@@ -239,6 +353,7 @@ impl Executive {
                                 kind: *kind,
                                 anchor: *anchor,
                                 queue: false,
+                                defer: rules.defer_needed.is_some_and(|f| f(*kind, *anchor)),
                             },
                         });
                     }
@@ -308,8 +423,9 @@ impl Executive {
                 }
                 Intent::AssignHarvest { unit, node } => {
                     // A unit an earlier intent claimed (a chosen builder,
-                    // a scout) must not be re-tasked by a chore.
-                    if !claimed.contains(unit) {
+                    // a scout) or one already held in an army/rear line
+                    // must not be re-tasked by a chore.
+                    if !claimed.contains(unit) && !self.enlisted().any(|id| id == *unit) {
                         claimed.push(*unit);
                         out.push(PlayerCommand {
                             player: me,
@@ -322,6 +438,14 @@ impl Executive {
                     }
                 }
                 Intent::Scout { unit, to } => {
+                    // A plain Move replaces the unit's whole program: a
+                    // Scout naming a machine an earlier intent already
+                    // bought would orphan a paid site or drop a weld.
+                    // Guarded on the gym path only — the scripted
+                    // tiers' scouting follows its construction claims.
+                    if rules.scout_honors_claims && claimed.contains(unit) {
+                        continue;
+                    }
                     claimed.push(*unit);
                     out.push(PlayerCommand {
                         player: me,
@@ -372,6 +496,47 @@ impl Executive {
                         });
                     }
                 }
+                Intent::RepairUnit { unit } => {
+                    let tile = obs.my_units.iter().find(|u| u.id == *unit).map(|u| u.tile);
+                    // The patient must not be drafted as its own welder:
+                    // the sim strips it from the crew and would reject
+                    // the emptied command.
+                    let mut barred = claimed.clone();
+                    barred.push(*unit);
+                    if let Some(tile) = tile
+                        && let Some(welder) = self.free_harvester(obs, tile, &barred)
+                    {
+                        // Rotate an enlisted patient out before later
+                        // Push/Recall intents lower. Merely claiming it
+                        // protects Scout and FormArmy, but army commands
+                        // address their existing membership wholesale
+                        // and would replace the weld in the same tick.
+                        for army in &mut self.armies {
+                            army.members.retain(|member| member != unit);
+                        }
+                        self.armies.retain(|army| !army.members.is_empty());
+                        if !self.rear.contains(unit) {
+                            self.rear.push(*unit);
+                            self.rear.sort_unstable();
+                        }
+                        // The patient must stay put for the weld to land.
+                        // Reserve it from every later non-army intent too.
+                        claimed.push(*unit);
+                        claimed.push(welder);
+                        out.push(PlayerCommand {
+                            player: me,
+                            command: Command::Stop { units: vec![*unit] },
+                        });
+                        out.push(PlayerCommand {
+                            player: me,
+                            command: Command::RepairUnit {
+                                units: vec![welder],
+                                target: *unit,
+                                queue: false,
+                            },
+                        });
+                    }
+                }
                 Intent::RaidAir { target } => {
                     let enlisted: Vec<UnitId> = self.enlisted().collect();
                     let wings: Vec<UnitId> = obs
@@ -404,21 +569,47 @@ impl Executive {
         out
     }
 
-    /// The per-think housekeeping no policy should have to ask for: prune
-    /// the dead, rotate the wounded to the rear, advance army states, and
-    /// withdraw from fights that have turned. `rear` is where the wounded
-    /// go — somewhere behind the lines, not the army's rally (which may
-    /// be the fight itself). Returns the commands the transitions demand.
+    /// The frozen scripted path's per-think housekeeping. Rear-line
+    /// veterans remain reserved even if an external effect heals them.
     pub fn maintain(
         &mut self,
         me: PlayerId,
         obs: &Observation,
         rear: TilePos,
     ) -> Vec<PlayerCommand> {
+        self.maintain_with_rejoin(me, obs, rear, false)
+    }
+
+    /// Per-think housekeeping for a policy that can deliberately heal
+    /// units. A fully healed rear-line veteran returns to the draft pool.
+    pub fn maintain_repair_capable(
+        &mut self,
+        me: PlayerId,
+        obs: &Observation,
+        rear: TilePos,
+    ) -> Vec<PlayerCommand> {
+        self.maintain_with_rejoin(me, obs, rear, true)
+    }
+
+    /// Prune the dead, rotate the wounded to the rear, advance army
+    /// states, and withdraw from fights that have turned. `rear` is
+    /// behind the lines, not the army's rally (which may be the fight).
+    fn maintain_with_rejoin(
+        &mut self,
+        me: PlayerId,
+        obs: &Observation,
+        rear: TilePos,
+        rejoin_healed: bool,
+    ) -> Vec<PlayerCommand> {
         let mut out = Vec::new();
         let doctrine = self.doctrine;
         let alive = |id: UnitId| obs.my_units.iter().any(|u| u.id == id);
-        self.rear.retain(|id| alive(*id));
+        self.rear.retain(|id| {
+            obs.my_units
+                .iter()
+                .find(|u| u.id == *id)
+                .is_some_and(|u| !rejoin_healed || u.hp < u.kind.stats().max_hp)
+        });
         for army in &mut self.armies {
             army.members.retain(|id| alive(*id));
             if army.members.is_empty() {
@@ -426,10 +617,10 @@ impl Executive {
             }
             let in_contact = enemies_near(obs, &army.members, CONTACT_RADIUS);
 
-            // Rotate the badly wounded out — permanently — but only
-            // between fights. Mid-engagement a wounded machine still
-            // deals full damage, and at equal speeds it cannot escape a
-            // pursuer anyway; pulling it then just thins the line.
+            // Rotate the badly wounded out, but only between fights.
+            // Mid-engagement a wounded machine still deals full damage,
+            // and at equal speeds it cannot escape a pursuer anyway;
+            // pulling it then just thins the line.
             if doctrine.pullback && !in_contact {
                 let mut pulled: Vec<UnitId> = Vec::new();
                 army.members.retain(|id| {
@@ -576,19 +767,27 @@ impl Executive {
     pub(super) fn labor_claims(&self, obs: &Observation, intents: &[Intent]) -> Vec<UnitId> {
         let mut claimed: Vec<UnitId> = Vec::new();
         for intent in intents {
-            // The three labor intents are the ones whose worker the
-            // policy never names; a new one belongs in this list too.
-            let anchor = match intent {
-                Intent::Build { anchor, .. } => Some(*anchor),
-                Intent::Repair { building } | Intent::Salvage { building } => obs
-                    .my_buildings
-                    .iter()
-                    .find(|b| b.id == *building)
-                    .map(|b| b.anchor),
-                _ => None,
+            // The labor intents are the ones whose worker the policy
+            // never names; a new one belongs in this list too.
+            let (anchor, patient) = match intent {
+                Intent::Build { anchor, .. } => (Some(*anchor), None),
+                Intent::Repair { building } | Intent::Salvage { building } => (
+                    obs.my_buildings
+                        .iter()
+                        .find(|b| b.id == *building)
+                        .map(|b| b.anchor),
+                    None,
+                ),
+                Intent::RepairUnit { unit } => (
+                    obs.my_units.iter().find(|u| u.id == *unit).map(|u| u.tile),
+                    Some(*unit),
+                ),
+                _ => (None, None),
             };
+            let mut barred = claimed.clone();
+            barred.extend(patient);
             if let Some(anchor) = anchor
-                && let Some(unit) = self.free_harvester(obs, anchor, &claimed)
+                && let Some(unit) = self.free_harvester(obs, anchor, &barred)
             {
                 claimed.push(unit);
             }
@@ -611,6 +810,11 @@ impl Executive {
             .filter(|u| {
                 u.kind == UnitKind::Harvester
                     && u.site.is_none()
+                    // A walking founder is as spoken for as a builder
+                    // on site: re-tasking it silently drops the
+                    // promised claim. Scripted tiers never defer, so
+                    // this arm is dead on their path.
+                    && u.founding.is_none()
                     && !enlisted.contains(&u.id)
                     && !claimed.contains(&u.id)
             })

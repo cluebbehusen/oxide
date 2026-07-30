@@ -57,8 +57,10 @@ impl GhostBuilding {
 pub struct Vision {
     visible: Grid<bool>,
     explored: Grid<bool>,
-    /// Remembered enemy buildings, sorted by (anchor.y, anchor.x) — a
-    /// deterministic canonical order like everything else in the state.
+    /// Remembered enemy buildings, sorted by (anchor.y, anchor.x, owner) —
+    /// a deterministic canonical order like everything else in the state.
+    /// The owner is part of the key, not decoration: two hostile seats can
+    /// leave memories recorded under the same corner.
     #[serde(default)]
     ghosts: Vec<GhostBuilding>,
     /// Scrap per tile as this player last saw it. Only meaningful where
@@ -254,21 +256,17 @@ pub(crate) fn refresh(state: &mut State) {
 
         // Freeze-frame the economy the same way: wherever there is sight,
         // remember the salvage; everywhere else the old numbers stand.
-        // Row slices, not per-cell lookups — this scan runs over the
-        // whole map for every team every tick.
+        // Row slices, not per-cell lookups, and both memories in one
+        // walk — this scan runs over the whole map for every team every
+        // tick, so it gets to run exactly once.
         for y in 0..state.map.height() {
             let visible = view.visible.row(y).expect("row in range");
             let tiles = state.map.grid().row(y).expect("row in range");
             let scrap = view.remembered_scrap.row_mut(y).expect("row in range");
-            for (x, (&seen, tile)) in visible.iter().zip(tiles).enumerate() {
-                if seen {
-                    scrap[x] = tile.scrap;
-                }
-            }
-            let visible = view.visible.row(y).expect("row in range");
             let wreck = view.remembered_wreck.row_mut(y).expect("row in range");
             for (x, (&seen, tile)) in visible.iter().zip(tiles).enumerate() {
                 if seen {
+                    scrap[x] = tile.scrap;
                     wreck[x] = tile.wreck;
                 }
             }

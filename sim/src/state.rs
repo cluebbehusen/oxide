@@ -12,11 +12,11 @@
 //!   tick that killed it.
 //! - `result` is set at most once; once set, ticks are frozen no-ops.
 
-use crate::ids::{BuildingId, PlayerId, UnitId};
-use crate::map::Map;
+use crate::ids::{BuildingId, PlayerId, Target, UnitId};
+use crate::map::{MAX_MAP_EDGE, Map};
 use crate::stats::{BuildingKind, UnitKind};
 use chassis::Tick;
-use chassis::fx::Vec2Fx;
+use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::TilePos;
 use chassis::rng::Pcg32;
 use serde::{Deserialize, Serialize};
@@ -43,6 +43,12 @@ pub struct Player {
     pub team: u8,
     /// Scrap in the bank.
     pub scrap: u32,
+    /// Whether this seat conceded ([`crate::Command::Surrender`]): its
+    /// Foundries no longer keep its team in the match and its commands
+    /// reject, while its machines play out their brains as remnants.
+    /// Defaulted so records that predate the field deserialize.
+    #[serde(default)]
+    pub resigned: bool,
 }
 
 /// How the match ended.
@@ -108,11 +114,32 @@ pub enum Order {
     /// Walk adjacent to an own built building and strip it down for a
     /// partial refund (harvesters only; Foundries refuse). Drains
     /// buffer like damage and resolve after it — fire wins ties, and
-    /// fire-forfeited hp refunds nothing. (Last variant by appending
-    /// discipline: earlier discriminants keep their serialized bytes.)
+    /// fire-forfeited hp refunds nothing.
     Salvage {
         /// The building coming down.
         building: crate::ids::BuildingId,
+    },
+    /// Walk to remembered ground and claim it on arrival: the deferred
+    /// half of a fog-legal build ([`crate::Command::Build`] with
+    /// `defer`). Nothing is placed or paid until the founder stands
+    /// beside the footprint and re-proves the *strict* placement
+    /// predicate on ground it now sees — taken ground stalls the
+    /// program instead of leaking what fog hid.
+    Found {
+        /// What to construct on arrival.
+        kind: crate::stats::BuildingKind,
+        /// Top-left tile of the claimed footprint.
+        anchor: TilePos,
+    },
+    /// Chase a wounded own ground unit and weld it back toward full
+    /// (harvesters only; billed per hp against the patient's cost).
+    /// The weld ticks only while welder and patient both stand still
+    /// within [`crate::stats::REPAIR_REACH`]. (Last variant by
+    /// appending discipline: earlier discriminants keep their
+    /// serialized bytes.)
+    RepairUnit {
+        /// The patient.
+        unit: crate::ids::UnitId,
     },
 }
 
@@ -383,6 +410,62 @@ impl State {
         self.tick
     }
 
+    /// Whether an active seat can currently receive recurring automatic
+    /// scrap that it can spend. This includes a completed Reclaimer, the
+    /// late Foundry baseline once its start boundary is reached, and the
+    /// faster Foundry recovery for a stranded harvest line.
+    ///
+    /// A resigned seat or one without a completed Foundry cannot turn
+    /// autonomous remnant income into a recovered economy, so neither is
+    /// reported as active here.
+    pub fn recovery_income_active(&self, player: PlayerId) -> bool {
+        if self.player(player).resigned
+            || !self.buildings.iter().any(|building| {
+                building.player == player
+                    && building.hp > 0
+                    && building.built
+                    && building.kind == BuildingKind::Foundry
+            })
+        {
+            return false;
+        }
+
+        let reclaimer = self.buildings.iter().any(|building| {
+            building.player == player
+                && building.hp > 0
+                && building.built
+                && building.kind == BuildingKind::Reclaimer
+        });
+        let baseline = self.tick.saturating_add(1) >= crate::stats::FOUNDRY_BASELINE_START_TICK;
+        let emergency = self.player(player).scrap < UnitKind::Harvester.stats().cost
+            && self.harvester_recovery_needed(player);
+        reclaimer || baseline || emergency
+    }
+
+    /// Whether a living Foundry owns neither a live Harvester nor a prepaid
+    /// one in a live production queue.
+    pub(crate) fn harvester_recovery_needed(&self, player: PlayerId) -> bool {
+        !self.player(player).resigned
+            && self.buildings.iter().any(|building| {
+                building.player == player
+                    && building.hp > 0
+                    && building.built
+                    && building.kind == BuildingKind::Foundry
+            })
+            && !self.units.iter().any(|unit| {
+                unit.player == player && unit.hp > 0 && unit.kind == UnitKind::Harvester
+            })
+            && !self.buildings.iter().any(|building| {
+                building.player == player
+                    && building.hp > 0
+                    && building.built
+                    && building
+                        .queue
+                        .iter()
+                        .any(|kind| *kind == UnitKind::Harvester)
+            })
+    }
+
     /// Terrain and scrap.
     pub fn map(&self) -> &Map {
         &self.map
@@ -431,62 +514,267 @@ impl State {
         self.vision.get(id.0 as usize)
     }
 
-    /// Checks the structural invariants field-level deserialization alone
-    /// cannot: sorted id lists, id counters ahead of every live id,
-    /// per-player tables sized to the player list, entity owners inside
-    /// it, and nested grids that hold together. Called automatically by
-    /// [`State`]'s `Deserialize` impl, so a snapshot that parses is a
-    /// snapshot that holds together; public for tooling that wants to
-    /// re-check after mutating one by hand.
+    /// Checks every structural invariant field-level deserialization alone
+    /// cannot. This is the sim's trust boundary: [`State`]'s `Deserialize`
+    /// impl calls it, there is no unvalidated constructor, and everything
+    /// downstream — the tick pipeline, the renderers, the gym's feature
+    /// builder — is entitled to assume the whole checklist below. In
+    /// particular the coordinate envelope is what *licenses* the sim's
+    /// unchecked tile arithmetic ([`TilePos::offset`],
+    /// [`Building::contains`], the neighborhood scans): a coordinate that
+    /// got through here cannot overflow them.
+    ///
+    /// The checklist, in the order it runs:
+    /// - Players: a non-empty table, addressable by [`PlayerId`], with
+    ///   team indices inside it.
+    /// - Map: consistent grid dimensions, within [`MAX_MAP_EDGE`].
+    /// - Per-player tables: one vision per seat, its grids sized to the
+    ///   map.
+    /// - Entity lists: strictly sorted by id, both id counters ahead of
+    ///   every live id.
+    /// - Units: owner in the table, hp inside `(0, max_hp]`, meters and
+    ///   per-weapon cooldowns bounded, queue within
+    ///   [`crate::stats::ORDER_QUEUE_CAP`], every coordinate inside the
+    ///   envelope, every entity named by an order actually minted.
+    /// - Buildings: the same, plus a queue this kind can produce for this
+    ///   seat's faction, a coherent salvage ledger, and no live salvage
+    ///   marker.
+    /// - Shells: coordinates inside the envelope, shooter minted.
+    /// - Vision: ghost owners in the table and hostile to the viewer,
+    ///   ghosts and contacts in canonical order, all of it inside the
+    ///   envelope.
+    ///
+    /// Two rules are deliberately *permissive*, because tighter ones would
+    /// refuse legitimately reachable states. References are checked
+    /// against the id counters, never against the live tables: an order
+    /// or a shell outliving its subject by a tick is ordinary (brains
+    /// re-validate, and a shell's shooter may be dead by impact), while an
+    /// id the run never minted is forgery. And the envelopes are
+    /// generous sanity boxes rather than map-relative bounds: the bug
+    /// being killed is the overflow class, not nonsense geometry, and a
+    /// body the separation phase shoved a fraction of a tile past the
+    /// border is a state the sim really does produce.
+    ///
+    /// Every field added to [`State`] or its nested types owes a row here
+    /// and a fixture in `sim/tests/state_integrity.rs`.
+    ///
+    /// Public for tooling that wants to re-check a state it mutated by
+    /// hand; the sim itself never calls it inside [`State::tick`].
     pub fn validate_invariants(&self) -> Result<(), StateIntegrityError> {
+        use StateIntegrityError as E;
+
         if self.players.is_empty() {
-            return Err(StateIntegrityError::NoPlayers);
+            return Err(E::NoPlayers);
         }
-        if !self.units.windows(2).all(|w| w[0].id < w[1].id) {
-            return Err(StateIntegrityError::UnsortedUnits);
+        // PlayerId is a u8: past 256 seats the ids alias and winners()
+        // would name the wrong ones.
+        if self.players.len() > usize::from(u8::MAX) + 1 {
+            return Err(E::TooManyPlayers);
         }
-        if !self.buildings.windows(2).all(|w| w[0].id < w[1].id) {
-            return Err(StateIntegrityError::UnsortedBuildings);
+        let players = self.players.len();
+        // Teams normalize to dense ids at scenario build, so a team index
+        // is always a seat index too.
+        if let Some(i) = self
+            .players
+            .iter()
+            .position(|p| usize::from(p.team) >= players)
+        {
+            return Err(E::ForeignTeam(PlayerId(i as u8)));
+        }
+
+        // Nested grids: derived Deserialize accepts any cell count, and a
+        // short one panics deep inside vision refresh instead of here.
+        if !self.map.is_consistent() {
+            return Err(E::MalformedMapGrid);
+        }
+        let (w, h) = (self.map.width(), self.map.height());
+        // The parse-time bound, re-applied: the neighborhood scans add
+        // unchecked radii to the map dimensions.
+        if w > MAX_MAP_EDGE as i32 || h > MAX_MAP_EDGE as i32 {
+            return Err(E::MapTooLarge {
+                width: w,
+                height: h,
+            });
+        }
+        if self.vision.len() != players {
+            return Err(E::VisionTableMismatch);
+        }
+        if self.vision.iter().any(|v| !v.is_consistent(w, h)) {
+            return Err(E::MalformedVisionGrid);
+        }
+
+        if !self.units.windows(2).all(|a| a[0].id < a[1].id) {
+            return Err(E::UnsortedUnits);
+        }
+        if !self.buildings.windows(2).all(|a| a[0].id < a[1].id) {
+            return Err(E::UnsortedBuildings);
         }
         if let Some(u) = self.units.last()
             && u.id.0 >= self.next_unit_id
         {
-            return Err(StateIntegrityError::StaleUnitCounter);
+            return Err(E::StaleUnitCounter);
         }
         if let Some(b) = self.buildings.last()
             && b.id.0 >= self.next_building_id
         {
-            return Err(StateIntegrityError::StaleBuildingCounter);
+            return Err(E::StaleBuildingCounter);
         }
-        if self.vision.len() != self.players.len() {
-            return Err(StateIntegrityError::VisionTableMismatch);
+        // The counters and the clock increment unchecked in the tick
+        // pipeline; a forged extreme is a next-step panic (debug) or a
+        // wrap that aliases live ids (release).
+        if self.tick > TICK_ENVELOPE {
+            return Err(E::TickBeyondEnvelope);
         }
-        let players = self.players.len();
-        if self.units.iter().any(|u| (u.player.0 as usize) >= players) {
-            return Err(StateIntegrityError::ForeignUnitOwner);
+        if self.next_unit_id > ID_COUNTER_ENVELOPE || self.next_building_id > ID_COUNTER_ENVELOPE {
+            return Err(E::IdCounterBeyondEnvelope);
         }
-        if self
-            .buildings
-            .iter()
-            .any(|b| (b.player.0 as usize) >= players)
-        {
-            return Err(StateIntegrityError::ForeignBuildingOwner);
+
+        for u in &self.units {
+            if usize::from(u.player.0) >= players {
+                return Err(E::ForeignUnitOwner(u.id));
+            }
+            let stats = u.kind.stats();
+            if u.hp == 0 || u.hp > stats.max_hp {
+                return Err(E::UnitHpOutOfRange(u.id));
+            }
+            if u.progress > PROGRESS_ENVELOPE {
+                return Err(E::UnitProgressOutOfRange(u.id));
+            }
+            // Slot i belongs to weapon i; slots past the roster stay zero
+            // for the machine's whole life.
+            if u.cooldowns.iter().enumerate().any(|(i, cd)| {
+                *cd > stats
+                    .weapons
+                    .get(i)
+                    .map_or(0, |weapon| weapon.cooldown_ticks)
+            }) {
+                return Err(E::UnitCooldownOutOfRange(u.id));
+            }
+            if u.queue.len() > crate::stats::ORDER_QUEUE_CAP {
+                return Err(E::OverlongUnitQueue(u.id));
+            }
+            if !unit_inside_envelope(u) {
+                return Err(E::UnitOutsideEnvelope(u.id));
+            }
+            for target in std::iter::once(&u.order)
+                .chain(&u.queue)
+                .filter_map(order_reference)
+            {
+                if !self.minted(target) {
+                    return Err(E::UnmintedOrderTarget(u.id));
+                }
+            }
         }
-        // Shells carry a seat too: hostile() indexes the player table on
-        // impact, so a foreign owner would panic ticks after acceptance.
-        if self.shells.iter().any(|s| (s.player.0 as usize) >= players) {
-            return Err(StateIntegrityError::ForeignShellOwner);
+
+        for b in &self.buildings {
+            if usize::from(b.player.0) >= players {
+                return Err(E::ForeignBuildingOwner(b.id));
+            }
+            let stats = b.kind.stats();
+            if b.hp == 0 || b.hp > stats.max_hp {
+                return Err(E::BuildingHpOutOfRange(b.id));
+            }
+            if b.progress > PROGRESS_ENVELOPE {
+                return Err(E::BuildingProgressOutOfRange(b.id));
+            }
+            // A building fires its first weapon and nothing else.
+            if b.cooldown
+                > stats
+                    .weapons
+                    .first()
+                    .map_or(0, |weapon| weapon.cooldown_ticks)
+            {
+                return Err(E::BuildingCooldownOutOfRange(b.id));
+            }
+            if b.queue.len() > crate::stats::QUEUE_CAP {
+                return Err(E::OverlongBuildingQueue(b.id));
+            }
+            let faction = self.players[usize::from(b.player.0)].faction;
+            if b.queue.iter().any(|kind| {
+                !stats.produces.contains(kind) || kind.faction().is_some_and(|f| f != faction)
+            }) {
+                return Err(E::UnproducibleQueueEntry(b.id));
+            }
+            // The footprint needs no separate check: sizes are single
+            // digits, so an anchor inside the envelope keeps `anchor + size`
+            // inside it too.
+            if !tile_inside_envelope(b.anchor) || !b.rally.is_none_or(tile_inside_envelope) {
+                return Err(E::BuildingOutsideEnvelope(b.id));
+            }
+            if !salvage_ledger_coherent(b) {
+                return Err(E::IncoherentSalvageLedger(b.id));
+            }
+            if b.salvaged {
+                return Err(E::LiveBuildingMarkedSalvaged(b.id));
+            }
         }
-        // Nested grids: derived Deserialize accepts any cell count, and a
-        // short one panics deep inside vision refresh instead of here.
-        if !self.map.is_consistent() {
-            return Err(StateIntegrityError::MalformedMapGrid);
+
+        for (i, s) in self.shells.iter().enumerate() {
+            // Shells carry a seat too: hostile() indexes the player table
+            // on impact, so a foreign owner would panic ticks after
+            // acceptance.
+            if usize::from(s.player.0) >= players {
+                return Err(E::ForeignShellOwner(i));
+            }
+            if !point_inside_envelope(s.launch)
+                || !point_inside_envelope(s.impact)
+                || s.splash
+                    .is_some_and(|r| r < Fx::ZERO || r > Fx::from_num(COORD_ENVELOPE))
+            {
+                return Err(E::ShellOutsideEnvelope(i));
+            }
+            if !self.minted(s.shooter) {
+                return Err(E::UnmintedShellShooter(i));
+            }
         }
-        let (w, h) = (self.map.width(), self.map.height());
-        if self.vision.iter().any(|v| !v.is_consistent(w, h)) {
-            return Err(StateIntegrityError::MalformedVisionGrid);
+
+        for (i, v) in self.vision.iter().enumerate() {
+            let seat = PlayerId(i as u8);
+            for ghost in v.ghosts() {
+                // Renderers index the player table with this to pick a
+                // tint; an owner outside it is a panic, not a wrong color.
+                if usize::from(ghost.owner.0) >= players {
+                    return Err(E::ForeignGhostOwner(seat));
+                }
+                if self.players[usize::from(ghost.owner.0)].team == self.players[i].team {
+                    return Err(E::FriendlyGhost(seat));
+                }
+                if !tile_inside_envelope(ghost.anchor) {
+                    return Err(E::GhostOutsideEnvelope(seat));
+                }
+            }
+            // The real sort key carries the owner; two seats can hold
+            // footprints a memory records under the same corner.
+            let ghost_key = |g: &crate::vision::GhostBuilding| (g.anchor.y, g.anchor.x, g.owner);
+            if !v
+                .ghosts()
+                .windows(2)
+                .all(|a| ghost_key(&a[0]) <= ghost_key(&a[1]))
+            {
+                return Err(E::UnsortedGhosts(seat));
+            }
+            if v.contacts().iter().any(|t| !tile_inside_envelope(*t)) {
+                return Err(E::ContactOutsideEnvelope(seat));
+            }
+            // Blips are sorted and deduplicated every refresh.
+            if !v
+                .contacts()
+                .windows(2)
+                .all(|a| (a[0].y, a[0].x) < (a[1].y, a[1].x))
+            {
+                return Err(E::UnsortedContacts(seat));
+            }
         }
         Ok(())
+    }
+
+    /// Whether this run ever handed out `target`'s id — the permissive
+    /// reference rule. Dangling is fine; unminted is forgery.
+    fn minted(&self, target: Target) -> bool {
+        match target {
+            Target::Unit(id) => id.0 < self.next_unit_id,
+            Target::Building(id) => id.0 < self.next_building_id,
+        }
     }
 
     /// Whether `player` currently sees `pos`.
@@ -668,15 +956,19 @@ impl State {
         self.next_building_id = id.0;
     }
 
-    /// Whether `player` may start `kind` at `anchor` right now: every
-    /// footprint tile *currently visible* to them, open ground, and free
-    /// of buildings and standing units. Visibility (not mere exploration)
-    /// is the fog-honest rule — the occupancy checks read live state,
-    /// and a red ghost over explored-but-unseen ground would otherwise
-    /// leak hidden enemies. One predicate serves command validation and
-    /// the shell's placement preview — they must never disagree, which
-    /// is why this is literally [`State::place_refusal`] with the
-    /// reason thrown away.
+    /// Whether `player` may claim `kind` at `anchor` *this instant*:
+    /// every footprint tile currently visible to them, open ground, and
+    /// free of buildings and standing units. The real invariant is
+    /// narrower than visibility: a placement verdict may only read facts
+    /// the issuer knows — static terrain, own memory, own and allied
+    /// entities. Requiring current sight is how THIS predicate earns the
+    /// right to read live occupancy (`building_at`, the hostile-unit
+    /// scan); [`State::place_intent_refusal`] earns it differently, by
+    /// answering from memory and re-checking here at arrival. This is
+    /// literally [`State::place_refusal`] with the reason thrown away,
+    /// and it stays the final word on every actual ground claim —
+    /// instant builds, bot builds, and the deferred founder's arrival
+    /// all resolve through it.
     pub fn can_place(&self, player: PlayerId, kind: BuildingKind, anchor: TilePos) -> bool {
         self.place_refusal(player, kind, anchor).is_none()
     }
@@ -711,9 +1003,10 @@ impl State {
         }
         // Hostile machines hold their ground — standing on a tile
         // denies it to the enemy's foundations. Friendly machines
-        // (allies included) never block: the accept path relocates
-        // them to the perimeter as the site claims the ground. A flyer
-        // passing overhead blocks nothing either way.
+        // (allies included) never block: they walk off as the site
+        // claims the ground (only a routeless body is dealt to the
+        // perimeter instantly). A flyer passing overhead blocks
+        // nothing either way.
         let hostile_in_footprint = self.units.iter().any(|u| {
             u.hp > 0
                 && self.hostile(player, u.player)
@@ -725,6 +1018,232 @@ impl State {
         });
         hostile_in_footprint.then_some(PlaceRefusal::Unit)
     }
+
+    /// Whether `player` may *intend* to build `kind` at `anchor` — the
+    /// deferred sibling of [`State::place_refusal`], serving
+    /// [`crate::Command::Build`]'s `defer` mode and the shell's ghost
+    /// on remembered ground. Per footprint tile: a currently visible
+    /// tile takes the strict predicate's live checks verbatim; an
+    /// explored-but-unseen tile is judged ONLY on what the issuer
+    /// knows — static terrain (immutable after parse), remembered
+    /// scrap (conservative: nodes only shrink), remembered enemy
+    /// buildings, live own/allied buildings (team-internal facts),
+    /// and the issuer's own pending [`Order::Found`] claims; a
+    /// never-explored tile refuses as [`PlaceRefusal::Fog`]. Live
+    /// hostile units and unremembered enemy buildings on unseen ground
+    /// are deliberately unreadable here — two states differing only in
+    /// what fog hides return identical verdicts, so the amber ghost
+    /// can never be a hidden-enemy detector. The arrival re-check
+    /// through the strict predicate is what catches the collisions
+    /// memory cannot (an allied scaffold on unseen ground included).
+    pub fn place_intent_refusal(
+        &self,
+        player: PlayerId,
+        kind: BuildingKind,
+        anchor: TilePos,
+    ) -> Option<PlaceRefusal> {
+        self.place_intent_refusal_replacing(player, kind, anchor, &[])
+    }
+
+    /// The intent verdict for a non-queued build that replaces the programs
+    /// of `units`. Claims belonging to live own harvesters in that selection
+    /// leave with those programs and therefore do not reserve ground against
+    /// the replacement. Claims from every other unit remain blockers.
+    pub fn place_intent_refusal_replacing(
+        &self,
+        player: PlayerId,
+        kind: BuildingKind,
+        anchor: TilePos,
+        units: &[UnitId],
+    ) -> Option<PlaceRefusal> {
+        if kind.stats().construction.is_none() {
+            return Some(PlaceRefusal::NotConstructible);
+        }
+        let vision = self.vision(player);
+        let my_team = self.players[player.0 as usize].team;
+        let (w, h) = kind.stats().size;
+        let covers = |a: TilePos, size: (i32, i32), t: TilePos| {
+            t.x >= a.x && t.x < a.x + size.0 && t.y >= a.y && t.y < a.y + size.1
+        };
+        for dy in 0..h {
+            for dx in 0..w {
+                let t = anchor.offset(dx, dy);
+                if vision.visible(t) {
+                    if !self.map.terrain_passable(t) {
+                        return Some(PlaceRefusal::Terrain);
+                    }
+                    if self.building_at(t).is_some() {
+                        return Some(PlaceRefusal::Building);
+                    }
+                    continue;
+                }
+                if !vision.explored(t) {
+                    return Some(PlaceRefusal::Fog);
+                }
+                let terrain = self.map.tile(t).map(|tile| tile.terrain);
+                if terrain != Some(crate::map::Terrain::Ground) || vision.remembered_scrap(t) > 0 {
+                    return Some(PlaceRefusal::Terrain);
+                }
+                let ghosted = vision
+                    .ghosts()
+                    .iter()
+                    .any(|g| covers(g.anchor, g.kind.stats().size, t));
+                let allied_building = self.buildings.iter().any(|b| {
+                    self.players[b.player.0 as usize].team == my_team
+                        && covers(b.anchor, b.kind.stats().size, t)
+                });
+                if ghosted || allied_building {
+                    return Some(PlaceRefusal::Building);
+                }
+            }
+        }
+        // The issuer's own outstanding claims: two deferred founds may
+        // not promise the same ground (checked over the whole footprint
+        // so a visible/unseen mix cannot slip a double claim through).
+        let claimed = self.units.iter().any(|u| {
+            u.player == player
+                && u.hp > 0
+                && !(u.kind.stats().harvest.is_some() && units.contains(&u.id))
+                && std::iter::once(&u.order).chain(u.queue.iter()).any(|o| {
+                    matches!(o, Order::Found { kind: k, anchor: a }
+                    if (0..h).any(|dy| (0..w).any(|dx| {
+                        covers(*a, k.stats().size, anchor.offset(dx, dy))
+                    })))
+                })
+        });
+        if claimed {
+            return Some(PlaceRefusal::Building);
+        }
+        // Hostile machines deny only ground the issuer can SEE them
+        // holding — exactly the strict rule, restricted to visible
+        // footprint tiles.
+        let hostile_in_sight = self.units.iter().any(|u| {
+            u.hp > 0
+                && self.hostile(player, u.player)
+                && u.kind.stats().domain == crate::stats::Domain::Ground
+                && {
+                    let t = u.tile();
+                    covers(anchor, (w, h), t) && vision.visible(t)
+                }
+        });
+        hostile_in_sight.then_some(PlaceRefusal::Unit)
+    }
+}
+
+/// How far outside the map a coordinate may sit before a snapshot is
+/// refused, in tiles: eight times the largest legal map edge. Deliberately
+/// a generous sanity box rather than a map-relative bound — see
+/// [`State::validate_invariants`] for why. Every offset the sim adds to a
+/// coordinate (footprint sizes, ring scans, vision spans) is smaller than
+/// one map edge, so nothing inside this box can overflow the unchecked
+/// arithmetic downstream, and the squared distances it feeds stay far
+/// inside [`Fx`]'s integer range.
+const COORD_ENVELOPE: i32 = 8 * MAX_MAP_EDGE as i32;
+
+/// Ceiling on the tick meters a snapshot may carry ([`Unit::progress`],
+/// [`Building::progress`]). Construction, repair, and salvage all price a
+/// step as `ramp * (meter + 1) / ramp_ticks` in `u32`; an unbounded meter
+/// overflows that product. This bound keeps it inside the type for every
+/// shipped building and unit and sits far above any meter a match of
+/// playable length reaches. The live weld/salvage meters saturate just
+/// short of here (the economy brain's `metered` read), so a torch held
+/// on one job for millions of ticks keeps billing at its marginal rate
+/// instead of walking the product past `u32`.
+pub(crate) const PROGRESS_ENVELOPE: u32 = 1 << 21;
+
+/// Ceiling on a building's cumulative salvage ledger. Repairing a
+/// half-stripped building and stripping it again legitimately drains more
+/// hp than it ever had, so the ledger has no semantic bound — only this
+/// one, which keeps the running total clear of a `u32` wrap.
+const SALVAGE_LEDGER_CEILING: u32 = u32::MAX / 2;
+
+/// Ceiling on a snapshot's tick. `State::tick` increments unchecked;
+/// a forged `u64::MAX` panics on the very next step in a debug build
+/// and wraps in release. Half the type is ~14 trillion years at 20
+/// ticks/s — no honest record gets near it.
+const TICK_ENVELOPE: u64 = u64::MAX / 2;
+
+/// Ceiling on the id counters. Spawning increments unchecked, and a
+/// wrapped counter would alias live ids and break the sorted-id
+/// invariant this same validator enforces. Half the type leaves two
+/// billion spawns of headroom.
+const ID_COUNTER_ENVELOPE: u32 = u32::MAX / 2;
+
+/// Whether a tile coordinate sits inside [`COORD_ENVELOPE`].
+fn tile_inside_envelope(t: TilePos) -> bool {
+    t.x >= -COORD_ENVELOPE
+        && t.x <= COORD_ENVELOPE
+        && t.y >= -COORD_ENVELOPE
+        && t.y <= COORD_ENVELOPE
+}
+
+/// Whether a world position sits inside [`COORD_ENVELOPE`].
+fn point_inside_envelope(p: Vec2Fx) -> bool {
+    let (lo, hi) = (Fx::from_num(-COORD_ENVELOPE), Fx::from_num(COORD_ENVELOPE));
+    p.x >= lo && p.x <= hi && p.y >= lo && p.y <= hi
+}
+
+/// Whether every coordinate an order names sits inside the envelope. The
+/// match is exhaustive on purpose: a new [`Order`] variant carrying a tile
+/// must decide its row here rather than slip through a catch-all.
+fn order_inside_envelope(order: &Order) -> bool {
+    match order {
+        Order::Idle
+        | Order::Build { .. }
+        | Order::Repair { .. }
+        | Order::Salvage { .. }
+        | Order::RepairUnit { .. } => true,
+        Order::Move { goal } | Order::AttackMove { goal } => tile_inside_envelope(*goal),
+        Order::Harvest { node } => tile_inside_envelope(*node),
+        Order::Attack { resume, .. } => resume.is_none_or(tile_inside_envelope),
+        Order::Found { anchor, .. } => tile_inside_envelope(*anchor),
+    }
+}
+
+/// The entity an order names, if any — exhaustive for the same reason as
+/// [`order_inside_envelope`].
+fn order_reference(order: &Order) -> Option<Target> {
+    match order {
+        Order::Idle
+        | Order::Move { .. }
+        | Order::Harvest { .. }
+        | Order::AttackMove { .. }
+        | Order::Found { .. } => None,
+        Order::Attack { target, .. } => Some(*target),
+        Order::Build { site } => Some(Target::Building(*site)),
+        Order::Repair { building } | Order::Salvage { building } => {
+            Some(Target::Building(*building))
+        }
+        Order::RepairUnit { unit } => Some(Target::Unit(*unit)),
+    }
+}
+
+/// Whether every coordinate a unit carries — body, orders, walk, tether —
+/// sits inside the envelope.
+fn unit_inside_envelope(u: &Unit) -> bool {
+    point_inside_envelope(u.pos)
+        && order_inside_envelope(&u.order)
+        && u.queue.iter().all(order_inside_envelope)
+        && u.leash.is_none_or(|l| tile_inside_envelope(l.anchor))
+        && u.path.as_ref().is_none_or(|p| {
+            tile_inside_envelope(p.goal) && p.waypoints.iter().copied().all(tile_inside_envelope)
+        })
+}
+
+/// Whether a building's salvage ledger is a coherent record of the hp
+/// stripped from it: crediting reads the cumulative drain through one
+/// exact formula, so any other pairing is a forgery — and one that would
+/// underflow the `u32` subtraction the next drain performs.
+fn salvage_ledger_coherent(b: &Building) -> bool {
+    if b.salvage_drained > SALVAGE_LEDGER_CEILING {
+        return false;
+    }
+    let stats = b.kind.stats();
+    let basis = stats.construction.map_or(0, |c| c.cost);
+    let target =
+        u64::from(b.salvage_drained) * u64::from(basis) * crate::stats::SALVAGE_REFUND_PERMILLE
+            / (1000 * u64::from(stats.max_hp));
+    u64::from(b.salvage_credited) == target
 }
 
 /// Why [`State::place_refusal`] said no. Own-state facts only — no
@@ -759,6 +1278,7 @@ mod tests {
                 faction: Faction::Ferrous,
                 team: 0,
                 scrap: 0,
+                resigned: false,
             }],
             7,
         )
@@ -805,6 +1325,72 @@ mod tests {
     }
 
     #[test]
+    fn the_progress_ceiling_keeps_the_construction_ramp_in_u32() {
+        // Construction, repair, and salvage all price one tick of work as
+        // `ramp * (meter + 1) / ramp_ticks` in u32. The ceiling is only
+        // worth anything if that product still fits at the ceiling.
+        const KINDS: [BuildingKind; 7] = [
+            BuildingKind::Foundry,
+            BuildingKind::Turret,
+            BuildingKind::Fabricator,
+            BuildingKind::FlakTurret,
+            BuildingKind::Bastion,
+            BuildingKind::Array,
+            BuildingKind::Reclaimer,
+        ];
+        for kind in KINDS {
+            let stats = kind.stats();
+            let ramp = u64::from(stats.max_hp - stats.max_hp / 5);
+            assert!(
+                ramp * (u64::from(PROGRESS_ENVELOPE) + 1) <= u64::from(u32::MAX),
+                "{}: the ramp math must stay inside u32 at the ceiling",
+                kind.name()
+            );
+        }
+        // Unit welds ramp over the full max_hp — same product, same
+        // ceiling, same obligation for every machine on the roster.
+        const UNIT_KINDS: [UnitKind; 11] = [
+            UnitKind::Harvester,
+            UnitKind::Sentinel,
+            UnitKind::Scuttler,
+            UnitKind::Lancer,
+            UnitKind::Bombard,
+            UnitKind::Flakhound,
+            UnitKind::Stinger,
+            UnitKind::Buzzard,
+            UnitKind::Darter,
+            UnitKind::Talon,
+            UnitKind::Wisp,
+        ];
+        for kind in UNIT_KINDS {
+            let ramp = u64::from(kind.stats().max_hp);
+            assert!(
+                ramp * (u64::from(PROGRESS_ENVELOPE) + 1) <= u64::from(u32::MAX),
+                "{}: the unit weld ramp must stay inside u32 at the ceiling",
+                kind.name()
+            );
+        }
+    }
+
+    #[test]
+    fn the_coordinate_envelope_admits_every_legal_map_and_refuses_the_extremes() {
+        assert!(tile_inside_envelope(TilePos::new(
+            MAX_MAP_EDGE as i32,
+            MAX_MAP_EDGE as i32
+        )));
+        assert!(tile_inside_envelope(TilePos::new(-1, -1)));
+        assert!(!tile_inside_envelope(TilePos::new(i32::MAX, 0)));
+        assert!(!tile_inside_envelope(TilePos::new(0, i32::MIN)));
+        assert!(point_inside_envelope(
+            TilePos::new(MAX_MAP_EDGE as i32, 0).center()
+        ));
+        assert!(!point_inside_envelope(Vec2Fx::new(
+            Fx::from_bits(i64::MAX),
+            Fx::ZERO
+        )));
+    }
+
+    #[test]
     fn state_hash_changes_with_content() {
         let mut a = tiny_state();
         let b = tiny_state();
@@ -815,12 +1401,36 @@ mod tests {
 }
 
 /// Why a deserialized snapshot was refused. Every variant is a structural
-/// contradiction the tick pipeline is entitled to assume away.
+/// contradiction the tick pipeline is entitled to assume away, and every
+/// one names the entity that broke it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum StateIntegrityError {
     /// The player table is empty.
     #[error("no players")]
     NoPlayers,
+    /// The player table is longer than [`PlayerId`] can address.
+    #[error("more players than a player id can address")]
+    TooManyPlayers,
+    /// A player sits on a team index no seat carries.
+    #[error("player {0} sits on a team outside the table")]
+    ForeignTeam(PlayerId),
+    /// The map grid's dimensions disagree with its cells.
+    #[error("map grid dimensions disagree with its cells")]
+    MalformedMapGrid,
+    /// The map is larger than the supported maximum per side.
+    #[error("map is {width}x{height}; the supported maximum is {MAX_MAP_EDGE} per side")]
+    MapTooLarge {
+        /// Columns claimed by the grid.
+        width: i32,
+        /// Rows claimed by the grid.
+        height: i32,
+    },
+    /// The vision table does not match the player list.
+    #[error("vision table does not match the player list")]
+    VisionTableMismatch,
+    /// A vision grid disagrees with the map dimensions.
+    #[error("a vision table disagrees with the map dimensions")]
+    MalformedVisionGrid,
     /// Units are not strictly sorted by id.
     #[error("units not strictly sorted by id")]
     UnsortedUnits,
@@ -833,32 +1443,99 @@ pub enum StateIntegrityError {
     /// The building id counter sits behind a live building.
     #[error("building id counter behind a live building")]
     StaleBuildingCounter,
-    /// The vision table does not match the player list.
-    #[error("vision table does not match the player list")]
-    VisionTableMismatch,
+    /// The tick is past the envelope the pipeline's unchecked
+    /// increment tolerates.
+    #[error("tick beyond the sanity envelope")]
+    TickBeyondEnvelope,
+    /// An id counter is past the envelope spawning tolerates.
+    #[error("an id counter is beyond the sanity envelope")]
+    IdCounterBeyondEnvelope,
     /// A unit is owned by a player outside the table.
-    #[error("unit owned by a player outside the table")]
-    ForeignUnitOwner,
+    #[error("unit {0} is owned by a player outside the table")]
+    ForeignUnitOwner(UnitId),
+    /// A unit's hit points sit outside `(0, max_hp]`.
+    #[error("unit {0} carries hit points its kind cannot hold")]
+    UnitHpOutOfRange(UnitId),
+    /// A unit's work meter is past the ceiling.
+    #[error("unit {0} carries a work meter past the ceiling")]
+    UnitProgressOutOfRange(UnitId),
+    /// A unit's weapon cooldown is longer than that weapon's period, or a
+    /// slot past its roster is armed.
+    #[error("unit {0} carries a cooldown no weapon of its kind sets")]
+    UnitCooldownOutOfRange(UnitId),
+    /// A unit's order queue is longer than [`crate::stats::ORDER_QUEUE_CAP`].
+    #[error("unit {0} queues more orders than the cap allows")]
+    OverlongUnitQueue(UnitId),
+    /// A unit's body, order, walk, or tether names a coordinate outside
+    /// the sanity envelope.
+    #[error("unit {0} names a coordinate outside the envelope")]
+    UnitOutsideEnvelope(UnitId),
+    /// A unit's order names an entity id this run never handed out.
+    #[error("unit {0} is ordered against an id the run never minted")]
+    UnmintedOrderTarget(UnitId),
     /// A building is owned by a player outside the table.
-    #[error("building owned by a player outside the table")]
-    ForeignBuildingOwner,
+    #[error("building {0} is owned by a player outside the table")]
+    ForeignBuildingOwner(BuildingId),
+    /// A building's hit points sit outside `(0, max_hp]`.
+    #[error("building {0} carries hit points its kind cannot hold")]
+    BuildingHpOutOfRange(BuildingId),
+    /// A building's progress meter is past the ceiling.
+    #[error("building {0} carries a progress meter past the ceiling")]
+    BuildingProgressOutOfRange(BuildingId),
+    /// A building's cooldown is longer than its weapon's period.
+    #[error("building {0} carries a cooldown its weapon never sets")]
+    BuildingCooldownOutOfRange(BuildingId),
+    /// A building's production queue is longer than
+    /// [`crate::stats::QUEUE_CAP`].
+    #[error("building {0} queues more units than the cap allows")]
+    OverlongBuildingQueue(BuildingId),
+    /// A building queues a unit its kind cannot train, or one belonging to
+    /// the other faction's roster.
+    #[error("building {0} queues a unit it could never train")]
+    UnproducibleQueueEntry(BuildingId),
+    /// A building's anchor or rally point sits outside the sanity
+    /// envelope.
+    #[error("building {0} names a coordinate outside the envelope")]
+    BuildingOutsideEnvelope(BuildingId),
+    /// A building's salvage ledger is not a coherent record of the hp
+    /// stripped from it.
+    #[error("building {0} carries an incoherent salvage ledger")]
+    IncoherentSalvageLedger(BuildingId),
+    /// A live building carries the transient marker cleanup uses to
+    /// distinguish a completed salvage from combat destruction.
+    #[error("building {0} is still live but marked salvaged")]
+    LiveBuildingMarkedSalvaged(BuildingId),
     /// A shell in flight is owned by a player outside the table.
-    #[error("shell owned by a player outside the table")]
-    ForeignShellOwner,
-    /// The map grid's dimensions disagree with its cells.
-    #[error("map grid dimensions disagree with its cells")]
-    MalformedMapGrid,
-    /// A vision grid disagrees with the map dimensions.
-    #[error("a vision table disagrees with the map dimensions")]
-    MalformedVisionGrid,
+    #[error("shell {0} is owned by a player outside the table")]
+    ForeignShellOwner(usize),
+    /// A shell's launch, impact, or splash radius is outside the sanity
+    /// envelope.
+    #[error("shell {0} names a coordinate outside the envelope")]
+    ShellOutsideEnvelope(usize),
+    /// A shell was fired by an entity id this run never handed out.
+    #[error("shell {0} was fired by an id the run never minted")]
+    UnmintedShellShooter(usize),
+    /// A remembered building is owned by a player outside the table.
+    #[error("player {0} remembers a building owned outside the table")]
+    ForeignGhostOwner(PlayerId),
+    /// A player remembers a building belonging to their own team; ghosts
+    /// are memories of the enemy.
+    #[error("player {0} remembers a building of their own team")]
+    FriendlyGhost(PlayerId),
+    /// A remembered building's anchor sits outside the sanity envelope.
+    #[error("player {0} remembers a building outside the envelope")]
+    GhostOutsideEnvelope(PlayerId),
+    /// A player's remembered buildings are not in canonical order.
+    #[error("player {0} remembers buildings out of canonical order")]
+    UnsortedGhosts(PlayerId),
+    /// A radar contact sits outside the sanity envelope.
+    #[error("player {0} holds a radar contact outside the envelope")]
+    ContactOutsideEnvelope(PlayerId),
+    /// A player's radar contacts are not sorted and deduplicated.
+    #[error("player {0} holds radar contacts out of canonical order")]
+    UnsortedContacts(PlayerId),
 }
 
-/// The wire shape of [`State`]: a private mirror that derives the actual
-/// field-level `Deserialize`, so the only path from bytes to a `State`
-/// runs through [`State::validate_invariants`] — there is no public
-/// unvalidated constructor to call by accident. The exhaustive `From`
-/// below keeps the mirror honest: if `State` grows or loses a field, this
-/// module stops compiling instead of silently desyncing.
 /// A shell in flight: launched at the victim's fire-time position,
 /// unguided from that instant ("a shell in flight chooses nothing" —
 /// literal since 0.9), resolving on its arrival tick against whatever
@@ -883,6 +1560,12 @@ pub struct Shell {
     pub splash: Option<chassis::fx::Fx>,
 }
 
+/// The wire shape of [`State`]: a private mirror that derives the actual
+/// field-level `Deserialize`, so the only path from bytes to a `State`
+/// runs through `State::validate_invariants` — there is no public
+/// unvalidated constructor to call by accident. The exhaustive `From`
+/// below keeps the mirror honest: if `State` grows or loses a field, this
+/// module stops compiling instead of silently desyncing.
 #[derive(Deserialize)]
 #[serde(rename = "State")]
 struct StateWire {

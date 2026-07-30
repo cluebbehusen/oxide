@@ -1,0 +1,34 @@
+# Supply-chain policy, enforced by the CI `deny` job
+# (EmbarkStudios/cargo-deny). The ignore list is a triage ledger, not a
+# mute button: every entry names its reason and its exit condition.
+
+[advisories]
+ignore = [
+    { id = "RUSTSEC-2025-0035", reason = "macroquad's mutable-static soundness holes: known upstream, no fix planned, and the engine choice is deliberate. Exits with an engine change or an upstream fix." },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained; it arrives via fontdue via macroquad and only shell text rendering touches it. Exits with macroquad." },
+    { id = "RUSTSEC-2023-0089", reason = "atomic-polyfill is archived; it arrives via postcard's heapless 0.7 and compiles only on targets without native atomics — never ours. Exits when postcard moves to heapless 0.8." },
+]
+
+[licenses]
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+# The six workspace crates are publish = false and carry no license
+# field; they are the product, not a dependency.
+private = { ignore = true }
+
+[bans]
+# macroquad's tree drags duplicate majors (syn 2/3, smallvec 0.6/1);
+# denying would be a standing red light nobody can turn off.
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

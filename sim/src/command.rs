@@ -84,13 +84,15 @@ pub enum Command {
         /// What to build.
         kind: UnitKind,
     },
-    /// Start a construction site and send a harvester to stand it up.
+    /// Start a construction site and send harvesters to stand it up.
     /// The full price is paid on placement; cancelling salvages
     /// `cost x hp / max_hp`.
     Build {
-        /// Candidate builders. Fresh placement sends the first accepted
-        /// harvester; resuming an existing site sends every accepted
-        /// harvester (builders stack).
+        /// Candidate builders. Every accepted harvester joins the crew,
+        /// fresh placement and resume alike (builders stack); on a
+        /// fresh placement the first accepted harvester founds the
+        /// site — it pays and proves the doorstep, and its full queue
+        /// rejects the whole command.
         units: Vec<UnitId>,
         /// What to construct.
         kind: crate::stats::BuildingKind,
@@ -101,6 +103,17 @@ pub enum Command {
         /// defers only the walk-and-work leg.
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         queue: bool,
+        /// Claim on arrival instead of now: validate against the
+        /// issuer's *knowledge* ([`crate::State::place_intent_refusal`])
+        /// and hand the crew [`crate::state::Order::Found`] — nothing
+        /// placed, nothing charged, no route demanded until the founder
+        /// stands beside ground it can see (an honest stall later, like
+        /// a Move into fog). The shell arms this for explored-but-unseen
+        /// ground; the gym bot emits it exactly where the shell
+        /// would (a footprint tile out of current sight); the scripted
+        /// tiers never do, which is what keeps their anchors frozen.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        defer: bool,
     },
     /// Scrap an own unfinished site for a partial refund.
     Cancel {
@@ -147,6 +160,29 @@ pub enum Command {
         building: BuildingId,
         /// Rally tile, or `None` for the doorstep default.
         rally: Option<TilePos>,
+    },
+    /// Concede the seat. The issuer's Foundries stop counting toward the
+    /// team-scoped victory check and its future commands reject as
+    /// [`RejectReason::Eliminated`]; units already in the world keep
+    /// executing their brains, like any eliminated seat's remnants.
+    Surrender,
+    /// Send harvesters to weld a wounded own GROUND unit back toward
+    /// full. Billed per hp against the patient's cost at repair
+    /// pricing, prepaid at whole-scrap boundaries like a building weld.
+    /// Air patients refuse — a harvester cannot service a machine
+    /// hovering where it cannot stand. The patient's own orders are
+    /// untouched: a fleeing machine keeps fleeing and simply goes
+    /// unwelded while out of reach. (Last variant by appending
+    /// discipline: earlier discriminants keep their serialized bytes.)
+    RepairUnit {
+        /// The units to commit (only harvesters are accepted; the
+        /// patient itself never joins its own crew).
+        units: Vec<UnitId>,
+        /// The wounded machine.
+        target: UnitId,
+        /// Append behind current orders instead of replacing them.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        queue: bool,
     },
 }
 

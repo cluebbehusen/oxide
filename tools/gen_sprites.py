@@ -979,6 +979,42 @@ def reclaimer(faction: str) -> None:
     finish(img, px, f"reclaimer_{faction}")
 
 
+def repair_bay(faction: str) -> None:
+    """2x2 field workshop: an open service pad under a welding gantry —
+    wounded machines roll in past the hazard chevrons and roll out whole."""
+    px = 128
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    d.rounded_rectangle([s(6), s(8), s(122), s(120)], radius=s(9), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle([s(12), s(14), s(116), s(114)], radius=s(7), fill=(*IRON, 255))
+    # Recessed service pad, open to the south.
+    d.rounded_rectangle([s(24), s(30), s(104), s(106)], radius=s(5), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle([s(28), s(34), s(100), s(102)], radius=s(4), fill=(12, 10, 10, 255))
+    # Hazard chevrons along the drive-in edge.
+    for i in range(5):
+        x0 = 30 + i * 14
+        d.polygon(
+            [(s(x0), s(102)), (s(x0 + 7), s(102)), (s(x0 + 11), s(110)), (s(x0 + 4), s(110))],
+            fill=(*pal["light"], 255),
+        )
+    # Welding gantry spanning the pad.
+    d.rectangle([s(18), s(52), s(110), s(60)], fill=(*IRON_DARK, 255))
+    d.rectangle([s(18), s(52), s(110), s(54)], fill=(*IRON_LIGHT, 255))
+    # Twin service arms reaching down into the bay, torch heads lit.
+    for ax in (46, 82):
+        d.rectangle([s(ax - 3), s(58), s(ax + 3), s(78)], fill=(*pal["dark"], 255))
+        d.ellipse([s(ax - 6), s(74), s(ax + 6), s(86)], fill=(*pal["base"], 255))
+        d.ellipse([s(ax - 2), s(78), s(ax + 2), s(82)], fill=(*BONE, 255))
+    # Corner service posts.
+    for cx, cy in ((18, 20), (110, 20), (18, 108), (110, 108)):
+        d.ellipse([s(cx - 6), s(cy - 6), s(cx + 6), s(cy + 6)], fill=(*IRON_DARK, 255))
+        d.ellipse([s(cx - 3), s(cy - 3), s(cx + 3), s(cy + 3)], fill=(*pal["base"], 255))
+    # Faction service band on the roof edge.
+    d.rectangle([s(50), s(16), s(78), s(26)], fill=(*pal["dark"], 255))
+    d.rectangle([s(54), s(18), s(74), s(24)], fill=(*pal["light"], 255))
+    finish(img, px, f"repair_bay_{faction}")
+
+
 def wreck_pile() -> None:
     """Battlefield salvage on open ground: like a scrap heap but in dead
     machine tones with only a few amber glints — walkable junk, not a
@@ -1317,6 +1353,7 @@ def main() -> None:
         bastion(faction)
         array(faction)
         reclaimer(faction)
+        repair_bay(faction)
     accent_masks()
     icon_stop()
     icon_move()

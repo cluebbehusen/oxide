@@ -24,7 +24,7 @@ mod tick;
 pub mod vision;
 
 pub use command::{Command, PlayerCommand};
-pub use event::{Event, StallReason, TickReport};
+pub use event::{Event, StallReason, TickReport, UnitRepairSource};
 pub use ids::{BuildingId, PlayerId, Target, UnitId};
 pub use scenario::Scenario;
 pub use state::{
@@ -32,6 +32,7 @@ pub use state::{
     Unit,
 };
 pub use stats::{BuildingKind, UnitKind};
+pub use tick::CommandPhaseView;
 pub use vision::{GhostBuilding, Vision};
 
 /// Version stamped into replays; a replay is only guaranteed to reproduce on

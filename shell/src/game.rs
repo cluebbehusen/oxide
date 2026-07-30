@@ -121,6 +121,14 @@ pub struct Game {
     /// End-of-match statistics, computed once from the recorder when
     /// the result lands (the record IS the match — a re-execution).
     pub end_stats: Option<oxide_kit::stats::MatchStats>,
+    /// The match in numbers at the moment the human conceded an
+    /// UNDECIDED team match — the exit offer's stats. Decided matches
+    /// (a 1v1 surrender included) go through `end_stats` instead.
+    pub concede_stats: Option<oxide_kit::stats::MatchStats>,
+    /// Whether the surrender overlay (banner + concede stats + the
+    /// Esc-to-menu exit) is up. Presentation only; opening the pause
+    /// menu dismisses it so spectating the ally stays unobstructed.
+    pub conceded_banner: bool,
     /// What the player has demonstrably done — the tutorial's evidence.
     pub demo: crate::tutorial::Demo,
     /// Fog-free viewing without the debug chrome — the playback
@@ -227,6 +235,8 @@ impl Game {
             layout: std::cell::Cell::new(crate::layout::LayoutModel::default()),
             panel_model: std::cell::RefCell::new(None),
             end_stats: None,
+            concede_stats: None,
+            conceded_banner: false,
             demo: crate::tutorial::Demo::default(),
             spectate: false,
             accum: 0.0,
@@ -304,7 +314,7 @@ impl Game {
     /// Runs exactly one tick: bots think, staged commands drain, everything
     /// is recorded, presentation caches update. The only place `state.current_tick()`
     /// is called.
-    pub fn do_tick(&mut self) {
+    pub fn do_tick(&mut self) -> oxide_sim::TickReport {
         // New ticks make any earlier autosave stale.
         self.autosave_done = false;
         // Interpolation cache; pointless during suppressed bulk advances
@@ -332,6 +342,37 @@ impl Game {
                 .record(self.state.current_tick(), command.clone());
         }
         let report = self.state.tick(&commands);
+
+        // Income is evidence too: the mining lesson graduates on a
+        // load actually landing, not on the accepted order — so it
+        // rides the sim's event, outside the command gate below.
+        if report
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::ScrapDeposited { player, .. } if *player == self.human))
+        {
+            self.demo.deposited = true;
+        }
+
+        // A concession that did NOT decide the match (a team game, the
+        // ally fighting on) raises the surrender overlay: the human's
+        // match in numbers so far, with Esc-to-menu as the exit. A
+        // decisive surrender goes through the normal result flow, and a
+        // bulk fast-forward (replay load) keeps only the resigned fact —
+        // the banner is a fresh-concession moment, not standing state.
+        if !self.suppress_presentation
+            && self.state.result().is_none()
+            && report
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::PlayerResigned { player } if *player == self.human))
+        {
+            let mut replay = self.recorder.clone();
+            let total = self.state.current_tick();
+            replay.meta.ticks = Some(total);
+            self.concede_stats = oxide_kit::stats::compute(&replay, (total / 48).max(1)).ok();
+            self.conceded_banner = true;
+        }
 
         // The tutorial's evidence: what the human actually asked for
         // AND the sim accepted. A tick carrying any rejection for the
@@ -407,6 +448,7 @@ impl Game {
         {
             self.selection.building = None;
         }
+        report
     }
 
     /// Whether rendering should ignore fog: the debug overlay or a
@@ -466,6 +508,15 @@ impl Game {
         self.fx_clock
     }
 
+    /// Advances presentation from ordinary frame time while the match runs.
+    /// Driven presentation steps use [`Self::update_fx`] directly because
+    /// they represent sim time even when the wall clock is paused.
+    pub fn update_wall_clock_fx(&mut self, dt: f32) {
+        if !self.paused {
+            self.update_fx(dt);
+        }
+    }
+
     /// How far the presentation clock sits between the last executed
     /// tick and the next, 0..1 — frozen while paused. Interpolation
     /// fuel for anything that must move on sim time, not wall time.
@@ -511,6 +562,23 @@ impl Game {
             .iter()
             .map(|u| (u.id.0, world_vec(u.pos)))
             .collect();
+    }
+
+    /// Advances a small number of ticks while retaining presentation
+    /// effects and returning the sim events. This is the agent-facing
+    /// counterpart to [`Game::advance_ticks`]: slower, but suitable for
+    /// judging command acceptance, transient feedback, and combat frames.
+    pub fn present_ticks(&mut self, n: u64) -> Vec<Event> {
+        let mut events = Vec::new();
+        for _ in 0..n {
+            // A presented step stands in for one normal sim interval.
+            // Age what the previous tick put on screen before spawning
+            // this tick's effects, leaving the newest effects at age zero.
+            self.update_fx(TICK_DT);
+            events.extend(self.do_tick().events);
+        }
+        self.accum = 0.0;
+        events
     }
 
     /// Interpolation factor for rendering between ticks.
@@ -576,6 +644,20 @@ impl Game {
         hash_hex(self.state.hash())
     }
 
+    /// The transport's view of this session — also the live half of the
+    /// debug protocol's shared surface.
+    pub fn status_view(&self) -> oxide_protocol::StatusView {
+        oxide_protocol::StatusView {
+            tick: self.state.current_tick(),
+            paused: self.paused,
+            speed: self.speed,
+            scenario: self.scenario.name.clone(),
+            sim_version: SIM_VERSION.to_string(),
+            result: self.state.result(),
+            recorded_commands: self.recorder.commands.len(),
+        }
+    }
+
     /// The local player's fog view (what rendering and targeting honor).
     pub fn my_vision(&self) -> &oxide_sim::Vision {
         self.state.vision(self.human)
@@ -607,6 +689,49 @@ impl Game {
             Some(prev) => prev.lerp(now, alpha),
             None => now,
         }
+    }
+}
+
+/// The live session's half of the debug protocol's shared surface: real
+/// clock, real recorder, sim time driven through the same `do_tick`
+/// funnel every other command source uses.
+impl oxide_protocol::DebugSession for Game {
+    fn status(&self) -> oxide_protocol::StatusView {
+        self.status_view()
+    }
+
+    fn state(&self) -> &State {
+        &self.state
+    }
+
+    fn advance(&mut self, ticks: u64) -> oxide_protocol::AdvancedView {
+        self.advance_ticks(ticks);
+        oxide_protocol::AdvancedView {
+            ticks,
+            tick: self.state.current_tick(),
+            hash: self.hash_hex(),
+        }
+    }
+
+    fn present(&mut self, ticks: u64) -> oxide_protocol::PresentedView {
+        let events = self.present_ticks(ticks);
+        oxide_protocol::PresentedView {
+            ticks,
+            tick: self.state.current_tick(),
+            hash: self.hash_hex(),
+            events,
+        }
+    }
+
+    fn set_paused(&mut self, paused: bool) -> Result<(), String> {
+        self.paused = paused;
+        Ok(())
+    }
+
+    fn set_speed(&mut self, multiplier: f64) -> Result<(), String> {
+        oxide_protocol::check_speed(multiplier)?;
+        self.speed = multiplier;
+        Ok(())
     }
 }
 
@@ -652,5 +777,180 @@ mod tests {
         }
         assert!(!game.demo.attack_moved);
         assert!(!game.demo.built);
+    }
+
+    #[test]
+    fn presented_ticks_return_rejections_and_keep_their_toast() {
+        let mut game = Game::with_viewport(
+            Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("skirmish builds");
+        let foreign = game
+            .state
+            .units()
+            .iter()
+            .find(|unit| unit.player != game.human)
+            .expect("skirmish has an opponent")
+            .id;
+        game.issue(Command::Stop {
+            units: vec![foreign],
+        });
+
+        let events = game.present_ticks(1);
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            Event::CommandRejected { player, .. } if *player == game.human
+        )));
+        assert!(
+            game.toasts
+                .iter()
+                .any(|toast| toast.text == "nothing selected can do that"),
+            "presentation-preserving steps must retain shell feedback"
+        );
+    }
+
+    #[test]
+    fn presented_ticks_age_old_effects_and_leave_new_feedback_fresh() {
+        let mut game = Game::with_viewport(
+            Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("skirmish builds");
+        game.fx.push(Effect {
+            kind: EffectKind::Ping {
+                at: macroquad::prelude::Vec2::ZERO,
+                kind: PingKind::Move,
+            },
+            age: 0.0,
+        });
+
+        game.present_ticks(4);
+
+        let age = game
+            .fx
+            .iter()
+            .find_map(|effect| matches!(effect.kind, EffectKind::Ping { .. }).then_some(effect.age))
+            .expect("the half-second ping remains after four ticks");
+        assert!(
+            (age - 4.0 * TICK_DT).abs() < f32::EPSILON * 8.0,
+            "each represented interval must age existing presentation: {age}"
+        );
+
+        game.present_ticks(6);
+        assert!(
+            !game
+                .fx
+                .iter()
+                .any(|effect| matches!(effect.kind, EffectKind::Ping { .. })),
+            "an effect must expire after enough presented sim time"
+        );
+    }
+
+    #[test]
+    fn paused_wall_time_freezes_presentation() {
+        let mut game = Game::with_viewport(
+            Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("skirmish builds");
+        game.fx.push(Effect {
+            kind: EffectKind::Ping {
+                at: macroquad::prelude::Vec2::ZERO,
+                kind: PingKind::Move,
+            },
+            age: 0.0,
+        });
+
+        game.paused = true;
+        game.update_wall_clock_fx(0.25);
+        assert_eq!(game.fx_time(), 0.0, "decorative animation must hold");
+        assert_eq!(game.fx[0].age, 0.0, "transient effects must hold too");
+
+        game.paused = false;
+        game.update_wall_clock_fx(0.25);
+        assert_eq!(game.fx_time(), 0.25);
+        assert_eq!(game.fx[0].age, 0.25);
+    }
+
+    #[test]
+    fn a_decisive_concession_uses_the_result_flow_not_the_overlay() {
+        // 1v1: the surrender decides the match on its own tick, so the
+        // normal end-of-match banner takes over.
+        let mut game = Game::with_viewport(
+            Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("skirmish builds");
+        game.issue(Command::Surrender);
+        game.do_tick();
+        assert!(game.state.player(game.human).resigned);
+        assert!(game.state.result().is_some(), "a 1v1 concession decides");
+        assert!(!game.conceded_banner, "no concede overlay over a result");
+        assert!(game.concede_stats.is_none());
+    }
+
+    #[test]
+    fn a_team_concession_raises_the_surrender_overlay() {
+        use oxide_sim::scenario::PlayerSpec;
+        let seat = |name: &str, faction, team, bot| PlayerSpec {
+            name: name.into(),
+            faction,
+            team: Some(team),
+            scrap: 100,
+            bot,
+            // Teamed bot seats need a config (the classic bot is
+            // team-blind by design).
+            bot_config: bot.then_some(oxide_sim::scenario::BotConfig {
+                level: oxide_sim::bot::Level::Easy,
+                aggression: Some(500),
+            }),
+        };
+        let scenario = Scenario {
+            name: "concede-arena".into(),
+            seed: 42,
+            map: vec![
+                "####################".into(),
+                "#1..............3..#".into(),
+                "#..................#".into(),
+                "#..................#".into(),
+                "#..................#".into(),
+                "#2..............4..#".into(),
+                "#..................#".into(),
+                "####################".into(),
+            ],
+            players: vec![
+                seat("West Ferrous", oxide_sim::Faction::Ferrous, 0, false),
+                seat("West Cupric", oxide_sim::Faction::Cupric, 0, true),
+                seat("East Ferrous", oxide_sim::Faction::Ferrous, 1, true),
+                seat("East Cupric", oxide_sim::Faction::Cupric, 1, true),
+            ],
+            units: Vec::new(),
+            buildings: Vec::new(),
+            meta: None,
+        };
+        let mut game = Game::with_viewport(scenario, macroquad::prelude::vec2(1280.0, 800.0))
+            .expect("the concede arena builds");
+        game.issue(Command::Surrender);
+        game.do_tick();
+        assert!(game.state.player(game.human).resigned);
+        assert!(
+            game.state.result().is_none(),
+            "the ally's Foundry keeps the match running"
+        );
+        assert!(
+            game.conceded_banner,
+            "the undecided concession raises the overlay"
+        );
+        assert!(
+            game.concede_stats.is_some(),
+            "the exit offer carries the match-so-far numbers"
+        );
+        // The banner is a one-shot moment: later ticks never re-raise
+        // a dismissed overlay.
+        game.conceded_banner = false;
+        game.do_tick();
+        assert!(!game.conceded_banner, "spectating stays unobstructed");
     }
 }

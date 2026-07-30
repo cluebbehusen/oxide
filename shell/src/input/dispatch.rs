@@ -139,6 +139,11 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 game.toast("salvage cancelled");
                 return;
             }
+            if input.repairing {
+                input.repairing = false;
+                game.toast("weld cancelled");
+                return;
+            }
             if input.running {
                 input.running = false;
                 game.toast("run cancelled");
@@ -179,6 +184,26 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 game.toast("salvage: click an own building to strip it, Esc to cancel");
             } else {
                 game.toast("no harvester to salvage with");
+            }
+        }
+        Action::RepairUnit => {
+            // A toggle, like salvage: pressing again stands down.
+            if input.repairing {
+                input.repairing = false;
+                game.toast("weld cancelled");
+                return;
+            }
+            let has_harvester = game.selection.units.iter().any(|id| {
+                game.state
+                    .unit(*id)
+                    .is_some_and(|u| u.kind == UnitKind::Harvester && u.player == game.human)
+            });
+            if has_harvester {
+                input.disarm_click_verbs();
+                input.repairing = true;
+                game.toast("weld: click a damaged own unit, Esc to cancel");
+            } else {
+                game.toast("no harvester to weld with");
             }
         }
         Action::Run => {

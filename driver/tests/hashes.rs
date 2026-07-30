@@ -4,8 +4,16 @@
 //! is compared against `tests/goldens/state-hashes.json`. Any sim change
 //! that moves behavior shows up here as a one-line diff instead of golden
 //! PNG churn, and CI regenerates the file on every OS to prove the
-//! cross-platform bit-identical invariant. When a change is intentional:
-//! `BLESS=1 cargo test -p oxide-driver`, review the diff, commit, explain.
+//! cross-platform bit-identical invariant.
+//!
+//! The fixture carries the `SIM_VERSION` it was blessed under, and the
+//! bless path enforces the compatibility discipline mechanically: hash
+//! movement while the version stands still is a behavior change wearing
+//! last release's number — an old binary would silently reconstruct a
+//! different world from the same replay. Bump the workspace version
+//! first, then `BLESS=1 cargo test -p oxide-driver`, review the diff,
+//! commit, explain. `BLESS_SAME_VERSION=1` overrides the refusal for a
+//! deliberate exception; the commit message owns the justification.
 
 use oxide_driver::runner;
 use oxide_sim::Scenario;
@@ -13,6 +21,13 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 const FIXTURE_TICKS: u64 = 2_000;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Fixture {
+    /// The `SIM_VERSION` these hashes were blessed under.
+    sim_version: String,
+    hashes: BTreeMap<String, String>,
+}
 
 fn compute_hashes() -> BTreeMap<String, String> {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scenarios");
@@ -62,28 +77,150 @@ fn compute_hashes() -> BTreeMap<String, String> {
     hashes
 }
 
+/// The bless discipline as a pure decision: same-version hash movement
+/// on an existing row refuses unless explicitly overridden. A missing,
+/// pre-stamp, or other-version fixture licenses the bless; new and
+/// removed rows never block (maps come and go without a version story).
+fn bless_gate(
+    stored: Option<&Fixture>,
+    actual: &BTreeMap<String, String>,
+    override_on: bool,
+) -> Result<(), String> {
+    let Some(stored) = stored else {
+        return Ok(());
+    };
+    if stored.sim_version != oxide_sim::SIM_VERSION || override_on {
+        return Ok(());
+    }
+    let drifted: Vec<&str> = stored
+        .hashes
+        .iter()
+        .filter(|(name, hash)| actual.get(*name).is_some_and(|a| a != *hash))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    if drifted.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "refusing to bless: {} fixture hash(es) moved ({}) but SIM_VERSION is still {} \
+         — a behavior change must carry its cycle's workspace version, or an old binary \
+         reconstructs a different world from the same replay. Bump the version in \
+         Cargo.toml first, or set BLESS_SAME_VERSION=1 for a deliberate exception and \
+         justify it in the commit message.",
+        drifted.len(),
+        drifted.join(", "),
+        oxide_sim::SIM_VERSION,
+    ))
+}
+
+#[test]
+fn same_version_hash_movement_refuses_the_bless() {
+    let stored = Fixture {
+        sim_version: oxide_sim::SIM_VERSION.to_string(),
+        hashes: BTreeMap::from([
+            ("skirmish".to_string(), "aaaa".to_string()),
+            ("retired-map".to_string(), "cccc".to_string()),
+        ]),
+    };
+    let actual = BTreeMap::from([
+        ("skirmish".to_string(), "bbbb".to_string()),
+        ("brand-new-map".to_string(), "dddd".to_string()),
+    ]);
+    let err = bless_gate(Some(&stored), &actual, false).unwrap_err();
+    assert!(err.contains("skirmish"), "{err}");
+    assert!(
+        !err.contains("retired-map") && !err.contains("brand-new-map"),
+        "row additions and removals must never block: {err}"
+    );
+    assert!(
+        bless_gate(Some(&stored), &actual, true).is_ok(),
+        "the explicit override must license the bless"
+    );
+}
+
+#[test]
+fn a_version_bump_or_fresh_fixture_licenses_the_bless() {
+    let stored = Fixture {
+        sim_version: "0.0.1-not-this-version".to_string(),
+        hashes: BTreeMap::from([("skirmish".to_string(), "aaaa".to_string())]),
+    };
+    let actual = BTreeMap::from([("skirmish".to_string(), "bbbb".to_string())]);
+    assert!(bless_gate(Some(&stored), &actual, false).is_ok());
+    assert!(bless_gate(None, &actual, false).is_ok());
+
+    let same_version_same_hashes = Fixture {
+        sim_version: oxide_sim::SIM_VERSION.to_string(),
+        hashes: actual.clone(),
+    };
+    assert!(
+        bless_gate(Some(&same_version_same_hashes), &actual, false).is_ok(),
+        "a wrapper-only or row-only re-bless within one version is legitimate"
+    );
+}
+
 #[test]
 fn shipped_scenarios_match_hash_fixtures() {
     let actual = compute_hashes();
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/goldens/state-hashes.json");
 
     if std::env::var_os("BLESS").is_some() {
-        let mut body = serde_json::to_string_pretty(&actual).unwrap();
+        // An absent fixture or the recognized pre-stamp shape (a plain
+        // name-to-hash map) blesses freely — those are the one-time
+        // migration paths. Anything else that fails to parse is a
+        // CORRUPT fixture, and blessing over it would bypass the drift
+        // gate; refuse instead. A parseable one gates: same-version
+        // hash movement on an existing row is behavior drift wearing a
+        // stale version number.
+        let stored: Option<Fixture> = match std::fs::read_to_string(&fixture) {
+            Err(_) => None,
+            Ok(raw) => match serde_json::from_str::<Fixture>(&raw) {
+                Ok(parsed) => Some(parsed),
+                Err(_) if serde_json::from_str::<BTreeMap<String, String>>(&raw).is_ok() => None,
+                Err(err) => panic!(
+                    "fixture {} is corrupt ({err}) — refusing to bless over it; \
+                     inspect or restore it from git first",
+                    fixture.display()
+                ),
+            },
+        };
+        let override_on = std::env::var_os("BLESS_SAME_VERSION").is_some();
+        if let Err(refusal) = bless_gate(stored.as_ref(), &actual, override_on) {
+            panic!("{refusal}");
+        }
+        let blessed = Fixture {
+            sim_version: oxide_sim::SIM_VERSION.to_string(),
+            hashes: actual,
+        };
+        let mut body = serde_json::to_string_pretty(&blessed).unwrap();
         body.push('\n');
         std::fs::write(&fixture, body).unwrap();
         eprintln!("blessed {}", fixture.display());
         return;
     }
-    let expected: BTreeMap<String, String> =
-        serde_json::from_str(&std::fs::read_to_string(&fixture).unwrap_or_else(|_| {
-            panic!(
-                "missing fixture {} — run `BLESS=1 cargo test -p oxide-driver` and commit it",
-                fixture.display()
-            )
-        }))
-        .unwrap();
+
+    let raw = std::fs::read_to_string(&fixture).unwrap_or_else(|_| {
+        panic!(
+            "missing fixture {} — run `BLESS=1 cargo test -p oxide-driver` and commit it",
+            fixture.display()
+        )
+    });
+    let expected: Fixture = serde_json::from_str(&raw).unwrap_or_else(|err| {
+        panic!(
+            "fixture {} lacks its sim_version stamp (pre-0.13 shape?): {err} — \
+             re-bless with `BLESS=1 cargo test -p oxide-driver`",
+            fixture.display()
+        )
+    });
     assert_eq!(
-        expected,
+        expected.sim_version,
+        oxide_sim::SIM_VERSION,
+        "fixture was blessed under sim {} but the workspace is {} — re-verify the \
+         hashes and re-bless so the stamp tells the truth",
+        expected.sim_version,
+        oxide_sim::SIM_VERSION,
+    );
+    assert_eq!(
+        expected.hashes,
         actual,
         "state hashes drifted from {} — an unintended sim change, or re-bless deliberately",
         fixture.display()

@@ -68,6 +68,43 @@ pub enum Action {
     SetBookmark(u8),
     /// Return the camera to a remembered slot.
     RecallBookmark(u8),
+    /// Arm the unit weld: the next click on a damaged own ground unit
+    /// sends the selected harvesters to weld it back up (billed per hp
+    /// against the machine's cost).
+    RepairUnit,
+}
+
+impl Action {
+    /// The player-facing name, e.g. in the remap screen's conflict
+    /// notice ("M is already bound to Run"). Exhaustive on purpose:
+    /// non-remappable holders (Confirm, the digits) are reachable
+    /// conflicts, and every one must be nameable.
+    pub fn label(self) -> String {
+        match self {
+            Action::PanLeft => "Pan left".to_string(),
+            Action::PanRight => "Pan right".to_string(),
+            Action::PanUp => "Pan up".to_string(),
+            Action::PanDown => "Pan down".to_string(),
+            Action::StopOrScrap => "Stop".to_string(),
+            Action::TrainSlot(n) => format!("Train slot {}", n + 1),
+            Action::TogglePause => "Pause".to_string(),
+            Action::ToggleBuildPalette => "Build palette".to_string(),
+            Action::Patrol => "Patrol".to_string(),
+            Action::ToggleOverlay => "Debug overlay".to_string(),
+            Action::Back => "Back".to_string(),
+            Action::HomeCamera => "Center home".to_string(),
+            Action::Slot(n) => format!("Slot {n}"),
+            Action::AssignGroup(n) => format!("Assign group {n}"),
+            Action::Confirm => "Confirm".to_string(),
+            Action::CycleIdleWorker => "Next idle harvester".to_string(),
+            Action::JumpToLastAlert => "Jump to last alert".to_string(),
+            Action::Salvage => "Salvage".to_string(),
+            Action::Run => "Run".to_string(),
+            Action::SetBookmark(n) => format!("Set bookmark {}", n + 1),
+            Action::RecallBookmark(n) => format!("Recall bookmark {}", n + 1),
+            Action::RepairUnit => "Weld unit".to_string(),
+        }
+    }
 }
 
 /// A physical chord: one key plus the modifier truth that must hold.
@@ -211,6 +248,10 @@ impl BindingMap {
                 chord: Chord::bare(Key::M),
                 action: Action::Run,
             },
+            Binding {
+                chord: Chord::bare(Key::W),
+                action: Action::RepairUnit,
+            },
         ];
         for (i, key) in [Key::F5, Key::F6, Key::F7, Key::F8].into_iter().enumerate() {
             bindings.push(Binding {
@@ -258,6 +299,8 @@ impl BindingMap {
             // Classic's M belongs to StopOrScrap over here; Run takes
             // the freed right-index H (TrainSlot 1 moved to K).
             (Action::Run, Key::H),
+            // Weld crosses to the right hand's remaining top-row key.
+            (Action::RepairUnit, Key::Y),
         ] {
             // Order matters: unbind the target key's old meaning first
             // so the rebind never reports a conflict.
@@ -323,6 +366,16 @@ impl BindingMap {
     /// Removes an action's binding entirely (the row reads "unbound").
     pub fn unbind(&mut self, action: Action) {
         self.bindings.retain(|b| b.action != action);
+    }
+
+    /// The action currently holding an exact chord, if any — the
+    /// non-mutating twin of [`Self::rebind`]'s refusal rule, so a
+    /// refused remap can name what it collided with.
+    pub fn holder(&self, chord: Chord) -> Option<Action> {
+        self.bindings
+            .iter()
+            .find(|b| b.chord == chord)
+            .map(|b| b.action)
     }
 
     pub fn rebind(&mut self, action: Action, chord: Chord) -> bool {

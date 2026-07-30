@@ -114,13 +114,20 @@ use macroquad::prelude::*;
 use oxide_sim::stats::SCRAP_NODE_AMOUNT;
 use oxide_sim::{GameResult, UnitKind};
 
+pub(crate) use crate::theme::{
+    SURFACE_CARD, TEXT_BODY, TEXT_DISABLED, TEXT_PRIMARY, TEXT_SECONDARY,
+};
+
 const OUTSIDE: Color = color_u8!(20, 20, 25, 255);
+// World decoration (selection rings, rally poles, breadcrumbs) keeps
+// its own bone pair: the text tiers in crate::theme answer for
+// legibility, and raising them must never thicken the world's weight.
 const BONE: Color = color_u8!(232, 228, 216, 255);
 const BONE_FAINT: Color = color_u8!(232, 228, 216, 90);
-const SCRAP_COLOR: Color = color_u8!(217, 164, 65, 255);
+const SCRAP_COLOR: Color = crate::theme::TEXT_ACCENT;
 const HP_BACK: Color = color_u8!(20, 20, 24, 220);
-const DANGER: Color = color_u8!(217, 82, 74, 255);
-const PANEL: Color = color_u8!(20, 20, 24, 200);
+const DANGER: Color = crate::theme::TEXT_DANGER;
+const PANEL: Color = crate::theme::SURFACE_PANEL;
 
 /// The user's UI scale preference — atomic f32 bits so the settings
 /// screen can retune it live while every draw and hit-test path reads
@@ -259,6 +266,11 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     draw_blips(game);
     draw_rally_marker(game);
     draw_breadcrumbs(game, input);
+    // Deferred claims are the player's own intent, like breadcrumbs —
+    // a spectator has no chair whose promises deserve footprints.
+    if !game.spectate {
+        draw_pending_founds(game, sprites);
+    }
     draw_placement_ghost(game, sprites, input);
     draw_drag_rect(game, input);
     draw_salvage_tooltip(game, input);
@@ -516,7 +528,8 @@ fn hp_bar(x: f32, y: f32, w: f32, hp: u32, max_hp: u32) {
 /// detect — and the same rings under a placement ghost, because siting
 /// a Flak Turret or Bastion IS the decision its rings describe. Weapon
 /// reach draws in danger red, own vision in bone, the Array's radar
-/// detection in patina teal; where a gun outranges its own eyes
+/// detection in patina teal, and Repair Bay healing in green; where a gun
+/// outranges its own eyes
 /// (Bombard, Bastion), the gap between red and bone is the spotter's
 /// job, made visible.
 /// How many selected units draw their rings and programs — a boxed
@@ -537,10 +550,11 @@ pub fn tutorial_card_rect(t: &crate::tutorial::Tutorial) -> Rect {
     let s = ui_scale();
     let w = 460.0 * s;
     let x = (screen_width() - w) * 0.5;
-    let lines = crate::tutorial::STEPS
+    let lines = (crate::tutorial::STEPS
         .get(t.step)
         .map(|step| step.body.len())
-        .unwrap_or(0) as f32;
+        .unwrap_or(0)
+        + usize::from(t.coach_active())) as f32;
     Rect::new(x, 36.0 * s, w, 34.0 * s + lines * 18.0 * s + 10.0 * s)
 }
 
@@ -552,19 +566,18 @@ pub fn tutorial_dismiss_rect() -> Rect {
     Rect::new(x + w - 26.0 * s, 40.0 * s, 22.0 * s, 22.0 * s)
 }
 
-/// The tutorial card: headline, lesson, dismiss box, progress. Drawn
-/// over the world, under nothing — school outranks scenery.
-pub fn draw_tutorial(t: &crate::tutorial::Tutorial) {
+/// The tutorial card: headline, lesson, live coach line, dismiss box,
+/// progress. Drawn over the world, under nothing — school outranks
+/// scenery.
+pub fn draw_tutorial(t: &crate::tutorial::Tutorial, game: &crate::game::Game) {
     let Some(step) = crate::tutorial::STEPS.get(t.step) else {
         return;
     };
     let s = ui_scale();
-    let w = 460.0 * s;
-    let x = (screen_width() - w) * 0.5;
-    let y = 36.0 * s;
+    let rect = tutorial_card_rect(t);
+    let (x, y, w, h) = (rect.x, rect.y, rect.w, rect.h);
     let line_h = 18.0 * s;
-    let h = 34.0 * s + step.body.len() as f32 * line_h + 10.0 * s;
-    draw_rectangle(x, y, w, h, Color::from_rgba(14, 14, 18, 235));
+    draw_rectangle(x, y, w, h, SURFACE_CARD);
     draw_rectangle_lines(x, y, w, h, 1.5 * s, Color::new(0.85, 0.65, 0.35, 0.9));
     draw_text(
         format!(
@@ -584,12 +597,25 @@ pub fn draw_tutorial(t: &crate::tutorial::Tutorial) {
             x + 10.0 * s,
             y + 42.0 * s + i as f32 * line_h,
             15.0 * s,
-            BONE_FAINT,
+            TEXT_BODY,
+        );
+    }
+    if let Some(coach) = t.coach(game) {
+        let color = match &coach {
+            crate::tutorial::CoachLine::Status(_) => SCRAP_COLOR,
+            crate::tutorial::CoachLine::Recovery(_) => DANGER,
+        };
+        draw_text(
+            coach.text(),
+            x + 10.0 * s,
+            y + 42.0 * s + step.body.len() as f32 * line_h,
+            15.0 * s,
+            color,
         );
     }
     let d = tutorial_dismiss_rect();
-    draw_rectangle_lines(d.x, d.y, d.w, d.h, 1.2 * s, BONE_FAINT);
-    draw_text("x", d.x + 7.0 * s, d.y + 16.0 * s, 16.0 * s, BONE_FAINT);
+    draw_rectangle_lines(d.x, d.y, d.w, d.h, 1.2 * s, TEXT_SECONDARY);
+    draw_text("x", d.x + 7.0 * s, d.y + 16.0 * s, 16.0 * s, TEXT_SECONDARY);
 }
 
 #[cfg(test)]

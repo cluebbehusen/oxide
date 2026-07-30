@@ -87,6 +87,20 @@ pub enum Event {
         /// Scrap added to the bank.
         amount: u32,
     },
+    /// A wounded machine received hp from one repair source.
+    ///
+    /// This reports only hp accepted by the shared resolver after damage
+    /// and max-hp clamping. It is output telemetry, not replay input.
+    UnitRepaired {
+        /// The repaired machine.
+        unit: UnitId,
+        /// The machine's owner.
+        player: PlayerId,
+        /// What supplied the repair.
+        source: UnitRepairSource,
+        /// Hp actually accepted from this source.
+        amount: u32,
+    },
     /// A scrap node ran out.
     NodeDepleted {
         /// The now-empty tile.
@@ -181,6 +195,28 @@ pub enum Event {
         /// The final outcome.
         result: GameResult,
     },
+    /// A seat conceded. Its machines play on as remnants; the victory
+    /// check stops counting its Foundries the same tick.
+    PlayerResigned {
+        /// The seat that gave up.
+        player: PlayerId,
+    },
+}
+
+/// The source of an accepted unit repair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum UnitRepairSource {
+    /// A Harvester's field welder.
+    FieldWelder {
+        /// The Harvester doing the work.
+        unit: UnitId,
+    },
+    /// A Repair Bay aura pulse.
+    RepairBay {
+        /// The Repair Bay supplying the pulse.
+        building: BuildingId,
+    },
 }
 
 /// Everything [`crate::State::tick`] has to say about one tick.
@@ -205,4 +241,10 @@ pub enum StallReason {
     NoFiringPosition,
     /// The bank ran dry mid-job.
     InsufficientScrap,
+    /// Ground claimed by a deferred found was taken by the time the
+    /// founder arrived. Fog-legal by construction: the verdict is only
+    /// ever computed on footprint tiles the arriving unit currently
+    /// sees, so it reports the founder's own discovery, never a fact
+    /// fog still hides.
+    GroundTaken,
 }

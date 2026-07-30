@@ -4,7 +4,7 @@
 use anyhow::{Context, Result};
 use macroquad::audio::{Sound, load_sound};
 use macroquad::prelude::{FilterMode, Rect, Texture2D, load_texture};
-use oxide_sim::{Faction, UnitKind};
+use oxide_sim::{BuildingKind, Faction, UnitKind};
 
 /// Every sprite the shell draws, as regions of ONE texture.
 ///
@@ -41,6 +41,7 @@ pub struct Sprites {
     bastion: [Rect; 3],
     array: [Rect; 3],
     reclaimer: [Rect; 3],
+    repair_bay: [Rect; 3],
     harvester: [Rect; 3],
     harvester_scoop: [[Rect; 3]; 2],
     scaffold: [Rect; 2],
@@ -68,11 +69,195 @@ fn faction_index(faction: Faction) -> usize {
 /// mask (the pixels where the two faction variants differ, grayscale).
 const ACCENT: usize = 2;
 
+/// The atlas manifest as `tools/gen_sprites.py` writes it.
+type Manifest = std::collections::HashMap<String, [f32; 4]>;
+
+/// Sprites with no faction variants: one region, one name.
+const SINGLE_KEYS: [&str; 10] = [
+    "rock_skirt",
+    "scrap_full",
+    "scrap_mid",
+    "scrap_low",
+    "scrap_rich",
+    "muzzle_flash",
+    "scorch",
+    "wreck_pile",
+    "air_shadow",
+    "burst",
+];
+
+/// Verb pictograms, ordered to match [`crate::panel::VerbIcon`].
+const VERB_ICON_KEYS: [&str; 12] = [
+    "icon_stop",
+    "icon_move",
+    "icon_attack_move",
+    "icon_attack",
+    "icon_patrol",
+    "icon_harvest",
+    "icon_build",
+    "icon_repair",
+    "icon_salvage",
+    "icon_cancel",
+    "icon_rally",
+    "icon_idle",
+];
+
+const GROUND_KEYS: [&str; 6] = [
+    "ground_0", "ground_1", "ground_2", "ground_3", "ground_4", "ground_5",
+];
+
+const ROCK_KEYS: [&str; 4] = ["rock_0", "rock_1", "rock_2", "rock_3"];
+
+/// Skyline rows, ordered `w_conn * 4 + e_conn * 2 + variant`.
+const PEAK_SKY_KEYS: [&str; 8] = [
+    "peak_sky_00_0",
+    "peak_sky_00_1",
+    "peak_sky_01_0",
+    "peak_sky_01_1",
+    "peak_sky_10_0",
+    "peak_sky_10_1",
+    "peak_sky_11_0",
+    "peak_sky_11_1",
+];
+
+const PEAK_LONE_KEYS: [&str; 2] = ["peak_lone_0", "peak_lone_1"];
+
+const PEAK_BODY_KEYS: [&str; 2] = ["peak_body_0", "peak_body_1"];
+
+const DECAL_KEYS: [&str; 4] = ["decal_crack", "decal_plate", "decal_stain", "decal_wreck"];
+
+const SCAFFOLD_KEYS: [&str; 2] = ["scaffold_dense", "scaffold_sparse"];
+
+const DEBRIS_KEYS: [&str; 3] = ["debris_0", "debris_1", "debris_2"];
+
+/// The Turret's gun is faction-varied like a unit, but belongs to no kind.
+const TURRET_BARREL_STEM: &str = "turret_barrel";
+
+/// The Harvester's dig frames hang off its own stem.
+const SCOOP_SUFFIXES: [&str; 2] = ["_scoop1", "_scoop2"];
+
+/// The atlas stem a unit kind's rows live under.
+fn unit_stem(kind: UnitKind) -> &'static str {
+    kind.name()
+}
+
+/// The atlas stem a building kind's rows live under. Exhaustive on
+/// purpose: a new kind must say where its art is before it compiles.
+fn building_stem(kind: BuildingKind) -> &'static str {
+    match kind {
+        BuildingKind::Foundry => "foundry",
+        BuildingKind::Turret => "turret",
+        BuildingKind::Fabricator => "fabricator",
+        BuildingKind::FlakTurret => "flak_turret",
+        BuildingKind::Bastion => "bastion",
+        BuildingKind::Array => "array",
+        BuildingKind::Reclaimer => "reclaimer",
+        BuildingKind::RepairBay => "repair_bay",
+    }
+}
+
+/// The three names every faction-varied row carries.
+fn variant_keys(stem: &str, suffix: &str) -> [String; 3] {
+    [
+        format!("{stem}_ferrous{suffix}"),
+        format!("{stem}_cupric{suffix}"),
+        format!("{stem}_accent{suffix}"),
+    ]
+}
+
+fn lookup(rects: &Manifest, name: &str) -> Result<Rect> {
+    let [x, y, w, h] = rects
+        .get(name)
+        .copied()
+        .with_context(|| format!("sprite {name:?} missing from atlas"))?;
+    Ok(Rect::new(x, y, w, h))
+}
+
+fn pick<const N: usize>(rects: &Manifest, keys: [&str; N]) -> Result<[Rect; N]> {
+    let mut out = [Rect::new(0.0, 0.0, 0.0, 0.0); N];
+    for (slot, key) in out.iter_mut().zip(keys) {
+        *slot = lookup(rects, key)?;
+    }
+    Ok(out)
+}
+
+fn variant_row(rects: &Manifest, stem: &str, suffix: &str) -> Result<[Rect; 3]> {
+    let mut out = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
+    for (slot, key) in out.iter_mut().zip(variant_keys(stem, suffix)) {
+        *slot = lookup(rects, &key)?;
+    }
+    Ok(out)
+}
+
+/// Every kind the shell must find art for.
+#[cfg(test)]
+const ALL_UNIT_KINDS: [UnitKind; 11] = [
+    UnitKind::Harvester,
+    UnitKind::Sentinel,
+    UnitKind::Scuttler,
+    UnitKind::Lancer,
+    UnitKind::Bombard,
+    UnitKind::Flakhound,
+    UnitKind::Stinger,
+    UnitKind::Buzzard,
+    UnitKind::Darter,
+    UnitKind::Talon,
+    UnitKind::Wisp,
+];
+
+#[cfg(test)]
+const ALL_BUILDING_KINDS: [BuildingKind; 8] = [
+    BuildingKind::Foundry,
+    BuildingKind::Turret,
+    BuildingKind::Fabricator,
+    BuildingKind::FlakTurret,
+    BuildingKind::Bastion,
+    BuildingKind::Array,
+    BuildingKind::Reclaimer,
+    BuildingKind::RepairBay,
+];
+
+/// Every atlas key [`Sprites::load`] resolves, built from the same lists
+/// and stems the loader itself uses.
+#[cfg(test)]
+fn atlas_keys() -> Vec<String> {
+    let mut keys: Vec<String> = SINGLE_KEYS
+        .iter()
+        .chain(VERB_ICON_KEYS.iter())
+        .chain(GROUND_KEYS.iter())
+        .chain(ROCK_KEYS.iter())
+        .chain(PEAK_SKY_KEYS.iter())
+        .chain(PEAK_LONE_KEYS.iter())
+        .chain(PEAK_BODY_KEYS.iter())
+        .chain(DECAL_KEYS.iter())
+        .chain(SCAFFOLD_KEYS.iter())
+        .chain(DEBRIS_KEYS.iter())
+        .map(|key| (*key).to_string())
+        .collect();
+    keys.extend(variant_keys(TURRET_BARREL_STEM, ""));
+    for kind in ALL_BUILDING_KINDS {
+        keys.extend(variant_keys(building_stem(kind), ""));
+    }
+    for kind in ALL_UNIT_KINDS {
+        keys.extend(variant_keys(unit_stem(kind), ""));
+    }
+    for suffix in SCOOP_SUFFIXES {
+        keys.extend(variant_keys(unit_stem(UnitKind::Harvester), suffix));
+    }
+    keys
+}
+
 /// Where game data lives. A macOS .app bundle keeps it in
-/// Contents/Resources beside Contents/MacOS/<exe>; development runs
+/// Contents/Resources beside `Contents/MacOS/<exe>`; development runs
 /// from the workspace root. Resolved once by probing for the atlas —
 /// the one file no build ships without.
 pub fn resource_root() -> std::path::PathBuf {
+    // Native automation runs from an isolated writable directory so
+    // local replays and screenshots cannot perturb a golden walk. It
+    // points back at the read-only workspace resources explicitly.
+    if let Some(root) = std::env::var_os("OXIDE_RESOURCE_ROOT") {
+        return root.into();
+    }
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
@@ -100,182 +285,66 @@ impl Sprites {
         let manifest = macroquad::file::load_string(&resource("assets/sprites/atlas.json"))
             .await
             .context("loading assets/sprites/atlas.json")?;
-        let rects: std::collections::HashMap<String, [f32; 4]> =
-            serde_json::from_str(&manifest).context("parsing atlas manifest")?;
-        let rect = |name: &str| -> Result<Rect> {
-            let [x, y, w, h] = rects
-                .get(name)
-                .copied()
-                .with_context(|| format!("sprite {name:?} missing from atlas"))?;
-            Ok(Rect::new(x, y, w, h))
-        };
+        let rects: Manifest = serde_json::from_str(&manifest).context("parsing atlas manifest")?;
+        let [
+            rock_skirt,
+            scrap_full,
+            scrap_mid,
+            scrap_low,
+            scrap_rich,
+            muzzle_flash,
+            scorch,
+            wreck_pile,
+            air_shadow,
+            burst,
+        ] = pick(&rects, SINGLE_KEYS)?;
+        let unit = |kind| variant_row(&rects, unit_stem(kind), "");
+        let building = |kind| variant_row(&rects, building_stem(kind), "");
         Ok(Self {
             texture,
-            verb_icons: [
-                rect("icon_stop")?,
-                rect("icon_move")?,
-                rect("icon_attack_move")?,
-                rect("icon_attack")?,
-                rect("icon_patrol")?,
-                rect("icon_harvest")?,
-                rect("icon_build")?,
-                rect("icon_repair")?,
-                rect("icon_salvage")?,
-                rect("icon_cancel")?,
-                rect("icon_rally")?,
-                rect("icon_idle")?,
-            ],
-            ground: [
-                rect("ground_0")?,
-                rect("ground_1")?,
-                rect("ground_2")?,
-                rect("ground_3")?,
-                rect("ground_4")?,
-                rect("ground_5")?,
-            ],
-            rock: [
-                rect("rock_0")?,
-                rect("rock_1")?,
-                rect("rock_2")?,
-                rect("rock_3")?,
-            ],
-            peak_sky: [
-                rect("peak_sky_00_0")?,
-                rect("peak_sky_00_1")?,
-                rect("peak_sky_01_0")?,
-                rect("peak_sky_01_1")?,
-                rect("peak_sky_10_0")?,
-                rect("peak_sky_10_1")?,
-                rect("peak_sky_11_0")?,
-                rect("peak_sky_11_1")?,
-            ],
-            peak_lone: [rect("peak_lone_0")?, rect("peak_lone_1")?],
-            peak_body: [rect("peak_body_0")?, rect("peak_body_1")?],
-            turret_barrel: [
-                rect("turret_barrel_ferrous")?,
-                rect("turret_barrel_cupric")?,
-                rect("turret_barrel_accent")?,
-            ],
-            rock_skirt: rect("rock_skirt")?,
-            decals: [
-                rect("decal_crack")?,
-                rect("decal_plate")?,
-                rect("decal_stain")?,
-                rect("decal_wreck")?,
-            ],
-            scrap_full: rect("scrap_full")?,
-            scrap_mid: rect("scrap_mid")?,
-            scrap_low: rect("scrap_low")?,
-            scrap_rich: rect("scrap_rich")?,
-            muzzle_flash: rect("muzzle_flash")?,
-            scorch: rect("scorch")?,
-            wreck_pile: rect("wreck_pile")?,
-            air_shadow: rect("air_shadow")?,
-            burst: rect("burst")?,
-            foundry: [
-                rect("foundry_ferrous")?,
-                rect("foundry_cupric")?,
-                rect("foundry_accent")?,
-            ],
-            turret: [
-                rect("turret_ferrous")?,
-                rect("turret_cupric")?,
-                rect("turret_accent")?,
-            ],
-            fabricator: [
-                rect("fabricator_ferrous")?,
-                rect("fabricator_cupric")?,
-                rect("fabricator_accent")?,
-            ],
-            flak_turret: [
-                rect("flak_turret_ferrous")?,
-                rect("flak_turret_cupric")?,
-                rect("flak_turret_accent")?,
-            ],
-            bastion: [
-                rect("bastion_ferrous")?,
-                rect("bastion_cupric")?,
-                rect("bastion_accent")?,
-            ],
-            array: [
-                rect("array_ferrous")?,
-                rect("array_cupric")?,
-                rect("array_accent")?,
-            ],
-            reclaimer: [
-                rect("reclaimer_ferrous")?,
-                rect("reclaimer_cupric")?,
-                rect("reclaimer_accent")?,
-            ],
-            harvester: [
-                rect("harvester_ferrous")?,
-                rect("harvester_cupric")?,
-                rect("harvester_accent")?,
-            ],
+            verb_icons: pick(&rects, VERB_ICON_KEYS)?,
+            ground: pick(&rects, GROUND_KEYS)?,
+            rock: pick(&rects, ROCK_KEYS)?,
+            peak_sky: pick(&rects, PEAK_SKY_KEYS)?,
+            peak_lone: pick(&rects, PEAK_LONE_KEYS)?,
+            peak_body: pick(&rects, PEAK_BODY_KEYS)?,
+            turret_barrel: variant_row(&rects, TURRET_BARREL_STEM, "")?,
+            rock_skirt,
+            decals: pick(&rects, DECAL_KEYS)?,
+            scrap_full,
+            scrap_mid,
+            scrap_low,
+            scrap_rich,
+            muzzle_flash,
+            scorch,
+            wreck_pile,
+            air_shadow,
+            burst,
+            foundry: building(BuildingKind::Foundry)?,
+            turret: building(BuildingKind::Turret)?,
+            fabricator: building(BuildingKind::Fabricator)?,
+            flak_turret: building(BuildingKind::FlakTurret)?,
+            bastion: building(BuildingKind::Bastion)?,
+            array: building(BuildingKind::Array)?,
+            reclaimer: building(BuildingKind::Reclaimer)?,
+            repair_bay: building(BuildingKind::RepairBay)?,
+            harvester: unit(UnitKind::Harvester)?,
             harvester_scoop: [
-                [
-                    rect("harvester_ferrous_scoop1")?,
-                    rect("harvester_cupric_scoop1")?,
-                    rect("harvester_accent_scoop1")?,
-                ],
-                [
-                    rect("harvester_ferrous_scoop2")?,
-                    rect("harvester_cupric_scoop2")?,
-                    rect("harvester_accent_scoop2")?,
-                ],
+                variant_row(&rects, unit_stem(UnitKind::Harvester), SCOOP_SUFFIXES[0])?,
+                variant_row(&rects, unit_stem(UnitKind::Harvester), SCOOP_SUFFIXES[1])?,
             ],
-            scaffold: [rect("scaffold_dense")?, rect("scaffold_sparse")?],
-            debris: [rect("debris_0")?, rect("debris_1")?, rect("debris_2")?],
-            scuttler: [
-                rect("scuttler_ferrous")?,
-                rect("scuttler_cupric")?,
-                rect("scuttler_accent")?,
-            ],
-            lancer: [
-                rect("lancer_ferrous")?,
-                rect("lancer_cupric")?,
-                rect("lancer_accent")?,
-            ],
-            sentinel: [
-                rect("sentinel_ferrous")?,
-                rect("sentinel_cupric")?,
-                rect("sentinel_accent")?,
-            ],
-            bombard: [
-                rect("bombard_ferrous")?,
-                rect("bombard_cupric")?,
-                rect("bombard_accent")?,
-            ],
-            flakhound: [
-                rect("flakhound_ferrous")?,
-                rect("flakhound_cupric")?,
-                rect("flakhound_accent")?,
-            ],
-            stinger: [
-                rect("stinger_ferrous")?,
-                rect("stinger_cupric")?,
-                rect("stinger_accent")?,
-            ],
-            buzzard: [
-                rect("buzzard_ferrous")?,
-                rect("buzzard_cupric")?,
-                rect("buzzard_accent")?,
-            ],
-            darter: [
-                rect("darter_ferrous")?,
-                rect("darter_cupric")?,
-                rect("darter_accent")?,
-            ],
-            talon: [
-                rect("talon_ferrous")?,
-                rect("talon_cupric")?,
-                rect("talon_accent")?,
-            ],
-            wisp: [
-                rect("wisp_ferrous")?,
-                rect("wisp_cupric")?,
-                rect("wisp_accent")?,
-            ],
+            scaffold: pick(&rects, SCAFFOLD_KEYS)?,
+            debris: pick(&rects, DEBRIS_KEYS)?,
+            scuttler: unit(UnitKind::Scuttler)?,
+            lancer: unit(UnitKind::Lancer)?,
+            sentinel: unit(UnitKind::Sentinel)?,
+            bombard: unit(UnitKind::Bombard)?,
+            flakhound: unit(UnitKind::Flakhound)?,
+            stinger: unit(UnitKind::Stinger)?,
+            buzzard: unit(UnitKind::Buzzard)?,
+            darter: unit(UnitKind::Darter)?,
+            talon: unit(UnitKind::Talon)?,
+            wisp: unit(UnitKind::Wisp)?,
         })
     }
 
@@ -385,6 +454,7 @@ impl Sprites {
             oxide_sim::BuildingKind::Bastion => &self.bastion,
             oxide_sim::BuildingKind::Array => &self.array,
             oxide_sim::BuildingKind::Reclaimer => &self.reclaimer,
+            oxide_sim::BuildingKind::RepairBay => &self.repair_bay,
         }
     }
 
@@ -523,5 +593,65 @@ impl Sounds {
             ack: clip("ack").await?,
             laser2: clip("laser2").await?,
         })
+    }
+}
+
+/// The asset manifest, checked without a GPU.
+///
+/// [`Sprites::load`] already fails loudly on a missing region and
+/// [`Sprites::unit_row`] is exhaustive, so a new kind cannot compile
+/// without a sprite row — but both of those checks need a window, which
+/// CI never opens. These read `atlas.json` as plain data instead, so a
+/// regenerated atlas that dropped a row, or a kind whose art was never
+/// generated, fails by name in the ordinary test run.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest() -> Manifest {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/sprites/atlas.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
+        serde_json::from_str(&text).expect("atlas.json maps names to [x, y, w, h]")
+    }
+
+    #[test]
+    fn the_shell_and_the_atlas_name_the_same_sprites() {
+        let atlas = manifest();
+        let named = atlas_keys();
+        let mut missing: Vec<&String> = named.iter().filter(|k| !atlas.contains_key(*k)).collect();
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "the shell asks for sprites the atlas does not ship: {missing:?} \
+             — regenerate with tools/gen_sprites.py"
+        );
+        // The other direction: art nothing draws is art nobody blessed.
+        // gen_sprites.py and the shell ship together, so a row with no
+        // reader is a half-landed change, not a spare part.
+        let mut orphans: Vec<&String> = atlas.keys().filter(|k| !named.contains(k)).collect();
+        orphans.sort();
+        assert!(
+            orphans.is_empty(),
+            "the atlas ships sprites the shell never draws: {orphans:?}"
+        );
+        // Containment both ways still allows the shell to name one
+        // region twice; a bijection does not.
+        assert_eq!(named.len(), atlas.len(), "a sprite is named twice");
+    }
+
+    #[test]
+    fn every_kind_has_both_rosters_and_an_accent_mask() {
+        let atlas = manifest();
+        let stems = ALL_UNIT_KINDS
+            .map(unit_stem)
+            .into_iter()
+            .chain(ALL_BUILDING_KINDS.map(building_stem));
+        for stem in stems {
+            for key in variant_keys(stem, "") {
+                assert!(atlas.contains_key(&key), "no {key} in the atlas");
+            }
+        }
     }
 }

@@ -279,8 +279,8 @@ impl Map {
     }
 
     /// One decay step: every wreck tile loses one salvage. Runs on a
-    /// global cadence so battlefield scrap stays a fresh-battle prize
-    /// without per-tile timers in the hash.
+    /// global cadence so battlefield scrap eventually returns to the
+    /// dirt without per-tile timers in the hash.
     pub(crate) fn decay_wrecks(&mut self) {
         for (_, tile) in self.grid.iter_mut() {
             tile.wreck = tile.wreck.saturating_sub(1);

@@ -13,6 +13,11 @@ set -eu
 
 cargo build --release -p oxide-shell
 
+# The bundle wears the workspace version. Derived, never typed: a pinned
+# literal here shipped three releases stamped 0.9.0.
+VERSION="$(cargo pkgid -p oxide-shell)"
+VERSION="${VERSION##*[@#]}"
+
 APP=dist/Oxide.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -21,7 +26,9 @@ cp target/release/Oxide "$APP/Contents/MacOS/"
 cp -R assets "$APP/Contents/Resources/assets"
 cp -R scenarios "$APP/Contents/Resources/scenarios"
 
-cat > "$APP/Contents/Info.plist" << 'PLIST'
+# NOTE: unquoted heredoc — $VERSION interpolates, so any future plist
+# edit must shell-escape $, backticks, and backslashes.
+cat > "$APP/Contents/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -32,8 +39,8 @@ cat > "$APP/Contents/Info.plist" << 'PLIST'
     <key>CFBundleIdentifier</key><string>com.cluebbehusen.oxide</string>
     <key>CFBundleExecutable</key><string>Oxide</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.9.0</string>
-    <key>CFBundleVersion</key><string>0.9.0</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
+    <key>CFBundleVersion</key><string>$VERSION</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>CFBundleIconFile</key><string>oxide.icns</string>
 </dict>
@@ -56,4 +63,12 @@ if command -v sips > /dev/null && command -v iconutil > /dev/null \
     iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/oxide.icns"
 fi
 
-echo "packaged $APP"
+# Smoke: the bundle must carry its pieces and tell the truth about its
+# version. set -eu turns any miss into a packaging failure.
+test -x "$APP/Contents/MacOS/Oxide"
+test -f "$APP/Contents/Resources/assets/sprites/atlas.png"
+test -f "$APP/Contents/Resources/assets/sprites/atlas.json"
+test -f "$APP/Contents/Resources/scenarios/skirmish.json"
+grep -q "<string>$VERSION</string>" "$APP/Contents/Info.plist"
+
+echo "packaged Oxide $VERSION -> $APP"

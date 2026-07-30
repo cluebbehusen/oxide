@@ -1,0 +1,9 @@
+# Actions-only on purpose: the cargo tree's stale corners are triaged
+# by cargo-deny (deny.toml) instead, and macroquad-rooted version-bump
+# PRs would be pure churn against a pinned engine.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

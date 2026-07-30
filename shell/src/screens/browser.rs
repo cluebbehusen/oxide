@@ -9,15 +9,12 @@
 
 use crate::menu::{PreviewCache, ScenarioEntry};
 use macroquad::prelude::{
-    Color, DrawTextureParams, Rect, Vec2, color_u8, draw_rectangle, draw_rectangle_lines,
-    draw_text, draw_texture_ex, measure_text, vec2,
+    Color, DrawTextureParams, Rect, Vec2, draw_rectangle, draw_rectangle_lines, draw_text,
+    draw_texture_ex, measure_text, vec2,
 };
 use oxide_protocol::{Key, MouseButton, RawEvent};
 
-const TITLE_COLOR: Color = color_u8!(196, 87, 59, 255);
-const ITEM_COLOR: Color = color_u8!(214, 210, 196, 255);
-const DIM: Color = color_u8!(214, 210, 196, 120);
-const PANEL: Color = color_u8!(20, 20, 24, 230);
+use crate::theme::{SURFACE_MENU, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE};
 
 /// What a frame of browser input decided.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -439,17 +436,11 @@ impl Browser {
             (view.x - dims.width) * 0.5,
             72.0 * ui,
             title_size,
-            TITLE_COLOR,
+            TEXT_TITLE,
         );
         let layout = self.layout(entries, view, ui);
         for (label, rect) in &layout.headings {
-            draw_text(
-                label,
-                rect.x,
-                rect.y + rect.h * 0.62,
-                22.0 * ui,
-                TITLE_COLOR,
-            );
+            draw_text(label, rect.x, rect.y + rect.h * 0.62, 22.0 * ui, TEXT_TITLE);
             let dims = measure_text(label, None, (22.0 * ui) as u16, 1.0);
             draw_rectangle(
                 rect.x + dims.width + 14.0 * ui,
@@ -463,7 +454,7 @@ impl Browser {
             let entry = &entries[*entry_idx];
             let selected = *entry_idx == self.selected;
             let hovered = self.hover == Some(*entry_idx);
-            draw_rectangle(rect.x, rect.y, rect.w, rect.h, PANEL);
+            draw_rectangle(rect.x, rect.y, rect.w, rect.h, SURFACE_MENU);
             let label_h = 30.0 * ui;
             let thumb = Rect::new(
                 rect.x + 4.0 * ui,
@@ -486,9 +477,9 @@ impl Browser {
                 );
             }
             let border = if selected {
-                TITLE_COLOR
+                TEXT_TITLE
             } else if hovered {
-                DIM
+                TEXT_SECONDARY
             } else {
                 Color::new(0.6, 0.6, 0.65, 0.25)
             };
@@ -507,13 +498,23 @@ impl Browser {
                 rect.x + (rect.w - name.width) * 0.5,
                 rect.y + rect.h - 10.0 * ui,
                 name_size,
-                if selected { ITEM_COLOR } else { DIM },
+                if selected {
+                    TEXT_PRIMARY
+                } else {
+                    TEXT_SECONDARY
+                },
             );
         }
         // Scroll cues.
         let (band_x, band_w, _, _, _, top, bottom) = metrics(view, ui);
         if layout.more_above {
-            draw_text("^", band_x + band_w * 0.5, 110.0 * ui, 22.0 * ui, DIM);
+            draw_text(
+                "^",
+                band_x + band_w * 0.5,
+                110.0 * ui,
+                22.0 * ui,
+                TEXT_SECONDARY,
+            );
         }
         if layout.more_below {
             draw_text(
@@ -521,7 +522,7 @@ impl Browser {
                 band_x + band_w * 0.5,
                 view.y - 66.0 * ui,
                 22.0 * ui,
-                DIM,
+                TEXT_SECONDARY,
             );
         }
         // A draw-only scrollbar thumb: where the window sits in the
@@ -533,8 +534,14 @@ impl Browser {
             let thumb_top = top + frac(self.scroll_line) * track_h;
             let thumb_h = (frac(layout.lines_shown) * track_h).max(24.0 * ui);
             let x = (band_x + band_w + 10.0 * ui).min(view.x - 8.0 * ui);
-            draw_rectangle(x, top, 3.0 * ui, track_h, PANEL);
-            draw_rectangle(x, thumb_top.min(bottom - thumb_h), 3.0 * ui, thumb_h, DIM);
+            draw_rectangle(x, top, 3.0 * ui, track_h, SURFACE_MENU);
+            draw_rectangle(
+                x,
+                thumb_top.min(bottom - thumb_h),
+                3.0 * ui,
+                thumb_h,
+                TEXT_SECONDARY,
+            );
         }
         // The selected map's story, above the hint line.
         if let Some(entry) = entries.get(self.selected) {
@@ -554,7 +561,7 @@ impl Browser {
                 (view.x - dims.width) * 0.5,
                 view.y - 44.0 * ui,
                 size,
-                ITEM_COLOR,
+                TEXT_PRIMARY,
             );
         }
         let hint = "Arrows/click select - Enter or click again plays - Esc back";
@@ -564,7 +571,7 @@ impl Browser {
             (view.x - dims.width) * 0.5,
             view.y - 20.0 * ui,
             16.0 * ui,
-            DIM,
+            TEXT_SECONDARY,
         );
     }
 }

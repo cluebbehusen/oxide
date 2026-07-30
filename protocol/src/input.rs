@@ -6,8 +6,9 @@
 //! Injected and hardware events take the identical path, which is what makes
 //! presentation-layer tests trustworthy without OS-level input faking.
 //!
-//! Touch variants exist now, unused, so the mobile ports extend this enum
-//! instead of growing a second funnel.
+//! Touch variants flow through the shell's real touch handling (tap
+//! select, drag pan, pinch zoom) — one funnel for every pointer
+//! species, sized for the mobile ports.
 
 use serde::{Deserialize, Serialize};
 
@@ -82,16 +83,45 @@ pub enum RawEvent {
         /// Window y.
         y: f32,
     },
+    /// A typed character, for text entry (save names). The shell emits
+    /// these only for printable ASCII: the menu font is Latin-1 and UI
+    /// strings stay ASCII, so the filter sits at ingest and every
+    /// consumer is safe by construction. Screens consume them only
+    /// while a text field has focus; letters stay semantic everywhere
+    /// else.
+    Text {
+        /// The character as typed (layout- and shift-resolved).
+        ch: char,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::assert_every_tag_sampled;
 
     fn roundtrip(event: RawEvent) -> RawEvent {
         let json = serde_json::to_string(&event).unwrap();
         serde_json::from_str(&json).unwrap()
     }
+
+    /// Contiguous index per [`RawEvent`] variant, in declaration order.
+    fn event_tag(event: &RawEvent) -> usize {
+        match event {
+            RawEvent::MouseMove { .. } => 0,
+            RawEvent::MouseDown { .. } => 1,
+            RawEvent::MouseUp { .. } => 2,
+            RawEvent::Wheel { .. } => 3,
+            RawEvent::KeyDown { .. } => 4,
+            RawEvent::KeyUp { .. } => 5,
+            RawEvent::TouchDown { .. } => 6,
+            RawEvent::TouchMove { .. } => 7,
+            RawEvent::TouchUp { .. } => 8,
+            RawEvent::Text { .. } => 9,
+        }
+    }
+
+    const EVENT_VARIANTS: usize = 10;
 
     #[test]
     fn every_raw_event_variant_including_touch_survives_a_roundtrip() {
@@ -127,9 +157,9 @@ mod tests {
                 x: 12.0,
                 y: 13.0,
             },
+            RawEvent::Text { ch: 'k' },
         ];
-        // A new variant with no line here escapes the wire round-trip.
-        assert_eq!(events.len(), 9);
+        assert_every_tag_sampled(events.iter().map(event_tag), EVENT_VARIANTS, "raw event");
         for event in events {
             assert_eq!(
                 roundtrip(event),
@@ -277,4 +307,7 @@ pub enum Key {
     Y,
     /// See [`Key::C`].
     Z,
+    /// Delete the character before the caret (text entry only; not a
+    /// bindable game verb).
+    Backspace,
 }

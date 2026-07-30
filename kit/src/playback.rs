@@ -3,7 +3,7 @@
 //! No recorder, no commands, no bots — the log is the match, and this
 //! engine replays it through raw [`State::tick`] exactly as the record
 //! dictates. Seeking backward restores the nearest forward checkpoint
-//! (in-memory `State` clones taken every [`CHECKPOINT_EVERY`] ticks on
+//! (in-memory `State` clones taken every `CHECKPOINT_EVERY` ticks on
 //! the way through) and re-simulates the suffix; save-is-a-replay means
 //! a seeked position can never diverge from a straight run, and the
 //! test below holds that as a hash identity.

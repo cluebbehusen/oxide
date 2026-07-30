@@ -148,27 +148,8 @@ impl Default for Config {
     }
 }
 
-/// Platform config directory for Oxide, created on save, never on load.
-fn config_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support/Oxide"))
-    }
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("Oxide"))
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-            .map(|d| d.join("oxide"))
-    }
-}
-
 fn config_path() -> Option<PathBuf> {
-    config_dir().map(|d| d.join("config.json"))
+    crate::paths::config_dir().map(|d| d.join("config.json"))
 }
 
 impl Config {
@@ -264,25 +245,8 @@ impl Config {
     }
 
     fn save_to(&self, path: &std::path::Path) -> std::io::Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(
-            &tmp,
-            serde_json::to_string_pretty(self).expect("config serializes"),
-        )?;
-        // Windows refuses to rename onto an existing file; removing the
-        // old config first costs atomicity only in the crash window
-        // between the two calls, and the loader falls back to defaults
-        // on any unreadable file.
-        match std::fs::rename(&tmp, path) {
-            Ok(()) => Ok(()),
-            Err(_) => {
-                std::fs::remove_file(path).ok();
-                std::fs::rename(&tmp, path)
-            }
-        }
+        let text = serde_json::to_string_pretty(self).expect("config serializes");
+        chassis::fsx::write_atomic(path, |writer| writer.write_all(text.as_bytes()))
     }
 }
 
@@ -409,8 +373,8 @@ mod tests {
 
     #[test]
     fn saving_twice_replaces_instead_of_failing() {
-        // Windows refuses rename-onto-existing; the fallback must make
-        // the second save land, and its content must win.
+        // std's rename replaces existing destinations on every
+        // platform; the second save must land and its content win.
         let dir = std::env::temp_dir().join(format!("oxide-config-twice-{}", std::process::id()));
         let path = dir.join("config.json");
         let mut config = Config::default();
@@ -419,6 +383,35 @@ mod tests {
         config.save_to(&path).expect("second save replaces");
         let loaded = Config::load_from(Some(path.clone()));
         assert!((loaded.ui_scale - 1.5).abs() < 1e-6, "the newer config won");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_save_leaves_the_old_config_standing() {
+        // A read-only directory refuses the temp file; the previous
+        // config must survive untouched and no temp may linger.
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("oxide-config-fail-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let path = dir.join("config.json");
+        let config = Config::default();
+        config.save_to(&path).expect("first save");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let changed = Config {
+            ui_scale: 1.5,
+            ..Config::default()
+        };
+        assert!(changed.save_to(&path).is_err(), "the failure surfaces");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let loaded = Config::load_from(Some(path.clone()));
+        assert_eq!(loaded, config, "the old config survived the failed save");
+        let temps: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(temps.is_empty(), "no temp survives a failed save");
         std::fs::remove_dir_all(&dir).ok();
     }
 

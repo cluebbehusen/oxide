@@ -37,7 +37,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       # macroquad links against the platform's windowing/audio stacks even
       # in headless test builds.
@@ -52,15 +52,23 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
+
+      # Public documentation is a promise too: broken intra-doc links
+      # and malformed HTML rot silently without a gate.
+      - name: Docs
+        if: runner.os == 'Linux'
+        run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
 
       # The whole point of the fixed-point sim: hashes blessed on one
       # platform must reproduce exactly on every other.
       - name: Cross-platform determinism
-        run: cargo test -p oxide-driver --test hashes -- --nocapture
+        run: cargo test -p oxide-driver --test hashes --locked -- --nocapture
 
   # The declared rust-version is a promise; moving-stable alone never
   # tests it.
@@ -71,13 +79,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master 2026-07-16
         with:
           toolchain: "1.93"
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Install Linux system libraries
         run: |
           sudo apt-get update
           sudo apt-get install -y libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
       - name: Test on MSRV
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
   # The training tools are shipped source too: lint, formatting, and
   # types hold to the same standard as the Rust side.
@@ -89,6 +97,10 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: tools/train/uv.lock
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master 2026-07-16
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Ruff lint
         working-directory: tools/train
         run: uv run ruff check .
@@ -101,3 +113,25 @@ jobs:
       - name: Tests
         working-directory: tools/train
         run: uv run pytest -q
+      # The gym contract only verifies when a worker actually launches;
+      # without this, Rust/Python column order can drift while both
+      # suites stay green. oxide-driver has no macroquad dependency, so
+      # the build needs no display or system libraries.
+      - name: Build gym driver
+        run: cargo build -p oxide-driver --locked
+      - name: Gym handshake
+        working-directory: tools/train
+        env:
+          OXIDE_DRIVER_BIN: ${{ github.workspace }}/target/debug/oxide-driver
+        run: uv run pytest tests/test_handshake.py -q
+
+  # Supply-chain gate: advisories, bans, licenses, and source policy
+  # live in deny.toml, including the triage list for macroquad's stale
+  # corners.
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories bans licenses sources

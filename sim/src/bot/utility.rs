@@ -217,14 +217,23 @@ impl UtilityPolicy {
     }
 
     /// A harvester sent last think and idle again now bounced off an
-    /// unreachable node — never ask twice.
+    /// unreachable node — never ask twice. Only a node still reporting
+    /// value earns the blacklist: a source the harvester honestly
+    /// drained reads as empty and needs no entry (the amount filter
+    /// already refuses it), and blacklisting it would poison the tile
+    /// against every future deposit landing there.
     pub(super) fn audit_harvests(&mut self, obs: &Observation) {
         for (id, node) in std::mem::take(&mut self.last_sent) {
             let bounced = obs
                 .my_units
                 .iter()
                 .any(|u| u.id == id && u.idle && u.hp > 0);
-            if bounced && !self.dead_nodes.contains(&node) {
+            let still_reports = obs
+                .known_scrap
+                .iter()
+                .chain(obs.known_wrecks.iter())
+                .any(|(pos, amount)| *pos == node && *amount > 0);
+            if bounced && still_reports && !self.dead_nodes.contains(&node) {
                 self.dead_nodes.push(node);
             }
         }
@@ -232,10 +241,25 @@ impl UtilityPolicy {
 
     /// A site requested last think that never appeared was refused for a
     /// reason the observation can't see; stop asking for that anchor.
+    /// A pending deferred found is a site on its way, not a refusal:
+    /// the founder pays on arrival, so while one is still walking the
+    /// anchor stays pending for a later audit to judge (blacklisting
+    /// it would poison ground the claim is about to prove). The
+    /// scripted tiers never defer — `founding` is always `None` on
+    /// their path.
     pub(super) fn audit_sites(&mut self, obs: &Observation) {
         for anchor in std::mem::take(&mut self.pending_sites) {
             let appeared = obs.my_buildings.iter().any(|b| b.anchor == anchor);
-            if !appeared && !self.dead_anchors.contains(&anchor) {
+            if appeared {
+                continue;
+            }
+            let walking = obs
+                .my_units
+                .iter()
+                .any(|u| u.founding.is_some_and(|(_, a)| a == anchor));
+            if walking {
+                self.pending_sites.push(anchor);
+            } else if !self.dead_anchors.contains(&anchor) {
                 self.dead_anchors.push(anchor);
             }
         }
@@ -885,7 +909,10 @@ impl UtilityPolicy {
             self.scout = obs
                 .my_units
                 .iter()
-                .filter(|u| !enlisted.contains(&u.id) && u.site.is_none())
+                // A walking founder (`founding`) is spoken for like a
+                // builder on site: a scout order would replace the
+                // deferred claim's whole program.
+                .filter(|u| !enlisted.contains(&u.id) && u.site.is_none() && u.founding.is_none())
                 .filter(|u| u.kind == UnitKind::Harvester || u.idle)
                 .min_by_key(|u| {
                     let preference = match u.kind {
@@ -1234,4 +1261,102 @@ impl UtilityPolicy {
 /// can fight.
 pub fn is_fighter(u: &UnitObs) -> bool {
     u.kind.stats().can_fight()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bot::observation::{OBSERVATION_VERSION, Observation, UnitObs};
+    use crate::ids::{PlayerId, UnitId};
+
+    fn obs_with(units: Vec<UnitObs>) -> Observation {
+        Observation {
+            version: OBSERVATION_VERSION,
+            tick: 0,
+            me: PlayerId(0),
+            scrap: 0,
+            map_width: 32,
+            map_height: 20,
+            my_units: units,
+            my_buildings: Vec::new(),
+            my_queues: Vec::new(),
+            ally_units: Vec::new(),
+            ally_buildings: Vec::new(),
+            enemy_units: Vec::new(),
+            enemy_buildings: Vec::new(),
+            known_scrap: Vec::new(),
+            known_rock: Vec::new(),
+            known_wrecks: Vec::new(),
+            blips: Vec::new(),
+            faction: crate::state::Faction::Ferrous,
+            my_shells: 0,
+            incoming_shells: Vec::new(),
+        }
+    }
+
+    fn harvester(id: u32, founding: Option<(BuildingKind, TilePos)>) -> UnitObs {
+        UnitObs {
+            id: UnitId(id),
+            player: PlayerId(0),
+            kind: UnitKind::Harvester,
+            tile: TilePos::new(5, 5),
+            hp: UnitKind::Harvester.stats().max_hp,
+            idle: founding.is_none(),
+            carrying: 0,
+            site: None,
+            salvaging: None,
+            founding,
+        }
+    }
+
+    /// The site audit's deferred-found contract (fog placement Part
+    /// B): an anchor whose founder is still walking is a site on its
+    /// way — kept pending, never blacklisted — while the same anchor
+    /// with no founder and no building is a refusal and earns the
+    /// blacklist as it always did.
+    #[test]
+    fn a_walking_founder_defers_the_site_audits_verdict() {
+        let anchor = TilePos::new(9, 4);
+
+        let mut policy = UtilityPolicy::new();
+        policy.pending_sites.push(anchor);
+        let walking = obs_with(vec![harvester(0, Some((BuildingKind::Turret, anchor)))]);
+        policy.audit_sites(&walking);
+        assert!(
+            policy.dead_anchors.is_empty(),
+            "the audit blacklisted an anchor whose founder is still walking"
+        );
+        assert_eq!(
+            policy.pending_sites,
+            vec![anchor],
+            "a walking claim's anchor must stay pending for a later audit"
+        );
+
+        let mut policy = UtilityPolicy::new();
+        policy.pending_sites.push(anchor);
+        let refused = obs_with(vec![harvester(0, None)]);
+        policy.audit_sites(&refused);
+        assert_eq!(
+            policy.dead_anchors,
+            vec![anchor],
+            "with no founder and no building, the anchor was refused and \
+             must be blacklisted exactly as before"
+        );
+        assert!(policy.pending_sites.is_empty());
+    }
+
+    /// A founder walking toward one anchor must not shield a different
+    /// pending anchor from the audit.
+    #[test]
+    fn the_founder_shields_only_its_own_anchor() {
+        let claimed = TilePos::new(9, 4);
+        let refused = TilePos::new(15, 8);
+        let mut policy = UtilityPolicy::new();
+        policy.pending_sites.push(claimed);
+        policy.pending_sites.push(refused);
+        let obs = obs_with(vec![harvester(0, Some((BuildingKind::Turret, claimed)))]);
+        policy.audit_sites(&obs);
+        assert_eq!(policy.pending_sites, vec![claimed]);
+        assert_eq!(policy.dead_anchors, vec![refused]);
+    }
 }

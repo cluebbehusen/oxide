@@ -1,7 +1,17 @@
 """Tests for ``mapgen``: the size-class draws, and the grand pace bias
 the round-8 pacing curriculum trains on."""
 
-from mapgen import _carve, cache_name
+from __future__ import annotations
+
+import json
+import pathlib
+import subprocess
+from typing import TYPE_CHECKING
+
+from mapgen import _carve, cache_name, generate
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def dims(candidate: dict) -> tuple[int, int]:
@@ -48,3 +58,42 @@ class TestCacheName:
             cache_name(8, 2, False, None),
         }
         assert len(names) == 5, f"cache identities collided: {sorted(names)}"
+
+
+def test_cached_maps_are_bound_to_generator_and_validator_content(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    validations: list[str] = []
+
+    def accept(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        validations.append(command[0])
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", accept)
+    first_driver = tmp_path / "driver-a"
+    second_driver = tmp_path / "driver-b"
+    first_driver.write_bytes(b"sim-a")
+    second_driver.write_bytes(b"sim-b")
+
+    first_path = pathlib.Path(
+        generate(7, str(tmp_path / "maps"), driver=str(first_driver))
+    )
+    assert json.loads(first_path.read_text()) == _carve(7)
+
+    stale = json.loads(first_path.read_text())
+    stale["name"] = "stale-generator-output"
+    first_path.write_text(json.dumps(stale))
+    repaired_path = pathlib.Path(
+        generate(7, str(tmp_path / "maps"), driver=str(first_driver))
+    )
+    assert repaired_path == first_path
+    assert json.loads(repaired_path.read_text()) == _carve(7)
+
+    second_path = pathlib.Path(
+        generate(7, str(tmp_path / "maps"), driver=str(second_driver))
+    )
+    assert second_path != first_path
+    assert validations == [str(first_driver), str(first_driver), str(second_driver)]

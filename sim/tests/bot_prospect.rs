@@ -9,8 +9,8 @@ use oxide_sim::bot::{Action, FEATURE_NAMES, GymBot};
 use oxide_sim::{PlayerId, Scenario};
 
 /// A starvation box: a one-tile home patch (400 scrap), and the only
-/// other scrap 14 Chebyshev away — outside the sim's 10-tile retarget
-/// hop — and deeper into the enemy's half than the bot's own, so the
+/// other scrap 14 Chebyshev away — far outside the sim's radius-2
+/// retarget hop — and deeper into the enemy's half than the bot's own, so the
 /// normal economy filter refuses it even once seen. Reaching it takes
 /// the whole ladder: home dries, the line starves, the prospector's
 /// centre leg walks into vision of the patch, and the contested-node

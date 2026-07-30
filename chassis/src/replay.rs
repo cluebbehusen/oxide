@@ -37,6 +37,17 @@ pub struct ReplayMeta {
     /// run is fully reproduced (commands alone only bound it from below).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ticks: Option<Tick>,
+    /// What kind of record this is. Chassis assigns no meaning — games
+    /// write their own tags (Oxide uses "autosave", "save", "match") and
+    /// classify at their own boundary, the same shape as `description`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Wall-clock save time, unix seconds. This is provenance OUTSIDE
+    /// the sim: a wall clock is forbidden in deterministic state, not in
+    /// recorder metadata — the caller passes the value (chassis never
+    /// reads a clock) and no sim path or hash ever consumes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_at: Option<u64>,
 }
 
 /// A command stamped with the tick it executes on.
@@ -79,6 +90,8 @@ impl<S, C> Replay<S, C> {
                 sim_version: sim_version.into(),
                 description: None,
                 ticks: None,
+                kind: None,
+                saved_at: None,
             },
             setup,
             commands: Vec::new(),
@@ -154,34 +167,20 @@ impl<S, C> Replay<S, C> {
         }
     }
 
-    /// Writes the replay as pretty JSON: parent directories are created,
-    /// the write is flushed, and the file lands atomically (tmp + rename)
-    /// so a crash mid-save can't leave a truncated log behind.
+    /// Writes the replay as pretty JSON through [`crate::fsx::write_atomic`]:
+    /// parent directories are created, the payload is flushed and fsynced,
+    /// and the file atomically replaces any previous record on every
+    /// platform — a crash mid-save can't publish a truncated log, and a
+    /// failed save leaves no temp behind.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), ReplayError>
     where
         S: Serialize,
         C: Serialize,
     {
-        let path = path.as_ref();
-        if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent)?;
-        }
-        // Unique temp name: two sessions (or two threads of one) saving
-        // the same stem concurrently must not clobber each other.
-        static SAVE_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let nonce = SAVE_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let tmp = path.with_extension(format!("tmp.{}.{nonce}", std::process::id()));
-        {
-            let file = std::fs::File::create(&tmp)?;
-            let mut writer = std::io::BufWriter::new(file);
-            serde_json::to_writer_pretty(&mut writer, self)?;
-            use std::io::Write as _;
-            writer.flush()?;
-        }
-        std::fs::rename(&tmp, path)?;
-        Ok(())
+        crate::fsx::write_atomic(path, |writer| {
+            serde_json::to_writer_pretty(&mut *writer, self)?;
+            Ok(())
+        })
     }
 
     /// Reads a replay written by [`Replay::save`].
@@ -348,6 +347,52 @@ mod tests {
         let replay: Replay<u8, u8> = Replay::new("1.0.0", 1);
         replay.save(&path).unwrap();
         assert!(path.exists());
+    }
+
+    #[test]
+    fn saving_twice_to_one_path_replaces_the_record() {
+        // Pinned on every CI platform: a second save onto an existing
+        // replay lands (std's rename replaces on Windows too) and its
+        // content wins.
+        let dir = std::env::temp_dir().join(format!("chassis-replay-twice-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.json");
+
+        let mut first: Replay<u8, &str> = Replay::new("1.0.0", 1);
+        first.record(1, "early");
+        first.save(&path).unwrap();
+        let mut second: Replay<u8, &str> = Replay::new("1.0.0", 1);
+        second.record(1, "early");
+        second.record(7, "late");
+        second.save(&path).unwrap();
+
+        let loaded: Replay<u8, String> = Replay::load(&path).unwrap();
+        assert_eq!(loaded.commands.len(), 2, "the second record won");
+        assert_eq!(loaded.commands[1].command, "late");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn absent_metadata_stays_out_of_the_file_and_present_metadata_survives() {
+        // Compatibility both directions: a record that sets nothing
+        // serializes byte-identically to the pre-metadata format (an old
+        // binary reads it untroubled), and a pre-metadata file loads
+        // with the new fields honestly absent.
+        let bare: Replay<u8, u8> = Replay::new("1.0.0", 1);
+        let json = serde_json::to_string(&bare).unwrap();
+        assert!(!json.contains("kind") && !json.contains("saved_at"));
+        let old_file = r#"{"meta":{"sim_version":"1.0.0"},"setup":1,"commands":[]}"#;
+        let loaded: Replay<u8, u8> = serde_json::from_str(old_file).unwrap();
+        assert_eq!(loaded.meta.kind, None);
+        assert_eq!(loaded.meta.saved_at, None);
+
+        let mut tagged: Replay<u8, u8> = Replay::new("1.0.0", 1);
+        tagged.meta.kind = Some("save".to_string());
+        tagged.meta.saved_at = Some(1_784_721_600);
+        let json = serde_json::to_string(&tagged).unwrap();
+        let back: Replay<u8, u8> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.meta.kind.as_deref(), Some("save"));
+        assert_eq!(back.meta.saved_at, Some(1_784_721_600));
     }
 
     #[test]

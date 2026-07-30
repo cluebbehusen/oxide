@@ -22,8 +22,6 @@ use oxide_sim::bot::{Level, NeuralBot, QuantNet, deal_aggression, seat_bots};
 use oxide_sim::scenario::{BotConfig, Scenario};
 use oxide_sim::{GameResult, PlayerId, State};
 use serde::Serialize;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// How one sweep match ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -107,45 +105,19 @@ pub fn run_sweep(
     let jobs: Vec<(u64, bool)> = (0..seeds)
         .flat_map(|offset| [(offset, false), (offset, true)])
         .collect();
-    let next = AtomicUsize::new(0);
-    let results: Mutex<Vec<SweepMatch>> = Mutex::new(Vec::with_capacity(jobs.len()));
-    let failure: Mutex<Option<anyhow::Error>> = Mutex::new(None);
-    let workers = std::thread::available_parallelism()
-        .map_or(4, |n| n.get())
-        .min(jobs.len());
-    std::thread::scope(|scope| {
-        for _ in 0..workers {
-            scope.spawn(|| {
-                loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(&(offset, swapped)) = jobs.get(i) else {
-                        break;
-                    };
-                    match play(&base, level, seed_base + offset, swapped, max_ticks) {
-                        Ok(m) => {
-                            eprintln!(
-                                "  seed {} {} · {} ticks · {:?}",
-                                m.seed,
-                                if m.swapped { "swap" } else { "deal" },
-                                m.ticks,
-                                m.outcome
-                            );
-                            results.lock().unwrap().push(m);
-                        }
-                        Err(err) => {
-                            *failure.lock().unwrap() = Some(err);
-                            break;
-                        }
-                    }
-                }
-            });
-        }
-    });
-    if let Some(err) = failure.into_inner().unwrap() {
-        return Err(err);
-    }
-    let mut matches = results.into_inner().unwrap();
-    matches.sort_by_key(|m| (m.seed, m.swapped));
+    // The pool returns results in job order, so the record is ordered
+    // by (seed, orientation) without a second sort.
+    let matches = crate::pool::fan_out(&jobs, |&(offset, swapped)| {
+        let m = play(&base, level, seed_base + offset, swapped, max_ticks)?;
+        eprintln!(
+            "  seed {} {} · {} ticks · {:?}",
+            m.seed,
+            if m.swapped { "swap" } else { "deal" },
+            m.ticks,
+            m.outcome
+        );
+        Ok(m)
+    })?;
 
     let mut victories = 0u32;
     let mut draws = 0u32;
@@ -289,15 +261,16 @@ fn play(
     })
 }
 
-/// One side of a duel: a ladder rung, optionally with candidate
-/// skill/cadence overrides — the re-metering experiments probe points
-/// between the shipped rungs. Personality stays the shipped per-seat
-/// deal; blunder derives from skill, as shipped.
+/// One side of a duel: a named ladder rung, optionally with raw
+/// candidate skill or cadence overrides. Without a skill override the
+/// bot keeps the named rung's exact hesitation and strategy-conditioned
+/// policy skill; supplying a skill opts into the legacy raw profile
+/// whose hesitation derives from that skill.
 #[derive(Debug, Clone, Serialize)]
 pub struct DuelSide {
     /// The base rung.
     pub level: Level,
-    /// Skill-knob override (None: the rung's own).
+    /// Raw skill-knob override (None: the named strategy condition).
     pub skill: Option<u32>,
     /// Cadence override (None: the rung's own).
     pub cadence: Option<u64>,
@@ -327,16 +300,37 @@ impl DuelSide {
         faction: oxide_sim::Faction,
         aggression: u32,
     ) -> NeuralBot {
-        NeuralBot::with_profile(
-            player,
-            self.cadence.unwrap_or_else(|| self.level.cadence()),
-            QuantNet::ladder().clone(),
-            self.skill.unwrap_or_else(|| self.level.skill()),
-            aggression,
-            faction,
-            0,
-            seed,
-        )
+        if let Some(skill) = self.skill {
+            NeuralBot::with_profile(
+                player,
+                self.cadence.unwrap_or_else(|| self.level.cadence()),
+                QuantNet::ladder().clone(),
+                skill,
+                aggression,
+                faction,
+                0,
+                seed,
+            )
+        } else if let Some(cadence) = self.cadence {
+            NeuralBot::ladder_with_net_at_cadence(
+                player,
+                seed,
+                self.level,
+                Some(aggression),
+                faction,
+                QuantNet::ladder().clone(),
+                cadence,
+            )
+        } else {
+            NeuralBot::ladder_with_net(
+                player,
+                seed,
+                self.level,
+                Some(aggression),
+                faction,
+                QuantNet::ladder().clone(),
+            )
+        }
     }
 }
 
@@ -395,37 +389,10 @@ pub fn run_duel(
     let jobs: Vec<(u64, usize)> = (0..seeds)
         .flat_map(|offset| [(offset, 0), (offset, 1)])
         .collect();
-    let next = AtomicUsize::new(0);
-    let results: Mutex<Vec<DuelEntry>> = Mutex::new(Vec::with_capacity(jobs.len()));
-    let failure: Mutex<Option<anyhow::Error>> = Mutex::new(None);
-    let workers = std::thread::available_parallelism()
-        .map_or(4, |n| n.get())
-        .min(jobs.len());
-    std::thread::scope(|scope| {
-        for _ in 0..workers {
-            scope.spawn(|| {
-                loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(&(offset, a_seat)) = jobs.get(i) else {
-                        break;
-                    };
-                    let seed = seed_base + offset;
-                    match play_duel(&base, a, b, seed, a_seat, max_ticks) {
-                        // (a_seat, decision tick, winning seat, drawn)
-                        Ok(entry) => results.lock().unwrap().push(entry),
-                        Err(err) => {
-                            *failure.lock().unwrap() = Some(err);
-                            break;
-                        }
-                    }
-                }
-            });
-        }
-    });
-    if let Some(err) = failure.into_inner().unwrap() {
-        return Err(err);
-    }
-    let entries = results.into_inner().unwrap();
+    // (a_seat, decision tick, winning seat, drawn)
+    let entries: Vec<DuelEntry> = crate::pool::fan_out(&jobs, |&(offset, a_seat)| {
+        play_duel(&base, a, b, seed_base + offset, a_seat, max_ticks)
+    })?;
 
     let mut report = DuelReport {
         scenario: base.name.clone(),
@@ -566,6 +533,26 @@ pub struct TierRecord {
     pub matches: u32,
     /// Matches that drew or hit the cap.
     pub unresolved: u32,
+    /// Median tick of the profile's victories against this tier.
+    /// Pace, not count: two rungs with the same record separate here.
+    pub median_victory_tick: Option<u64>,
+    /// Third-quartile tick of those same victories — the grind tail a
+    /// median hides.
+    pub p75_victory_tick: Option<u64>,
+}
+
+/// One finished yardstick match, before the fold.
+struct YardstickEntry {
+    map: usize,
+    tier: usize,
+    won: bool,
+    resolved: bool,
+    ticks: u64,
+}
+
+/// Nearest-rank quantile over an already-sorted series.
+pub(crate) fn quantile(sorted: &[u64], num: usize, den: usize) -> Option<u64> {
+    (!sorted.is_empty()).then(|| sorted[(sorted.len() * num / den).min(sorted.len() - 1)])
 }
 
 /// The widened scripted-yardstick verdict for one profile — the same
@@ -588,6 +575,144 @@ pub struct YardstickReport {
     pub wins: u32,
     /// Total matches.
     pub matches: u32,
+    /// Total matches that drew or hit the cap.
+    pub unresolved: u32,
+}
+
+/// The yardstick across a whole scenario directory: the same profile
+/// measured on every 1v1 map, per map and pooled. The ladder is
+/// calibrated on one map, and duration distributions vary by an order
+/// of magnitude across the roster.
+#[derive(Debug, Clone, Serialize)]
+pub struct YardstickSlate {
+    /// The measured profile's label.
+    pub profile: String,
+    /// The scenario directory swept.
+    pub dir: String,
+    /// Seeds per tier per map (each fought from both seats).
+    pub seeds_per_tier: u64,
+    /// Tick cap per match.
+    pub max_ticks: u64,
+    /// Per-map reports, in path order.
+    pub per_map: Vec<YardstickReport>,
+    /// Per-tier records pooled over every map — folded from the raw
+    /// matches, never from the per-map quantiles.
+    pub per_tier: Vec<TierRecord>,
+    /// Total wins over the slate.
+    pub wins: u32,
+    /// Total matches over the slate.
+    pub matches: u32,
+    /// Total matches that drew or hit the cap.
+    pub unresolved: u32,
+}
+
+const TIERS: [oxide_sim::bot::Difficulty; 4] = {
+    use oxide_sim::bot::Difficulty;
+    [
+        Difficulty::Scrapheap,
+        Difficulty::Standard,
+        Difficulty::Veteran,
+        Difficulty::Prime,
+    ]
+};
+
+/// Folds the entries a filter selects into one record per tier.
+fn tier_records<'a>(entries: impl Iterator<Item = &'a YardstickEntry>) -> Vec<TierRecord> {
+    let mut wins = [0u32; TIERS.len()];
+    let mut matches = [0u32; TIERS.len()];
+    let mut unresolved = [0u32; TIERS.len()];
+    let mut victory_ticks: [Vec<u64>; TIERS.len()] = Default::default();
+    for e in entries {
+        matches[e.tier] += 1;
+        unresolved[e.tier] += u32::from(!e.resolved);
+        if e.won {
+            wins[e.tier] += 1;
+            victory_ticks[e.tier].push(e.ticks);
+        }
+    }
+    TIERS
+        .iter()
+        .enumerate()
+        .map(|(t, tier)| {
+            victory_ticks[t].sort_unstable();
+            TierRecord {
+                tier: format!("{tier:?}"),
+                wins: wins[t],
+                matches: matches[t],
+                unresolved: unresolved[t],
+                median_victory_tick: quantile(&victory_ticks[t], 1, 2),
+                p75_victory_tick: quantile(&victory_ticks[t], 3, 4),
+            }
+        })
+        .collect()
+}
+
+/// Assembles one map's report from the entries fought on it.
+fn map_report<'a>(
+    name: &str,
+    side: &DuelSide,
+    seeds_per_tier: u64,
+    max_ticks: u64,
+    entries: impl Iterator<Item = &'a YardstickEntry>,
+) -> YardstickReport {
+    let per_tier = tier_records(entries);
+    YardstickReport {
+        profile: side.label(),
+        scenario: name.to_string(),
+        seeds_per_tier,
+        max_ticks,
+        wins: per_tier.iter().map(|t| t.wins).sum(),
+        matches: per_tier.iter().map(|t| t.matches).sum(),
+        unresolved: per_tier.iter().map(|t| t.unresolved).sum(),
+        per_tier,
+    }
+}
+
+/// Fights `side` against every scripted tier on every one of `bases`,
+/// on one shared worker pool — nesting a pool per map would let the
+/// thread count decide how long the slate takes.
+fn yardstick_entries(
+    bases: &[Scenario],
+    side: &DuelSide,
+    seeds_per_tier: u64,
+    max_ticks: u64,
+    seed_base: u64,
+) -> Result<Vec<YardstickEntry>> {
+    use oxide_sim::bot::Brain;
+    // (map index, tier index, seed offset, the profile's seat)
+    let jobs: Vec<(usize, usize, u64, u8)> = (0..bases.len())
+        .flat_map(|m| {
+            (0..TIERS.len()).flat_map(move |t| {
+                (0..seeds_per_tier).flat_map(move |o| [(m, t, o, 0u8), (m, t, o, 1u8)])
+            })
+        })
+        .collect();
+    crate::pool::fan_out(&jobs, |&(m, t, offset, seat)| {
+        let seed = seed_base + offset;
+        let mut sc = bases[m].clone();
+        sc.seed = seed;
+        let mut state: State = sc.build().context("building scenario")?;
+        let faction = sc.players[usize::from(seat)].faction;
+        let mut bot = side.bot_with_aggression(PlayerId(seat), seed, faction, 500);
+        let mut opp = Brain::for_tier(PlayerId(1 - seat), seed, TIERS[t]);
+        for _ in 0..max_ticks {
+            let mut commands = bot.act(&state);
+            commands.extend(opp.act(&state));
+            state.tick(&commands);
+            if state.result().is_some() {
+                break;
+            }
+        }
+        let resolved = matches!(state.result(), Some(GameResult::Victory { .. }));
+        let won = resolved && state.winners().contains(&PlayerId(seat));
+        Ok(YardstickEntry {
+            map: m,
+            tier: t,
+            won,
+            resolved,
+            ticks: state.current_tick(),
+        })
+    })
 }
 
 /// Measures `side` against the four scripted tiers. The profile plays
@@ -602,7 +727,6 @@ pub fn run_yardstick(
     max_ticks: u64,
     seed_base: u64,
 ) -> Result<YardstickReport> {
-    use oxide_sim::bot::{Brain, Difficulty};
     let base = crate::runner::load_scenario(scenario)?;
     anyhow::ensure!(
         base.players.len() == 2,
@@ -610,89 +734,85 @@ pub fn run_yardstick(
         base.name,
         base.players.len()
     );
-    const TIERS: [Difficulty; 4] = [
-        Difficulty::Scrapheap,
-        Difficulty::Standard,
-        Difficulty::Veteran,
-        Difficulty::Prime,
-    ];
+    let bases = [base];
+    let entries = yardstick_entries(&bases, side, seeds_per_tier, max_ticks, seed_base)?;
+    Ok(map_report(
+        &bases[0].name,
+        side,
+        seeds_per_tier,
+        max_ticks,
+        entries.iter(),
+    ))
+}
 
-    // (tier index, seed, the profile's seat)
-    let jobs: Vec<(usize, u64, u8)> = (0..TIERS.len())
-        .flat_map(|t| (0..seeds_per_tier).flat_map(move |o| [(t, o, 0u8), (t, o, 1u8)]))
+/// Measures `side` on every 1v1 scenario in `dir`. Maps with any other
+/// seat count are skipped, not refused — the shipped directory mixes
+/// formats and the yardstick's opponent is a single scripted seat.
+pub fn run_yardstick_slate(
+    dir: &str,
+    side: &DuelSide,
+    seeds_per_tier: u64,
+    max_ticks: u64,
+    seed_base: u64,
+) -> Result<YardstickSlate> {
+    let mut paths: Vec<_> = std::fs::read_dir(dir)
+        .with_context(|| format!("reading {dir}"))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
         .collect();
-    let next = AtomicUsize::new(0);
-    // (tier index, won, resolved)
-    let results: Mutex<Vec<(usize, bool, bool)>> = Mutex::new(Vec::with_capacity(jobs.len()));
-    let failure: Mutex<Option<anyhow::Error>> = Mutex::new(None);
-    let workers = std::thread::available_parallelism()
-        .map_or(4, |n| n.get())
-        .min(jobs.len());
-    std::thread::scope(|scope| {
-        for _ in 0..workers {
-            scope.spawn(|| {
-                loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(&(t, offset, seat)) = jobs.get(i) else {
-                        break;
-                    };
-                    let seed = seed_base + offset;
-                    let mut sc = base.clone();
-                    sc.seed = seed;
-                    let built = sc.build().context("building scenario");
-                    let mut state: State = match built {
-                        Ok(state) => state,
-                        Err(err) => {
-                            *failure.lock().unwrap() = Some(err);
-                            break;
-                        }
-                    };
-                    let faction = sc.players[usize::from(seat)].faction;
-                    let mut bot = side.bot_with_aggression(PlayerId(seat), seed, faction, 500);
-                    let mut opp = Brain::for_tier(PlayerId(1 - seat), seed, TIERS[t]);
-                    for _ in 0..max_ticks {
-                        let mut commands = bot.act(&state);
-                        commands.extend(opp.act(&state));
-                        state.tick(&commands);
-                        if state.result().is_some() {
-                            break;
-                        }
-                    }
-                    let won = matches!(state.result(), Some(GameResult::Victory { .. }))
-                        && state.winners().contains(&PlayerId(seat));
-                    let resolved = matches!(state.result(), Some(GameResult::Victory { .. }));
-                    results.lock().unwrap().push((t, won, resolved));
-                }
-            });
+    paths.sort();
+    anyhow::ensure!(!paths.is_empty(), "no scenarios under {dir}");
+    let mut bases: Vec<Scenario> = Vec::new();
+    for path in &paths {
+        let sc = crate::runner::load_scenario(&path.to_string_lossy())?;
+        if sc.players.len() == 2 {
+            bases.push(sc);
+        } else {
+            eprintln!("  skipping {} ({} seats)", sc.name, sc.players.len());
         }
-    });
-    if let Some(err) = failure.into_inner().unwrap() {
-        return Err(err);
     }
+    anyhow::ensure!(!bases.is_empty(), "no 1v1 scenarios under {dir}");
 
-    let mut per_tier: Vec<TierRecord> = TIERS
+    let entries = yardstick_entries(&bases, side, seeds_per_tier, max_ticks, seed_base)?;
+    let per_map: Vec<YardstickReport> = bases
         .iter()
-        .map(|t| TierRecord {
-            tier: format!("{t:?}"),
-            wins: 0,
-            matches: 0,
-            unresolved: 0,
+        .enumerate()
+        .map(|(m, base)| {
+            map_report(
+                &base.name,
+                side,
+                seeds_per_tier,
+                max_ticks,
+                entries.iter().filter(|e| e.map == m),
+            )
         })
         .collect();
-    for (t, won, resolved) in results.into_inner().unwrap() {
-        per_tier[t].matches += 1;
-        per_tier[t].wins += u32::from(won);
-        per_tier[t].unresolved += u32::from(!resolved);
-    }
-    Ok(YardstickReport {
+    let per_tier = tier_records(entries.iter());
+    Ok(YardstickSlate {
         profile: side.label(),
-        scenario: base.name.clone(),
+        dir: dir.to_string(),
         seeds_per_tier,
         max_ticks,
         wins: per_tier.iter().map(|t| t.wins).sum(),
         matches: per_tier.iter().map(|t| t.matches).sum(),
+        unresolved: per_tier.iter().map(|t| t.unresolved).sum(),
+        per_map,
         per_tier,
     })
+}
+
+/// Prints one tier table, indented under whatever names it.
+fn print_tiers(per_tier: &[TierRecord]) {
+    for tier in per_tier {
+        let pace = match (tier.median_victory_tick, tier.p75_victory_tick) {
+            (Some(median), Some(p75)) => format!("win ticks median {median}, p75 {p75}"),
+            _ => "no victories".to_string(),
+        };
+        println!(
+            "  vs {:<10} {:>2}/{:<2} ({} unresolved)  ·  {pace}",
+            tier.tier, tier.wins, tier.matches, tier.unresolved
+        );
+    }
 }
 
 /// Runs the yardstick and prints the verdict — the CLI entry.
@@ -709,15 +829,59 @@ pub fn yardstick_report(
         "\nYARDSTICK  ·  {}  ·  {}  ·  {} seeds/tier x 2 seats  ·  cap {}",
         report.scenario, report.profile, report.seeds_per_tier, report.max_ticks
     );
-    for tier in &report.per_tier {
-        println!(
-            "  vs {:<10} {:>2}/{:<2} ({} unresolved)",
-            tier.tier, tier.wins, tier.matches, tier.unresolved
-        );
-    }
-    println!("total {}/{}", report.wins, report.matches);
+    print_tiers(&report.per_tier);
+    println!(
+        "total {}/{}  ·  {} unresolved",
+        report.wins, report.matches, report.unresolved
+    );
     if let Some(path) = out {
         std::fs::write(path, serde_json::to_string_pretty(&report)?)?;
+        println!("raw record: {path}");
+    }
+    Ok(())
+}
+
+/// Runs the yardstick across a scenario directory and prints the
+/// verdict — the `--dir` CLI entry.
+pub fn yardstick_slate_report(
+    dir: &str,
+    side: &DuelSide,
+    seeds_per_tier: u64,
+    max_ticks: u64,
+    seed_base: u64,
+    out: Option<&str>,
+) -> Result<()> {
+    let slate = run_yardstick_slate(dir, side, seeds_per_tier, max_ticks, seed_base)?;
+    println!(
+        "\nYARDSTICK SLATE  ·  {}  ·  {} 1v1 maps  ·  {}  ·  {} seeds/tier x 2 seats  ·  cap {}",
+        slate.dir,
+        slate.per_map.len(),
+        slate.profile,
+        slate.seeds_per_tier,
+        slate.max_ticks
+    );
+    for map in &slate.per_map {
+        let pace = map
+            .per_tier
+            .iter()
+            .filter_map(|t| t.median_victory_tick)
+            .max()
+            .map_or("no victories".to_string(), |slowest| {
+                format!("slowest tier median {slowest}")
+            });
+        println!(
+            "  {:<22} {:>3}/{:<3} ({} unresolved)  ·  {pace}",
+            map.scenario, map.wins, map.matches, map.unresolved
+        );
+    }
+    println!("\npooled over the slate:");
+    print_tiers(&slate.per_tier);
+    println!(
+        "total {}/{}  ·  {} unresolved",
+        slate.wins, slate.matches, slate.unresolved
+    );
+    if let Some(path) = out {
+        std::fs::write(path, serde_json::to_string_pretty(&slate)?)?;
         println!("raw record: {path}");
     }
     Ok(())
@@ -726,6 +890,28 @@ pub fn yardstick_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_same_command_source(
+        mut actual: NeuralBot,
+        mut expected: NeuralBot,
+        seed: u64,
+        label: &str,
+    ) {
+        let mut sc = crate::runner::load_scenario("skirmish").unwrap();
+        sc.seed = seed;
+        let mut state = sc.build().unwrap();
+        for _ in 0..400 {
+            let actual_commands = actual.act(&state);
+            let expected_commands = expected.act(&state);
+            assert_eq!(
+                actual_commands,
+                expected_commands,
+                "{label} at tick {}",
+                state.current_tick()
+            );
+            state.tick(&expected_commands);
+        }
+    }
 
     /// Two seeds, both orientations, a cap far too small to decide:
     /// the plumbing must account for every job and mirror the
@@ -764,5 +950,136 @@ mod tests {
             report.a_wins + report.b_wins + report.draws + report.undecided,
             4
         );
+    }
+
+    /// A side without a raw skill override is the shipped named
+    /// profile, including the strategy-specific policy skill and the
+    /// level's exact hesitation. Check both strategy bands explicitly:
+    /// a seed-dealt industry-only sample could hide the old raw-Medium
+    /// coincidence at skill 620.
+    #[test]
+    fn default_duel_sides_are_exact_named_profiles_for_both_strategies() {
+        let seed = 17;
+        let player = PlayerId(0);
+        let faction = oxide_sim::Faction::Ferrous;
+        for level in Level::LADDER {
+            let side = DuelSide {
+                level,
+                skill: None,
+                cadence: None,
+            };
+            for aggression in [300, 550] {
+                assert_same_command_source(
+                    side.bot_with_aggression(player, seed, faction, aggression),
+                    NeuralBot::ladder(player, seed, level, Some(aggression), faction),
+                    seed,
+                    &format!("{level:?} aggression {aggression}"),
+                );
+            }
+        }
+    }
+
+    /// Cadence-only probes retain named semantics, while an explicit
+    /// skill still opts into the historical raw profile used by
+    /// re-metering experiments.
+    #[test]
+    fn duel_side_overrides_keep_their_declared_semantics() {
+        let seed = 19;
+        let player = PlayerId(0);
+        let faction = oxide_sim::Faction::Ferrous;
+        let cadence_only = DuelSide {
+            level: Level::Hard,
+            skill: None,
+            cadence: Some(32),
+        };
+        assert_same_command_source(
+            cadence_only.bot_with_aggression(player, seed, faction, 550),
+            NeuralBot::ladder_with_net_at_cadence(
+                player,
+                seed,
+                Level::Hard,
+                Some(550),
+                faction,
+                QuantNet::ladder().clone(),
+                32,
+            ),
+            seed,
+            "cadence-only named profile",
+        );
+
+        let raw = DuelSide {
+            level: Level::Medium,
+            skill: Some(700),
+            cadence: Some(30),
+        };
+        assert_same_command_source(
+            raw.bot_with_aggression(player, seed, faction, 550),
+            NeuralBot::with_profile(
+                player,
+                30,
+                QuantNet::ladder().clone(),
+                700,
+                550,
+                faction,
+                0,
+                seed,
+            ),
+            seed,
+            "explicit raw profile",
+        );
+    }
+
+    /// A cap far too small to decide anything: every match must land
+    /// in some tier's unresolved column, and a tier with no victories
+    /// must report no pace rather than a zero.
+    #[test]
+    fn the_yardstick_accounts_for_every_tier_and_admits_an_empty_pace() {
+        let side = DuelSide {
+            level: Level::Medium,
+            skill: None,
+            cadence: None,
+        };
+        let report = run_yardstick("skirmish", &side, 1, 40, 3_000).unwrap();
+        assert_eq!(report.per_tier.len(), 4);
+        assert_eq!(report.matches, 8);
+        assert_eq!(report.unresolved, 8);
+        for tier in &report.per_tier {
+            assert_eq!(tier.matches, 2);
+            assert_eq!(tier.wins, 0);
+            assert_eq!(tier.median_victory_tick, None);
+            assert_eq!(tier.p75_victory_tick, None);
+        }
+    }
+
+    /// The slate keeps every 1v1 map of the directory, skips the other
+    /// formats, and its pooled tier records total the per-map ones.
+    #[test]
+    fn the_slate_pools_its_maps_and_skips_other_formats() {
+        let side = DuelSide {
+            level: Level::Medium,
+            skill: None,
+            cadence: None,
+        };
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../scenarios");
+        let slate = run_yardstick_slate(dir, &side, 1, 20, 3_000).unwrap();
+        assert!(slate.per_map.len() >= 10, "the 1v1 roster is present");
+        for map in &slate.per_map {
+            assert_eq!(map.matches, 8);
+        }
+        assert_eq!(slate.matches, 8 * slate.per_map.len() as u32);
+        for (t, tier) in slate.per_tier.iter().enumerate() {
+            let pooled: u32 = slate.per_map.iter().map(|m| m.per_tier[t].matches).sum();
+            assert_eq!(tier.matches, pooled);
+        }
+    }
+
+    /// Nearest rank, and both quantiles collapse onto a single sample.
+    #[test]
+    fn quantiles_take_the_nearest_rank() {
+        assert_eq!(quantile(&[], 1, 2), None);
+        assert_eq!(quantile(&[7], 1, 2), Some(7));
+        assert_eq!(quantile(&[7], 3, 4), Some(7));
+        assert_eq!(quantile(&[1, 2, 3, 4], 1, 2), Some(3));
+        assert_eq!(quantile(&[1, 2, 3, 4], 3, 4), Some(4));
     }
 }

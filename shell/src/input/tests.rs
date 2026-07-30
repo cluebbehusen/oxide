@@ -24,6 +24,20 @@ fn click(x: f32, y: f32) -> [RawEvent; 2] {
     ]
 }
 
+fn build_click(
+    game: &mut Game,
+    input: &mut InputState,
+    kind: oxide_sim::BuildingKind,
+    anchor: TilePos,
+) {
+    input.placing = Some(kind);
+    let world = vec2(anchor.x as f32 + 0.5, anchor.y as f32 + 0.5);
+    game.camera.center = world;
+    game.camera.pan(Vec2::ZERO);
+    let point = game.camera.to_screen(world);
+    apply_events(game, input, &click(point.x, point.y));
+}
+
 #[test]
 fn bookmarks_remember_and_recall_camera_ground() {
     let mut game = headless_game();
@@ -356,6 +370,7 @@ fn a_right_click_anywhere_on_an_own_site_resumes_it() {
             kind: oxide_sim::stats::BuildingKind::Fabricator,
             anchor,
             queue: false,
+            defer: false,
         },
     }]);
     assert!(
@@ -930,6 +945,110 @@ fn paused_strokes_share_one_queue_prediction() {
     );
 }
 
+#[test]
+fn a_drag_rechecks_programs_staged_while_the_button_is_held() {
+    let mut game = drag_arena(50_000);
+    let mut input = InputState::new();
+    let builder = game.state.units()[0].id;
+    game.selection.units = vec![builder];
+
+    // Leave exactly one queue slot for the opening Shift stamp.
+    let mut fill = vec![PlayerCommand {
+        player: game.human,
+        command: Command::Move {
+            units: vec![builder],
+            goal: TilePos::new(14, 7),
+            queue: false,
+        },
+    }];
+    for _ in 0..oxide_sim::stats::ORDER_QUEUE_CAP - 1 {
+        fill.push(PlayerCommand {
+            player: game.human,
+            command: Command::Move {
+                units: vec![builder],
+                goal: TilePos::new(15, 7),
+                queue: true,
+            },
+        });
+    }
+    game.state.tick(&fill);
+
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::KeyDown { key: Key::Shift }],
+    );
+    let first = game.camera.to_screen(vec2(4.5, 2.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::MouseDown {
+            button: MouseButton::Left,
+            x: first.x,
+            y: first.y,
+        }],
+    );
+    assert_eq!(staged_builds(&game), 1, "the last free slot was used");
+
+    game.issue(Command::Stop {
+        units: vec![builder],
+    });
+    let second = game.camera.to_screen(vec2(6.5, 2.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::MouseMove {
+            x: second.x,
+            y: second.y,
+        }],
+    );
+    assert_eq!(
+        staged_builds(&game),
+        2,
+        "a pending Stop frees the program for the next drag stamp"
+    );
+
+    // The inverse interleaving must also hold: externally staged orders
+    // can consume all headroom before the next pointer event.
+    let mut game = drag_arena(50_000);
+    let mut input = InputState::new();
+    let builder = game.state.units()[0].id;
+    game.selection.units = vec![builder];
+    input.placing = Some(oxide_sim::BuildingKind::Turret);
+    let first = game.camera.to_screen(vec2(4.5, 2.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::MouseDown {
+            button: MouseButton::Left,
+            x: first.x,
+            y: first.y,
+        }],
+    );
+    for _ in 0..oxide_sim::stats::ORDER_QUEUE_CAP {
+        game.issue(Command::Move {
+            units: vec![builder],
+            goal: TilePos::new(15, 7),
+            queue: true,
+        });
+    }
+    let second = game.camera.to_screen(vec2(6.5, 2.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::MouseMove {
+            x: second.x,
+            y: second.y,
+        }],
+    );
+    assert_eq!(
+        staged_builds(&game),
+        1,
+        "a projected full queue refuses a drag stamp the sim would reject"
+    );
+}
+
 /// A 2v1 team scenario: the human and a configured bot ally on one
 /// team, a lone enemy on the other — the readability tests' stage.
 fn team_game() -> Game {
@@ -978,9 +1097,10 @@ fn an_ally_selection_reads_its_orders_but_takes_none() {
     assert_eq!(game.selection.units, vec![ally], "allies are selectable");
 
     // The panel is read-only: no command cards; a single ally shows
-    // its order chips.
+    // static combat capability and its order chips.
     let panel = crate::panel::build(&game, &input.bindings).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on an ally panel");
+    assert_eq!(panel.combat, vec!["unarmed"]);
     assert!(!panel.queue.is_empty(), "the ally's orders show");
     assert_eq!(
         panel.faction,
@@ -1029,11 +1149,15 @@ fn a_hostile_selection_inspects_and_leaks_nothing() {
     apply_events(&mut game, &mut input, &click(screen.x, screen.y));
     assert_eq!(game.selection.units, vec![foe], "a visible foe inspects");
 
-    // hp and kind only: zero cards, zero chips — order state is intent
-    // the fog never licensed.
+    // Static kind-level combat facts are safe to inspect. Command cards
+    // and order chips stay absent because order state reveals intent.
     let panel = crate::panel::build(&game, &input.bindings).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on a hostile panel");
     assert!(panel.queue.is_empty(), "no order chips on a hostile panel");
+    assert_eq!(panel.combat.len(), 1);
+    assert!(panel.combat[0].contains("damage"));
+    assert!(panel.combat[0].contains("range"));
+    assert!(panel.combat[0].contains("targets ground"));
 
     // And no breadcrumbs, whatever program the enemy runs.
     let unit = game.state.unit(foe).unwrap();
@@ -1461,6 +1585,7 @@ fn an_allied_site_under_fog_refuses_selection() {
             kind: oxide_sim::BuildingKind::Turret,
             anchor: TilePos::new(15, 1),
             queue: false,
+            defer: false,
         },
     }]);
     assert!(
@@ -2254,6 +2379,41 @@ fn the_type_strip_cuts_a_mixed_selection_both_ways() {
     );
 }
 
+#[test]
+fn drag_feedback_starts_before_box_selection_does() {
+    let origin = vec2(100.0, 100.0);
+    assert_eq!(
+        drag_feedback(origin, origin, 1.0),
+        DragFeedback::Still,
+        "an idle press draws nothing"
+    );
+    assert_eq!(
+        drag_feedback(origin, origin + vec2(1.0, 0.0), 1.0),
+        DragFeedback::Outline,
+        "the first movement draws the box"
+    );
+    assert_eq!(
+        drag_feedback(origin, origin + vec2(6.0, 0.0), 1.0),
+        DragFeedback::Outline,
+        "the click boundary remains visual feedback only"
+    );
+    assert_eq!(
+        drag_feedback(origin, origin + vec2(6.1, 0.0), 1.0),
+        DragFeedback::Selection,
+        "unit preview begins exactly when release would box-select"
+    );
+    assert_eq!(
+        drag_feedback(origin, origin + vec2(12.0, 0.0), 2.0),
+        DragFeedback::Outline,
+        "the semantic boundary still follows UI scale"
+    );
+    assert_eq!(
+        drag_feedback(origin, origin + vec2(12.1, 0.0), 2.0),
+        DragFeedback::Selection,
+        "scaled movement beyond the boundary previews the selection"
+    );
+}
+
 /// A mouse already in flight when the button lands: the press must
 /// anchor the box where it LANDED, and the box must be drawable on the
 /// very frame of the press. The polled adapter could do neither — it
@@ -2844,4 +3004,807 @@ fn the_docks_subject_always_draws_its_trail() {
     let one = game.selection.units[0];
     game.selection.units = vec![one];
     assert_eq!(crate::render::entities::decor_units(&game), vec![one]);
+}
+
+#[test]
+fn the_tutorial_survives_its_own_literal_instructions() {
+    // The regression gate for the 150-scrap dead end: every lesson,
+    // played exactly as its card words it (keyboard alternatives the
+    // text itself offers, world clicks for the rest), must stay
+    // affordable with the shipped numbers. If a cost change or a bank
+    // change re-opens the trap, this fails before a player finds it.
+    use crate::tutorial::{Tutorial, tutorial_scenario};
+
+    let harvester_cost = UnitKind::Harvester.stats().cost;
+    let turret_cost = BUILD_PALETTE[0]
+        .stats()
+        .construction
+        .expect("palette structures are constructable")
+        .cost;
+    let sentinel_cost = UnitKind::Sentinel.stats().cost;
+    let opening = tutorial_scenario().players[0].scrap;
+    assert!(
+        opening >= harvester_cost + turret_cost + sentinel_cost,
+        "the tutorial bank ({opening}) no longer covers its literal lesson spends \
+         ({harvester_cost}+{turret_cost}+{sentinel_cost}): raise tutorial_scenario's \
+         scrap or cheapen a lesson"
+    );
+
+    let mut game =
+        Game::with_viewport(tutorial_scenario(), vec2(1280.0, 800.0)).expect("tutorial builds");
+    let mut input = InputState::new();
+    let mut t = Tutorial::new();
+    game.camera.center = vec2(8.0, 5.0);
+    let key = |game: &mut Game, input: &mut InputState, key: Key| {
+        apply_events(
+            game,
+            input,
+            &[RawEvent::KeyDown { key }, RawEvent::KeyUp { key }],
+        );
+    };
+    let right_click = |game: &mut Game, input: &mut InputState, world: Vec2| {
+        let p = game.camera.to_screen(world);
+        apply_events(
+            game,
+            input,
+            &[RawEvent::MouseDown {
+                button: MouseButton::Right,
+                x: p.x,
+                y: p.y,
+            }],
+        );
+    };
+    let bank = |game: &Game| game.state.player(game.human).scrap;
+
+    // Lesson 1 — "or press H": the Foundry fallback trains a Harvester.
+    assert!(t.advance(&game.demo));
+    assert_eq!(t.step, 0);
+    assert!(bank(&game) >= harvester_cost, "lesson 1 must be affordable");
+    key(&mut game, &mut input, Key::H);
+    game.do_tick();
+    assert!(t.advance(&game.demo));
+    assert_eq!(t.step, 1, "training graduates lesson 1");
+
+    // Lesson 2 — select a harvester, right-click a scrap pile; the
+    // card holds until the first load lands.
+    let hauler = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+        .map(|u| (u.id, u.pos))
+        .expect("a starting harvester");
+    let p = game
+        .camera
+        .to_screen(vec2(hauler.1.x.to_num::<f32>(), hauler.1.y.to_num::<f32>()));
+    apply_events(&mut game, &mut input, &click(p.x, p.y));
+    assert_eq!(
+        game.selection.units,
+        vec![hauler.0],
+        "the harvester is in hand"
+    );
+    right_click(&mut game, &mut input, vec2(7.5, 2.5)); // the home scrap pile
+    game.do_tick();
+    assert!(game.demo.harvested, "the order was accepted");
+    assert!(t.advance(&game.demo));
+    assert_eq!(
+        t.step, 1,
+        "an accepted order alone must not graduate the lesson"
+    );
+    for _ in 0..1500 {
+        if game.demo.deposited {
+            break;
+        }
+        game.do_tick();
+    }
+    assert!(game.demo.deposited, "a load reaches the bank within budget");
+    assert!(t.advance(&game.demo));
+    assert_eq!(t.step, 2, "income graduates the mining lesson");
+
+    // Lesson 3 — "Pick a DIFFERENT harvester": the hauler keeps its
+    // program while an idle machine raises the palette's structure.
+    assert!(bank(&game) >= turret_cost, "lesson 3 must be affordable");
+    let idle = game
+        .state
+        .units()
+        .iter()
+        .find(|u| {
+            u.player == game.human
+                && u.kind == UnitKind::Harvester
+                && matches!(u.order, oxide_sim::Order::Idle)
+        })
+        .map(|u| (u.id, u.pos))
+        .expect("an idle harvester to build with");
+    let p = game
+        .camera
+        .to_screen(vec2(idle.1.x.to_num::<f32>(), idle.1.y.to_num::<f32>()));
+    apply_events(&mut game, &mut input, &click(p.x, p.y));
+    assert_eq!(game.selection.units.len(), 1, "one builder in hand");
+    let picked = game.selection.units[0];
+    assert!(
+        game.state
+            .unit(picked)
+            .is_some_and(|u| !matches!(u.order, oxide_sim::Order::Harvest { .. })),
+        "the literal reading leaves the hauler hauling"
+    );
+    key(&mut game, &mut input, Key::B);
+    key(&mut game, &mut input, Key::Num1);
+    let ground = game.camera.to_screen(vec2(10.5, 4.5));
+    apply_events(&mut game, &mut input, &click(ground.x, ground.y));
+    assert!(
+        game.pending.iter().any(
+            |c| matches!(&c.command, Command::Build { kind, .. } if *kind == BUILD_PALETTE[0])
+        ),
+        "B, digit, ground click staged the build: {:?}",
+        game.pending
+    );
+    game.do_tick();
+    assert!(t.advance(&game.demo));
+    assert_eq!(t.step, 3, "the site graduates the building lesson");
+    assert!(
+        game.state
+            .units()
+            .iter()
+            .any(|u| u.player == game.human && matches!(u.order, oxide_sim::Order::Harvest { .. })),
+        "income survives the building lesson"
+    );
+
+    // Lesson 4 — the trap's teeth: the fighter must be payable here.
+    assert!(
+        bank(&game) >= sentinel_cost,
+        "the fighter lesson re-opened the dead end: bank {} vs {} needed",
+        bank(&game),
+        sentinel_cost
+    );
+    key(&mut game, &mut input, Key::S); // train slot 2: the Sentinel
+    game.do_tick();
+    assert!(t.advance(&game.demo));
+    assert_eq!(t.step, 4, "the fighter graduates the arming lesson");
+
+    // Lesson 5 — right-click ground with a fighter selected.
+    let sentinel = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Sentinel)
+        .map(|u| (u.id, u.pos))
+        .expect("the starting sentinel stands");
+    let p = game.camera.to_screen(vec2(
+        sentinel.1.x.to_num::<f32>(),
+        sentinel.1.y.to_num::<f32>(),
+    ));
+    apply_events(&mut game, &mut input, &click(p.x, p.y));
+    right_click(&mut game, &mut input, vec2(12.5, 9.5));
+    game.do_tick();
+    assert!(t.advance(&game.demo));
+    assert_eq!(t.step, 5, "attack-move graduates the march lesson");
+
+    // Lesson 6 is the pause menu, a frame-loop act outside the
+    // command stream; its flag flips in main.rs.
+    game.demo.paused_menu = true;
+    assert!(!t.advance(&game.demo), "school is out");
+}
+
+#[test]
+fn a_click_on_remembered_ground_defers_and_unscouted_refuses() {
+    use chassis::grid::TilePos;
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let harvester = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+        .unwrap()
+        .id;
+    let spot = TilePos::new(18, 4);
+    // Scout the spot, then walk home so it stays explored but unseen.
+    let walk = |game: &mut Game, goal: TilePos| {
+        game.state.tick(&[PlayerCommand {
+            player: game.human,
+            command: Command::Move {
+                units: vec![harvester],
+                goal,
+                queue: false,
+            },
+        }]);
+    };
+    walk(&mut game, TilePos::new(18, 5));
+    for _ in 0..600 {
+        if game.state.can_see(game.human, spot) {
+            break;
+        }
+        game.state.tick(&[]);
+    }
+    assert!(
+        game.state.can_see(game.human, spot),
+        "scout reached the spot"
+    );
+    walk(&mut game, TilePos::new(7, 5));
+    for _ in 0..600 {
+        if !game.state.can_see(game.human, spot) {
+            break;
+        }
+        game.state.tick(&[]);
+    }
+    assert!(!game.state.can_see(game.human, spot));
+    assert!(game.state.vision(game.human).explored(spot));
+
+    game.selection.units = vec![harvester];
+    build_click(&mut game, &mut input, oxide_sim::BuildingKind::Turret, spot);
+    assert_eq!(game.pending.len(), 1, "remembered ground stages the claim");
+    match &game.pending[0].command {
+        Command::Build { anchor, defer, .. } => {
+            assert_eq!(*anchor, spot);
+            assert!(*defer, "remembered ground emits the deferred mode");
+        }
+        other => panic!("expected a build, staged {other:?}"),
+    }
+
+    // Never-explored ground refuses outright: nothing staged, mode
+    // stays armed for the next try.
+    let dark = TilePos::new(30, 5);
+    assert!(!game.state.vision(game.human).explored(dark));
+    build_click(&mut game, &mut input, oxide_sim::BuildingKind::Turret, dark);
+    assert_eq!(game.pending.len(), 1, "unscouted ground stages nothing");
+    assert!(input.placing.is_some(), "the refusal keeps the mode armed");
+}
+
+#[test]
+fn an_undrained_deferred_build_is_replaced_before_preflight() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let builder = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+        .expect("skirmish authors a harvester")
+        .id;
+    let kind = oxide_sim::BuildingKind::Fabricator;
+    let first = TilePos::new(18, 4);
+    let replacement = TilePos::new(19, 4);
+    let cost = kind
+        .stats()
+        .construction
+        .expect("fabricator is constructible")
+        .cost;
+    let scrap = game.state.player(game.human).scrap;
+    assert!(
+        cost <= scrap && scrap < cost.saturating_mul(2),
+        "premise: the bank funds one fabricator, not both"
+    );
+
+    let walk = |game: &mut Game, goal: TilePos| {
+        game.state.tick(&[PlayerCommand {
+            player: game.human,
+            command: Command::Move {
+                units: vec![builder],
+                goal,
+                queue: false,
+            },
+        }]);
+    };
+    walk(&mut game, TilePos::new(19, 6));
+    for _ in 0..600 {
+        if [first, replacement].iter().all(|anchor| {
+            let (w, h) = kind.stats().size;
+            (0..h).all(|dy| (0..w).all(|dx| game.state.can_see(game.human, anchor.offset(dx, dy))))
+        }) {
+            break;
+        }
+        game.state.tick(&[]);
+    }
+    walk(&mut game, TilePos::new(7, 5));
+    for _ in 0..600 {
+        if [first, replacement].iter().all(|anchor| {
+            let (w, h) = kind.stats().size;
+            (0..h).all(|dy| (0..w).all(|dx| !game.state.can_see(game.human, anchor.offset(dx, dy))))
+        }) {
+            break;
+        }
+        game.state.tick(&[]);
+    }
+    for anchor in [first, replacement] {
+        let (w, h) = kind.stats().size;
+        for dy in 0..h {
+            for dx in 0..w {
+                let tile = anchor.offset(dx, dy);
+                assert!(game.state.vision(game.human).explored(tile));
+                assert!(!game.state.can_see(game.human, tile));
+            }
+        }
+    }
+
+    game.selection.units = vec![builder];
+    build_click(&mut game, &mut input, kind, first);
+    assert_eq!(game.pending.len(), 1, "the first deferred build staged");
+    assert!(matches!(
+        game.pending[0].command,
+        Command::Build {
+            queue: false,
+            defer: true,
+            ..
+        }
+    ));
+
+    let queued = pending_build_projection(&game, kind, replacement, true).funds;
+    assert_eq!(queued.scrap, scrap);
+    assert_eq!(
+        queued.reserved, cost,
+        "Shift preserves the pending claim and its reservation"
+    );
+    assert_eq!(
+        placement_refusal(&game, kind, replacement, true),
+        Some(oxide_sim::PlaceRefusal::Building),
+        "Shift preserves the overlapping pending footprint"
+    );
+    let replacing = pending_build_projection(&game, kind, replacement, false).funds;
+    assert_eq!(replacing.scrap, scrap);
+    assert_eq!(
+        replacing.reserved, 0,
+        "a plain click replaces the pending claim before it can charge"
+    );
+    assert_eq!(
+        placement_refusal(&game, kind, replacement, false),
+        None,
+        "the abandoned pending footprint no longer blocks its replacement"
+    );
+
+    build_click(&mut game, &mut input, kind, replacement);
+    assert_eq!(
+        game.pending.len(),
+        2,
+        "one-build bank accepts the replacement instead of billing both claims"
+    );
+
+    let scrap = game.state.player(game.human).scrap;
+    let commands = std::mem::take(&mut game.pending);
+    let report = game.state.tick(&commands);
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| matches!(event, oxide_sim::Event::CommandRejected { .. })),
+        "the sim accepts the same command sequence the shell preflight accepted"
+    );
+    assert_eq!(
+        game.state.player(game.human).scrap,
+        scrap,
+        "the founder is still walking, so neither deferred command charged"
+    );
+    assert!(matches!(
+        game.state.unit(builder).expect("builder survives").order,
+        oxide_sim::Order::Found {
+            kind: ordered,
+            anchor,
+        } if ordered == kind && anchor == replacement
+    ));
+
+    let other_builder = game
+        .state
+        .units()
+        .iter()
+        .find(|unit| {
+            unit.player == game.human && unit.kind == UnitKind::Harvester && unit.id != builder
+        })
+        .expect("skirmish authors another harvester")
+        .id;
+    game.pending.push(PlayerCommand {
+        player: game.human,
+        command: Command::Stop {
+            units: vec![builder],
+        },
+    });
+    game.selection.units = vec![other_builder];
+    assert_eq!(
+        placement_refusal(&game, kind, first, false),
+        None,
+        "the pending Stop releases the live claim before the next command"
+    );
+
+    build_click(&mut game, &mut input, kind, first);
+    assert_eq!(
+        game.pending.len(),
+        2,
+        "a stale live claim does not make the shell refuse the valid replacement"
+    );
+    let commands = std::mem::take(&mut game.pending);
+    let report = game.state.tick(&commands);
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| matches!(event, oxide_sim::Event::CommandRejected { .. }))
+    );
+    assert!(matches!(
+        game.state
+            .unit(other_builder)
+            .expect("other builder survives")
+            .order,
+        oxide_sim::Order::Found {
+            kind: ordered,
+            anchor,
+        } if ordered == kind && anchor == first
+    ));
+}
+
+#[test]
+fn pending_projection_keeps_sites_but_stop_clears_unpaid_claims() {
+    let mut game = drag_arena(500);
+    let builder = game.state.units()[0].id;
+    let kind = oxide_sim::BuildingKind::Turret;
+    let anchor = TilePos::new(4, 2);
+    let cost = kind
+        .stats()
+        .construction
+        .expect("turret is constructible")
+        .cost;
+    game.selection.units = vec![builder];
+    game.pending.push(PlayerCommand {
+        player: game.human,
+        command: Command::Build {
+            units: vec![builder],
+            kind,
+            anchor,
+            queue: false,
+            defer: false,
+        },
+    });
+    let committed = pending_build_projection(&game, kind, anchor, false).funds;
+    assert_eq!(
+        committed.scrap,
+        500 - cost,
+        "an immediate site charges before its builder is reprogrammed"
+    );
+    assert_eq!(committed.reserved, 0);
+    assert_eq!(
+        placement_refusal(&game, kind, anchor, false),
+        Some(oxide_sim::PlaceRefusal::Building),
+        "an immediate site's ground stays committed after replacement"
+    );
+
+    game.pending.clear();
+    game.pending.push(PlayerCommand {
+        player: game.human,
+        command: Command::Build {
+            units: vec![builder],
+            kind,
+            anchor,
+            queue: false,
+            defer: true,
+        },
+    });
+    assert_eq!(
+        pending_build_projection(&game, kind, anchor, true).funds,
+        PendingBuildFunds {
+            scrap: 500,
+            reserved: cost,
+        }
+    );
+    assert_eq!(
+        placement_refusal(&game, kind, anchor, true),
+        Some(oxide_sim::PlaceRefusal::Building)
+    );
+    game.pending.push(PlayerCommand {
+        player: game.human,
+        command: Command::Patrol {
+            units: vec![builder],
+            waypoints: Vec::new(),
+        },
+    });
+    assert_eq!(
+        pending_build_projection(&game, kind, anchor, true).funds,
+        PendingBuildFunds {
+            scrap: 500,
+            reserved: cost,
+        },
+        "a rejected pending command cannot release the claim"
+    );
+    assert_eq!(
+        placement_refusal(&game, kind, anchor, true),
+        Some(oxide_sim::PlaceRefusal::Building)
+    );
+    game.pending.pop();
+
+    game.pending.push(PlayerCommand {
+        player: game.human,
+        command: Command::Stop {
+            units: vec![builder],
+        },
+    });
+    assert_eq!(
+        pending_build_projection(&game, kind, anchor, true).funds,
+        PendingBuildFunds {
+            scrap: 500,
+            reserved: 0,
+        },
+        "Stop clears the deferred promise before it can charge"
+    );
+    assert_eq!(
+        placement_refusal(&game, kind, anchor, true),
+        None,
+        "Stop releases the deferred footprint"
+    );
+}
+
+#[test]
+fn a_paid_site_does_not_reserve_its_surviving_deferred_claim_again() {
+    let mut game = headless_game();
+    let workers: Vec<_> = game
+        .state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == game.human && unit.kind == UnitKind::Harvester)
+        .map(|unit| unit.id)
+        .take(2)
+        .collect();
+    assert_eq!(workers.len(), 2, "skirmish authors two human workers");
+    let kind = oxide_sim::BuildingKind::Turret;
+    let anchor = TilePos::new(10, 4);
+    let cost = kind
+        .stats()
+        .construction
+        .expect("turret is constructible")
+        .cost;
+    let scrap = game.state.player(game.human).scrap;
+    game.pending.extend([
+        PlayerCommand {
+            player: game.human,
+            command: Command::Build {
+                units: vec![workers[0]],
+                kind,
+                anchor,
+                queue: false,
+                defer: true,
+            },
+        },
+        PlayerCommand {
+            player: game.human,
+            command: Command::Build {
+                units: vec![workers[1]],
+                kind,
+                anchor,
+                queue: false,
+                defer: false,
+            },
+        },
+    ]);
+    game.state
+        .inspect_command_phase(&game.pending, |projected| {
+            assert!(matches!(
+                projected.unit(workers[0]).expect("worker survives").order,
+                oxide_sim::Order::Found {
+                    kind: ordered,
+                    anchor: claimed,
+                } if ordered == kind && claimed == anchor
+            ));
+            assert!(
+                projected.has_own_unfinished_site(game.human, kind, anchor),
+                "the later immediate command paid for the deferred claim's site"
+            );
+        });
+
+    game.selection.units = vec![workers[1]];
+    let projection = pending_build_projection_for(&game, kind, TilePos::new(13, 4), true, false);
+    assert_eq!(
+        projection.funds,
+        PendingBuildFunds {
+            scrap: scrap - cost,
+            reserved: 0,
+        },
+        "the projected bank is charged once and the free join reserves nothing"
+    );
+}
+
+#[test]
+fn a_deferred_shift_build_can_use_any_selected_worker_with_room() {
+    let mut game = headless_game();
+    let workers: Vec<_> = game
+        .state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == game.human && unit.kind == UnitKind::Harvester)
+        .map(|unit| unit.id)
+        .take(2)
+        .collect();
+    assert_eq!(workers.len(), 2, "skirmish authors two human workers");
+    let low = game.state.unit(workers[0]).expect("worker exists").tile();
+    let far = (0..game.state.map().height())
+        .flat_map(|y| (0..game.state.map().width()).map(move |x| TilePos::new(x, y)))
+        .filter(|&tile| game.state.passable(tile))
+        .max_by_key(|tile| (tile.x - low.x).abs() + (tile.y - low.y).abs())
+        .expect("map has passable ground");
+    let mut fill = vec![PlayerCommand {
+        player: game.human,
+        command: Command::Move {
+            units: vec![workers[0]],
+            goal: far,
+            queue: false,
+        },
+    }];
+    for _ in 0..oxide_sim::stats::ORDER_QUEUE_CAP {
+        fill.push(PlayerCommand {
+            player: game.human,
+            command: Command::Move {
+                units: vec![workers[0]],
+                goal: far,
+                queue: true,
+            },
+        });
+    }
+    game.state.tick(&fill);
+    assert_eq!(
+        game.state
+            .unit(workers[0])
+            .expect("worker survives")
+            .queue
+            .len(),
+        oxide_sim::stats::ORDER_QUEUE_CAP,
+        "the lowest-id founder starts full"
+    );
+    assert!(matches!(
+        game.state.unit(workers[1]).expect("worker survives").order,
+        oxide_sim::Order::Idle
+    ));
+
+    let kind = oxide_sim::BuildingKind::Turret;
+    let low = game.state.unit(workers[0]).expect("worker survives").tile();
+    let anchor = (0..game.state.map().height())
+        .flat_map(|y| (0..game.state.map().width()).map(move |x| TilePos::new(x, y)))
+        .filter(|&tile| game.state.can_place(game.human, kind, tile))
+        .min_by_key(|tile| (tile.x - low.x).abs() + (tile.y - low.y).abs())
+        .expect("visible reachable ground remains");
+    game.selection.units = workers.clone();
+    assert!(
+        pending_build_projection_for(&game, kind, anchor, true, true).queue_has_room,
+        "deferred construction succeeds when any selected worker can take the claim"
+    );
+    assert!(
+        !pending_build_projection_for(&game, kind, anchor, true, false).queue_has_room,
+        "immediate construction is still gated by the lowest-id founder"
+    );
+
+    let command = |defer| PlayerCommand {
+        player: game.human,
+        command: Command::Build {
+            units: workers.clone(),
+            kind,
+            anchor,
+            queue: true,
+            defer,
+        },
+    };
+    let mut deferred = game.state.clone();
+    let report = deferred.tick(&[command(true)]);
+    assert!(
+        !report.events.iter().any(|event| matches!(
+            event,
+            oxide_sim::Event::CommandRejected {
+                reason: oxide_sim::command::RejectReason::QueueFull,
+                ..
+            }
+        )),
+        "the sim accepts the deferred command through the free worker"
+    );
+    let mut immediate = game.state.clone();
+    let report = immediate.tick(&[command(false)]);
+    assert!(
+        report.events.iter().any(|event| matches!(
+            event,
+            oxide_sim::Event::CommandRejected {
+                reason: oxide_sim::command::RejectReason::QueueFull,
+                ..
+            }
+        )),
+        "the sim rejects the immediate command when its founder is full"
+    );
+}
+
+#[test]
+fn a_plain_placement_replaces_the_selected_claim_while_shift_preserves_it() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let builder = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+        .expect("skirmish authors a harvester")
+        .id;
+    let kind = oxide_sim::BuildingKind::Fabricator;
+    let old_spot = TilePos::new(10, 4);
+    let new_spot = TilePos::new(11, 4);
+    for spot in [old_spot, new_spot] {
+        assert!(
+            game.state
+                .place_intent_refusal(game.human, kind, spot)
+                .is_none(),
+            "premise: the visible site starts open"
+        );
+    }
+    let report = game.state.tick(&[PlayerCommand {
+        player: game.human,
+        command: Command::Build {
+            units: vec![builder],
+            kind,
+            anchor: old_spot,
+            queue: false,
+            defer: true,
+        },
+    }]);
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| matches!(event, oxide_sim::Event::CommandRejected { .. }))
+    );
+    assert!(matches!(
+        game.state.unit(builder).unwrap().order,
+        oxide_sim::Order::Found {
+            kind: claimed_kind,
+            anchor,
+        } if claimed_kind == kind && anchor == old_spot
+    ));
+    assert!(
+        game.state.buildings().iter().all(|b| b.anchor != old_spot),
+        "the founder is still walking, so only its claim occupies the ground"
+    );
+
+    game.selection.units = vec![builder];
+    input.placing = Some(kind);
+    game.camera.center = vec2(new_spot.x as f32 + 0.5, new_spot.y as f32 + 0.5);
+    game.camera.pan(Vec2::ZERO);
+    let p = game
+        .camera
+        .to_screen(vec2(new_spot.x as f32 + 0.5, new_spot.y as f32 + 0.5));
+
+    assert_eq!(
+        placement_refusal(&game, kind, new_spot, true),
+        Some(oxide_sim::PlaceRefusal::Building),
+        "Shift appends, so the live claim remains a blocker"
+    );
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::Shift },
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: p.x,
+                y: p.y,
+            },
+            RawEvent::KeyUp { key: Key::Shift },
+        ],
+    );
+    assert!(
+        game.pending.is_empty(),
+        "the conservative Shift preflight stages no duplicate claim"
+    );
+    assert!(input.placing.is_some(), "the refused click stays armed");
+
+    assert_eq!(
+        placement_refusal(&game, kind, new_spot, false),
+        None,
+        "a plain click abandons the selected founder's old claim"
+    );
+    apply_events(&mut game, &mut input, &click(p.x, p.y));
+    assert_eq!(
+        game.pending.len(),
+        1,
+        "claim, overlap, and scrap preflights all account for replacement"
+    );
+    assert!(matches!(
+        game.pending[0].command,
+        Command::Build {
+            anchor,
+            queue: false,
+            ..
+        } if anchor == new_spot
+    ));
 }

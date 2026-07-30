@@ -42,6 +42,41 @@ struct PendingHpGain {
     paid: u32,
 }
 
+/// A buffered hp gain on a UNIT — welding by a crewmate today; any
+/// future source of unit healing (a healing structure, an aura) must
+/// push into this same list and resolve through
+/// [`resolve_unit_heals`] — two independent unit-heal paths would be a
+/// determinism trap. Same contract as [`PendingHpGain`]: applied after
+/// damage, so a machine the volley zeroed forfeits every heal (fire
+/// wins ties).
+struct PendingUnitHeal {
+    /// The patient.
+    unit: UnitId,
+    /// Hp this welder's tick offers.
+    step: u32,
+    /// Whose bank prepaid, for the ceiling refund.
+    player: crate::ids::PlayerId,
+    /// Scrap this welder prepaid for this tick's step — refunded when
+    /// the WHOLE step lands past the hp ceiling, exactly like a
+    /// building weld's coin.
+    paid: u32,
+    /// The exact producer, carried through resolution for output-only
+    /// accepted-hp telemetry.
+    source: crate::event::UnitRepairSource,
+}
+
+/// A field weld whose patient stood in reach when the welder's brain ran.
+///
+/// The patient's own brain may run later in the parity-alternating phase
+/// and create a departure path. Commit these only after every brain has
+/// resolved its intent so a weld never rides that same-tick departure.
+struct PendingFieldWeld {
+    /// The Harvester holding the torch.
+    welder: UnitId,
+    /// The wounded own machine offered the weld.
+    patient: UnitId,
+}
+
 /// A buffered hp drain — salvage work — resolved with the gains as one
 /// signed per-building delta after damage. A building fire zeroed this
 /// tick forfeits every drain (fire wins; forfeited hp refunds
@@ -52,10 +87,34 @@ struct PendingHpDrain {
     step: u32,
 }
 
-pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
+/// A deferred founder that arrived this tick. Buffered like damage and
+/// resolved in unit-id order after the volley: brains iterate reversed
+/// on odd ticks, and an inline claim would let tick parity decide which
+/// of two arriving crewmates founds — the buffer keeps the choice a
+/// pure function of ids.
+struct PendingFounding {
+    unit: UnitId,
+    player: crate::ids::PlayerId,
+    kind: crate::stats::BuildingKind,
+    anchor: chassis::grid::TilePos,
+}
+
+pub(super) fn run(
+    state: &mut State,
+    index: &mut super::spatial::UnitIndex,
+    events: &mut Vec<Event>,
+) {
+    // One index serves every acquisition window this phase: brains
+    // decide against the start-of-tick world — positions, hp, and the
+    // unit list itself hold still until resolution — so a snapshot
+    // taken here stays exact for the whole decision loop.
+    index.rebuild(&state.units);
     let mut hits: Vec<PendingHit> = Vec::new();
     let mut builds: Vec<PendingHpGain> = Vec::new();
+    let mut heals: Vec<PendingUnitHeal> = Vec::new();
+    let mut field_welds: Vec<PendingFieldWeld> = Vec::new();
     let mut drains: Vec<PendingHpDrain> = Vec::new();
+    let mut founds: Vec<PendingFounding> = Vec::new();
     let mut launches: Vec<crate::state::Shell> = Vec::new();
     // Alternate direction by tick parity: sequential phases must not hand
     // one seat a standing first-mover edge (with damage buffered, the
@@ -77,24 +136,36 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         }
         let order = state.unit(id).expect("just seen").order;
         match order {
-            Order::Idle => idle(state, id),
+            Order::Idle => idle(state, index, id),
             Order::Move { goal } => walk(state, id, goal, events),
             Order::Harvest { node } => harvest(state, id, node, events),
-            Order::Attack { target, resume } => {
-                attack(state, id, target, resume, events, &mut hits, &mut launches)
-            }
-            Order::AttackMove { goal } => attack_move(state, id, goal, events),
+            Order::Attack { target, resume } => attack(
+                state,
+                index,
+                id,
+                target,
+                resume,
+                events,
+                &mut hits,
+                &mut launches,
+            ),
+            Order::AttackMove { goal } => attack_move(state, index, id, goal, events),
             Order::Build { site } => build(state, id, site, events, &mut builds),
             Order::Repair { building } => repair(state, id, building, events, &mut builds),
             Order::Salvage { building } => salvage(state, id, building, events, &mut drains),
+            Order::Found { kind, anchor } => found(state, id, kind, anchor, events, &mut founds),
+            Order::RepairUnit { unit } => repair_unit(state, id, unit, events, &mut field_welds),
         }
     }
+    commit_unit_welds(state, field_welds, events, &mut heals);
     turret_fire(state, events, &mut hits, &mut launches);
+    repair_bay_aura(state, &mut heals);
     // Arrivals join this tick's volley; launches land on later ticks
     // (flight is at least one tick), so ordering here cannot matter.
     land_shells(state, &mut hits, events);
     state.shells.extend(launches);
-    resolve_hits(state, hits, builds, drains, events);
+    resolve_hits(state, hits, builds, heals, drains, events);
+    resolve_founds(state, founds, events);
 }
 
 mod combat;
@@ -103,7 +174,7 @@ mod locomotion;
 
 use combat::attack;
 use combat::{land_shells, retaliate, target_standing, turret_fire};
-use economy::{build, harvest, repair, salvage};
+use economy::{build, commit_unit_welds, found, harvest, repair, repair_unit, salvage};
 use locomotion::{attack_move, idle, walk};
 
 /// The other half of simultaneity: buffered shots land now, in the order
@@ -116,6 +187,7 @@ fn resolve_hits(
     state: &mut State,
     hits: Vec<PendingHit>,
     builds: Vec<PendingHpGain>,
+    heals: Vec<PendingUnitHeal>,
     drains: Vec<PendingHpDrain>,
     events: &mut Vec<Event>,
 ) {
@@ -253,11 +325,257 @@ fn resolve_hits(
             }
         }
     }
+    resolve_unit_heals(state, heals, events);
     for hit in &hits {
         if let Target::Unit(uid) = hit.victim
             && target_standing(state, hit.attacker)
         {
             retaliate(state, uid, hit.attacker);
+        }
+    }
+}
+
+/// The unit half of buffered hp work — the ONE seam every unit heal
+/// resolves through, built to be fed by any future healing source (a
+/// repair structure's aura pushes into the same list) as well as
+/// today's crewmate welds. The building resolver's three rules,
+/// restated for machines: a unit at 0 hp after the volley forfeits
+/// every heal and refunds nothing (fire wins ties, and nothing
+/// resurrects); stacked welders billed against the same start-of-tick
+/// reading, so a welder whose WHOLE step lands past the hp ceiling
+/// gets its prepaid coin back (the marginal welder's partially
+/// accepted step keeps its ceil-billed fraction); and per unit the
+/// gains net into one delta clamped once to max_hp.
+fn resolve_unit_heals(state: &mut State, heals: Vec<PendingUnitHeal>, events: &mut Vec<Event>) {
+    let mut rooms: Vec<(UnitId, i64)> = Vec::new();
+    for heal in &heals {
+        let Some(u) = state.unit(heal.unit).filter(|u| u.hp > 0) else {
+            continue;
+        };
+        let i = match rooms.iter().position(|(id, _)| *id == heal.unit) {
+            Some(i) => i,
+            None => {
+                let room = i64::from(u.kind.stats().max_hp) - i64::from(u.hp);
+                rooms.push((heal.unit, room));
+                rooms.len() - 1
+            }
+        };
+        let accepted = rooms[i].1.clamp(0, i64::from(heal.step)) as u32;
+        if rooms[i].1 <= 0 {
+            // Every gain consumes room; only the refund cares what was
+            // paid — the same rule the building ledger learned when a
+            // free-stepping welder ate the last room uncompensated.
+            if heal.paid > 0 {
+                let bank = &mut state.player_mut(heal.player).scrap;
+                *bank = bank.saturating_add(heal.paid);
+            }
+        } else {
+            rooms[i].1 -= i64::from(heal.step);
+        }
+        if accepted > 0 {
+            events.push(Event::UnitRepaired {
+                unit: heal.unit,
+                player: heal.player,
+                source: heal.source,
+                amount: accepted,
+            });
+        }
+    }
+    let mut sums: Vec<(UnitId, i64)> = Vec::new();
+    for heal in &heals {
+        match sums.iter_mut().find(|(id, _)| *id == heal.unit) {
+            Some((_, gain)) => *gain += i64::from(heal.step),
+            None => sums.push((heal.unit, i64::from(heal.step))),
+        }
+    }
+    for (unit, gain) in sums {
+        let Some(u) = state.unit_mut(unit) else {
+            continue;
+        };
+        if u.hp == 0 {
+            continue; // fire won this tick; the heal forfeits with its coin
+        }
+        let max = i64::from(u.kind.stats().max_hp);
+        u.hp = (i64::from(u.hp) + gain).clamp(0, max) as u32;
+    }
+}
+
+/// The Repair Bay's act — the one building whose output is a heal. On
+/// its pulse cadence every built bay, in building-id order, offers each
+/// own wounded machine inside [`crate::stats::REPAIR_BAY_RADIUS`] of
+/// its footprint (ground and air alike; reach measures from the
+/// nearest footprint point, so a 2x2 gets no phantom ring) one
+/// [`crate::stats::REPAIR_BAY_STEP`] of hp, billed from the owner's
+/// bank at [`crate::stats::REPAIR_COST_PERMILLE`] of the patient's
+/// proportional cost. Hp itself is the billing meter: each pulse pays
+/// the ceiling-diff of the patient's milli-scrap value across its
+/// step, so a full heal telescopes to within one scrap of exact — no
+/// stored counter, nothing new in the hash. A bank that cannot cover a
+/// patient's coin skips that patient and keeps scanning: partial scrap
+/// heals the earliest ids and starves the rest, deterministically.
+/// Everything buffers into the one unit-heal resolver, so fire wins
+/// ties and an overlapping second bay's past-ceiling coin refunds like
+/// any stacked welder's.
+fn repair_bay_aura(state: &mut State, heals: &mut Vec<PendingUnitHeal>) {
+    use crate::stats::BuildingKind;
+    if !state
+        .current_tick()
+        .is_multiple_of(crate::stats::REPAIR_BAY_PERIOD)
+    {
+        return;
+    }
+    let bays: Vec<crate::ids::BuildingId> = state
+        .buildings
+        .iter()
+        .filter(|b| b.built && b.hp > 0 && b.kind == BuildingKind::RepairBay)
+        .map(|b| b.id)
+        .collect();
+    let radius = crate::stats::REPAIR_BAY_RADIUS;
+    // Steps already in flight per patient this pulse: overlapping
+    // auras stack in resolution, so a later bay must price from the
+    // hp earlier bays already queued — reading start-of-tick hp made
+    // every bay bill (or skip) the same first interval.
+    let mut in_flight: std::collections::BTreeMap<UnitId, u32> = std::collections::BTreeMap::new();
+    for bay in bays {
+        let Some(b) = state.building(bay) else {
+            continue;
+        };
+        let owner = b.player;
+        // The aura is automatic, so unlike a voluntary purchase it must
+        // not eat the only 50 scrap a stranded seat can use to restart
+        // harvesting. Sustain may spend any surplus above the reserve.
+        let preserve_harvester_reserve = super::harvester_recovery_needed(state, owner);
+        let patients: Vec<UnitId> = state
+            .units
+            .iter()
+            .filter(|u| {
+                u.player == owner
+                    && u.hp > 0
+                    && u.hp < u.kind.stats().max_hp
+                    && b.closest_point_to(u.pos).dist_sq(u.pos) <= radius * radius
+            })
+            .map(|u| u.id)
+            .collect();
+        for id in patients {
+            let u = state.unit(id).expect("just filtered");
+            let stats = u.kind.stats();
+            let queued = in_flight.get(&id).copied().unwrap_or(0);
+            let healed = (u.hp + queued).min(stats.max_hp);
+            let step = crate::stats::REPAIR_BAY_STEP.min(stats.max_hp - healed);
+            if step == 0 {
+                continue; // earlier bays already carry this one to whole
+            }
+            let millis = |hp: u32| -> u64 {
+                u64::from(hp) * u64::from(stats.cost) * crate::stats::REPAIR_COST_PERMILLE
+                    / u64::from(stats.max_hp)
+            };
+            let due = millis(healed + step).div_ceil(1000) - millis(healed).div_ceil(1000);
+            let bank = state.player(owner).scrap;
+            if u64::from(bank) < due {
+                continue; // broke for this patient; cheaper coins may still land
+            }
+            if due > 0
+                && preserve_harvester_reserve
+                && u64::from(bank) - due < u64::from(crate::stats::UnitKind::Harvester.stats().cost)
+            {
+                continue;
+            }
+            state.player_mut(owner).scrap = bank - due as u32;
+            in_flight.insert(id, queued + step);
+            heals.push(PendingUnitHeal {
+                unit: id,
+                step,
+                player: owner,
+                paid: due as u32,
+                source: crate::event::UnitRepairSource::RepairBay { building: bay },
+            });
+        }
+    }
+}
+
+/// Arrived deferred founders claim their ground, strictly in unit-id
+/// order. The claim re-proves [`crate::State::place_refusal`] on ground
+/// the founder now stands beside — adjacency puts the whole footprint
+/// inside a harvester's sight, so every fact the verdict reads is one
+/// the founder's own eyes deliver. Ground honestly taken (a building
+/// raised, a hostile machine parked) drops the program with a fog-safe
+/// stall; a crewmate whose lower-id partner founded first simply joins
+/// the fresh site. Nothing was charged before this moment, so a failed
+/// claim has nothing to refund.
+fn resolve_founds(state: &mut State, mut founds: Vec<PendingFounding>, events: &mut Vec<Event>) {
+    use crate::command::RejectReason;
+    use crate::event::StallReason;
+    founds.sort_unstable_by_key(|f| f.unit);
+    for f in founds {
+        let Some(unit) = state.unit(f.unit) else {
+            continue;
+        };
+        if unit.hp == 0 {
+            continue; // the volley won; a corpse claims nothing
+        }
+        // Retaliation (just resolved) can hand a hit machine a new
+        // order; a founder no longer on the errand claims nothing.
+        if unit.order
+            != (Order::Found {
+                kind: f.kind,
+                anchor: f.anchor,
+            })
+        {
+            continue;
+        }
+        // A lower-id crewmate founded this tick (or the site already
+        // stood): join it instead of stalling on "taken" ground that
+        // is the crew's own.
+        let ours = state
+            .buildings
+            .iter()
+            .find(|b| b.anchor == f.anchor && b.kind == f.kind && b.player == f.player && !b.built)
+            .map(|b| b.id);
+        if let Some(site) = ours {
+            let unit = state.unit_mut(f.unit).expect("checked above");
+            unit.order = Order::Build { site };
+            unit.path = None;
+            unit.progress = 0;
+            continue;
+        }
+        let stall = |state: &mut State, reason: StallReason, events: &mut Vec<Event>| {
+            let unit = state.unit_mut(f.unit).expect("checked above");
+            let (player, pos) = (unit.player, unit.pos);
+            unit.clear_program();
+            events.push(Event::OrderStalled {
+                unit: f.unit,
+                player,
+                pos,
+                reason,
+            });
+        };
+        if state.place_refusal(f.player, f.kind, f.anchor).is_some() {
+            stall(state, StallReason::GroundTaken, events);
+            continue;
+        }
+        let claimed = super::commands::found_site(
+            state,
+            f.player,
+            f.unit,
+            f.kind,
+            f.anchor,
+            |state, site| {
+                // The founder's own active order becomes the build; its
+                // queued program survives untouched — deferral changes
+                // when the claim lands, never what comes after.
+                let unit = state.unit_mut(f.unit).expect("checked above");
+                unit.order = Order::Build { site };
+                unit.path = None;
+                unit.progress = 0;
+                true
+            },
+        );
+        match claimed {
+            Ok(_) => {}
+            Err(RejectReason::NotEnoughScrap) => {
+                stall(state, StallReason::InsufficientScrap, events);
+            }
+            Err(_) => stall(state, StallReason::NoRoute, events),
         }
     }
 }

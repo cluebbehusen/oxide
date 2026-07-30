@@ -20,6 +20,7 @@ oxide-kit = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 # The audio feature is NOT in macroquad's defaults — without it every
 # sound call is a warning-printing stub.

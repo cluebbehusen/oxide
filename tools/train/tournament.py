@@ -12,9 +12,12 @@ Usage (from tools/train/):
     uv run tournament.py --ckpt runs/bc.pt --seeds 10   # quick look
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import math
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 import torch
@@ -22,8 +25,29 @@ from torch import nn
 
 from league import TIERS, faction_knob, maybe_blunder, rusher
 from mapgen import cache_dir, generate
-from models import load_policy
-from oxide_gym import Worker
+from models import factorized_greedy, load_policy
+from oxide_gym import ActionPlan, FactionName, Frame, Worker, condition_from_profile
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+
+class TournamentWorker(Protocol):
+    """The gym surface one tournament match needs."""
+
+    def reset(
+        self,
+        seed: int,
+        control: tuple[int, ...] = (0,),
+        tier: str = "veteran",
+        max_ticks: int = 40_000,
+        cadence: int = 16,
+        scenario: str | None = None,
+        conditions: dict[int, tuple[int, ...]] | None = None,
+        factions: str | Sequence[FactionName] | None = None,
+    ) -> Frame: ...
+
+    def step(self, actions: dict[int, ActionPlan]) -> Frame: ...
 
 
 def wilson(wins: int, games: int, z: float = 1.96) -> tuple[float, float]:
@@ -38,20 +62,30 @@ def wilson(wins: int, games: int, z: float = 1.96) -> tuple[float, float]:
 
 def play(
     policy: nn.Module,
-    worker: Worker,
+    worker: TournamentWorker,
     opponent: str,
     seed: int,
     seat: int,
     scenario: str | None = None,
-    condition: tuple[int, int] = (1000, 500),
+    condition: tuple[int, int] = (1000, 550),
+    hesitation_permille: int = 0,
+    cadence: int = 28,
     seats: int = 2,
 ) -> tuple[bool | None, int]:
     """One greedy match; returns (won, ticks). `won` is None only for a
     true draw (tick cap with the learner standing) — elimination in a
     multiplayer game is a loss even while others fight on. The faction
-    knob is appended per seat, honestly (even = ferrous)."""
+    knob is appended per seat, honestly (even = ferrous). Policy
+    conditioning and execution handicap are independent, matching the
+    named runtime wrapper."""
+    if not 0 <= hesitation_permille <= 1000:
+        raise ValueError(
+            f"hesitation must be in 0..1000 permille, got {hesitation_permille}"
+        )
+    if cadence <= 0:
+        raise ValueError(f"cadence must be positive, got {cadence}")
     conds: dict[int, tuple[int, ...]] = {
-        s: (*condition, faction_knob(s)) for s in range(8)
+        s: condition_from_profile(*condition, faction_knob(s)) for s in range(8)
     }
     rusher_seat = None
     if opponent == "rusher":
@@ -59,15 +93,25 @@ def play(
         # too — whichever seat the learner isn't (any of them in FFA).
         rusher_seat = (seat + 1) % seats
         frame = worker.reset(
-            seed, control=(seat, rusher_seat), scenario=scenario, conditions=conds
+            seed,
+            control=(seat, rusher_seat),
+            scenario=scenario,
+            conditions=conds,
+            cadence=cadence,
         )
     else:
         frame = worker.reset(
-            seed, control=(seat,), tier=opponent, scenario=scenario, conditions=conds
+            seed,
+            control=(seat,),
+            tier=opponent,
+            scenario=scenario,
+            conditions=conds,
+            cadence=cadence,
         )
     rng = np.random.default_rng(seed * 2 + seat)
     while not frame.done:
         view = frame.seats.get(seat)
+        acts: dict[int, ActionPlan]
         if view is None:
             # Team games: the seat's foundry fell while its team plays
             # on — the gym stops shipping views for dead seats and
@@ -80,12 +124,21 @@ def play(
                     torch.as_tensor(view.obs[None]),
                     torch.as_tensor(view.mask[None]),
                 )
-            # The shipped weakening is knob input + forced near-best
-            # blunders, exactly as trained — evaluate that mechanism.
-            intended = int(logits.argmax())
+            # The shipped weakening is an execution-side hesitation,
+            # independent of the policy's strategy conditioning.
+            plan = factorized_greedy(logits)[0].cpu()
+            intended: ActionPlan = (
+                int(plan[0]),
+                int(plan[1]),
+                int(plan[2]),
+            )
             acts = {
                 seat: maybe_blunder(
-                    intended, logits[0].numpy(), view.mask, condition[0], rng
+                    intended,
+                    logits[0].numpy(),
+                    view.mask,
+                    hesitation_permille,
+                    rng,
                 )
             }
         if rusher_seat is not None and rusher_seat in frame.seats:
@@ -113,7 +166,19 @@ def main() -> None:
         "--scenario", default=None, help="map (default: the built-in skirmish)"
     )
     ap.add_argument("--skill", type=int, default=1000)
-    ap.add_argument("--aggression", type=int, default=500)
+    ap.add_argument("--aggression", type=int, default=550)
+    ap.add_argument(
+        "--hesitation",
+        type=int,
+        default=0,
+        help="exact execution-side hesitation per mille (default: Expert 0)",
+    )
+    ap.add_argument(
+        "--cadence",
+        type=int,
+        default=28,
+        help="decision stride in ticks (default: shipped Expert 28)",
+    )
     ap.add_argument(
         "--random-maps",
         type=int,
@@ -193,6 +258,8 @@ def main() -> None:
                         seat,
                         scenario,
                         (args.skill, args.aggression),
+                        hesitation_permille=args.hesitation,
+                        cadence=args.cadence,
                         seats=4 if (ffa or team) else 2,
                     )
                     games += 1
@@ -212,6 +279,10 @@ def main() -> None:
                         "rate": round(wins / games, 3),
                         "ci95": [round(lo, 3), round(hi, 3)],
                         "median_ticks": int(np.median(ticks)),
+                        "skill": args.skill,
+                        "aggression": args.aggression,
+                        "hesitation_permille": args.hesitation,
+                        "cadence": args.cadence,
                     }
                 )
             )

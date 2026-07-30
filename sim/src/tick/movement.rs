@@ -1,16 +1,20 @@
-//! Phases 4–5: path following and collision resolution.
+//! Phases 4–5: footprint eviction, path following, and collision
+//! resolution.
 //!
 //! Movement is per-unit work. Since 0.5, ground can close *during* a walk —
 //! a construction site claims its footprint the moment the command lands —
 //! so each step revalidates the waypoint it is about to move toward and
 //! drops the path when the ground has closed (the brain repaths around the
-//! new obstacle next tick). Collision resolution then pushes overlapping
+//! new obstacle next tick). Since 0.13 a pathless ground body left
+//! standing on claimed ground walks itself off (see
+//! [`evict_claimed_ground`]) instead of being relocated instantly.
+//! Collision resolution then pushes overlapping
 //! bodies apart until they fit — units are solid to each other, but tiles
 //! are only ever blocked by terrain and buildings, so pathfinding stays
 //! deadlock-free while crowds physically jostle.
 
 use crate::map::Map;
-use crate::state::{Order, State};
+use crate::state::{Order, PathFollow, State};
 use chassis::fx::{Fx, Vec2Fx, sqrt};
 use chassis::grid::TilePos;
 
@@ -38,6 +42,79 @@ fn early_advance_safe(
         return true;
     }
     open(cur.offset(dx, 0)) && open(cur.offset(0, dy))
+}
+
+/// The nearest walkable escape from a body's own (possibly blocked)
+/// tile: candidates ring-scan outward in (chebyshev, y, x) order — the
+/// deterministic order every ring scan uses — and the first one that
+/// routes wins (A* consults `passable` for every tile except the start,
+/// so a body paths out of ground it could not enter). Bounded: any real
+/// escape begins on an adjacent open tile, so the reach only pads for
+/// corner-cut geometry.
+pub(super) fn escape_route(
+    state: &State,
+    kind: crate::stats::UnitKind,
+    from: TilePos,
+) -> Option<PathFollow> {
+    for r in 1..=crate::stats::EVICT_SCAN_RADIUS {
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs().max(dy.abs()) != r {
+                    continue;
+                }
+                let goal = from.offset(dx, dy);
+                if !state.passable(goal) {
+                    continue;
+                }
+                if let Some(waypoints) = super::route_for(state, kind, from, goal) {
+                    return Some(PathFollow {
+                        goal,
+                        waypoints,
+                        next: 0,
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Pure preview of the phase-5 claimed-ground eviction for one unit.
+///
+/// Brains that require a body to remain still can consult the exact same
+/// predicate and route that [`evict_claimed_ground`] will apply later in
+/// the tick, without mutating the state early.
+pub(super) fn claimed_ground_escape(state: &State, id: crate::ids::UnitId) -> Option<PathFollow> {
+    let unit = state.unit(id)?;
+    if unit.hp == 0
+        || unit.kind.stats().domain != crate::stats::Domain::Ground
+        || unit.path.is_some()
+        || state.building_at(unit.tile()).is_none()
+    {
+        return None;
+    }
+    escape_route(state, unit.kind, unit.tile())
+}
+
+/// Phase-5 pre-pass: a pathless ground body standing on a building
+/// footprint walks off — an accepted foundation claims its ground
+/// instantly, and no sim rule expects a resting unit on a claimed
+/// footprint. Sets `path` ONLY: orders, queue, progress, leash, and
+/// settle all survive, so the body keeps its job while it clears the
+/// ground. Re-arms every tick because working brains null the path
+/// while standing still (extract, attack-in-range) — brains run first,
+/// eviction re-arms, movement consumes. Id order; deterministic scan.
+/// No route means the body stays put — a crowd the sim already
+/// tolerates — except at placement time, where `apply_build` deals a
+/// routeless body onto the perimeter instantly so nothing can end up
+/// inside a finished building.
+pub(super) fn evict_claimed_ground(state: &mut State) {
+    for i in 0..state.units.len() {
+        let id = state.units[i].id;
+        if let Some(path) = claimed_ground_escape(state, id) {
+            state.units[i].path = Some(path);
+        }
+    }
 }
 
 /// Advances every unit along its path by its speed, returning each
@@ -153,12 +230,17 @@ const STACKED_DIRS: [Vec2Fx; 8] = [
 /// correction as a slide (see [`correction_dirs`]) instead of a pure
 /// radial push. Snapshotted once for all passes — corrections can
 /// stale it by at most one step, which only softens the slide.
-pub(super) fn resolve_collisions(state: &mut State, travel: &[Vec2Fx]) {
+pub(super) fn resolve_collisions(
+    state: &mut State,
+    travel: &[Vec2Fx],
+    index: &mut super::spatial::UnitIndex,
+) {
     // Direction alternates by tick parity — Gauss-Seidel's sequential
     // application must not always favor the same ids (see brain::run).
     let reversed = state.tick % 2 == 1;
+    let mut spent: Vec<Fx> = Vec::new();
     for _ in 0..COLLISION_ITERATIONS {
-        if !relaxation_pass(state, reversed, travel) {
+        if !relaxation_pass(state, reversed, travel, index, &mut spent) {
             break;
         }
     }
@@ -208,7 +290,13 @@ fn correction_dirs(away: Vec2Fx, travel: Vec2Fx, partner_head_on: bool) -> [Opti
 /// forever. Sequential application cannot cancel, so jams always evolve.
 /// Dead units are skipped: a corpse should not shove the living on its
 /// removal tick.
-fn relaxation_pass(state: &mut State, reversed: bool, travel: &[Vec2Fx]) -> bool {
+fn relaxation_pass(
+    state: &mut State,
+    reversed: bool,
+    travel: &[Vec2Fx],
+    index: &mut super::spatial::UnitIndex,
+    spent: &mut Vec<Fx>,
+) -> bool {
     let n = state.units.len();
     if n < 2 {
         return false;
@@ -218,109 +306,99 @@ fn relaxation_pass(state: &mut State, reversed: bool, travel: &[Vec2Fx]) -> bool
     // Buckets are snapshotted at pass start; corrections are small enough
     // (≤ COLLISION_MAX_STEP) that a newly-adjacent pair simply waits for
     // the next pass.
-    let mut by_tile: Vec<(TilePos, usize)> = state
-        .units
-        .iter()
-        .enumerate()
-        .filter(|(_, u)| u.hp > 0)
-        .map(|(i, u)| (u.tile(), i))
-        .collect();
-    by_tile.sort_unstable_by_key(|&(t, i)| (t.y, t.x, i));
+    index.rebuild(&state.units);
 
-    let order: Vec<usize> = if reversed {
-        (0..n).rev().collect()
-    } else {
-        (0..n).collect()
-    };
     let mut any_overlap = false;
     // Per-unit displacement budget for this pass. Clamping only per pair
     // lets a unit in k overlaps move k × the cap — dense stacks visibly
     // exploded outward. Spent distance is tracked per unit instead, so the
     // cap in stats.rs means what it says.
-    let mut spent = vec![Fx::ZERO; n];
-    for i in order {
+    spent.clear();
+    spent.resize(n, Fx::ZERO);
+    for k in 0..n {
+        let i = if reversed { n - 1 - k } else { k };
         if state.units[i].hp == 0 {
             continue;
         }
         let home = state.units[i].tile();
         for dy in -1..=1 {
-            for dx in -1..=1 {
-                let tile = home.offset(dx, dy);
-                let start = by_tile.partition_point(|&(t, _)| (t.y, t.x) < (tile.y, tile.x));
-                for &(_, j) in by_tile[start..].iter().take_while(|&&(t, _)| t == tile) {
-                    if j <= i {
-                        continue; // each pair once, in (i, j) id order
-                    }
-                    let (pos_i, radius_i, id_i, dom_i) = {
-                        let u = &state.units[i];
-                        (u.pos, u.kind.stats().radius, u.id, u.kind.stats().domain)
+            // The row span walks the 3-tile window in ascending
+            // (x, slot) order — the same candidate sequence the old
+            // tile-by-tile bucket walk produced, which Gauss-Seidel's
+            // immediate application makes load-bearing.
+            for &(_, j) in index.row_span(home.y + dy, home.x - 1, home.x + 1) {
+                if j <= i {
+                    continue; // each pair once, in (i, j) id order
+                }
+                let (pos_i, radius_i, id_i, dom_i) = {
+                    let u = &state.units[i];
+                    (u.pos, u.kind.stats().radius, u.id, u.kind.stats().domain)
+                };
+                let (pos_j, radius_j, id_j, dom_j) = {
+                    let u = &state.units[j];
+                    (u.pos, u.kind.stats().radius, u.id, u.kind.stats().domain)
+                };
+                // Bodies only collide within their own layer: a flyer
+                // and a crawler occupy the same tile without touching.
+                if dom_i != dom_j {
+                    continue;
+                }
+                let min_dist = radius_i + radius_j;
+                let delta = pos_j - pos_i;
+                let dist_sq = delta.length_sq();
+                if dist_sq >= min_dist * min_dist {
+                    continue;
+                }
+                any_overlap = true;
+                let dist = sqrt(dist_sq);
+                // Perfectly stacked pairs keep the fixed-direction
+                // radial split — there is no geometry to slide on.
+                let (dir, overlap, stacked) = if dist == Fx::ZERO {
+                    let pick = ((id_i.0 ^ id_j.0) % 8) as usize;
+                    (STACKED_DIRS[pick], min_dist, true)
+                } else {
+                    (delta / dist, min_dist - dist, false)
+                };
+                // Anchored units (working in place) yield a sliver;
+                // movers absorb the correction and flow around them.
+                let (share_i, share_j) =
+                    match (is_anchored(&state.units[i]), is_anchored(&state.units[j])) {
+                        (true, false) => (ANCHORED_PUSH_SHARE, Fx::ONE - ANCHORED_PUSH_SHARE),
+                        (false, true) => (Fx::ONE - ANCHORED_PUSH_SHARE, ANCHORED_PUSH_SHARE),
+                        _ => (chassis::fx::HALF, chassis::fx::HALF),
                     };
-                    let (pos_j, radius_j, id_j, dom_j) = {
-                        let u = &state.units[j];
-                        (u.pos, u.kind.stats().radius, u.id, u.kind.stats().domain)
-                    };
-                    // Bodies only collide within their own layer: a flyer
-                    // and a crawler occupy the same tile without touching.
-                    if dom_i != dom_j {
-                        continue;
-                    }
-                    let min_dist = radius_i + radius_j;
-                    let delta = pos_j - pos_i;
-                    let dist_sq = delta.length_sq();
-                    if dist_sq >= min_dist * min_dist {
-                        continue;
-                    }
-                    any_overlap = true;
-                    let dist = sqrt(dist_sq);
-                    // Perfectly stacked pairs keep the fixed-direction
-                    // radial split — there is no geometry to slide on.
-                    let (dir, overlap, stacked) = if dist == Fx::ZERO {
-                        let pick = ((id_i.0 ^ id_j.0) % 8) as usize;
-                        (STACKED_DIRS[pick], min_dist, true)
-                    } else {
-                        (delta / dist, min_dist - dist, false)
-                    };
-                    // Anchored units (working in place) yield a sliver;
-                    // movers absorb the correction and flow around them.
-                    let (share_i, share_j) =
-                        match (is_anchored(&state.units[i]), is_anchored(&state.units[j])) {
-                            (true, false) => (ANCHORED_PUSH_SHARE, Fx::ONE - ANCHORED_PUSH_SHARE),
-                            (false, true) => (Fx::ONE - ANCHORED_PUSH_SHARE, ANCHORED_PUSH_SHARE),
-                            _ => (chassis::fx::HALF, chassis::fx::HALF),
-                        };
-                    let (away_i, away_j) = (-dir, dir);
-                    let closing_i = travel[i].x * away_i.x + travel[i].y * away_i.y < Fx::ZERO;
-                    let closing_j = travel[j].x * away_j.x + travel[j].y * away_j.y < Fx::ZERO;
-                    let dirs_j = if stacked {
-                        [Some(away_j), None, None]
-                    } else {
-                        correction_dirs(away_j, travel[j], closing_i)
-                    };
-                    let dirs_i = if stacked {
-                        [Some(away_i), None, None]
-                    } else {
-                        correction_dirs(away_i, travel[i], closing_j)
-                    };
-                    let step_j = (overlap * share_j).min(COLLISION_MAX_STEP - spent[j]);
-                    if step_j > Fx::ZERO {
-                        for cand in dirs_j.into_iter().flatten() {
-                            let to = pos_j + cand * step_j;
-                            if state.passable_for(dom_j, TilePos::containing(to)) {
-                                state.units[j].pos = to;
-                                spent[j] += step_j;
-                                break;
-                            }
+                let (away_i, away_j) = (-dir, dir);
+                let closing_i = travel[i].x * away_i.x + travel[i].y * away_i.y < Fx::ZERO;
+                let closing_j = travel[j].x * away_j.x + travel[j].y * away_j.y < Fx::ZERO;
+                let dirs_j = if stacked {
+                    [Some(away_j), None, None]
+                } else {
+                    correction_dirs(away_j, travel[j], closing_i)
+                };
+                let dirs_i = if stacked {
+                    [Some(away_i), None, None]
+                } else {
+                    correction_dirs(away_i, travel[i], closing_j)
+                };
+                let step_j = (overlap * share_j).min(COLLISION_MAX_STEP - spent[j]);
+                if step_j > Fx::ZERO {
+                    for cand in dirs_j.into_iter().flatten() {
+                        let to = pos_j + cand * step_j;
+                        if state.passable_for(dom_j, TilePos::containing(to)) {
+                            state.units[j].pos = to;
+                            spent[j] += step_j;
+                            break;
                         }
                     }
-                    let step_i = (overlap * share_i).min(COLLISION_MAX_STEP - spent[i]);
-                    if step_i > Fx::ZERO {
-                        for cand in dirs_i.into_iter().flatten() {
-                            let to = pos_i + cand * step_i;
-                            if state.passable_for(dom_i, TilePos::containing(to)) {
-                                state.units[i].pos = to;
-                                spent[i] += step_i;
-                                break;
-                            }
+                }
+                let step_i = (overlap * share_i).min(COLLISION_MAX_STEP - spent[i]);
+                if step_i > Fx::ZERO {
+                    for cand in dirs_i.into_iter().flatten() {
+                        let to = pos_i + cand * step_i;
+                        if state.passable_for(dom_i, TilePos::containing(to)) {
+                            state.units[i].pos = to;
+                            spent[i] += step_i;
+                            break;
                         }
                     }
                 }
@@ -328,4 +406,101 @@ fn relaxation_pass(state: &mut State, reversed: bool, travel: &[Vec2Fx]) -> bool
         }
     }
     any_overlap
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::spatial::UnitIndex;
+    use super::*;
+    use crate::scenario::{PlayerSpec, Scenario, UnitSpec};
+    use crate::state::Faction;
+    use crate::stats::UnitKind;
+
+    fn seat(name: &str, faction: Faction) -> PlayerSpec {
+        PlayerSpec {
+            name: name.into(),
+            faction,
+            team: None,
+            scrap: 0,
+            bot: false,
+            bot_config: None,
+        }
+    }
+
+    fn boundary_pair() -> State {
+        Scenario {
+            name: "boundary-pair".into(),
+            seed: 1,
+            map: vec![
+                "............".into(),
+                "............".into(),
+                "............".into(),
+                "1.........2.".into(),
+                "............".into(),
+                "............".into(),
+                "............".into(),
+                "............".into(),
+            ],
+            players: vec![
+                seat("North", Faction::Ferrous),
+                seat("South", Faction::Cupric),
+            ],
+            units: vec![
+                UnitSpec {
+                    player: 0,
+                    kind: UnitKind::Sentinel,
+                    x: 5,
+                    y: 1,
+                },
+                UnitSpec {
+                    player: 1,
+                    kind: UnitKind::Sentinel,
+                    x: 6,
+                    y: 1,
+                },
+            ],
+            buildings: Vec::new(),
+            meta: None,
+        }
+        .build()
+        .expect("boundary pair builds")
+    }
+
+    #[test]
+    fn collision_finds_border_crossing_pairs_in_either_id_order() {
+        let height = boundary_pair().map.height();
+        let edges = [
+            ("north", Fx::lit("0.1"), Fx::lit("-0.1")),
+            (
+                "south",
+                Fx::from_num(height) - Fx::lit("0.1"),
+                Fx::from_num(height) + Fx::lit("0.1"),
+            ),
+        ];
+
+        for (edge, inside_y, outside_y) in edges {
+            for outside_slot in 0..2 {
+                let mut state = boundary_pair();
+                let inside_slot = 1 - outside_slot;
+                state.units[outside_slot].pos = Vec2Fx::new(Fx::lit("5.5"), outside_y);
+                state.units[inside_slot].pos = Vec2Fx::new(Fx::lit("5.5"), inside_y);
+                state
+                    .validate_invariants()
+                    .expect("the accepted coordinate envelope includes border rows");
+                let before = state.units[inside_slot].pos;
+                let travel = vec![Vec2Fx::ZERO; state.units.len()];
+                let mut index = UnitIndex::new();
+                let mut spent = Vec::new();
+
+                assert!(
+                    relaxation_pass(&mut state, false, &travel, &mut index, &mut spent),
+                    "{edge} pair with outside slot {outside_slot} was not visited"
+                );
+                assert_ne!(
+                    state.units[inside_slot].pos, before,
+                    "{edge} pair with outside slot {outside_slot} was not separated"
+                );
+            }
+        }
+    }
 }

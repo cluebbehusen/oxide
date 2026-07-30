@@ -21,6 +21,12 @@ pub(crate) enum LiveCmd {
         #[arg(long)]
         map: bool,
     },
+    /// The world as one seat honestly knows it: visibility mask, entities
+    /// under current sight, ghost memories, remembered salvage, contacts.
+    Fog {
+        /// The seat whose knowledge to report.
+        player: u8,
+    },
     /// Camera pose and visible world rect.
     Camera,
     /// Shell mode and active menu state.
@@ -30,6 +36,12 @@ pub(crate) enum LiveCmd {
     /// Fast-forward N ticks (works while paused — that's the point).
     Advance {
         /// Tick count.
+        ticks: u64,
+    },
+    /// Advance a small number of ticks while preserving transient
+    /// presentation and returning the sim events.
+    Step {
+        /// Tick count (capped at 120 by the protocol).
         ticks: u64,
     },
     /// Stop the wall clock (rendering continues).
@@ -161,6 +173,11 @@ pub(crate) enum LiveCmd {
         /// Append behind current orders instead of replacing them.
         #[arg(long)]
         queue: bool,
+        /// Defer the claim: walk out and found on arrival (validated
+        /// against the seat's knowledge, paid when the ground is
+        /// claimed) — the shell's explored-but-unseen mode.
+        #[arg(long)]
+        defer: bool,
     },
     /// Send harvesters to weld a damaged own built building.
     Repair {
@@ -172,6 +189,21 @@ pub(crate) enum LiveCmd {
         /// The building to weld.
         #[arg(long)]
         building: u32,
+        /// Append behind current orders instead of replacing them.
+        #[arg(long)]
+        queue: bool,
+    },
+    /// Send harvesters to weld a wounded own ground unit (billed per
+    /// hp against the patient's cost; air patients refuse).
+    RepairUnit {
+        /// Acting player index.
+        player: u8,
+        /// Welder unit ids, comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        units: Vec<u32>,
+        /// The wounded machine.
+        #[arg(long)]
+        target: u32,
         /// Append behind current orders instead of replacing them.
         #[arg(long)]
         queue: bool,
@@ -249,6 +281,12 @@ pub(crate) enum LiveCmd {
         /// Keys joined with '+', e.g. "ctrl+1" or "shift+f1".
         keys: String,
     },
+    /// Inject typed text, one Text event per character — drives the
+    /// save-name field the way a keyboard's char stream does.
+    InjectText {
+        /// Printable ASCII; anything else is refused.
+        text: String,
+    },
     /// Inject a cursor move.
     InjectMouseMove {
         /// Window x.
@@ -313,6 +351,10 @@ pub(crate) enum LiveCmd {
         /// Sim ticks advanced between frames.
         #[arg(long, default_value_t = 5)]
         ticks_between: u64,
+        /// Preserve transient effects between frames instead of using
+        /// presentation-suppressing bulk advances.
+        #[arg(long)]
+        present: bool,
         /// Output directory for frame-NNN.png and sheet.png.
         #[arg(short, long)]
         out: std::path::PathBuf,
@@ -344,10 +386,14 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
                 ..StateFilter::default()
             },
         },
+        LiveCmd::Fog { player } => Request::QueryFogView {
+            player: PlayerId(player),
+        },
         LiveCmd::Camera => Request::QueryCamera,
         LiveCmd::Ui => Request::QueryUi,
         LiveCmd::Hash => Request::StateHash,
         LiveCmd::Advance { ticks } => Request::AdvanceTicks { ticks },
+        LiveCmd::Step { ticks } => Request::PresentTicks { ticks },
         LiveCmd::Pause => Request::Pause,
         LiveCmd::Resume => Request::Resume,
         LiveCmd::Speed { multiplier } => Request::SetSpeed { multiplier },
@@ -456,6 +502,7 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
             kind,
             at,
             queue,
+            defer,
         } => Request::SendCommand {
             player: PlayerId(player),
             command: Command::Build {
@@ -463,6 +510,7 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
                 kind: kind.into(),
                 anchor: parse_tile(&at)?,
                 queue,
+                defer,
             },
         },
         LiveCmd::Repair {
@@ -475,6 +523,19 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
             command: Command::Repair {
                 units: units(ids),
                 building: BuildingId(building),
+                queue,
+            },
+        },
+        LiveCmd::RepairUnit {
+            player,
+            units: ids,
+            target,
+            queue,
+        } => Request::SendCommand {
+            player: PlayerId(player),
+            command: Command::RepairUnit {
+                units: units(ids),
+                target: UnitId(target),
                 queue,
             },
         },
@@ -562,6 +623,19 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
             }));
             return Ok(requests);
         }
+        LiveCmd::InjectText { text } => {
+            // The shell filters ingest to printable ASCII; refusing here
+            // tells the caller instead of silently dropping characters.
+            if let Some(bad) = text.chars().find(|c| !('\u{20}'..='\u{7e}').contains(c)) {
+                bail!("inject-text takes printable ASCII only (got {bad:?})");
+            }
+            return Ok(text
+                .chars()
+                .map(|ch| Request::InjectEvent {
+                    event: RawEvent::Text { ch },
+                })
+                .collect());
+        }
         LiveCmd::InjectMouseMove { x, y } => Request::InjectEvent {
             event: RawEvent::MouseMove { x, y },
         },
@@ -646,10 +720,17 @@ pub(crate) fn capture_sequence(
     addr: &str,
     frames: u32,
     ticks_between: u64,
+    present: bool,
     out: &std::path::Path,
 ) -> Result<()> {
     if !(2..=64).contains(&frames) {
         bail!("frames must be within 2..=64");
+    }
+    if present && ticks_between > oxide_protocol::MAX_PRESENT_TICKS {
+        bail!(
+            "--present supports at most {} ticks between frames",
+            oxide_protocol::MAX_PRESENT_TICKS
+        );
     }
     std::fs::create_dir_all(out)?;
     let out = out.canonicalize()?;
@@ -657,9 +738,16 @@ pub(crate) fn capture_sequence(
     let mut paths = Vec::new();
     for i in 0..frames {
         if i > 0 {
-            client.call(Request::AdvanceTicks {
-                ticks: ticks_between,
-            })?;
+            let request = if present {
+                Request::PresentTicks {
+                    ticks: ticks_between,
+                }
+            } else {
+                Request::AdvanceTicks {
+                    ticks: ticks_between,
+                }
+            };
+            client.call(request)?;
         }
         let path = out.join(format!("frame-{i:03}.png"));
         client.call(Request::Screenshot {
@@ -701,6 +789,27 @@ pub(crate) fn capture_sequence(
 mod tests {
     use super::*;
     use oxide_protocol::MouseButton;
+
+    #[test]
+    fn step_uses_the_presentation_preserving_protocol_method() {
+        assert_eq!(
+            live_requests(LiveCmd::Step { ticks: 7 }).unwrap(),
+            vec![Request::PresentTicks { ticks: 7 }]
+        );
+    }
+
+    #[test]
+    fn presented_capture_rejects_an_unbounded_interval_before_connecting() {
+        let error = capture_sequence(
+            "127.0.0.1:1",
+            2,
+            oxide_protocol::MAX_PRESENT_TICKS + 1,
+            true,
+            std::path::Path::new("not-created"),
+        )
+        .expect_err("the interval is invalid independently of a live shell");
+        assert!(error.to_string().contains("at most 120"));
+    }
 
     #[test]
     fn a_chord_presses_in_order_and_releases_in_reverse() {

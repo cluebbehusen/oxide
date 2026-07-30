@@ -123,7 +123,7 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
             150.0 * s,
             22.0 * s,
             22.0 * s,
-            BONE,
+            TEXT_PRIMARY,
         );
         // Idle harvesters are money on the ground; the badge nags in
         // danger red and clicking it (or N) cycles through them. Tick
@@ -201,7 +201,7 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
                 screen_width() - width - 10.0 * s,
                 21.0 * s,
                 16.0 * s,
-                BONE_FAINT,
+                TEXT_BODY,
             );
         }
     }
@@ -249,18 +249,25 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
         draw_text(&toast.text, 12.0 * s, y, 20.0 * s, color);
     }
 
-    // Spectator strip: a foundry-less seat on a living team stays in
-    // the match by design — masterless machines finish their orders and
-    // the team plays on — but the human deserves to be told the seat
-    // has no voice left. Commands still route; the sim rejects them.
+    // Spectator strip: a foundry-less or resigned seat on a living team
+    // stays in the match by design — masterless machines finish their
+    // orders and the team plays on — but the human deserves to be told
+    // the seat has no voice left. Commands still route; the sim rejects
+    // them.
+    let resigned = game.state.player(game.human).resigned;
     if game.state.result().is_none()
-        && !game
-            .state
-            .buildings()
-            .iter()
-            .any(|b| b.player == game.human && b.kind == oxide_sim::BuildingKind::Foundry)
+        && (resigned
+            || !game
+                .state
+                .buildings()
+                .iter()
+                .any(|b| b.player == game.human && b.kind == oxide_sim::BuildingKind::Foundry))
     {
-        let text = "ELIMINATED - SPECTATING";
+        let text = if resigned {
+            "SURRENDERED - SPECTATING"
+        } else {
+            "ELIMINATED - SPECTATING"
+        };
         let dims = measure_text(text, None, (24.0 * s) as u16, 1.0);
         let x = (screen_width() - dims.width) * 0.5;
         draw_rectangle(
@@ -276,19 +283,24 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
 
 /// The endgame verdict, drawn over every other layer — at 640x400 the
 /// old in-HUD version collided with the minimap and pushed its graph
-/// off screen. Geometry clamps to the viewport.
+/// off screen. Geometry clamps to the viewport. The same overlay
+/// serves a team game's concede moment: the match is undecided, but
+/// the conceded human gets its numbers-so-far and the Esc exit while
+/// the ally plays on.
 pub(crate) fn draw_result_overlay(game: &Game) {
     let s = ui_scale();
-    if let Some(result) = game.state.result() {
+    let overlay = if let Some(result) = game.state.result() {
         // The human's verdict first — the game knows whose screen this
         // is; "FERROUS WINS" made every ending read like someone else's.
         let winners = game.state.winners();
         let (text, color) = match result {
-            GameResult::Victory { .. } if winners.contains(&game.human) => {
-                ("VICTORY".to_string(), SCRAP_COLOR)
+            GameResult::Victory { .. } if winners.contains(&game.human) => ("VICTORY", SCRAP_COLOR),
+            // A conceded defeat says so — the player chose this end.
+            GameResult::Victory { .. } if game.state.player(game.human).resigned => {
+                ("SURRENDERED", DANGER)
             }
-            GameResult::Victory { .. } => ("DEFEAT".to_string(), DANGER),
-            GameResult::Draw => ("MUTUAL DESTRUCTION".to_string(), BONE_FAINT),
+            GameResult::Victory { .. } => ("DEFEAT", DANGER),
+            GameResult::Draw => ("MUTUAL DESTRUCTION", TEXT_BODY),
         };
         let sub = match result {
             GameResult::Victory { .. } => {
@@ -300,8 +312,20 @@ pub(crate) fn draw_result_overlay(game: &Game) {
             }
             GameResult::Draw => "no foundry survived".to_string(),
         };
+        Some((text, color, sub, game.end_stats.as_ref()))
+    } else if game.conceded_banner {
+        Some((
+            "SURRENDERED",
+            DANGER,
+            "your team fights on".to_string(),
+            game.concede_stats.as_ref(),
+        ))
+    } else {
+        None
+    };
+    if let Some((text, color, sub, stats)) = overlay {
         let size = 56.0 * s;
-        let dims = measure_text(&text, None, size as u16, 1.0);
+        let dims = measure_text(text, None, size as u16, 1.0);
         let x = (screen_width() - dims.width) * 0.5;
         // The whole column (banner + stats + curves + caption) must fit
         // the viewport: center it, then clamp against both edges.
@@ -317,21 +341,21 @@ pub(crate) fn draw_result_overlay(game: &Game) {
             124.0 * s,
             PANEL,
         );
-        draw_text(&text, x, y, size, color);
+        draw_text(text, x, y, size, color);
         let sub_dims = measure_text(&sub, None, (20.0 * s) as u16, 1.0);
         draw_text(
             &sub,
             (screen_width() - sub_dims.width) * 0.5,
             y + 26.0 * s,
             20.0 * s,
-            BONE_FAINT,
+            TEXT_BODY,
         );
         // The match in numbers: one line per seat from the recomputed
         // record — losses and the peak army it ever fielded — then the
         // army curves themselves, seat-colored, so the shape of the
         // game (the swing, the collapse, the long grind) reads at a
         // glance.
-        if let Some(stats) = &game.end_stats {
+        if let Some(stats) = stats {
             let curves_y = y + (92.0 + 22.0 * stats.players.len() as f32) * s;
             let (gw, gh) = (
                 (360.0 * s).min(screen_width() - 48.0 * s),
@@ -379,7 +403,7 @@ pub(crate) fn draw_result_overlay(game: &Game) {
                 (screen_width() - cap_dims.width) * 0.5,
                 curves_y + gh + 14.0 * s,
                 13.0 * s,
-                BONE_FAINT,
+                TEXT_SECONDARY,
             );
             for (i, seat) in stats.players.iter().enumerate() {
                 let name = game
@@ -401,7 +425,7 @@ pub(crate) fn draw_result_overlay(game: &Game) {
                     (screen_width() - dims.width) * 0.5,
                     y + (86.0 + 22.0 * i as f32) * s,
                     16.0 * s,
-                    BONE_FAINT,
+                    TEXT_BODY,
                 );
             }
         }
@@ -412,7 +436,7 @@ pub(crate) fn draw_result_overlay(game: &Game) {
             (screen_width() - hint_dims.width) * 0.5,
             y + 52.0 * s,
             20.0 * s,
-            BONE_FAINT,
+            TEXT_SECONDARY,
         );
     }
 }
