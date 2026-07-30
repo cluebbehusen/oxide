@@ -435,6 +435,18 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         }
 
         let screen_before = std::mem::discriminant(&screen);
+        // Menu backdrops are presentation worlds too. Home, setup, and
+        // the replay shelf animate even when `--paused` reserves the next
+        // match for driven control; Settings inherits its caller, so the
+        // pause-menu path stays frozen. Playing and Playback advance their
+        // own clocks below, while Pause deliberately advances neither.
+        match &screen {
+            Screen::Home(_) | Screen::Wizard(_) | Screen::Replays(_) => app.game.update_fx(dt),
+            Screen::Settings { back, .. } if !matches!(**back, Screen::Pause(_)) => {
+                app.game.update_fx(dt);
+            }
+            Screen::Settings { .. } | Screen::Playing | Screen::Playback(_) | Screen::Pause(_) => {}
+        }
         // A `rerun` transition re-enters the loop under the new screen
         // before presenting, so the frame shows the destination — the
         // old coordinator's `continue` arms.
@@ -692,7 +704,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                     }
                 }
                 app.game.advance_wall_clock(dt);
-                app.game.update_fx(dt);
+                app.game.update_wall_clock_fx(dt);
                 if app.game.state.result().is_some() && app.game.end_stats.is_none() {
                     // One re-execution of the record at match end; the
                     // sim replays thousands of ticks per second, so the

@@ -323,7 +323,8 @@ impl PlaybackSession {
         if self.game.state.current_tick() != self.engine.position() {
             self.game.state = self.engine.state.clone();
         }
-        self.game.update_fx(dt);
+        self.game.paused = self.paused;
+        self.game.update_wall_clock_fx(dt);
         self.game.camera.set_viewport(viewport);
         self.game.camera.update(dt);
         false
@@ -402,6 +403,7 @@ impl oxide_protocol::DebugSession for PlaybackSession {
 
     fn set_paused(&mut self, paused: bool) -> Result<(), String> {
         self.paused = paused;
+        self.game.paused = paused;
         Ok(())
     }
 
@@ -616,9 +618,15 @@ mod tests {
         let mut pb = session();
         key(&mut pb, Key::Space);
         let before = pb.engine.position();
+        let fx_before = pb.game.fx_time();
         let mut mouse = vec2(0.0, 0.0);
         pb.update(&[], 1.0, vec2(1280.0, 800.0), false, 1.0, &mut mouse);
         assert_eq!(pb.engine.position(), before, "a paused viewer holds still");
+        assert_eq!(
+            pb.game.fx_time(),
+            fx_before,
+            "a paused viewer holds decorative animation too"
+        );
     }
 
     #[test]

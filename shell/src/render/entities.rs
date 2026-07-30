@@ -420,7 +420,8 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
             let pulse = if reduced_motion() {
                 0.5
             } else {
-                ((get_time() * 2.6 + f64::from(building.id.0)).sin() * 0.5 + 0.5) as f32
+                ((f64::from(game.fx_time()) * 2.6 + f64::from(building.id.0)).sin() * 0.5 + 0.5)
+                    as f32
             };
             let glow = match faction {
                 oxide_sim::Faction::Ferrous => Color::new(0.97, 0.62, 0.45, 0.10 + 0.10 * pulse),
@@ -517,7 +518,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 // The radar sweeps its ring — damped to a steady mast.
                 oxide_sim::BuildingKind::Array => {
                     if !reduced_motion() {
-                        let sweep = (get_time() * 1.1) as f32 % (2.0 * std::f32::consts::PI);
+                        let sweep = game.fx_time() * 1.1 % (2.0 * std::f32::consts::PI);
                         let reach = zoom * 4.0;
                         let tip = center + vec2(sweep.cos(), sweep.sin()) * reach;
                         draw_line(
@@ -535,7 +536,8 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                     let pulse = if reduced_motion() {
                         0.5
                     } else {
-                        ((get_time() * 1.7 + f64::from(building.id.0)).sin() * 0.5 + 0.5) as f32
+                        ((f64::from(game.fx_time()) * 1.7 + f64::from(building.id.0)).sin() * 0.5
+                            + 0.5) as f32
                     };
                     draw_circle(
                         center.x,
@@ -547,7 +549,8 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 // The fabricator's work light blinks.
                 oxide_sim::BuildingKind::Fabricator => {
                     let on = reduced_motion()
-                        || ((get_time() * 1.4 + f64::from(building.id.0)).fract() < 0.5);
+                        || ((f64::from(game.fx_time()) * 1.4 + f64::from(building.id.0)).fract()
+                            < 0.5);
                     if on {
                         draw_circle(
                             screen.x + dest.x * 0.82,

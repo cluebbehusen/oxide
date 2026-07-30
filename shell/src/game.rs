@@ -508,6 +508,15 @@ impl Game {
         self.fx_clock
     }
 
+    /// Advances presentation from ordinary frame time while the match runs.
+    /// Driven presentation steps use [`Self::update_fx`] directly because
+    /// they represent sim time even when the wall clock is paused.
+    pub fn update_wall_clock_fx(&mut self, dt: f32) {
+        if !self.paused {
+            self.update_fx(dt);
+        }
+    }
+
     /// How far the presentation clock sits between the last executed
     /// tick and the next, 0..1 — frozen while paused. Interpolation
     /// fuel for anything that must move on sim time, not wall time.
@@ -837,6 +846,32 @@ mod tests {
                 .any(|effect| matches!(effect.kind, EffectKind::Ping { .. })),
             "an effect must expire after enough presented sim time"
         );
+    }
+
+    #[test]
+    fn paused_wall_time_freezes_presentation() {
+        let mut game = Game::with_viewport(
+            Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("skirmish builds");
+        game.fx.push(Effect {
+            kind: EffectKind::Ping {
+                at: macroquad::prelude::Vec2::ZERO,
+                kind: PingKind::Move,
+            },
+            age: 0.0,
+        });
+
+        game.paused = true;
+        game.update_wall_clock_fx(0.25);
+        assert_eq!(game.fx_time(), 0.0, "decorative animation must hold");
+        assert_eq!(game.fx[0].age, 0.0, "transient effects must hold too");
+
+        game.paused = false;
+        game.update_wall_clock_fx(0.25);
+        assert_eq!(game.fx_time(), 0.25);
+        assert_eq!(game.fx[0].age, 0.25);
     }
 
     #[test]

@@ -32,6 +32,7 @@ pub use state::{
     Unit,
 };
 pub use stats::{BuildingKind, UnitKind};
+pub use tick::CommandPhaseView;
 pub use vision::{GhostBuilding, Vision};
 
 /// Version stamped into replays; a replay is only guaranteed to reproduce on

@@ -45,6 +45,80 @@ use crate::stats::PATH_EXPANSION_CAP;
 use chassis::grid::TilePos;
 use chassis::path::astar;
 
+/// Read-only state after the command phase of a hypothetical tick.
+///
+/// The view deliberately exposes only prediction-safe queries. It cannot be
+/// converted into a [`State`], serialized, hashed, or installed as an
+/// authoritative session with a stale tick, vision table, or result.
+pub struct CommandPhaseView<'a> {
+    state: &'a State,
+}
+
+impl CommandPhaseView<'_> {
+    /// Projected tick, unchanged because later phases never ran.
+    pub fn current_tick(&self) -> crate::Tick {
+        self.state.current_tick()
+    }
+
+    /// Whether `player` may issue another command after the projected batch.
+    pub fn accepts_commands(&self, player: crate::ids::PlayerId) -> bool {
+        self.state.result.is_none()
+            && self
+                .state
+                .try_player(player)
+                .is_some_and(|seat| !seat.resigned)
+            && self.state.buildings.iter().any(|building| {
+                building.player == player && building.kind == crate::stats::BuildingKind::Foundry
+            })
+    }
+
+    /// Projected scrap in `player`'s bank.
+    pub fn scrap(&self, player: crate::ids::PlayerId) -> Option<u32> {
+        self.state.try_player(player).map(|seat| seat.scrap)
+    }
+
+    /// Projected live units, in canonical id order.
+    pub fn units(&self) -> &[crate::state::Unit] {
+        self.state.units()
+    }
+
+    /// One projected live unit.
+    pub fn unit(&self, id: crate::ids::UnitId) -> Option<&crate::state::Unit> {
+        self.state.unit(id)
+    }
+
+    /// Whether projected commands already paid for a matching own site.
+    ///
+    /// A deferred founder joins that unfinished site for free when it
+    /// arrives, so callers must not reserve the construction price again.
+    pub fn has_own_unfinished_site(
+        &self,
+        player: crate::ids::PlayerId,
+        kind: crate::stats::BuildingKind,
+        anchor: TilePos,
+    ) -> bool {
+        self.state.buildings.iter().any(|building| {
+            building.player == player
+                && building.kind == kind
+                && building.anchor == anchor
+                && !building.built
+        })
+    }
+
+    /// Fog-safe projected placement verdict, excluding claims carried by
+    /// workers whose programs the candidate command will replace.
+    pub fn place_intent_refusal_replacing(
+        &self,
+        player: crate::ids::PlayerId,
+        kind: crate::stats::BuildingKind,
+        anchor: TilePos,
+        units: &[crate::ids::UnitId],
+    ) -> Option<crate::state::PlaceRefusal> {
+        self.state
+            .place_intent_refusal_replacing(player, kind, anchor, units)
+    }
+}
+
 /// Whether this seat is stranded and eligible for Foundry recovery income.
 ///
 /// Keep every automatic consumer of the recovery reserve on this one
@@ -56,6 +130,26 @@ fn harvester_recovery_needed(state: &State, player: crate::ids::PlayerId) -> boo
 }
 
 impl State {
+    /// Inspects a private clone after applying only phase-one commands.
+    ///
+    /// This is the non-authoritative prediction seam for shells and tools:
+    /// command validation, ordering, charges, sites, and unit programs match
+    /// [`State::tick`], but production, brains, movement, cleanup, vision,
+    /// victory, and the tick counter do not advance. The receiver is never
+    /// mutated; only [`State::tick`] advances an authoritative session.
+    pub fn inspect_command_phase<R>(
+        &self,
+        commands: &[PlayerCommand],
+        inspect: impl FnOnce(CommandPhaseView<'_>) -> R,
+    ) -> R {
+        let mut projected = self.clone();
+        if projected.result.is_none() {
+            let mut events = Vec::new();
+            commands::apply(&mut projected, commands, &mut events);
+        }
+        inspect(CommandPhaseView { state: &projected })
+    }
+
     /// Advances the world by one fixed timestep, applying `commands` (all
     /// stamped for this tick). The returned report is presentation data —
     /// dropping it never affects the sim.
@@ -370,6 +464,81 @@ pub(crate) fn find_nearby_passable(state: &State, goal: TilePos, radius: i32) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_phase_inspection_is_pure_and_stops_before_the_tick() {
+        let state = crate::Scenario::skirmish()
+            .build()
+            .expect("embedded skirmish builds");
+        let before = state.clone();
+        let worker = state
+            .units()
+            .iter()
+            .find(|unit| {
+                unit.player == crate::PlayerId(0) && unit.kind == crate::UnitKind::Harvester
+            })
+            .expect("skirmish authors a worker")
+            .id;
+        let kind = crate::BuildingKind::Turret;
+        let anchor = TilePos::new(10, 4);
+        let cost = kind
+            .stats()
+            .construction
+            .expect("turret is constructible")
+            .cost;
+        let command = PlayerCommand {
+            player: crate::PlayerId(0),
+            command: crate::Command::Build {
+                units: vec![worker],
+                kind,
+                anchor,
+                queue: false,
+                defer: false,
+            },
+        };
+
+        state.inspect_command_phase(&[command], |projected| {
+            assert_eq!(projected.current_tick(), state.current_tick());
+            assert_eq!(
+                projected.scrap(crate::PlayerId(0)),
+                Some(state.player(crate::PlayerId(0)).scrap - cost)
+            );
+            assert_eq!(
+                projected.place_intent_refusal_replacing(crate::PlayerId(0), kind, anchor, &[]),
+                Some(crate::PlaceRefusal::Building),
+                "the projected site owns its footprint"
+            );
+            assert!(matches!(
+                projected.unit(worker).expect("worker remains").order,
+                crate::Order::Build { .. }
+            ));
+        });
+        assert_eq!(state, before, "inspection never mutates its source");
+    }
+
+    #[test]
+    fn command_phase_inspection_honors_a_frozen_result() {
+        let mut state = crate::Scenario::skirmish()
+            .build()
+            .expect("embedded skirmish builds");
+        state.result = Some(GameResult::Draw);
+        let before = state.clone();
+
+        state.inspect_command_phase(
+            &[PlayerCommand {
+                player: crate::PlayerId(0),
+                command: crate::Command::Surrender,
+            }],
+            |projected| {
+                assert!(!projected.accepts_commands(crate::PlayerId(0)));
+                assert_eq!(
+                    projected.scrap(crate::PlayerId(0)),
+                    Some(state.player(crate::PlayerId(0)).scrap)
+                );
+            },
+        );
+        assert_eq!(state, before);
+    }
 
     #[test]
     fn rect_ring_has_expected_size_and_order() {
