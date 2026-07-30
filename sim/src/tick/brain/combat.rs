@@ -886,6 +886,70 @@ mod tests {
         }
     }
 
+    fn boundary_duel() -> State {
+        Scenario {
+            name: "boundary-duel".into(),
+            seed: 1,
+            map: vec![
+                "............".into(),
+                "............".into(),
+                "............".into(),
+                "1.........2.".into(),
+                "............".into(),
+                "............".into(),
+                "............".into(),
+                "............".into(),
+            ],
+            players: vec![
+                seat("North", Faction::Ferrous),
+                seat("South", Faction::Cupric),
+            ],
+            units: vec![
+                UnitSpec {
+                    player: 0,
+                    kind: UnitKind::Sentinel,
+                    x: 5,
+                    y: 1,
+                },
+                UnitSpec {
+                    player: 1,
+                    kind: UnitKind::Sentinel,
+                    x: 6,
+                    y: 1,
+                },
+            ],
+            buildings: Vec::new(),
+            meta: None,
+        }
+        .build()
+        .expect("boundary duel builds")
+    }
+
+    #[test]
+    fn indexed_acquisition_keeps_targets_beyond_north_and_south_rows() {
+        let mut state = boundary_duel();
+        let height = state.map.height();
+        let attacker = state.units[0].id;
+        let victim = state.units[1].id;
+        let mut index = UnitIndex::new();
+
+        for (inside, outside) in [
+            (TilePos::new(5, 0), TilePos::new(5, -1)),
+            (TilePos::new(5, height - 1), TilePos::new(5, height)),
+        ] {
+            state.units[0].pos = inside.center();
+            state.units[1].pos = outside.center();
+            state
+                .validate_invariants()
+                .expect("the accepted coordinate envelope includes border rows");
+            index.rebuild(&state.units);
+
+            let indexed = acquire_target(&state, &index, attacker);
+            assert_eq!(indexed, Some(Target::Unit(victim)));
+            assert_eq!(indexed, linear_acquire(&state, attacker));
+        }
+    }
+
     /// Two mixed armies crossing an open arena, compared pick-for-pick
     /// against the linear scan every tick — range edges, weapon-mask
     /// misses (flak vs ground, ground-only vs flyers), dying candidates,
@@ -980,7 +1044,7 @@ mod tests {
         let mut picks = 0usize;
         for _ in 0..400 {
             state.tick(&[]);
-            index.rebuild(&state.units, state.map.height());
+            index.rebuild(&state.units);
             for unit in &state.units {
                 if unit.hp == 0 {
                     continue;

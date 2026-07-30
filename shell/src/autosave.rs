@@ -9,6 +9,7 @@
 //! instead of a bool.
 
 use crate::game::{Game, GameReplay};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -20,6 +21,9 @@ const KEEP_MATCHES: usize = 20;
 /// A temp older than this is an orphan from a crashed save, not a
 /// write in flight.
 const TEMP_ORPHAN_AGE: Duration = Duration::from_secs(3600);
+/// Invalid-JSON ownership marker held at a destination until its replay
+/// atomically replaces it.
+const RESERVATION_MARKER_PREFIX: &str = "oxide-save-reservation:";
 
 /// What a successful [`save`] call actually did.
 #[derive(Debug)]
@@ -97,6 +101,14 @@ pub fn save(game: &mut Game) -> Result<SaveOutcome, SaveError> {
 /// The testable core: the gates, the name walk, the write, the
 /// rotation — everything but the platform directory lookup.
 fn write_record(game: &mut Game, dir: &Path) -> Result<SaveOutcome, SaveError> {
+    write_record_with(game, dir, |record, path| record.save(path))
+}
+
+fn write_record_with(
+    game: &mut Game,
+    dir: &Path,
+    save_replay: impl FnOnce(&GameReplay, &Path) -> Result<(), chassis::replay::ReplayError>,
+) -> Result<SaveOutcome, SaveError> {
     if game.state.current_tick() == 0 {
         return Ok(SaveOutcome::NothingToSave);
     }
@@ -121,13 +133,9 @@ fn write_record(game: &mut Game, dir: &Path) -> Result<SaveOutcome, SaveError> {
     // Tick-stamped names collide across sessions (same map, same quit
     // tick); walk a counter until a free name turns up so rotation
     // always keeps the newest sessions instead of overwriting one.
-    let path = free_path(dir, prefix, tick, game.scenario.seed);
-    game.recorder
-        .save(&path)
-        .map_err(|source| SaveError::Write {
-            path: path.clone(),
-            source,
-        })?;
+    let path = free_path(dir, prefix, tick, game.scenario.seed)?
+        .publish(|path| save_replay(&game.recorder, path))
+        .map_err(|(path, source)| SaveError::Write { path, source })?;
     game.autosave_done = true;
     rotate(dir);
     Ok(SaveOutcome::Wrote(path))
@@ -157,42 +165,96 @@ fn write_named(game: &Game, name: &str, dir: &Path, saved_at: u64) -> Result<Pat
     record.meta.description = Some(name.to_string());
     record.meta.kind = Some("save".to_string());
     record.meta.saved_at = Some(saved_at);
-    let path = free_path(dir, "save", game.state.current_tick(), game.scenario.seed);
-    if let Err(source) = record.save(&path) {
-        // The reservation placeholder must not survive a failed write:
-        // an empty .json on the shelf helps nobody.
-        std::fs::remove_file(&path).ok();
-        return Err(SaveError::Write { path, source });
-    }
-    Ok(path)
+    free_path(dir, "save", game.state.current_tick(), game.scenario.seed)?
+        .publish(|path| record.save(path))
+        .map_err(|(path, source)| SaveError::Write { path, source })
 }
 
-/// A collision-free `{prefix}-{tick}` path in `dir`, RESERVED by
-/// `create_new` (O_EXCL): a bare `exists()` probe races a second
-/// session saving the same tick — both pass, and the later atomic
-/// rename silently overwrites the first player's record. The zero-byte
-/// claim is replaced by the atomic write that follows (and removed if
-/// that write fails).
-fn free_path(dir: &Path, prefix: &str, tick: u64, seed: u64) -> PathBuf {
-    let mut path = dir.join(format!("{prefix}-{tick:010}.json"));
-    let mut n = 0u32;
+/// Owns an exclusively-created path until an atomic write replaces its
+/// marker. A failed write removes the marker, while an error reported
+/// after rename leaves the published replay intact.
+struct PathReservation {
+    path: PathBuf,
+    marker: Vec<u8>,
+    armed: bool,
+}
+
+impl PathReservation {
+    fn publish<E>(
+        mut self,
+        write: impl FnOnce(&Path) -> Result<(), E>,
+    ) -> Result<PathBuf, (PathBuf, E)> {
+        match write(&self.path) {
+            Ok(()) => {
+                self.armed = false;
+                Ok(self.path.clone())
+            }
+            Err(source) => Err((self.path.clone(), source)),
+        }
+    }
+}
+
+impl Drop for PathReservation {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let still_our_marker = std::fs::metadata(&self.path)
+            .is_ok_and(|metadata| metadata.len() == self.marker.len() as u64)
+            && std::fs::read(&self.path).is_ok_and(|contents| contents == self.marker);
+        if still_our_marker {
+            std::fs::remove_file(&self.path).ok();
+        }
+    }
+}
+
+/// A collision-free `{prefix}-{tick}` path in `dir`, reserved by
+/// `create_new` (O_EXCL). Every successful return owns its candidate;
+/// collision suffixes have no arbitrary cutoff that can bypass the
+/// exclusive create.
+fn free_path(dir: &Path, prefix: &str, tick: u64, seed: u64) -> Result<PathReservation, SaveError> {
+    static RESERVATION_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut n = 0u64;
     loop {
+        let path = if n == 0 {
+            dir.join(format!("{prefix}-{tick:010}.json"))
+        } else {
+            dir.join(format!("{prefix}-{tick:010}-{seed}-{n}.json"))
+        };
         match std::fs::File::create_new(&path) {
-            Ok(_) => return path,
+            Ok(mut file) => {
+                let nonce = RESERVATION_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let marker = format!(
+                    "{RESERVATION_MARKER_PREFIX}{}:{nonce}\n",
+                    std::process::id()
+                )
+                .into_bytes();
+                if let Err(source) = file.write_all(&marker) {
+                    drop(file);
+                    std::fs::remove_file(&path).ok();
+                    return Err(SaveError::Write {
+                        path,
+                        source: source.into(),
+                    });
+                }
+                return Ok(PathReservation {
+                    path,
+                    marker,
+                    armed: true,
+                });
+            }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            // Unwritable directory and friends: hand the candidate
-            // back and let the real write report the real error.
-            Err(_) => return path,
+            Err(source) => {
+                return Err(SaveError::Write {
+                    path,
+                    source: source.into(),
+                });
+            }
         }
-        n += 1;
-        if n >= 1000 {
-            // Practically unreachable; the pid ends the walk uniquely.
-            return dir.join(format!(
-                "{prefix}-{tick:010}-{seed}-p{}.json",
-                std::process::id()
-            ));
-        }
-        path = dir.join(format!("{prefix}-{tick:010}-{seed}-{n}.json"));
+        n = n.checked_add(1).ok_or_else(|| SaveError::Write {
+            path,
+            source: std::io::Error::other("exhausted save path suffixes").into(),
+        })?;
     }
 }
 
@@ -229,6 +291,7 @@ fn rotate_prefix(dir: &Path, prefix: &str, keep: usize) {
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| n.starts_with(prefix))
         })
+        .filter(|p| !is_reservation_marker(p))
         .collect();
     // Newest last by modification time; ties by name for determinism.
     files.sort_by_key(|p| {
@@ -241,6 +304,18 @@ fn rotate_prefix(dir: &Path, prefix: &str, keep: usize) {
         let oldest = files.remove(0);
         std::fs::remove_file(oldest).ok();
     }
+}
+
+fn is_reservation_marker(path: &Path) -> bool {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut prefix = [0; RESERVATION_MARKER_PREFIX.len()];
+    // Keep this read on one handle. If an atomic rename happens before
+    // `open`, this sees and counts the completed replay. If it happens
+    // afterward, this sees the old marker and defers its accounting until
+    // the publishing saver rotates.
+    file.read_exact(&mut prefix).is_ok() && prefix == RESERVATION_MARKER_PREFIX.as_bytes()
 }
 
 /// The newest autosave this sim version can honestly resume, if any.
@@ -363,6 +438,126 @@ mod tests {
         assert!(err.player_line().is_ascii(), "the menu font is Latin-1");
         assert!(!game.autosave_done, "a failed save still owes a record");
         std::fs::remove_file(&dir).ok();
+    }
+
+    #[test]
+    fn a_failed_autosave_removes_only_its_uncommitted_reservation() {
+        let dir = scratch("failed-reservation");
+        let mut game = Game::new(oxide_sim::Scenario::skirmish()).expect("game");
+        game.advance_ticks(1);
+
+        let err = write_record_with(&mut game, &dir, |_, _| {
+            Err(std::io::Error::other("write refused").into())
+        })
+        .expect_err("the injected write fails");
+        let SaveError::Write { path, .. } = err else {
+            panic!("the write failure keeps its path");
+        };
+        assert!(
+            !path.exists(),
+            "a failed write removes its reservation marker"
+        );
+        assert!(!game.autosave_done, "the session still owes a save");
+
+        let err = write_record_with(&mut game, &dir, |record, path| {
+            record.save(path)?;
+            Err(std::io::Error::other("late durability failure").into())
+        })
+        .expect_err("a post-rename failure still reports");
+        let SaveError::Write { path, .. } = err else {
+            panic!("the late failure keeps its path");
+        };
+        GameReplay::load(&path).expect("a published replay is not mistaken for the marker");
+        assert!(!game.autosave_done, "durability was not confirmed");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn collisions_beyond_one_thousand_remain_exclusively_reserved() {
+        let dir = scratch("many-collisions");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut game = Game::new(oxide_sim::Scenario::skirmish()).expect("game");
+        game.advance_ticks(1);
+        let tick = game.state.current_tick();
+        let seed = game.scenario.seed;
+        let mut blockers = Vec::new();
+        for _ in 0..1000 {
+            blockers.push(free_path(&dir, "save", tick, seed).expect("reserve collision"));
+        }
+
+        let first = write_named(&game, "first beyond the cutoff", &dir, 1)
+            .expect("the first high-collision save lands");
+        let second = write_named(&game, "second beyond the cutoff", &dir, 2)
+            .expect("the next high-collision save lands");
+        assert_ne!(first, second, "each save owns a distinct destination");
+        assert_eq!(
+            GameReplay::load(&first)
+                .unwrap()
+                .meta
+                .description
+                .as_deref(),
+            Some("first beyond the cutoff")
+        );
+        assert_eq!(
+            GameReplay::load(&second)
+                .unwrap()
+                .meta
+                .description
+                .as_deref(),
+            Some("second beyond the cutoff")
+        );
+
+        drop(blockers);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rotation_does_not_count_an_in_flight_reservation() {
+        let dir = scratch("in-flight-rotation");
+        let scenario = oxide_sim::Scenario::skirmish();
+        for ticks in 1..=KEEP_AUTOSAVES {
+            let mut game = Game::new(scenario.clone()).expect("game");
+            game.advance_ticks(ticks as u64);
+            let Ok(SaveOutcome::Wrote(path)) = write_record(&mut game, &dir) else {
+                panic!("completed autosave lands");
+            };
+            GameReplay::load(path).expect("completed autosave loads");
+        }
+
+        let mut game = Game::new(scenario).expect("game");
+        game.advance_ticks(100);
+        let held = free_path(
+            &dir,
+            "autosave",
+            game.state.current_tick(),
+            game.scenario.seed,
+        )
+        .expect("another saver holds an in-flight destination");
+        let Ok(SaveOutcome::Wrote(new_path)) = write_record(&mut game, &dir) else {
+            panic!("the concurrent completed autosave lands");
+        };
+        assert!(new_path.exists(), "rotation keeps the new completed save");
+
+        let completed: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| GameReplay::load(path).is_ok())
+            .collect();
+        assert_eq!(
+            completed.len(),
+            KEEP_AUTOSAVES,
+            "the marker consumes no completed-record retention slot"
+        );
+        assert!(completed.contains(&new_path));
+
+        drop(held);
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            KEEP_AUTOSAVES,
+            "a failed concurrent saver leaves the full completed shelf"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

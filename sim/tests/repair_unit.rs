@@ -6,9 +6,10 @@
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::{PlayerSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
 use oxide_sim::{
-    Command, Event, Faction, Order, PlayerCommand, PlayerId, Scenario, State, UnitId, UnitKind,
+    BuildingKind, Command, Event, Faction, Order, PlayerCommand, PlayerId, Scenario, State, Target,
+    UnitId, UnitKind, UnitRepairSource,
 };
 
 fn arena(units: Vec<UnitSpec>) -> Scenario {
@@ -121,6 +122,115 @@ fn cast() -> Vec<UnitSpec> {
         unit(0, UnitKind::Harvester, 4, 2), // patient
         unit(1, UnitKind::Scuttler, 12, 6), // raider
     ]
+}
+
+#[derive(Clone, Copy, Debug)]
+enum DepartingWork {
+    Attack,
+    Harvest,
+    Build,
+    Repair,
+    Salvage,
+    RepairUnit,
+}
+
+fn weld_step_progress(kind: UnitKind) -> u32 {
+    let stats = kind.stats();
+    (0..stats.train_ticks)
+        .find(|p| {
+            stats.max_hp * (p + 1) / stats.train_ticks > stats.max_hp * *p / stats.train_ticks
+        })
+        .expect("every unit repair ramp eventually gains hp")
+}
+
+fn departure_case(work: DepartingWork, tick: u64) -> (State, UnitId, UnitId, PlayerCommand) {
+    let patient_kind = if matches!(work, DepartingWork::Attack) {
+        UnitKind::Sentinel
+    } else {
+        UnitKind::Harvester
+    };
+    let mut units = vec![
+        unit(0, UnitKind::Harvester, 4, 5), // welder
+        unit(0, patient_kind, 5, 5),        // patient
+    ];
+    match work {
+        DepartingWork::Attack => units.push(unit(1, UnitKind::Sentinel, 10, 5)),
+        DepartingWork::RepairUnit => units.push(unit(0, UnitKind::Sentinel, 10, 5)),
+        _ => {}
+    }
+    let mut scenario = arena(units);
+    if matches!(work, DepartingWork::Repair | DepartingWork::Salvage) {
+        scenario.buildings.push(BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Turret,
+            x: 9,
+            y: 2,
+        });
+    }
+    let state = scenario.build().unwrap();
+    let (welder, patient) = (state.units()[0].id, state.units()[1].id);
+    let extra_unit = state.units().get(2).map(|u| u.id);
+    let work_building = state
+        .buildings()
+        .iter()
+        .find(|b| b.player == PlayerId(0) && b.kind == BuildingKind::Turret)
+        .map(|b| b.id);
+
+    let mut json = serde_json::to_value(state).unwrap();
+    json["tick"] = serde_json::json!(tick);
+    json["units"][0]["order"] = serde_json::json!({"order": "repair_unit", "unit": patient});
+    json["units"][0]["progress"] = serde_json::json!(weld_step_progress(patient_kind));
+    json["units"][1]["hp"] = serde_json::json!(patient_kind.stats().max_hp - 10);
+    if matches!(work, DepartingWork::RepairUnit) {
+        json["units"][2]["hp"] = serde_json::json!(UnitKind::Sentinel.stats().max_hp - 10);
+    }
+    if matches!(work, DepartingWork::Repair) {
+        let building = work_building.expect("repair case has a Turret");
+        let slot = json["buildings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|b| b["id"] == serde_json::json!(building))
+            .unwrap();
+        json["buildings"][slot]["hp"] = serde_json::json!(BuildingKind::Turret.stats().max_hp - 10);
+    }
+    let state: State = serde_json::from_value(json).unwrap();
+
+    let command = match work {
+        DepartingWork::Attack => Command::Attack {
+            units: vec![patient],
+            target: Target::Unit(extra_unit.expect("attack case has a target")),
+            queue: false,
+        },
+        DepartingWork::Harvest => Command::Harvest {
+            units: vec![patient],
+            node: TilePos::new(11, 5),
+            queue: false,
+        },
+        DepartingWork::Build => Command::Build {
+            units: vec![patient],
+            kind: BuildingKind::Turret,
+            anchor: TilePos::new(9, 2),
+            queue: false,
+            defer: false,
+        },
+        DepartingWork::Repair => Command::Repair {
+            units: vec![patient],
+            building: work_building.expect("repair case has a Turret"),
+            queue: false,
+        },
+        DepartingWork::Salvage => Command::Salvage {
+            units: vec![patient],
+            building: work_building.expect("salvage case has a Turret"),
+            queue: false,
+        },
+        DepartingWork::RepairUnit => Command::RepairUnit {
+            units: vec![patient],
+            target: extra_unit.expect("unit-repair case has a target"),
+            queue: false,
+        },
+    };
+    (state, welder, patient, cmd(0, command))
 }
 
 #[test]
@@ -349,6 +459,322 @@ fn a_move_landing_mid_weld_rides_no_farewell_heal() {
             before,
             "no heal may land on the departure tick (offset {offset})"
         );
+    }
+}
+
+#[test]
+fn every_departing_work_order_rides_no_farewell_heal() {
+    for work in [
+        DepartingWork::Attack,
+        DepartingWork::Harvest,
+        DepartingWork::Build,
+        DepartingWork::Repair,
+        DepartingWork::Salvage,
+        DepartingWork::RepairUnit,
+    ] {
+        for tick in [0, 1] {
+            let (mut state, welder, patient, command) = departure_case(work, tick);
+            let before_hp = state.unit(patient).unwrap().hp;
+            let before_pos = state.unit(patient).unwrap().pos;
+            let report = state.tick(&[command]);
+            assert!(
+                !report
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, Event::CommandRejected { .. })),
+                "{work:?} must be a valid departure order at tick {tick}: {:?}",
+                report.events
+            );
+            assert!(
+                state.unit(patient).unwrap().pos != before_pos,
+                "{work:?} must actually depart at tick {tick}"
+            );
+            assert_eq!(
+                state.unit(patient).unwrap().hp,
+                before_hp,
+                "{work:?} rode a farewell heal at tick {tick}"
+            );
+            assert!(
+                !report.events.iter().any(|event| matches!(
+                    event,
+                    Event::UnitRepaired {
+                        unit,
+                        source: UnitRepairSource::FieldWelder { unit: source },
+                        ..
+                    } if *unit == patient && *source == welder
+                )),
+                "{work:?} emitted a field-weld event on departure at tick {tick}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_stationary_work_order_remains_weldable() {
+    for tick in [0, 1] {
+        let scenario = arena(vec![
+            unit(0, UnitKind::Harvester, 4, 5), // welder
+            unit(0, UnitKind::Harvester, 5, 5), // patient and second welder
+            unit(0, UnitKind::Harvester, 6, 5), // second patient
+        ]);
+        let state = scenario.build().unwrap();
+        let (welder, patient, other) = (
+            state.units()[0].id,
+            state.units()[1].id,
+            state.units()[2].id,
+        );
+        let mut json = serde_json::to_value(state).unwrap();
+        json["tick"] = serde_json::json!(tick);
+        json["units"][0]["order"] = serde_json::json!({"order": "repair_unit", "unit": patient});
+        json["units"][0]["progress"] = serde_json::json!(weld_step_progress(UnitKind::Harvester));
+        json["units"][1]["hp"] = serde_json::json!(UnitKind::Harvester.stats().max_hp - 10);
+        json["units"][2]["hp"] = serde_json::json!(UnitKind::Harvester.stats().max_hp - 10);
+        let mut state: State = serde_json::from_value(json).unwrap();
+
+        let before = state.unit(patient).unwrap().hp;
+        let report = state.tick(&[cmd(
+            0,
+            Command::RepairUnit {
+                units: vec![patient],
+                target: other,
+                queue: false,
+            },
+        )]);
+        assert_eq!(
+            state.unit(patient).unwrap().pos,
+            TilePos::new(5, 5).center()
+        );
+        assert_eq!(
+            state.unit(patient).unwrap().hp,
+            before + 1,
+            "a pathless RepairUnit worker must remain weldable at tick {tick}"
+        );
+        assert!(report.events.iter().any(|event| matches!(
+            event,
+            Event::UnitRepaired {
+                unit,
+                source: UnitRepairSource::FieldWelder { unit: source },
+                amount: 1,
+                ..
+            } if *unit == patient && *source == welder
+        )));
+    }
+}
+
+#[test]
+fn a_patient_that_parks_during_its_brain_is_weldable_on_both_parities() {
+    for tick in [0, 1] {
+        let scenario = arena(vec![
+            unit(0, UnitKind::Harvester, 4, 5), // welder
+            unit(0, UnitKind::Sentinel, 5, 5),  // patient
+            unit(1, UnitKind::Sentinel, 7, 5),  // in-range target
+        ]);
+        let state = scenario.build().unwrap();
+        let (welder, patient, target) = (
+            state.units()[0].id,
+            state.units()[1].id,
+            state.units()[2].id,
+        );
+        let mut json = serde_json::to_value(state).unwrap();
+        json["tick"] = serde_json::json!(tick);
+        json["units"][0]["order"] = serde_json::json!({"order": "repair_unit", "unit": patient});
+        json["units"][0]["progress"] = serde_json::json!(weld_step_progress(UnitKind::Sentinel));
+        json["units"][1]["hp"] = serde_json::json!(UnitKind::Sentinel.stats().max_hp - 10);
+        json["units"][1]["order"] = serde_json::to_value(Order::Attack {
+            target: Target::Unit(target),
+            resume: None,
+        })
+        .unwrap();
+        json["units"][1]["path"] = serde_json::json!({
+            "goal": {"x": 7, "y": 5},
+            "waypoints": [{"x": 6, "y": 5}, {"x": 7, "y": 5}],
+            "next": 0
+        });
+        let mut state: State = serde_json::from_value(json).unwrap();
+
+        let before = state.unit(patient).unwrap().hp;
+        let report = state.tick(&[]);
+        assert!(
+            state.unit(patient).unwrap().path.is_none(),
+            "the in-range attack must park the patient"
+        );
+        assert_eq!(
+            state.unit(patient).unwrap().hp,
+            before + 1,
+            "a path cleared by the patient's brain must not suppress the weld at tick {tick}"
+        );
+        assert!(report.events.iter().any(|event| matches!(
+            event,
+            Event::UnitRepaired {
+                unit,
+                source: UnitRepairSource::FieldWelder { unit: source },
+                amount: 1,
+                ..
+            } if *unit == patient && *source == welder
+        )));
+    }
+}
+
+#[test]
+fn a_departing_patient_propagates_through_an_in_reach_weld_chain() {
+    for tick in [0, 1] {
+        let scenario = arena(vec![
+            unit(0, UnitKind::Harvester, 4, 5), // A repairs B
+            unit(0, UnitKind::Harvester, 5, 5), // B repairs C
+            unit(0, UnitKind::Harvester, 6, 5), // C departs
+        ]);
+        let state = scenario.build().unwrap();
+        let (a, b, c) = (
+            state.units()[0].id,
+            state.units()[1].id,
+            state.units()[2].id,
+        );
+        let mut json = serde_json::to_value(state).unwrap();
+        json["tick"] = serde_json::json!(tick);
+        json["units"][0]["order"] = serde_json::json!({"order": "repair_unit", "unit": b});
+        json["units"][0]["progress"] = serde_json::json!(weld_step_progress(UnitKind::Harvester));
+        json["units"][1]["order"] = serde_json::json!({"order": "repair_unit", "unit": c});
+        json["units"][1]["progress"] = serde_json::json!(weld_step_progress(UnitKind::Harvester));
+        json["units"][1]["hp"] = serde_json::json!(UnitKind::Harvester.stats().max_hp - 10);
+        json["units"][2]["hp"] = serde_json::json!(UnitKind::Harvester.stats().max_hp - 10);
+        let mut state: State = serde_json::from_value(json).unwrap();
+
+        let before_hp = state.unit(b).unwrap().hp;
+        let before_pos = state.unit(b).unwrap().pos;
+        let report = state.tick(&[cmd(
+            0,
+            Command::Move {
+                units: vec![c],
+                goal: TilePos::new(10, 7),
+                queue: false,
+            },
+        )]);
+        assert_eq!(
+            state.unit(b).unwrap().hp,
+            before_hp,
+            "A -> B must be rejected when B chases departing C at tick {tick}"
+        );
+        assert_ne!(
+            state.unit(b).unwrap().pos,
+            before_pos,
+            "B must take the chase path at tick {tick}"
+        );
+        assert!(!report.events.iter().any(|event| matches!(
+            event,
+            Event::UnitRepaired {
+                unit,
+                source: UnitRepairSource::FieldWelder { unit: source },
+                ..
+            } if *unit == b && *source == a
+        )));
+    }
+}
+
+#[test]
+fn a_patient_evicted_from_freshly_claimed_ground_rides_no_heal() {
+    for tick in [0, 1] {
+        let scenario = arena(vec![
+            unit(0, UnitKind::Harvester, 4, 5), // welder
+            unit(0, UnitKind::Harvester, 5, 5), // patient in the new footprint
+            unit(0, UnitKind::Harvester, 6, 5), // founder
+        ]);
+        let state = scenario.build().unwrap();
+        let (welder, patient, founder) = (
+            state.units()[0].id,
+            state.units()[1].id,
+            state.units()[2].id,
+        );
+        let mut json = serde_json::to_value(state).unwrap();
+        json["tick"] = serde_json::json!(tick);
+        json["units"][0]["order"] = serde_json::json!({"order": "repair_unit", "unit": patient});
+        json["units"][0]["progress"] = serde_json::json!(weld_step_progress(UnitKind::Harvester));
+        json["units"][1]["hp"] = serde_json::json!(UnitKind::Harvester.stats().max_hp - 10);
+        let mut state: State = serde_json::from_value(json).unwrap();
+
+        let before_hp = state.unit(patient).unwrap().hp;
+        let before_pos = state.unit(patient).unwrap().pos;
+        let report = state.tick(&[cmd(
+            0,
+            Command::Build {
+                units: vec![founder],
+                kind: BuildingKind::Turret,
+                anchor: TilePos::new(5, 5),
+                queue: false,
+                defer: false,
+            },
+        )]);
+        assert!(
+            state
+                .buildings()
+                .iter()
+                .any(|building| building.anchor == TilePos::new(5, 5)),
+            "the command must claim the patient's ground at tick {tick}"
+        );
+        assert_ne!(
+            state.unit(patient).unwrap().pos,
+            before_pos,
+            "the footprint eviction must move the patient at tick {tick}"
+        );
+        assert_eq!(
+            state.unit(patient).unwrap().hp,
+            before_hp,
+            "the patient rode a heal while eviction moved it at tick {tick}"
+        );
+        assert!(!report.events.iter().any(|event| matches!(
+            event,
+            Event::UnitRepaired {
+                unit,
+                source: UnitRepairSource::FieldWelder { unit: source },
+                ..
+            } if *unit == patient && *source == welder
+        )));
+    }
+}
+
+#[test]
+fn a_patient_committing_its_deferred_found_rides_no_heal() {
+    for tick in [0, 1] {
+        let scenario = arena(vec![
+            unit(0, UnitKind::Harvester, 4, 5), // welder
+            unit(0, UnitKind::Harvester, 5, 5), // arrived founder and patient
+        ]);
+        let state = scenario.build().unwrap();
+        let (welder, patient) = (state.units()[0].id, state.units()[1].id);
+        let anchor = TilePos::new(6, 5);
+        let mut json = serde_json::to_value(state).unwrap();
+        json["tick"] = serde_json::json!(tick);
+        json["units"][0]["order"] = serde_json::json!({"order": "repair_unit", "unit": patient});
+        json["units"][0]["progress"] = serde_json::json!(weld_step_progress(UnitKind::Harvester));
+        json["units"][1]["hp"] = serde_json::json!(UnitKind::Harvester.stats().max_hp - 10);
+        json["units"][1]["order"] = serde_json::to_value(Order::Found {
+            kind: BuildingKind::Turret,
+            anchor,
+        })
+        .unwrap();
+        let mut state: State = serde_json::from_value(json).unwrap();
+
+        let before_hp = state.unit(patient).unwrap().hp;
+        let report = state.tick(&[]);
+        assert!(
+            state
+                .buildings()
+                .iter()
+                .any(|building| building.anchor == anchor),
+            "the arrived founder must claim its promised ground at tick {tick}"
+        );
+        assert_eq!(
+            state.unit(patient).unwrap().hp,
+            before_hp,
+            "the founder became newly weldable before its claim resolved at tick {tick}"
+        );
+        assert!(!report.events.iter().any(|event| matches!(
+            event,
+            Event::UnitRepaired {
+                unit,
+                source: UnitRepairSource::FieldWelder { unit: source },
+                ..
+            } if *unit == patient && *source == welder
+        )));
     }
 }
 

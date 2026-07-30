@@ -78,6 +78,9 @@ pub struct PlayerView {
     pub units: usize,
     /// Standing buildings.
     pub buildings: usize,
+    /// Whether this seat has conceded and can no longer issue commands.
+    #[serde(default)]
+    pub resigned: bool,
 }
 
 /// One unit, floats-for-reading.
@@ -164,6 +167,10 @@ pub struct FogView {
     pub tick: u64,
     /// The seat this knowledge belongs to.
     pub player: u8,
+    /// The viewing seat's own economy and status. Opponent player rows are
+    /// deliberately absent: a fair client needs its bank and command
+    /// eligibility without learning any hostile economy.
+    pub own_player: Box<PlayerView>,
     /// One row per map row, one char per tile: `' '` never seen, `'.'`
     /// explored but currently dark, `'*'` visible right now.
     pub mask: Vec<String>,
@@ -252,6 +259,7 @@ impl FogView {
         Self {
             tick: state.current_tick(),
             player: player.0,
+            own_player: Box::new(player_view(state, usize::from(player.0))),
             mask,
             units: state
                 .units()
@@ -388,23 +396,7 @@ impl StateView {
                         .players()
                         .iter()
                         .enumerate()
-                        .map(|(i, p)| PlayerView {
-                            id: i as u8,
-                            name: p.name.clone(),
-                            faction: p.faction,
-                            team: p.team,
-                            scrap: p.scrap,
-                            units: state
-                                .units()
-                                .iter()
-                                .filter(|u| u.player.0 as usize == i)
-                                .count(),
-                            buildings: state
-                                .buildings()
-                                .iter()
-                                .filter(|b| b.player.0 as usize == i)
-                                .count(),
-                        })
+                        .map(|(i, _)| player_view(state, i))
                         .collect()
                 }
             } else {
@@ -422,6 +414,28 @@ impl StateView {
             },
             map: filter.map.then(|| ascii_with_entities(state)),
         }
+    }
+}
+
+fn player_view(state: &State, index: usize) -> PlayerView {
+    let player = &state.players()[index];
+    PlayerView {
+        id: index as u8,
+        name: player.name.clone(),
+        faction: player.faction,
+        team: player.team,
+        scrap: player.scrap,
+        units: state
+            .units()
+            .iter()
+            .filter(|unit| usize::from(unit.player.0) == index)
+            .count(),
+        buildings: state
+            .buildings()
+            .iter()
+            .filter(|building| usize::from(building.player.0) == index)
+            .count(),
+        resigned: player.resigned,
     }
 }
 
@@ -585,6 +599,52 @@ mod tests {
                 "remembered salvage never leaks from unexplored ground"
             );
         }
+    }
+
+    #[test]
+    fn the_fog_view_carries_only_the_viewing_seats_economy() {
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        scenario.players[0].scrap = 73;
+        scenario.players[1].scrap = 987_654;
+        let mut state = scenario.build().unwrap();
+        state.tick(&[oxide_sim::PlayerCommand {
+            player: PlayerId(0),
+            command: oxide_sim::Command::Surrender,
+        }]);
+
+        let fog = FogView::capture(&state, PlayerId(0));
+        assert_eq!(fog.player, 0);
+        assert_eq!(fog.own_player.id, 0);
+        assert_eq!(fog.own_player.scrap, 73);
+        assert!(fog.own_player.resigned);
+        assert_eq!(
+            fog.own_player.units,
+            state
+                .units()
+                .iter()
+                .filter(|unit| unit.player.0 == 0)
+                .count()
+        );
+        assert_eq!(
+            fog.own_player.buildings,
+            state
+                .buildings()
+                .iter()
+                .filter(|building| building.player.0 == 0)
+                .count()
+        );
+
+        let encoded = serde_json::to_value(&fog).unwrap();
+        assert!(
+            encoded.get("players").is_none(),
+            "opponent rows stay absent"
+        );
+        assert_eq!(encoded["own_player"]["scrap"], 73);
+        assert_ne!(encoded["own_player"]["scrap"], 987_654);
+
+        let omniscient = StateView::capture(&state, StateFilter::default());
+        assert!(omniscient.players[0].resigned);
+        assert!(!omniscient.players[1].resigned);
     }
 
     #[test]

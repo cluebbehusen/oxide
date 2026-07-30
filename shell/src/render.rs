@@ -528,7 +528,8 @@ fn hp_bar(x: f32, y: f32, w: f32, hp: u32, max_hp: u32) {
 /// detect — and the same rings under a placement ghost, because siting
 /// a Flak Turret or Bastion IS the decision its rings describe. Weapon
 /// reach draws in danger red, own vision in bone, the Array's radar
-/// detection in patina teal; where a gun outranges its own eyes
+/// detection in patina teal, and Repair Bay healing in green; where a gun
+/// outranges its own eyes
 /// (Bombard, Bastion), the gap between red and bone is the spotter's
 /// job, made visible.
 /// How many selected units draw their rings and programs — a boxed

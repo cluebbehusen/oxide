@@ -79,6 +79,23 @@ pub(super) fn escape_route(
     None
 }
 
+/// Pure preview of the phase-5 claimed-ground eviction for one unit.
+///
+/// Brains that require a body to remain still can consult the exact same
+/// predicate and route that [`evict_claimed_ground`] will apply later in
+/// the tick, without mutating the state early.
+pub(super) fn claimed_ground_escape(state: &State, id: crate::ids::UnitId) -> Option<PathFollow> {
+    let unit = state.unit(id)?;
+    if unit.hp == 0
+        || unit.kind.stats().domain != crate::stats::Domain::Ground
+        || unit.path.is_some()
+        || state.building_at(unit.tile()).is_none()
+    {
+        return None;
+    }
+    escape_route(state, unit.kind, unit.tile())
+}
+
 /// Phase-5 pre-pass: a pathless ground body standing on a building
 /// footprint walks off — an accepted foundation claims its ground
 /// instantly, and no sim rule expects a resting unit on a claimed
@@ -93,15 +110,8 @@ pub(super) fn escape_route(
 /// inside a finished building.
 pub(super) fn evict_claimed_ground(state: &mut State) {
     for i in 0..state.units.len() {
-        let u = &state.units[i];
-        if u.hp == 0 || u.kind.stats().domain != crate::stats::Domain::Ground || u.path.is_some() {
-            continue;
-        }
-        let (kind, tile) = (u.kind, u.tile());
-        if state.building_at(tile).is_none() {
-            continue;
-        }
-        if let Some(path) = escape_route(state, kind, tile) {
+        let id = state.units[i].id;
+        if let Some(path) = claimed_ground_escape(state, id) {
             state.units[i].path = Some(path);
         }
     }
@@ -296,7 +306,7 @@ fn relaxation_pass(
     // Buckets are snapshotted at pass start; corrections are small enough
     // (≤ COLLISION_MAX_STEP) that a newly-adjacent pair simply waits for
     // the next pass.
-    index.rebuild(&state.units, state.map.height());
+    index.rebuild(&state.units);
 
     let mut any_overlap = false;
     // Per-unit displacement budget for this pass. Clamping only per pair
@@ -396,4 +406,101 @@ fn relaxation_pass(
         }
     }
     any_overlap
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::spatial::UnitIndex;
+    use super::*;
+    use crate::scenario::{PlayerSpec, Scenario, UnitSpec};
+    use crate::state::Faction;
+    use crate::stats::UnitKind;
+
+    fn seat(name: &str, faction: Faction) -> PlayerSpec {
+        PlayerSpec {
+            name: name.into(),
+            faction,
+            team: None,
+            scrap: 0,
+            bot: false,
+            bot_config: None,
+        }
+    }
+
+    fn boundary_pair() -> State {
+        Scenario {
+            name: "boundary-pair".into(),
+            seed: 1,
+            map: vec![
+                "............".into(),
+                "............".into(),
+                "............".into(),
+                "1.........2.".into(),
+                "............".into(),
+                "............".into(),
+                "............".into(),
+                "............".into(),
+            ],
+            players: vec![
+                seat("North", Faction::Ferrous),
+                seat("South", Faction::Cupric),
+            ],
+            units: vec![
+                UnitSpec {
+                    player: 0,
+                    kind: UnitKind::Sentinel,
+                    x: 5,
+                    y: 1,
+                },
+                UnitSpec {
+                    player: 1,
+                    kind: UnitKind::Sentinel,
+                    x: 6,
+                    y: 1,
+                },
+            ],
+            buildings: Vec::new(),
+            meta: None,
+        }
+        .build()
+        .expect("boundary pair builds")
+    }
+
+    #[test]
+    fn collision_finds_border_crossing_pairs_in_either_id_order() {
+        let height = boundary_pair().map.height();
+        let edges = [
+            ("north", Fx::lit("0.1"), Fx::lit("-0.1")),
+            (
+                "south",
+                Fx::from_num(height) - Fx::lit("0.1"),
+                Fx::from_num(height) + Fx::lit("0.1"),
+            ),
+        ];
+
+        for (edge, inside_y, outside_y) in edges {
+            for outside_slot in 0..2 {
+                let mut state = boundary_pair();
+                let inside_slot = 1 - outside_slot;
+                state.units[outside_slot].pos = Vec2Fx::new(Fx::lit("5.5"), outside_y);
+                state.units[inside_slot].pos = Vec2Fx::new(Fx::lit("5.5"), inside_y);
+                state
+                    .validate_invariants()
+                    .expect("the accepted coordinate envelope includes border rows");
+                let before = state.units[inside_slot].pos;
+                let travel = vec![Vec2Fx::ZERO; state.units.len()];
+                let mut index = UnitIndex::new();
+                let mut spent = Vec::new();
+
+                assert!(
+                    relaxation_pass(&mut state, false, &travel, &mut index, &mut spent),
+                    "{edge} pair with outside slot {outside_slot} was not visited"
+                );
+                assert_ne!(
+                    state.units[inside_slot].pos, before,
+                    "{edge} pair with outside slot {outside_slot} was not separated"
+                );
+            }
+        }
+    }
 }

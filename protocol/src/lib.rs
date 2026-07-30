@@ -78,10 +78,11 @@ pub enum Request {
         #[serde(default)]
         filter: StateFilter,
     },
-    /// The world as one seat honestly knows it: visibility mask, entities
-    /// filtered to current sight, ghost memories, remembered salvage, and
-    /// radar contacts. The fog-safe counterpart to the omniscient
-    /// [`Request::QueryState`] — what lets an agent play fair.
+    /// The world as one seat honestly knows it: its own economy and command
+    /// eligibility, visibility mask, entities filtered to current sight,
+    /// ghost memories, remembered salvage, and radar contacts. The fog-safe
+    /// counterpart to the omniscient [`Request::QueryState`] — what lets an
+    /// agent play fair.
     QueryFogView {
         /// The seat whose knowledge to report.
         player: PlayerId,

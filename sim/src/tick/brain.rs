@@ -65,6 +65,18 @@ struct PendingUnitHeal {
     source: crate::event::UnitRepairSource,
 }
 
+/// A field weld whose patient stood in reach when the welder's brain ran.
+///
+/// The patient's own brain may run later in the parity-alternating phase
+/// and create a departure path. Commit these only after every brain has
+/// resolved its intent so a weld never rides that same-tick departure.
+struct PendingFieldWeld {
+    /// The Harvester holding the torch.
+    welder: UnitId,
+    /// The wounded own machine offered the weld.
+    patient: UnitId,
+}
+
 /// A buffered hp drain — salvage work — resolved with the gains as one
 /// signed per-building delta after damage. A building fire zeroed this
 /// tick forfeits every drain (fire wins; forfeited hp refunds
@@ -96,10 +108,11 @@ pub(super) fn run(
     // decide against the start-of-tick world — positions, hp, and the
     // unit list itself hold still until resolution — so a snapshot
     // taken here stays exact for the whole decision loop.
-    index.rebuild(&state.units, state.map.height());
+    index.rebuild(&state.units);
     let mut hits: Vec<PendingHit> = Vec::new();
     let mut builds: Vec<PendingHpGain> = Vec::new();
     let mut heals: Vec<PendingUnitHeal> = Vec::new();
+    let mut field_welds: Vec<PendingFieldWeld> = Vec::new();
     let mut drains: Vec<PendingHpDrain> = Vec::new();
     let mut founds: Vec<PendingFounding> = Vec::new();
     let mut launches: Vec<crate::state::Shell> = Vec::new();
@@ -141,9 +154,10 @@ pub(super) fn run(
             Order::Repair { building } => repair(state, id, building, events, &mut builds),
             Order::Salvage { building } => salvage(state, id, building, events, &mut drains),
             Order::Found { kind, anchor } => found(state, id, kind, anchor, events, &mut founds),
-            Order::RepairUnit { unit } => repair_unit(state, id, unit, events, &mut heals),
+            Order::RepairUnit { unit } => repair_unit(state, id, unit, events, &mut field_welds),
         }
     }
+    commit_unit_welds(state, field_welds, events, &mut heals);
     turret_fire(state, events, &mut hits, &mut launches);
     repair_bay_aura(state, &mut heals);
     // Arrivals join this tick's volley; launches land on later ticks
@@ -160,7 +174,7 @@ mod locomotion;
 
 use combat::attack;
 use combat::{land_shells, retaliate, target_standing, turret_fire};
-use economy::{build, found, harvest, repair, repair_unit, salvage};
+use economy::{build, commit_unit_welds, found, harvest, repair, repair_unit, salvage};
 use locomotion::{attack_move, idle, walk};
 
 /// The other half of simultaneity: buffered shots land now, in the order
@@ -457,14 +471,14 @@ fn repair_bay_aura(state: &mut State, heals: &mut Vec<PendingUnitHeal>) {
             };
             let due = millis(healed + step).div_ceil(1000) - millis(healed).div_ceil(1000);
             let bank = state.player(owner).scrap;
-            if due > 0
-                && preserve_harvester_reserve
-                && bank <= crate::stats::UnitKind::Harvester.stats().cost
-            {
-                continue;
-            }
             if u64::from(bank) < due {
                 continue; // broke for this patient; cheaper coins may still land
+            }
+            if due > 0
+                && preserve_harvester_reserve
+                && u64::from(bank) - due < u64::from(crate::stats::UnitKind::Harvester.stats().cost)
+            {
+                continue;
             }
             state.player_mut(owner).scrap = bank - due as u32;
             in_flight.insert(id, queued + step);

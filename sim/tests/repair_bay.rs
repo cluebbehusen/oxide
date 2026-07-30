@@ -145,6 +145,31 @@ fn aura_bill(kind: UnitKind, from: u32, to: u32) -> u32 {
     (millis(to).div_ceil(1000) - millis(from).div_ceil(1000)) as u32
 }
 
+fn wounded_ring_patient(kind: UnitKind, hp: u32, scrap: u32, overlap: bool) -> State {
+    let pos = if overlap {
+        TilePos::new(BAY_ANCHOR.0 + 2, BAY_ANCHOR.1 + 3)
+    } else {
+        RING
+    };
+    let mut scenario = arena(
+        vec![unit(0, kind, pos.x, pos.y)],
+        [Faction::Ferrous, Faction::Cupric],
+        scrap,
+        true,
+    );
+    if overlap {
+        scenario.buildings.push(BuildingSpec {
+            player: 0,
+            kind: BuildingKind::RepairBay,
+            x: BAY_ANCHOR.0 + 3,
+            y: BAY_ANCHOR.1,
+        });
+    }
+    let mut json = serde_json::to_value(scenario.build().unwrap()).unwrap();
+    json["units"][0]["hp"] = serde_json::json!(hp);
+    serde_json::from_value(json).unwrap()
+}
+
 #[test]
 fn the_aura_heals_the_ring_to_whole_and_bills_the_welders_exact_price() {
     let units = vec![
@@ -324,6 +349,51 @@ fn the_aura_cannot_spend_the_emergency_harvester_reserve() {
         hurt,
         "paid sustain pauses while the economy is stranded"
     );
+}
+
+#[test]
+fn multi_scrap_pulses_preserve_the_whole_harvester_reserve() {
+    let reserve = UnitKind::Harvester.stats().cost;
+    // Bombard hp steps cost either two or three scrap. One scrap less
+    // than the required surplus must block the whole pulse; exactly the
+    // required surplus may be spent down to the intact reserve.
+    for (hp, due) in [(1, 2), (8, 3)] {
+        assert_eq!(aura_bill(UnitKind::Bombard, hp, hp + 1), due);
+
+        let mut blocked = wounded_ring_patient(UnitKind::Bombard, hp, reserve + due - 1, false);
+        blocked.tick(&[]);
+        assert_eq!(blocked.units()[0].hp, hp);
+        assert_eq!(
+            blocked.player(PlayerId(0)).scrap,
+            reserve + due - 1,
+            "a {due}-scrap pulse must not borrow from the reserve"
+        );
+
+        let mut funded = wounded_ring_patient(UnitKind::Bombard, hp, reserve + due, false);
+        funded.tick(&[]);
+        assert_eq!(funded.units()[0].hp, hp + 1);
+        assert_eq!(
+            funded.player(PlayerId(0)).scrap,
+            reserve,
+            "the exact surplus remains spendable"
+        );
+    }
+}
+
+#[test]
+fn overlapping_bays_recheck_the_reserve_after_each_charge() {
+    let reserve = UnitKind::Harvester.stats().cost;
+    let hp = 1;
+    assert_eq!(aura_bill(UnitKind::Bombard, hp, hp + 1), 2);
+    assert_eq!(aura_bill(UnitKind::Bombard, hp + 1, hp + 2), 2);
+
+    // The first bay may spend two of the three surplus scrap. The second
+    // must price from that post-charge bank and leave the remaining 51
+    // untouched instead of taking it below the replacement price.
+    let mut state = wounded_ring_patient(UnitKind::Bombard, hp, reserve + 3, true);
+    state.tick(&[]);
+    assert_eq!(state.units()[0].hp, hp + 1);
+    assert_eq!(state.player(PlayerId(0)).scrap, reserve + 1);
 }
 
 #[test]

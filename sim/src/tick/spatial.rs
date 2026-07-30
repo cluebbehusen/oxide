@@ -23,10 +23,11 @@ use chassis::grid::TilePos;
 pub(super) struct UnitIndex {
     /// `(tile, slot into the units vec)`, sorted by `(y, x, slot)`.
     entries: Vec<(TilePos, usize)>,
-    /// `rows[y]..rows[y + 1]` bounds row `y` within `entries`.
+    /// `rows[y - first_row]..rows[y - first_row + 1]` bounds row `y`
+    /// within `entries`.
     rows: Vec<u32>,
-    /// Row count the offsets were built for.
-    height: i32,
+    /// Lowest occupied row represented by `rows`.
+    first_row: i32,
 }
 
 impl UnitIndex {
@@ -35,15 +36,15 @@ impl UnitIndex {
         Self {
             entries: Vec::new(),
             rows: Vec::new(),
-            height: 0,
+            first_row: 0,
         }
     }
 
-    /// Rebuilds the index over `units` (dead bodies excluded), reusing
-    /// the buffers. `height` is the map's row count; every living unit
-    /// stands on the map, so rows cover every entry.
-    pub(super) fn rebuild(&mut self, units: &[Unit], height: i32) {
-        self.height = height;
+    /// Rebuilds the index over `units` (dead bodies excluded), reusing the
+    /// buffers. Rows span the occupied coordinate range, including bodies
+    /// fractionally beyond a map border that [`State`](crate::State)'s
+    /// accepted coordinate envelope permits.
+    pub(super) fn rebuild(&mut self, units: &[Unit]) {
         self.entries.clear();
         self.entries.extend(
             units
@@ -55,10 +56,20 @@ impl UnitIndex {
         self.entries
             .sort_unstable_by_key(|&(t, slot)| (t.y, t.x, slot));
         self.rows.clear();
-        self.rows.reserve(height as usize + 1);
+
+        let Some(&(first, _)) = self.entries.first() else {
+            self.first_row = 0;
+            return;
+        };
+        let last_row = self.entries.last().expect("just saw an entry").0.y;
+        self.first_row = first.y;
+        let row_count = i64::from(last_row) - i64::from(self.first_row) + 1;
+        self.rows.reserve(row_count as usize + 1);
+
         let mut i = 0usize;
-        for y in 0..=height {
-            while i < self.entries.len() && self.entries[i].0.y < y {
+        self.rows.push(0);
+        for y in self.first_row..=last_row {
+            while i < self.entries.len() && self.entries[i].0.y == y {
                 i += 1;
             }
             self.rows.push(i as u32);
@@ -67,12 +78,15 @@ impl UnitIndex {
 
     /// The entries of row `y` with `x` in `x_min..=x_max`, in ascending
     /// `(x, slot)` order — byte-for-byte the sequence a tile-by-tile
-    /// bucket walk over that span produces. Empty for off-map rows.
+    /// bucket walk over that span produces. Empty for unoccupied rows
+    /// outside the index's current coordinate range.
     pub(super) fn row_span(&self, y: i32, x_min: i32, x_max: i32) -> &[(TilePos, usize)] {
-        if y < 0 || y >= self.height {
+        let row_index = i64::from(y) - i64::from(self.first_row);
+        if row_index < 0 || row_index as usize + 1 >= self.rows.len() {
             return &[];
         }
-        let row = &self.entries[self.rows[y as usize] as usize..self.rows[y as usize + 1] as usize];
+        let row_index = row_index as usize;
+        let row = &self.entries[self.rows[row_index] as usize..self.rows[row_index + 1] as usize];
         let start = row.partition_point(|&(t, _)| t.x < x_min);
         let len = row[start..].partition_point(|&(t, _)| t.x <= x_max);
         &row[start..start + len]
@@ -93,8 +107,25 @@ mod tests {
         for _ in 0..90 {
             state.tick(&[]);
         }
+        let width = state.map.width();
+        let height = state.map.height();
+        for (slot, tile) in [
+            TilePos::new(-1, -1),
+            TilePos::new(width, height),
+            TilePos::new(-1, 2),
+            TilePos::new(width, 3),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            state.units[slot].pos = tile.center();
+        }
+        state
+            .validate_invariants()
+            .expect("the accepted coordinate envelope includes border rows");
+
         let mut index = UnitIndex::new();
-        index.rebuild(&state.units, state.map.height());
+        index.rebuild(&state.units);
         let reference = |y: i32, x_min: i32, x_max: i32| -> Vec<(TilePos, usize)> {
             let mut hits: Vec<(TilePos, usize)> = state
                 .units
@@ -108,13 +139,15 @@ mod tests {
             hits
         };
         let mut nonempty = 0;
-        for y in -1..=state.map.height() {
-            for x in -1..=state.map.width() {
+        for y in -1..=height {
+            for x in -1..=width {
                 let got = index.row_span(y, x - 1, x + 1);
                 assert_eq!(got, &reference(y, x - 1, x + 1)[..], "window ({y}, {x})");
                 nonempty += usize::from(!got.is_empty());
             }
         }
         assert!(nonempty > 0, "the fixture exercised no occupied windows");
+        assert_eq!(index.row_span(-1, i32::MIN, i32::MAX).len(), 1);
+        assert_eq!(index.row_span(height, i32::MIN, i32::MAX).len(), 1);
     }
 }

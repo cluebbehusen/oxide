@@ -265,7 +265,7 @@ pub(super) fn repair_unit(
     id: UnitId,
     patient: UnitId,
     events: &mut Vec<Event>,
-    heals: &mut Vec<super::PendingUnitHeal>,
+    welds: &mut Vec<super::PendingFieldWeld>,
 ) {
     let me = state.unit(id).expect("caller checked").player;
     // The self-target guard is defense in depth: commands refuse it,
@@ -279,94 +279,196 @@ pub(super) fn repair_unit(
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     };
-    // Reading the patient's path mid-phase is deliberate: both machines
-    // are the same seat's, so the parity-alternating brain order leaks
-    // no cross-seat edge, and the read is a pure function of the tick.
-    // Stationarity is INTENT, not just a standing path: a Move that
-    // landed this very tick has set the order while the patient's
-    // brain (later in id order) has not yet built its path, and
-    // path.is_some() alone would let one heal ride the departure.
-    let t_walking = t.path.is_some()
-        || matches!(
-            t.order,
-            Order::Move { .. } | Order::AttackMove { .. } | Order::Found { .. }
-        );
-    let (t_pos, t_tile, t_kind) = (t.pos, t.tile(), t.kind);
-    let stats = t.kind.stats();
-    let (ramp, ramp_ticks) = (stats.max_hp, stats.train_ticks);
+    let (t_pos, t_tile) = (t.pos, t.tile());
     let reach = crate::stats::REPAIR_REACH;
     let unit = state.unit(id).expect("caller checked");
     let in_reach = unit.pos.dist_sq(t_pos) <= reach * reach;
-    if in_reach && !t_walking {
-        // The billing meter is the building welder's, with the unit's
+    if in_reach {
+        // Do not bill or advance the torch yet. The patient's own brain
+        // may run later in this parity-alternating phase and create the
+        // path movement consumes this tick. Commit after all brains have
+        // exposed that departure.
+        state.unit_mut(id).expect("caller checked").path = None;
+        welds.push(super::PendingFieldWeld {
+            welder: id,
+            patient,
+        });
+    } else {
+        chase_patient(state, id, t_tile, events);
+    }
+}
+
+/// Commits field welds after every patient's brain has had the chance to
+/// create the path that movement will consume this tick. Repair Bay pulses
+/// remain separate: their aura deliberately heals moving machines. This
+/// necessarily gives inline brain-phase economy (including deposits and
+/// building repair) priority in the shared bank; eligibility must settle
+/// before a field weld can bill without reintroducing tick-parity behavior.
+pub(super) fn commit_unit_welds(
+    state: &mut State,
+    welds: Vec<super::PendingFieldWeld>,
+    events: &mut Vec<Event>,
+    heals: &mut Vec<super::PendingUnitHeal>,
+) {
+    // A welder can itself be somebody else's patient. Settle every
+    // departure before billing any torch: rejecting B -> C may give B a
+    // chase path, which must then reject A -> B even when A's candidate
+    // appeared first in this tick's parity order. Eligibility only moves
+    // from stationary to departing, so this reaches a fixed point in at
+    // most one transition per candidate.
+    let mut stationary = vec![true; welds.len()];
+    loop {
+        let mut changed = false;
+        for (slot, weld) in welds.iter().enumerate() {
+            if !stationary[slot] {
+                continue;
+            }
+            let Some(unit) = state
+                .unit(weld.welder)
+                .filter(|u| u.order == (Order::RepairUnit { unit: weld.patient }))
+            else {
+                stationary[slot] = false;
+                continue;
+            };
+            let me = unit.player;
+            let unit_pos = unit.pos;
+            if footprint_eviction_pending(state, weld.welder) {
+                // Phase 5, after weld resolution, will make this welder
+                // walk off newly claimed ground. It cannot light the
+                // torch and move in the same tick.
+                stationary[slot] = false;
+                continue;
+            }
+            let Some(t) = state
+                .unit(weld.patient)
+                .filter(|t| t.player == me && t.hp > 0 && t.hp < t.kind.stats().max_hp)
+            else {
+                stationary[slot] = false;
+                continue;
+            };
+            let reach = crate::stats::REPAIR_REACH;
+            if t.path.is_none()
+                && !matches!(t.order, Order::Found { .. })
+                && !footprint_eviction_pending(state, weld.patient)
+                && unit_pos.dist_sq(t.pos) <= reach * reach
+            {
+                continue;
+            }
+            let patient_tile = t.tile();
+            stationary[slot] = false;
+            chase_patient(state, weld.welder, patient_tile, events);
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    for (weld, stationary) in welds.into_iter().zip(stationary) {
+        if !stationary {
+            continue;
+        }
+        let Some(unit) = state
+            .unit(weld.welder)
+            .filter(|u| u.order == (Order::RepairUnit { unit: weld.patient }))
+        else {
+            continue;
+        };
+        let (me, unit_pos, p) = (unit.player, unit.pos, metered(unit.progress));
+        let Some(t) = state
+            .unit(weld.patient)
+            .filter(|t| t.player == me && t.hp > 0 && t.hp < t.kind.stats().max_hp)
+        else {
+            continue;
+        };
+        debug_assert!(t.path.is_none());
+        debug_assert!(!footprint_eviction_pending(state, weld.welder));
+        debug_assert!(!footprint_eviction_pending(state, weld.patient));
+        debug_assert!(
+            unit_pos.dist_sq(t.pos) <= crate::stats::REPAIR_REACH * crate::stats::REPAIR_REACH
+        );
+        let t_kind = t.kind;
+
+        // The billing meter is the Harvester welder's, with the patient's
         // own numbers: ramp is full max_hp (machines have no one-fifth
         // foundation), the clock is its training time, the basis its
         // price. Same ceiling prepay, same survival of no-op reissues.
-        let p = metered(unit.progress);
+        let stats = t_kind.stats();
+        let (ramp, ramp_ticks) = (stats.max_hp, stats.train_ticks);
         let due = u64::from(crate::stats::unit_repair_debit(t_kind, p));
         if due > 0 {
             if u64::from(state.player(me).scrap) < due {
                 // Broke stalls the torch.
-                let unit = state.unit_mut(id).expect("caller checked");
+                let unit = state.unit_mut(weld.welder).expect("just seen");
                 let (player, pos) = (unit.player, unit.pos);
                 unit.clear_program();
                 events.push(Event::OrderStalled {
-                    unit: id,
+                    unit: weld.welder,
                     player,
                     pos,
                     reason: StallReason::InsufficientScrap,
                 });
-                return;
+                continue;
             }
             state.player_mut(me).scrap -= due as u32;
         }
-        let unit = state.unit_mut(id).expect("caller checked");
+        let unit = state.unit_mut(weld.welder).expect("just seen");
         unit.path = None;
         unit.progress = p + 1;
         let step = (ramp * (p + 1) / ramp_ticks) - (ramp * p / ramp_ticks);
         if step > 0 {
             heals.push(super::PendingUnitHeal {
-                unit: patient,
+                unit: weld.patient,
                 step,
                 player: me,
                 paid: due as u32,
-                source: crate::event::UnitRepairSource::FieldWelder { unit: id },
+                source: crate::event::UnitRepairSource::FieldWelder { unit: weld.welder },
             });
         }
-    } else {
-        // The chase: re-aim at the patient's CURRENT tile whenever the
-        // path's goal has drifted more than a tile from it — cheap
-        // pursuit without per-tick A*, the combat chase's rule. The
-        // meter survives the walk; only the torch time bills.
-        let kind = unit.kind;
-        let tile = unit.tile();
-        let keep = unit
-            .path
-            .as_ref()
-            .is_some_and(|pf| pf.goal.chebyshev(t_tile) <= 1);
-        if keep {
-            return;
+    }
+}
+
+/// Whether phase 5 will give this pathless body an escape path from a
+/// claimed building footprint. Weld settlement runs before that pre-pass,
+/// so it must predict the same move to uphold the both-bodies-still rule.
+fn footprint_eviction_pending(state: &State, id: UnitId) -> bool {
+    super::super::movement::claimed_ground_escape(state, id).is_some()
+}
+
+/// Re-aims the torch carrier at the patient's current tile. The meter
+/// survives the walk; only committed torch time bills.
+fn chase_patient(state: &mut State, id: UnitId, patient_tile: TilePos, events: &mut Vec<Event>) {
+    // Cheap pursuit without per-tick A*: keep a path whose goal has
+    // drifted no more than one tile from the patient.
+    let unit = state.unit(id).expect("caller checked");
+    let kind = unit.kind;
+    let tile = unit.tile();
+    let keep = unit
+        .path
+        .as_ref()
+        .is_some_and(|pf| pf.goal.chebyshev(patient_tile) <= 1);
+    if keep {
+        return;
+    }
+    match route_for(state, kind, tile, patient_tile) {
+        Some(waypoints) => {
+            let unit = state.unit_mut(id).expect("caller checked");
+            unit.path = Some(PathFollow {
+                goal: patient_tile,
+                waypoints,
+                next: 0,
+            });
         }
-        match route_for(state, kind, tile, t_tile) {
-            Some(waypoints) => {
-                let unit = state.unit_mut(id).expect("caller checked");
-                unit.path = Some(PathFollow {
-                    goal: t_tile,
-                    waypoints,
-                    next: 0,
-                });
-            }
-            None => {
-                let unit = state.unit_mut(id).expect("caller checked");
-                let (player, pos) = (unit.player, unit.pos);
-                unit.clear_program();
-                events.push(Event::OrderStalled {
-                    unit: id,
-                    player,
-                    pos,
-                    reason: StallReason::NoRoute,
-                });
-            }
+        None => {
+            let unit = state.unit_mut(id).expect("caller checked");
+            let (player, pos) = (unit.player, unit.pos);
+            unit.clear_program();
+            events.push(Event::OrderStalled {
+                unit: id,
+                player,
+                pos,
+                reason: StallReason::NoRoute,
+            });
         }
     }
 }
