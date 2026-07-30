@@ -428,12 +428,14 @@ mod tests {
             writer
                 .write_all(status(2).as_bytes())
                 .expect("write request");
-            let line = read_line(&mut reader).expect("response line");
-            if serde_json::from_str::<ResponseEnvelope>(line.trim())
-                .expect("parse response")
-                .into_result()
-                .is_ok()
-            {
+            // Windows may reset a refused socket whose request was not read.
+            let released = read_line(&mut reader).is_some_and(|line| {
+                serde_json::from_str::<ResponseEnvelope>(line.trim())
+                    .expect("parse response")
+                    .into_result()
+                    .is_ok()
+            });
+            if released {
                 return;
             }
             assert!(attempt < 199, "the abandoned connection never let go");

@@ -2,19 +2,16 @@
 
 import argparse
 import json
-from typing import TYPE_CHECKING
+import pathlib
 
 import pytest
 import torch
 
 import dequantize
 from export import export
-from lineage import build_lineage, checkpoint_metadata
+from lineage import build_lineage, checkpoint_metadata, content_digest
 from models import load_policy, make_policy, save_policy
 from oxide_gym import ACTIONS, GYM_VERSION
-
-if TYPE_CHECKING:
-    import pathlib
 
 
 def _bridge_artifact(
@@ -127,6 +124,48 @@ class TestUnflooring:
         assert (
             lineage["inputs"]["source"]["lineage_id"] == source["lineage"]["lineage_id"]
         )
+        training_dir = pathlib.Path(dequantize.__file__).resolve().parent
+        for role, filename in {
+            "export_code": "export.py",
+            "gym_client": "oxide_gym.py",
+            "model_code": "models.py",
+            "transformer_code": "dequantize.py",
+        }.items():
+            assert lineage["inputs"][role] == {
+                "content_sha256": content_digest(training_dir / filename)
+            }
+
+    @pytest.mark.parametrize(
+        "changed_dependency",
+        ["dequantize.py", "export.py", "models.py", "oxide_gym.py"],
+    )
+    def test_recovery_dependency_changes_produce_different_lineage_ids(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        changed_dependency: str,
+    ) -> None:
+        weights = _bridge_artifact(tmp_path)
+        training_dir = tmp_path / "training"
+        training_dir.mkdir()
+        for dependency in ("dequantize.py", "export.py", "models.py", "oxide_gym.py"):
+            (training_dir / dependency).write_text("first implementation")
+        monkeypatch.setattr(
+            dequantize,
+            "__file__",
+            str(training_dir / "dequantize.py"),
+        )
+
+        first_out = tmp_path / "first.pt"
+        dequantize.dequantize(weights, first_out, (ACTIONS - 2,))
+        _policy, first = load_policy(str(first_out))
+
+        (training_dir / changed_dependency).write_text("second implementation")
+        second_out = tmp_path / "second.pt"
+        dequantize.dequantize(weights, second_out, (ACTIONS - 2,))
+        _policy, second = load_policy(str(second_out))
+
+        assert first["lineage"]["lineage_id"] != second["lineage"]["lineage_id"]
 
     def test_a_trained_row_cannot_be_erased_under_the_name_unfloor(
         self, tmp_path: pathlib.Path

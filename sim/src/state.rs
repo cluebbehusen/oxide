@@ -525,8 +525,9 @@ impl State {
     /// got through here cannot overflow them.
     ///
     /// The checklist, in the order it runs:
-    /// - Players: a non-empty table, addressable by [`PlayerId`], with
-    ///   team indices inside it.
+    /// - Players and result: a non-empty table, addressable by
+    ///   [`PlayerId`], with team indices inside it and any victory naming
+    ///   a team a player actually carries.
     /// - Map: consistent grid dimensions, within [`MAX_MAP_EDGE`].
     /// - Per-player tables: one vision per seat, its grids sized to the
     ///   map.
@@ -580,6 +581,11 @@ impl State {
             .position(|p| usize::from(p.team) >= players)
         {
             return Err(E::ForeignTeam(PlayerId(i as u8)));
+        }
+        if let Some(GameResult::Victory { team }) = self.result
+            && !self.players.iter().any(|player| player.team == team)
+        {
+            return Err(E::UnknownVictoryTeam(team));
         }
 
         // Nested grids: derived Deserialize accepts any cell count, and a
@@ -671,6 +677,9 @@ impl State {
                 return Err(E::ForeignBuildingOwner(b.id));
             }
             let stats = b.kind.stats();
+            if !b.built && stats.construction.is_none() {
+                return Err(E::UnconstructibleSite(b.id));
+            }
             if b.hp == 0 || b.hp > stats.max_hp {
                 return Err(E::BuildingHpOutOfRange(b.id));
             }
@@ -1414,6 +1423,9 @@ pub enum StateIntegrityError {
     /// A player sits on a team index no seat carries.
     #[error("player {0} sits on a team outside the table")]
     ForeignTeam(PlayerId),
+    /// A victory names a team no player carries.
+    #[error("victory names team {0}, which no player carries")]
+    UnknownVictoryTeam(u8),
     /// The map grid's dimensions disagree with its cells.
     #[error("map grid dimensions disagree with its cells")]
     MalformedMapGrid,
@@ -1476,6 +1488,9 @@ pub enum StateIntegrityError {
     /// A building is owned by a player outside the table.
     #[error("building {0} is owned by a player outside the table")]
     ForeignBuildingOwner(BuildingId),
+    /// An unfinished building kind has no construction definition.
+    #[error("building {0} is unfinished but its kind cannot be constructed")]
+    UnconstructibleSite(BuildingId),
     /// A building's hit points sit outside `(0, max_hp]`.
     #[error("building {0} carries hit points its kind cannot hold")]
     BuildingHpOutOfRange(BuildingId),

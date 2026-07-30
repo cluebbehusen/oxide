@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import json
+import pathlib
 
 import torch
 
@@ -71,7 +72,10 @@ def widening_lineage(src: str, metadata: dict) -> dict[str, object]:
             "src_features": SRC_FEATURES,
             "src_gym_version": SRC_VERSION,
         },
-        inputs={"source": input_identity(src, metadata)},
+        inputs={
+            "source": input_identity(src, metadata),
+            "transformer_code": input_identity(pathlib.Path(__file__)),
+        },
     )
 
 

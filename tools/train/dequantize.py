@@ -190,6 +190,7 @@ def dequantize(
         "unfloored_actions": list(actions),
     }
     if actions:
+        training_dir = pathlib.Path(__file__).resolve().parent
         lineage = build_lineage(
             phase="q12-unfloor",
             phase_start_update=int(blob.get("update", 0) or 0),
@@ -197,7 +198,13 @@ def dequantize(
                 "gym_version": GYM_VERSION,
                 "unfloored_actions": list(actions),
             },
-            inputs={"source": input_identity(weights_path, blob)},
+            inputs={
+                "export_code": input_identity(training_dir / "export.py"),
+                "gym_client": input_identity(training_dir / "oxide_gym.py"),
+                "model_code": input_identity(training_dir / "models.py"),
+                "source": input_identity(weights_path, blob),
+                "transformer_code": input_identity(training_dir / "dequantize.py"),
+            },
         )
         metadata = checkpoint_metadata(lineage, metadata)
     elif "lineage" in blob:
