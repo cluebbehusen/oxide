@@ -197,7 +197,10 @@ def dequantize(
                 "gym_version": GYM_VERSION,
                 "unfloored_actions": list(actions),
             },
-            inputs={"source": input_identity(weights_path, blob)},
+            inputs={
+                "source": input_identity(weights_path, blob),
+                "transformer_code": input_identity(pathlib.Path(__file__)),
+            },
         )
         metadata = checkpoint_metadata(lineage, metadata)
     elif "lineage" in blob:

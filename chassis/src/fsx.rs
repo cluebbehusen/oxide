@@ -13,6 +13,12 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
+fn parent_dir(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
 /// Writes `path` atomically and durably: parent directories are
 /// created, the payload goes to a uniquely named sibling temp, is
 /// flushed and fsynced, and only then renamed over the destination.
@@ -28,11 +34,8 @@ where
     F: FnOnce(&mut dyn Write) -> Result<(), E>,
 {
     let path = path.as_ref();
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
-    }
+    let parent = parent_dir(path);
+    std::fs::create_dir_all(parent)?;
     // Unique temp name: two sessions (or two threads of one) saving
     // the same stem concurrently must not clobber each other.
     static NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -66,9 +69,7 @@ where
     // a directory for fsync, and there the rename's durability rides
     // the OS.
     #[cfg(unix)]
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::File::open(parent).and_then(|d| d.sync_all())?;
-    }
+    std::fs::File::open(parent).and_then(|d| d.sync_all())?;
     Ok(())
 }
 
@@ -123,6 +124,11 @@ mod tests {
                     .is_some_and(|n| n.contains(".tmp."))
             })
             .collect()
+    }
+
+    #[test]
+    fn a_bare_path_uses_the_current_directory_as_its_parent() {
+        assert_eq!(parent_dir(Path::new("session.json")), Path::new("."));
     }
 
     #[test]

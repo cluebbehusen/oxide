@@ -9,7 +9,7 @@ import torch
 
 import dequantize
 from export import export
-from lineage import build_lineage, checkpoint_metadata
+from lineage import build_lineage, checkpoint_metadata, content_digest
 from models import load_policy, make_policy, save_policy
 from oxide_gym import ACTIONS, GYM_VERSION
 
@@ -127,6 +127,28 @@ class TestUnflooring:
         assert (
             lineage["inputs"]["source"]["lineage_id"] == source["lineage"]["lineage_id"]
         )
+        assert lineage["inputs"]["transformer_code"] == {
+            "content_sha256": content_digest(dequantize.__file__)
+        }
+
+    def test_transformer_changes_produce_different_lineage_ids(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        weights = _bridge_artifact(tmp_path)
+        transformer = tmp_path / "dequantize.py"
+        transformer.write_text("first implementation")
+        monkeypatch.setattr(dequantize, "__file__", str(transformer))
+
+        first_out = tmp_path / "first.pt"
+        dequantize.dequantize(weights, first_out, (ACTIONS - 2,))
+        _policy, first = load_policy(str(first_out))
+
+        transformer.write_text("second implementation")
+        second_out = tmp_path / "second.pt"
+        dequantize.dequantize(weights, second_out, (ACTIONS - 2,))
+        _policy, second = load_policy(str(second_out))
+
+        assert first["lineage"]["lineage_id"] != second["lineage"]["lineage_id"]
 
     def test_a_trained_row_cannot_be_erased_under_the_name_unfloor(
         self, tmp_path: pathlib.Path

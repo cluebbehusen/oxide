@@ -58,7 +58,12 @@ class TestArtifactBridge:
         art = json.loads(out.read_text())
         lineage = validate_lineage(art["lineage"])
         assert lineage["phase"] == "contract-widen-v6-v7"
-        assert lineage["inputs"] == {"source": {"content_sha256": content_digest(src)}}
+        assert lineage["inputs"] == {
+            "source": {"content_sha256": content_digest(src)},
+            "transformer_code": {
+                "content_sha256": content_digest(widen.__file__),
+            },
+        }
         assert art["gym_version"] == widen.DST_VERSION
         assert art["features"] == widen.DST_FEATURES
         assert art["actions"] == widen.DST_ACTIONS
@@ -117,6 +122,21 @@ class TestArtifactBridge:
             return
         raise AssertionError("re-widening an already-widened artifact must refuse")
 
+    def test_transformer_changes_produce_different_lineage_ids(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        src = _fake_artifact(tmp_path)
+        metadata = json.loads(src.read_text())
+        transformer = tmp_path / "widen.py"
+        transformer.write_text("first implementation")
+        monkeypatch.setattr(widen, "__file__", str(transformer))
+        first = widen.widening_lineage(str(src), metadata)
+
+        transformer.write_text("second implementation")
+        second = widen.widening_lineage(str(src), metadata)
+
+        assert first["lineage_id"] != second["lineage_id"]
+
 
 class TestCheckpointBridge:
     def test_the_float_resume_gets_head_specific_noops(
@@ -145,7 +165,12 @@ class TestCheckpointBridge:
         blob = torch.load(out, weights_only=True)
         lineage = validate_lineage(blob["lineage"])
         assert lineage["phase"] == "contract-widen-v6-v7"
-        assert lineage["inputs"] == {"source": {"content_sha256": content_digest(src)}}
+        assert lineage["inputs"] == {
+            "source": {"content_sha256": content_digest(src)},
+            "transformer_code": {
+                "content_sha256": content_digest(widen.__file__),
+            },
+        }
         assert blob["gym_version"] == widen.DST_VERSION
         state = blob["state"]
         assert (
