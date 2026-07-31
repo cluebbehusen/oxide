@@ -354,6 +354,22 @@ deals the style and variant from disjoint PCG streams; mirrored hostile seats
 share a variant and opposing teams receive the same multiset. Exact
 `aggression` remains the zero-facet research/tooling override.
 
+The level-playing-field contract is non-negotiable: a bot is a command source,
+not an alternate ruleset. It receives only fog-honest information available to
+a player and every command passes through the same validation, costs, build
+times, queues, movement, combat, and economy. Feasibility masks may exclude an
+action that the shared game rules make impossible in the current state, but a
+bot-only structure or unit cap, shorter queue limit, forced tech prerequisite,
+income bonus, stat modifier, or other hidden strategic restriction is not an
+acceptable balance tool. Difficulty may change execution cadence and
+hesitation, while personality changes preferences; neither changes which legal
+strategies exist. If a legal strategy such as mass Reclaimers is dominant or
+pathological, fix the shared balance or the training outcome rather than hiding
+it from the bot. Expanding a learned policy's legal action surface still needs
+retraining and the complete promotion battery: behavior from weights evaluated
+outside their trained masks is evidence to investigate, not evidence that a
+bot-only restriction belongs in the game.
+
 The 12 conditioning inputs are skill, aggression, the seat's actual faction,
 a four-way strategy one-hot derived from the aggression quartile, and the
 resolved economy/air/siege/support/commitment facets. Authored maps deal even
