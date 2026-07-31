@@ -192,7 +192,7 @@ impl PauseScreen {
     /// Start-preselected doctrine).
     pub fn begin_naming(&mut self, suggested: String) {
         // The field itself only ever grows typed ASCII; the suggestion
-        // holds to the same UI alphabet (ASCII plus the '·' separator)
+        // holds to the same ASCII UI alphabet
         // so a map name cannot smuggle glyphs past the ingest filter.
         let mut value: String = suggested.chars().take(Self::NAME_MAX).collect();
         value.retain(|c| c.is_ascii() || c == '\u{b7}');
@@ -280,7 +280,7 @@ impl PauseScreen {
         if let Some(dialog) = &self.save_failed {
             &dialog.line
         } else if self.naming.is_some() {
-            "type a name · Enter saves · Esc cancels"
+            "type a name | Enter saves | Esc cancels"
         } else if let Some(row) = self.confirming {
             match row {
                 Row::Surrender => "this concedes the match",
@@ -598,17 +598,17 @@ mod tests {
         let mut p = PauseScreen::open(false, true);
         assert_eq!(activate(&mut p, "Save Game"), Out::SaveGame);
         assert!(!p.confirming(), "saving destroys nothing — no dialog");
-        p.begin_naming("skirmish · t100".to_string());
+        p.begin_naming("skirmish | t100".to_string());
         assert!(p.naming());
         assert_eq!(
-            p.menu.items[0], "skirmish · t100_",
+            p.menu.items[0], "skirmish | t100_",
             "prefilled, with a static caret"
         );
         // The Start-preselected doctrine: Enter alone commits the
         // suggested name without any typing.
         assert_eq!(
             drive(&mut p, Key::Enter),
-            Out::Save("skirmish · t100".to_string())
+            Out::Save("skirmish | t100".to_string())
         );
     }
 

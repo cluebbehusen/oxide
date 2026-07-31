@@ -9,6 +9,17 @@ fn headless_game() -> Game {
         .expect("embedded skirmish builds")
 }
 
+fn multi_producer_game() -> Game {
+    let mut scenario = oxide_sim::Scenario::skirmish();
+    scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+        player: 0,
+        kind: oxide_sim::BuildingKind::Fabricator,
+        x: 9,
+        y: 3,
+    });
+    Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("multi-producer fixture builds")
+}
+
 fn click(x: f32, y: f32) -> [RawEvent; 2] {
     [
         RawEvent::MouseDown {
@@ -22,6 +33,227 @@ fn click(x: f32, y: f32) -> [RawEvent; 2] {
             y,
         },
     ]
+}
+
+#[test]
+fn shift_click_selects_and_toggles_same_owner_buildings() {
+    let mut game = multi_producer_game();
+    let mut input = InputState::new();
+    let mut own: Vec<_> = game
+        .state
+        .buildings()
+        .iter()
+        .filter(|building| building.player == game.human)
+        .map(|building| building.id)
+        .collect();
+    own.sort_unstable();
+    assert_eq!(own.len(), 2);
+    let center = |game: &Game, id| {
+        let building = game.state.building(id).unwrap();
+        let size = building.kind.stats().size;
+        game.camera.to_screen(vec2(
+            building.anchor.x as f32 + size.0 as f32 * 0.5,
+            building.anchor.y as f32 + size.1 as f32 * 0.5,
+        ))
+    };
+
+    let first = center(&game, own[0]);
+    apply_events(&mut game, &mut input, &click(first.x, first.y));
+    assert_eq!(game.selection.buildings, vec![own[0]]);
+
+    let second = center(&game, own[1]);
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::Shift },
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: second.x,
+                y: second.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: second.x,
+                y: second.y,
+            },
+            RawEvent::KeyUp { key: Key::Shift },
+        ],
+    );
+    assert_eq!(game.selection.buildings, own);
+
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::Shift },
+            RawEvent::MouseDown {
+                button: MouseButton::Left,
+                x: first.x,
+                y: first.y,
+            },
+            RawEvent::MouseUp {
+                button: MouseButton::Left,
+                x: first.x,
+                y: first.y,
+            },
+            RawEvent::KeyUp { key: Key::Shift },
+        ],
+    );
+    assert_eq!(game.selection.buildings, vec![own[1]]);
+}
+
+#[test]
+fn selected_producers_receive_the_same_context_rally_in_id_order() {
+    let mut game = multi_producer_game();
+    let mut producers: Vec<_> = game
+        .state
+        .buildings()
+        .iter()
+        .filter(|building| building.player == game.human)
+        .map(|building| building.id)
+        .collect();
+    producers.sort_unstable();
+    game.selection.buildings = producers.clone();
+    let rally = TilePos::new(14, 9);
+    let screen = game
+        .camera
+        .to_screen(vec2(rally.x as f32 + 0.5, rally.y as f32 + 0.5));
+
+    context_order(&mut game, screen, false);
+
+    let staged: Vec<_> = game
+        .pending
+        .iter()
+        .filter_map(|command| match &command.command {
+            Command::SetRally {
+                building,
+                rally: Some(tile),
+            } => Some((*building, *tile)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        staged,
+        producers
+            .into_iter()
+            .map(|building| (building, rally))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn training_skips_a_selected_nonproducer_before_the_factory() {
+    let mut scenario = oxide_sim::Scenario::skirmish();
+    scenario.buildings.insert(
+        0,
+        oxide_sim::scenario::BuildingSpec {
+            player: 0,
+            kind: oxide_sim::BuildingKind::Turret,
+            x: 9,
+            y: 3,
+        },
+    );
+    let mut game =
+        Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("production fixture builds");
+    let turret = game
+        .state
+        .buildings()
+        .iter()
+        .find(|building| building.kind == oxide_sim::BuildingKind::Turret)
+        .unwrap()
+        .id;
+    let foundry = game.home_foundry().unwrap().id;
+    game.selection.buildings = vec![turret, foundry];
+
+    super::orders::train(&mut game, 0);
+
+    assert!(matches!(
+        game.pending.as_slice(),
+        [PlayerCommand {
+            command: Command::Train { building, .. },
+            ..
+        }] if *building == foundry
+    ));
+}
+
+#[test]
+fn training_uses_the_first_selected_factory_that_supports_the_slot() {
+    let mut game = multi_producer_game();
+    let foundry = game.home_foundry().unwrap().id;
+    let fabricator = game
+        .state
+        .buildings()
+        .iter()
+        .find(|building| building.kind == oxide_sim::BuildingKind::Fabricator)
+        .unwrap()
+        .id;
+    game.selection.buildings = vec![foundry, fabricator];
+
+    super::orders::train(&mut game, 2);
+
+    assert!(matches!(
+        game.pending.as_slice(),
+        [PlayerCommand {
+            command: Command::Train { building, .. },
+            ..
+        }] if *building == fabricator
+    ));
+}
+
+#[test]
+fn a_selected_defense_right_clicks_a_visible_enemy_into_focus() {
+    let mut scenario = oxide_sim::Scenario::skirmish();
+    scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+        player: 0,
+        kind: oxide_sim::BuildingKind::Turret,
+        x: 9,
+        y: 3,
+    });
+    scenario.units.push(oxide_sim::scenario::UnitSpec {
+        player: 1,
+        kind: UnitKind::Sentinel,
+        x: 12,
+        y: 4,
+    });
+    let mut game =
+        Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("focus fixture builds");
+    let turret = game
+        .state
+        .buildings()
+        .iter()
+        .find(|building| building.kind == oxide_sim::BuildingKind::Turret)
+        .unwrap()
+        .id;
+    let enemy = game
+        .state
+        .units()
+        .iter()
+        .find(|unit| unit.player != game.human && unit.tile() == TilePos::new(12, 4))
+        .unwrap();
+    assert!(game.my_vision().visible(enemy.tile()));
+    let enemy_id = enemy.id;
+    let screen = game.camera.to_screen(vec2(
+        enemy.pos.x.to_num::<f32>(),
+        enemy.pos.y.to_num::<f32>(),
+    ));
+    game.selection.buildings = vec![turret];
+
+    context_order(&mut game, screen, false);
+
+    assert!(matches!(
+        game.pending.as_slice(),
+        [PlayerCommand {
+            command: Command::FocusFire { buildings, target },
+            ..
+        }] if buildings == &vec![turret] && *target == oxide_sim::Target::Unit(enemy_id)
+    ));
+    assert!(
+        game.pending
+            .iter()
+            .all(|command| !matches!(command.command, Command::SetRally { .. })),
+        "a defense click must never become a nonsensical rally"
+    );
 }
 
 fn build_click(
@@ -340,12 +572,12 @@ fn the_rally_card_arms_a_touchable_world_target() {
         .find(|building| building.player == game.human)
         .expect("human Foundry")
         .id;
-    game.selection.building = Some(foundry);
+    game.selection.buildings = vec![foundry];
 
     let card = macroquad::math::Rect::new(300.0, 700.0, 60.0, 60.0);
     let zero = macroquad::math::Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut cards = [(zero, crate::panel::CardAction::None); 16];
-    cards[0] = (card, crate::panel::CardAction::ArmRally(foundry));
+    cards[0] = (card, crate::panel::CardAction::ArmRally);
     game.layout.set(crate::layout::LayoutModel::compute(
         vec2(1280.0, 800.0),
         1.0,
@@ -354,6 +586,10 @@ fn the_rally_card_arms_a_touchable_world_target() {
         zero,
         zero,
         zero,
+        zero,
+        zero,
+        [(zero, crate::panel::CardAction::None); 8],
+        0,
         cards,
         1,
         [(zero, crate::panel::CardAction::None); 8],
@@ -377,7 +613,7 @@ fn the_rally_card_arms_a_touchable_world_target() {
             },
         ],
     );
-    assert_eq!(input.rallying, Some(foundry));
+    assert_eq!(input.rallying, vec![foundry]);
 
     let rally = chassis::grid::TilePos::new(14, 9);
     let point = game
@@ -411,7 +647,84 @@ fn the_rally_card_arms_a_touchable_world_target() {
             ..
         }] if *building == foundry && *staged == rally
     ));
-    assert_eq!(input.rallying, None, "one target consumes the armed card");
+    assert!(
+        input.rallying.is_empty(),
+        "one target consumes the armed card"
+    );
+}
+
+#[test]
+fn the_armed_mode_ribbon_cancel_is_a_real_touch_action() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    input.attacking = true;
+    let ribbon = macroquad::math::Rect::new(220.0, 620.0, 280.0, 44.0);
+    let cancel = macroquad::math::Rect::new(456.0, 620.0, 44.0, 44.0);
+    let zero = macroquad::math::Rect::new(0.0, 0.0, 0.0, 0.0);
+    game.layout.set(crate::layout::LayoutModel::compute(
+        vec2(1280.0, 800.0),
+        1.0,
+        f32::INFINITY,
+        0.0,
+        zero,
+        zero,
+        zero,
+        ribbon,
+        cancel,
+        [(zero, crate::panel::CardAction::None); 8],
+        0,
+        [(zero, crate::panel::CardAction::None); 16],
+        0,
+        [(zero, crate::panel::CardAction::None); 8],
+        0,
+    ));
+    let at = cancel.center();
+    input.now = 1.0;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::TouchDown {
+                id: 11,
+                x: at.x,
+                y: at.y,
+            },
+            RawEvent::TouchUp {
+                id: 11,
+                x: at.x,
+                y: at.y,
+            },
+        ],
+    );
+    assert_eq!(input.armed_mode(), None);
+    assert!(game.pending.is_empty(), "cancel emits no gameplay command");
+}
+
+#[test]
+fn every_targeting_mode_has_persistent_human_copy() {
+    let mut input = InputState::new();
+    input.placing = Some(oxide_sim::BuildingKind::Bastion);
+    assert_eq!(input.armed_mode().unwrap().label(), "BUILD BASTION");
+    input.disarm_click_verbs();
+    input.rallying = vec![oxide_sim::BuildingId(0)];
+    assert_eq!(input.armed_mode().unwrap().label(), "SET RALLY");
+    input.disarm_click_verbs();
+    input.salvaging = true;
+    assert_eq!(input.armed_mode().unwrap().label(), "SALVAGE");
+    input.disarm_click_verbs();
+    input.repairing = true;
+    assert_eq!(input.armed_mode().unwrap().label(), "WELD UNIT");
+    input.disarm_click_verbs();
+    input.running = true;
+    assert_eq!(input.armed_mode().unwrap().label(), "RUN");
+    input.disarm_click_verbs();
+    input.attacking = true;
+    assert_eq!(input.armed_mode().unwrap().label(), "ATTACK-MOVE");
+    input.disarm_click_verbs();
+    input.patrol_route = Some(vec![TilePos::new(1, 1), TilePos::new(2, 2)]);
+    assert_eq!(input.armed_mode().unwrap().label(), "PATROL | 2 WAYPOINTS");
+    assert!(input.cancel_armed_mode());
+    assert_eq!(input.armed_mode(), None);
 }
 
 #[test]
@@ -996,6 +1309,10 @@ fn the_attack_move_card_is_touchable_and_arms_the_same_world_tap() {
         zero,
         zero,
         zero,
+        zero,
+        zero,
+        [(zero, crate::panel::CardAction::None); 8],
+        0,
         cards,
         1,
         [(zero, crate::panel::CardAction::None); 8],
@@ -1409,7 +1726,9 @@ fn an_ally_selection_reads_its_orders_but_takes_none() {
     // static combat capability and its order chips.
     let panel = crate::panel::build(&game, &input.bindings).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on an ally panel");
-    assert_eq!(panel.combat, vec!["unarmed"]);
+    assert_eq!(panel.combat.len(), 1);
+    assert_eq!(panel.combat[0].icon, crate::panel::CombatIcon::Unarmed);
+    assert_eq!(panel.combat[0].text, "unarmed");
     assert!(!panel.queue.is_empty(), "the ally's orders show");
     assert_eq!(
         panel.faction,
@@ -1464,9 +1783,10 @@ fn a_hostile_selection_inspects_and_leaks_nothing() {
     assert!(panel.cards.is_empty(), "no verbs on a hostile panel");
     assert!(panel.queue.is_empty(), "no order chips on a hostile panel");
     assert_eq!(panel.combat.len(), 1);
-    assert!(panel.combat[0].contains("damage"));
-    assert!(panel.combat[0].contains("range"));
-    assert!(panel.combat[0].contains("targets ground"));
+    assert_eq!(panel.combat[0].icon, crate::panel::CombatIcon::Weapon);
+    assert!(panel.combat[0].text.contains("dmg"));
+    assert!(panel.combat[0].text.contains("tiles"));
+    assert!(panel.combat[0].text.contains("ground"));
 
     // And no breadcrumbs, whatever program the enemy runs.
     let unit = game.state.unit(foe).unwrap();
@@ -1675,7 +1995,7 @@ fn a_fogged_hostile_never_steers_the_long_press() {
         .find(|b| b.player == game.human)
         .unwrap()
         .id;
-    game.selection.building = Some(own);
+    game.selection.buildings = vec![own];
     // The enemy Foundry's ground is unexplored — but an omniscient
     // entity probe would still see the building there and flip the
     // gesture from rally to select, leaking hidden occupancy.
@@ -1706,8 +2026,8 @@ fn a_fogged_hostile_never_steers_the_long_press() {
     input.now = 9.9;
     update_touch(&mut game, &mut input);
     assert_eq!(
-        game.selection.building,
-        Some(own),
+        game.selection.buildings,
+        vec![own],
         "the hidden building must not turn the gesture into a select"
     );
     assert!(
@@ -1940,7 +2260,7 @@ fn an_allied_site_under_fog_refuses_selection() {
     input.now = 5.0; // clicks land at the viewport center; keep them
     apply_events(&mut game, &mut input, &click(screen.x, screen.y)); // out of double-click range
     assert!(
-        game.selection.building.is_none(),
+        game.selection.buildings.is_empty(),
         "a fogged ally site must refuse the blind click"
     );
     // The built ally foundry selects through shared team sight.
@@ -1961,8 +2281,8 @@ fn an_allied_site_under_fog_refuses_selection() {
     input.now = 10.0;
     apply_events(&mut game, &mut input, &click(screen.x, screen.y));
     assert_eq!(
-        game.selection.building,
-        Some(ally_foundry),
+        game.selection.buildings,
+        vec![ally_foundry],
         "the built ally building stays inspectable"
     );
 }
@@ -2121,6 +2441,10 @@ fn publish_minimap(game: &Game) -> macroquad::math::Rect {
         zero,
         minimap,
         zero,
+        zero,
+        zero,
+        [(zero, crate::panel::CardAction::None); 8],
+        0,
         [(zero, crate::panel::CardAction::None); 16],
         0,
         [(zero, crate::panel::CardAction::None); 8],
@@ -2293,6 +2617,10 @@ fn a_tap_on_the_idle_badge_cycles_workers() {
         zero,
         zero,
         badge,
+        zero,
+        zero,
+        [(zero, crate::panel::CardAction::None); 8],
+        0,
         [(zero, crate::panel::CardAction::None); 16],
         0,
         [(zero, crate::panel::CardAction::None); 8],
@@ -2623,7 +2951,7 @@ fn a_placement_drag_stamps_a_row_of_queued_builds() {
 }
 
 #[test]
-fn the_type_strip_cuts_a_mixed_selection_both_ways() {
+fn the_roster_strip_cuts_a_mixed_selection_both_ways() {
     let mut game = headless_game();
     let mut input = InputState::new();
     let mine: Vec<_> = game
@@ -2636,7 +2964,7 @@ fn the_type_strip_cuts_a_mixed_selection_both_ways() {
     game.selection.units = mine.clone();
     let panel = crate::panel::build(&game, &input.bindings).expect("panel");
     let strip: Vec<_> = panel
-        .cards
+        .roster
         .iter()
         .filter_map(|c| match c.action {
             crate::panel::CardAction::FilterKind(k) => Some((k, c.title.clone())),
@@ -2644,6 +2972,13 @@ fn the_type_strip_cuts_a_mixed_selection_both_ways() {
         })
         .collect();
     assert_eq!(strip.len(), 2, "two kinds, two counted cards: {strip:?}");
+    assert!(
+        panel
+            .cards
+            .iter()
+            .all(|card| !matches!(card.action, crate::panel::CardAction::FilterKind(_))),
+        "roster filters must not occupy the command-verb collection"
+    );
     assert!(
         strip
             .iter()

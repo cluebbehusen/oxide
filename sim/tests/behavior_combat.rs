@@ -982,7 +982,7 @@ fn turret_holds_ground_and_dies_to_lancer_siege() {
     );
     assert!(state.building(turret).is_some_and(|b| b.hp > 0));
 
-    // Now the siege, in a fresh world: a lancer at range 5.5 > turret 4.5
+    // Now the siege, in a fresh world: a lancer at range 5.5 > turret 5.0
     // grinds it down without ever taking return fire.
     let scenario = Scenario {
         name: "lancer-siege".into(),
@@ -1123,6 +1123,142 @@ fn turret_fires_at_its_stated_cadence() {
         "interval must equal cooldown_ticks, not cooldown_ticks + 1"
     );
     assert_eq!(fire_ticks[2] - fire_ticks[1], cooldown);
+}
+
+#[test]
+fn bastion_has_artillery_reach_and_a_real_close_pressure_dead_zone() {
+    let bastion_weapon = BuildingKind::Bastion.stats().weapons[0];
+    assert_eq!(
+        bastion_weapon.range,
+        UnitKind::Bombard.stats().weapons[0].range,
+        "the emplacement must threaten the same nominal envelope as mobile artillery"
+    );
+    assert!(
+        bastion_weapon.minimum_range > chassis::fx::Fx::ZERO,
+        "the long gun needs explicit close-pressure counterplay"
+    );
+
+    let scenario = Scenario {
+        name: "bastion-dead-zone".into(),
+        seed: 44,
+        map: vec![
+            "####################".into(),
+            "#1.................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#................2.#".into(),
+            "#..................#".into(),
+            "####################".into(),
+        ],
+        players: arena(vec![]).players,
+        units: vec![unit(1, UnitKind::Scuttler, 9, 6)],
+        buildings: vec![BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Bastion,
+            x: 7,
+            y: 5,
+        }],
+        meta: None,
+    };
+    let mut state = scenario.build().unwrap();
+    let bastion = state
+        .buildings()
+        .iter()
+        .find(|building| building.kind == BuildingKind::Bastion)
+        .unwrap()
+        .id;
+    let scuttler = state.units()[0].id;
+    let scuttler_hp = state.unit(scuttler).unwrap().hp;
+    state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: vec![scuttler],
+            target: Target::Building(bastion),
+            queue: false,
+        },
+    )]);
+    let events = run_until(&mut state, 1_500, |s, _| s.building(bastion).is_none());
+    assert!(
+        state.building(bastion).is_none(),
+        "an isolated Bastion must fall to pressure established inside its dead zone"
+    );
+    assert_eq!(
+        state.unit(scuttler).unwrap().hp,
+        scuttler_hp,
+        "the Bastion must not acquire or fire on a target inside its dead zone"
+    );
+    assert!(
+        !events.iter().any(|event| matches!(
+            event,
+            Event::ShellLaunched {
+                shooter: Target::Building(id),
+                ..
+            } if *id == bastion
+        )),
+        "minimum range must be enforced at fire time, not merely advertised in stats"
+    );
+}
+
+#[test]
+fn bastion_opens_fire_beyond_its_dead_zone() {
+    let scenario = Scenario {
+        name: "bastion-open-fire".into(),
+        seed: 45,
+        map: vec![
+            "####################".into(),
+            "#1.................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#..................#".into(),
+            "#................2.#".into(),
+            "#..................#".into(),
+            "####################".into(),
+        ],
+        players: arena(vec![]).players,
+        units: vec![unit(1, UnitKind::Harvester, 13, 6)],
+        buildings: vec![BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Bastion,
+            x: 7,
+            y: 5,
+        }],
+        meta: None,
+    };
+    let mut state = scenario.build().unwrap();
+    let bastion = state
+        .buildings()
+        .iter()
+        .find(|building| building.kind == BuildingKind::Bastion)
+        .unwrap()
+        .id;
+    let target = state.units()[0].id;
+    let before = state.unit(target).unwrap().hp;
+    let events = run_until(&mut state, 200, |s, _| {
+        s.unit(target).is_none_or(|unit| unit.hp < before)
+    });
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            Event::ShellLaunched {
+                shooter: Target::Building(id),
+                ..
+            } if *id == bastion
+        )),
+        "a target outside the dead zone must still be acquired immediately"
+    );
+    assert!(
+        state.unit(target).is_none_or(|unit| unit.hp < before),
+        "a stationary target outside the dead zone must take the shell"
+    );
 }
 
 #[test]

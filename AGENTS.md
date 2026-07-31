@@ -81,7 +81,8 @@ deterministic sims across threads — grown-shelf sweeps stay a
 dozen-seconds affair, and a new sweep over per-map runs should spawn
 the same way. The play-through
 (`driver/tests/headless.rs`) is the **liveness gate**: 12k bot-vs-bot
-ticks per map, tallied per seat out of the `TickReport`s — units
+ticks per map, extended to 24k on vast maps whose 100+ tile routes delay
+first contact, and tallied per seat out of the `TickReport`s — units
 produced, deliveries, buildings completed, shots fired, last-progress
 tick. Every seat still holding a Foundry owes its format's production
 and delivery floor; eliminated seats owe nothing (the
@@ -336,29 +337,26 @@ The shipped opponent is a neural policy embedded in `oxide-sim`
 hash fixtures pin the weights like any other rule). Difficulty is an
 execution handicap around one strategic mind: Easy/Medium/Hard/Expert
 use cadence 56/36/28/28 and exact hesitation 350/190/5/0 per mille.
-Industry personalities condition the policy at skill 620 and combined
-arms at 1000 on every rung; named difficulty no longer feeds the learned
-skill input. Training crosses both strategy conditions with all four
-execution profiles, so the shipped ladder degrades execution rather than
-asking one continuous neural input to order itself. A second knob picks
-the personality (turtle → aggressive), dealt from the scenario seed when
-unset. The v7 deal gives three chances in five to
-industry, uniform at 250..=399, and two chances in five to combined
-arms, uniform at 500..=600 (`bot::deal_aggression`, the one definition
-the driver probes also call). The industry lean keeps Reclaimers in
-ordinary matches without giving up the Turret/Array profile. It
-deliberately skips the 400..=499 transition, the combined-style tail
-where inactive canaries begin, and the pressure quartile; the full
-0..=1000 range stays reachable through explicit picks. The seven conditioning inputs are
-skill, aggression, the seat's actual faction, and a four-way strategy
-one-hot derived from the aggression quartile. Authored maps deal even
-seats Ferrous; launch-time retints feed the faction knob the seat's
-ACTUAL faction rather than sampling it. Scenario seats opt
+Named difficulty no longer feeds the learned skill input. It changes
+only cadence and hesitation, so the shipped ladder degrades execution
+rather than asking one continuous neural input to order itself. Player-facing
+personality resolves once into one of three deterministic variants inside
+Turtle, Balanced, or Aggressive, plus a complementary team role. Surprise Me
+deals the style and variant from disjoint PCG streams; mirrored hostile seats
+share a variant and opposing teams receive the same multiset. Exact
+`aggression` remains the zero-facet research/tooling override.
+
+The 12 conditioning inputs are skill, aggression, the seat's actual faction,
+a four-way strategy one-hot derived from the aggression quartile, and the
+resolved economy/air/siege/support/commitment facets. Authored maps deal even
+seats Ferrous; launch-time retints feed the faction knob the seat's ACTUAL
+faction rather than sampling it. Scenario seats opt
 in via `PlayerSpec.bot_config`; a seat without one gets the legacy
 rule-cascade bot, which is what keeps pre-0.7 replays reproducing
 (that bot is team-blind by design — team seats must set a config).
 
-The gym contract is v7: 81 named integer features and 26 masked macro
+The gym contract is v8: 81 named integer features, 12 named conditions,
+and 26 masked macro
 action ids partitioned into three independent policy heads. Production
 chooses one of nine actions, construction/maintenance one of eleven
 (including `NoConstruction`), and military operations one of six
@@ -397,16 +395,48 @@ baseline. That artifact proved the repair lifecycle and reduced
 Scuttler body-time, but it is an ancestor and comparison point, not the
 v7 promotion. Episode-aligned continuation first selected update 95,
 then the combat-mix continuation selected update 105
-(`ca3502efb0a4e845`) as the decisive parent. The shipped artifact is
-that parent plus one selectively revived production row:
+(`ca3502efb0a4e845`) as the decisive parent. The promoted v7 source artifact
+is that parent plus one selectively revived production row:
 `revive.py --actions 3,8 --promote-actions 3` trains the Scuttler and
 air-superiority rows together, then restores the air row after the
-native cup showed it cost 40 industry-profile wins. Its digest is
+native cup showed it cost 40 industry-profile wins. That promoted v7
+source artifact's digest is
 `4473f3e795891915`; its content-addressed training lineage is
 `sha256:41de14c644a34fa26597a717cc6f01883529b24325436651120682d55799fe70`.
 It displaced its parent only after the complete native-Q12,
-faction/seat, composition, repair, ladder, and determinism battery;
-`ladder_weights.json` is the byte-exact exporter output.
+faction/seat, composition, repair, ladder, and determinism battery.
+The 0.14 v8 bridge appended the five profile columns with exact zero
+first-layer weights, so every pre-continuation logit and action stayed
+unchanged. Removing those columns reconstructs the promoted v7 digest above
+exactly. `tools/train/widen.py` is the explicit v7 artifact and checkpoint
+migration; the v8 loader refuses an old external artifact with that command in
+its error instead of guessing. The bridge is an ancestor, not the shipped
+policy. A full-policy continuation over the Rust-authored named-profile
+factorial promoted R2 update 140 (`c36fce50824b9fb5`); its content-addressed
+training lineage is
+`sha256:3e1df7598e5b1dd1438bc96bad326a4f732b88f416a87176bec4ece15af6090c`.
+The current `ladder_weights.json` is that artifact's byte-exact exporter
+output. Later profile-only continuations did not clear the promotion battery
+and remain research artifacts.
+
+Named-profile identity does not depend on learned logits alone. Strong
+authored facets narrow the ordinary action mask around finite opening
+milestones at the same decision boundary used by native inference and the
+external gym. High economy commits five Harvesters and a Fabricator safety
+screen, then a Scuttler, faction anti-air, and Lancer; it also commits a
+Reclaimer once nearby salvage falls below 450 and the bank covers its cost
+plus 70 scrap. High air commits a Fabricator, both faction air roles, and a
+Lancer; high siege commits a Fabricator and Bombard; high support commits one
+Turret. Progress latches one-way and counts live or queued units, completed or
+paid sites, and deferred founding claims, so a lost commitment never becomes
+a standing replacement quota. Recovery, forced home defense or finishing,
+and an existing saved capital plan take precedence. Zero facets bypass this
+doctrine exactly, preserving R2's raw mask, command, and state-hash path.
+`sim/tests/profile_doctrine.rs` pins every finite package and precedence rule;
+`sim/tests/bot_profiles.rs` requires every same-style variant pair to change
+actual play across a majority of seven fixed seeds (the promoted combination
+differs on all seven for every pair), and the driver fixtures hold external-gym
+profile masks to the same native decision surface.
 Training slots are role-indexed
 where the factions differ, so one action space serves both rosters.
 Since v4 every
@@ -415,9 +445,10 @@ dimensions (fixed scales broke on the large map classes), map dims
 ride along (march timing is an absolute-distance skill), and two
 fog-safe shell senses report incoming shells near the economy
 (impact tile currently visible — the arc renderer's rule) and own
-shells in flight. `FEATURE_NAMES` rides in the gym hello and the
-Python wrapper asserts its own list against it — Rust/Python column
-skew dies at handshake, not in a silently mistrained run.
+shells in flight. `FEATURE_NAMES`, `CONDITION_NAMES`, and every canonical
+style/variant/team-role vector ride in the gym hello. The Python wrapper
+validates and consumes that Rust-authored catalog, so feature, condition, or
+profile skew dies at handshake instead of in a silently mistrained run.
 
 The weights are a generated artifact with a regeneration ritual, like
 the goldens. From `tools/train/` (uv + PyTorch):
@@ -595,14 +626,26 @@ movement before prescribing more income.
 The training distribution must match the named runtime wrapper explicitly.
 The v7 ladder's learned skill response is not monotone, so sampling a scalar
 skill and deriving hesitation from it trained a relationship the shipped bot
-does not use. The default curriculum now shuffles an exact 20-cell factorial:
-the 60/40 industry/combined policy conditions crossed with Easy, Medium, Hard,
-and Expert execution profiles. Custom aggression distributions keep a separate
+does not use. The v8 default curriculum consumes the Rust handshake catalog and
+shuffles an exact 36-cell factorial: all nine named variants crossed with Easy,
+Medium, Hard, and Expert execution profiles. Team lanes sample distinct
+Rust-authored specialist-role vectors; solo and FFA lanes use Generalist.
+`--style-coef` is the bounded seeding instrument for those new columns:
+named profiles score only fog-safe own-state economy, air and siege mix,
+support infrastructure, and army commitment against their five authored
+facets, averaged over the episode and capped at 0.1 total reward. Raw
+aggression experiments retain the old commitment-only posture signal.
+This teaches a conditioning contract rather than an action quota; promotion
+still requires the unshaped outcome and composition gates.
+Custom aggression distributions stay zero-facet experiments with a separate
 four-profile execution cycle. Every sampled cadence reaches `Worker.reset`,
 and PPO receives the exact hesitation value rather than deriving one from
-policy skill. `tournament.py` keeps the same separation: `--skill` and
-`--aggression` condition the actor, while `--hesitation` and `--cadence`
-control execution (defaulting to combined 550 at Expert's 0/28 profile).
+policy skill. Frozen past/incumbent opponents mirror the learner's named
+vector under their own faction, and in-loop evaluation rotates through every
+canonical variant. `tournament.py` defaults to a deterministic rotation through
+the Rust canonical profile catalog; explicit `--skill` or `--aggression`
+selects the zero-facet research path, while `--hesitation` and `--cadence`
+control execution.
 Passing skill as hesitation makes a full-skill checkpoint idle every window;
 the native Q12 cup never shared that torch-side failure mode.
 
@@ -628,7 +671,9 @@ Hard < Expert forever).
 
 `driver balance-probe` runs bot-vs-bot across the shipped maps
 (optionally `--weights` for a candidate artifact — the fun gate's
-mechanical form) and reports both cost-weighted and body-time-weighted
+mechanical form). Embedded and candidate policies consume the same
+scenario-resolved named style, variant, and team role unless a raw override
+is explicit. The probe reports both cost-weighted and body-time-weighted
 composition, headed by the probed artifact's digest. The distinction is
 load-bearing: cheap Scuttlers can dominate army presence over a match
 while a few expensive specialists make army VALUE look varied. Since 0.13 every
@@ -656,19 +701,23 @@ actual catastrophic-tail limit. Everything folds through one seat-level cohort p
 decided-vs-capped / per-map keys), and the matches fan out over the
 shared pool.
 
-Schema 6's `--out` record carries `overall`, diagnostic `decided`, raw
-matches with activity/economy evidence, and the ordinary cohort tables.
-The gate reads only `overall`'s competitive-lifetime `combat_*` fields;
-the unprefixed all-unit fields are diagnostic compatibility data. A
-production line is not a second combat kind. `tools/train/fun_gate.py` requires
-exactly schema 6 and reads the payload by key; a driver test pins every
-field it consumes.
+Schema 7's `--out` record carries `overall`, diagnostic `decided`, raw
+matches with activity/economy evidence, the ordinary cohort tables, and the
+explicitly selected named style and variant alongside the legacy aggression
+field. The gate reads only `overall`'s competitive-lifetime `combat_*` fields;
+the unprefixed all-unit fields are diagnostic compatibility data. A production
+line is not a second combat kind. `tools/train/fun_gate.py` requires exactly
+schema 7 and reads the payload by key; a driver test pins every field it
+consumes.
 
-Promotion runs at least three seeds over the shipped personality deal
-plus fixed industry-300 and combined-arms-550 profiles. All three must
-clear the composition and tech gates; the dealt profile also owes
-structure reach and cap health. More than 10% unhealthy caps fails, but
-an active 40k war does not. Value/body entropy must reach 2.00/1.95 bits
+Promotion runs at least three seeds over the shipped personality deal,
+Turtle variant 1 (`industrial-attrition`), and Balanced variant 1
+(`air-combined`). All three must clear the composition and tech gates. The
+dealt profile also owes structure reach and cap health; Industrial Attrition
+owes at least 25% competitive-lifetime Reclaimer reach, and Air Combined owes
+at least 13% of competitive army value in faction-appropriate air units. More
+than 10% unhealthy caps fails, but an active 40k war does not. Value/body
+entropy must reach 2.00/1.95 bits
 and their per-seat p25 values 1.35/1.25. At most 7.5% of seats may fall
 below 0.75 value entropy or 0.65 body entropy, at most 10% may spend over
 80% of body-time on one kind, and the leading mean body share is capped
@@ -676,7 +725,7 @@ at 50%. `--baseline-weights` optionally adds a same-map/seed regression
 envelope: at most 0.10 mean-entropy loss, 0.15 p25 loss, or five-point
 worsening in a catastrophic-tail rate or the leading body share.
 Promotion tables captured under earlier winner-only or all-unit
-contracts are not comparable and must be re-probed under schema 6.
+contracts are not comparable and must be re-probed under schema 7.
 The gate also enforces two tech rules with distinct
 thresholds: `--min-tech-share` (0.45) on the SUM over the
 Fabricator-gated kinds asks whether the tree was climbed at all, and
@@ -785,9 +834,9 @@ and its audited ground route. `pace` is a claim about map SCALE —
 `map_gates.rs` bands it on Foundry-to-Foundry route length and
 nothing else measured how long a match actually runs. It does now,
 and the two are only loosely correlated: at Medium the 15-step
-Scrapyard Brawl closes in 3:52 while the 31-step Skirmish Basin takes
-4:37, and inside one label Ferric Reach (large, 65) reads 7:23
-against Cinder Steppe (large, 85) at 19:33. Each row is exactly what
+Scrapyard Brawl closes in 4:12 while the 31-step Skirmish Basin takes
+9:40, and inside one label Ferric Reach (large, 65) reads 20:01
+against Cinder Steppe (large, 85) at 12:23. Each row is exactly what
 `driver sweep --scenario <map>` reports at the same dials — the rows
 run one after another, each fanning its own matches, so a surprising
 row is reproducible with one command. Measurement only: the medians
@@ -797,10 +846,10 @@ this instrument: `ScenarioMeta.duration` on every 1v1 map carries the
 p25-p75 decision window (Medium, 12 seeds x 2 orientations, 60k cap,
 seed base 7000) rounded outward to minutes, drawn beside the
 geometric `pace` label it qualifies. The bands are artifact-stamped
-measurements, never gates. They still describe the former embedded A1450
-v6 baseline on this balance; re-run the sweep and re-stamp them for the
-shipped v7 update-105 artifact, or after any later weights or balance
-bless that moves the clock. Meta never reaches
+measurements, never gates. The shipped v8 R2 update-140 slate on the final
+0.14 simulation decided 318/384 matches; its 66 capped games remain censored
+and do not enter the quartiles. Re-run and re-stamp the bands after any later
+weights or balance bless that moves the clock. Meta never reaches
 `State::assemble`, so the stamping moved no hash fixture — proven
 unblessed.
 `driver bench` times a 500-unit mass battle locally
@@ -990,8 +1039,9 @@ comparisons don't survive GPU churn, so CI never runs it.
   need the issuer to *see* the victim. Rendering honors fog fully
   (unexplored void, explored dim, unseen enemies culled) but the debug
   surface — `query_state`, the F1 overlay, the software renderer — is
-  deliberately omniscient. The bot reads full state (classic cheating AI);
-  its commands still pass normal validation.
+  deliberately omniscient. The legacy Classic bot reads full state; the
+  shipped neural/Gym path builds a fog-honest observation from team sight,
+  memory, and radar. Every bot's commands still pass normal validation.
 - **Units are solid but never block tiles.** Collision is iterative pair
   relaxation after movement; pathfinding ignores units entirely, so crowds
   jostle but can't deadlock a corridor the way tile-reservation schemes do.
@@ -1055,8 +1105,10 @@ comparisons don't survive GPU churn, so CI never runs it.
   victory check (a fully-resigned team is eliminated on the spot; a
   1v1 concession decides its own tick), its future commands reject as
   `Eliminated` (which makes a second Surrender a no-op), and its
-  machines play out as remnants. Bots never surrender — no gym
-  action exists for it, deliberately.
+  machines play out as remnants. Gym bots concede only from the terminal
+  recovery state: a critically wounded Foundry under visible pressure with
+  no viable economy or defensive package. Ordinary losing positions still
+  play out.
 - **Air is a second movement domain, not a special case.** Flyers take
   the straight line (no A*), ignore terrain, construction claims, and
   ground collision, collide only with each other, never block
@@ -1070,7 +1122,7 @@ comparisons don't survive GPU churn, so CI never runs it.
   first routeable one wins — reaching weapon range is the job;
   occupying the victim's tile never was. No candidate in reach stalls
   the order honestly.
-- **Peaks (`^`) are the mountain nothing crosses.** A third terrain:
+- **Peaks (`^`) are the plated exclusion barrier nothing crosses.** A third terrain:
   blocks ground movement (like rock), blocks air (the one thing the
   sky routes around — flyers A* over air passability when a peak
   breaks their straight line), blocks direct fire in every domain
@@ -1107,20 +1159,23 @@ comparisons don't survive GPU churn, so CI never runs it.
   seconds, still never a bank), buried by accepted foundations,
   skipped when a surviving building covers the tile. Vision remembers
   wreck amounts like scrap; stale memories resolve by walking and
-  discovering. Since 0.13 wrecks are strictly DIRECTED work: the
-  harvester auto-retarget never adopts a wreck tile (an accepted
-  auto-hop once chain-walked harvest lines 51 tiles across old
-  battlefields toward the enemy); only an explicit Harvest reaches
-  one.
-- **A dry deposit retires its harvester (0.13).** The auto-retarget
-  scan reaches `RETARGET_RADIUS` = 2 — the widest contiguous scrap
-  cluster on any shipped map — so a harvester finishes the patch it
-  was sent to, delivers what it carries, and goes idle instead of
-  marching to the next deposit (radius 10 once carried whole harvest
-  lines to a different patch, and through wrecks, toward the enemy).
-  Farther patches are the owner's call: the human through the idle
-  badge and `N`, the bots through their economy channels, which only
-  ever re-task idle workers on the next think.
+  discovering. An explicit Harvest creates a bounded work zone and may
+  adopt remembered or visible wrecks inside it; the clicked source stays
+  the anchor, so local cleanup can never chain from wreck to wreck across
+  a battlefield.
+- **Harvest is an anchored work contract (0.14).** The source the player
+  clicked remains the center of a Chebyshev-radius-seven zone through
+  extraction and every delivery. The explicit source remains authoritative,
+  but its route avoids fog-honest known danger whenever a detour exists.
+  Autonomous follow-ons deterministically choose only reachable known nodes
+  and wrecks inside the fixed zone, refusing visible ground threats,
+  remembered armed structures, or a nearby radar contact. Nearby friendly
+  ground combat value screens equal or weaker visible mobile pressure, so a
+  defended line keeps working instead of treating every battle as a rout.
+  If no safe source remains, retirement is sticky: it deposits its cargo, returns beside a
+  built own Foundry, advances one queued order, then idles. Losing sight
+  cannot wake stale salvage memory back up, and a source just beyond the
+  original anchor's radius never becomes eligible through hop drift.
 - **A Reclaimer is paid insurance, not an opening build.** Each completed
   Reclaimer credits one scrap every 24 ticks. At 150 scrap it repays its
   purchase after 3,600 ticks, then remains the efficient answer to an
@@ -1128,14 +1183,19 @@ comparisons don't survive GPU churn, so CI never runs it.
 - **A living Foundry prevents permanent economy death.** A non-resigned
   seat with a surviving completed Foundry, no live Harvester, and none in
   a live production queue receives the fast emergency credit: one scrap
-  every 10 ticks until its bank reaches the Harvester's 50-scrap price.
+  every 10 ticks against one finite recovery entitlement. That entitlement
+  is the captured bank deficit for a Harvester plus one Sentinel, or only
+  the Harvester when a paid ground screen already survives. Spending,
+  cancelling, or losing the package never refills it; a real Harvester
+  deposit re-arms the next cycle and a prepaid worker's death preserves
+  only the old unspent remainder.
   Separately, once 12,000 ticks have completed, every non-resigned seat
   with a completed living Foundry receives the long-game floor of one
   scrap every 60 ticks even while its harvest line exists. Both credits
   are per seat, never per Foundry. Automatic Repair Bays preserve the
-  replacement reserve, and the neural/scripted executive spends it on
-  the Harvester before returning control to policy; the replay-era
-  classic bot remains untouched.
+  recovery entitlement. The neural executive forms a screen-and-worker
+  package when a known source is guarded; the replay-era classic bot
+  remains untouched.
 - **Repair reuses construction's machinery.** Welding feeds buffered
   hp gains through the same resolve path as building (fire wins ties),
   stalls broke, and stacks across welders. Since 0.11 the three
@@ -1283,8 +1343,8 @@ comparisons don't survive GPU churn, so CI never runs it.
   lesson affordable at shipped numbers. Dismissible; re-entry is
   another tutorial match from Home.
 - **The build palette is data-driven.** `B` opens it; digits are
-  contextual (palette first, then a selected factory's produce slots
-  filtered to the seat's faction, then control groups). The old
+  contextual (palette first, then the first compatible selected producer's
+  slots filtered to the seat's faction, then control groups). The old
   hardcoded B/N hotkeys are gone.
 - **Input is semantic since 0.9.** `poll_events` is the only hardware
   reader; RawEvents resolve through a `BindingMap`
@@ -1357,12 +1417,13 @@ comparisons don't survive GPU churn, so CI never runs it.
   semantic flavor): every faction-varied sprite carries a derived
   accent mask in the atlas — gen_sprites.py diffs the two faction
   variants; where they differ IS the faction-colored region — and the
-  shell overlays it tinted per `allegiance_tint`: own machines pure,
-  allies blue, every hostile crimson (colorblind mode swaps ally to
-  bone for a luminance split). Minimap dots speak the same hues.
+  shell overlays it through `seat_identity_color`: own machines stay pure,
+  allied seats receive distinct cool accents, and hostile seats receive
+  distinct warm accents (colorblind mode keeps a friend/foe luminance split).
+  Minimap dots use the same identities.
   Never a badge, bar, or ring around the silhouette — bars read as
-  health. The menu font is Latin-1 only: an em dash renders as
-  tofu, so UI strings stick to ASCII plus '·'.
+  health. Runtime UI copy is ASCII-only; semantic icons carry meanings
+  such as vision, radar, attack range, minimum range, and repair.
 - **Stalls carry reasons** (`StallReason`): own-state facts only —
   routes, banks, footing. A reason must never derive from what fog
   hides; the enum doc enforces the principle on future variants.
@@ -1441,8 +1502,9 @@ comparisons don't survive GPU churn, so CI never runs it.
   2v2 slate (48/96 versus the frozen bridge's 33/96). Shipped 2v2
   seats are all-neural, which is the configuration it trained; deeper
   mixed-ally training remains a known lever and has historically cost
-  duel sharpness. The final v7 artifact's mixed-ally strength remains
-  unmeasured; revisit when 2v2 becomes a headline mode.
+  duel sharpness. R2 trained against both self-team and scripted
+  mixed-ally lanes, but its final mixed-ally strength remains unmeasured;
+  revisit when 2v2 becomes a headline mode.
 - **Expert's outright yardstick sweep is on loan to the movement era.**
   The 0.12 movement overhaul first moved Expert from a sweep to 60/80;
   subsequent 0.13 economy and roster changes re-rolled every rung
@@ -1454,11 +1516,21 @@ comparisons don't survive GPU churn, so CI never runs it.
   A1450 incumbent-continuation artifact finally preserved decisiveness and
   the exact 150-seed native cup matrix, but embedding it made Hard at
   cadence 16 read below Medium. Those are historical v6 readings. The
-  shipped v7 policy instead conditions every named rung on its trained
-  style and expresses difficulty through cadence and hesitation; its
-  160-match yardstick reads 101 < 116 < 135 < 140 with zero unresolved.
-  Its final native cup reads 580/800 with zero caps or draws, superseding
-  the old Prime/rusher verdict rather than inheriting it by assumption.
+  v7 policy instead conditioned every named rung on its trained style and
+  expressed difficulty through cadence and hesitation; its 160-match
+  yardstick read 101 < 116 < 135 < 140, and its native cup read 580/800
+  with zero caps or draws. Those are historical v7 results, not permanent
+  thresholds. The shipped v8 R2 update-140 policy retains the execution-only
+  difficulty ladder while adding the resolved named-profile contract. Its raw
+  zero-facet 160-match yardstick reads Easy 103 wins and 3,274,331 ticks,
+  Medium 125 and 2,459,207, Hard 144 and 1,643,189, and Expert 147 and
+  1,544,745: wins rise and the horizon-priced tick total falls at every rung.
+  Its final canonical-profile native cup matrix reads FF 115 wins with 13
+  caps, FC 133 with 7, CF 139 with 8, and CC 157 with 2, each over 300
+  games, for 544/1,200 wins with 30 caps. Every cap remained active. Zero
+  caps is therefore historical
+  evidence, not a standing rule: the current gate rejects unhealthy tails
+  while permitting active wars at the horizon.
 
 ## Gotchas learned the hard way
 

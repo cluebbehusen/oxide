@@ -31,7 +31,7 @@ pub enum Action {
     PanDown,
     /// Halt selected units, or scrap a selected unfinished site.
     StopOrScrap,
-    /// Train the selected factory's Nth roster slot (0-based).
+    /// Train the first compatible selected producer's Nth roster slot (0-based).
     TrainSlot(u8),
     /// Toggle the sim clock.
     TogglePause,

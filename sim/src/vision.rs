@@ -14,9 +14,11 @@
 
 use crate::ids::PlayerId;
 use crate::state::State;
-use crate::stats::BuildingKind;
+use crate::stats::{BuildingKind, Domain};
+use chassis::fx::{Fx, HALF, Vec2Fx};
 use chassis::grid::{Grid, TilePos};
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 
 /// A remembered enemy building: what its ground looked like the last time
 /// this player saw it. Ghosts are beliefs, not facts — the building may be
@@ -177,6 +179,254 @@ impl Vision {
     }
 }
 
+/// Whether the shared fog-honest view for `viewer` justifies treating a
+/// ground salvage tile as dangerous.
+///
+/// This is the one threat-knowledge funnel used by autonomous Harvest
+/// work. Live mobile enemies are consulted only when the viewer's
+/// current team vision contains their tile, and nearby friendly ground
+/// firepower can screen equal or weaker pressure. Static weapons come
+/// from the vision's own building memories, and unidentified radar
+/// contacts matter only in a tight local ring. Nothing here remembers a
+/// mobile unit after sight is lost or reads an unseen live building.
+#[derive(Debug, Clone, Copy)]
+struct MobileGroundPressure {
+    pos: Vec2Fx,
+    reach_sq: Fx,
+    strength: u64,
+    hostile: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StaticGroundPressure {
+    anchor: TilePos,
+    size: (i32, i32),
+    reach_sq: Fx,
+}
+
+/// One player's immutable, fog-honest salvage-danger snapshot for the
+/// brain phase. Capturing once makes every A* predicate a walk over compact
+/// threat records instead of repeatedly rescanning the full game state.
+pub(crate) struct GroundSalvageDanger {
+    contacts: Vec<TilePos>,
+    mobile: Vec<MobileGroundPressure>,
+    statics: Vec<StaticGroundPressure>,
+    building_blocks: Vec<Vec<(i32, i32)>>,
+    cache: RefCell<Vec<Vec<(i32, bool)>>>,
+}
+
+impl GroundSalvageDanger {
+    /// Captures the threat knowledge that stays fixed throughout one brain
+    /// phase. Unit damage is buffered and positions move afterward, so the
+    /// snapshot is exact for every Harvester decision in that phase.
+    pub(crate) fn capture(state: &State, viewer: PlayerId) -> Self {
+        let vision = state.vision(viewer);
+        let mobile = state
+            .units
+            .iter()
+            .filter_map(|unit| {
+                let hostile = state.hostile(viewer, unit.player);
+                if hostile && !vision.visible(unit.tile()) {
+                    return None;
+                }
+                let range = ground_weapon_reach(unit.kind.stats().weapons)?
+                    + crate::stats::HARVEST_MOBILE_DANGER_MARGIN;
+                let stats = unit.kind.stats();
+                Some(MobileGroundPressure {
+                    pos: unit.pos,
+                    reach_sq: range * range,
+                    strength: u64::from(stats.cost).saturating_mul(u64::from(unit.hp))
+                        / u64::from(stats.max_hp),
+                    hostile,
+                })
+            })
+            .collect();
+        let statics = vision
+            .ghosts()
+            .iter()
+            .filter(|ghost| ghost.built)
+            .filter_map(|ghost| {
+                let range = ground_weapon_reach(ghost.kind.stats().weapons)?
+                    + crate::stats::HARVEST_STATIC_DANGER_MARGIN;
+                Some(StaticGroundPressure {
+                    anchor: ghost.anchor,
+                    size: ghost.kind.stats().size,
+                    reach_sq: range * range,
+                })
+            })
+            .collect();
+        let mut building_blocks = vec![Vec::new(); state.map.height() as usize];
+        let viewer_team = state.player(viewer).team;
+        for building in &state.buildings {
+            if state.player(building.player).team == viewer_team {
+                stamp_blocked_rect(
+                    &mut building_blocks,
+                    state.map.width(),
+                    building.anchor,
+                    building.kind.stats().size,
+                );
+            } else {
+                // A hostile structure placed during this tick's command
+                // phase is not in the previous tick's ghost table yet.
+                // Its currently visible tiles are still live truth; its
+                // unseen footprint must remain unknown until vision
+                // refresh records it.
+                for tile in building.tiles().filter(|tile| vision.visible(*tile)) {
+                    stamp_blocked_span(
+                        &mut building_blocks,
+                        state.map.width(),
+                        tile.y,
+                        tile.x,
+                        tile.x,
+                    );
+                }
+            }
+        }
+        for ghost in vision.ghosts() {
+            stamp_blocked_rect(
+                &mut building_blocks,
+                state.map.width(),
+                ghost.anchor,
+                ghost.kind.stats().size,
+            );
+        }
+        for row in &mut building_blocks {
+            merge_spans(row);
+        }
+        Self {
+            contacts: vision.contacts().to_vec(),
+            mobile,
+            statics,
+            building_blocks,
+            cache: RefCell::new(vec![Vec::new(); state.map.height() as usize]),
+        }
+    }
+
+    /// Whether this snapshot marks one tile as too dangerous for
+    /// autonomous salvage work.
+    pub(crate) fn contains(&self, source: TilePos) -> bool {
+        let Some(row_index) = usize::try_from(source.y)
+            .ok()
+            .filter(|row| *row < self.cache.borrow().len())
+        else {
+            return self.compute_contains(source);
+        };
+        let cached = {
+            let cache = self.cache.borrow();
+            let row = &cache[row_index];
+            row.binary_search_by_key(&source.x, |hit| hit.0)
+                .ok()
+                .map(|index| row[index].1)
+        };
+        if let Some(dangerous) = cached {
+            return dangerous;
+        }
+        let dangerous = self.compute_contains(source);
+        let mut cache = self.cache.borrow_mut();
+        let row = &mut cache[row_index];
+        let index = row
+            .binary_search_by_key(&source.x, |hit| hit.0)
+            .unwrap_or_else(|index| index);
+        row.insert(index, (source.x, dangerous));
+        dangerous
+    }
+
+    /// Whether a building occupies this tile in the viewer's shared
+    /// knowledge. The row spans are captured once so every A* expansion
+    /// avoids a full building and ghost scan.
+    pub(crate) fn known_building_blocked(&self, tile: TilePos) -> bool {
+        let Some(row) = usize::try_from(tile.y)
+            .ok()
+            .and_then(|row| self.building_blocks.get(row))
+        else {
+            return false;
+        };
+        let index = row.partition_point(|&(_, end)| end < tile.x);
+        row.get(index)
+            .is_some_and(|&(start, end)| tile.x >= start && tile.x <= end)
+    }
+
+    fn compute_contains(&self, source: TilePos) -> bool {
+        if self
+            .contacts
+            .iter()
+            .any(|contact| contact.chebyshev(source) <= crate::stats::HARVEST_RADAR_DANGER_RADIUS)
+        {
+            return true;
+        }
+        let source_point = source.center();
+        let (mut hostile_strength, mut screen_strength) = (0u64, 0u64);
+        for pressure in &self.mobile {
+            if pressure.pos.dist_sq(source_point) > pressure.reach_sq {
+                continue;
+            }
+            if pressure.hostile {
+                hostile_strength = hostile_strength.saturating_add(pressure.strength);
+            } else {
+                screen_strength = screen_strength.saturating_add(pressure.strength);
+            }
+        }
+        if hostile_strength > screen_strength {
+            return true;
+        }
+        self.statics.iter().any(|pressure| {
+            rect_closest_point(pressure.anchor, pressure.size, source_point).dist_sq(source_point)
+                <= pressure.reach_sq
+        })
+    }
+}
+
+fn stamp_blocked_rect(
+    rows: &mut [Vec<(i32, i32)>],
+    map_width: i32,
+    anchor: TilePos,
+    size: (i32, i32),
+) {
+    for y in anchor.y..anchor.y + size.1 {
+        stamp_blocked_span(rows, map_width, y, anchor.x, anchor.x + size.0 - 1);
+    }
+}
+
+fn stamp_blocked_span(rows: &mut [Vec<(i32, i32)>], map_width: i32, y: i32, start: i32, end: i32) {
+    let Some(row) = usize::try_from(y).ok().and_then(|y| rows.get_mut(y)) else {
+        return;
+    };
+    let start = start.max(0);
+    let end = end.min(map_width - 1);
+    if start <= end {
+        row.push((start, end));
+    }
+}
+
+fn merge_spans(row: &mut Vec<(i32, i32)>) {
+    row.sort_unstable();
+    let mut write = 0;
+    for read in 0..row.len() {
+        let (start, end) = row[read];
+        if write > 0 && start <= row[write - 1].1.saturating_add(1) {
+            row[write - 1].1 = row[write - 1].1.max(end);
+        } else {
+            row[write] = (start, end);
+            write += 1;
+        }
+    }
+    row.truncate(write);
+}
+
+fn ground_weapon_reach(weapons: &[crate::stats::WeaponStats]) -> Option<Fx> {
+    weapons
+        .iter()
+        .filter(|weapon| weapon.targets.covers(Domain::Ground))
+        .map(|weapon| weapon.range)
+        .max()
+}
+
+fn rect_closest_point(anchor: TilePos, size: (i32, i32), from: Vec2Fx) -> Vec2Fx {
+    let min = anchor.center() - Vec2Fx::new(HALF, HALF);
+    let max = min + Vec2Fx::new(Fx::from_num(size.0), Fx::from_num(size.1));
+    Vec2Fx::new(from.x.clamp(min.x, max.x), from.y.clamp(min.y, max.y))
+}
+
 /// Horizontal half-spans of a sight disc, per |dy|: `spans[d]` is the
 /// widest `dx` with `dx*dx + d*d <= r*r`. Built once per process for
 /// every radius the stats can name — integer math, no libm.
@@ -303,4 +553,173 @@ pub(crate) fn refresh(state: &mut State) {
         }
     }
     state.vision = vision;
+}
+
+#[cfg(test)]
+mod danger_tests {
+    use super::*;
+    use crate::scenario::{PlayerSpec, UnitSpec};
+    use crate::{Faction, Scenario, UnitKind};
+
+    fn screened_source(extra_hostile: bool) -> (State, TilePos) {
+        let source = TilePos::new(10, 5);
+        let mut units = vec![
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Harvester,
+                x: 9,
+                y: 5,
+            },
+            UnitSpec {
+                player: 0,
+                kind: UnitKind::Sentinel,
+                x: 8,
+                y: 5,
+            },
+            UnitSpec {
+                player: 1,
+                kind: UnitKind::Sentinel,
+                x: 12,
+                y: 5,
+            },
+        ];
+        if extra_hostile {
+            units.push(UnitSpec {
+                player: 1,
+                kind: UnitKind::Sentinel,
+                x: 12,
+                y: 6,
+            });
+        }
+        let state = Scenario {
+            name: "screened-salvage".into(),
+            seed: 4,
+            map: vec![
+                "####################".into(),
+                "#1.................#".into(),
+                "#..................#".into(),
+                "#..................#".into(),
+                "#..................#".into(),
+                "#..................#".into(),
+                "#................2.#".into(),
+                "#..................#".into(),
+                "####################".into(),
+            ],
+            players: vec![
+                PlayerSpec {
+                    name: "Ferrous".into(),
+                    faction: Faction::Ferrous,
+                    team: None,
+                    scrap: 0,
+                    bot: false,
+                    bot_config: None,
+                },
+                PlayerSpec {
+                    name: "Cupric".into(),
+                    faction: Faction::Cupric,
+                    team: None,
+                    scrap: 0,
+                    bot: false,
+                    bot_config: None,
+                },
+            ],
+            units,
+            buildings: Vec::new(),
+            meta: None,
+        }
+        .build()
+        .unwrap();
+        (state, source)
+    }
+
+    #[test]
+    fn equal_local_ground_value_screens_a_work_zone() {
+        let (state, source) = screened_source(false);
+        let danger = GroundSalvageDanger::capture(&state, PlayerId(0));
+        assert!(!danger.contains(source));
+    }
+
+    #[test]
+    fn outmatched_local_ground_value_retires_a_work_zone() {
+        let (state, source) = screened_source(true);
+        let danger = GroundSalvageDanger::capture(&state, PlayerId(0));
+        assert!(danger.contains(source));
+    }
+
+    #[test]
+    fn cached_danger_queries_match_the_snapshot_predicate() {
+        let (state, _) = screened_source(true);
+        let danger = GroundSalvageDanger::capture(&state, PlayerId(0));
+        for y in -1..=state.map.height() {
+            for x in -1..=state.map.width() {
+                let tile = TilePos::new(x, y);
+                assert_eq!(
+                    danger.contains(tile),
+                    danger.compute_contains(tile),
+                    "{tile}"
+                );
+                assert_eq!(
+                    danger.contains(tile),
+                    danger.compute_contains(tile),
+                    "cached {tile}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn indexed_building_knowledge_matches_the_fog_reference() {
+        fn reference(state: &State, viewer: PlayerId, tile: TilePos) -> bool {
+            let vision = state.vision(viewer);
+            if vision.visible(tile) {
+                return state.building_at(tile).is_some();
+            }
+            let team = state.player(viewer).team;
+            state.buildings.iter().any(|building| {
+                state.player(building.player).team == team && building.contains(tile)
+            }) || vision
+                .ghosts()
+                .iter()
+                .any(|ghost| ghost.footprint().any(|t| t == tile))
+        }
+
+        let (mut state, _) = screened_source(false);
+        let visible_site = TilePos::new(10, 4);
+        assert!(state.vision(PlayerId(0)).visible(visible_site));
+        state.place_building(PlayerId(1), BuildingKind::Turret, visible_site);
+
+        let check = |state: &State| {
+            let knowledge = GroundSalvageDanger::capture(state, PlayerId(0));
+            for y in 0..state.map.height() {
+                for x in 0..state.map.width() {
+                    let tile = TilePos::new(x, y);
+                    assert_eq!(
+                        knowledge.known_building_blocked(tile),
+                        reference(state, PlayerId(0), tile),
+                        "{tile}"
+                    );
+                }
+            }
+        };
+        check(&state);
+
+        state.refresh_vision();
+        for unit in state
+            .units
+            .iter_mut()
+            .filter(|unit| unit.player == PlayerId(0))
+        {
+            unit.pos = TilePos::new(2, 2).center();
+        }
+        state.refresh_vision();
+        assert!(!state.vision(PlayerId(0)).visible(visible_site));
+        assert!(
+            state
+                .vision(PlayerId(0))
+                .ghosts()
+                .iter()
+                .any(|ghost| ghost.anchor == visible_site)
+        );
+        check(&state);
+    }
 }

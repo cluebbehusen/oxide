@@ -126,6 +126,10 @@ pub struct WeaponStats {
     pub damage: u32,
     /// Maximum engagement distance, in tiles (center to closest point).
     pub range: Fx,
+    /// Closest engagement distance. Targets inside this radius cannot be
+    /// selected, giving long-range emplacements an explicit close-pressure
+    /// counter.
+    pub minimum_range: Fx,
     /// Ticks between hits.
     pub cooldown_ticks: u32,
     /// Which movement domains this weapon can hit. Buildings count as
@@ -372,6 +376,7 @@ const SENTINEL: UnitStats = UnitStats {
         WeaponStats {
             damage: 10,
             range: Fx::lit("2.5"),
+            minimum_range: Fx::ZERO,
             cooldown_ticks: 20, // 1 hit/s
             targets: DomainMask::GROUND,
             splash: None,
@@ -383,6 +388,7 @@ const SENTINEL: UnitStats = UnitStats {
         WeaponStats {
             damage: 4,
             range: Fx::lit("3"),
+            minimum_range: Fx::ZERO,
             cooldown_ticks: 30,
             targets: DomainMask::AIR,
             splash: None,
@@ -405,7 +411,8 @@ const SCUTTLER: UnitStats = UnitStats {
     weapons: &[WeaponStats {
         damage: 3,
         range: Fx::lit("0.8"), // practically touching
-        cooldown_ticks: 6,     // a gnawing 10 dps
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 6, // a gnawing 10 dps
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
@@ -430,7 +437,8 @@ const LANCER: UnitStats = UnitStats {
         // one-shots the light roster; siege and air still counter.
         damage: 60,
         range: Fx::lit("5.5"), // beyond aggro: it only uses this on orders
-        cooldown_ticks: 60,    // one heavy shot per 3 s
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 60, // one heavy shot per 3 s
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
@@ -451,7 +459,8 @@ const BOMBARD: UnitStats = UnitStats {
     weapons: &[WeaponStats {
         damage: 45,
         range: Fx::lit("9.5"), // beyond its own vision: a spotter weapon
-        cooldown_ticks: 100,   // one shell per 5 s
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 100, // one shell per 5 s
         targets: DomainMask::GROUND,
         splash: Some(Fx::lit("1.4")),
         indirect: true,
@@ -472,6 +481,7 @@ const FLAKHOUND: UnitStats = UnitStats {
     weapons: &[WeaponStats {
         damage: 8,
         range: Fx::lit("5"),
+        minimum_range: Fx::ZERO,
         cooldown_ticks: 25,
         targets: DomainMask::AIR,
         splash: Some(Fx::lit("1.2")),
@@ -493,6 +503,7 @@ const STINGER: UnitStats = UnitStats {
     weapons: &[WeaponStats {
         damage: 5,
         range: Fx::lit("4.5"),
+        minimum_range: Fx::ZERO,
         cooldown_ticks: 20,
         targets: DomainMask::AIR,
         splash: Some(Fx::lit("1")),
@@ -518,6 +529,7 @@ const BUZZARD: UnitStats = UnitStats {
     weapons: &[WeaponStats {
         damage: 25,
         range: Fx::lit("3"),
+        minimum_range: Fx::ZERO,
         cooldown_ticks: 50,
         targets: DomainMask::GROUND,
         splash: None,
@@ -543,6 +555,7 @@ const DARTER: UnitStats = UnitStats {
     weapons: &[WeaponStats {
         damage: 8,
         range: Fx::lit("2.5"),
+        minimum_range: Fx::ZERO,
         cooldown_ticks: 15,
         targets: DomainMask::GROUND,
         splash: None,
@@ -564,6 +577,7 @@ const TALON: UnitStats = UnitStats {
     weapons: &[WeaponStats {
         damage: 14,
         range: Fx::lit("3.5"),
+        minimum_range: Fx::ZERO,
         cooldown_ticks: 25,
         targets: DomainMask::AIR,
         splash: None,
@@ -585,6 +599,7 @@ const WISP: UnitStats = UnitStats {
     weapons: &[WeaponStats {
         damage: 8,
         range: Fx::lit("3"),
+        minimum_range: Fx::ZERO,
         cooldown_ticks: 18,
         targets: DomainMask::AIR,
         splash: None,
@@ -614,7 +629,8 @@ const TURRET: BuildingStats = BuildingStats {
     produces: &[],
     weapons: &[WeaponStats {
         damage: 12,
-        range: Fx::lit("4.5"), // the bottom rung of the siege ladder
+        range: Fx::lit("5"), // the bottom rung of the siege ladder
+        minimum_range: Fx::ZERO,
         cooldown_ticks: 25,
         targets: DomainMask::GROUND,
         splash: None,
@@ -659,6 +675,7 @@ const FLAK_TURRET: BuildingStats = BuildingStats {
     weapons: &[WeaponStats {
         damage: 7,
         range: Fx::lit("5.5"),
+        minimum_range: Fx::ZERO,
         cooldown_ticks: 12,
         targets: DomainMask::AIR,
         splash: Some(Fx::lit("1.2")),
@@ -678,7 +695,8 @@ const BASTION: BuildingStats = BuildingStats {
     produces: &[],
     weapons: &[WeaponStats {
         damage: 40,
-        range: Fx::lit("7.5"), // beyond its own sight: full reach needs a spotter
+        range: Fx::lit("9.5"), // artillery parity; full reach needs a spotter
+        minimum_range: Fx::lit("2.5"),
         cooldown_ticks: 90,
         targets: DomainMask::GROUND,
         splash: Some(Fx::lit("1.3")),
@@ -743,6 +761,17 @@ impl UnitKind {
             UnitKind::Talon => &TALON,
             UnitKind::Wisp => &WISP,
         }
+    }
+
+    /// Whether this unit can serve as the ground escort in a stranded
+    /// economy's recovery package.
+    pub(crate) fn is_recovery_screen(self) -> bool {
+        let stats = self.stats();
+        stats.domain == Domain::Ground
+            && stats
+                .weapons
+                .iter()
+                .any(|weapon| weapon.targets.covers(Domain::Ground) && !weapon.projectile)
     }
 }
 
@@ -812,9 +841,15 @@ pub const SHELL_SPEED: Fx = Fx::lit("0.30");
 pub const RECLAIMER_PERIOD: u64 = 24;
 
 /// Ticks per emergency scrap credited by a surviving Foundry after its
-/// owner's last Harvester is gone. The credit stops at the price of a new
-/// Harvester and never runs while one is already training.
+/// owner's last Harvester is gone. Each real deposit arms one finite
+/// recovery entitlement; spending or cancelling that package cannot refill
+/// it.
 pub const FOUNDRY_RECOVERY_PERIOD: u64 = 10;
+
+/// Maximum symmetric emergency entitlement available to a stranded seat:
+/// one cheap screen plus its replacement Harvester. A seat with a paid
+/// ground screen captures only the Harvester-sized deficit.
+pub const FOUNDRY_RECOVERY_RESERVE: u32 = SENTINEL.cost + HARVESTER.cost;
 
 /// Ticks per baseline scrap credited by a living player's Foundry.
 ///
@@ -895,7 +930,7 @@ pub const FOUNDRY_REPAIR_PRICE: u32 = 100;
 pub const RICH_SCRAP_NODE_AMOUNT: u32 = 800;
 
 /// Maximum queued units per Foundry.
-pub const QUEUE_CAP: usize = 5;
+pub const QUEUE_CAP: usize = 8;
 
 /// Maximum orders (and patrol waypoints) queued per unit. Bounds what a
 /// hostile append stream can make a unit remember.
@@ -904,12 +939,25 @@ pub const ORDER_QUEUE_CAP: usize = 32;
 /// A* expansion budget per query — bounds worst-case pathfinding work.
 pub const PATH_EXPANSION_CAP: u32 = 20_000;
 
-/// When a harvest node runs dry, harvesters look for a replacement within
-/// this Chebyshev radius of the old node. Sized to the widest contiguous
-/// scrap deposit on any shipped map: the harvester finishes the deposit
-/// it was sent to, then reports for orders — marching to a different
-/// patch is the owner's call, surfaced through the idle-harvester flow.
-pub const RETARGET_RADIUS: i32 = 2;
+/// Chebyshev radius of a Harvester's work zone around the source the
+/// player clicked. Seven spans the widest deliberately connected deposit
+/// on the shipped 0.13 map shelf (the grand team-map center fields) while
+/// a fixed anchor prevents hop-by-hop drift into another patch.
+pub const HARVEST_ZONE_RADIUS: i32 = 7;
+
+/// A radar blip only makes salvage unsafe when it is this close to a
+/// candidate source. Contacts carry no identity or range, so a distant
+/// blip must not retire an otherwise healthy work zone.
+pub const HARVEST_RADAR_DANGER_RADIUS: i32 = 4;
+
+/// Mobile ground threats are treated as dangerous this many tiles beyond
+/// their current weapon reach. It gives a visible raider's approach time
+/// weight without inventing memory after sight is lost.
+pub const HARVEST_MOBILE_DANGER_MARGIN: Fx = Fx::lit("3");
+
+/// Remembered hostile emplacements are static, so their conservative
+/// danger margin can stay tighter than a mobile threat's.
+pub const HARVEST_STATIC_DANGER_MARGIN: Fx = Fx::lit("1");
 
 /// When a Move command lands on an impassable tile, the goal snaps to the
 /// nearest passable tile within this radius (else the command is rejected).
@@ -940,9 +988,9 @@ pub const ARRIVAL_NEAR: Fx = Fx::lit("1.5");
 pub const ANCHORED_PUSH_SHARE: Fx = Fx::lit("0.1");
 
 /// Furthest collision resolution may displace one unit in a whole tick,
-/// across every relaxation pass. Keeps packed crowds settling smoothly
-/// instead of popping apart.
-pub const COLLISION_MAX_STEP: Fx = Fx::lit("0.12");
+/// across every relaxation pass. This stays below the visible-jolt limit
+/// while leaving enough separation headroom for dense armies to flow.
+pub const COLLISION_MAX_STEP: Fx = Fx::lit("0.155");
 
 /// The slide blend for a MOVING unit's collision correction: instead
 /// of a pure push along the contact normal (which a head-on pair's

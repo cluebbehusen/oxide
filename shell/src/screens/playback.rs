@@ -143,21 +143,21 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2) {
         return;
     }
     let full = format!(
-        "PLAYBACK  {} / {}  ·  {}x{}  ·  Space pause · PgUp/PgDn seek · Home/End · 1-5 speed · Esc leave",
+        "PLAYBACK  {} / {}  |  {}x{}  |  Space pause | PgUp/PgDn seek | Home/End | 1-5 speed | Esc leave",
         pb.engine.position(),
         pb.engine.total(),
         pb.speed,
-        if pb.paused { "  ·  PAUSED" } else { "" },
+        if pb.paused { "  |  PAUSED" } else { "" },
     );
     // A 640px window cannot seat the controls hint; the transport
     // numbers alone must never run off both edges.
     let line = if measure_text(&full, None, size as u16, 1.0).width > screen_width() - 16.0 * s {
         format!(
-            "PLAYBACK  {} / {}  ·  {}x{}",
+            "PLAYBACK  {} / {}  |  {}x{}",
             pb.engine.position(),
             pb.engine.total(),
             pb.speed,
-            if pb.paused { "  ·  PAUSED" } else { "" },
+            if pb.paused { "  |  PAUSED" } else { "" },
         )
     } else {
         full

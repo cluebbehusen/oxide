@@ -9,13 +9,10 @@ const MINIMAP_MAX: Vec2 = vec2(220.0, 150.0);
 const MINI_VOID: Color = color_u8!(10, 10, 13, 255);
 const MINI_GROUND: Color = color_u8!(44, 44, 52, 255);
 const MINI_ROCK: Color = color_u8!(84, 84, 96, 255);
-const MINI_PEAK: Color = color_u8!(108, 104, 126, 255);
+const MINI_PEAK: Color = color_u8!(77, 66, 42, 255);
 
-/// Minimap allegiance color: the same semantic hues the world's
-/// accent masks wear — your dots keep faction color, allies read
-/// blue, every hostile reads crimson. One vocabulary on both
-/// surfaces; which faction an enemy runs is the battlefield's story,
-/// not the minimap's.
+/// Minimap identity color: the same faction-own, cool-allied, warm-hostile
+/// seat accents used by the world renderer.
 fn mini_entity_color(game: &Game, owner: oxide_sim::PlayerId) -> Color {
     super::seat_identity_color(game, owner)
 }
@@ -95,7 +92,10 @@ pub fn minimap_world_in(rect: Rect, map_w: i32, screen: Vec2) -> Option<Vec2> {
 /// The whole war at a glance, under the same fog rules as the world view
 /// (and, like everything else, omniscient while the F1 overlay is up).
 pub(crate) fn draw_minimap(game: &Game) {
-    let rect = minimap_rect(game);
+    let rect = game.layout.get().minimap;
+    if rect.w <= 0.0 || rect.h <= 0.0 {
+        return;
+    }
     let scale = rect.w / game.state.map().width() as f32;
     let omniscient = game.all_seeing();
     let vision = game.my_vision();

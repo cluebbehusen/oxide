@@ -112,6 +112,28 @@ fn shape_and_version_drift_is_refused() {
     assert!(QuantNet::from_json(&bad.to_string()).is_err(), "shape");
 }
 
+#[test]
+fn a_v7_external_artifact_names_the_supported_migration() {
+    let mut old = tiny_artifact();
+    old["gym_version"] = 7.into();
+    old["conditioning"] = 7.into();
+    old["recips"] = serde_json::json!(vec![1; oxide_sim::bot::FEATURE_COUNT + 7]);
+    for row in old["layers"][0]["w"]
+        .as_array_mut()
+        .expect("tiny first layer")
+    {
+        row.as_array_mut()
+            .expect("tiny row")
+            .truncate(oxide_sim::bot::FEATURE_COUNT + 7);
+    }
+    let err = QuantNet::from_json(&old.to_string()).expect_err("v7 is not silently accepted");
+    assert!(err.contains("weights speak gym v7, sim speaks v8"), "{err}");
+    assert!(
+        err.contains("widen.py --src OLD.json --out NEW.json"),
+        "{err}"
+    );
+}
+
 /// `--weights` loads files the sim did not write, so the loader is a
 /// trust boundary: every tensor that feeds the integer kernel carries
 /// a magnitude ceiling, and a breach names itself.

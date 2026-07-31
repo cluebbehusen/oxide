@@ -17,8 +17,6 @@ pub(crate) struct UnitPose {
     pub width_scale: f32,
     /// Vertical squash/stretch, used for ground weight.
     pub height_scale: f32,
-    /// Strength of the ground wake.
-    pub dust: f32,
     /// Strength of the air exhaust.
     pub thruster: f32,
 }
@@ -29,16 +27,15 @@ impl UnitPose {
         lift: 0.0,
         width_scale: 1.0,
         height_scale: 1.0,
-        dust: 0.0,
         thruster: 0.0,
     };
 }
 
 /// Presentation pose for one unit.
 ///
-/// Entity id offsets prevent a formation from bobbing in lockstep. Reduced
-/// motion removes travel oscillation and particles but keeps a steady air
-/// exhaust, so an active flyer still reads as powered rather than parked.
+/// Ground locomotion lives in authored sprite frames, so a tracked chassis
+/// remains planted instead of wobbling or squashing. Air units retain a small
+/// bank and exhaust; entity id offsets keep a formation out of lockstep.
 pub(crate) fn unit_pose(
     time: f32,
     id: u32,
@@ -55,37 +52,51 @@ pub(crate) fn unit_pose(
             ..UnitPose::REST
         };
     }
-    let phase = time * if airborne { 5.2 } else { 8.4 } + id as f32 * 1.618_034;
+    if !airborne {
+        return UnitPose::REST;
+    }
+    let phase = time * 5.2 + id as f32 * 1.618_034;
     let wave = phase.sin();
     let stride = phase.cos();
-    if airborne {
-        UnitPose {
-            lateral: wave * 0.025,
-            lift: stride * 0.025,
-            width_scale: 1.0 - wave.abs() * 0.065,
-            height_scale: 1.0 + wave.abs() * 0.025,
-            dust: 0.0,
-            thruster: 0.62 + 0.28 * (stride * 0.5 + 0.5),
-        }
-    } else {
-        UnitPose {
-            lateral: wave * 0.014,
-            lift: -stride.abs() * 0.014,
-            width_scale: 1.0 + wave * 0.012,
-            height_scale: 1.0 - wave * 0.009,
-            dust: (stride * 0.5 + 0.5).powi(2),
-            thruster: 0.0,
-        }
+    UnitPose {
+        lateral: wave * 0.025,
+        lift: stride * 0.025,
+        width_scale: 1.0 - wave.abs() * 0.065,
+        height_scale: 1.0 + wave.abs() * 0.025,
+        thruster: 0.62 + 0.28 * (stride * 0.5 + 0.5),
     }
 }
 
-/// A stable 0..1 activity cycle, offset per entity.
-pub(crate) fn activity_phase(time: f32, id: u32, speed: f32, reduced: bool) -> f32 {
-    if reduced {
-        0.5
-    } else {
-        ((time * speed + id as f32 * 0.754_878).sin() * 0.5 + 0.5).clamp(0.0, 1.0)
+/// A stable authored-frame loop with a deterministic per-entity offset.
+/// Reduced motion always holds the base frame.
+pub(crate) fn loop_frame(
+    time: f32,
+    id: u32,
+    frames_per_second: f32,
+    frame_count: usize,
+    reduced: bool,
+) -> usize {
+    assert!(frame_count > 0, "an authored loop needs at least one frame");
+    if reduced || frame_count == 1 {
+        return 0;
     }
+    let tick = (time.max(0.0) * frames_per_second.max(0.0)).floor() as u64;
+    ((tick + u64::from(id).wrapping_mul(7)) % frame_count as u64) as usize
+}
+
+/// Selects a construction sprite's progress stage and ambient machinery phase.
+/// Public site progress chooses the stage; no builder order or other private
+/// activity can leak through presentation. Reduced motion holds the crane.
+pub(crate) fn construction_frame(
+    progress: u32,
+    total: u32,
+    time: f32,
+    id: u32,
+    reduced: bool,
+) -> (usize, usize) {
+    let stage = ((u64::from(progress) * 3) / u64::from(total.max(1))).min(2) as usize;
+    let phase = loop_frame(time, id, 3.0, 2, reduced);
+    (stage, phase)
 }
 
 /// Pose for a defense's separately drawn mount.
@@ -140,8 +151,8 @@ mod tests {
     fn unit_motion_is_repeatable_and_formation_offsets_do_not_lock_step() {
         let a = unit_pose(2.25, 7, true, false, false);
         assert_eq!(a, unit_pose(2.25, 7, true, false, false));
-        assert_ne!(a, unit_pose(2.25, 8, true, false, false));
-        assert!(a.dust > 0.0);
+        assert_eq!(a, unit_pose(2.25, 8, true, false, false));
+        assert_eq!(a, UnitPose::REST);
         assert_eq!(a.thruster, 0.0);
     }
 
@@ -154,19 +165,15 @@ mod tests {
         assert_eq!(air.lateral, 0.0);
         assert_eq!(air.lift, 0.0);
         assert_eq!(air.width_scale, 1.0);
-        assert_eq!(air.dust, 0.0);
         assert!(air.thruster > 0.0);
-        assert_eq!(activity_phase(1.0, 1, 9.0, true), 0.5);
-        assert_eq!(activity_phase(99.0, 91, 0.2, true), 0.5);
     }
 
     #[test]
     fn air_and_ground_use_distinct_activity_cues() {
         let ground = unit_pose(0.4, 11, true, false, false);
         let air = unit_pose(0.4, 11, true, true, false);
-        assert!(ground.dust > 0.0);
+        assert_eq!(ground, UnitPose::REST);
         assert_eq!(ground.thruster, 0.0);
-        assert_eq!(air.dust, 0.0);
         assert!(air.thruster > 0.0);
         assert_ne!(air.width_scale, ground.width_scale);
         assert_eq!(unit_pose(0.4, 11, false, true, false), UnitPose::REST);
@@ -184,19 +191,42 @@ mod tests {
                         pose.lift,
                         pose.width_scale,
                         pose.height_scale,
-                        pose.dust,
                         pose.thruster,
                     ] {
                         assert!(value.is_finite());
                     }
                     assert!((0.9..=1.1).contains(&pose.width_scale));
                     assert!((0.9..=1.1).contains(&pose.height_scale));
-                    assert!((0.0..=1.0).contains(&pose.dust));
                     assert!((0.0..=1.0).contains(&pose.thruster));
                 }
-                assert!((0.0..=1.0).contains(&activity_phase(time, id, 8.0, false)));
             }
         }
+    }
+
+    #[test]
+    fn authored_loops_are_repeatable_offset_and_reduced_motion_safe() {
+        assert_eq!(loop_frame(1.25, 7, 8.0, 3, false), 2);
+        assert_eq!(loop_frame(1.25, 7, 8.0, 3, false), 2);
+        assert_ne!(
+            loop_frame(1.25, 7, 8.0, 3, false),
+            loop_frame(1.25, 8, 8.0, 3, false)
+        );
+        assert_eq!(loop_frame(99.0, 42, 8.0, 3, true), 0);
+        assert_eq!(loop_frame(-2.0, 0, 8.0, 3, false), 0);
+    }
+
+    #[test]
+    fn construction_frames_advance_by_progress_but_freeze_the_machine_when_needed() {
+        assert_eq!(construction_frame(0, 300, 1.0, 0, false).0, 0);
+        assert_eq!(construction_frame(100, 300, 1.0, 0, false).0, 1);
+        assert_eq!(construction_frame(200, 300, 1.0, 0, false).0, 2);
+        assert_eq!(construction_frame(299, 300, 1.0, 0, false).0, 2);
+        assert_ne!(
+            construction_frame(100, 300, 9.0, 4, false).1,
+            construction_frame(100, 300, 9.4, 4, false).1,
+            "every visible site carries the ambient crane loop"
+        );
+        assert_eq!(construction_frame(100, 300, 9.0, 4, true), (1, 0));
     }
 
     #[test]

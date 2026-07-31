@@ -62,7 +62,7 @@ pub fn compute(replay: &GameReplay, every: u64) -> Result<MatchStats> {
         .unwrap_or(0);
     anyhow::ensure!(
         total <= crate::MAX_REPLAY_TICKS,
-        "replay spans {total} ticks — beyond the {}-tick bound",
+        "replay spans {total} ticks, beyond the {}-tick bound",
         crate::MAX_REPLAY_TICKS
     );
     let mut state = replay.setup.build().context("building scenario")?;

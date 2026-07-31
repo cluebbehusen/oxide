@@ -5,8 +5,11 @@
 use super::*;
 
 /// The panel's clickable geometry: cards, card count, queue slots,
-/// queue count, band top.
+/// queue count, band bounds, orders dock, and whether the compact
+/// layout had to yield the minimap.
 type PanelGeometry = (
+    [(Rect, crate::panel::CardAction); 8],
+    usize,
     [(Rect, crate::panel::CardAction); 16],
     usize,
     [(Rect, crate::panel::CardAction); 8],
@@ -14,7 +17,190 @@ type PanelGeometry = (
     f32,
     f32,
     Rect,
+    bool,
 );
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PanelPacking {
+    right: f32,
+    available: f32,
+    per_row: usize,
+    roster_shown: usize,
+    roster_per_row: usize,
+    roster_h: f32,
+    combat_shown: usize,
+    combat_h: f32,
+    band_h: f32,
+    top: f32,
+    hides_minimap: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn panel_packing_at_right(
+    viewport: Vec2,
+    scale: f32,
+    right: f32,
+    roster_shown: usize,
+    cards_shown: usize,
+    combat_len: usize,
+    hides_minimap: bool,
+) -> PanelPacking {
+    let cards_x = 150.0 * scale;
+    let (card_w, card_h, gap) = (66.0 * scale, 80.0 * scale, 6.0 * scale);
+    let available = (right - cards_x).max(card_w);
+    let per_row = (((available + gap) / (card_w + gap)).floor() as usize).max(1);
+    let (roster_w, roster_h, roster_gap) = (64.0 * scale, 70.0 * scale, 5.0 * scale);
+    let roster_per_row =
+        (((available + roster_gap) / (roster_w + roster_gap)).floor() as usize).max(1);
+    let roster_rows = roster_shown.div_ceil(roster_per_row);
+    let roster_h = if roster_shown == 0 {
+        0.0
+    } else {
+        22.0 * scale + roster_rows as f32 * (roster_h + 5.0 * scale)
+    };
+    let rows = grouped_card_rows(cards_shown, per_row);
+    let combat_h = if combat_len == 0 {
+        0.0
+    } else {
+        (22.0 + 18.0 * combat_len as f32) * scale
+    };
+    let band_h = (20.0 * scale + combat_h + roster_h + rows as f32 * (card_h + 4.0 * scale))
+        .max(120.0 * scale);
+    PanelPacking {
+        right,
+        available,
+        per_row,
+        roster_shown,
+        roster_per_row,
+        roster_h,
+        combat_shown: combat_len,
+        combat_h,
+        band_h,
+        top: viewport.y - band_h,
+        hides_minimap,
+    }
+}
+
+fn panel_packing(
+    viewport: Vec2,
+    minimap: Rect,
+    scale: f32,
+    roster_len: usize,
+    cards_len: usize,
+    combat_len: usize,
+) -> PanelPacking {
+    let roster_shown = roster_len.min(8);
+    let cards_shown = cards_len.min(16);
+    let reserved_right = if minimap.w > 0.0 {
+        (minimap.x - 8.0 * scale).max(300.0 * scale).min(viewport.x)
+    } else {
+        viewport.x
+    };
+    let max_band_h = (viewport.y - crate::layout::TOP_BAR_H * scale).max(0.0);
+    let mut packing = panel_packing_at_right(
+        viewport,
+        scale,
+        reserved_right,
+        roster_shown,
+        cards_shown,
+        combat_len,
+        false,
+    );
+    if packing.band_h > max_band_h && reserved_right < viewport.x {
+        packing = panel_packing_at_right(
+            viewport,
+            scale,
+            viewport.x,
+            roster_shown,
+            cards_shown,
+            combat_len,
+            true,
+        );
+    }
+    if packing.band_h > max_band_h && packing.roster_shown > 0 {
+        packing = panel_packing_at_right(
+            viewport,
+            scale,
+            viewport.x,
+            0,
+            cards_shown,
+            combat_len,
+            true,
+        );
+    }
+    if packing.band_h > max_band_h && packing.combat_shown > 0 {
+        packing = panel_packing_at_right(viewport, scale, viewport.x, 0, cards_shown, 0, true);
+    }
+    packing
+}
+
+fn grouped_card_slot(index: usize, rally_count: usize, per_row: usize) -> (usize, usize, bool) {
+    let per_row = per_row.max(1);
+    let row = index / per_row;
+    let column = index % per_row;
+    let boundary_row = rally_count / per_row;
+    let follows_rally_in_same_row = rally_count > 0
+        && !rally_count.is_multiple_of(per_row)
+        && index >= rally_count
+        && row == boundary_row;
+    (row, column, follows_rally_in_same_row)
+}
+
+fn grouped_card_rows(shown: usize, per_row: usize) -> usize {
+    shown.div_ceil(per_row.max(1)).max(1)
+}
+
+fn grouped_card_gap(
+    shown: usize,
+    rally_count: usize,
+    per_row: usize,
+    available: f32,
+    card_width: f32,
+    ordinary_gap: f32,
+) -> f32 {
+    let per_row = per_row.max(1);
+    if rally_count == 0 || rally_count >= shown || rally_count.is_multiple_of(per_row) {
+        return 0.0;
+    }
+    let boundary_row_start = rally_count / per_row * per_row;
+    let cards_in_boundary_row = (shown - boundary_row_start).min(per_row);
+    let ordinary_width = cards_in_boundary_row as f32 * card_width
+        + cards_in_boundary_row.saturating_sub(1) as f32 * ordinary_gap;
+    (available - ordinary_width).clamp(0.0, 10.0 * card_width / 66.0)
+}
+
+/// Packs every visible queue chip above the command band. A single
+/// column stays pleasantly quiet when it fits; a full eight-slot
+/// production queue becomes a 2×4 dock at the 640×400 contract instead
+/// of hiding paid, cancelable work behind a "+4" label.
+fn queue_grid(queue_len: usize, panel_top: f32, scale: f32) -> (Rect, [Rect; 8], usize) {
+    let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
+    let mut slots = [zero; 8];
+    let count = queue_len.min(slots.len());
+    if count == 0 {
+        return (zero, slots, 0);
+    }
+    let (size, gap) = (44.0 * scale, 4.0 * scale);
+    let label_h = 22.0 * scale;
+    let available = (panel_top - 54.0 * scale - label_h).max(size + gap);
+    let max_rows = ((available / (size + gap)).floor() as usize).max(1);
+    let columns = count.div_ceil(max_rows).max(1);
+    let rows = count.div_ceil(columns);
+    let width = 16.0 * scale + columns as f32 * size + columns.saturating_sub(1) as f32 * gap;
+    let height = label_h + rows as f32 * (size + gap) + 6.0 * scale;
+    let dock = Rect::new(0.0, panel_top - height, width, height);
+    for (index, slot) in slots.iter_mut().take(count).enumerate() {
+        let row = index / columns;
+        let column = index % columns;
+        *slot = Rect::new(
+            8.0 * scale + column as f32 * (size + gap),
+            dock.y + label_h + row as f32 * (size + gap),
+            size,
+            size,
+        );
+    }
+    (dock, slots, count)
+}
 
 /// Draws the command panel band and returns its clickable geometry.
 pub(crate) fn draw_panel(
@@ -26,36 +212,44 @@ pub(crate) fn draw_panel(
     use crate::panel::{CardAction, CardIcon};
     let s = ui_scale();
     let mini = minimap_rect(game);
-    // Cards stop short of the minimap on narrow windows; the band
-    // itself hugs its content instead of spanning the screen — a
-    // full-width bar left a dead stretch between the cards and the
-    // minimap, which floats in the corner at its own size.
-    let right = if mini.w > 0.0 {
-        (mini.x - 8.0 * s).max(300.0 * s)
-    } else {
-        screen_width()
-    };
-    // Cards wrap instead of vanishing: a 640px window must keep every
-    // command reachable, so the band grows taller as rows accumulate.
+    let packing = panel_packing(
+        vec2(screen_width(), screen_height()),
+        mini,
+        s,
+        panel.roster.len(),
+        panel.cards.len(),
+        panel.combat.len(),
+    );
+    let right = packing.right;
+    // Cards wrap instead of vanishing. If reserving the minimap would
+    // push the panel through the top bar, the command surface takes the
+    // width for this frame; only a still-overfull palette temporarily
+    // yields the mixed roster.
     let (cw, ch, gap) = (66.0 * s, 80.0 * s, 6.0 * s);
     let cards_x = 150.0 * s;
-    let available = (right - cards_x).max(cw);
-    let per_row = (((available + gap) / (cw + gap)).floor() as usize).max(1);
+    let available = packing.available;
+    let per_row = packing.per_row;
+    let roster_shown = packing.roster_shown;
+    let (rw, rh, roster_gap) = (64.0 * s, 70.0 * s, 5.0 * s);
+    let roster_per_row = packing.roster_per_row;
+    let roster_h = packing.roster_h;
     let shown = panel.cards.len().min(16);
-    let rows = shown.div_ceil(per_row).max(1);
-    let combat_h = if panel.combat.is_empty() {
-        0.0
-    } else {
-        (20.0 + 15.0 * panel.combat.len() as f32) * s
-    };
-    let band_h = (20.0 * s + combat_h + rows as f32 * (ch + 4.0 * s)).max(120.0 * s);
-    let top = screen_height() - band_h;
+    let rally_shown = panel.cards[..shown]
+        .iter()
+        .take_while(|card| matches!(card.action, CardAction::ArmRally | CardAction::ClearRally))
+        .count();
+    let section_gap = grouped_card_gap(shown, rally_shown, per_row, available, cw, gap);
+    let combat_shown = packing.combat_shown;
+    let combat_h = packing.combat_h;
+    let band_h = packing.band_h;
+    let top = packing.top;
     let used_cols = shown.min(per_row).max(1) as f32;
     let cards_w = (cards_x + used_cols * (cw + gap)).max(220.0 * s) + 6.0 * s;
     let combat_w = panel
         .combat
         .iter()
-        .map(|line| measure_text(line, None, (12.0 * s) as u16, 1.0).width)
+        .take(combat_shown)
+        .map(|fact| measure_text(&fact.text, None, (13.0 * s) as u16, 1.0).width + 24.0 * s)
         .fold(0.0, f32::max);
     let band_w = cards_w.max((cards_x + combat_w + 12.0 * s).min(right));
     // Opaque, unlike the translucent HUD panels: machines drifting
@@ -189,38 +383,116 @@ pub(crate) fn draw_panel(
         TEXT_SECONDARY,
     );
 
-    // A single unit publishes its static combat capability without a
-    // hover. The model contains kind-level weapon facts only, never a
-    // live target, current cooldown, or private order state.
-    if !panel.combat.is_empty() {
-        draw_text("COMBAT", cards_x, top + 15.0 * s, 10.0 * s, TEXT_SECONDARY);
+    // A single entity publishes its static combat capability without a
+    // hover. The model contains kind-level weapon and range facts only,
+    // never a live target, current cooldown, or private order state.
+    if combat_shown > 0 {
+        draw_text(
+            "CAPABILITIES",
+            cards_x,
+            top + 15.0 * s,
+            10.0 * s,
+            TEXT_SECONDARY,
+        );
         let max_width = (band_w - cards_x - 12.0 * s).max(40.0 * s);
-        for (i, line) in panel.combat.iter().enumerate() {
-            let mut font_size = 12.0 * s;
-            let mut dims = measure_text(line, None, font_size as u16, 1.0);
-            while dims.width > max_width && font_size > 8.0 * s {
+        for (i, fact) in panel.combat.iter().take(combat_shown).enumerate() {
+            let y = top + (34.0 + 18.0 * i as f32) * s;
+            let icon_color = combat_icon_color(fact.icon);
+            draw_combat_icon(
+                vec2(cards_x + 7.0 * s, y - 4.5 * s),
+                5.2 * s,
+                fact.icon,
+                icon_color,
+                false,
+            );
+            let text_x = cards_x + 20.0 * s;
+            let mut font_size = 13.0 * s;
+            let mut dims = measure_text(&fact.text, None, font_size as u16, 1.0);
+            while dims.width > max_width - 20.0 * s && font_size > 9.0 * s {
                 font_size -= 0.5 * s;
-                dims = measure_text(line, None, font_size as u16, 1.0);
+                dims = measure_text(&fact.text, None, font_size as u16, 1.0);
+            }
+            draw_text(&fact.text, text_x, y, font_size, TEXT_PRIMARY);
+        }
+    }
+
+    // Mixed-selection roster, visually and geometrically separate from
+    // verbs. It reads as "what is in my hand" before "what can it do".
+    let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
+    let mut roster_slots = [(zero, CardAction::None); 8];
+    let mut roster_count = 0;
+    if roster_shown > 0 {
+        let label_y = top + combat_h + 15.0 * s;
+        draw_text("SELECTED UNITS", cards_x, label_y, 12.0 * s, TEXT_SECONDARY);
+        for (index, card) in panel.roster.iter().take(roster_shown).enumerate() {
+            let (row, column) = (index / roster_per_row, index % roster_per_row);
+            let rect = Rect::new(
+                cards_x + column as f32 * (rw + roster_gap),
+                top + combat_h + 22.0 * s + row as f32 * (rh + 5.0 * s),
+                rw,
+                rh,
+            );
+            let hovered = rect.contains(input.mouse);
+            draw_rectangle(
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                if hovered {
+                    Color::new(0.28, 0.28, 0.33, 1.0)
+                } else {
+                    Color::new(0.13, 0.13, 0.17, 1.0)
+                },
+            );
+            draw_rectangle_lines(
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                if hovered { 2.0 * s } else { 1.2 * s },
+                if hovered {
+                    BONE
+                } else {
+                    Color::new(0.48, 0.48, 0.56, 0.9)
+                },
+            );
+            let icon_size = 42.0 * s;
+            draw_icon(
+                Rect::new(
+                    rect.x + (rect.w - icon_size) * 0.5,
+                    rect.y + 3.0 * s,
+                    icon_size,
+                    icon_size,
+                ),
+                &card.icon,
+                WHITE,
+            );
+            let mut size = 11.0 * s;
+            let mut dims = measure_text(&card.title, None, size as u16, 1.0);
+            while dims.width > rect.w - 6.0 * s && size > 8.0 * s {
+                size -= 0.5 * s;
+                dims = measure_text(&card.title, None, size as u16, 1.0);
             }
             draw_text(
-                line,
-                cards_x,
-                top + (31.0 + 15.0 * i as f32) * s,
-                font_size,
+                &card.title,
+                rect.x + (rect.w - dims.width) * 0.5,
+                rect.y + rect.h - 6.0 * s,
+                size,
                 TEXT_PRIMARY,
             );
+            roster_slots[roster_count] = (rect, card.action);
+            roster_count += 1;
         }
     }
 
     // Command cards, wrapping into as many rows as the width demands.
-    let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
     let mut cards = [(zero, CardAction::None); 16];
     let mut card_count = 0;
     for (i, card) in panel.cards.iter().take(16).enumerate() {
-        let (row, col) = (i / per_row, i % per_row);
+        let (row, col, after_rally) = grouped_card_slot(i, rally_shown, per_row);
         let rect = Rect::new(
-            cards_x + col as f32 * (cw + gap),
-            top + 10.0 * s + combat_h + row as f32 * (ch + 4.0 * s),
+            cards_x + col as f32 * (cw + gap) + if after_rally { section_gap } else { 0.0 },
+            top + 10.0 * s + combat_h + roster_h + row as f32 * (ch + 4.0 * s),
             cw,
             ch,
         );
@@ -313,20 +585,15 @@ pub(crate) fn draw_panel(
     let mut queue_count = 0;
     let mut dock = Rect::new(0.0, 0.0, 0.0, 0.0);
     if !panel.queue.is_empty() {
-        let (qw, qgap) = (44.0 * s, 4.0 * s);
-        let label_h = 22.0 * s;
-        // The dock lives between the top bar and the band; at a small
-        // window a full queue would climb off the screen, so chips that
-        // don't fit fold into a "+N" line instead of vanishing upward.
-        let avail = (top - 54.0 * s - label_h).max(qw + qgap);
-        let max_fit = ((avail / (qw + qgap)).floor() as usize).max(1);
-        let n = panel.queue.len().min(8).min(max_fit);
-        let hidden = panel.queue.len().min(8) - n;
+        let (grid_dock, grid_slots, n) = queue_grid(panel.queue.len(), top, s);
+        dock = grid_dock;
+        let hidden = panel.queue.len().saturating_sub(n);
         let more_h = if hidden > 0 { 16.0 * s } else { 0.0 };
-        let dock_h = label_h + n as f32 * (qw + qgap) + more_h + 6.0 * s;
-        let dock_w = qw + 16.0 * s;
-        let dock_top = top - dock_h;
-        dock = Rect::new(0.0, dock_top, dock_w, dock_h);
+        if more_h > 0.0 {
+            dock.y -= more_h;
+            dock.h += more_h;
+        }
+        let dock_top = dock.y;
         draw_rectangle(
             dock.x,
             dock.y,
@@ -357,7 +624,8 @@ pub(crate) fn draw_panel(
         );
         let orders_dock = panel.queue_label.starts_with("orders");
         for (i, card) in panel.queue.iter().take(n).enumerate() {
-            let rect = Rect::new(8.0 * s, dock_top + label_h + i as f32 * (qw + qgap), qw, qw);
+            let mut rect = grid_slots[i];
+            rect.y -= more_h;
             let hovered = rect.contains(input.mouse);
             draw_rectangle(
                 rect.x,
@@ -419,13 +687,15 @@ pub(crate) fn draw_panel(
             draw_text(
                 format!("+{hidden}"),
                 12.0 * s,
-                dock_top + dock_h - 8.0 * s,
+                dock_top + dock.h - 8.0 * s,
                 13.0 * s,
                 TEXT_SECONDARY,
             );
         }
     }
     (
+        roster_slots,
+        roster_count,
         cards,
         card_count,
         queue_slots,
@@ -433,6 +703,7 @@ pub(crate) fn draw_panel(
         top,
         band_w,
         dock,
+        packing.hides_minimap,
     )
 }
 
@@ -453,11 +724,18 @@ pub(crate) fn draw_panel_tooltip(game: &Game, input: &InputState) {
     // The hovered RECT is the anchor, not just the index: the orders
     // dock stacks upward from the band, so a tooltip pinned to the
     // band's top edge described chip 1 beside chip 8.
-    let hovered = layout.cards[..layout.card_count]
+    let hovered = layout.roster_slots[..layout.roster_count]
         .iter()
         .enumerate()
         .find(|(_, (r, _))| r.w > 0.0 && r.contains(input.mouse))
-        .and_then(|(i, (r, _))| panel.cards.get(i).map(|c| (c, *r, TooltipSide::Above)))
+        .and_then(|(i, (r, _))| panel.roster.get(i).map(|c| (c, *r, TooltipSide::Above)))
+        .or_else(|| {
+            layout.cards[..layout.card_count]
+                .iter()
+                .enumerate()
+                .find(|(_, (r, _))| r.w > 0.0 && r.contains(input.mouse))
+                .and_then(|(i, (r, _))| panel.cards.get(i).map(|c| (c, *r, TooltipSide::Above)))
+        })
         .or_else(|| {
             layout.queue_slots[..layout.queue_count]
                 .iter()
@@ -527,5 +805,110 @@ pub(crate) fn draw_panel_tooltip(game: &Game, input: &InputState) {
             size,
             *color,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rally_cards_get_a_compact_visual_break_before_production() {
+        assert_eq!(grouped_card_rows(7, 5), 2);
+        assert_eq!(grouped_card_slot(0, 2, 5), (0, 0, false));
+        assert_eq!(grouped_card_slot(1, 2, 5), (0, 1, false));
+        assert_eq!(grouped_card_slot(2, 2, 5), (0, 2, true));
+        assert_eq!(grouped_card_slot(4, 2, 5), (0, 4, true));
+        assert_eq!(grouped_card_slot(5, 2, 5), (1, 0, false));
+        assert_eq!(grouped_card_slot(6, 2, 5), (1, 1, false));
+        assert_eq!(grouped_card_gap(7, 2, 5, 400.0, 66.0, 6.0), 10.0);
+        assert_eq!(grouped_card_gap(7, 2, 5, 354.0, 66.0, 6.0), 0.0);
+
+        assert_eq!(grouped_card_rows(7, 5), 2);
+        assert_eq!(grouped_card_slot(5, 0, 5), (1, 0, false));
+    }
+
+    #[test]
+    fn eight_paid_slots_form_a_fully_clickable_small_window_dock() {
+        // A 120px command band leaves panel_top=280 at the supported
+        // 640×400 floor. Every slot must remain present, above the band,
+        // and below the top bar rather than folding into "+N".
+        let (dock, slots, count) = queue_grid(8, 280.0, 1.0);
+        assert_eq!(count, 8);
+        assert!(dock.y >= crate::layout::TOP_BAR_H);
+        assert_eq!(
+            slots[..count]
+                .iter()
+                .map(|slot| slot.x.to_bits())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            2,
+            "the full queue uses two columns"
+        );
+        assert_eq!(
+            slots[..count]
+                .iter()
+                .map(|slot| slot.y.to_bits())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            4,
+            "the full queue uses four rows"
+        );
+        for slot in &slots[..count] {
+            assert!(slot.x >= dock.x && slot.x + slot.w <= dock.x + dock.w);
+            assert!(slot.y >= dock.y && slot.y + slot.h <= dock.y + dock.h);
+            assert!(slot.y + slot.h <= 280.0);
+        }
+    }
+
+    #[test]
+    fn a_queue_that_fits_stays_in_one_quiet_column() {
+        let (_, slots, count) = queue_grid(5, 680.0, 1.0);
+        assert_eq!(count, 5);
+        assert!(slots[..count].iter().all(|slot| slot.x == slots[0].x));
+    }
+
+    #[test]
+    fn a_dense_small_window_panel_yields_the_minimap_before_overflowing() {
+        let viewport = vec2(640.0, 400.0);
+        let minimap = minimap_rect_scaled(40, 24, viewport, 1.0);
+        let packing = panel_packing(viewport, minimap, 1.0, 8, 16, 5);
+
+        assert!(packing.hides_minimap);
+        assert_eq!(packing.right, viewport.x);
+        assert_eq!(packing.roster_shown, 0, "the open palette gets the room");
+        assert_eq!(packing.combat_shown, 0, "cards stay reachable before facts");
+        assert!(packing.top >= crate::layout::TOP_BAR_H);
+        assert!(packing.top + packing.band_h <= viewport.y);
+    }
+
+    #[test]
+    fn a_mixed_small_window_selection_keeps_its_large_roster() {
+        let viewport = vec2(640.0, 400.0);
+        let minimap = minimap_rect_scaled(40, 24, viewport, 1.0);
+        let packing = panel_packing(viewport, minimap, 1.0, 8, 6, 0);
+
+        assert!(packing.hides_minimap);
+        assert_eq!(packing.roster_shown, 8);
+        assert!(packing.top >= crate::layout::TOP_BAR_H);
+        assert!(packing.top + packing.band_h <= viewport.y);
+        let (dock, slots, count) = queue_grid(8, packing.top, 1.0);
+        assert_eq!(count, 8);
+        assert!(dock.y >= crate::layout::TOP_BAR_H);
+        assert!(
+            slots[..count]
+                .iter()
+                .all(|slot| slot.y >= crate::layout::TOP_BAR_H)
+        );
+    }
+
+    #[test]
+    fn a_simple_panel_keeps_the_minimap() {
+        let viewport = vec2(640.0, 400.0);
+        let minimap = minimap_rect_scaled(40, 24, viewport, 1.0);
+        let packing = panel_packing(viewport, minimap, 1.0, 0, 2, 0);
+
+        assert!(!packing.hides_minimap);
+        assert!(packing.right < viewport.x);
     }
 }

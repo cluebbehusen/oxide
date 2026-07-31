@@ -193,6 +193,12 @@ def load_policy(path: str, device: str = "cpu") -> tuple[Mlp, dict]:
     if isinstance(blob, dict) and "arch" in blob:
         recorded = blob.get("gym_version")
         if recorded is not None and recorded != GYM_VERSION:
+            if recorded == 7 and GYM_VERSION == 8:
+                raise RuntimeError(
+                    f"{path} speaks gym v7, trainer speaks v8; migrate the "
+                    "checkpoint with `uv run widen.py --ckpt --src OLD.pt "
+                    "--out NEW.pt`"
+                )
             raise RuntimeError(
                 f"{path} speaks gym v{recorded}, trainer speaks v{GYM_VERSION}"
             )

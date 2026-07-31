@@ -416,7 +416,7 @@ def main() -> None:
     ap.add_argument(
         "--resume",
         default=None,
-        help="initialize from a widened v7 checkpoint instead of fresh weights",
+        help="initialize from a widened v8 checkpoint instead of fresh weights",
     )
     ap.add_argument("--out", default="runs/bc.pt")
     args = ap.parse_args()

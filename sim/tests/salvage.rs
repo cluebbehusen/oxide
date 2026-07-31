@@ -1284,14 +1284,14 @@ fn eviction_reaches_a_looping_programs_rotation() {
     assert!(unit.looping, "the patrol itself survives");
 }
 
-// --- The retarget contract (0.13): finish the deposit, then report ---
+// --- The anchored work-zone contract (0.14) ---
 
-use oxide_sim::stats::RETARGET_RADIUS;
+use oxide_sim::stats::HARVEST_ZONE_RADIUS;
 
 #[test]
 fn a_dry_source_hops_only_inside_its_own_deposit() {
     // A wreck two tiles from the scrap nodes: when it runs dry, the
-    // harvester hops to the adjacent deposit instead of retiring.
+    // Harvester adopts another safe source inside the clicked work zone.
     // The executioner sits inside sight of the kill site (targeted
     // attacks are fog-gated) but outside its own aggro ring.
     let mut state = arena(vec![
@@ -1331,32 +1331,33 @@ fn a_dry_source_hops_only_inside_its_own_deposit() {
     run_until(&mut state, 3000, |s, _| {
         matches!(
             s.unit(salvager).unwrap().order,
-            Order::Harvest { node } if node != grave && s.map().scrap_at(node) > 0
+            Order::Harvest { node, .. } if node != grave && s.map().scrap_at(node) > 0
         )
     });
-    let Order::Harvest { node } = state.unit(salvager).unwrap().order else {
+    let Order::Harvest { node, .. } = state.unit(salvager).unwrap().order else {
         unreachable!("run_until checked");
     };
     let cheb = (node.x - grave.x).abs().max((node.y - grave.y).abs());
     assert!(
-        cheb <= RETARGET_RADIUS,
-        "the hop stays inside the deposit: {node:?} is {cheb} from {grave:?}"
+        cheb <= HARVEST_ZONE_RADIUS,
+        "the hop stays inside the anchored zone: {node:?} is {cheb} from {grave:?}"
     );
 }
 
 #[test]
 fn a_dry_source_with_no_neighbor_retires_the_harvester_instead_of_marching() {
-    // The nearest scrap sits six tiles from the wreck — far outside the
-    // retarget radius. The harvester delivers what it carries and goes
-    // idle; marching to a different patch is the player's call.
-    let mut state = arena(vec![
+    // No other salvage is known in this yard. The Harvester delivers what
+    // it carries and retires at home instead of inventing a prospecting
+    // destination.
+    let mut scenario = arena(vec![
         unit(0, UnitKind::Harvester, 5, 5),
         unit(1, UnitKind::Scuttler, 6, 5),
         unit(0, UnitKind::Harvester, 12, 2),
         unit(0, UnitKind::Sentinel, 11, 1),
-    ])
-    .build()
-    .unwrap();
+    ]);
+    scenario.map[4] = "#.....##.......#".into();
+    scenario.map[5] = "#..............#".into();
+    let mut state = scenario.build().unwrap();
     let (victim, killer, salvager, executioner) = (
         state.units()[0].id,
         state.units()[1].id,
@@ -1387,16 +1388,17 @@ fn a_dry_source_with_no_neighbor_retires_the_harvester_instead_of_marching() {
         )),
         "the load came home before the unit retired"
     );
-    // The authored nodes were never auto-adopted.
-    assert_eq!(state.map().scrap_at(TilePos::new(11, 4)), 400);
-    assert_eq!(state.map().scrap_at(TilePos::new(11, 5)), 400);
+    assert_eq!(
+        state.map().iter().map(|(_, tile)| tile.scrap).sum::<u32>(),
+        0,
+        "the yard contained no fallback source"
+    );
 }
 
 #[test]
-fn wrecks_never_magnetize_the_retarget_but_a_direct_order_still_reaches_them() {
-    // A second wreck lands two tiles from the first — inside the radius.
-    // The auto-hop must ignore it (battlefield salvage is directed work);
-    // an explicit Harvest on it is still valid.
+fn a_work_zone_cleans_up_neighboring_wrecks_without_another_order() {
+    // A second wreck lands two tiles from the first. Local battlefield
+    // salvage is part of the same anchored work contract now.
     let mut state = arena(vec![
         unit(0, UnitKind::Harvester, 5, 5),
         unit(0, UnitKind::Harvester, 7, 5),
@@ -1424,32 +1426,10 @@ fn wrecks_never_magnetize_the_retarget_but_a_direct_order_still_reaches_them() {
             queue: false,
         },
     )]);
-    run_until(&mut state, 4000, |s, _| {
-        let u = s.unit(salvager).unwrap();
-        u.order == Order::Idle && u.carrying == 0
-    });
+    let before = state.map().wreck_at(grave_b);
+    run_until(&mut state, 4000, |s, _| s.map().wreck_at(grave_b) < before);
     assert!(
-        state.map().wreck_at(grave_b) > 0,
-        "the neighbor wreck was never auto-adopted"
+        state.map().wreck_at(grave_b) < before,
+        "the neighboring wreck joined the local cleanup"
     );
-    // Directed salvage still works: the player sends the harvester on.
-    let report = state.tick(&[cmd(
-        0,
-        Command::Harvest {
-            units: vec![salvager],
-            node: grave_b,
-            queue: false,
-        },
-    )]);
-    assert!(
-        !report
-            .events
-            .iter()
-            .any(|e| matches!(e, Event::CommandRejected { .. })),
-        "an explicit order onto a wreck is always the player's right"
-    );
-    run_until(&mut state, 600, |s, _| {
-        let u = s.unit(salvager).unwrap();
-        u.tile() == grave_b && u.carrying > 0
-    });
 }

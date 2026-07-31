@@ -722,19 +722,17 @@ mod tests {
         // This pairing exposes a deterministic orientation/player-order
         // effect. A single leg declared opposite winners depending only
         // on which physical side the logical army occupied.
-        let siege_line = parse_army("bombard:5,scuttler:5").unwrap();
-        let sentinels = parse_army("sentinel:13").unwrap();
-        let out = duel(&siege_line, &sentinels, &Arena::default()).unwrap();
+        let sentinels = parse_army("sentinel:5").unwrap();
+        let bombards = parse_army("bombard:2").unwrap();
+        let out = duel(&sentinels, &bombards, &Arena::default()).unwrap();
 
         // These two assertions pin a MEASURED orientation effect under the
         // current balance numbers. A stats or movement bless can
         // legitimately flip a leg; if one fails after such a change,
         // re-measure and update the pinned winners rather than suspecting
-        // the pairing machinery. Re-measured under the same-faction seat
-        // default and unchanged, which is the expected result: the arena
-        // trains nothing, so a seat's roster selects no unit stat.
-        assert_eq!(out.a_as_player_0.verdict(), Some(DuelVerdict::B), "{out:?}");
-        assert_eq!(out.a_as_player_1.verdict(), Some(DuelVerdict::A), "{out:?}");
+        // the pairing machinery.
+        assert_eq!(out.a_as_player_0.verdict(), Some(DuelVerdict::A), "{out:?}");
+        assert_eq!(out.a_as_player_1.verdict(), Some(DuelVerdict::B), "{out:?}");
         assert_eq!(
             out.verdict_flips_on_swap(),
             Some(true),

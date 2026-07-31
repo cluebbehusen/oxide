@@ -4,7 +4,7 @@ mod common;
 
 use chassis::grid::TilePos;
 use oxide_sim::scenario::PlayerSpec;
-use oxide_sim::{Command, Event, Faction, Order, PlayerId, Scenario, UnitId, UnitKind};
+use oxide_sim::{Command, Event, Faction, Order, PlayerId, Scenario, State, UnitId, UnitKind};
 
 use common::*;
 
@@ -339,26 +339,77 @@ fn congestion_survives_nonconsecutive_unit_ids() {
 }
 
 #[test]
-fn dense_stacks_respect_the_per_pass_displacement_cap() {
+fn dense_stacks_respect_the_per_tick_displacement_cap() {
     // 100 units spawned on one tile. Per-pair clamping once let a unit in
     // k overlaps drift k × COLLISION_MAX_STEP in a single tick (measured
-    // 1.8+ tiles); the budget is per unit per pass, so one tick may move
-    // nobody farther than COLLISION_ITERATIONS × COLLISION_MAX_STEP.
+    // 1.8+ tiles), and resetting the budget between relaxation passes still
+    // allowed three caps. One budget now spans the whole tick.
     let units = (0..100)
         .map(|_| unit(0, UnitKind::Harvester, 8, 3))
         .collect();
     let mut state = arena(units).build().unwrap();
     let before: Vec<_> = state.units().iter().map(|u| (u.id, u.pos)).collect();
     state.tick(&[]);
-    let cap = oxide_sim::stats::COLLISION_MAX_STEP * 3; // COLLISION_ITERATIONS
+    let cap = oxide_sim::stats::COLLISION_MAX_STEP;
+    let tolerance = chassis::fx::Fx::lit("0.0001");
     for (id, start) in before {
         let now = state.unit(id).unwrap().pos;
         let moved = (now - start).length_sq();
         assert!(
-            moved <= cap * cap,
+            moved <= (cap + tolerance) * (cap + tolerance),
             "{id} moved {moved:?}² in one tick (cap {cap:?})"
         );
     }
+}
+
+#[test]
+fn a_harvester_crossing_a_parked_line_never_gets_a_collision_speed_burst() {
+    fn timed_walk(mut state: State, mover: UnitId) -> (u64, chassis::fx::Fx) {
+        state.tick(&[cmd(
+            0,
+            Command::Move {
+                units: vec![mover],
+                goal: TilePos::new(35, 10),
+                queue: false,
+            },
+        )]);
+        let mut previous = state.unit(mover).expect("mover exists").pos;
+        let mut max_step = chassis::fx::Fx::ZERO;
+        for tick in 1..4_000 {
+            state.tick(&[]);
+            let unit = state.unit(mover).expect("mover survives");
+            max_step = max_step.max(unit.pos.dist(previous));
+            previous = unit.pos;
+            if unit.order == Order::Idle {
+                return (tick, max_step);
+            }
+        }
+        panic!("harvester never crossed the lane");
+    }
+
+    let mut crowded_units = vec![unit(0, UnitKind::Harvester, 5, 10)];
+    for y in 8..=12 {
+        crowded_units.push(unit(0, UnitKind::Harvester, 20, y));
+    }
+    let crowded = open_arena(41, 21, crowded_units).build().unwrap();
+    let mover = crowded.units()[0].id;
+    let (crowded_ticks, max_step) = timed_walk(crowded, mover);
+
+    let solo = open_arena(41, 21, vec![unit(0, UnitKind::Harvester, 5, 10)])
+        .build()
+        .unwrap();
+    let solo_mover = solo.units()[0].id;
+    let (solo_ticks, _) = timed_walk(solo, solo_mover);
+
+    assert!(
+        crowded_ticks >= solo_ticks,
+        "collision separation made the crowded route faster ({crowded_ticks} vs {solo_ticks})"
+    );
+    let visual_limit = UnitKind::Harvester.stats().speed * chassis::fx::Fx::lit("1.3");
+    assert!(
+        max_step <= visual_limit,
+        "one collision frame moved {max_step:?}, above the 30% visual-speed allowance {visual_limit:?}"
+    );
 }
 
 #[test]

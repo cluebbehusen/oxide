@@ -919,14 +919,14 @@ impl Wizard {
                                 let plan = draft.seats[seat];
                                 if seat == draft.seat_choice {
                                     format!(
-                                        "{}. {} (you) · {}",
+                                        "{}. {} (you) | {}",
                                         seat + 1,
                                         name,
                                         FACTION_CHIP_ITEMS[plan.faction_choice]
                                     )
                                 } else {
                                     format!(
-                                        "{}. {} · {} · {} · {}",
+                                        "{}. {} | {} | {} | {}",
                                         seat + 1,
                                         name,
                                         DIFFICULTY_ITEMS[plan.level_choice],
@@ -1321,9 +1321,9 @@ mod tests {
         let mut w = Wizard::open(&draft);
         w.step = Step::Setup;
         let (_, items, _) = w.ui_surface(&draft);
-        assert_eq!(items[0], "1. Cupric (you) · Cupric");
+        assert_eq!(items[0], "1. Cupric (you) | Cupric");
         assert!(
-            items[1].starts_with("2. Ferrous · "),
+            items[1].starts_with("2. Ferrous | "),
             "the AI row leads with the effective name: {}",
             items[1]
         );

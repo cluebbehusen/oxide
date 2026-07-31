@@ -35,14 +35,16 @@ pub use gym::{
     OPERATION_ACTIONS, PRODUCTION_ACTIONS,
 };
 pub use neural::{
-    CONDITIONING_COUNT, DEALT_AGGRESSION_MAX, DEALT_AGGRESSION_MIN, DECISION_STREAM_BASE,
-    LADDER_CADENCE, Level, NeuralBot, QuantNet, deal_aggression, ladder_condition_values,
+    CONDITION_NAMES, CONDITIONING_COUNT, DEALT_AGGRESSION_MAX, DEALT_AGGRESSION_MIN,
+    DECISION_STREAM_BASE, LADDER_CADENCE, Level, NeuralBot, QuantNet, deal_aggression,
+    ladder_condition_values, ladder_condition_values_with_facets,
 };
 pub use observation::{BuildingObs, Observation, UnitObs};
 pub use orient::Orientation;
 pub use profile::{
-    BotProfileError, NAMED_VARIANT_COUNT, PROFILE_CONDITION_NAMES, PROFILE_ROLE_STREAM,
-    PROFILE_STYLE_STREAM_BASE, PROFILE_VARIANT_STREAM_BASE, ProfileFacets, ResolvedBotProfile,
+    BotProfileError, CanonicalProfile, NAMED_VARIANT_COUNT, PROFILE_CONDITION_COUNT,
+    PROFILE_CONDITION_NAMES, PROFILE_ROLE_STREAM, PROFILE_STYLE_STREAM_BASE, PROFILE_TEAM_ROLES,
+    PROFILE_VARIANT_STREAM_BASE, ProfileFacets, ResolvedBotProfile, canonical_profiles,
     deal_named_style, deal_style_variant, resolve_bot_profiles, resolve_team_roles,
 };
 pub use tiers::Difficulty;
@@ -93,11 +95,10 @@ pub fn seat_bots(scenario: &crate::Scenario) -> Vec<SeatBot> {
             match p.bot_config {
                 Some(_) => {
                     let profile = profiles[i].expect("a configured bot resolves a profile");
-                    SeatBot::Neural(Box::new(NeuralBot::ladder(
+                    SeatBot::Neural(Box::new(NeuralBot::ladder_resolved(
                         player,
                         scenario.seed,
-                        profile.level,
-                        Some(profile.aggression),
+                        profile,
                         p.faction,
                     )))
                 }

@@ -43,6 +43,23 @@ pub struct Player {
     pub team: u8,
     /// Scrap in the bank.
     pub scrap: u32,
+    /// Emergency scrap still available in the current stranded-economy
+    /// cycle. The allowance is finite: spending the credited package
+    /// cannot make the Foundry mint it a second time.
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub recovery_allowance: u16,
+    /// Bank target captured when the current recovery cycle began. It is
+    /// fixed for the cycle so selling, queueing, or losing a screen cannot
+    /// expand the entitlement after the fact.
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub recovery_target: u16,
+    /// Whether one new recovery cycle may begin. A real Harvester deposit
+    /// re-arms it; merely training, cancelling, or losing a worker does not.
+    #[serde(
+        default = "default_true",
+        skip_serializing_if = "core::clone::Clone::clone"
+    )]
+    pub recovery_ready: bool,
     /// Whether this seat conceded ([`crate::Command::Surrender`]): its
     /// Foundries no longer keep its team in the match and its commands
     /// reject, while its machines play out their brains as remnants.
@@ -77,11 +94,20 @@ pub enum Order {
         /// Destination (always passable — commands snap it).
         goal: TilePos,
     },
-    /// Mine a node, hauling to the nearest Foundry, until it and its
-    /// neighborhood are exhausted.
+    /// Work a bounded salvage zone, hauling to the nearest Foundry until
+    /// every safe remembered source near the clicked anchor is exhausted.
     Harvest {
-        /// The node tile being worked.
+        /// The node or wreck tile currently being worked.
         node: TilePos,
+        /// The source the player clicked: the fixed center of the work
+        /// zone. `None` is the legacy state shape and means `node`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anchor: Option<TilePos>,
+        /// The zone was observed exhausted or unsafe. Sticky until the
+        /// Harvester deposits its cargo, reaches a built Foundry, and
+        /// advances its queued program.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        retiring: bool,
     },
     /// Chase and attack one target until it is gone.
     Attack {
@@ -292,6 +318,12 @@ pub struct Building {
     /// stand at the doorstep.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rally: Option<TilePos>,
+    /// A player-designated target this defense prefers while it remains a
+    /// live, hostile, truly visible target in the weapon's domain. Range and
+    /// cover only decide whether the preference can be fired on now; they do
+    /// not erase it or suppress ordinary fallback acquisition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus: Option<Target>,
     /// Whether construction has finished. Sites (`false`) block ground and
     /// take damage but don't see, fight, or produce.
     #[serde(
@@ -419,7 +451,8 @@ impl State {
     /// Whether an active seat can currently receive recurring automatic
     /// scrap that it can spend. This includes a completed Reclaimer, the
     /// late Foundry baseline once its start boundary is reached, and the
-    /// faster Foundry recovery for a stranded harvest line.
+    /// faster Foundry recovery for a stranded harvest line, up to the
+    /// public screen-plus-worker reserve.
     ///
     /// A resigned seat or one without a completed Foundry cannot turn
     /// autonomous remnant income into a recovered economy, so neither is
@@ -443,8 +476,15 @@ impl State {
                 && building.kind == BuildingKind::Reclaimer
         });
         let baseline = self.tick.saturating_add(1) >= crate::stats::FOUNDRY_BASELINE_START_TICK;
-        let emergency = self.player(player).scrap < UnitKind::Harvester.stats().cost
-            && self.harvester_recovery_needed(player);
+        let seat = self.player(player);
+        let target = if seat.recovery_ready {
+            self.recovery_package_target(player)
+        } else {
+            u32::from(seat.recovery_target)
+        };
+        let emergency = self.harvester_recovery_needed(player)
+            && seat.scrap < target
+            && (seat.recovery_ready || seat.recovery_allowance > 0);
         reclaimer || baseline || emergency
     }
 
@@ -470,6 +510,32 @@ impl State {
                         .iter()
                         .any(|kind| *kind == UnitKind::Harvester)
             })
+    }
+
+    /// Bank target for a newly stranded economy. A surviving paid ground
+    /// screen means the seat needs only a replacement worker; otherwise
+    /// the public package includes one cheapest dependable guard.
+    pub(crate) fn recovery_package_target(&self, player: PlayerId) -> u32 {
+        let screen_value: u32 = self
+            .units
+            .iter()
+            .filter(|unit| unit.player == player && unit.hp > 0 && unit.kind.is_recovery_screen())
+            .map(|unit| unit.kind.stats().cost)
+            .chain(
+                self.buildings
+                    .iter()
+                    .filter(|building| building.player == player && building.hp > 0)
+                    .flat_map(|building| building.queue.iter())
+                    .filter(|kind| kind.is_recovery_screen())
+                    .map(|kind| kind.stats().cost),
+            )
+            .fold(0, u32::saturating_add);
+        UnitKind::Harvester.stats().cost
+            + if screen_value >= UnitKind::Sentinel.stats().cost {
+                0
+            } else {
+                UnitKind::Sentinel.stats().cost
+            }
     }
 
     /// Terrain and scrap.
@@ -542,7 +608,8 @@ impl State {
     /// - Units: owner in the table, hp inside `(0, max_hp]`, meters and
     ///   per-weapon cooldowns bounded, queue within
     ///   [`crate::stats::ORDER_QUEUE_CAP`], every coordinate inside the
-    ///   envelope, every entity named by an order actually minted.
+    ///   envelope, every anchored Harvest source inside its work zone,
+    ///   every entity named by an order actually minted.
     /// - Buildings: the same, plus a queue this kind can produce for this
     ///   seat's faction, a coherent salvage ledger, and no live salvage
     ///   marker.
@@ -587,6 +654,15 @@ impl State {
             .position(|p| usize::from(p.team) >= players)
         {
             return Err(E::ForeignTeam(PlayerId(i as u8)));
+        }
+        if let Some(i) = self.players.iter().position(|player| {
+            u32::from(player.recovery_allowance) > crate::stats::FOUNDRY_RECOVERY_RESERVE
+                || u32::from(player.recovery_target) > crate::stats::FOUNDRY_RECOVERY_RESERVE
+                || player.recovery_allowance > player.recovery_target
+                || (player.recovery_ready
+                    && (player.recovery_allowance != 0 || player.recovery_target != 0))
+        }) {
+            return Err(E::InvalidRecoveryLedger(PlayerId(i as u8)));
         }
         if let Some(GameResult::Victory { team }) = self.result
             && !self.players.iter().any(|player| player.team == team)
@@ -668,6 +744,12 @@ impl State {
             if !unit_inside_envelope(u) {
                 return Err(E::UnitOutsideEnvelope(u.id));
             }
+            if std::iter::once(&u.order)
+                .chain(&u.queue)
+                .any(|order| !harvest_order_inside_zone(order))
+            {
+                return Err(E::HarvestSourceOutsideZone(u.id));
+            }
             for target in std::iter::once(&u.order)
                 .chain(&u.queue)
                 .filter_map(order_reference)
@@ -700,6 +782,24 @@ impl State {
                     .map_or(0, |weapon| weapon.cooldown_ticks)
             {
                 return Err(E::BuildingCooldownOutOfRange(b.id));
+            }
+            if let Some(target) = b.focus {
+                if !self.minted(target) {
+                    return Err(E::UnmintedBuildingFocus(b.id));
+                }
+                let target_is_live = match target {
+                    Target::Unit(id) => self.unit(id).is_some(),
+                    Target::Building(id) => self.building(id).is_some(),
+                };
+                if !b.built
+                    || stats.weapons.is_empty()
+                    || (target_is_live
+                        && self
+                            .visible_hostile_target_domain(b.player, target)
+                            .is_none_or(|domain| !stats.weapons[0].targets.covers(domain)))
+                {
+                    return Err(E::InvalidBuildingFocus(b.id));
+                }
             }
             if b.queue.len() > crate::stats::QUEUE_CAP {
                 return Err(E::OverlongBuildingQueue(b.id));
@@ -797,6 +897,30 @@ impl State {
         self.vision(player).visible(pos)
     }
 
+    /// The movement domain of a live hostile target under the viewer's
+    /// current true sight. Radar contacts and remembered buildings do not
+    /// identify a target and therefore never satisfy this query.
+    pub(crate) fn visible_hostile_target_domain(
+        &self,
+        viewer: PlayerId,
+        target: Target,
+    ) -> Option<crate::stats::Domain> {
+        match target {
+            Target::Unit(id) => self.unit(id).and_then(|unit| {
+                (unit.hp > 0
+                    && self.hostile(viewer, unit.player)
+                    && self.can_see(viewer, unit.tile()))
+                .then_some(unit.kind.stats().domain)
+            }),
+            Target::Building(id) => self.building(id).and_then(|building| {
+                (building.hp > 0
+                    && self.hostile(viewer, building.player)
+                    && building.tiles().any(|tile| self.can_see(viewer, tile)))
+                .then_some(crate::stats::Domain::Ground)
+            }),
+        }
+    }
+
     /// Whether two seats are enemies. Every combat, targeting, and
     /// detection decision routes through this — teammates are never
     /// valid victims, and a seat is never hostile to itself.
@@ -825,6 +949,24 @@ impl State {
     /// scenario build so tick 0 already has sight.
     pub(crate) fn refresh_vision(&mut self) {
         crate::vision::refresh(self);
+        let keep: Vec<bool> = self
+            .buildings
+            .iter()
+            .map(|building| {
+                building.focus.is_none_or(|target| {
+                    building.built
+                        && building.kind.stats().weapons.first().is_some_and(|weapon| {
+                            self.visible_hostile_target_domain(building.player, target)
+                                .is_some_and(|domain| weapon.targets.covers(domain))
+                        })
+                })
+            })
+            .collect();
+        for (building, keep) in self.buildings.iter_mut().zip(keep) {
+            if !keep {
+                building.focus = None;
+            }
+        }
     }
 
     /// Mutable access to a player.
@@ -933,6 +1075,7 @@ impl State {
             queue: std::collections::VecDeque::new(),
             progress: 0,
             rally: None,
+            focus: None,
             built: true,
             cooldown: 0,
             salvage_drained: 0,
@@ -1211,9 +1354,25 @@ fn order_inside_envelope(order: &Order) -> bool {
         Order::Move { goal } | Order::AttackMove { goal } | Order::Advance { goal } => {
             tile_inside_envelope(*goal)
         }
-        Order::Harvest { node } => tile_inside_envelope(*node),
+        Order::Harvest { node, anchor, .. } => {
+            tile_inside_envelope(*node) && anchor.is_none_or(tile_inside_envelope)
+        }
         Order::Attack { resume, .. } => resume.is_none_or(tile_inside_envelope),
         Order::Found { anchor, .. } => tile_inside_envelope(*anchor),
+    }
+}
+
+/// An anchored Harvest order may change its active source, but only within
+/// the fixed local work zone. `None` is the legacy shape and defines a
+/// zone centered on `node`.
+fn harvest_order_inside_zone(order: &Order) -> bool {
+    match order {
+        Order::Harvest {
+            node,
+            anchor: Some(anchor),
+            ..
+        } => node.chebyshev(*anchor) <= crate::stats::HARVEST_ZONE_RADIUS,
+        _ => true,
     }
 }
 
@@ -1296,6 +1455,9 @@ mod tests {
                 faction: Faction::Ferrous,
                 team: 0,
                 scrap: 0,
+                recovery_allowance: 0,
+                recovery_target: 0,
+                recovery_ready: true,
                 resigned: false,
             }],
             7,
@@ -1432,6 +1594,10 @@ pub enum StateIntegrityError {
     /// A player sits on a team index no seat carries.
     #[error("player {0} sits on a team outside the table")]
     ForeignTeam(PlayerId),
+    /// A player's finite emergency-income ledger exceeds its public cap
+    /// or claims both an armed and active cycle.
+    #[error("player {0} carries an invalid recovery ledger")]
+    InvalidRecoveryLedger(PlayerId),
     /// A victory names a team no player carries.
     #[error("victory names team {0}, which no player carries")]
     UnknownVictoryTeam(u8),
@@ -1491,6 +1657,9 @@ pub enum StateIntegrityError {
     /// the sanity envelope.
     #[error("unit {0} names a coordinate outside the envelope")]
     UnitOutsideEnvelope(UnitId),
+    /// An anchored Harvest order names a source outside its bounded work zone.
+    #[error("unit {0} names a harvest source outside its work zone")]
+    HarvestSourceOutsideZone(UnitId),
     /// A unit's order names an entity id this run never handed out.
     #[error("unit {0} is ordered against an id the run never minted")]
     UnmintedOrderTarget(UnitId),
@@ -1509,6 +1678,12 @@ pub enum StateIntegrityError {
     /// A building's cooldown is longer than its weapon's period.
     #[error("building {0} carries a cooldown its weapon never sets")]
     BuildingCooldownOutOfRange(BuildingId),
+    /// A building focus names an id this run never minted.
+    #[error("building {0} focuses an id the run never minted")]
+    UnmintedBuildingFocus(BuildingId),
+    /// A live building focus could not have passed the command gate.
+    #[error("building {0} carries an invalid defense focus")]
+    InvalidBuildingFocus(BuildingId),
     /// A building's production queue is longer than
     /// [`crate::stats::QUEUE_CAP`].
     #[error("building {0} queues more units than the cap allows")]

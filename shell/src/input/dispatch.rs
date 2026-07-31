@@ -46,14 +46,14 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             if !game.selection.units.is_empty() {
                 let units = game.selection.units.clone();
                 game.issue(Command::Stop { units });
-            } else if let Some(id) = game.selection.building
+            } else if let [id] = game.selection.buildings.as_slice()
                 && game
                     .state
-                    .building(id)
+                    .building(*id)
                     .is_some_and(|b| b.player == game.human && !b.built)
             {
-                game.issue(Command::Cancel { building: id });
-                game.selection.building = None;
+                game.issue(Command::Cancel { building: *id });
+                game.selection.buildings.clear();
             }
         }
         Action::TrainSlot(n) => train(game, n as usize),
@@ -94,7 +94,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                     .map(|u| u.id);
                 if let Some(id) = pick {
                     game.selection.units = vec![id];
-                    game.selection.building = None;
+                    game.selection.buildings.clear();
                     input.build_menu = true;
                     input.placing = None;
                 } else {
@@ -154,7 +154,8 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 game.toast("attack-move cancelled");
                 return;
             }
-            if input.rallying.take().is_some() {
+            if !input.rallying.is_empty() {
+                input.rallying.clear();
                 game.toast("rally placement cancelled");
                 return;
             }
@@ -163,7 +164,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 return;
             }
             game.selection.units.clear();
-            game.selection.building = None;
+            game.selection.buildings.clear();
         }
         Action::SetBookmark(slot) => {
             input.bookmarks[slot as usize] = Some(game.camera.center);

@@ -54,6 +54,12 @@ fn every_map_carries_complete_metadata() {
             .as_ref()
             .unwrap_or_else(|| panic!("{name}: shipped maps carry metadata"));
         assert!(!meta.hook.is_empty(), "{name}: hook missing");
+        if scenario.players.len() == 2 {
+            assert!(
+                !meta.duration.is_empty(),
+                "{name}: 1v1 duration measurement missing"
+            );
+        }
         assert!(
             matches!(meta.pace.as_str(), "quick" | "standard" | "large" | "vast"),
             "{name}: pace '{}' is not a recognized label",

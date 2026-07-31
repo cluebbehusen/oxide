@@ -5,7 +5,9 @@
 //! stream disjoint from the neural ladder's hesitation stream, so adding
 //! profile variety cannot advance or reseed execution mistakes.
 
-use super::neural::{CONDITIONING_COUNT, Level, ladder_condition_values};
+use super::neural::{
+    CONDITIONING_COUNT, Level, ladder_condition_values, ladder_condition_values_with_facets,
+};
 use crate::ids::PlayerId;
 use crate::map::{Map, MapError};
 use crate::scenario::{BotConfig, BotConfigError, NamedStyle, Scenario, TeamRole};
@@ -17,11 +19,11 @@ use chassis::rng::Pcg32;
 /// Number of curated variants within every named style.
 pub const NAMED_VARIANT_COUNT: u8 = 3;
 
-/// Profile facet names in their future gym-conditioning order.
-///
-/// The values are resolved and inspectable in 0.14, but deliberately do
-/// not widen the current v7 artifact's seven learned conditions.
-pub const PROFILE_CONDITION_NAMES: [&str; 5] = [
+/// Number of high-level profile facets appended to the neural condition.
+pub const PROFILE_CONDITION_COUNT: usize = 5;
+
+/// Profile facet names in gym-conditioning order.
+pub const PROFILE_CONDITION_NAMES: [&str; PROFILE_CONDITION_COUNT] = [
     "profile_economy",
     "profile_air",
     "profile_siege",
@@ -35,12 +37,15 @@ pub const PROFILE_STYLE_STREAM_BASE: u64 = 5000;
 pub const PROFILE_VARIANT_STREAM_BASE: u64 = 6000;
 /// Scenario-wide stream selector used to permute complementary team jobs.
 pub const PROFILE_ROLE_STREAM: u64 = 7000;
+/// Scenario-wide stream used to shuffle the least-used named-style deck.
+const PROFILE_STYLE_DECK_STREAM: u64 = 7100;
+/// First scenario-wide stream used to shuffle each style's variant deck.
+const PROFILE_VARIANT_DECK_STREAM_BASE: u64 = 7200;
 
-/// High-level strategy inputs reserved for the gym-v8 widening.
+/// High-level strategy inputs appended by the gym-v8 widening.
 ///
-/// These values resolve now so setup, diagnostics, and future training all
-/// share one contract. The v7 network still receives only
-/// [`ResolvedBotProfile::conditions`].
+/// These values resolve once so setup, diagnostics, runtime inference, and
+/// training all share one contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProfileFacets {
     /// Preference for compounding economy.
@@ -56,8 +61,34 @@ pub struct ProfileFacets {
 }
 
 impl ProfileFacets {
+    /// No named strategic lean.
+    ///
+    /// Raw-aggression experiments use this value so widening the actor
+    /// does not silently invent a profile they did not request.
+    pub const ZERO: Self = Self {
+        economy_bias: 0,
+        air_bias: 0,
+        siege_bias: 0,
+        support_bias: 0,
+        commitment_bias: 0,
+    };
+
+    /// Reconstructs facets from the published profile-condition order.
+    ///
+    /// Callers accepting untrusted values remain responsible for enforcing
+    /// the documented `0..=1000` range.
+    pub const fn from_conditions(conditions: [u32; PROFILE_CONDITION_COUNT]) -> Self {
+        Self {
+            economy_bias: conditions[0],
+            air_bias: conditions[1],
+            siege_bias: conditions[2],
+            support_bias: conditions[3],
+            commitment_bias: conditions[4],
+        }
+    }
+
     /// Values aligned with [`PROFILE_CONDITION_NAMES`], each in `0..=1000`.
-    pub const fn conditions(self) -> [u32; 5] {
+    pub const fn conditions(self) -> [u32; PROFILE_CONDITION_COUNT] {
         [
             self.economy_bias,
             self.air_bias,
@@ -67,7 +98,8 @@ impl ProfileFacets {
         ]
     }
 
-    fn with_role(self, role: TeamRole) -> Self {
+    /// Applies one complementary team job to the authored base profile.
+    pub fn with_role(self, role: TeamRole) -> Self {
         let adjust = |value: u32, delta: i32| {
             if delta >= 0 {
                 value.saturating_add(delta as u32).min(1000)
@@ -106,6 +138,49 @@ struct VariantSpec {
     name: &'static str,
     aggression: u32,
     facets: ProfileFacets,
+}
+
+/// One authored named-style variant before a team-role adjustment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CanonicalProfile {
+    /// Setup-visible style family.
+    pub style: NamedStyle,
+    /// Stable zero-based variant within the style.
+    pub variant: u8,
+    /// Human-readable diagnostic key.
+    pub name: &'static str,
+    /// Legacy aggression condition retained by the widened policy.
+    pub aggression: u32,
+    /// Authored generalist facets before a team-role adjustment.
+    pub facets: ProfileFacets,
+}
+
+/// Every team role represented in the canonical gym catalog.
+pub const PROFILE_TEAM_ROLES: [TeamRole; 5] = [
+    TeamRole::Generalist,
+    TeamRole::Vanguard,
+    TeamRole::Industry,
+    TeamRole::Support,
+    TeamRole::Siege,
+];
+
+/// Returns every named style variant in stable setup order.
+pub fn canonical_profiles() -> Vec<CanonicalProfile> {
+    NamedStyle::ALL
+        .into_iter()
+        .flat_map(|style| {
+            (0..NAMED_VARIANT_COUNT).map(move |variant| {
+                let spec = variant_spec(style, variant);
+                CanonicalProfile {
+                    style,
+                    variant,
+                    name: spec.name,
+                    aggression: spec.aggression,
+                    facets: spec.facets,
+                }
+            })
+        })
+        .collect()
 }
 
 fn variant_spec(style: NamedStyle, variant: u8) -> VariantSpec {
@@ -228,7 +303,7 @@ pub struct ResolvedBotProfile {
     pub style: Option<NamedStyle>,
     /// Curated named-style variant, or `None` for exact legacy aggression.
     pub variant: Option<u8>,
-    /// Exact v7 aggression condition supplied to the neural network.
+    /// Legacy aggression condition retained in the widened neural input.
     pub aggression: u32,
     /// Complementary team job.
     pub team_role: TeamRole,
@@ -242,13 +317,13 @@ impl ResolvedBotProfile {
         Some(variant_spec(self.style?, self.variant?).name)
     }
 
-    /// The current seven v7 conditioning values.
-    ///
-    /// Profile facets deliberately do not ride here yet. Gym-v8 will widen
-    /// the learned contract and artifact together instead of silently
-    /// feeding a v7 policy extra columns.
+    /// The complete gym-v8 conditioning values.
     pub fn conditions(self, faction: Faction) -> [i64; CONDITIONING_COUNT] {
-        ladder_condition_values(self.aggression, faction)
+        if self.style.is_some() {
+            ladder_condition_values_with_facets(self.aggression, faction, self.facets)
+        } else {
+            ladder_condition_values(self.aggression, faction)
+        }
     }
 }
 
@@ -349,52 +424,210 @@ pub(crate) fn resolve_bot_profiles_from_parts(
 
     let roles = resolve_team_roles_from_parts(scenario, map, anchors)?;
     let mirrors = mirror_seats(scenario, map, anchors);
-    let mut mirrored_variants = vec![None; scenario.players.len()];
-    for (index, mirror) in mirrors.iter().enumerate() {
-        let Some(mirror) = *mirror else {
-            continue;
-        };
-        if index >= mirror {
-            continue;
-        }
-        let requested = scenario.players[index]
-            .bot_config
-            .and_then(|config| config.variant);
-        let mirror_requested = scenario.players[mirror]
-            .bot_config
-            .and_then(|config| config.variant);
-        let variant = match (requested, mirror_requested) {
-            (Some(variant), Some(mirror_variant)) if variant != mirror_variant => {
-                return Err(BotProfileError::ConflictingMirrorVariants {
-                    player: PlayerId(index as u8),
-                    mirror: PlayerId(mirror as u8),
-                    variant,
-                    mirror_variant,
-                });
-            }
-            (Some(variant), _) | (_, Some(variant)) => Some(variant),
-            (None, None) => None,
-        };
-        mirrored_variants[index] = variant;
-        mirrored_variants[mirror] = variant;
-    }
+    let (dealt_styles, dealt_variants) = deal_named_profiles(scenario, &mirrors)?;
     Ok(scenario
         .players
         .iter()
         .enumerate()
         .map(|(index, player)| {
             player.bot_config.map(|config| {
-                let deal_seat = mirrors[index].map_or(index, |mirror| index.min(mirror));
                 resolve_one(
                     scenario.seed,
-                    PlayerId(deal_seat as u8),
+                    PlayerId(index as u8),
                     config,
                     roles[index],
-                    mirrored_variants[index],
+                    dealt_styles[index],
+                    dealt_variants[index],
                 )
             })
         })
         .collect())
+}
+
+type DealtNamedProfiles = (Vec<Option<NamedStyle>>, Vec<Option<u8>>);
+
+fn deal_named_profiles(
+    scenario: &Scenario,
+    mirrors: &[Option<usize>],
+) -> Result<DealtNamedProfiles, BotProfileError> {
+    let groups = named_deal_groups(scenario, mirrors);
+    let mut group_styles: Vec<Option<NamedStyle>> = groups
+        .iter()
+        .map(|group| {
+            group.iter().find_map(|seat| {
+                scenario.players[*seat]
+                    .bot_config
+                    .and_then(|config| config.style)
+            })
+        })
+        .collect();
+
+    let mut style_counts = [0_u16; NamedStyle::ALL.len()];
+    for style in group_styles.iter().flatten() {
+        style_counts[style_index(*style)] += 1;
+    }
+    let style_preference = shuffled_styles(scenario.seed);
+    for style in &mut group_styles {
+        if style.is_none() {
+            let dealt = least_used_style(&style_counts, &style_preference);
+            style_counts[style_index(dealt)] += 1;
+            *style = Some(dealt);
+        }
+    }
+
+    let mut group_variants = vec![None; groups.len()];
+    let mut variant_counts = [[0_u16; NAMED_VARIANT_COUNT as usize]; NamedStyle::ALL.len()];
+    for (group_index, group) in groups.iter().enumerate() {
+        let mut requested = None;
+        for seat in group {
+            let Some(variant) = scenario.players[*seat]
+                .bot_config
+                .and_then(|config| config.variant)
+            else {
+                continue;
+            };
+            if let Some(previous) = requested
+                && previous != variant
+            {
+                return Err(BotProfileError::ConflictingMirrorVariants {
+                    player: PlayerId(group[0] as u8),
+                    mirror: PlayerId(*seat as u8),
+                    variant: previous,
+                    mirror_variant: variant,
+                });
+            }
+            requested = Some(variant);
+        }
+        if let Some(variant) = requested {
+            let style = group_styles[group_index].expect("every named group has a style");
+            variant_counts[style_index(style)][usize::from(variant)] += 1;
+            group_variants[group_index] = Some(variant);
+        }
+    }
+    let variant_preferences = NamedStyle::ALL.map(|style| shuffled_variants(scenario.seed, style));
+    for (group_index, variant) in group_variants.iter_mut().enumerate() {
+        if variant.is_none() {
+            let style = group_styles[group_index].expect("every named group has a style");
+            let style_index = style_index(style);
+            let dealt = least_used_variant(
+                &variant_counts[style_index],
+                &variant_preferences[style_index],
+            );
+            variant_counts[style_index][usize::from(dealt)] += 1;
+            *variant = Some(dealt);
+        }
+    }
+
+    let mut styles = vec![None; scenario.players.len()];
+    let mut variants = vec![None; scenario.players.len()];
+    for (group_index, group) in groups.iter().enumerate() {
+        for seat in group {
+            styles[*seat] = group_styles[group_index];
+            variants[*seat] = group_variants[group_index];
+        }
+    }
+    Ok((styles, variants))
+}
+
+fn named_deal_groups(scenario: &Scenario, mirrors: &[Option<usize>]) -> Vec<Vec<usize>> {
+    let mut competitors = Vec::new();
+    for index in 0..scenario.players.len() {
+        let key = team_key(scenario, index);
+        if !competitors.contains(&key) {
+            competitors.push(key);
+        }
+    }
+    let preserve_two_side_symmetry = competitors.len() == 2;
+    let mut assigned = vec![false; scenario.players.len()];
+    let mut groups = Vec::new();
+    for seat in 0..scenario.players.len() {
+        if assigned[seat] || !has_named_profile(scenario, seat) {
+            continue;
+        }
+        let mirror = preserve_two_side_symmetry
+            .then(|| mirrors[seat])
+            .flatten()
+            .filter(|mirror| {
+                !assigned[*mirror]
+                    && has_named_profile(scenario, *mirror)
+                    && compatible_explicit_styles(scenario, seat, *mirror)
+            });
+        if let Some(mirror) = mirror {
+            assigned[seat] = true;
+            assigned[mirror] = true;
+            groups.push(vec![seat, mirror]);
+        } else {
+            assigned[seat] = true;
+            groups.push(vec![seat]);
+        }
+    }
+    groups
+}
+
+fn has_named_profile(scenario: &Scenario, seat: usize) -> bool {
+    scenario.players[seat]
+        .bot_config
+        .is_some_and(|config| config.aggression.is_none())
+}
+
+fn compatible_explicit_styles(scenario: &Scenario, a: usize, b: usize) -> bool {
+    let a = scenario.players[a]
+        .bot_config
+        .and_then(|config| config.style);
+    let b = scenario.players[b]
+        .bot_config
+        .and_then(|config| config.style);
+    a.is_none() || b.is_none() || a == b
+}
+
+fn style_index(style: NamedStyle) -> usize {
+    NamedStyle::ALL
+        .iter()
+        .position(|candidate| *candidate == style)
+        .expect("named style belongs to the canonical palette")
+}
+
+fn shuffled_styles(seed: u64) -> [NamedStyle; NamedStyle::ALL.len()] {
+    let mut styles = NamedStyle::ALL;
+    let mut rng = Pcg32::new(seed, PROFILE_STYLE_DECK_STREAM);
+    for upper in (1..styles.len()).rev() {
+        let other = rng.next_below((upper + 1) as u32) as usize;
+        styles.swap(upper, other);
+    }
+    styles
+}
+
+fn shuffled_variants(seed: u64, style: NamedStyle) -> [u8; NAMED_VARIANT_COUNT as usize] {
+    let mut variants = [0, 1, 2];
+    let mut rng = Pcg32::new(
+        seed,
+        PROFILE_VARIANT_DECK_STREAM_BASE + style_index(style) as u64,
+    );
+    for upper in (1..variants.len()).rev() {
+        let other = rng.next_below((upper + 1) as u32) as usize;
+        variants.swap(upper, other);
+    }
+    variants
+}
+
+fn least_used_style(
+    counts: &[u16; NamedStyle::ALL.len()],
+    preference: &[NamedStyle; NamedStyle::ALL.len()],
+) -> NamedStyle {
+    *preference
+        .iter()
+        .min_by_key(|style| counts[style_index(**style)])
+        .expect("named style palette is non-empty")
+}
+
+fn least_used_variant(
+    counts: &[u16; NAMED_VARIANT_COUNT as usize],
+    preference: &[u8; NAMED_VARIANT_COUNT as usize],
+) -> u8 {
+    *preference
+        .iter()
+        .min_by_key(|variant| counts[usize::from(**variant)])
+        .expect("variant palette is non-empty")
 }
 
 fn resolve_one(
@@ -402,7 +635,8 @@ fn resolve_one(
     deal_player: PlayerId,
     config: BotConfig,
     team_role: TeamRole,
-    mirrored_variant: Option<u8>,
+    dealt_style: Option<NamedStyle>,
+    dealt_variant: Option<u8>,
 ) -> ResolvedBotProfile {
     if let Some(aggression) = config.aggression {
         return ResolvedBotProfile {
@@ -411,21 +645,14 @@ fn resolve_one(
             variant: None,
             aggression,
             team_role,
-            facets: ProfileFacets {
-                economy_bias: 500,
-                air_bias: 500,
-                siege_bias: 500,
-                support_bias: 500,
-                commitment_bias: aggression,
-            }
-            .with_role(team_role),
+            facets: ProfileFacets::ZERO,
         };
     }
 
-    let style = config
-        .style
+    let style = dealt_style
+        .or(config.style)
         .unwrap_or_else(|| deal_named_style(scenario_seed, deal_player));
-    let variant = mirrored_variant
+    let variant = dealt_variant
         .or(config.variant)
         .unwrap_or_else(|| deal_style_variant(scenario_seed, deal_player));
     let spec = variant_spec(style, variant);

@@ -345,6 +345,109 @@ fn state_with_far_remembered_scrap(bank: u32) -> oxide_sim::State {
     serde_json::from_value(value).unwrap()
 }
 
+fn defense_build_anchor(state: &oxide_sim::State, action: Action) -> chassis::grid::TilePos {
+    let mut bot = GymBot::new(PlayerId(0));
+    bot.step(state, action)
+        .into_iter()
+        .find_map(|command| match command.command {
+            Command::Build { anchor, .. } => Some(anchor),
+            _ => None,
+        })
+        .expect("the funded defense action should lower to a build")
+}
+
+#[test]
+fn defense_placement_is_deterministic_and_tracks_the_visible_approach() {
+    use oxide_sim::scenario::UnitSpec;
+
+    let threatened = |y| {
+        let mut scenario = Scenario::skirmish();
+        scenario.players[0].scrap = 1_000;
+        scenario.units.retain(|unit| unit.player == 0);
+        scenario.units.push(UnitSpec {
+            player: 1,
+            kind: UnitKind::Sentinel,
+            x: 12,
+            y,
+        });
+        scenario.build().unwrap()
+    };
+    let north = threatened(4);
+    let south = threatened(11);
+    let north_anchor = defense_build_anchor(&north, Action::BuildTurret);
+    let north_repeat = defense_build_anchor(&north, Action::BuildTurret);
+    let south_anchor = defense_build_anchor(&south, Action::BuildTurret);
+    assert_eq!(
+        north_anchor, north_repeat,
+        "the same fog-honest state must choose the same scored site"
+    );
+    assert!(
+        north_anchor.y < south_anchor.y,
+        "the defense should move with the visible approach: north {north_anchor:?}, south \
+         {south_anchor:?}"
+    );
+}
+
+#[test]
+fn unseen_enemy_units_cannot_steer_defense_placement() {
+    use oxide_sim::scenario::UnitSpec;
+
+    let mut quiet = Scenario::skirmish();
+    quiet.players[0].scrap = 1_000;
+    quiet.units.retain(|unit| unit.player == 0);
+    let quiet = quiet.build().unwrap();
+
+    let mut hidden = Scenario::skirmish();
+    hidden.players[0].scrap = 1_000;
+    hidden.units.retain(|unit| unit.player == 0);
+    hidden.units.push(UnitSpec {
+        player: 1,
+        kind: UnitKind::Sentinel,
+        x: 25,
+        y: 10,
+    });
+    let hidden = hidden.build().unwrap();
+
+    assert_eq!(
+        defense_build_anchor(&quiet, Action::BuildBastion),
+        defense_build_anchor(&hidden, Action::BuildBastion),
+        "the scored site may read visible threats, shared sight, blips, and shells, never an \
+         unseen enemy unit"
+    );
+}
+
+#[test]
+fn flak_placement_tracks_air_pressure_not_ground_noise() {
+    use oxide_sim::scenario::UnitSpec;
+
+    let threatened = |kind, y| {
+        let mut scenario = Scenario::skirmish();
+        scenario.players[0].scrap = 1_000;
+        scenario.units.retain(|unit| unit.player == 0);
+        scenario.units.push(UnitSpec {
+            player: 1,
+            kind,
+            x: 12,
+            y,
+        });
+        scenario.build().unwrap()
+    };
+    let ground_north = defense_build_anchor(&threatened(UnitKind::Sentinel, 4), Action::BuildFlak);
+    let ground_south = defense_build_anchor(&threatened(UnitKind::Sentinel, 11), Action::BuildFlak);
+    assert_eq!(
+        ground_north, ground_south,
+        "ground-only pressure must not pull an anti-air battery off its air-defense job"
+    );
+
+    let air_north = defense_build_anchor(&threatened(UnitKind::Darter, 4), Action::BuildFlak);
+    let air_south = defense_build_anchor(&threatened(UnitKind::Darter, 11), Action::BuildFlak);
+    assert!(
+        air_north.y < air_south.y,
+        "the flak battery should move with the visible air approach: north {air_north:?}, south \
+         {air_south:?}"
+    );
+}
+
 #[test]
 fn unpaid_founding_claims_reserve_only_unspent_capital_and_expire() {
     let mut state = state_with_far_remembered_scrap(150);
@@ -997,6 +1100,43 @@ fn guarded_recovery_buys_a_screen_before_its_harvester() {
 }
 
 #[test]
+fn guarded_recovery_does_not_mistake_lone_artillery_for_a_screen() {
+    let mut first = guarded_stranded_scenario(0);
+    first.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Bombard,
+        x: 5,
+        y: 7,
+    });
+    let state = first.build().unwrap();
+    let mut gym = GymBot::new(PlayerId(0));
+    let _ = gym.step_plan(&state, ActionPlan::default());
+
+    first.players[0].scrap = UnitKind::Sentinel.stats().cost;
+    first.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Harvester,
+        x: 5,
+        y: 6,
+    });
+    let state = first.build().unwrap();
+    let mut value = serde_json::to_value(state).unwrap();
+    value["tick"] = serde_json::json!(1);
+    let state: oxide_sim::State = serde_json::from_value(value).unwrap();
+    let commands = gym.step_plan(&state, ActionPlan::default());
+    assert!(
+        commands.iter().any(|command| matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Sentinel,
+                ..
+            }
+        )),
+        "artillery cannot directly contest a guarded salvage line: {commands:?}"
+    );
+}
+
+#[test]
 fn guarded_recovery_cancels_a_naked_prepaid_harvester() {
     let scenario = guarded_stranded_scenario(2 * UnitKind::Harvester.stats().cost);
     let mut state = scenario.build().unwrap();
@@ -1338,6 +1478,81 @@ fn a_stalled_recovery_worker_hold_retries_on_a_bounded_cadence() {
 }
 
 #[test]
+fn stale_artillery_army_does_not_suppress_a_fresh_recovery_screen() {
+    let first = guarded_stranded_scenario(0);
+    let state = first.build().unwrap();
+    let mut gym = GymBot::new(PlayerId(0));
+    let _ = gym.step_plan(&state, ActionPlan::default());
+
+    let mut contested = first;
+    contested.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Harvester,
+        x: 5,
+        y: 6,
+    });
+    for x in [5, 6] {
+        contested.units.push(oxide_sim::scenario::UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x,
+            y: 12,
+        });
+    }
+    let state = contested.build().unwrap();
+    let mut value = serde_json::to_value(state).unwrap();
+    value["tick"] = serde_json::json!(1);
+    let mut state: oxide_sim::State = serde_json::from_value(value).unwrap();
+
+    let form = gym.step_plan(&state, ActionPlan::default());
+    let stale_member = form
+        .iter()
+        .find_map(|command| match &command.command {
+            Command::AttackMove { units, .. } => units.first().copied(),
+            _ => None,
+        })
+        .expect("recovery should form one direct screen");
+    let fresh_screen = state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Sentinel)
+        .map(|unit| unit.id)
+        .find(|unit| *unit != stale_member)
+        .expect("the second direct screen stays outside the first army");
+    state.tick(&form);
+
+    let push = gym.step_plan(&state, ActionPlan::default());
+    assert!(
+        push.iter().any(|command| matches!(
+            &command.command,
+            Command::AttackMove { units, .. } if units.contains(&stale_member)
+        )),
+        "the staged recovery screen should begin contesting the guarded source: {push:?}"
+    );
+    state.tick(&push);
+
+    let mut value = serde_json::to_value(state).unwrap();
+    let stale = value["units"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|unit| unit["id"] == serde_json::json!(stale_member.0))
+        .expect("the enlisted screen remains alive");
+    stale["kind"] = serde_json::json!("bombard");
+    let state: oxide_sim::State = serde_json::from_value(value).unwrap();
+
+    let replacement = gym.step_plan(&state, ActionPlan::default());
+    assert!(
+        replacement.iter().any(|command| matches!(
+            &command.command,
+            Command::AttackMove { units, .. } if units.contains(&fresh_screen)
+        )),
+        "a stale pure-artillery army cannot make the new direct screen look redundant: \
+         {replacement:?}"
+    );
+}
+
+#[test]
 fn a_recovery_screen_secures_the_source_after_its_push_lifecycle() {
     let first = guarded_stranded_scenario(0);
     let state = first.build().unwrap();
@@ -1524,6 +1739,71 @@ fn passive_victim_finish_commitment_forms_and_pushes_a_dominant_army() {
         }
     }
     panic!("the dominant army never committed to the known Foundry");
+}
+
+#[test]
+fn undersized_active_finish_remnant_does_not_freeze_reserves() {
+    let mut scenario = passive_victim_scenario(0);
+    for index in 0..8 {
+        scenario.units.push(oxide_sim::scenario::UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x: 8 + index % 4,
+            y: 10 + index / 4,
+        });
+    }
+    let state = at_passive_victim_tick(&scenario);
+    let target = state
+        .buildings()
+        .iter()
+        .find(|building| building.player == PlayerId(1) && building.kind == BuildingKind::Foundry)
+        .unwrap()
+        .anchor;
+    let mut gym = GymBot::new(PlayerId(0));
+
+    let formed = gym.step(&state, Action::FormArmy);
+    let members = formed
+        .iter()
+        .find_map(|command| match &command.command {
+            Command::AttackMove { units, goal, .. } if *goal != target => Some(units.clone()),
+            _ => None,
+        })
+        .expect("the first army should form at its rally point");
+    assert!(members.len() >= 5);
+    gym.step(&state, Action::Push);
+
+    let casualties: Vec<_> = members.into_iter().skip(1).collect();
+    let mut value = serde_json::to_value(state).unwrap();
+    value["units"].as_array_mut().unwrap().retain(|unit| {
+        unit["player"] != 0
+            || !unit["id"]
+                .as_u64()
+                .is_some_and(|id| casualties.iter().any(|lost| u64::from(lost.0) == id))
+    });
+    let thinned: oxide_sim::State = serde_json::from_value(value).unwrap();
+
+    let reserve = gym.step_plan(&thinned, ActionPlan::default());
+    assert!(
+        reserve.iter().any(|command| matches!(
+            &command.command,
+            Command::AttackMove { units, goal, .. }
+                if !units.is_empty() && *goal != target
+        )),
+        "an undersized active remnant must release idle fighters into a new body: {reserve:?}"
+    );
+
+    for _ in 0..6 {
+        let commands = gym.step_plan(&thinned, ActionPlan::default());
+        if commands.iter().any(|command| {
+            matches!(
+                command.command,
+                Command::AttackMove { goal, .. } if goal == target
+            )
+        }) {
+            return;
+        }
+    }
+    panic!("the reserve body never committed past the undersized active remnant");
 }
 
 #[test]

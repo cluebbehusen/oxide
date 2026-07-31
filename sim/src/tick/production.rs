@@ -12,6 +12,30 @@ use crate::state::{Order, State};
 use crate::stats::UnitKind;
 use chassis::grid::TilePos;
 
+/// Arms each newly stranded seat from the state that existed at the tick
+/// boundary. Commands run afterward, so spending or reshaping a queue on
+/// the first recovery tick cannot enlarge the captured entitlement.
+pub(super) fn capture_recovery_entitlements(state: &mut State) {
+    let players: Vec<PlayerId> = state
+        .players
+        .iter()
+        .enumerate()
+        .map(|(index, _)| PlayerId(index as u8))
+        .collect();
+    for player in players {
+        if !super::harvester_recovery_needed(state, player) || !state.player(player).recovery_ready
+        {
+            continue;
+        }
+        let target = state.recovery_package_target(player);
+        let allowance = target.saturating_sub(state.player(player).scrap);
+        let seat = state.player_mut(player);
+        seat.recovery_target = target as u16;
+        seat.recovery_allowance = allowance as u16;
+        seat.recovery_ready = false;
+    }
+}
+
 pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
     // Reclaimers trickle first: every built one grinds ambient debris
     // into a scrap each period. Order is building-id order (commutative
@@ -30,39 +54,65 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
     }
 
     // A living player always has a slow way back into the game, even
-    // after the map's salvage is exhausted. A destroyed harvest line
-    // uses the faster recovery cadence until one replacement Harvester
-    // is affordable. Credit is per seat, not per Foundry: extra bases
-    // improve resilience without multiplying the free income.
+    // after the map's salvage is exhausted.
     let completed_ticks = state.tick.saturating_add(1);
     let baseline_tick = completed_ticks >= crate::stats::FOUNDRY_BASELINE_START_TICK
         && completed_ticks.is_multiple_of(crate::stats::FOUNDRY_BASELINE_PERIOD);
-    let recovery_tick = state
-        .tick
-        .is_multiple_of(crate::stats::FOUNDRY_RECOVERY_PERIOD);
-    if baseline_tick || recovery_tick {
-        let harvester_cost = UnitKind::Harvester.stats().cost;
+    if baseline_tick {
         let credits: Vec<PlayerId> = state
             .players
             .iter()
             .enumerate()
             .map(|(index, _)| PlayerId(index as u8))
             .filter(|player| {
-                let recovery = state.player(*player).scrap < harvester_cost
-                    && super::harvester_recovery_needed(state, *player);
-                let baseline = !state.player(*player).resigned
+                !state.player(*player).resigned
                     && state.buildings.iter().any(|building| {
                         building.player == *player
                             && building.hp > 0
                             && building.built
                             && building.kind == crate::stats::BuildingKind::Foundry
-                    });
-                (recovery && recovery_tick) || (baseline && baseline_tick)
+                    })
             })
             .collect();
         for player in credits {
             let bank = &mut state.player_mut(player).scrap;
             *bank = bank.saturating_add(1);
+        }
+    }
+
+    // External income closes the captured deficit without creating new
+    // emergency headroom. Spending, cancelling, or losing the package
+    // never enlarges its allowance; only a real deposit re-arms a cycle.
+    let players: Vec<PlayerId> = state
+        .players
+        .iter()
+        .enumerate()
+        .map(|(index, _)| PlayerId(index as u8))
+        .collect();
+    for player in &players {
+        if !super::harvester_recovery_needed(state, *player) || state.player(*player).recovery_ready
+        {
+            continue;
+        }
+        let seat = state.player_mut(*player);
+        let headroom = u32::from(seat.recovery_target).saturating_sub(seat.scrap);
+        seat.recovery_allowance = seat.recovery_allowance.min(headroom as u16);
+    }
+
+    if state
+        .tick
+        .is_multiple_of(crate::stats::FOUNDRY_RECOVERY_PERIOD)
+    {
+        for player in players {
+            if !super::harvester_recovery_needed(state, player) {
+                continue;
+            }
+            let seat = state.player_mut(player);
+            if seat.recovery_allowance == 0 || seat.scrap >= u32::from(seat.recovery_target) {
+                continue;
+            }
+            seat.scrap = seat.scrap.saturating_add(1);
+            seat.recovery_allowance -= 1;
         }
     }
 
@@ -119,7 +169,11 @@ fn rally_order(state: &State, owner: PlayerId, kind: UnitKind, rally: TilePos) -
         && (state.vision(owner).remembered_scrap(rally) > 0
             || state.vision(owner).remembered_wreck(rally) > 0)
     {
-        return Some(Order::Harvest { node: rally });
+        return Some(Order::Harvest {
+            node: rally,
+            anchor: Some(rally),
+            retiring: false,
+        });
     }
     let goal = super::domain_goal(state, rally, stats.domain)?;
     Some(if stats.can_fight() {

@@ -10,7 +10,7 @@
 use super::domain_goal;
 use crate::command::{Command, PlayerCommand, RejectReason};
 use crate::event::Event;
-use crate::ids::{PlayerId, Target, UnitId};
+use crate::ids::{BuildingId, PlayerId, Target, UnitId};
 use crate::state::{Order, State};
 use crate::stats::{Domain, GOAL_SNAP_RADIUS, ORDER_QUEUE_CAP, QUEUE_CAP};
 use chassis::grid::TilePos;
@@ -105,6 +105,9 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
             Command::Advance { units, goal, queue } => {
                 apply_advance(state, pc.player, &canonical_units(units), *goal, *queue)
             }
+            Command::FocusFire { buildings, target } => {
+                apply_focus_fire(state, pc.player, &canonical_buildings(buildings), *target)
+            }
         };
         if let Err(reason) = outcome {
             events.push(Event::CommandRejected {
@@ -125,6 +128,16 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
 /// The recorded command keeps the client's bytes; this is how the sim
 /// *interprets* a list, not a rewrite of it.
 fn canonical_units(ids: &[UnitId]) -> Vec<UnitId> {
+    let mut ids = ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// A command's building list read as the set it means. Validation remains
+/// all-or-nothing: canonicalization only removes ordering and duplication,
+/// never a bad member.
+fn canonical_buildings(ids: &[BuildingId]) -> Vec<BuildingId> {
     let mut ids = ids.to_vec();
     ids.sort_unstable();
     ids.dedup();
@@ -483,19 +496,30 @@ fn apply_harvest(
     if !in_envelope(state, node) {
         return Err(RejectReason::OutOfBounds);
     }
-    // A source counts if it exists *or* the issuer remembers it existing —
+    // A source counts if it is visible now or the issuer remembers it —
     // ordering harvesters onto stale memory is legitimate play (they walk
-    // over, discover the truth, and retarget), and rejecting it would leak
-    // that an unseen node or wreck has been emptied.
-    let live = state.map.scrap_at(node) > 0 || state.map.wreck_at(node) > 0;
-    let remembered = state.vision(player).remembered_scrap(node) > 0
-        || state.vision(player).remembered_wreck(node) > 0;
-    if !live && !remembered {
+    // over, discover the truth, and retarget), while never-seen live
+    // salvage must not become a command-success oracle through fog.
+    let vision = state.vision(player);
+    let known = if vision.visible(node) {
+        state.map.scrap_at(node) > 0 || state.map.wreck_at(node) > 0
+    } else {
+        vision.remembered_scrap(node) > 0 || vision.remembered_wreck(node) > 0
+    };
+    if !known {
         return Err(RejectReason::NotANode);
     }
     let mut landed = 0;
     let applied = for_owned_workers(state, player, units, |unit| {
-        if assign(unit, Order::Harvest { node }, queue) {
+        if assign(
+            unit,
+            Order::Harvest {
+                node,
+                anchor: Some(node),
+                retiring: false,
+            },
+            queue,
+        ) {
             landed += 1;
         }
     });
@@ -1031,8 +1055,56 @@ fn apply_set_rally(
     if b.player != player {
         return Err(RejectReason::NotYourBuilding);
     }
+    if !b.built || b.kind.stats().produces.is_empty() {
+        return Err(RejectReason::InvalidTarget);
+    }
     // Any tile is a legal rally — spawns snap to walkable ground later, and
     // a scrap-node rally is exactly how auto-harvest is asked for.
     b.rally = rally;
+    Ok(())
+}
+
+fn apply_focus_fire(
+    state: &mut State,
+    player: PlayerId,
+    buildings: &[BuildingId],
+    target: Target,
+) -> Result<(), RejectReason> {
+    if buildings.is_empty() {
+        return Err(RejectReason::NotYourBuilding);
+    }
+
+    // Check every defense before writing any preference. A mixed selection
+    // containing a stale, foreign, unfinished, or incompatible building is
+    // one rejected command, never a partially retasked line.
+    let mut weapons = Vec::with_capacity(buildings.len());
+    for &id in buildings {
+        let building = state.building(id).ok_or(RejectReason::NotYourBuilding)?;
+        if building.player != player {
+            return Err(RejectReason::NotYourBuilding);
+        }
+        if !building.built {
+            return Err(RejectReason::InvalidTarget);
+        }
+        let weapon = building
+            .kind
+            .stats()
+            .weapons
+            .first()
+            .copied()
+            .ok_or(RejectReason::InvalidTarget)?;
+        weapons.push(weapon);
+    }
+
+    let domain = state
+        .visible_hostile_target_domain(player, target)
+        .ok_or(RejectReason::InvalidTarget)?;
+    if weapons.iter().any(|weapon| !weapon.targets.covers(domain)) {
+        return Err(RejectReason::InvalidTarget);
+    }
+
+    for &id in buildings {
+        state.building_mut(id).expect("validated above").focus = Some(target);
+    }
     Ok(())
 }

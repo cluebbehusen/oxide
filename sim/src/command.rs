@@ -53,11 +53,12 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         queue: bool,
     },
-    /// Put harvesters to work on a scrap node.
+    /// Put harvesters to work in a bounded local zone around a known
+    /// scrap node or wreck.
     Harvest {
         /// The units to commit (only harvesters are accepted).
         units: Vec<UnitId>,
-        /// A tile that currently holds scrap.
+        /// The visible or remembered salvage tile anchoring the zone.
         node: TilePos,
         /// Append instead of replace (see [`Command::Move::queue`]).
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
@@ -186,8 +187,7 @@ pub enum Command {
     /// Move to a tile while taking primary-weapon shots that are already
     /// available. Unlike [`Command::AttackMove`], units never chase,
     /// stop for, or retaliate against targets during this move. Units
-    /// that cannot fight walk there normally. (Last variant by appending
-    /// discipline: earlier discriminants keep their serialized bytes.)
+    /// that cannot fight walk there normally.
     Advance {
         /// The units to commit.
         units: Vec<UnitId>,
@@ -196,6 +196,18 @@ pub enum Command {
         /// Append instead of replace (see [`Command::Move::queue`]).
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         queue: bool,
+    },
+    /// Give built armed buildings a preferred visible hostile target.
+    /// The preference persists while the target remains valid and in true
+    /// sight. A focused defense still fires at an ordinary target when its
+    /// preference is currently out of reach or behind blocking terrain.
+    /// (Last variant by appending discipline: earlier discriminants keep
+    /// their serialized bytes.)
+    FocusFire {
+        /// The defenses to retask. The sim reads this as a sorted set.
+        buildings: Vec<BuildingId>,
+        /// The visible hostile unit or building to prefer.
+        target: Target,
     },
 }
 

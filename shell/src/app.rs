@@ -719,8 +719,8 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                         app.input.drag_origin = None;
                     }
                 }
-                let had_selection =
-                    !app.game.selection.units.is_empty() || app.game.selection.building.is_some();
+                let had_selection = !app.game.selection.units.is_empty()
+                    || !app.game.selection.buildings.is_empty();
                 let escape_pressed = events
                     .iter()
                     .any(|e| matches!(e, RawEvent::KeyDown { key: Key::Escape }));
@@ -952,7 +952,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                         // Only the session knows its map and tick; the
                         // screen just edits the string.
                         let suggested = format!(
-                            "{} · t{}",
+                            "{} | t{}",
                             app.game.scenario.name,
                             app.game.state.current_tick()
                         );
@@ -1502,7 +1502,7 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
                 && !('\u{20}'..='\u{7e}').contains(&ch)
             {
                 Err(format!(
-                    "text event {ch:?} outside printable ASCII — the funnel refuses it"
+                    "text event {ch:?} is outside printable ASCII; the funnel refuses it"
                 ))
             } else {
                 app.injected.push(event);

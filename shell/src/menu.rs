@@ -502,7 +502,7 @@ pub fn discover_scenarios() -> Vec<ScenarioEntry> {
                     // geometric pace label it qualifies — one badge,
                     // so the pair can never separate.
                     let pace = match (m.pace.is_empty(), m.duration.is_empty()) {
-                        (false, false) => format!("{} · {}", m.pace, m.duration),
+                        (false, false) => format!("{} | {}", m.pace, m.duration),
                         (false, true) => m.pace.clone(),
                         (true, _) => m.duration.clone(),
                     };

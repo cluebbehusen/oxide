@@ -3,7 +3,9 @@
 //! Phase order is part of the sim's contract — changing it changes game
 //! outcomes (and therefore every regression hash):
 //!
-//! 1. **Commands** — validate and apply this tick's [`PlayerCommand`]s.
+//! 1. **Recovery and commands** — capture any newly stranded economy's
+//!    finite entitlement from the tick-boundary state, then validate and
+//!    apply this tick's [`PlayerCommand`]s.
 //! 2. **Production** — Foundries advance queues and spawn finished units
 //!    (before brains, so a fresh unit acts on its birth tick).
 //! 3. **Brains** — each unit, in id order, turns intent into action:
@@ -162,6 +164,7 @@ impl State {
             // local on purpose: the pipeline rebuilds it at each use
             // point, and it must never ride on `State` (see `spatial`).
             let mut index = spatial::UnitIndex::new();
+            production::capture_recovery_entitlements(self);
             commands::apply(self, commands, &mut events);
             production::run(self, &mut events);
             brain::run(self, &mut index, &mut events);

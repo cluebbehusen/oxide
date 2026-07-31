@@ -301,15 +301,15 @@ pub enum ScenarioError {
     #[error("starting building #{0} is invalid (owner in range? footprint on open ground?)")]
     BadBuilding(usize),
     /// Two Foundries can't reach each other: the match could never end.
-    #[error("players {0} and {1} are sealed apart — no ground route between their foundries")]
+    #[error("players {0} and {1} are sealed apart; no ground route connects their foundries")]
     Disconnected(PlayerId, PlayerId),
     /// Every seat on one team: nobody to fight, no way to win.
-    #[error("all players share one team — the match could never end")]
+    #[error("all players share one team, so the match could never end")]
     OneTeam,
     /// A teamed seat asked for the config-less classic bot, which is
     /// team-blind by design and would spend the match targeting allies.
     #[error(
-        "player {0} shares a team but fields the classic bot — teamed bot seats need a bot_config"
+        "player {0} shares a team but fields the classic bot; teamed bot seats need a bot_config"
     )]
     TeamBotNeedsConfig(PlayerId),
     /// A bot's personality or team-role selection cannot be resolved.
@@ -402,6 +402,9 @@ impl Scenario {
                     faction: spec.faction,
                     team,
                     scrap: spec.scrap,
+                    recovery_allowance: 0,
+                    recovery_target: 0,
+                    recovery_ready: true,
                     resigned: false,
                 }
             })

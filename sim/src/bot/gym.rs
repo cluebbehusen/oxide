@@ -16,6 +16,7 @@
 use super::executive::{ArmyState, Executive, Intent, LoweringRules};
 use super::observation::{Observation, UnitObs};
 use super::orient::Orientation;
+use super::profile::ProfileFacets;
 use super::utility::{Dials, UtilityPolicy};
 use crate::command::{Command, PlayerCommand};
 use crate::ids::{BuildingId, PlayerId, UnitId};
@@ -129,6 +130,22 @@ pub const CONSTRUCTION_PLAN_TIMEOUT_TICKS: u64 = 1_200;
 /// turns every small map into a deterministic build-order loss.
 const FABRICATOR_MIN_HARVESTERS: usize = 4;
 const FABRICATOR_MIN_SCREEN_STRENGTH: i64 = 150;
+
+/// A named profile becomes an authored strategic commitment only at the
+/// deliberately strong end of one facet. Lower values remain preferences for
+/// the actor to learn rather than a second scripted policy.
+const PROFILE_DOCTRINE_THRESHOLD: u32 = 800;
+/// A complementary team Industry role should still express its economy lean
+/// even when the underlying style does not cross the full doctrine threshold.
+const PROFILE_RECLAIMER_THRESHOLD: u32 = 700;
+/// The industrial opening compounds one worker beyond the generalist target.
+const PROFILE_HARVESTER_TARGET: usize = 5;
+/// The authored Reclaimer milestone uses the same retirement economics as the
+/// utility policy: nearby salvage must be low and one fighting purchase stays
+/// banked beyond the site's cost.
+const PROFILE_HOME_SALVAGE_RADIUS: i32 = 14;
+const PROFILE_SALVAGE_LOW: u32 = 450;
+const PROFILE_CAPITAL_RESERVE: u32 = 70;
 
 /// How long a witnessed threat, hit, or own loss keeps nearby salvage
 /// suspect. Bot memory is deliberately coarser than vision memory: it
@@ -432,12 +449,30 @@ impl Default for ActionPlan {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct ProfileDoctrineProgress {
+    workforce: bool,
+    fabricator: bool,
+    reclaimer: bool,
+    air_ground: bool,
+    air_air: bool,
+    ground_tech: bool,
+    anti_air: bool,
+    scuttler: bool,
+    bombard: bool,
+    turret: bool,
+}
+
 /// One externally-driven bot. Same command-source shape as the other
 /// bots: everything it does goes through recorded `PlayerCommand`s.
 #[derive(Debug, Clone)]
 pub struct GymBot {
     player: PlayerId,
     dials: Dials,
+    /// Construction-time named strategy. Zero is the raw research path and
+    /// must leave the decision surface byte-for-byte unchanged.
+    profile_facets: ProfileFacets,
+    profile_progress: ProfileDoctrineProgress,
     policy: UtilityPolicy,
     exec: Executive,
     /// Fog memory (bot-local, legitimate): the last enemy army this bot
@@ -490,12 +525,27 @@ impl GymBot {
     /// longer stride halves the trainer's credit-assignment horizon;
     /// macro decisions don't need 8-tick resolution.
     pub fn with_cadence(player: PlayerId, cadence: u64) -> Self {
+        Self::with_profile_facets(player, cadence, ProfileFacets::ZERO)
+    }
+
+    /// A gym bot whose named profile may commit finite opening milestones.
+    ///
+    /// The five values use the same Rust-authored contract as neural
+    /// conditioning. [`ProfileFacets::ZERO`] is exactly the raw research path:
+    /// it performs no profile reconciliation at all.
+    pub fn with_profile_facets(
+        player: PlayerId,
+        cadence: u64,
+        profile_facets: ProfileFacets,
+    ) -> Self {
         Self {
             player,
             dials: Dials {
                 cadence: cadence.clamp(4, 64),
                 ..Dials::full()
             },
+            profile_facets,
+            profile_progress: ProfileDoctrineProgress::default(),
             policy: UtilityPolicy::new(),
             exec: Executive::default(),
             seen_strength: 0,
@@ -545,6 +595,7 @@ impl GymBot {
         let obs = orientation.observe(&world);
         self.refresh_founding_claims(&obs);
         self.reconcile_plan(&obs);
+        self.refresh_profile_progress(&obs);
         let home = home_tile(&obs);
         let armies: Vec<_> = projected
             .armies()
@@ -933,6 +984,7 @@ impl GymBot {
         ];
 
         let mut mask = [false; ACTION_COUNT];
+        let mut tactical_reconciliation = false;
         mask[Action::Idle as usize] = true;
         mask[Action::NoConstruction as usize] = true;
         mask[Action::NoOperation as usize] = true;
@@ -1040,10 +1092,12 @@ impl GymBot {
                 }
             });
             if let Some(defense) = defense {
+                tactical_reconciliation = true;
                 for action in OPERATION_ACTIONS {
                     mask[action] = action == defense as usize;
                 }
             } else if let Some(finish) = self.finish_operation(&obs, &armies, h) {
+                tactical_reconciliation = true;
                 for action in OPERATION_ACTIONS {
                     mask[action] = action == finish as usize;
                 }
@@ -1065,8 +1119,146 @@ impl GymBot {
             mask[action as usize] = true;
             mask[Action::NoConstruction as usize] = true;
             mask[Action::NoOperation as usize] = true;
+        } else if !tactical_reconciliation && home_intruder.is_none() {
+            self.apply_profile_doctrine(&obs, &mut mask);
         }
         Decision { features, mask }
+    }
+
+    /// Narrows ordinary legal choices around finite, observable profile
+    /// milestones. This is part of the decision surface rather than a hidden
+    /// rewrite after inference, so native play and the external gym execute
+    /// the same action they selected and train against the same mask.
+    fn apply_profile_doctrine(&self, obs: &Observation, mask: &mut [bool; ACTION_COUNT]) {
+        if self.profile_facets == ProfileFacets::ZERO || self.planned_build.is_some() {
+            return;
+        }
+
+        if let Some(action) = self.profile_production_milestone(obs, mask) {
+            narrow_head(mask, &PRODUCTION_ACTIONS, action);
+        }
+        if let Some(action) = self.profile_construction_milestone(obs, mask) {
+            narrow_head(mask, &CONSTRUCTION_ACTIONS, action);
+        }
+    }
+
+    fn profile_production_milestone(
+        &self,
+        obs: &Observation,
+        mask: &[bool; ACTION_COUNT],
+    ) -> Option<Action> {
+        let facets = self.profile_facets;
+        if facets.economy_bias >= PROFILE_RECLAIMER_THRESHOLD
+            && !self.profile_progress.workforce
+            && mask[Action::TrainHarvester as usize]
+        {
+            return Some(Action::TrainHarvester);
+        }
+
+        let industry =
+            facets.economy_bias >= PROFILE_DOCTRINE_THRESHOLD && self.profile_progress.workforce;
+        let advanced = facets.air_bias >= PROFILE_DOCTRINE_THRESHOLD
+            || facets.siege_bias >= PROFILE_DOCTRINE_THRESHOLD
+            || industry;
+        if advanced && !self.profile_progress.fabricator {
+            if committed_units(obs, UnitKind::Harvester) < FABRICATOR_MIN_HARVESTERS
+                && mask[Action::TrainHarvester as usize]
+            {
+                return Some(Action::TrainHarvester);
+            }
+            let screen_strength = projected_ground_strength(obs);
+            if screen_strength < FABRICATOR_MIN_SCREEN_STRENGTH
+                && mask[Action::TrainSentinel as usize]
+            {
+                return Some(Action::TrainSentinel);
+            }
+        }
+
+        if facets.air_bias >= PROFILE_DOCTRINE_THRESHOLD {
+            for (complete, action) in [
+                (self.profile_progress.air_ground, Action::TrainAirGround),
+                (self.profile_progress.air_air, Action::TrainAirAir),
+                (self.profile_progress.ground_tech, Action::TrainLancer),
+            ] {
+                if !complete && mask[action as usize] {
+                    return Some(action);
+                }
+            }
+        }
+
+        if facets.siege_bias >= PROFILE_DOCTRINE_THRESHOLD
+            && !self.profile_progress.bombard
+            && mask[Action::TrainBombard as usize]
+        {
+            return Some(Action::TrainBombard);
+        }
+
+        if industry {
+            for (complete, action) in [
+                (self.profile_progress.scuttler, Action::TrainScuttler),
+                (self.profile_progress.anti_air, Action::TrainAntiAir),
+                (self.profile_progress.ground_tech, Action::TrainLancer),
+            ] {
+                if !complete && mask[action as usize] {
+                    return Some(action);
+                }
+            }
+        }
+        None
+    }
+
+    fn profile_construction_milestone(
+        &self,
+        obs: &Observation,
+        mask: &[bool; ACTION_COUNT],
+    ) -> Option<Action> {
+        let facets = self.profile_facets;
+        let industry =
+            facets.economy_bias >= PROFILE_DOCTRINE_THRESHOLD && self.profile_progress.workforce;
+        let advanced = facets.air_bias >= PROFILE_DOCTRINE_THRESHOLD
+            || facets.siege_bias >= PROFILE_DOCTRINE_THRESHOLD
+            || industry;
+        if facets.economy_bias >= PROFILE_RECLAIMER_THRESHOLD
+            && self.profile_progress.workforce
+            && !self.profile_progress.reclaimer
+            && nearby_salvage(obs) < PROFILE_SALVAGE_LOW
+            && affordable_capital(obs, BuildingKind::Reclaimer, PROFILE_CAPITAL_RESERVE)
+            && mask[Action::BuildReclaimer as usize]
+        {
+            return Some(Action::BuildReclaimer);
+        }
+
+        if advanced && !self.profile_progress.fabricator && mask[Action::BuildFabricator as usize] {
+            return Some(Action::BuildFabricator);
+        }
+
+        if facets.support_bias >= PROFILE_DOCTRINE_THRESHOLD
+            && !self.profile_progress.turret
+            && mask[Action::BuildTurret as usize]
+        {
+            return Some(Action::BuildTurret);
+        }
+        None
+    }
+
+    fn refresh_profile_progress(&mut self, obs: &Observation) {
+        if self.profile_facets == ProfileFacets::ZERO {
+            return;
+        }
+        self.profile_progress.workforce |=
+            committed_units(obs, UnitKind::Harvester) >= PROFILE_HARVESTER_TARGET;
+        self.profile_progress.fabricator |= committed_buildings(obs, BuildingKind::Fabricator) > 0;
+        self.profile_progress.reclaimer |= committed_buildings(obs, BuildingKind::Reclaimer) > 0;
+        self.profile_progress.air_ground |=
+            committed_units(obs, Role::AirGround.unit_for(obs.faction)) > 0;
+        self.profile_progress.air_air |=
+            committed_units(obs, Role::AirAir.unit_for(obs.faction)) > 0;
+        self.profile_progress.ground_tech |= committed_units(obs, UnitKind::Lancer) > 0;
+        self.profile_progress.anti_air |=
+            committed_units(obs, Role::AntiAir.unit_for(obs.faction)) > 0;
+        self.profile_progress.scuttler |= committed_units(obs, UnitKind::Scuttler) > 0;
+        self.profile_progress.bombard |= committed_units(obs, UnitKind::Bombard) > 0;
+        self.profile_progress.turret |= committed_buildings(obs, BuildingKind::Turret) > 0;
     }
 
     /// Applies one legacy flat action while the other two heads stay
@@ -1551,13 +1743,60 @@ impl GymBot {
         kind: BuildingKind,
     ) -> Option<TilePos> {
         match kind {
-            BuildingKind::Turret | BuildingKind::FlakTurret => self
-                .policy
-                .nearest_scrap(obs, home)
-                .and_then(|node| self.policy.placement_near(obs, kind, node)),
+            BuildingKind::Turret | BuildingKind::FlakTurret | BuildingKind::Bastion => {
+                self.defense_anchor(obs, home, kind)
+            }
             BuildingKind::Foundry => None,
             _ => self.policy.placement_near(obs, kind, home),
         }
+    }
+
+    fn defense_anchor(
+        &self,
+        obs: &Observation,
+        home: TilePos,
+        kind: BuildingKind,
+    ) -> Option<TilePos> {
+        let mut foci = defense_foci(obs, home, kind);
+        foci.sort_unstable_by_key(|tile| (tile.y, tile.x));
+        foci.dedup();
+
+        let mut candidates: Vec<_> = foci
+            .into_iter()
+            .filter_map(|focus| self.policy.placement_near(obs, kind, focus))
+            .collect();
+        candidates.sort_unstable_by_key(|anchor| (anchor.y, anchor.x));
+        candidates.dedup();
+        if candidates.is_empty() {
+            return None;
+        }
+
+        let metrics: Vec<_> = candidates
+            .iter()
+            .copied()
+            .map(|anchor| DefenseMetrics::measure(obs, home, kind, anchor))
+            .collect();
+        let bounds = DefenseBounds::from_metrics(&metrics);
+        let preferred_spacing = metrics
+            .iter()
+            .map(|metric| metric.spacing)
+            .max()
+            .unwrap_or(0)
+            .min(8);
+        candidates
+            .into_iter()
+            .zip(metrics)
+            .filter(|(_, metrics)| metrics.spacing >= preferred_spacing)
+            .map(|(anchor, metrics)| {
+                (
+                    std::cmp::Reverse(metrics.score(kind, bounds)),
+                    anchor.y,
+                    anchor.x,
+                    anchor,
+                )
+            })
+            .min()
+            .map(|(.., anchor)| anchor)
     }
 
     fn try_planned_build(
@@ -2000,13 +2239,21 @@ impl GymBot {
                     return commands;
                 }
 
+                // Army state outlives individual roles. A pure-artillery
+                // remnant cannot make this ground-worker push safe merely
+                // because its executive still says Pushing or Staging.
+                let has_direct_screen =
+                    |members: &[UnitId]| members.iter().any(|member| live_screen.contains(member));
                 let staging = armies
                     .iter()
-                    .filter(|army| army.state == ArmyState::Staging)
+                    .filter(|army| {
+                        army.state == ArmyState::Staging && has_direct_screen(&army.members)
+                    })
                     .min_by_key(|army| army.id);
                 let contesting = armies.iter().find(|army| {
                     army.target == Some(source)
                         && matches!(army.state, ArmyState::Pushing | ArmyState::Engaging)
+                        && has_direct_screen(&army.members)
                 });
                 let screen_on_source = live_screen.iter().any(|member| {
                     obs.my_units.iter().any(|unit| {
@@ -2265,13 +2512,22 @@ impl GymBot {
             return None;
         }
 
-        // An army already marching or fighting owns its own lifecycle.
+        // An army already marching or fighting owns its own lifecycle only
+        // while it still has a finishing body. A surviving straggler must
+        // not freeze a stronger staged or idle reserve behind it.
         // Lock the learned operation head to a no-op: Recall must not
         // interrupt a justified finish, while reissuing Push would reset
         // paths and weapon opportunities.
         if armies
             .iter()
-            .any(|army| matches!(army.state, ArmyState::Pushing | ArmyState::Engaging))
+            .filter(|army| matches!(army.state, ArmyState::Pushing | ArmyState::Engaging))
+            .any(|army| {
+                fighters
+                    .iter()
+                    .filter(|unit| army.members.contains(&unit.id))
+                    .count()
+                    >= FINISH_MIN_FIGHTERS
+            })
         {
             return Some(Action::NoOperation);
         }
@@ -2391,6 +2647,468 @@ fn nearest_home_intruder(obs: &Observation, home: TilePos) -> Option<TilePos> {
         .map(|(_, y, x, _)| TilePos::new(x, y))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Point2 {
+    x: i32,
+    y: i32,
+}
+
+impl Point2 {
+    fn tile(tile: TilePos) -> Self {
+        Self {
+            x: tile.x.saturating_mul(2).saturating_add(1),
+            y: tile.y.saturating_mul(2).saturating_add(1),
+        }
+    }
+
+    fn building(anchor: TilePos, kind: BuildingKind) -> Self {
+        let (width, height) = kind.stats().size;
+        Self {
+            x: anchor.x.saturating_mul(2).saturating_add(width),
+            y: anchor.y.saturating_mul(2).saturating_add(height),
+        }
+    }
+
+    fn chebyshev(self, other: Self) -> i32 {
+        (self.x - other.x).abs().max((self.y - other.y).abs())
+    }
+
+    fn manhattan(self, other: Self) -> i32 {
+        (self.x - other.x)
+            .abs()
+            .saturating_add((self.y - other.y).abs())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DefenseMetrics {
+    threat: i64,
+    protected_value: i64,
+    coverage: i64,
+    vision: i64,
+    spacing: i64,
+    congestion: i64,
+    builder_safety: i64,
+    builder_travel: i64,
+}
+
+impl DefenseMetrics {
+    fn measure(obs: &Observation, home: TilePos, kind: BuildingKind, anchor: TilePos) -> Self {
+        let center = Point2::building(anchor, kind);
+        let home = Point2::tile(home);
+        let (minimum_reach, reach) = defense_reach2(kind);
+        let protected = protected_points(obs, kind);
+        let threats = defense_threats(obs, kind);
+
+        let threat = threats
+            .iter()
+            .map(|(point, value)| {
+                value.saturating_mul(i64::from(64 - center.chebyshev(*point).min(64)))
+            })
+            .sum();
+        let protected_value = protected
+            .iter()
+            .map(|(point, value)| {
+                value.saturating_mul(32) / i64::from(8i32.saturating_add(center.chebyshev(*point)))
+            })
+            .sum();
+
+        let protected_coverage: i64 = protected
+            .iter()
+            .filter(|(point, _)| {
+                let distance = center.chebyshev(*point);
+                distance >= minimum_reach && distance <= reach
+            })
+            .map(|(_, value)| value / 50)
+            .sum();
+        let approach_coverage: i64 = threats
+            .iter()
+            .filter(|(point, _)| {
+                home.chebyshev(center) < home.chebyshev(*point)
+                    && home
+                        .chebyshev(center)
+                        .saturating_add(center.chebyshev(*point))
+                        <= home.chebyshev(*point).saturating_add(4)
+            })
+            .map(|(_, value)| value / 50)
+            .sum();
+        let open_coverage = known_open_coverage(obs, center, minimum_reach, reach);
+
+        let vision = obs
+            .my_units
+            .iter()
+            .chain(obs.ally_units.iter())
+            .map(|unit| {
+                let sight = unit.kind.stats().vision.saturating_mul(2);
+                if center.chebyshev(Point2::tile(unit.tile)) <= sight {
+                    i64::from(sight).saturating_mul(50)
+                } else {
+                    0
+                }
+            })
+            .chain(
+                obs.my_buildings
+                    .iter()
+                    .chain(obs.ally_buildings.iter())
+                    .filter(|building| building.built)
+                    .map(|building| {
+                        let sight = building.kind.stats().vision.saturating_mul(2);
+                        if center.chebyshev(Point2::building(building.anchor, building.kind))
+                            <= sight
+                        {
+                            let array_bonus = if building.kind == BuildingKind::Array {
+                                3
+                            } else {
+                                1
+                            };
+                            i64::from(sight)
+                                .saturating_mul(50)
+                                .saturating_mul(array_bonus)
+                        } else {
+                            0
+                        }
+                    }),
+            )
+            .sum();
+
+        let spacing = obs
+            .my_buildings
+            .iter()
+            .chain(obs.ally_buildings.iter())
+            .filter(|building| {
+                matches!(
+                    building.kind,
+                    BuildingKind::Turret | BuildingKind::FlakTurret | BuildingKind::Bastion
+                )
+            })
+            .map(|building| center.chebyshev(Point2::building(building.anchor, building.kind)))
+            .min()
+            .unwrap_or(24)
+            .min(24);
+
+        let congestion = obs
+            .my_units
+            .iter()
+            .chain(obs.ally_units.iter())
+            .filter(|unit| center.chebyshev(Point2::tile(unit.tile)) <= 6)
+            .count()
+            .saturating_add(
+                obs.my_buildings
+                    .iter()
+                    .chain(obs.ally_buildings.iter())
+                    .filter(|building| {
+                        center.chebyshev(Point2::building(building.anchor, building.kind)) <= 6
+                    })
+                    .count()
+                    .saturating_mul(2),
+            );
+        let builder_safety = threats
+            .iter()
+            .map(|(point, _)| center.chebyshev(*point))
+            .min()
+            .unwrap_or(64)
+            .min(64);
+
+        let builder_travel = obs
+            .my_units
+            .iter()
+            .filter(|unit| {
+                unit.kind == UnitKind::Harvester && unit.site.is_none() && unit.founding.is_none()
+            })
+            .map(|unit| center.manhattan(Point2::tile(unit.tile)))
+            .min()
+            .unwrap_or(i32::MAX);
+
+        Self {
+            threat,
+            protected_value,
+            coverage: protected_coverage
+                .saturating_add(approach_coverage)
+                .saturating_add(open_coverage),
+            vision,
+            spacing: i64::from(spacing),
+            congestion: i64::try_from(congestion).unwrap_or(i64::MAX),
+            builder_safety: i64::from(builder_safety),
+            builder_travel: i64::from(builder_travel),
+        }
+    }
+
+    fn score(self, kind: BuildingKind, bounds: DefenseBounds) -> i64 {
+        let values = [
+            normalized(self.threat, bounds.threat, false),
+            normalized(self.protected_value, bounds.protected_value, false),
+            normalized(self.coverage, bounds.coverage, false),
+            normalized(self.vision, bounds.vision, false),
+            normalized(self.spacing, bounds.spacing, false),
+            normalized(self.congestion, bounds.congestion, true),
+            normalized(self.builder_safety, bounds.builder_safety, false),
+            normalized(self.builder_travel, bounds.builder_travel, true),
+        ];
+        let weights = match kind {
+            BuildingKind::Turret => [24, 24, 15, 5, 10, 7, 8, 7],
+            BuildingKind::FlakTurret => [29, 23, 13, 6, 9, 7, 8, 5],
+            BuildingKind::Bastion => [24, 16, 22, 14, 8, 5, 7, 4],
+            _ => [0; 8],
+        };
+        values
+            .into_iter()
+            .zip(weights)
+            .map(|(value, weight)| value.saturating_mul(weight))
+            .sum()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DefenseBounds {
+    threat: (i64, i64),
+    protected_value: (i64, i64),
+    coverage: (i64, i64),
+    vision: (i64, i64),
+    spacing: (i64, i64),
+    congestion: (i64, i64),
+    builder_safety: (i64, i64),
+    builder_travel: (i64, i64),
+}
+
+impl DefenseBounds {
+    fn from_metrics(metrics: &[DefenseMetrics]) -> Self {
+        let bounds = |values: fn(DefenseMetrics) -> i64| {
+            metrics
+                .iter()
+                .copied()
+                .map(values)
+                .fold((i64::MAX, i64::MIN), |(low, high), value| {
+                    (low.min(value), high.max(value))
+                })
+        };
+        Self {
+            threat: bounds(|metric| metric.threat),
+            protected_value: bounds(|metric| metric.protected_value),
+            coverage: bounds(|metric| metric.coverage),
+            vision: bounds(|metric| metric.vision),
+            spacing: bounds(|metric| metric.spacing),
+            congestion: bounds(|metric| metric.congestion),
+            builder_safety: bounds(|metric| metric.builder_safety),
+            builder_travel: bounds(|metric| metric.builder_travel),
+        }
+    }
+}
+
+fn normalized(value: i64, (low, high): (i64, i64), inverse: bool) -> i64 {
+    if low == high {
+        return 0;
+    }
+    let offset = if inverse {
+        high.saturating_sub(value)
+    } else {
+        value.saturating_sub(low)
+    };
+    offset.saturating_mul(1_000) / high.saturating_sub(low)
+}
+
+fn defense_reach2(kind: BuildingKind) -> (i32, i32) {
+    kind.stats().weapons.first().map_or((0, 0), |weapon| {
+        let doubled = chassis::fx::Fx::from_num(2);
+        (
+            (weapon.minimum_range * doubled).floor().to_num(),
+            (weapon.range * doubled).floor().to_num(),
+        )
+    })
+}
+
+fn defense_foci(obs: &Observation, home: TilePos, kind: BuildingKind) -> Vec<TilePos> {
+    let mut foci = Vec::new();
+    let mut salvage: Vec<_> = obs
+        .known_scrap
+        .iter()
+        .chain(obs.known_wrecks.iter())
+        .filter(|(_, amount)| *amount > 0)
+        .map(|(tile, _)| (tile.manhattan(home), tile.y, tile.x, *tile))
+        .collect();
+    salvage.sort_unstable();
+
+    match kind {
+        BuildingKind::Turret | BuildingKind::FlakTurret => {
+            foci.extend(salvage.into_iter().take(8).map(|(.., tile)| tile));
+            if foci.is_empty() {
+                foci.push(home);
+                foci.extend(
+                    obs.my_units
+                        .iter()
+                        .filter(|unit| unit.kind == UnitKind::Harvester)
+                        .take(8)
+                        .map(|unit| unit.tile),
+                );
+            }
+        }
+        BuildingKind::Bastion => {
+            foci.push(home);
+            foci.extend(
+                obs.my_buildings
+                    .iter()
+                    .filter(|building| building.built && !building.kind.stats().can_fight())
+                    .take(8)
+                    .map(|building| building.anchor),
+            );
+            foci.extend(salvage.into_iter().take(4).map(|(.., tile)| {
+                TilePos::new(
+                    home.x + (tile.x - home.x) / 3,
+                    home.y + (tile.y - home.y) / 3,
+                )
+            }));
+        }
+        _ => {}
+    }
+
+    let mut threats: Vec<_> = defense_threats(obs, kind)
+        .into_iter()
+        .map(|(point, value)| {
+            let tile = TilePos::new((point.x - 1) / 2, (point.y - 1) / 2);
+            (
+                std::cmp::Reverse(value),
+                tile.manhattan(home),
+                tile.y,
+                tile.x,
+                tile,
+            )
+        })
+        .collect();
+    threats.sort_unstable();
+    for (.., threat) in threats.into_iter().take(8) {
+        foci.push(threat);
+        foci.push(TilePos::new(
+            home.x + (threat.x - home.x) / 2,
+            home.y + (threat.y - home.y) / 2,
+        ));
+    }
+    if foci.is_empty() {
+        foci.push(home);
+    }
+    foci
+}
+
+fn defense_threats(obs: &Observation, kind: BuildingKind) -> Vec<(Point2, i64)> {
+    let target_domain = match kind {
+        BuildingKind::FlakTurret => Domain::Air,
+        _ => Domain::Ground,
+    };
+    let mut threats: Vec<_> = obs
+        .enemy_units
+        .iter()
+        .filter(|unit| unit.kind.stats().domain == target_domain && unit.kind.stats().can_fight())
+        .map(|unit| {
+            (
+                Point2::tile(unit.tile),
+                i64::try_from(super::executive::unit_strength(unit))
+                    .unwrap_or(i64::MAX)
+                    .max(1),
+            )
+        })
+        .collect();
+
+    threats.extend(obs.blips.iter().map(|tile| (Point2::tile(*tile), 1_000)));
+    if target_domain == Domain::Ground {
+        threats.extend(
+            obs.incoming_shells
+                .iter()
+                .map(|tile| (Point2::tile(*tile), 1_500)),
+        );
+        threats.extend(
+            obs.enemy_buildings
+                .iter()
+                .filter(|building| {
+                    building
+                        .kind
+                        .stats()
+                        .weapons
+                        .iter()
+                        .any(|weapon| weapon.targets.covers(Domain::Ground))
+                })
+                .map(|building| {
+                    (
+                        Point2::building(building.anchor, building.kind),
+                        i64::from(building.hp).max(1),
+                    )
+                }),
+        );
+    }
+    threats
+}
+
+fn protected_points(obs: &Observation, kind: BuildingKind) -> Vec<(Point2, i64)> {
+    let building_value = |building: &super::observation::BuildingObs| {
+        let base: i64 = match building.kind {
+            BuildingKind::Foundry => 1_800,
+            BuildingKind::Fabricator => 1_200,
+            BuildingKind::Reclaimer => 900,
+            BuildingKind::RepairBay => 900,
+            BuildingKind::Array => 700,
+            BuildingKind::Bastion => 450,
+            BuildingKind::Turret | BuildingKind::FlakTurret => 350,
+        };
+        if building.built { base } else { base / 2 }
+    };
+    let mut protected: Vec<_> = obs
+        .my_buildings
+        .iter()
+        .chain(obs.ally_buildings.iter())
+        .map(|building| {
+            (
+                Point2::building(building.anchor, building.kind),
+                building_value(building),
+            )
+        })
+        .collect();
+    protected.extend(
+        obs.my_units
+            .iter()
+            .filter(|unit| unit.kind == UnitKind::Harvester)
+            .map(|unit| {
+                (
+                    Point2::tile(unit.tile),
+                    1_000i64.saturating_add(i64::from(unit.carrying).saturating_mul(20)),
+                )
+            }),
+    );
+
+    let salvage_base = match kind {
+        BuildingKind::Turret | BuildingKind::FlakTurret => 5_000,
+        BuildingKind::Bastion => 700,
+        _ => 0,
+    };
+    protected.extend(
+        obs.known_scrap
+            .iter()
+            .chain(obs.known_wrecks.iter())
+            .filter(|(_, amount)| *amount > 0)
+            .map(|(tile, amount)| {
+                (
+                    Point2::tile(*tile),
+                    salvage_base + i64::from((*amount).min(800)),
+                )
+            }),
+    );
+    protected
+}
+
+fn known_open_coverage(obs: &Observation, center: Point2, minimum_reach: i32, reach: i32) -> i64 {
+    let min_x = ((center.x - reach - 1) / 2).max(0);
+    let max_x = ((center.x + reach - 1) / 2).min(obs.map_width - 1);
+    let min_y = ((center.y - reach - 1) / 2).max(0);
+    let max_y = ((center.y + reach - 1) / 2).min(obs.map_height - 1);
+    let mut open = 0i64;
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let tile = TilePos::new(x, y);
+            let distance = center.chebyshev(Point2::tile(tile));
+            if distance >= minimum_reach && distance <= reach && !obs.known_rock.contains(&tile) {
+                open += 1;
+            }
+        }
+    }
+    open
+}
+
 fn building_cap(kind: BuildingKind) -> usize {
     match kind {
         BuildingKind::Fabricator => 1,
@@ -2452,6 +3170,65 @@ fn committed_buildings(obs: &Observation, kind: BuildingKind) -> usize {
             .iter()
             .filter(|(claim, _)| *claim == kind)
             .count()
+}
+
+fn committed_units(obs: &Observation, kind: UnitKind) -> usize {
+    obs.my_units.iter().filter(|unit| unit.kind == kind).count()
+        + obs
+            .my_queues
+            .iter()
+            .flatten()
+            .filter(|queued| **queued == kind)
+            .count()
+}
+
+fn projected_ground_strength(obs: &Observation) -> i64 {
+    let live = obs
+        .my_units
+        .iter()
+        .map(super::executive::unit_strength)
+        .sum::<u64>();
+    let queued = obs
+        .my_queues
+        .iter()
+        .flatten()
+        .map(|kind| {
+            let stats = kind.stats();
+            let dps100 = stats
+                .weapons
+                .iter()
+                .filter(|weapon| weapon.targets.covers(Domain::Ground))
+                .map(|weapon| u64::from(weapon.damage) * 100 / u64::from(weapon.cooldown_ticks))
+                .sum::<u64>();
+            u64::from(stats.max_hp) * dps100
+        })
+        .sum::<u64>();
+    i64::try_from(live.saturating_add(queued) / 100).unwrap_or(i64::MAX)
+}
+
+fn nearby_salvage(obs: &Observation) -> u32 {
+    let Some(home) = home_tile(obs) else {
+        return 0;
+    };
+    obs.known_scrap
+        .iter()
+        .chain(&obs.known_wrecks)
+        .filter(|(tile, _)| tile.chebyshev(home) <= PROFILE_HOME_SALVAGE_RADIUS)
+        .fold(0u32, |total, (_, amount)| total.saturating_add(*amount))
+}
+
+fn affordable_capital(obs: &Observation, kind: BuildingKind, reserve: u32) -> bool {
+    kind.stats()
+        .construction
+        .is_some_and(|construction| obs.scrap >= construction.cost.saturating_add(reserve))
+}
+
+fn narrow_head(mask: &mut [bool; ACTION_COUNT], head: &[usize], action: Action) {
+    debug_assert!(head.contains(&(action as usize)));
+    debug_assert!(mask[action as usize]);
+    for candidate in head {
+        mask[*candidate] = *candidate == action as usize;
+    }
 }
 
 fn unit_patient(
@@ -2517,8 +3294,7 @@ fn recovery_uncertainty_floor() -> u64 {
 }
 
 fn recovery_screen_kind(kind: UnitKind) -> bool {
-    let stats = kind.stats();
-    stats.domain == Domain::Ground && stats.can_target(Domain::Ground)
+    kind.is_recovery_screen()
 }
 
 fn recovery_screen_units(obs: &Observation) -> impl Iterator<Item = UnitId> + '_ {
@@ -2657,5 +3433,57 @@ mod tests {
             bot.danger_strength_at(DANGER_MEMORY_TICKS, source, &orientation),
             0
         );
+    }
+
+    #[test]
+    fn defense_reach_is_derived_from_the_weapon_role() {
+        assert_eq!(defense_reach2(BuildingKind::Turret), (0, 10));
+        assert_eq!(defense_reach2(BuildingKind::FlakTurret), (0, 11));
+        assert_eq!(
+            defense_reach2(BuildingKind::Bastion),
+            (5, 19),
+            "the Bastion placement annulus must track its close-pressure dead zone and \
+             artillery-parity reach"
+        );
+    }
+
+    #[test]
+    fn defense_scoring_rewards_builder_safety_and_low_congestion() {
+        let bounds = DefenseBounds {
+            threat: (0, 0),
+            protected_value: (0, 0),
+            coverage: (0, 0),
+            vision: (0, 0),
+            spacing: (0, 0),
+            congestion: (0, 10),
+            builder_safety: (0, 10),
+            builder_travel: (0, 0),
+        };
+        let exposed = DefenseMetrics {
+            threat: 0,
+            protected_value: 0,
+            coverage: 0,
+            vision: 0,
+            spacing: 0,
+            congestion: 10,
+            builder_safety: 0,
+            builder_travel: 0,
+        };
+        let safe = DefenseMetrics {
+            congestion: 0,
+            builder_safety: 10,
+            ..exposed
+        };
+        for kind in [
+            BuildingKind::Turret,
+            BuildingKind::FlakTurret,
+            BuildingKind::Bastion,
+        ] {
+            assert!(
+                safe.score(kind, bounds) > exposed.score(kind, bounds),
+                "{kind:?} placement must not treat a crowded firing lane or an exposed builder \
+                 as free"
+            );
+        }
     }
 }

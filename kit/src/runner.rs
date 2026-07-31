@@ -105,7 +105,7 @@ pub fn run_replay_bounded(
     });
     anyhow::ensure!(
         allow_long || total <= MAX_REPLAY_TICKS,
-        "replay claims {total} ticks (limit {MAX_REPLAY_TICKS}) — pass --allow-long to run it anyway"
+        "replay claims {total} ticks (limit {MAX_REPLAY_TICKS}); pass --allow-long to run it anyway"
     );
     let mut state = replay.setup.build().context("building replay setup")?;
     let mut cursor = replay.cursor();

@@ -6,7 +6,18 @@ import numpy as np
 import torch
 
 import tournament
-from oxide_gym import ACTIONS, FEATURES, ActionPlan, FactionName, Frame, SeatView
+from oxide_gym import (
+    ACTIONS,
+    FEATURES,
+    NET_FEATURES,
+    ActionPlan,
+    CanonicalProfile,
+    FactionName,
+    Frame,
+    ProfileCatalog,
+    SeatView,
+    condition_from_profile,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -25,10 +36,27 @@ class FixedPolicy(torch.nn.Module):
         return logits, torch.zeros(obs.shape[0], dtype=torch.float32)
 
 
+def profile_catalog() -> ProfileCatalog:
+    roles = ("generalist", "vanguard")
+    profile = CanonicalProfile("balanced", 0, "ground-combined", 500, roles)
+    values: dict[tuple[str, int, str, FactionName], tuple[int, ...]] = {}
+    for role, facets in (
+        ("generalist", (500, 300, 400, 500, 500)),
+        ("vanguard", (500, 300, 400, 450, 650)),
+    ):
+        for faction_name, faction in (("ferrous", 0), ("cupric", 1000)):
+            condition = list(condition_from_profile(1000, 500, faction))
+            condition[-5:] = facets
+            values[("balanced", 0, role, faction_name)] = tuple(condition)
+    return ProfileCatalog((profile,), values, "generalist")
+
+
 class OneStepWorker:
     def __init__(self) -> None:
         self.cadence = 0
         self.actions: dict[int, ActionPlan] = {}
+        self.conditions: dict[int, tuple[int, ...]] = {}
+        self.profile_catalog = profile_catalog()
 
     def reset(
         self,
@@ -41,10 +69,11 @@ class OneStepWorker:
         conditions: dict[int, tuple[int, ...]] | None = None,
         factions: str | Sequence[FactionName] | None = None,
     ) -> Frame:
-        _ = (seed, control, tier, max_ticks, scenario, conditions, factions)
+        _ = (seed, control, tier, max_ticks, scenario, factions)
         self.cadence = cadence
+        self.conditions = {} if conditions is None else conditions
         view = SeatView(
-            obs=np.zeros(FEATURES + 7, dtype=np.float32),
+            obs=np.zeros(NET_FEATURES, dtype=np.float32),
             mask=np.ones(ACTIONS, dtype=np.bool_),
             raw=[0] * FEATURES,
         )
@@ -89,3 +118,19 @@ def test_tournament_applies_exact_hesitation_not_policy_skill() -> None:
 
     assert worker.cadence == 36
     assert worker.actions == {0: (0, 24, 25)}
+
+
+def test_tournament_default_consumes_named_profile_and_specialist_role() -> None:
+    worker = OneStepWorker()
+    won, _ticks = tournament.play(
+        FixedPolicy(),
+        worker,
+        "scrapheap",
+        seed=7,
+        seat=0,
+        role="vanguard",
+    )
+
+    assert won is True
+    assert worker.conditions[0][-5:] == (500, 300, 400, 450, 650)
+    assert worker.conditions[1][-5:] == (500, 300, 400, 500, 500)

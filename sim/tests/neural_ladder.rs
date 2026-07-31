@@ -1,16 +1,20 @@
-//! The shipped ladder holds: embedded weights load, every named level
-//! outpaces the one below it against the scripted yardstick slate at
-//! both shipped style centers (seat-swapped; wins first, then victory
+//! The shipped ladder holds: embedded weights load, every execution level
+//! outpaces the one below it against the scripted yardstick slate at two
+//! pinned raw-aggression centers (seat-swapped; wins first, then victory
 //! pace with losses priced at the horizon — deliberately NOT neural
 //! head-to-head, which rewards patience), and ladder matches reproduce
-//! bit-identically — the neural tiers live inside replays like any
-//! other command source.
+//! bit-identically. Raw zero-facet conditions isolate the inherited actor
+//! and execution handicaps here; `bot_profiles` separately gates learned
+//! named-profile diversity.
 
-use oxide_sim::bot::{Brain, CONDITIONING_COUNT, Difficulty, Level, NeuralBot, QuantNet};
+use oxide_sim::bot::{
+    Brain, CONDITIONING_COUNT, Difficulty, FEATURE_COUNT, Level, NeuralBot, QuantNet,
+    ladder_condition_values,
+};
 use oxide_sim::state::GameResult;
-use oxide_sim::{PlayerId, Scenario};
+use oxide_sim::{Faction, PlayerId, Scenario};
 
-const YARDSTICK_STYLE_CENTERS: [u32; 2] = [300, 550];
+const RAW_AGGRESSION_CENTERS: [u32; 2] = [300, 550];
 
 fn ladder_match(hi: Level, lo: Level, hi_seat: u8, seed: u64) -> (Option<bool>, u64) {
     let mut scenario = Scenario::skirmish();
@@ -18,7 +22,7 @@ fn ladder_match(hi: Level, lo: Level, hi_seat: u8, seed: u64) -> (Option<bool>, 
     let mut state = scenario.build().unwrap();
     let lo_seat = 1 - hi_seat;
     // The combined-arms center avoids the strategy boundary while this
-    // diagnostic isolates the named execution handicaps.
+    // diagnostic isolates the shipped execution handicaps.
     // The faction knob is honest, never assumed from the rung: a bot
     // conditioned on the roster it is not holding also orders kinds
     // `apply_train` rejects, so a seated-wrong diagnostic measures a
@@ -59,16 +63,16 @@ fn embedded_weights_parse() {
 }
 
 /// Wins and total victory ticks for `level` against every scripted
-/// tier and both dealt style centers over the pinned seed set — the
+/// tier and both raw-aggression centers over the pinned seed set — the
 /// ladder's external yardstick.
 /// A loss counts the full 40k-tick horizon toward the total, so the
 /// tick sum subsumes the win count at the losing end and stays a
 /// single monotone instrument. Every match is an independent
 /// deterministic sim, so the slate fans out across threads; the
 /// totals are order-free.
-fn yardstick(level: Level) -> (u32, u64) {
+fn yardstick_with_net(level: Level, net: &QuantNet) -> (u32, u64) {
     use oxide_sim::state::GameResult as GR;
-    // Ten seeds across every tier and two style centers: the 0.12
+    // Ten seeds across every tier and two raw-aggression centers: the 0.12
     // pursuit-tether work re-rolled enough chaotic outcomes to show
     // the old 24-match sample inverting rungs. The 160-match truth is
     // the stable instrument the ladder deserves.
@@ -80,7 +84,7 @@ fn yardstick(level: Level) -> (u32, u64) {
         (Difficulty::Prime, &SEEDS),
     ];
     let mut matches = Vec::new();
-    for aggression in YARDSTICK_STYLE_CENTERS {
+    for aggression in RAW_AGGRESSION_CENTERS {
         for (tier, seeds) in slate {
             for &seed in seeds {
                 for seat in [0u8, 1] {
@@ -93,13 +97,20 @@ fn yardstick(level: Level) -> (u32, u64) {
         let handles: Vec<_> = matches
             .into_iter()
             .map(|(tier, seed, seat, aggression)| {
+                let net = net.clone();
                 scope.spawn(move || {
                     let mut sc = Scenario::skirmish();
                     sc.seed = seed;
                     let mut state = sc.build().unwrap();
                     let faction = sc.players[seat as usize].faction;
-                    let mut bot =
-                        NeuralBot::ladder(PlayerId(seat), seed, level, Some(aggression), faction);
+                    let mut bot = NeuralBot::ladder_with_net(
+                        PlayerId(seat),
+                        seed,
+                        level,
+                        Some(aggression),
+                        faction,
+                        net,
+                    );
                     let mut opp = Brain::for_tier(PlayerId(1 - seat), seed, tier);
                     let horizon = 40_000u32;
                     let mut end = u64::from(horizon);
@@ -127,6 +138,10 @@ fn yardstick(level: Level) -> (u32, u64) {
             .map(|h| h.join().expect("a yardstick match panicked"))
             .fold((0u32, 0u64), |(w, t), (dw, dt)| (w + dw, t + dt))
     })
+}
+
+fn yardstick(level: Level) -> (u32, u64) {
+    yardstick_with_net(level, QuantNet::ladder())
 }
 
 #[test]
@@ -168,6 +183,70 @@ fn the_ladder_orders_against_the_scripted_yardsticks() {
             lower.0 < totals[3].0,
             "Expert must hold the top win count outright: {totals:?}"
         );
+    }
+}
+
+#[test]
+#[ignore = "candidate gate: set OXIDE_LADDER_WEIGHTS to an exported artifact"]
+fn candidate_ladder_orders_against_the_scripted_yardsticks() {
+    let path = std::env::var("OXIDE_LADDER_WEIGHTS").expect("OXIDE_LADDER_WEIGHTS");
+    let json = std::fs::read_to_string(path).expect("candidate artifact");
+    let net = QuantNet::from_json(&json).expect("valid candidate artifact");
+    let totals: Vec<(u32, u64)> = Level::LADDER
+        .iter()
+        .map(|level| yardstick_with_net(*level, &net))
+        .collect();
+    let max = 160u32;
+    println!("\nCANDIDATE LADDER YARDSTICK  ·  skirmish  ·  {max} matches/rung  ·  40k horizon");
+    for (level, (wins, ticks)) in Level::LADDER.iter().zip(&totals) {
+        let rung = format!("{level:?}");
+        println!("  {rung:<8} wins {wins:>2}/{max}  ·  tick total {ticks:>9}");
+    }
+    for pair in totals.windows(2) {
+        assert!(
+            pair[0].0 < pair[1].0,
+            "a higher rung must win more of the same slate: {totals:?} of {max}"
+        );
+        assert!(
+            pair[0].1 > pair[1].1,
+            "a higher rung must put the same slate away faster: {totals:?} of {max}"
+        );
+    }
+    for lower in &totals[..3] {
+        assert!(
+            lower.0 < totals[3].0,
+            "Expert must hold the top win count outright: {totals:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "candidate gate: set OXIDE_PROFILE_WEIGHTS and OXIDE_PARENT_WEIGHTS"]
+fn candidate_raw_aggression_path_matches_parent_exactly() {
+    let load = |name: &str| {
+        let path = std::env::var(name).unwrap_or_else(|_| panic!("{name}"));
+        let json = std::fs::read_to_string(path).expect("candidate artifact");
+        QuantNet::from_json(&json).expect("valid candidate artifact")
+    };
+    let candidate = load("OXIDE_PROFILE_WEIGHTS");
+    let parent = load("OXIDE_PARENT_WEIGHTS");
+    let feature_cases = [
+        [0; FEATURE_COUNT],
+        std::array::from_fn(|index| (index as i64 * 97) % 1_001),
+        std::array::from_fn(|index| 1_000 - (index as i64 * 131) % 1_001),
+    ];
+
+    for features in feature_cases {
+        for faction in [Faction::Ferrous, Faction::Cupric] {
+            for aggression in 0..=1_000 {
+                let knobs = ladder_condition_values(aggression, faction);
+                assert_eq!(
+                    candidate.logits(&features, &knobs),
+                    parent.logits(&features, &knobs),
+                    "raw aggression {aggression} for {faction:?} changed"
+                );
+            }
+        }
     }
 }
 

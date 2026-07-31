@@ -115,8 +115,8 @@ pub enum Event {
         /// building may be rubble by the time presentation looks it up
         /// (a Bastion destroyed the tick it fires still booms).
         kind: crate::stats::BuildingKind,
-        /// The unit hit.
-        target: crate::ids::UnitId,
+        /// The unit or building hit.
+        target: Target,
         /// Muzzle position.
         turret_pos: chassis::fx::Vec2Fx,
         /// Impact position.

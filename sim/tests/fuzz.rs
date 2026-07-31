@@ -61,13 +61,14 @@ enum CommandTag {
     Surrender,
     RepairUnit,
     Advance,
+    FocusFire,
 }
 
 /// The draw pool. Paired with the exhaustive matches below, the array and
 /// the variant list cannot drift apart — the old `next_below(10)` bound
 /// against nine arms is exactly how `Repair`, `Salvage`, and
 /// `CancelTrain` went unfuzzed.
-const COMMAND_TAGS: [CommandTag; 16] = [
+const COMMAND_TAGS: [CommandTag; 17] = [
     CommandTag::Move,
     CommandTag::Attack,
     CommandTag::AttackMove,
@@ -84,6 +85,7 @@ const COMMAND_TAGS: [CommandTag; 16] = [
     CommandTag::Surrender,
     CommandTag::RepairUnit,
     CommandTag::Advance,
+    CommandTag::FocusFire,
 ];
 
 /// How rarely a drawn [`CommandTag::Surrender`] is kept: one landed
@@ -116,6 +118,7 @@ fn tag_index(tag: CommandTag) -> usize {
         CommandTag::Surrender => 13,
         CommandTag::RepairUnit => 14,
         CommandTag::Advance => 15,
+        CommandTag::FocusFire => 16,
     }
 }
 
@@ -138,6 +141,7 @@ fn tag_of(command: &Command) -> CommandTag {
         Command::Surrender => CommandTag::Surrender,
         Command::RepairUnit { .. } => CommandTag::RepairUnit,
         Command::Advance { .. } => CommandTag::Advance,
+        Command::FocusFire { .. } => CommandTag::FocusFire,
     }
 }
 
@@ -303,6 +307,20 @@ fn units(rng: &mut Pcg32, state: &State) -> Vec<UnitId> {
     ids
 }
 
+/// A building multiset for the same canonicalization and atomic-validation
+/// pressure as unit-bearing commands.
+fn buildings(rng: &mut Pcg32, state: &State) -> Vec<BuildingId> {
+    let mut ids = Vec::new();
+    for _ in 0..rng.next_below(6) {
+        if !ids.is_empty() && rng.next_below(3) == 0 {
+            ids.push(ids[rng.next_below(ids.len() as u32) as usize]);
+        } else {
+            ids.push(building_id(rng, state));
+        }
+    }
+    ids
+}
+
 fn target(rng: &mut Pcg32, state: &State) -> Target {
     if rng.next_below(2) == 0 {
         Target::Unit(unit_id(rng, state))
@@ -389,6 +407,10 @@ fn generate(tag: CommandTag, rng: &mut Pcg32, state: &State) -> Command {
             units: units(rng, state),
             target: unit_id(rng, state),
             queue: queue(rng),
+        },
+        CommandTag::FocusFire => Command::FocusFire {
+            buildings: buildings(rng, state),
+            target: target(rng, state),
         },
     }
 }

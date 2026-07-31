@@ -12,22 +12,29 @@
 
 use anyhow::{Context, Result};
 use oxide_kit::composition::{self, Aggregate, MatchComposition};
-use oxide_sim::bot::{Difficulty, Level};
-use oxide_sim::scenario::BotConfig;
+use oxide_sim::bot::{Difficulty, Level, NAMED_VARIANT_COUNT, resolve_bot_profiles};
+use oxide_sim::scenario::{BotConfig, NamedStyle};
 
 /// Candidate-probe overrides for conditioning, hesitation, and think
 /// cadence. Without a raw conditioning or hesitation override,
-/// candidates use the same strategy-specific policy condition and
-/// level handicap as the shipped ladder.
+/// candidates use the same resolved named profile and level handicap
+/// as the shipped ladder.
 pub struct ProbeDials {
     /// Run the scripted utility controller at this tier instead of the
     /// neural ladder.
     pub scripted: Option<Difficulty>,
-    /// Raw conditioning override. `None` keeps the ladder's
-    /// strategy-specific policy condition.
+    /// Raw conditioning override. `None` keeps the ladder's resolved
+    /// named profile.
     pub skill: Option<u32>,
-    /// Personality override (None: deal the shipped seed-derived value).
+    /// Raw aggression override. `None` keeps the seed-resolved named
+    /// style and variant.
     pub aggression: Option<u32>,
+    /// Exact named style. `None` keeps the scenario seed's deterministic
+    /// profile deal.
+    pub style: Option<NamedStyle>,
+    /// Curated variant within `style`, 0..=2. `None` keeps the named
+    /// variant deal.
+    pub variant: Option<u8>,
     /// Exact hesitation rate per mille. Supplying this, including zero,
     /// opts into a raw experimental profile; `None` keeps the named
     /// level's handicap.
@@ -37,8 +44,73 @@ pub struct ProbeDials {
 }
 
 impl ProbeDials {
-    fn uses_raw_profile(&self) -> bool {
+    fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.style.is_some() || self.variant.is_none(),
+            "--variant requires --style"
+        );
+        anyhow::ensure!(
+            self.variant
+                .is_none_or(|variant| variant < NAMED_VARIANT_COUNT),
+            "--variant must be 0, 1, or 2"
+        );
+        anyhow::ensure!(
+            self.style.is_none() || self.scripted.is_none(),
+            "--style and --scripted-tier are mutually exclusive"
+        );
+        anyhow::ensure!(
+            self.style.is_none()
+                || (self.skill.is_none() && self.aggression.is_none() && self.blunder.is_none()),
+            "--style is mutually exclusive with --skill, --aggression, and --blunder"
+        );
+        Ok(())
+    }
+
+    fn uses_manual_profile(&self) -> bool {
         self.skill.is_some() || self.blunder.is_some()
+    }
+
+    fn uses_raw_profile(&self) -> bool {
+        self.uses_manual_profile() || self.aggression.is_some()
+    }
+}
+
+fn candidate_bot(
+    dials: &ProbeDials,
+    level: Level,
+    player: oxide_sim::PlayerId,
+    scenario_seed: u64,
+    profile: oxide_sim::bot::ResolvedBotProfile,
+    faction: oxide_sim::Faction,
+    net: oxide_sim::bot::QuantNet,
+) -> oxide_sim::bot::NeuralBot {
+    use oxide_sim::bot::NeuralBot;
+
+    if dials.uses_manual_profile() {
+        let aggression = dials
+            .aggression
+            .unwrap_or_else(|| oxide_sim::bot::deal_aggression(scenario_seed, player));
+        NeuralBot::with_profile_hesitation(
+            player,
+            dials.cadence.unwrap_or_else(|| level.cadence()),
+            net,
+            dials.skill.unwrap_or_else(|| level.skill()),
+            aggression,
+            faction,
+            dials.blunder,
+            scenario_seed,
+        )
+    } else if let Some(cadence) = dials.cadence {
+        NeuralBot::ladder_resolved_with_net_at_cadence(
+            player,
+            scenario_seed,
+            profile,
+            faction,
+            net,
+            cadence,
+        )
+    } else {
+        NeuralBot::ladder_resolved_with_net(player, scenario_seed, profile, faction, net)
     }
 }
 
@@ -53,6 +125,7 @@ pub fn balance_probe(
     weights: Option<&str>,
     out: Option<&str>,
 ) -> Result<()> {
+    dials.validate()?;
     anyhow::ensure!(
         dials.scripted.is_none() || weights.is_none(),
         "--scripted-tier and --weights are mutually exclusive"
@@ -93,8 +166,8 @@ pub fn balance_probe(
             player.bot_config = Some(BotConfig {
                 level,
                 aggression: dials.aggression,
-                style: None,
-                variant: None,
+                style: dials.style,
+                variant: dials.variant,
                 team_role: None,
             });
         }
@@ -121,54 +194,27 @@ pub fn balance_probe(
             (None, None) => composition::sample_match(&sc, max_ticks, 20)
                 .with_context(|| format!("sampling {}", sc.name))?,
             (None, Some(net)) => {
-                use oxide_sim::bot::NeuralBot;
-                let mut bots: Vec<NeuralBot> = sc
+                let profiles = resolve_bot_profiles(&sc)
+                    .with_context(|| format!("resolving bot profiles for {}", sc.name))?;
+                let mut bots: Vec<oxide_sim::bot::NeuralBot> = sc
                     .players
                     .iter()
                     .enumerate()
                     .map(|(seat, player)| {
-                        // Exactly the shipped ladder profile unless a
-                        // raw skill or hesitation dial is explicitly
-                        // overridden. A cadence-only probe still keeps
-                        // the named level's hesitation and
-                        // strategy-conditioned policy skill.
-                        let aggression = dials.aggression.unwrap_or_else(|| {
-                            oxide_sim::bot::deal_aggression(
-                                sc.seed,
-                                oxide_sim::PlayerId(seat as u8),
-                            )
-                        });
-                        if dials.uses_raw_profile() {
-                            NeuralBot::with_profile_hesitation(
-                                oxide_sim::PlayerId(seat as u8),
-                                dials.cadence.unwrap_or_else(|| level.cadence()),
-                                net.clone(),
-                                dials.skill.unwrap_or_else(|| level.skill()),
-                                aggression,
-                                player.faction,
-                                dials.blunder,
-                                sc.seed,
-                            )
-                        } else if let Some(cadence) = dials.cadence {
-                            NeuralBot::ladder_with_net_at_cadence(
-                                oxide_sim::PlayerId(seat as u8),
-                                sc.seed,
-                                level,
-                                Some(aggression),
-                                player.faction,
-                                net.clone(),
-                                cadence,
-                            )
-                        } else {
-                            NeuralBot::ladder_with_net(
-                                oxide_sim::PlayerId(seat as u8),
-                                sc.seed,
-                                level,
-                                Some(aggression),
-                                player.faction,
-                                net.clone(),
-                            )
-                        }
+                        // Exactly the scenario-resolved shipped profile
+                        // unless raw skill or hesitation is explicitly
+                        // overridden. A cadence-only probe retains the
+                        // named style, variant, team role, and level
+                        // hesitation.
+                        candidate_bot(
+                            dials,
+                            level,
+                            oxide_sim::PlayerId(seat as u8),
+                            sc.seed,
+                            profiles[seat].expect("configured probe bot has a profile"),
+                            player.faction,
+                            net.clone(),
+                        )
                     })
                     .collect();
                 composition::sample_driven(&sc, max_ticks, 20, |state| {
@@ -359,7 +405,7 @@ pub fn balance_probe(
         let payload = serde_json::json!({
             // Bumped whenever a consumer (tools/train/fun_gate.py) would
             // need to read this file differently.
-            "schema": 6,
+            "schema": 7,
             "level": format!("{level:?}"),
             "artifact": artifact,
             "digest": digest,
@@ -370,6 +416,8 @@ pub fn balance_probe(
                 "scripted": dials.scripted.map(|tier| format!("{tier:?}")),
                 "skill": dials.skill,
                 "aggression": dials.aggression,
+                "style": dials.style.map(style_slug),
+                "variant": dials.variant,
                 "blunder": dials.blunder.unwrap_or(0),
                 "cadence": dials.cadence,
             },
@@ -387,6 +435,14 @@ pub fn balance_probe(
         println!("\nraw record: {path}");
     }
     Ok(())
+}
+
+fn style_slug(style: NamedStyle) -> &'static str {
+    match style {
+        NamedStyle::Turtle => "turtle",
+        NamedStyle::Balanced => "balanced",
+        NamedStyle::Aggressive => "aggressive",
+    }
 }
 
 /// Censored share of a cohort's matches, in percent.
@@ -467,16 +523,24 @@ fn print_cohort_row(name: &str, agg: &Aggregate) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_sim::bot::{NeuralBot, QuantNet};
+    use oxide_sim::scenario::TeamRole;
 
-    #[test]
-    fn exact_raw_overrides_are_distinct_from_the_candidate_ladder_profile() {
-        let mut dials = ProbeDials {
+    fn empty_dials() -> ProbeDials {
+        ProbeDials {
             scripted: None,
             skill: None,
             aggression: None,
+            style: None,
+            variant: None,
             blunder: None,
             cadence: None,
-        };
+        }
+    }
+
+    #[test]
+    fn exact_raw_overrides_are_distinct_from_the_candidate_ladder_profile() {
+        let mut dials = empty_dials();
         assert!(!dials.uses_raw_profile());
 
         dials.blunder = Some(0);
@@ -491,6 +555,158 @@ mod tests {
             dials.uses_raw_profile(),
             "even a numerically familiar skill is an explicit raw profile"
         );
+
+        dials.skill = None;
+        dials.aggression = Some(550);
+        assert!(
+            dials.uses_raw_profile(),
+            "an exact aggression override bypasses named profile facets"
+        );
+    }
+
+    #[test]
+    fn named_profile_selectors_refuse_ambiguous_raw_controls() {
+        let mut dials = empty_dials();
+        dials.variant = Some(1);
+        assert!(
+            dials
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("requires")
+        );
+
+        dials.style = Some(NamedStyle::Turtle);
+        dials.variant = Some(NAMED_VARIANT_COUNT);
+        assert!(
+            dials
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("0, 1, or 2")
+        );
+
+        for configure in [
+            |dials: &mut ProbeDials| dials.skill = Some(700),
+            |dials: &mut ProbeDials| dials.aggression = Some(550),
+            |dials: &mut ProbeDials| dials.blunder = Some(0),
+        ] {
+            let mut conflicting = empty_dials();
+            conflicting.style = Some(NamedStyle::Balanced);
+            conflicting.variant = Some(1);
+            configure(&mut conflicting);
+            assert!(
+                conflicting
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("mutually exclusive")
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_named_selector_receives_the_runtime_resolved_team_profile() {
+        let mut scenario = crate::runner::load_scenario(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../scenarios/open-quarry.json"
+        ))
+        .unwrap();
+        scenario.seed = 31;
+        for player in &mut scenario.players {
+            player.bot = true;
+            player.bot_config = Some(BotConfig {
+                level: Level::Medium,
+                aggression: None,
+                style: Some(NamedStyle::Turtle),
+                variant: Some(1),
+                team_role: None,
+            });
+        }
+        let profiles = resolve_bot_profiles(&scenario).unwrap();
+        let (seat, profile) = profiles
+            .iter()
+            .enumerate()
+            .find_map(|(seat, profile)| {
+                profile
+                    .filter(|profile| profile.team_role != TeamRole::Generalist)
+                    .map(|profile| (seat, profile))
+            })
+            .expect("a team map resolves a specialized runtime role");
+        assert_eq!(profile.style, Some(NamedStyle::Turtle));
+        assert_eq!(profile.variant, Some(1));
+
+        let dials = ProbeDials {
+            style: Some(NamedStyle::Turtle),
+            variant: Some(1),
+            cadence: Some(11),
+            ..empty_dials()
+        };
+        let player = oxide_sim::PlayerId(seat as u8);
+        let faction = scenario.players[seat].faction;
+        let mut actual = candidate_bot(
+            &dials,
+            Level::Medium,
+            player,
+            scenario.seed,
+            profile,
+            faction,
+            QuantNet::ladder().clone(),
+        );
+        let mut expected = NeuralBot::ladder_resolved_with_net_at_cadence(
+            player,
+            scenario.seed,
+            profile,
+            faction,
+            QuantNet::ladder().clone(),
+            11,
+        );
+        let mut state = scenario.build().unwrap();
+        for _ in 0..200 {
+            let actual_commands = actual.act(&state);
+            let expected_commands = expected.act(&state);
+            assert_eq!(actual_commands, expected_commands);
+            state.tick(&expected_commands);
+        }
+    }
+
+    #[test]
+    fn candidate_probe_accepts_the_scenario_resolved_named_profile_slate() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../scenarios");
+        let weights = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../sim/src/bot/ladder_weights.json"
+        );
+        let out =
+            std::env::temp_dir().join(format!("oxide-candidate-probe-{}.json", std::process::id()));
+        balance_probe(
+            dir,
+            Level::Easy,
+            &ProbeDials {
+                scripted: None,
+                skill: None,
+                aggression: None,
+                style: Some(NamedStyle::Balanced),
+                variant: Some(1),
+                blunder: None,
+                cadence: Some(11),
+            },
+            1,
+            1,
+            Some(weights),
+            out.to_str(),
+        )
+        .unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        std::fs::remove_file(&out).ok();
+
+        assert_eq!(payload["schema"], 7);
+        assert_eq!(payload["profile"], "ladder");
+        assert_eq!(payload["dials"]["style"], "balanced");
+        assert_eq!(payload["dials"]["variant"], 1);
+        assert_eq!(payload["dials"]["cadence"], 11);
+        assert_ne!(payload["digest"], "scripted");
     }
 
     /// The `--out` payload is a contract with `tools/train/fun_gate.py`,
@@ -511,6 +727,8 @@ mod tests {
                 scripted: Some(Difficulty::Scrapheap),
                 skill: None,
                 aggression: None,
+                style: None,
+                variant: None,
                 blunder: None,
                 cadence: None,
             },
@@ -523,7 +741,7 @@ mod tests {
         let payload: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
         std::fs::remove_file(&out).ok();
-        assert_eq!(payload["schema"], 6);
+        assert_eq!(payload["schema"], 7);
         assert!(payload["overall"]["matches"].as_u64().unwrap() >= 25);
         // Nothing decides in 40 ticks, so the diagnostic decided cohort
         // is empty — which consumers must be able to see, not infer.
@@ -547,6 +765,8 @@ mod tests {
         assert!(payload["overall"]["seat_combat_count_dominance"]["p90"].is_number());
         assert!(payload["overall"]["competitive_seats_with_building"].is_object());
         assert!(payload["dials"]["aggression"].is_null());
+        assert!(payload["dials"]["style"].is_null());
+        assert!(payload["dials"]["variant"].is_null());
         assert!(payload["overall"]["seat_count_dominance"]["p90"].is_number());
         for cohort in ["faction", "pace", "outcome", "map"] {
             assert!(

@@ -116,6 +116,8 @@ pub(super) fn run(
     let mut drains: Vec<PendingHpDrain> = Vec::new();
     let mut founds: Vec<PendingFounding> = Vec::new();
     let mut launches: Vec<crate::state::Shell> = Vec::new();
+    let mut harvest_danger_by_team: Vec<Option<crate::vision::GroundSalvageDanger>> =
+        (0..state.players.len()).map(|_| None).collect();
     // Alternate direction by tick parity: sequential phases must not hand
     // one seat a standing first-mover edge (with damage buffered, the
     // remaining coupling is small — shared scrap, own-side order state —
@@ -138,7 +140,18 @@ pub(super) fn run(
         match order {
             Order::Idle => idle(state, index, id),
             Order::Move { goal } => walk(state, id, goal, events),
-            Order::Harvest { node } => harvest(state, id, node, events),
+            Order::Harvest {
+                node,
+                anchor,
+                retiring,
+            } => {
+                let player = state.unit(id).expect("just seen").player;
+                let team = state.player(player).team as usize;
+                let danger = harvest_danger_by_team[team].get_or_insert_with(|| {
+                    crate::vision::GroundSalvageDanger::capture(state, player)
+                });
+                harvest(state, danger, id, node, anchor, retiring, events);
+            }
             Order::Attack { target, resume } => attack(
                 state,
                 index,
@@ -445,9 +458,19 @@ fn repair_bay_aura(state: &mut State, heals: &mut Vec<PendingUnitHeal>) {
         };
         let owner = b.player;
         // The aura is automatic, so unlike a voluntary purchase it must
-        // not eat the only 50 scrap a stranded seat can use to restart
-        // harvesting. Sustain may spend any surplus above the reserve.
-        let preserve_harvester_reserve = super::harvester_recovery_needed(state, owner);
+        // not eat the captured recovery package. A surviving paid screen
+        // makes that package worker-sized; reserving the universal maximum
+        // would strand exactly the army the Repair Bay exists to sustain.
+        let recovery_reserve = if super::harvester_recovery_needed(state, owner) {
+            let seat = state.player(owner);
+            if seat.recovery_ready {
+                state.recovery_package_target(owner)
+            } else {
+                u32::from(seat.recovery_target)
+            }
+        } else {
+            0
+        };
         let patients: Vec<UnitId> = state
             .units
             .iter()
@@ -478,8 +501,8 @@ fn repair_bay_aura(state: &mut State, heals: &mut Vec<PendingUnitHeal>) {
                 continue; // broke for this patient; cheaper coins may still land
             }
             if due > 0
-                && preserve_harvester_reserve
-                && u64::from(bank) - due < u64::from(crate::stats::UnitKind::Harvester.stats().cost)
+                && recovery_reserve > 0
+                && u64::from(bank) - due < u64::from(recovery_reserve)
             {
                 continue;
             }

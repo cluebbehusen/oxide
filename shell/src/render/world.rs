@@ -30,81 +30,22 @@ pub(crate) fn draw_fog(game: &Game) {
     }
 }
 
-/// The crown sprite for a skyline/lone peak tile, or `None` for an
-/// interior wall tile. Connectivity picks the art, and the neighbor
-/// probe is fog-honest: an unexplored neighbor is unknown, not absent
-/// — reading its live terrain would let a known peak's edge art
-/// disclose whether the ridge continues under fog. Never flipped;
-/// a flip would break the chained edge profiles.
-fn peak_crown(game: &Game, sprites: &Sprites, x: i32, y: i32, h: usize) -> Option<Rect> {
-    let peaky = |dx: i32, dy: i32| {
-        let pos = TilePos::new(x + dx, y + dy);
-        (game.all_seeing() || game.my_vision().explored(pos))
-            && game
-                .state
-                .map()
-                .tile(pos)
-                .is_some_and(|t| t.terrain == oxide_sim::map::Terrain::Peak)
-    };
-    if peaky(0, -1) {
-        None
-    } else if !peaky(-1, 0) && !peaky(1, 0) && !peaky(0, 1) {
-        Some(sprites.peak_lone(h % 2))
-    } else {
-        Some(sprites.peak_sky(peaky(-1, 0), peaky(1, 0), h % 2))
-    }
-}
-
-/// The skyline pass: crown sprites are 1x1.5 tiles, anchored half a
-/// tile ABOVE their own — machines on the tile behind the ridge
-/// disappear behind the crests, which is the whole point of a wall
-/// that owns its column of sky. Fog-gated on the crown's OWN tile:
-/// an unexplored peak draws nothing at all, so its overhang can never
-/// leak into a visible neighbor (the fog rects only cover tiles, not
-/// sprite footprints).
-pub(crate) fn draw_peak_crowns(game: &Game, sprites: &Sprites) {
-    let zoom = game.camera.zoom;
-    let size = zoom.ceil() + 1.0;
-    let tint = theme_tint(
-        game.scenario
-            .meta
-            .as_ref()
-            .map(|m| m.theme.as_str())
-            .unwrap_or(""),
-    );
-    let (min, max) = visible_tiles(game);
-    // One row of slack above the window: a crown anchored just off
-    // the top edge still hangs into view.
-    for y in min.y..(max.y + 1) {
-        for x in min.x..max.x {
-            let pos = TilePos::new(x, y);
-            let Some(tile) = game.state.map().tile(pos) else {
-                continue;
-            };
-            if tile.terrain != oxide_sim::map::Terrain::Peak {
-                continue;
-            }
-            if !(game.all_seeing() || game.my_vision().explored(pos)) {
-                continue;
-            }
-            let h = (x.wrapping_mul(31).wrapping_add(y.wrapping_mul(17))) as usize;
-            let Some(source) = peak_crown(game, sprites, x, y, h) else {
-                continue;
-            };
-            let screen = game.camera.to_screen(vec2(x as f32, y as f32));
-            draw_texture_ex(
-                sprites.texture(),
-                screen.x.floor(),
-                (screen.y - zoom * 0.5).floor(),
-                tint,
-                DrawTextureParams {
-                    dest_size: Some(vec2(size, size * 1.5)),
-                    source: Some(source),
-                    ..Default::default()
-                },
-            );
-        }
-    }
+/// Fog-honest peak connectivity. An explored barrier cannot disclose that
+/// its wall continues into an unexplored neighbor merely through edge art.
+fn peak_neighbor_mask(game: &Game, pos: TilePos) -> u8 {
+    [(0, -1, 1), (1, 0, 2), (0, 1, 4), (-1, 0, 8)]
+        .into_iter()
+        .fold(0, |mask, (dx, dy, bit)| {
+            let neighbor = pos.offset(dx, dy);
+            let known = game.all_seeing() || game.my_vision().explored(neighbor);
+            let connected = known
+                && game
+                    .state
+                    .map()
+                    .tile(neighbor)
+                    .is_some_and(|tile| tile.terrain == oxide_sim::map::Terrain::Peak);
+            if connected { mask | bit } else { mask }
+        })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,10 +55,12 @@ struct ThemePropPlacement {
 }
 
 fn theme_code(theme: &str) -> Option<u32> {
+    // Stable layout salts, chosen so each shipped theme exercises its complete
+    // prop row without changing the shared density rule.
     match theme {
         "rusted-yard" => Some(1),
         "cold-circuitry" => Some(2),
-        "quarry-dust" => Some(3),
+        "quarry-dust" => Some(25),
         "basalt" => Some(4),
         "slag" => Some(5),
         "verdigris" => Some(6),
@@ -164,13 +107,14 @@ fn symmetric_theme_prop(
             hash = hash.wrapping_mul(16_777_619);
         }
     }
-    // Match the old generic-decal density, but make every mark belong to
-    // the map instead of sharing one universal scatter.
-    if !hash.is_multiple_of(23) {
+    // One residue in eleven gives open ground enough history to establish a
+    // map identity without turning every tile into visual noise. Residue five
+    // keeps even the smallest shipped arenas above the density floor.
+    if hash % 11 != 5 {
         return None;
     }
-    let variant = (hash / 23 % 3) as usize;
-    let base_turns = (hash / (23 * 3) % 4) as u8;
+    let variant = (hash / 11 % 6) as usize;
+    let base_turns = (hash / (11 * 6) % 4) as u8;
     Some(ThemePropPlacement {
         variant,
         quarter_turns: if mirrored {
@@ -373,17 +317,10 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
             };
             let (overlay, flip) = match (tile.terrain, scrap) {
                 (oxide_sim::map::Terrain::Rock, _) => (Some(sprites.rock(h % 4)), h % 7 < 3),
-                (oxide_sim::map::Terrain::Peak, _) => {
-                    // Interior wall tiles draw here; the skyline rows
-                    // (crowns) draw in their own pass after units, so
-                    // their overhang can occlude what stands behind
-                    // the ridge. See draw_peak_crowns.
-                    if peak_crown(game, sprites, x, y, h).is_some() {
-                        (None, false)
-                    } else {
-                        (Some(sprites.peak_body(h % 2)), false)
-                    }
-                }
+                (oxide_sim::map::Terrain::Peak, _) => (
+                    Some(sprites.peak_barrier(peak_neighbor_mask(game, pos), h % 2)),
+                    false,
+                ),
                 (_, 0) if wreck > 0 => (Some(sprites.wreck_pile()), h % 5 < 2),
                 (_, 0) => (None, false),
                 (_, s) => (Some(sprites.scrap(s, SCRAP_NODE_AMOUNT)), false),
@@ -435,7 +372,7 @@ pub(crate) fn draw_scorches(game: &Game, sprites: &Sprites) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     const THEMES: [&str; 6] = [
         "rusted-yard",
@@ -524,6 +461,9 @@ mod tests {
             .collect();
         paths.sort();
         let mut seen_themes = BTreeSet::new();
+        let mut variants_by_theme = BTreeMap::<String, BTreeSet<usize>>::new();
+        let mut total_safe = 0;
+        let mut total_props = 0;
         for path in paths {
             let scenario = oxide_sim::Scenario::load(&path)
                 .unwrap_or_else(|err| panic!("loading {}: {err}", path.display()));
@@ -541,6 +481,8 @@ mod tests {
             let height = scenario.map.len() as i32;
             let width = scenario.map.first().expect("map row").len() as i32;
             let mut count = 0;
+            let mut safe_count = 0;
+            let mut variants = BTreeSet::new();
             for y in 0..height {
                 for x in 0..width {
                     let pos = TilePos::new(x, y);
@@ -554,10 +496,12 @@ mod tests {
                     if !symmetric_safe_theme_prop_tile(&scenario.map, pos) {
                         continue;
                     }
+                    safe_count += 1;
                     let Some(prop) = symmetric_theme_prop(theme, pos, width, height) else {
                         continue;
                     };
                     count += 1;
+                    variants.insert(prop.variant);
                     assert_eq!(authored_tile(&scenario.map, pos), Some(b'.'));
                     let partner = symmetric_theme_prop(theme, mirror, width, height)
                         .expect("symmetric partner");
@@ -568,14 +512,50 @@ mod tests {
                 }
             }
             assert!(
-                count > 0,
-                "{} received no deterministic theme props",
+                count * 20 >= safe_count,
+                "{} dresses fewer than one in twenty safe tiles ({count}/{safe_count})",
                 path.display()
             );
+            assert!(
+                count * 5 <= safe_count,
+                "{} dresses more than one in five safe tiles ({count}/{safe_count})",
+                path.display()
+            );
+            assert!(
+                variants.len() >= 4,
+                "{} only uses theme-prop variants {variants:?}",
+                path.display()
+            );
+            if safe_count >= 400 {
+                assert_eq!(
+                    variants,
+                    (0..6).collect(),
+                    "{} has room for, but does not use, all six theme-prop variants",
+                    path.display()
+                );
+            }
+            variants_by_theme
+                .entry(theme.to_string())
+                .or_default()
+                .extend(variants);
+            total_safe += safe_count;
+            total_props += count;
         }
+        assert!(
+            total_props * 14 >= total_safe && total_props * 8 <= total_safe,
+            "shipped maps should average roughly one prop per eleven safe tiles: \
+             {total_props}/{total_safe}"
+        );
         assert_eq!(
             seen_themes,
             THEMES.map(str::to_string).into_iter().collect()
         );
+        for theme in THEMES {
+            assert_eq!(
+                variants_by_theme.get(theme),
+                Some(&(0..6).collect()),
+                "{theme} does not exercise its complete shipped prop row"
+            );
+        }
     }
 }

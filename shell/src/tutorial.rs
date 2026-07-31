@@ -202,7 +202,7 @@ impl Tutorial {
             ));
         }
         Some(CoachLine::Status(format!(
-            "next: {cost} scrap · you have {bank} · {hauling} hauling"
+            "next: {cost} scrap | you have {bank} | {hauling} hauling"
         )))
     }
 }
@@ -278,14 +278,11 @@ mod tests {
     }
 
     #[test]
-    fn every_card_string_is_ascii_or_middle_dot() {
-        // The menu font is Latin-1: an em dash renders as tofu.
+    fn every_card_string_is_ascii() {
+        // The bundled font cannot be trusted to cover typographic punctuation.
         for step in &STEPS {
             for line in std::iter::once(&step.title).chain(step.body) {
-                assert!(
-                    line.chars().all(|c| c.is_ascii() || c == '·'),
-                    "non-ASCII in card text: {line}"
-                );
+                assert!(line.is_ascii(), "non-ASCII in card text: {line}");
             }
         }
     }

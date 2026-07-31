@@ -3,7 +3,7 @@
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::scenario::{PlayerSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
 use oxide_sim::stats::{BuildingKind, RECLAIMER_PERIOD};
 use oxide_sim::{
     Command, Event, Faction, Order, PlayerCommand, PlayerId, Scenario, State, UnitKind,
@@ -303,128 +303,53 @@ fn a_rejected_welders_prepaid_coin_comes_back() {
 
 #[test]
 fn a_free_stepping_welder_still_consumes_the_room() {
-    // The out-of-phase pair: a mid-meter welder's coins land only
-    // every few hp, so it often steps a FREE hp; a fresh welder
-    // joining beside it prepays its first coin immediately. When the
-    // free step eats the last hp of room, the prepaid neighbor takes
-    // the clamp — and must still get its coin back. (The refund pass
-    // once skipped zero-paid gains entirely, so the free step never
-    // decremented the tracked room and the neighbor looked accepted.)
     let mut scenario = arena(vec![
-        unit(0, UnitKind::Harvester, 4, 2),
-        unit(1, UnitKind::Scuttler, 12, 6),
-        unit(1, UnitKind::Scuttler, 12, 7),
+        unit(0, UnitKind::Harvester, 2, 4),
+        unit(0, UnitKind::Harvester, 4, 4),
     ]);
-    scenario.players[0].scrap = 500;
-    let mut state = scenario.build().unwrap();
-    let builder = state.units()[0].id;
-    let raiders = vec![state.units()[1].id, state.units()[2].id];
-    let (turret, opener, _) = wounded_turret(&mut state, builder, raiders);
-    let foundry = state
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Turret,
+        x: 3,
+        y: 3,
+    });
+    let state = scenario.build().unwrap();
+    let turret = state
         .buildings()
         .iter()
-        .find(|b| b.player == PlayerId(0) && b.kind == BuildingKind::Foundry)
+        .find(|building| building.kind == BuildingKind::Turret)
         .unwrap()
         .id;
-    let mut fresh = Vec::new();
-    for park in [TilePos::new(2, 4), TilePos::new(4, 4)] {
-        state.tick(&[cmd(
-            0,
-            Command::Train {
-                building: foundry,
-                kind: UnitKind::Harvester,
-            },
-        )]);
-        let mut trained = None;
-        run_until(&mut state, 200, |_, events| {
-            events.iter().any(|e| {
-                if let Event::UnitTrained { unit, .. } = e {
-                    trained = Some(*unit);
-                    true
-                } else {
-                    false
-                }
-            })
-        });
-        let torch = trained.expect("trained");
-        state.tick(&[cmd(
-            0,
-            Command::Move {
-                units: vec![torch],
-                goal: park,
-                queue: false,
-            },
-        )]);
-        run_until(&mut state, 300, |s, _| {
-            s.unit(torch).unwrap().tile() == park
-        });
-        fresh.push(torch);
-    }
-    // Stage the meter phases exactly. The opener grinds the wound to
-    // three hp short, then stands down; the mid-meter welder (lower
-    // id than the fresh one) takes over and welds ONE hp alone,
-    // paying its chip coin and leaving its meter inside the free
-    // zone with two hp of room. The joiner's first tick steps zero
-    // (the integer ramp), so its paying second tick lands exactly
-    // when the warmed welder's FREE step fills the last room.
+    let midmeter = state.units()[0].id;
+    let joiner = state.units()[1].id;
     let max = BuildingKind::Turret.stats().max_hp;
-    state.tick(&[cmd(
-        0,
-        Command::Repair {
-            units: vec![opener],
-            building: turret,
-            queue: false,
-        },
-    )]);
-    run_until(&mut state, 900, |s, _| {
-        s.building(turret).unwrap().hp >= max - 4
-    });
-    assert_eq!(
-        state.building(turret).unwrap().hp,
-        max - 4,
-        "test premise: the opener stops four short"
-    );
-    state.tick(&[cmd(
-        0,
-        Command::Stop {
-            units: vec![opener],
-        },
-    )]);
-    // The warmed welder takes the LOWER id: the collision tick runs
-    // in forward id order (tick parity — the 0.12 collision slide
-    // shifted every arrival by a tick), so the free step resolves
-    // first and the prepaid joiner takes the clamp.
-    let midmeter = fresh[0];
-    let joiner = fresh[1];
-    state.tick(&[cmd(
-        0,
-        Command::Repair {
-            units: vec![midmeter],
-            building: turret,
-            queue: false,
-        },
-    )]);
-    run_until(&mut state, 60, |s, _| {
-        s.building(turret).unwrap().hp >= max - 2
-    });
-    assert_eq!(
-        state.building(turret).unwrap().hp,
-        max - 2,
-        "test premise: two hp of room with a warmed meter"
-    );
-    // The fresh joiner prepays its coin on its very first step — the
-    // same tick the warmed welder steps a FREE hp into the last room.
+    let mut value = serde_json::to_value(state).unwrap();
+    value["buildings"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|building| building["id"] == serde_json::json!(turret.0))
+        .unwrap()["hp"] = serde_json::json!(max - 1);
+    for (unit, progress) in [(midmeter, 2), (joiner, 1)] {
+        let record = value["units"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|record| record["id"] == serde_json::json!(unit.0))
+            .unwrap();
+        record["progress"] = serde_json::json!(progress);
+        record["order"] = serde_json::to_value(Order::Repair { building: turret }).unwrap();
+    }
+    let mut state: State = serde_json::from_value(value).unwrap();
+
+    // The lower-id welder's progress-2 tick gains one free hp. The
+    // progress-1 neighbor also gains one hp but prepays its first scrap.
+    // With only one hp of room, the free gain lands first and the later
+    // prepaid gain must be refunded.
     let bank_before = state.player(PlayerId(0)).scrap;
-    state.tick(&[cmd(
-        0,
-        Command::Repair {
-            units: vec![joiner],
-            building: turret,
-            queue: false,
-        },
-    )]);
-    run_until(&mut state, 60, |s, _| s.building(turret).unwrap().hp == max);
+    state.tick(&[]);
     let spent = bank_before - state.player(PlayerId(0)).scrap;
+    assert_eq!(state.building(turret).unwrap().hp, max);
     assert_eq!(
         spent, 0,
         "a free step filled the room; the rejected prepay must come back (spent {spent})"
@@ -680,6 +605,8 @@ fn the_last_coin_prepays_its_full_scrap_of_welding() {
         unit(0, UnitKind::Harvester, 4, 2),
         unit(1, UnitKind::Scuttler, 12, 6),
         unit(1, UnitKind::Scuttler, 12, 7),
+        // Keep recovery income out of this isolated welding-price premise.
+        unit(0, UnitKind::Harvester, 14, 1),
     ]);
     // Turret (100) + welder (50) leave exactly one coin.
     scenario.players[0].scrap = 151;

@@ -33,9 +33,10 @@ pub struct Selection {
     /// Selected units — single-allegiance by construction (own for
     /// command, ally/enemy for read-only inspection).
     pub units: Vec<UnitId>,
-    /// Selected building of any owner (mutually exclusive with units
-    /// in practice); commands validate ownership at their own gates.
-    pub building: Option<BuildingId>,
+    /// Selected buildings of one owner (mutually exclusive with units
+    /// in practice), kept in id order. Commands validate ownership at
+    /// their own gates.
+    pub buildings: Vec<BuildingId>,
 }
 
 /// A transient visual effect (never sim-relevant).
@@ -439,15 +440,15 @@ impl Game {
             .retain(|id, _| state.unit(UnitId(*id)).is_some());
         self.aim_buildings
             .retain(|id, _| state.building(oxide_sim::BuildingId(*id)).is_some());
-        if let Some(b) = self.selection.building
-            && !self.state.building(b).is_some_and(|b| {
-                !self.state.hostile(human, b.player)
+        self.selection.buildings.retain(|id| {
+            self.state.building(*id).is_some_and(|building| {
+                !self.state.hostile(human, building.player)
                     || all_seeing
-                    || b.tiles().any(|t| self.state.vision(human).visible(t))
+                    || building
+                        .tiles()
+                        .any(|tile| self.state.vision(human).visible(tile))
             })
-        {
-            self.selection.building = None;
-        }
+        });
         report
     }
 

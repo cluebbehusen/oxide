@@ -287,13 +287,20 @@ impl Game {
                             (d.y.atan2(d.x) + std::f32::consts::FRAC_PI_2, self.fx_clock),
                         );
                     }
-                    // A turret chewing on our unit is an attack like any
-                    // other; the death case is UnitDied's alert.
-                    if self
-                        .state
-                        .unit(*target)
-                        .is_some_and(|u| u.player == self.human)
-                    {
+                    // A defense chewing on one of our entities is an
+                    // attack like any other; the death event raises its
+                    // own alert too.
+                    let own_target = match target {
+                        oxide_sim::Target::Unit(id) => self
+                            .state
+                            .unit(*id)
+                            .is_some_and(|unit| unit.player == self.human),
+                        oxide_sim::Target::Building(id) => self
+                            .state
+                            .building(*id)
+                            .is_some_and(|building| building.player == self.human),
+                    };
+                    if own_target {
                         self.raise_alert(world_vec(*target_pos));
                     }
                     // Kind rides in the event: the turret may be rubble by

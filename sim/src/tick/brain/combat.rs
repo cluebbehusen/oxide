@@ -33,6 +33,11 @@ fn traces_terrain(weapon: &WeaponStats, shooter: Domain, victim: Domain) -> bool
     !weapon.indirect && shooter == Domain::Ground && victim == Domain::Ground
 }
 
+fn within_weapon_reach(weapon: &WeaponStats, distance_sq: chassis::fx::Fx) -> bool {
+    distance_sq <= weapon.range * weapon.range
+        && distance_sq >= weapon.minimum_range * weapon.minimum_range
+}
+
 /// Buffers a shot: the direct hit, plus — for splash weapons — one hit on
 /// every other hostile unit inside the radius that the weapon can cover.
 /// Victims are chosen against the start-of-tick world like every other
@@ -173,8 +178,9 @@ fn buffer_shot(
 
 /// Built turrets pick their own fights: nearest enemy unit in range with a
 /// clear line (buildings can't chase, so out-of-line targets are simply
-/// ignored until they move). Stateless — target choice re-evaluates every
-/// shot, in building-id order.
+/// ignored until they move). A Bastion with no eligible unit can shell a
+/// currently visible hostile building. Stateless — target choice re-evaluates
+/// every shot, in building-id order.
 pub(super) fn turret_fire(
     state: &mut State,
     events: &mut Vec<Event>,
@@ -192,7 +198,16 @@ pub(super) fn turret_fire(
         if !b.built || b.hp == 0 {
             continue;
         }
-        let (me, center, cooling, kind) = (b.player, b.center(), b.cooldown > 0, b.kind);
+        let (me, center, cooling, kind, focus) =
+            (b.player, b.center(), b.cooldown > 0, b.kind, b.focus);
+        let focus_domain = focus.and_then(|target| {
+            state
+                .visible_hostile_target_domain(me, target)
+                .filter(|domain| atk.targets.covers(*domain))
+        });
+        if focus.is_some() && focus_domain.is_none() {
+            state.building_mut(id).expect("just seen").focus = None;
+        }
         if cooling {
             let b = state.building_mut(id).expect("just seen");
             b.cooldown -= 1;
@@ -201,7 +216,6 @@ pub(super) fn turret_fire(
             }
             // Reached zero this tick: fire now, like unit cooldowns do.
         }
-        let range_sq = atk.range * atk.range;
         let shot_open = |t: TilePos, full: bool| {
             let Some(tile) = state.map.tile(t) else {
                 return false;
@@ -213,50 +227,88 @@ pub(super) fn turret_fire(
         };
         // The owner must see the victim's tile — a turret that outranges
         // its own mast fires on a spotter's eyes, never into fog.
-        let victim = state
-            .units
-            .iter()
-            .filter(|u| {
-                state.hostile(me, u.player) && u.hp > 0 && atk.targets.covers(u.kind.stats().domain)
+        let focused_victim = focus.zip(focus_domain).and_then(|(target, domain)| {
+            let aim = match target {
+                Target::Unit(unit) => state.unit(unit)?.pos,
+                Target::Building(building) => state.building(building)?.closest_point_to(center),
+            };
+            let distance = center.dist_sq(aim);
+            let full = traces_terrain(atk, Domain::Ground, domain);
+            (within_weapon_reach(atk, distance)
+                && !chassis::path::line_blocked(center, aim, |tile| shot_open(tile, full)))
+            .then_some((target, aim))
+        });
+        let unit_victim = focused_victim
+            .is_none()
+            .then(|| {
+                state
+                    .units
+                    .iter()
+                    .filter(|u| {
+                        state.hostile(me, u.player)
+                            && u.hp > 0
+                            && atk.targets.covers(u.kind.stats().domain)
+                    })
+                    .filter(|u| state.can_see(me, u.tile()))
+                    .map(|u| (center.dist_sq(u.pos), u.id, u.pos, u.kind.stats().domain))
+                    .filter(|(d, _, _, _)| within_weapon_reach(atk, *d))
+                    .filter(|(_, _, pos, dom)| {
+                        let full = traces_terrain(atk, Domain::Ground, *dom);
+                        !chassis::path::line_blocked(center, *pos, |t| shot_open(t, full))
+                    })
+                    .min_by_key(|&(d, uid, _, _)| (d, uid))
             })
-            .filter(|u| state.can_see(me, u.tile()))
-            .map(|u| (center.dist_sq(u.pos), u.id, u.pos, u.kind.stats().domain))
-            .filter(|(d, _, _, _)| *d <= range_sq)
-            .filter(|(_, _, pos, dom)| {
-                let full = traces_terrain(atk, Domain::Ground, *dom);
-                !chassis::path::line_blocked(center, *pos, |t| shot_open(t, full))
-            })
-            .min_by_key(|&(d, uid, _, _)| (d, uid));
-        let Some((_, uid, upos, _)) = victim else {
+            .flatten();
+        let building_victim = (focused_victim.is_none()
+            && unit_victim.is_none()
+            && kind == crate::stats::BuildingKind::Bastion
+            && atk.targets.covers(Domain::Ground))
+        .then(|| {
+            state
+                .buildings
+                .iter()
+                .filter(|target| target.hp > 0 && state.hostile(me, target.player))
+                .filter(|target| target.tiles().any(|tile| state.can_see(me, tile)))
+                .map(|target| {
+                    let aim = target.closest_point_to(center);
+                    (center.dist_sq(aim), target.id, aim)
+                })
+                .filter(|(distance, _, _)| within_weapon_reach(atk, *distance))
+                .filter(|(_, _, aim)| {
+                    let full = traces_terrain(atk, Domain::Ground, Domain::Ground);
+                    !chassis::path::line_blocked(center, *aim, |tile| shot_open(tile, full))
+                })
+                .min_by_key(|&(distance, target, _)| (distance, target))
+        })
+        .flatten();
+        let (victim, aim) = if let Some(focused) = focused_victim {
+            focused
+        } else if let Some((_, uid, position, _)) = unit_victim {
+            (Target::Unit(uid), position)
+        } else if let Some((_, target, position)) = building_victim {
+            (Target::Building(target), position)
+        } else {
             continue;
         };
         let b = state.building_mut(id).expect("just seen");
         b.cooldown = atk.cooldown_ticks;
         if atk.projectile {
-            let flight = launch_shell(state, launches, Target::Building(id), me, center, upos, atk);
+            let flight = launch_shell(state, launches, Target::Building(id), me, center, aim, atk);
             events.push(Event::ShellLaunched {
                 shooter: Target::Building(id),
                 player: me,
                 from: center,
-                to: upos,
+                to: aim,
                 flight,
             });
         } else {
-            buffer_shot(
-                state,
-                Target::Building(id),
-                me,
-                Target::Unit(uid),
-                upos,
-                atk,
-                hits,
-            );
+            buffer_shot(state, Target::Building(id), me, victim, aim, atk, hits);
             events.push(Event::TurretFired {
                 turret: id,
                 kind,
-                target: uid,
+                target: victim,
                 turret_pos: center,
-                target_pos: upos,
+                target_pos: aim,
             });
         }
     }
@@ -332,7 +384,12 @@ pub(super) fn acquire_target(
                 continue;
             }
             let d = pos.dist_sq(u.pos);
-            if d <= aggro_sq && unit_target.is_none_or(|best| (d, u.id) < best) {
+            let outside_dead_zone = stats.weapons.iter().any(|weapon| {
+                weapon.targets.covers(u.kind.stats().domain)
+                    && d >= weapon.minimum_range * weapon.minimum_range
+            });
+            if d <= aggro_sq && outside_dead_zone && unit_target.is_none_or(|best| (d, u.id) < best)
+            {
                 unit_target = Some((d, u.id));
             }
         }
@@ -348,7 +405,13 @@ pub(super) fn acquire_target(
         .iter()
         .filter(|b| state.hostile(me, b.player) && b.hp > 0)
         .map(|b| (pos.dist_sq(b.closest_point_to(pos)), b.id))
-        .filter(|(d, _)| *d <= aggro_sq)
+        .filter(|(d, _)| {
+            *d <= aggro_sq
+                && stats.weapons.iter().any(|weapon| {
+                    weapon.targets.covers(Domain::Ground)
+                        && *d >= weapon.minimum_range * weapon.minimum_range
+                })
+        })
         .min()
         .map(|(_, bid)| Target::Building(bid))
 }
@@ -385,7 +448,6 @@ pub(super) fn advance(
         return;
     }
     let (pos, home, me, kind) = (unit.pos, unit.tile(), unit.player, unit.kind);
-    let range_sq = weapon.range * weapon.range;
     let reach = weapon.range.floor().to_num::<i32>() + 1;
     let shot_open = |t: TilePos, full: bool| {
         let Some(tile) = state.map.tile(t) else {
@@ -411,7 +473,7 @@ pub(super) fn advance(
             }
             let dist = pos.dist_sq(target.pos);
             let full = traces_terrain(&weapon, stats.domain, domain);
-            if dist > range_sq
+            if !within_weapon_reach(&weapon, dist)
                 || !shot_open(target.tile(), full)
                 || chassis::path::line_blocked(pos, target.pos, |t| shot_open(t, full))
             {
@@ -440,7 +502,7 @@ pub(super) fn advance(
                 })
                 .filter(|(dist, _, aim)| {
                     let full = traces_terrain(&weapon, stats.domain, Domain::Ground);
-                    *dist <= range_sq
+                    within_weapon_reach(&weapon, *dist)
                         && shot_open(TilePos::containing(*aim), full)
                         && !chassis::path::line_blocked(pos, *aim, |t| shot_open(t, full))
                 })
@@ -592,7 +654,7 @@ pub(super) fn attack(
             .building(bid)
             .is_some_and(|b| b.tiles().any(|t| state.can_see(me, t))),
     };
-    let in_range = pos.dist_sq(aim_point) <= weapon.range * weapon.range;
+    let in_range = within_weapon_reach(weapon, pos.dist_sq(aim_point));
     let full = traces_terrain(weapon, stats.domain, victim_domain);
     // The line trace skips endpoint tiles by design — but a building's
     // closest-footprint aim point is an exact edge coordinate that can
@@ -811,7 +873,6 @@ fn fire_sidearms(
         if wi == primary || cooldowns[wi] > 0 {
             continue;
         }
-        let range_sq = weapon.range * weapon.range;
         let shot_open = |t: TilePos, full: bool| {
             let Some(tile) = state.map.tile(t) else {
                 return false;
@@ -831,7 +892,7 @@ fn fire_sidearms(
             })
             .filter(|u| state.can_see(me, u.tile()))
             .map(|u| (pos.dist_sq(u.pos), u.id, u.pos, u.kind.stats().domain))
-            .filter(|(d, _, _, _)| *d <= range_sq)
+            .filter(|(d, _, _, _)| within_weapon_reach(weapon, *d))
             .filter(|(_, _, upos, dom)| {
                 let full = traces_terrain(weapon, stats.domain, *dom);
                 !chassis::path::line_blocked(pos, *upos, |t| shot_open(t, full))

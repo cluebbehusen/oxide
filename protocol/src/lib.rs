@@ -467,10 +467,11 @@ mod tests {
             Command::Surrender => 13,
             Command::RepairUnit { .. } => 14,
             Command::Advance { .. } => 15,
+            Command::FocusFire { .. } => 16,
         }
     }
 
-    const COMMAND_VARIANTS: usize = 16;
+    const COMMAND_VARIANTS: usize = 17;
 
     #[test]
     fn an_omitted_screenshot_path_survives_the_roundtrip() {
@@ -667,6 +668,10 @@ mod tests {
                 units: vec![UnitId(12)],
                 goal: TilePos::new(8, 5),
                 queue: true,
+            },
+            Command::FocusFire {
+                buildings: vec![BuildingId(8), BuildingId(7)],
+                target: Target::Unit(UnitId(13)),
             },
         ];
         assert_every_tag_sampled(

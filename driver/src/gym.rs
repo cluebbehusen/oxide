@@ -7,22 +7,31 @@
 //! seats for self-play and league play — every decision tick then
 //! carries features and masks for each controlled seat, and `step`
 //! takes one production/construction/operation action triple per
-//! controlled seat, in the same order.
+//! controlled seat, in the same order. A profiled reset also carries the
+//! Rust-authored five-facet condition into [`GymBot`], keeping the training
+//! executive and shipped named-profile doctrine on the same path.
 //! Determinism holds the whole way down: same seed and same actions
 //! replay the same match, which is what makes rollouts auditable.
 
 use anyhow::{Context, Result, bail};
 use oxide_sim::bot::{
-    ACTION_COUNT, ACTION_HEADS, Action, ActionPlan, Brain, Decision, Difficulty, FEATURE_COUNT,
-    FEATURE_NAMES, GYM_VERSION, GymBot,
+    ACTION_COUNT, ACTION_HEADS, Action, ActionPlan, Brain, CONDITION_NAMES, CONDITIONING_COUNT,
+    CanonicalProfile, Decision, Difficulty, FEATURE_COUNT, FEATURE_NAMES, GYM_VERSION, GymBot,
+    PROFILE_CONDITION_COUNT, PROFILE_TEAM_ROLES, ProfileFacets, ResolvedBotProfile,
+    canonical_profiles, ladder_condition_values_with_facets,
 };
-use oxide_sim::scenario::Scenario;
+use oxide_sim::scenario::{Scenario, TeamRole};
 use oxide_sim::state::GameResult;
 use oxide_sim::{
     BuildingKind, Command, Event, Faction, PlayerCommand, PlayerId, State, UnitRepairSource,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Write};
+
+/// Wire capability for applying the named-profile facets to the gym
+/// executive as well as to the policy condition. This is independent of
+/// [`GYM_VERSION`], which describes the actor's tensor shape.
+const PROFILED_DOCTRINE_VERSION: u32 = 1;
 
 /// Ordered west/east faction pair for a two-seat neural cup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,10 +93,37 @@ pub struct NeuralCupProfile {
     pub blunder: Option<u32>,
     /// Raw skill-conditioning override.
     pub skill: Option<u32>,
-    /// Aggression conditioning knob.
-    pub aggression: u32,
+    /// Raw aggression conditioning override. Omission exercises the
+    /// canonical named-profile slate.
+    pub aggression: Option<u32>,
     /// Optional ordered roster override.
     pub factions: Option<DuelFactions>,
+}
+
+fn cup_resolved_profile(
+    seed: u64,
+    aggression: Option<u32>,
+    canonical: &[CanonicalProfile],
+) -> ResolvedBotProfile {
+    if let Some(aggression) = aggression {
+        return ResolvedBotProfile {
+            level: oxide_sim::bot::Level::Expert,
+            style: None,
+            variant: None,
+            aggression,
+            team_role: TeamRole::Generalist,
+            facets: oxide_sim::bot::ProfileFacets::ZERO,
+        };
+    }
+    let profile = canonical[(seed.saturating_sub(3000) as usize) % canonical.len()];
+    ResolvedBotProfile {
+        level: oxide_sim::bot::Level::Expert,
+        style: Some(profile.style),
+        variant: Some(profile.variant),
+        aggression: profile.aggression,
+        team_role: TeamRole::Generalist,
+        facets: profile.facets,
+    }
 }
 
 type CupOutcome = (bool, bool, bool, bool, u64);
@@ -185,6 +221,10 @@ enum Request {
         /// Decision stride in ticks (default 8).
         #[serde(default = "default_cadence")]
         cadence: u64,
+        /// One Rust-authored named-profile facet row per controlled seat.
+        /// Omission and all-zero rows preserve the historical gym doctrine.
+        #[serde(default)]
+        profile_facets: Option<Vec<[u32; PROFILE_CONDITION_COUNT]>>,
     },
     Step {
         /// One action triple per controlled seat, in `control` order.
@@ -248,6 +288,28 @@ struct Episode {
     effects: Vec<SeatEffects>,
 }
 
+#[derive(Clone, Copy)]
+struct EpisodeOptions<'a> {
+    factions: Option<&'a [Faction]>,
+    cadence: u64,
+    profile_facets: Option<&'a [[u32; PROFILE_CONDITION_COUNT]]>,
+}
+
+impl<'a> EpisodeOptions<'a> {
+    fn new(factions: Option<&'a [Faction]>, cadence: u64) -> Self {
+        Self {
+            factions,
+            cadence,
+            profile_facets: None,
+        }
+    }
+
+    fn with_profile_facets(mut self, profile_facets: &'a [[u32; PROFILE_CONDITION_COUNT]]) -> Self {
+        self.profile_facets = Some(profile_facets);
+        self
+    }
+}
+
 impl Episode {
     fn new(
         seed: u64,
@@ -255,9 +317,13 @@ impl Episode {
         tier: Difficulty,
         max_ticks: u64,
         scenario: Option<&str>,
-        factions: Option<&[Faction]>,
-        cadence: u64,
+        options: EpisodeOptions<'_>,
     ) -> Result<Self> {
+        let EpisodeOptions {
+            factions,
+            cadence,
+            profile_facets,
+        } = options;
         let mut scenario = crate::runner::load_scenario(scenario.unwrap_or("skirmish"))?;
         scenario.seed = seed;
         let players = scenario.players.len() as u8;
@@ -281,10 +347,35 @@ impl Episode {
                 scenario.retint_seat(seat, faction);
             }
         }
+        if let Some(profile_facets) = profile_facets {
+            if profile_facets.len() != control.len() {
+                bail!(
+                    "profile_facets must name exactly {} controlled seats, got {}",
+                    control.len(),
+                    profile_facets.len()
+                );
+            }
+            if profile_facets.iter().flatten().any(|facet| *facet > 1_000) {
+                bail!("profile facets must be in 0..=1000");
+            }
+        }
         let state = scenario.build().context("scenario build")?;
         let gyms: Vec<GymBot> = control
             .iter()
-            .map(|s| GymBot::with_cadence(PlayerId(*s), cadence))
+            .enumerate()
+            .map(|(index, seat)| {
+                let facets =
+                    profile_facets.map_or([0; PROFILE_CONDITION_COUNT], |rows| rows[index]);
+                if facets == [0; PROFILE_CONDITION_COUNT] {
+                    GymBot::with_cadence(PlayerId(*seat), cadence)
+                } else {
+                    GymBot::with_profile_facets(
+                        PlayerId(*seat),
+                        cadence,
+                        ProfileFacets::from_conditions(facets),
+                    )
+                }
+            })
             .collect();
         let opponents: Vec<Brain> = (0..players)
             .filter(|s| !control.contains(s))
@@ -544,6 +635,63 @@ impl Episode {
     }
 }
 
+#[derive(Debug, Serialize)]
+struct CanonicalFactionConditions {
+    ferrous: [i64; CONDITIONING_COUNT],
+    cupric: [i64; CONDITIONING_COUNT],
+}
+
+#[derive(Debug, Serialize)]
+struct CanonicalRoleConditions {
+    role: TeamRole,
+    conditions: CanonicalFactionConditions,
+}
+
+#[derive(Debug, Serialize)]
+struct CanonicalProfileConditions {
+    style: oxide_sim::bot::NamedStyle,
+    variant: u8,
+    name: &'static str,
+    aggression: u32,
+    roles: Vec<CanonicalRoleConditions>,
+}
+
+fn canonical_profile_catalog() -> Vec<CanonicalProfileConditions> {
+    canonical_profiles()
+        .into_iter()
+        .map(|profile| {
+            let roles = PROFILE_TEAM_ROLES
+                .into_iter()
+                .map(|role| {
+                    let facets = profile.facets.with_role(role);
+                    CanonicalRoleConditions {
+                        role,
+                        conditions: CanonicalFactionConditions {
+                            ferrous: ladder_condition_values_with_facets(
+                                profile.aggression,
+                                Faction::Ferrous,
+                                facets,
+                            ),
+                            cupric: ladder_condition_values_with_facets(
+                                profile.aggression,
+                                Faction::Cupric,
+                                facets,
+                            ),
+                        },
+                    }
+                })
+                .collect::<Vec<_>>();
+            CanonicalProfileConditions {
+                style: profile.style,
+                variant: profile.variant,
+                name: profile.name,
+                aggression: profile.aggression,
+                roles,
+            }
+        })
+        .collect()
+}
+
 fn hello() -> serde_json::Value {
     serde_json::json!({
         "ready": true,
@@ -555,6 +703,11 @@ fn hello() -> serde_json::Value {
             .iter()
             .map(|head| head.to_vec())
             .collect::<Vec<_>>(),
+        "conditioning": CONDITIONING_COUNT,
+        "condition_names": CONDITION_NAMES,
+        "canonical_profiles": canonical_profile_catalog(),
+        "default_team_role": TeamRole::Generalist,
+        "profiled_doctrine": PROFILED_DOCTRINE_VERSION,
         "reset_factions": true,
         "effect_telemetry": true,
     })
@@ -583,22 +736,29 @@ pub fn serve() -> Result<()> {
                 scenario,
                 factions,
                 cadence,
-            }) => match Episode::new(
-                seed,
-                &control,
-                tier,
-                max_ticks,
-                scenario.as_deref(),
-                factions.as_deref(),
-                cadence,
-            ) {
-                Ok(mut e) => {
-                    let reply = e.reply();
-                    episode = Some(e);
-                    reply
+                profile_facets,
+            }) => {
+                let options = EpisodeOptions::new(factions.as_deref(), cadence);
+                let options = match profile_facets.as_deref() {
+                    Some(facets) => options.with_profile_facets(facets),
+                    None => options,
+                };
+                match Episode::new(
+                    seed,
+                    &control,
+                    tier,
+                    max_ticks,
+                    scenario.as_deref(),
+                    options,
+                ) {
+                    Ok(mut e) => {
+                        let reply = e.reply();
+                        episode = Some(e);
+                        reply
+                    }
+                    Err(err) => serde_json::json!({ "error": format!("{err:#}") }),
                 }
-                Err(err) => serde_json::json!({ "error": format!("{err:#}") }),
-            },
+            }
             Ok(Request::Step { actions }) => match episode.as_mut() {
                 Some(e) if e.live() => match e.step(&actions) {
                     Ok(()) => e.reply(),
@@ -638,9 +798,15 @@ pub fn neural_cup(
     let json = std::fs::read_to_string(weights)
         .with_context(|| format!("reading {}", weights.display()))?;
     let net = QuantNet::from_json(&json).map_err(|e| anyhow::anyhow!(e))?;
-    let raw_profile = skill.is_some() || blunder.is_some();
-    let profile_name = if raw_profile { "raw" } else { "ladder" };
+    let manual_profile = skill.is_some() || blunder.is_some();
+    let raw_profile = manual_profile || aggression.is_some();
+    let profile_name = if raw_profile {
+        "raw"
+    } else {
+        "canonical-slate"
+    };
     let effective_cadence = cadence.unwrap_or_else(|| Level::Expert.cadence());
+    let canonical = canonical_profiles();
     // Every result line carries the artifact's digest: a cup table
     // pasted into an experiments note answers "which weights" on its
     // own, long after the checkpoint path stops meaning anything.
@@ -674,36 +840,37 @@ pub fn neural_cup(
             let (sc, game_factions) = prepare_cup_scenario(scenario, seed, factions)?;
             debug_assert_eq!(game_factions, actual_factions);
             let faction = game_factions.faction(seat);
-            let mut neural = if raw_profile {
+            let mut neural = if manual_profile {
                 NeuralBot::with_profile_hesitation(
                     PlayerId(seat),
                     effective_cadence,
                     net.clone(),
                     skill.unwrap_or_else(|| Level::Expert.skill()),
-                    aggression,
+                    aggression.unwrap_or(550),
                     faction,
                     blunder,
                     seed,
                 )
-            } else if let Some(cadence) = cadence {
-                NeuralBot::ladder_with_net_at_cadence(
-                    PlayerId(seat),
-                    seed,
-                    Level::Expert,
-                    Some(aggression),
-                    faction,
-                    net.clone(),
-                    cadence,
-                )
             } else {
-                NeuralBot::ladder_with_net(
-                    PlayerId(seat),
-                    seed,
-                    Level::Expert,
-                    Some(aggression),
-                    faction,
-                    net.clone(),
-                )
+                let resolved = cup_resolved_profile(seed, aggression, &canonical);
+                if let Some(cadence) = cadence {
+                    NeuralBot::ladder_resolved_with_net_at_cadence(
+                        PlayerId(seat),
+                        seed,
+                        resolved,
+                        faction,
+                        net.clone(),
+                        cadence,
+                    )
+                } else {
+                    NeuralBot::ladder_resolved_with_net(
+                        PlayerId(seat),
+                        seed,
+                        resolved,
+                        faction,
+                        net.clone(),
+                    )
+                }
             };
             let mut opponent = match opponent_kind {
                 CupOpponent::Tier(tier) => Some(Brain::for_tier(PlayerId(1 - seat), seed, tier)),
@@ -827,8 +994,15 @@ mod tests {
     use oxide_sim::state::Order;
 
     fn episode(factions: Option<&[Faction]>) -> Episode {
-        Episode::new(17, &[0, 1], Difficulty::Veteran, 100, None, factions, 8)
-            .expect("skirmish episode")
+        Episode::new(
+            17,
+            &[0, 1],
+            Difficulty::Veteran,
+            100,
+            None,
+            EpisodeOptions::new(factions, 8),
+        )
+        .expect("skirmish episode")
     }
 
     #[test]
@@ -985,6 +1159,29 @@ mod tests {
         assert_eq!(hello["version"], GYM_VERSION);
         assert_eq!(hello["features"], FEATURE_COUNT);
         assert_eq!(hello["actions"], ACTION_COUNT);
+        assert_eq!(hello["conditioning"], CONDITIONING_COUNT);
+        assert_eq!(hello["condition_names"], serde_json::json!(CONDITION_NAMES));
+        assert_eq!(hello["default_team_role"], "generalist");
+        assert_eq!(hello["profiled_doctrine"], PROFILED_DOCTRINE_VERSION);
+        let profiles = hello["canonical_profiles"]
+            .as_array()
+            .expect("canonical profile rows");
+        assert_eq!(profiles.len(), 9);
+        for profile in profiles {
+            let roles = profile["roles"].as_array().expect("canonical team roles");
+            assert_eq!(roles.len(), PROFILE_TEAM_ROLES.len());
+            for role in roles {
+                for faction in ["ferrous", "cupric"] {
+                    assert_eq!(
+                        role["conditions"][faction]
+                            .as_array()
+                            .expect("canonical condition")
+                            .len(),
+                        CONDITIONING_COUNT
+                    );
+                }
+            }
+        }
         assert_eq!(
             hello["action_heads"],
             serde_json::json!([
@@ -1020,9 +1217,140 @@ mod tests {
     }
 
     #[test]
+    fn native_cup_default_rotates_every_canonical_profile() {
+        let canonical = canonical_profiles();
+        let resolved = (3000..3000 + canonical.len() as u64)
+            .map(|seed| cup_resolved_profile(seed, None, &canonical))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            resolved
+                .iter()
+                .map(|profile| (profile.style, profile.variant))
+                .collect::<Vec<_>>(),
+            canonical
+                .iter()
+                .map(|profile| (Some(profile.style), Some(profile.variant)))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            resolved
+                .iter()
+                .all(|profile| profile.facets.conditions() != [0; 5])
+        );
+
+        let raw = cup_resolved_profile(3000, Some(437), &canonical);
+        assert_eq!(raw.style, None);
+        assert_eq!(raw.variant, None);
+        assert_eq!(raw.aggression, 437);
+        assert_eq!(raw.facets, oxide_sim::bot::ProfileFacets::ZERO);
+    }
+
+    #[test]
+    fn reset_profile_facets_match_a_direct_native_gym_decision() {
+        let facets = canonical_profiles()[4].facets.with_role(TeamRole::Support);
+        let rows = [facets.conditions()];
+        let mut episode = Episode::new(
+            17,
+            &[0],
+            Difficulty::Veteran,
+            100,
+            None,
+            EpisodeOptions::new(None, 8).with_profile_facets(&rows),
+        )
+        .expect("profiled skirmish episode");
+        let mut direct = GymBot::with_profile_facets(PlayerId(0), 8, facets);
+
+        let from_reset = episode.gyms[0].decision(&episode.state);
+        let native = direct.decision(&episode.state);
+        assert_eq!(from_reset.features, native.features);
+        assert_eq!(from_reset.mask, native.mask);
+    }
+
+    #[test]
+    fn zero_profile_facets_select_the_historical_gym_path() {
+        let mut omitted = Episode::new(
+            17,
+            &[0],
+            Difficulty::Veteran,
+            100,
+            None,
+            EpisodeOptions::new(None, 8),
+        )
+        .expect("unprofiled skirmish episode");
+        let zero_rows = [[0; PROFILE_CONDITION_COUNT]];
+        let mut explicit_zero = Episode::new(
+            17,
+            &[0],
+            Difficulty::Veteran,
+            100,
+            None,
+            EpisodeOptions::new(None, 8).with_profile_facets(&zero_rows),
+        )
+        .expect("zero-profile skirmish episode");
+
+        let omitted_decision = omitted.gyms[0].decision(&omitted.state);
+        let zero_decision = explicit_zero.gyms[0].decision(&explicit_zero.state);
+        assert_eq!(omitted_decision.features, zero_decision.features);
+        assert_eq!(omitted_decision.mask, zero_decision.mask);
+
+        let plan = ActionPlan::from_action(Action::TrainHarvester);
+        assert_eq!(
+            omitted.gyms[0].step_plan(&omitted.state, plan),
+            explicit_zero.gyms[0].step_plan(&explicit_zero.state, plan)
+        );
+    }
+
+    #[test]
+    fn reset_rejects_misaligned_or_out_of_range_profile_facets() {
+        let misaligned = Episode::new(
+            17,
+            &[0, 1],
+            Difficulty::Veteran,
+            100,
+            None,
+            EpisodeOptions::new(None, 8).with_profile_facets(&[[0; PROFILE_CONDITION_COUNT]]),
+        )
+        .err()
+        .expect("one profile row cannot describe two controlled seats");
+        assert!(
+            misaligned
+                .to_string()
+                .contains("profile_facets must name exactly 2 controlled seats, got 1"),
+            "{misaligned:#}"
+        );
+
+        let mut invalid = [0; PROFILE_CONDITION_COUNT];
+        invalid[2] = 1_001;
+        let out_of_range = Episode::new(
+            17,
+            &[0],
+            Difficulty::Veteran,
+            100,
+            None,
+            EpisodeOptions::new(None, 8).with_profile_facets(&[invalid]),
+        )
+        .err()
+        .expect("profile facets outside the public range must fail");
+        assert!(
+            out_of_range
+                .to_string()
+                .contains("profile facets must be in 0..=1000"),
+            "{out_of_range:#}"
+        );
+    }
+
+    #[test]
     fn terminal_reply_distinguishes_tick_cap_from_a_game_result() {
-        let mut capped = Episode::new(17, &[0, 1], Difficulty::Veteran, 0, None, None, 8)
-            .expect("capped skirmish episode");
+        let mut capped = Episode::new(
+            17,
+            &[0, 1],
+            Difficulty::Veteran,
+            0,
+            None,
+            EpisodeOptions::new(None, 8),
+        )
+        .expect("capped skirmish episode");
         let capped_reply = capped.reply();
         assert_eq!(capped_reply["done"], true);
         assert_eq!(capped_reply["truncated"], true);
@@ -1041,8 +1369,15 @@ mod tests {
 
     #[test]
     fn repair_effects_accumulate_across_the_whole_decision_interval() {
-        let mut episode = Episode::new(17, &[0], Difficulty::Veteran, 300, None, None, 64)
-            .expect("skirmish episode");
+        let mut episode = Episode::new(
+            17,
+            &[0],
+            Difficulty::Veteran,
+            300,
+            None,
+            EpisodeOptions::new(None, 64),
+        )
+        .expect("skirmish episode");
         wound_sentinel(&mut episode, PlayerId(0));
         let reset = episode.reply();
         assert_eq!(reset["effects"][0]["unit_hp_restored"], 0);
@@ -1463,8 +1798,7 @@ mod tests {
             Difficulty::Veteran,
             100,
             None,
-            Some(&[Faction::Cupric]),
-            8,
+            EpisodeOptions::new(Some(&[Faction::Cupric]), 8),
         )
         .err()
         .expect("one faction cannot describe a two-seat scenario");

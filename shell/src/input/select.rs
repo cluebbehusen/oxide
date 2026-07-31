@@ -44,7 +44,7 @@ pub(super) fn cycle_idle_worker(game: &mut Game) {
         _ => first,
     };
     game.selection.units = vec![next];
-    game.selection.building = None;
+    game.selection.buildings.clear();
     let unit = game.state.unit(next).expect("listed above");
     game.camera.center = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
     game.camera.pan(Vec2::ZERO); // re-clamp
@@ -76,7 +76,7 @@ fn selectable(game: &Game, unit: &oxide_sim::Unit) -> bool {
 pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f32) {
     let world = game.camera.to_world(screen);
     if !additive {
-        game.selection.building = None;
+        game.selection.buildings.clear();
     }
     // Nearest visible unit of any owner within pick range wins; own
     // units outrank foreign ones inside the radius so a scrum never
@@ -94,6 +94,7 @@ pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f3
         .filter(|(_, d, ..)| *d <= radius)
         .min_by(|a, b| (a.0, a.1).partial_cmp(&(b.0, b.1)).expect("finite"));
     if let Some((_, _, id, owner)) = picked {
+        game.selection.buildings.clear();
         let current_owner = game
             .selection
             .units
@@ -114,9 +115,6 @@ pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f3
         }
         return;
     }
-    if additive {
-        return; // shift-miss leaves the selection alone
-    }
     // …then a building under the cursor (any owner whose ground shows).
     // Only the HUMAN'S OWN buildings skip the sight check: built ally
     // buildings are always inside shared team sight anyway, but ally
@@ -129,18 +127,42 @@ pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f3
             || building.tiles().any(|t| game.my_vision().visible(t)))
     {
         game.selection.units.clear();
-        game.selection.building = Some(building.id);
+        let current_owner = game
+            .selection
+            .buildings
+            .first()
+            .and_then(|id| game.state.building(*id))
+            .map(|selected| selected.player);
+        if additive && current_owner == Some(building.player) {
+            if let Some(index) = game
+                .selection
+                .buildings
+                .iter()
+                .position(|id| *id == building.id)
+            {
+                game.selection.buildings.remove(index);
+            } else {
+                game.selection.buildings.push(building.id);
+                game.selection.buildings.sort_unstable();
+            }
+        } else {
+            game.selection.buildings = vec![building.id];
+        }
         return;
+    }
+    if additive {
+        return; // shift-miss leaves the selection alone
     }
     // …otherwise clear.
     game.selection.units.clear();
+    game.selection.buildings.clear();
 }
 
 pub(super) fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2, additive: bool) {
     let a = game.camera.to_world(a_screen);
     let b = game.camera.to_world(b_screen);
     let (lo, hi) = (a.min(b), a.max(b));
-    game.selection.building = None;
+    game.selection.buildings.clear();
     let inside = |u: &&oxide_sim::Unit| {
         let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
         p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y
@@ -220,7 +242,7 @@ pub(super) fn select_all_of_kind_on_screen(game: &mut Game, screen: Vec2, ui: f3
         return;
     };
     let (lo, hi) = game.camera.world_rect();
-    game.selection.building = None;
+    game.selection.buildings.clear();
     game.selection.units = game
         .state
         .units()
