@@ -626,6 +626,18 @@ pub struct Sounds {
     pub ack: Sound,
     /// The zap's lower sibling, alternated per shot.
     pub laser2: Sound,
+    /// Front-end industrial ambience.
+    pub music_menu: Sound,
+    /// The calm match bed.
+    pub music_calm: Sound,
+    /// Rhythmic pressure layered over the calm bed during combat.
+    pub music_combat: Sound,
+    /// A neutral result bed for draws.
+    pub music_result: Sound,
+    /// The local-player victory bed.
+    pub music_victory: Sound,
+    /// The local-player defeat or surrender bed.
+    pub music_defeat: Sound,
 }
 
 async fn clip(name: &str) -> Result<Sound> {
@@ -654,6 +666,12 @@ impl Sounds {
             artillery_launch: clip("artillery_launch").await?,
             ack: clip("ack").await?,
             laser2: clip("laser2").await?,
+            music_menu: clip("music_menu").await?,
+            music_calm: clip("music_calm").await?,
+            music_combat: clip("music_combat").await?,
+            music_result: clip("music_result").await?,
+            music_victory: clip("music_victory").await?,
+            music_defeat: clip("music_defeat").await?,
         })
     }
 }
@@ -670,12 +688,97 @@ impl Sounds {
 mod tests {
     use super::*;
 
+    const SOUND_NAMES: [&str; 21] = [
+        "ack",
+        "artillery_boom",
+        "artillery_launch",
+        "building_boom",
+        "click",
+        "defeat",
+        "denied",
+        "deposit",
+        "flak",
+        "laser",
+        "laser2",
+        "music_calm",
+        "music_combat",
+        "music_defeat",
+        "music_menu",
+        "music_result",
+        "music_victory",
+        "rail_fire",
+        "train_done",
+        "unit_death",
+        "victory",
+    ];
+
     fn manifest() -> Manifest {
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/sprites/atlas.json");
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
         serde_json::from_str(&text).expect("atlas.json maps names to [x, y, w, h]")
+    }
+
+    #[test]
+    fn generated_sound_bank_is_complete_and_has_valid_pcm_metadata() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/sounds");
+        let mut actual: Vec<String> = std::fs::read_dir(&dir)
+            .expect("assets/sounds exists")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("wav"))
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        actual.sort();
+        let expected: Vec<String> = SOUND_NAMES
+            .iter()
+            .map(|name| format!("{name}.wav"))
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "tools/gen_sounds.py and the checked-in bank must be a bijection"
+        );
+
+        for name in SOUND_NAMES {
+            let path = dir.join(format!("{name}.wav"));
+            let bytes = std::fs::read(&path)
+                .unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
+            assert!(
+                bytes.len() >= 44,
+                "{} is shorter than a WAV header",
+                path.display()
+            );
+            assert_eq!(&bytes[0..4], b"RIFF", "{} is not RIFF", path.display());
+            assert_eq!(&bytes[8..12], b"WAVE", "{} is not WAVE", path.display());
+            assert_eq!(
+                u16::from_le_bytes([bytes[22], bytes[23]]),
+                1,
+                "{} must stay mono",
+                path.display()
+            );
+            assert_eq!(
+                u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]),
+                22_050,
+                "{} changed sample rate",
+                path.display()
+            );
+            assert_eq!(
+                u16::from_le_bytes([bytes[34], bytes[35]]),
+                16,
+                "{} must stay 16-bit PCM",
+                path.display()
+            );
+            if name.starts_with("music_") {
+                let data_bytes =
+                    u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
+                assert_eq!(
+                    data_bytes,
+                    12 * 22_050 * 2,
+                    "{} is not the authored twelve-second loop",
+                    path.display()
+                );
+            }
+        }
     }
 
     #[test]

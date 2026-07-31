@@ -1,7 +1,7 @@
 //! Menus: the main screen and the pause screen.
 //!
 //! One deliberately plain widget — a titled list navigated by arrow keys,
-//! Enter, or the mouse. Menu input arrives through the same [`RawEvent`]
+//! Enter, the mouse, or a finger. Menu input arrives through the same [`RawEvent`]
 //! funnel as gameplay, so injected events drive menus exactly like hardware
 //! (which is also how the menus get tested).
 
@@ -44,6 +44,9 @@ pub struct Menu {
     /// Row armed by a press; activation happens on release inside the
     /// same row, so dragging away cancels.
     pressed: Option<usize>,
+    /// Finger and row armed by a touch; a second finger is ignored until
+    /// the first resolves.
+    pressed_touch: Option<(u64, usize)>,
     /// Section-label rows: drawn dimmer, skipped by the cursor, never
     /// activated — the map browser's format headings.
     headers: Vec<usize>,
@@ -74,6 +77,7 @@ impl Menu {
             hover: None,
             wheel_accum: 0.0,
             pressed: None,
+            pressed_touch: None,
             headers,
         };
         menu.selected = menu.snap_clamped(0, 1);
@@ -187,7 +191,8 @@ impl Menu {
         (top, row, first, visible)
     }
 
-    fn item_rect(&self, index: usize) -> Option<Rect> {
+    /// Touchable bounds for one visible row.
+    pub(crate) fn item_rect(&self, index: usize) -> Option<Rect> {
         let s = ui();
         let (top, row, first, visible) = self.layout();
         if index < first || index >= first + visible {
@@ -261,6 +266,28 @@ impl Menu {
                         // the same row.
                         self.selected = a;
                         return Some(a);
+                    }
+                }
+                RawEvent::TouchDown { id, x, y } if self.pressed_touch.is_none() => {
+                    *mouse = vec2(x, y);
+                    self.hover = self.row_at(*mouse).filter(|r| !self.is_header(*r));
+                    self.pressed_touch = self.hover.map(|row| (id, row));
+                }
+                RawEvent::TouchMove { id, x, y }
+                    if self.pressed_touch.is_some_and(|(finger, _)| finger == id) =>
+                {
+                    *mouse = vec2(x, y);
+                    self.hover = self.row_at(*mouse).filter(|r| !self.is_header(*r));
+                }
+                RawEvent::TouchUp { id, x, y }
+                    if self.pressed_touch.is_some_and(|(finger, _)| finger == id) =>
+                {
+                    *mouse = vec2(x, y);
+                    let released_on = self.row_at(*mouse);
+                    let (_, armed) = self.pressed_touch.take().expect("matching touch is armed");
+                    if released_on == Some(armed) {
+                        self.selected = armed;
+                        return Some(armed);
                     }
                 }
                 RawEvent::KeyDown { key: Key::Up } => {
@@ -535,6 +562,27 @@ mod empty_tests {
             let events = [RawEvent::KeyDown { key }];
             assert_eq!(menu.handle(&events, &mut mouse), None);
         }
+    }
+
+    #[test]
+    fn a_touch_tap_activates_the_visible_row_under_the_finger() {
+        crate::render::set_viewport(1280.0, 800.0);
+        let mut menu = Menu::new("TOUCH", vec!["one".to_string(), "two".to_string()]);
+        let row = menu.item_rect(1).expect("second row is visible");
+        let x = row.x + row.w * 0.5;
+        let y = row.y + row.h * 0.5;
+        let mut mouse = vec2(0.0, 0.0);
+        assert_eq!(
+            menu.handle(
+                &[
+                    RawEvent::TouchDown { id: 7, x, y },
+                    RawEvent::TouchUp { id: 7, x, y },
+                ],
+                &mut mouse,
+            ),
+            Some(1)
+        );
+        assert_eq!(menu.selected, 1);
     }
 }
 

@@ -25,6 +25,7 @@ mod paths;
 mod render;
 mod saves;
 mod screens;
+mod soundtrack;
 mod theme;
 mod tutorial;
 

@@ -96,6 +96,7 @@ fn settings_menu(config: &Config) -> Menu {
             format!("Master volume: {}", pct(config.volumes.master)),
             format!("Effects volume: {}", pct(config.volumes.effects)),
             format!("UI volume: {}", pct(config.volumes.ui)),
+            format!("Music volume: {}", pct(config.volumes.music)),
             format!("UI scale: {}", pct(config.ui_scale)),
             format!("Edge pan: {}", onoff(config.camera.edge_pan)),
             format!("Invert zoom: {}", onoff(config.camera.zoom_inverted)),
@@ -112,7 +113,8 @@ fn settings_menu(config: &Config) -> Menu {
 /// from the Controls face re-select it, and a stale literal here once
 /// left the cursor on Colorblind accents after two rows were inserted
 /// above (a test pins the label to this index).
-const CONTROLS_ROW: usize = 9;
+const PRESET_ROW: usize = 9;
+const CONTROLS_ROW: usize = 10;
 
 /// Advances one settings row to its next value step. Returns false on
 /// rows that navigate instead of cycling.
@@ -126,7 +128,8 @@ fn cycle_setting(config: &mut Config, row: usize) -> bool {
         0 => config.volumes.master = step(config.volumes.master),
         1 => config.volumes.effects = step(config.volumes.effects),
         2 => config.volumes.ui = step(config.volumes.ui),
-        3 => {
+        3 => config.volumes.music = step(config.volumes.music),
+        4 => {
             // 75 -> 100 -> 125 -> 150 -> 75.
             config.ui_scale = match (config.ui_scale * 100.0).round() as u32 {
                 75 => 1.0,
@@ -136,13 +139,13 @@ fn cycle_setting(config: &mut Config, row: usize) -> bool {
             };
             render::set_user_scale(config.ui_scale);
         }
-        4 => config.camera.edge_pan = !config.camera.edge_pan,
-        5 => config.camera.zoom_inverted = !config.camera.zoom_inverted,
-        6 => {
+        5 => config.camera.edge_pan = !config.camera.edge_pan,
+        6 => config.camera.zoom_inverted = !config.camera.zoom_inverted,
+        7 => {
             config.reduced_motion = !config.reduced_motion;
             render::set_reduced_motion(config.reduced_motion);
         }
-        7 => {
+        8 => {
             config.colorblind = !config.colorblind;
             render::set_colorblind(config.colorblind);
         }
@@ -276,7 +279,7 @@ impl SettingsScreen {
                         let selected = self.menu.selected;
                         self.menu = settings_menu(config);
                         self.menu.select(selected);
-                    } else if row == 8 {
+                    } else if row == PRESET_ROW {
                         // The left-handed preset replaces the whole
                         // profile (custom rebinds included — Controls'
                         // Reset row walks back to Classic).
@@ -290,7 +293,7 @@ impl SettingsScreen {
                         let selected = self.menu.selected;
                         self.menu = settings_menu(config);
                         self.menu.select(selected);
-                    } else if row == 9 {
+                    } else if row == CONTROLS_ROW {
                         self.goto_controls(config, 0);
                     } else {
                         update.out = Out::Leave;
@@ -431,13 +434,64 @@ mod tests {
         let mut config = Config::default();
         let mut live = config.bindings.clone();
         let mut s = SettingsScreen::open(&config);
-        for _ in 0..6 {
+        for _ in 0..7 {
             drive(&mut s, &mut config, &mut live, &press(Key::Down), false);
         }
         let up = drive(&mut s, &mut config, &mut live, &press(Key::Enter), false);
-        assert!(config.reduced_motion, "row six toggles reduced motion");
+        assert!(config.reduced_motion, "row seven toggles reduced motion");
         assert!(up.dirty, "the caller is told to persist");
-        assert_eq!(s.menu.selected, 6, "the cursor stays on the tuned row");
+        assert_eq!(s.menu.selected, 7, "the cursor stays on the tuned row");
+    }
+
+    #[test]
+    fn music_volume_is_a_live_persisted_settings_row() {
+        let mut config = Config::default();
+        let mut live = config.bindings.clone();
+        let mut screen = SettingsScreen::open(&config);
+        for _ in 0..3 {
+            drive(
+                &mut screen,
+                &mut config,
+                &mut live,
+                &press(Key::Down),
+                false,
+            );
+        }
+        let update = drive(
+            &mut screen,
+            &mut config,
+            &mut live,
+            &press(Key::Enter),
+            false,
+        );
+        assert!(update.dirty);
+        assert_eq!(config.volumes.music, 0.0);
+        assert_eq!(screen.menu.selected, 3);
+        assert_eq!(screen.menu.items[3], "Music volume: 0%");
+    }
+
+    #[test]
+    fn music_volume_is_touch_reachable() {
+        crate::render::set_viewport(1280.0, 800.0);
+        let mut config = Config::default();
+        let mut live = config.bindings.clone();
+        let mut screen = SettingsScreen::open(&config);
+        let row = screen.menu.item_rect(3).expect("music row is visible");
+        let x = row.x + row.w * 0.5;
+        let y = row.y + row.h * 0.5;
+        let update = drive(
+            &mut screen,
+            &mut config,
+            &mut live,
+            &[
+                RawEvent::TouchDown { id: 11, x, y },
+                RawEvent::TouchUp { id: 11, x, y },
+            ],
+            false,
+        );
+        assert!(update.dirty);
+        assert_eq!(config.volumes.music, 0.0);
+        assert_eq!(screen.menu.selected, 3);
     }
 
     #[test]
@@ -557,7 +611,7 @@ mod tests {
         let mut config = Config::default();
         let mut live = config.bindings.clone();
         let mut s = SettingsScreen::open(&config);
-        for _ in 0..8 {
+        for _ in 0..PRESET_ROW {
             drive(&mut s, &mut config, &mut live, &press(Key::Down), false);
         }
         let up = drive(&mut s, &mut config, &mut live, &press(Key::Enter), false);

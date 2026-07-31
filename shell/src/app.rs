@@ -115,6 +115,8 @@ struct App {
     sounds: assets::Sounds,
     /// The rate-limiting clip player.
     mixer: Mixer,
+    /// Continuously running score beds and their pure crossfade state.
+    soundtrack: crate::soundtrack::Soundtrack,
 }
 
 /// Builds the game a filled-in draft describes.
@@ -277,6 +279,51 @@ impl Mixer {
     }
 }
 
+fn match_soundtrack_scene(game: &Game, paused: bool) -> crate::soundtrack::Scene {
+    match game.state.result() {
+        Some(oxide_sim::GameResult::Draw) => crate::soundtrack::Scene::Result,
+        Some(oxide_sim::GameResult::Victory { team })
+            if !game.state.player(game.human).resigned
+                && game.state.player(game.human).team == team =>
+        {
+            crate::soundtrack::Scene::Victory
+        }
+        Some(oxide_sim::GameResult::Victory { .. }) => crate::soundtrack::Scene::Defeat,
+        None if paused => crate::soundtrack::Scene::Pause,
+        None => crate::soundtrack::Scene::Match,
+    }
+}
+
+fn soundtrack_scene(screen: &Screen, game: &Game) -> crate::soundtrack::Scene {
+    match screen {
+        Screen::Playing => match_soundtrack_scene(game, false),
+        Screen::Playback(playback) => match_soundtrack_scene(
+            &playback.game,
+            playback.paused || playback.seeking.is_some(),
+        ),
+        Screen::Pause(_) => match_soundtrack_scene(game, true),
+        Screen::Settings { back, .. } if matches!(**back, Screen::Pause(_)) => {
+            match_soundtrack_scene(game, true)
+        }
+        Screen::Home(_) | Screen::Settings { .. } | Screen::Wizard(_) | Screen::Replays(_) => {
+            crate::soundtrack::Scene::Menu
+        }
+    }
+}
+
+fn raises_combat_music(kind: SoundKind) -> bool {
+    matches!(
+        kind,
+        SoundKind::Laser
+            | SoundKind::RailFire
+            | SoundKind::UnitDeath
+            | SoundKind::BuildingBoom
+            | SoundKind::Flak
+            | SoundKind::Artillery
+            | SoundKind::ArtilleryLaunch
+    )
+}
+
 pub(crate) async fn run(args: Args) -> Result<()> {
     let trace = crate::trace_startup_enabled(&args);
     let mark = |label: &str| {
@@ -301,6 +348,8 @@ pub(crate) async fn run(args: Args) -> Result<()> {
     mark("sprites loaded");
     let sounds = assets::Sounds::load().await?;
     mark("sounds loaded");
+    let mut soundtrack = crate::soundtrack::Soundtrack::default();
+    soundtrack.start(&sounds);
 
     let mut game = if let Some(path) = &args.replay {
         let replay = GameReplay::load(path).with_context(|| format!("loading replay {path}"))?;
@@ -372,6 +421,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         sprites,
         sounds,
         mixer: Mixer::default(),
+        soundtrack,
     };
     let mut ui_view = capture_ui(&screen, &app);
 
@@ -974,6 +1024,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                     app.game.camera.viewport().x / app.game.camera.zoom * 0.5,
                 ),
             };
+        let combat_impulse = queued.iter().any(|(kind, _)| raises_combat_music(*kind));
         for (kind, world) in queued {
             // Distance dims the battlefield: full volume on screen,
             // fading to a quarter around 1.5 viewports out. Unpositioned
@@ -991,6 +1042,13 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             app.mixer
                 .play(&app.sounds, kind, &app.config.volumes, attenuation);
         }
+        app.soundtrack.update(
+            soundtrack_scene(&screen, &app.game),
+            combat_impulse,
+            dt,
+            app.config.volumes,
+        );
+        app.soundtrack.apply(&app.sounds);
 
         if !app.pending_shots.is_empty() {
             // One readback serves every request that arrived this frame.
@@ -1529,5 +1587,37 @@ mod tests {
         let mut draft = team_draft();
         draft.seats.truncate(2);
         assert!(launch(&draft).is_err());
+    }
+
+    #[test]
+    fn soundtrack_context_tracks_pause_victory_and_surrender() {
+        let mut won = Game::new(Scenario::skirmish()).expect("game");
+        assert_eq!(
+            match_soundtrack_scene(&won, false),
+            crate::soundtrack::Scene::Match
+        );
+        assert_eq!(
+            match_soundtrack_scene(&won, true),
+            crate::soundtrack::Scene::Pause
+        );
+        won.state.tick(&[oxide_sim::PlayerCommand {
+            player: oxide_sim::PlayerId(1),
+            command: oxide_sim::Command::Surrender,
+        }]);
+        assert_eq!(
+            match_soundtrack_scene(&won, false),
+            crate::soundtrack::Scene::Victory
+        );
+
+        let mut lost = Game::new(Scenario::skirmish()).expect("game");
+        lost.state.tick(&[oxide_sim::PlayerCommand {
+            player: lost.human,
+            command: oxide_sim::Command::Surrender,
+        }]);
+        assert_eq!(
+            match_soundtrack_scene(&lost, false),
+            crate::soundtrack::Scene::Defeat,
+            "a resigned human never hears a teammate's eventual win as their victory"
+        );
     }
 }

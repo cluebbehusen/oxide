@@ -26,7 +26,12 @@ pub struct Volumes {
     /// Chrome sounds.
     pub ui: f32,
     /// Music and ambient beds.
+    #[serde(default = "default_volume")]
     pub music: f32,
+}
+
+fn default_volume() -> f32 {
+    1.0
 }
 
 impl Default for Volumes {
@@ -430,6 +435,31 @@ mod tests {
         config.save_to(&path).unwrap();
         let back = Config::load_from(Some(path.clone()));
         assert_eq!(back, config);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_config_from_before_the_music_bus_keeps_every_other_setting() {
+        let dir =
+            std::env::temp_dir().join(format!("oxide-config-pre-music-{}", std::process::id()));
+        let path = dir.join("config.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut old = serde_json::to_value(Config {
+            ui_scale: 1.25,
+            volumes: Volumes {
+                effects: 0.5,
+                ..Volumes::default()
+            },
+            ..Config::default()
+        })
+        .unwrap();
+        old["volumes"].as_object_mut().unwrap().remove("music");
+        std::fs::write(&path, serde_json::to_vec_pretty(&old).unwrap()).unwrap();
+
+        let loaded = Config::load_from(Some(path.clone()));
+        assert_eq!(loaded.volumes.music, 1.0);
+        assert_eq!(loaded.volumes.effects, 0.5);
+        assert_eq!(loaded.ui_scale, 1.25);
         std::fs::remove_dir_all(&dir).ok();
     }
 
