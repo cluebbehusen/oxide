@@ -381,14 +381,8 @@ impl ResultsScreen {
                 theme::TEXT_BODY,
             );
         }
-        draw_line(
-            left,
-            header_y + layout.rule_offset,
-            right,
-            header_y + 16.0 * s,
-            1.0 * s,
-            theme::TEXT_DISABLED,
-        );
+        let rule_y = header_y + layout.rule_offset;
+        draw_line(left, rule_y, right, rule_y, 1.0 * s, theme::TEXT_DISABLED);
 
         if let Some(report) = stats {
             let mut seats: Vec<usize> = (0..game.state.players().len()).collect();
@@ -399,7 +393,7 @@ impl ResultsScreen {
                     .players
                     .iter()
                     .find(|entry| usize::from(entry.seat) == seat);
-                let y = header_y + layout.rule_offset + (row as f32 + layout.row_baseline) * row_h;
+                let y = rule_y + (row as f32 + layout.row_baseline) * row_h;
                 let color = render::seat_identity_color(game, PlayerId(seat as u8));
                 draw_marker(
                     columns[0],
