@@ -228,9 +228,17 @@ Headless, no window needed:
 ```sh
 driver run skirmish --ticks 2000 --bots --map     # summary + ASCII map
 driver render skirmish --ticks 1200 --bots -o out.png
+driver replay-inspect replays/session.json --tick 3000,6000 --fog-seat 1 --map
 driver replay-stats replays/session.json          # per-seat series + losses
 driver map-audit scenarios/basalt-spine.json      # routes, fairness, pressure
 ```
+
+`replay-inspect` is the stable JSON forensic view: replay/scenario metadata,
+final outcome and hash, per-seat command counts and longest silence, and exact
+requested snapshots. Tick `N` is the state before commands stamped `N` execute;
+`--tick` repeats or accepts commas and defaults to the final tick. `--fog-seat`
+adds that seat's honest knowledge beside the omniscient state; `--map` adds the
+ASCII entity map.
 
 Replay UX in the shell: cold launches land on Home; `Replays` opens
 the Saves & Replays shelf — two header sections over one menu:

@@ -57,6 +57,22 @@ enum Cmd {
         #[arg(long)]
         allow_long: bool,
     },
+    /// Inspect a replay as stable JSON: metadata, command activity, outcome,
+    /// and exact snapshots at selected simulation ticks.
+    ReplayInspect {
+        /// Replay or save JSON path.
+        path: PathBuf,
+        /// State ticks to capture, repeatable or comma-separated. Tick N is
+        /// before commands stamped N execute. Defaults to the final tick.
+        #[arg(long = "tick", value_delimiter = ',')]
+        ticks: Vec<u64>,
+        /// Also capture the fog-honest view belonging to this seat.
+        #[arg(long)]
+        fog_seat: Option<u8>,
+        /// Include the omniscient ASCII map in every state snapshot.
+        #[arg(long)]
+        map: bool,
+    },
     /// Render a scenario state to a PNG (software rasterizer, no window).
     Render {
         /// Scenario path, or "skirmish".
@@ -525,6 +541,22 @@ fn main() -> Result<()> {
             {
                 bail!("hash mismatch: expected {expected}, got {hash}");
             }
+        }
+        Cmd::ReplayInspect {
+            path,
+            ticks,
+            fog_seat,
+            map,
+        } => {
+            let replay =
+                GameReplay::load(&path).with_context(|| format!("loading {}", path.display()))?;
+            let inspection = oxide_driver::replay_inspect::inspect(
+                &replay,
+                &ticks,
+                fog_seat.map(oxide_sim::PlayerId),
+                map,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&inspection)?);
         }
         Cmd::Render {
             scenario,

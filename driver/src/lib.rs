@@ -23,6 +23,7 @@ pub mod gym;
 pub mod pace;
 pub mod pool;
 pub mod repair_probe;
+pub mod replay_inspect;
 pub mod session;
 pub mod shots;
 pub mod smoke;

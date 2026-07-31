@@ -241,12 +241,17 @@ cargo run -p oxide-driver -- live capture-sequence --present --out screenshots/m
 cargo run -p oxide-driver -- live inject-wheel 2      # real input funnel
 cargo run -p oxide-driver -- live save-replay replays/session.json
 cargo run -p oxide-driver -- replay replays/session.json   # → same hash
+cargo run -p oxide-driver -- replay-inspect replays/session.json --tick 0,1200 --fog-seat 1 --map
 cargo run -p oxide-driver -- live load-replay replays/session.json  # resume
 ```
 
 `live --help` lists the rest (state queries with ASCII maps, fog-honest
 per-seat views, key/click injection, camera, overlay, scenario loading).
 `smoke --spawn` runs the whole sequence as an automated check.
+`replay-inspect` emits versioned JSON with replay metadata, final outcome,
+per-seat command activity and longest silence, plus exact snapshots. A snapshot
+at tick `N` is the state immediately before commands stamped `N` execute;
+repeat `--tick` or pass a comma-separated list, and omit it for the final state.
 
 No window at all: `cargo run -p oxide-driver -- session` serves the same
 protocol windowless (no GPU, sim time moves only on request), and every
