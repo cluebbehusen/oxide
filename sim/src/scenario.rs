@@ -9,7 +9,7 @@ use crate::map::{Map, MapError};
 use crate::state::{Faction, Player, State};
 use crate::stats::{BuildingKind, UnitKind};
 use chassis::grid::TilePos;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::path::Path;
 
 /// A match definition.
@@ -100,16 +100,142 @@ pub struct PlayerSpec {
     pub bot_config: Option<BotConfig>,
 }
 
-/// A shipped-ladder bot seat: difficulty plus personality.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// A named strategic personality selected in match setup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NamedStyle {
+    /// Fortify, invest, and counterattack.
+    Turtle,
+    /// Mix economy, production, and pressure.
+    Balanced,
+    /// Commit earlier and keep the initiative.
+    Aggressive,
+}
+
+impl NamedStyle {
+    /// All setup-visible styles in display order.
+    pub const ALL: [Self; 3] = [Self::Turtle, Self::Balanced, Self::Aggressive];
+
+    /// Inclusive aggression envelope reserved for this named family.
+    pub const fn aggression_bounds(self) -> (u32, u32) {
+        match self {
+            Self::Turtle => (0, 249),
+            Self::Balanced => (250, 749),
+            Self::Aggressive => (750, 1000),
+        }
+    }
+}
+
+/// A bot's complementary job within its team.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamRole {
+    /// No specialized team job, including every default free-for-all seat.
+    Generalist,
+    /// Apply direct pressure and screen for teammates.
+    Vanguard,
+    /// Carry the team's economic investment.
+    Industry,
+    /// Protect and sustain allied positions.
+    Support,
+    /// Supply long-range pressure against entrenched targets.
+    Siege,
+}
+
+/// Why a bot profile selection is not meaningful.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum BotConfigError {
+    /// A raw aggression value and named style would both own personality.
+    #[error("aggression and style are mutually exclusive")]
+    AmbiguousPersonality,
+    /// A variant only has meaning inside a named style.
+    #[error("variant requires a named style")]
+    VariantWithoutStyle,
+    /// Every named style currently has exactly three curated variants.
+    #[error("variant must be 0, 1, or 2, got {0}")]
+    InvalidVariant(u8),
+    /// The neural policy's public aggression domain is 0..=1000.
+    #[error("aggression must be at most 1000, got {0}")]
+    InvalidAggression(u32),
+}
+
+/// A shipped-ladder bot seat: difficulty plus personality and team job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BotConfig {
     /// Named difficulty on the neural ladder.
     pub level: crate::bot::Level,
-    /// Personality knob 0..=1000 (turtle to aggressive); `None` deals
-    /// one from the scenario seed, deterministically.
+    /// Exact legacy personality knob, 0..=1000. This remains supported
+    /// for experiments and old scenarios; it cannot accompany `style`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aggression: Option<u32>,
+    /// Named personality. When both personality fields are absent, the
+    /// scenario seed deals a named style.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<NamedStyle>,
+    /// Curated variant within `style`, 0..=2. When absent, a dedicated
+    /// construction-time stream deals one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<u8>,
+    /// Optional authored team job. Automatic roles remain mirrored and
+    /// complementary; an authored role is mirrored onto its opponent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_role: Option<TeamRole>,
+}
+
+impl BotConfig {
+    /// Validates combinations that serde cannot express structurally.
+    pub fn validate(self) -> Result<(), BotConfigError> {
+        if self.aggression.is_some() && self.style.is_some() {
+            return Err(BotConfigError::AmbiguousPersonality);
+        }
+        if self.variant.is_some() && self.style.is_none() {
+            return Err(BotConfigError::VariantWithoutStyle);
+        }
+        if let Some(variant) = self.variant
+            && variant >= crate::bot::NAMED_VARIANT_COUNT
+        {
+            return Err(BotConfigError::InvalidVariant(variant));
+        }
+        if let Some(aggression) = self.aggression
+            && aggression > 1000
+        {
+            return Err(BotConfigError::InvalidAggression(aggression));
+        }
+        Ok(())
+    }
+}
+
+impl<'de> Deserialize<'de> for BotConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            level: crate::bot::Level,
+            #[serde(default)]
+            aggression: Option<u32>,
+            #[serde(default)]
+            style: Option<NamedStyle>,
+            #[serde(default)]
+            variant: Option<u8>,
+            #[serde(default)]
+            team_role: Option<TeamRole>,
+        }
+
+        let fields = Fields::deserialize(deserializer)?;
+        let config = Self {
+            level: fields.level,
+            aggression: fields.aggression,
+            style: fields.style,
+            variant: fields.variant,
+            team_role: fields.team_role,
+        };
+        config.validate().map_err(serde::de::Error::custom)?;
+        Ok(config)
+    }
 }
 
 fn default_scrap() -> u32 {
@@ -186,6 +312,9 @@ pub enum ScenarioError {
         "player {0} shares a team but fields the classic bot — teamed bot seats need a bot_config"
     )]
     TeamBotNeedsConfig(PlayerId),
+    /// A bot's personality or team-role selection cannot be resolved.
+    #[error(transparent)]
+    BotProfile(#[from] crate::bot::BotProfileError),
 }
 
 impl Scenario {
@@ -241,6 +370,7 @@ impl Scenario {
         {
             return Err(ScenarioError::ExtraAnchor(*player, self.players.len()));
         }
+        crate::bot::profile::resolve_bot_profiles_from_parts(self, &map, &anchors)?;
         // Teams normalize to dense ids by first appearance: seats naming
         // the same explicit id share one, and every omitted seat gets a
         // fresh singleton — an authored id can never alias a "team of

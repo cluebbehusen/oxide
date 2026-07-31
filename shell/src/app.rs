@@ -138,7 +138,10 @@ fn launch(draft: &NewMatchDraft) -> Result<Game> {
             let plan = draft.seats[i];
             Some(oxide_sim::scenario::BotConfig {
                 level: oxide_sim::bot::Level::LADDER[plan.level_choice.min(3)],
-                aggression: screens::wizard::personality_knob(plan.personality_choice),
+                aggression: None,
+                style: screens::wizard::personality_style(plan.personality_choice),
+                variant: None,
+                team_role: None,
             })
         } else {
             None
@@ -1450,7 +1453,12 @@ mod tests {
             let config = p.bot_config.expect("every bot seat has a config");
             if i == 0 {
                 assert_eq!(config.level, oxide_sim::bot::Level::Expert);
-                assert_eq!(config.aggression, Some(100), "the seat's OWN dials");
+                assert_eq!(
+                    config.style,
+                    Some(oxide_sim::bot::NamedStyle::Turtle),
+                    "the seat's OWN dials"
+                );
+                assert_eq!(config.aggression, None, "named styles are not raw knobs");
             } else {
                 assert_eq!(config.level, oxide_sim::bot::Level::Medium);
             }

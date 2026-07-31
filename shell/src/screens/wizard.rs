@@ -27,7 +27,7 @@ use crate::theme::{SURFACE_MENU, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE};
 pub struct SeatPlan {
     /// Difficulty row (indexes `Level::LADDER`).
     pub level_choice: usize,
-    /// Personality row (feeds [`personality_knob`]).
+    /// Personality row (feeds [`personality_style`]).
     pub personality_choice: usize,
     /// Faction chip (feeds [`faction_override`]): 0 keeps the map's
     /// authored roster. The one dial the human's own card carries too.
@@ -131,14 +131,14 @@ const PERSONALITY_ITEMS: [&str; 4] = ["Surprise me", "Turtle", "Balanced", "Aggr
 /// [`faction_override`].
 const FACTION_CHIP_ITEMS: [&str; 3] = ["Auto", "Ferrous", "Cupric"];
 
-/// The personality dial a wizard row means; `None` lets the scenario
-/// seed deal one.
-pub fn personality_knob(choice: usize) -> Option<u32> {
+/// The named personality a wizard row means; `None` lets the scenario
+/// seed deal both style and variant.
+pub fn personality_style(choice: usize) -> Option<oxide_sim::bot::NamedStyle> {
     match choice {
-        1 => Some(100), // Turtle
-        2 => Some(500), // Balanced
-        3 => Some(900), // Aggressive
-        _ => None,      // Surprise me
+        1 => Some(oxide_sim::bot::NamedStyle::Turtle),
+        2 => Some(oxide_sim::bot::NamedStyle::Balanced),
+        3 => Some(oxide_sim::bot::NamedStyle::Aggressive),
+        _ => None,
     }
 }
 

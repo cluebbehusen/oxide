@@ -56,6 +56,9 @@ fn compute_hashes() -> BTreeMap<String, String> {
                         player.bot_config = Some(oxide_sim::scenario::BotConfig {
                             level: oxide_sim::bot::Level::Expert,
                             aggression: None,
+                            style: None,
+                            variant: None,
+                            team_role: None,
                         });
                     }
                     let outcome = runner::run_scenario(&scenario, FIXTURE_TICKS, true, false)

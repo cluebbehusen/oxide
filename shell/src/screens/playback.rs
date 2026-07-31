@@ -460,6 +460,9 @@ mod tests {
             p.bot_config = Some(oxide_sim::scenario::BotConfig {
                 level: oxide_sim::bot::Level::Medium,
                 aggression: None,
+                style: None,
+                variant: None,
+                team_role: None,
             });
         }
         let outcome = oxide_kit::runner::run_scenario(&scenario, 60, true, true).expect("run");

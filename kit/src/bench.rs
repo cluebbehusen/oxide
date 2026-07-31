@@ -146,6 +146,9 @@ pub fn all_bots(scenario: &mut Scenario) {
         player.bot_config = Some(oxide_sim::scenario::BotConfig {
             level: oxide_sim::bot::Level::Expert,
             aggression: None,
+            style: None,
+            variant: None,
+            team_role: None,
         });
     }
 }

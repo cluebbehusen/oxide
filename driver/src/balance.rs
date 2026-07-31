@@ -93,6 +93,9 @@ pub fn balance_probe(
             player.bot_config = Some(BotConfig {
                 level,
                 aggression: dials.aggression,
+                style: None,
+                variant: None,
+                team_role: None,
             });
         }
         let m = match (dials.scripted, &net) {

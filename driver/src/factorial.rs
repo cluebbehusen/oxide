@@ -915,6 +915,9 @@ mod tests {
                     player.bot_config = Some(BotConfig {
                         level,
                         aggression: None,
+                        style: None,
+                        variant: None,
+                        team_role: None,
                     });
                 }
                 let mut state = sc.build().unwrap();

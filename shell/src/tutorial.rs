@@ -98,6 +98,9 @@ pub fn tutorial_scenario() -> oxide_sim::Scenario {
         p.bot_config = Some(oxide_sim::scenario::BotConfig {
             level: oxide_sim::bot::Level::Easy,
             aggression: Some(0),
+            style: None,
+            variant: None,
+            team_role: None,
         });
     }
     scenario

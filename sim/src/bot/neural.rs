@@ -653,20 +653,22 @@ impl QuantNet {
     }
 }
 
-fn profile_knobs(skill: u32, aggression: u32, faction: Faction) -> Vec<i64> {
+fn profile_knobs(skill: u32, aggression: u32, faction: Faction) -> [i64; CONDITIONING_COUNT] {
     let strategy = match aggression {
         0..=249 => 0,
         250..=499 => 1,
         500..=749 => 2,
         _ => 3,
     };
-    let mut knobs = vec![
+    [
         i64::from(skill),
         i64::from(aggression),
         i64::from(faction == Faction::Cupric) * 1000,
-    ];
-    knobs.extend((0..4).map(|index| if index == strategy { 1000 } else { 0 }));
-    knobs
+        i64::from(strategy == 0) * 1000,
+        i64::from(strategy == 1) * 1000,
+        i64::from(strategy == 2) * 1000,
+        i64::from(strategy == 3) * 1000,
+    ]
 }
 
 fn ladder_policy_skill(aggression: u32) -> u32 {
@@ -674,6 +676,16 @@ fn ladder_policy_skill(aggression: u32) -> u32 {
         250..=499 => 620,
         _ => 1000,
     }
+}
+
+/// The seven conditioning values the current ladder artifact receives.
+///
+/// Named difficulty is intentionally absent: ladder levels change only
+/// cadence and hesitation. Higher-level profile facets will join this
+/// contract with the gym-v8 artifact widening.
+pub fn ladder_condition_values(aggression: u32, faction: Faction) -> [i64; CONDITIONING_COUNT] {
+    let aggression = aggression.min(1000);
+    profile_knobs(ladder_policy_skill(aggression), aggression, faction)
 }
 
 /// A trained policy as a command source: [`GymBot`] chores and
@@ -815,7 +827,7 @@ impl NeuralBot {
         Self {
             gym: GymBot::with_cadence(player, cadence),
             net,
-            knobs: profile_knobs(skill, aggression, faction),
+            knobs: profile_knobs(skill, aggression, faction).to_vec(),
             blunder_permille: blunder,
             rng: Pcg32::new(scenario_seed, stream),
         }

@@ -905,6 +905,9 @@ mod tests {
             bot_config: bot.then_some(oxide_sim::scenario::BotConfig {
                 level: oxide_sim::bot::Level::Easy,
                 aggression: Some(500),
+                style: None,
+                variant: None,
+                team_role: None,
             }),
         };
         let scenario = Scenario {

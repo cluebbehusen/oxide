@@ -231,7 +231,13 @@ fn play(
         // end-to-end; the swapped leg passes the same two values
         // exchanged.
         let aggression = swapped.then(|| dealt[1 - i]);
-        player.bot_config = Some(BotConfig { level, aggression });
+        player.bot_config = Some(BotConfig {
+            level,
+            aggression,
+            style: None,
+            variant: None,
+            team_role: None,
+        });
     }
     let mut state: State = sc.build().context("building scenario")?;
     let mut bots = seat_bots(&sc);
