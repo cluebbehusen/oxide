@@ -116,7 +116,10 @@ struct App {
     /// The rate-limiting clip player.
     mixer: Mixer,
     /// Continuously running score beds and their pure crossfade state.
-    soundtrack: crate::soundtrack::Soundtrack,
+    ///
+    /// Automation leaves this absent so a driven shell never starts
+    /// long-lived audio sources merely to take screenshots.
+    soundtrack: Option<crate::soundtrack::Soundtrack>,
 }
 
 /// Builds the game a filled-in draft describes.
@@ -348,8 +351,13 @@ pub(crate) async fn run(args: Args) -> Result<()> {
     mark("sprites loaded");
     let sounds = assets::Sounds::load().await?;
     mark("sounds loaded");
-    let mut soundtrack = crate::soundtrack::Soundtrack::default();
-    soundtrack.start(&sounds);
+    let soundtrack = if args.automation {
+        None
+    } else {
+        let mut soundtrack = crate::soundtrack::Soundtrack::default();
+        soundtrack.start(&sounds);
+        Some(soundtrack)
+    };
 
     let mut game = if let Some(path) = &args.replay {
         let replay = GameReplay::load(path).with_context(|| format!("loading replay {path}"))?;
@@ -1042,13 +1050,15 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             app.mixer
                 .play(&app.sounds, kind, &app.config.volumes, attenuation);
         }
-        app.soundtrack.update(
-            soundtrack_scene(&screen, &app.game),
-            combat_impulse,
-            dt,
-            app.config.volumes,
-        );
-        app.soundtrack.apply(&app.sounds);
+        if let Some(soundtrack) = &mut app.soundtrack {
+            soundtrack.update(
+                soundtrack_scene(&screen, &app.game),
+                combat_impulse,
+                dt,
+                app.config.volumes,
+            );
+            soundtrack.apply(&app.sounds);
+        }
 
         if !app.pending_shots.is_empty() {
             // One readback serves every request that arrived this frame.
