@@ -120,8 +120,11 @@ pub struct Game {
     /// the tooltip pass — building it twice per frame was pure waste.
     pub panel_model: std::cell::RefCell<Option<crate::panel::Panel>>,
     /// End-of-match statistics, computed once from the recorder when
-    /// the result lands (the record IS the match — a re-execution).
+    /// the result lands from the bounded live tracker.
     pub end_stats: Option<oxide_kit::stats::MatchStats>,
+    /// Tick-event totals and adaptively thinned graph samples. This is
+    /// presentation bookkeeping and never feeds back into the sim.
+    live_stats: oxide_kit::stats::LiveMatchStats,
     /// The match in numbers at the moment the human conceded an
     /// UNDECIDED team match — the exit offer's stats. Decided matches
     /// (a 1v1 surrender included) go through `end_stats` instead.
@@ -193,6 +196,7 @@ impl Game {
 
     fn assemble(scenario: Scenario, viewport: Vec2, human: PlayerId) -> Result<Self> {
         let state = scenario.build()?;
+        let live_stats = oxide_kit::stats::LiveMatchStats::new(&state);
         let bots = seat_bots(&scenario);
         let recorder = Replay::new(SIM_VERSION, scenario.clone());
         let focus = state
@@ -236,6 +240,7 @@ impl Game {
             layout: std::cell::Cell::new(crate::layout::LayoutModel::default()),
             panel_model: std::cell::RefCell::new(None),
             end_stats: None,
+            live_stats,
             concede_stats: None,
             conceded_banner: false,
             demo: crate::tutorial::Demo::default(),
@@ -280,6 +285,7 @@ impl Game {
         // session then continues exactly as the unsaved one would have.
         let mut bots = seat_bots(&scenario);
         let mut cursor = replay.cursor();
+        let mut live_stats = oxide_kit::stats::LiveMatchStats::new(&state);
         for _ in 0..total {
             for bot in &mut bots {
                 let _ = bot.act(&state);
@@ -289,7 +295,8 @@ impl Game {
                 .iter()
                 .map(|t| t.command.clone())
                 .collect();
-            state.tick(&commands);
+            let report = state.tick(&commands);
+            live_stats.observe(&state, &report.events);
         }
         anyhow::ensure!(
             cursor.is_finished(),
@@ -299,6 +306,10 @@ impl Game {
         game.state = state;
         game.bots = bots;
         game.recorder = replay;
+        game.live_stats = live_stats;
+        if game.state.result().is_some() {
+            game.end_stats = Some(game.live_stats.snapshot(&game.state));
+        }
         if let Some(focus) = game
             .state
             .buildings()
@@ -343,6 +354,10 @@ impl Game {
                 .record(self.state.current_tick(), command.clone());
         }
         let report = self.state.tick(&commands);
+        self.live_stats.observe(&self.state, &report.events);
+        if self.state.result().is_some() && self.end_stats.is_none() {
+            self.end_stats = Some(self.live_stats.snapshot(&self.state));
+        }
 
         // Income is evidence too: the mining lesson graduates on a
         // load actually landing, not on the accepted order — so it
@@ -368,10 +383,7 @@ impl Game {
                 .iter()
                 .any(|e| matches!(e, Event::PlayerResigned { player } if *player == self.human))
         {
-            let mut replay = self.recorder.clone();
-            let total = self.state.current_tick();
-            replay.meta.ticks = Some(total);
-            self.concede_stats = oxide_kit::stats::compute(&replay, (total / 48).max(1)).ok();
+            self.concede_stats = Some(self.live_stats.snapshot(&self.state));
             self.conceded_banner = true;
         }
 
@@ -525,23 +537,33 @@ impl Game {
         (self.accum / TICK_DT).clamp(0.0, 1.0)
     }
 
-    /// Advances the sim from wall time (the normal play path).
-    pub fn advance_wall_clock(&mut self, dt: f32) {
+    /// Advances the ordinary live path while optionally stopping on one exact
+    /// tick. Native profiling supplies the bound so a multi-tick frame cannot
+    /// overshoot its requested sample window; ordinary play passes `None`.
+    pub fn advance_wall_clock(&mut self, dt: f32, stop_tick: Option<u64>) -> bool {
         if self.paused {
-            return;
+            return false;
         }
         self.accum += dt * self.speed as f32;
         let mut ran = 0;
-        while self.accum >= TICK_DT && ran < MAX_TICKS_PER_FRAME {
+        while self.accum >= TICK_DT
+            && ran < MAX_TICKS_PER_FRAME
+            && stop_tick.is_none_or(|tick| self.state.current_tick() < tick)
+        {
             self.accum -= TICK_DT;
             self.do_tick();
             ran += 1;
+        }
+        if stop_tick.is_some_and(|tick| self.state.current_tick() >= tick) {
+            self.accum = 0.0;
+            return true;
         }
         // Behind by more than a frame's worth of ticks? Drop the debt
         // rather than spiraling.
         if ran == MAX_TICKS_PER_FRAME {
             self.accum = self.accum.min(TICK_DT);
         }
+        false
     }
 
     /// Fast-forwards `n` ticks immediately, pause state notwithstanding
@@ -876,6 +898,20 @@ mod tests {
     }
 
     #[test]
+    fn wall_clock_profile_bound_cannot_overshoot_inside_a_multi_tick_frame() {
+        let mut game = Game::with_viewport(
+            Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("skirmish builds");
+        game.speed = 8.0;
+
+        assert!(game.advance_wall_clock(1.0, Some(5)));
+        assert_eq!(game.state.current_tick(), 5);
+        assert_eq!(game.tick_fraction(), 0.0);
+    }
+
+    #[test]
     fn a_decisive_concession_uses_the_result_flow_not_the_overlay() {
         // 1v1: the surrender decides the match on its own tick, so the
         // normal end-of-match banner takes over.
@@ -890,6 +926,11 @@ mod tests {
         assert!(game.state.result().is_some(), "a 1v1 concession decides");
         assert!(!game.conceded_banner, "no concede overlay over a result");
         assert!(game.concede_stats.is_none());
+        assert_eq!(
+            game.end_stats.as_ref().map(|stats| stats.final_tick),
+            Some(1),
+            "the deciding tick leaves its report ready without replaying"
+        );
     }
 
     #[test]
@@ -950,6 +991,10 @@ mod tests {
         assert!(
             game.concede_stats.is_some(),
             "the exit offer carries the match-so-far numbers"
+        );
+        assert_eq!(
+            game.concede_stats.as_ref().map(|stats| stats.final_tick),
+            Some(1)
         );
         // The banner is a one-shot moment: later ticks never re-raise
         // a dismissed overlay.

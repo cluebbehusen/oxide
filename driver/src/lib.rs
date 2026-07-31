@@ -22,6 +22,7 @@ pub mod factorial;
 pub mod gym;
 pub mod pace;
 pub mod pool;
+pub mod profile;
 pub mod repair_probe;
 pub mod replay_inspect;
 pub mod session;

@@ -199,6 +199,10 @@ impl Session {
             Request::QueryUi => {
                 Err("the headless session has no window or menus to report".to_string())
             }
+            Request::QueryPerformance { .. } | Request::BeginPerformanceWindow { .. } => Err(
+                "the headless session has no native window or GPU frame loop to profile"
+                    .to_string(),
+            ),
             Request::InjectEvent { .. } => Err(
                 "the headless session has no input funnel; issue game commands \
                  with send_command"

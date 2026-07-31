@@ -28,7 +28,7 @@ pub enum Out {
     Rematch,
     /// Watch the completed command record.
     Watch,
-    /// Inspect the completed battlefield through the read-only replay viewer.
+    /// Inspect the already-final battlefield without replaying it.
     ViewFinalMap,
     /// Return to the front door.
     Home,

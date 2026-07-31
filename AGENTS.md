@@ -162,6 +162,7 @@ driver live step 1                 # presented tick + exact sim events
 driver live advance 300            # exactly 300 ticks, replies with hash
 driver live screenshot -o screenshots/check.png   # then READ the png
 driver live capture-sequence --present --out screenshots/motion
+driver live performance             # opt-in native frame timings
 driver live inject-wheel 2.0       # events enter the real input funnel
 driver live inject-key escape      # opens the pause menu — menus share
 driver live inject-key enter       # the input funnel too
@@ -171,7 +172,19 @@ driver live fog 0                  # seat 0's honest world: mask, ghosts,
 driver live save-replay replays/session.json
 driver replay replays/session.json # must print the same hash as live
 driver live load-replay replays/session.json      # resume = load a save
+driver profile-shell replays/session.json --from 4500 --to 5750 --speed 8
 ```
+
+`profile-shell` builds and launches the optimized, GPU-backed native shell,
+reconstructs the source record through `--from`, and resumes it on the real
+Playing screen with its ordinary HUD, fog, renderer, and bots. Commands after
+`--from` come from that live continuation rather than the source replay's
+suffix. The shell itself arms the exact tick window, records every active
+Playing frame while the ticks span it, auto-pauses at `--to`, and reports bounded work percentiles and
+shell-measured throughput. Use `--dev` only when debug-build behavior is the
+thing being measured. The window is gameplay-only and is refused if the live
+continuation reaches a match result at or before `--to`. A windowless `driver session` refuses these native GPU
+timings instead of returning a misleading substitute.
 
 The same session, no window at all: `driver session` serves the
 identical protocol windowless — a persistent headless match backed by
@@ -356,19 +369,23 @@ share a variant and opposing teams receive the same multiset. Exact
 
 The level-playing-field contract is non-negotiable: a bot is a command source,
 not an alternate ruleset. It receives only fog-honest information available to
-a player and every command passes through the same validation, costs, build
-times, queues, movement, combat, and economy. Feasibility masks may exclude an
-action that the shared game rules make impossible in the current state, but a
-bot-only structure or unit cap, shorter queue limit, forced tech prerequisite,
-income bonus, stat modifier, or other hidden strategic restriction is not an
-acceptable balance tool. Difficulty may change execution cadence and
-hesitation, while personality changes preferences; neither changes which legal
-strategies exist. If a legal strategy such as mass Reclaimers is dominant or
-pathological, fix the shared balance or the training outcome rather than hiding
-it from the bot. Expanding a learned policy's legal action surface still needs
-retraining and the complete promotion battery: behavior from weights evaluated
-outside their trained masks is evidence to investigate, not evidence that a
-bot-only restriction belongs in the game.
+a player, and game-rule eligibility is shared: counts, queues, costs,
+prerequisites, information, command validation, build times, movement, combat,
+and economy. The controller may use documented macro-policy abstractions,
+opening milestones, recovery overrides, or policy masks to choose among those
+shared-legal actions; those are controller architecture, not hidden game rules,
+and they need liveness and effectiveness gates. A bot-only structure or unit
+cap, shorter queue limit, forced tech prerequisite, income bonus, stat modifier,
+or other hidden strategic restriction is not an acceptable balance tool.
+Difficulty may change execution cadence and hesitation, while personality
+changes preferences; neither changes which strategies the game rules permit. If
+a legal strategy such as mass Reclaimers is dominant or pathological, fix the
+shared balance or the training outcome rather than hiding it from the bot.
+Expanding a learned policy's action surface needs explicit out-of-distribution
+evaluation and the complete promotion battery: test the current weights
+unchanged first, and retrain only if the evidence requires it. Behavior from
+weights evaluated outside their trained masks is evidence to investigate, not
+evidence that a bot-only restriction belongs in the game.
 
 The 12 conditioning inputs are skill, aggression, the seat's actual faction,
 a four-way strategy one-hot derived from the aggression quartile, and the

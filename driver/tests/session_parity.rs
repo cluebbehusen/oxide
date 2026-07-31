@@ -212,6 +212,11 @@ fn every_live_verb_works_headless_over_tcp_and_the_record_reproduces() -> Result
         Request::SetSpeed { multiplier: 2.0 },
         Request::QueryCamera,
         Request::QueryUi,
+        Request::QueryPerformance { reset: false },
+        Request::BeginPerformanceWindow {
+            from_tick: 305,
+            to_tick: 405,
+        },
         Request::ToggleOverlay,
         Request::InjectEvent {
             event: oxide_protocol::RawEvent::KeyDown {

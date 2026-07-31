@@ -358,6 +358,27 @@ enum Cmd {
         #[command(subcommand)]
         cmd: LiveCmd,
     },
+    /// Resume a record prefix and profile a live Playing interval in a
+    /// temporary real GPU-backed shell.
+    ProfileShell {
+        /// Replay or save JSON whose prefix becomes the live match.
+        replay: PathBuf,
+        /// First tick included in the measured window.
+        #[arg(long, default_value_t = 0)]
+        from: u64,
+        /// Tick at which the harness pauses and reports.
+        #[arg(long)]
+        to: u64,
+        /// Live wall-clock speed multiplier.
+        #[arg(long, default_value_t = 8.0)]
+        speed: f64,
+        /// Debug-server port for the temporary shell.
+        #[arg(long, default_value_t = 4198)]
+        port: u16,
+        /// Profile an unoptimized development shell instead of release.
+        #[arg(long)]
+        dev: bool,
+    },
     /// Serve the debug protocol windowless: a persistent headless match
     /// (no GPU, no wall clock — always driven mode) that every
     /// `driver live` verb can drive. Screenshots are CPU schematic
@@ -921,6 +942,24 @@ fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&reply)?);
             }
         }
+        Cmd::ProfileShell {
+            replay,
+            from,
+            to,
+            speed,
+            port,
+            dev,
+        } => {
+            let report = oxide_driver::profile::run(&oxide_driver::profile::ProfileOptions {
+                replay: &replay,
+                from,
+                to,
+                speed,
+                port,
+                dev,
+            })?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         Cmd::Session {
             port,
             scenario,
@@ -1020,5 +1059,36 @@ mod tests {
             error.kind(),
             clap::error::ErrorKind::MissingRequiredArgument
         );
+    }
+
+    #[test]
+    fn profile_shell_parses_an_exact_replay_window() {
+        let cli = Cli::try_parse_from([
+            "oxide-driver",
+            "profile-shell",
+            "match.json",
+            "--from",
+            "4500",
+            "--to",
+            "5750",
+            "--speed",
+            "8",
+        ])
+        .expect("profile command parses");
+        let Cmd::ProfileShell {
+            replay,
+            from,
+            to,
+            speed,
+            dev,
+            ..
+        } = cli.cmd
+        else {
+            panic!("profile-shell parsed as another command")
+        };
+        assert_eq!(replay, PathBuf::from("match.json"));
+        assert_eq!((from, to), (4500, 5750));
+        assert_eq!(speed, 8.0);
+        assert!(!dev);
     }
 }

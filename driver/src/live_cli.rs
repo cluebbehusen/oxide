@@ -31,6 +31,12 @@ pub(crate) enum LiveCmd {
     Camera,
     /// Shell mode and active menu state.
     Ui,
+    /// Native GPU-shell frame timing collected under --profile-frames.
+    Performance {
+        /// Clear the completed timing window after taking the snapshot.
+        #[arg(long)]
+        reset: bool,
+    },
     /// Canonical state fingerprint.
     Hash,
     /// Fast-forward N ticks (works while paused — that's the point).
@@ -406,6 +412,7 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
         },
         LiveCmd::Camera => Request::QueryCamera,
         LiveCmd::Ui => Request::QueryUi,
+        LiveCmd::Performance { reset } => Request::QueryPerformance { reset },
         LiveCmd::Hash => Request::StateHash,
         LiveCmd::Advance { ticks } => Request::AdvanceTicks { ticks },
         LiveCmd::Step { ticks } => Request::PresentTicks { ticks },

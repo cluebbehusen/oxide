@@ -7,6 +7,7 @@
 //! in unit tests. The main loop keeps only drawing and session wiring.
 
 pub mod browser;
+pub mod final_map;
 pub mod home;
 pub mod pause;
 pub mod playback;

@@ -16,6 +16,7 @@ mod autosave;
 mod camera;
 mod config;
 mod debug_server;
+mod frame_profile;
 mod game;
 mod input;
 mod layout;
@@ -97,6 +98,12 @@ struct Args {
     /// for the packaged .app, where flags are awkward).
     #[arg(long)]
     trace_startup: bool,
+
+    /// Collect bounded native GPU-shell frame timings for
+    /// query_performance. Off by default so ordinary play pays no timing or
+    /// sample-retention cost.
+    #[arg(long, requires = "debug_server")]
+    profile_frames: bool,
 }
 
 /// Wall-clock zero for the startup trace, pinned by the first caller —

@@ -91,6 +91,23 @@ pub enum Request {
     QueryCamera,
     /// Shell mode and active menu state.
     QueryUi,
+    /// Timing summary from the real window's opt-in frame profiler. A
+    /// windowless session refuses this instead of reporting CPU-renderer
+    /// timings as though they described the native shell.
+    QueryPerformance {
+        /// Clear samples after taking the snapshot.
+        #[serde(default)]
+        reset: bool,
+    },
+    /// Arm an exact native Playing-screen profile window. The current visible
+    /// tick must equal `from_tick`; the shell records every active Playing
+    /// frame while the live match spans the window and auto-pauses on `to_tick`.
+    BeginPerformanceWindow {
+        /// Exact live tick at which measurement begins.
+        from_tick: u64,
+        /// Exact live tick at which measurement ends and the shell pauses.
+        to_tick: u64,
+    },
     /// The canonical state fingerprint at the current tick.
     StateHash,
     /// Run sim ticks now (bots included), regardless of pause state, then
@@ -177,6 +194,8 @@ pub enum Reply {
     Camera(CameraView),
     /// Answer to [`Request::QueryUi`].
     Ui(UiView),
+    /// Answer to [`Request::QueryPerformance`].
+    Performance(FrameProfileView),
     /// Answer to [`Request::StateHash`].
     Hash(HashView),
     /// Answer to [`Request::AdvanceTicks`].
@@ -222,6 +241,84 @@ pub struct PresentedView {
     pub hash: String,
     /// Events emitted across the interval, in tick and event order.
     pub events: Vec<Event>,
+}
+
+/// Distribution summary for one frame-time measurement.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TimingSummary {
+    /// Arithmetic mean.
+    pub mean_ms: f64,
+    /// Median.
+    pub p50_ms: f64,
+    /// 95th percentile.
+    pub p95_ms: f64,
+    /// 99th percentile.
+    pub p99_ms: f64,
+    /// Largest sample.
+    pub max_ms: f64,
+}
+
+/// The slowest completed frame in a native-shell timing window.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlowFrameView {
+    /// Active screen while the frame ran.
+    pub mode: String,
+    /// Visible simulation tick at frame start.
+    pub tick_start: u64,
+    /// Visible simulation tick after the frame's update.
+    pub tick_end: u64,
+    /// CPU work between frame entry and the presentation handoff.
+    pub work_ms: f64,
+    /// Units in the visible world after the update.
+    pub units: usize,
+    /// Buildings in the visible world after the update.
+    pub buildings: usize,
+}
+
+/// Bounded timing snapshot collected by a real GPU-backed shell window.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FrameProfileView {
+    /// Always `"gpu"`; the field prevents accidental comparison with the
+    /// headless session's schematic CPU renderer.
+    pub renderer: String,
+    /// Completed frames represented by the summary.
+    pub frames: usize,
+    /// First visible tick in the sample window.
+    pub tick_start: u64,
+    /// Last visible tick in the sample window.
+    pub tick_end: u64,
+    /// Simulation ticks presented across the sampled frames.
+    pub ticks_presented: u64,
+    /// CPU work performed by the shell per frame.
+    pub work: TimingSummary,
+    /// Wall intervals between consecutive sampled frame starts.
+    pub interval: TimingSummary,
+    /// Frames whose CPU work exceeded a 60 Hz budget.
+    pub work_over_16_7_ms: usize,
+    /// Frames whose CPU work exceeded two 60 Hz budgets.
+    pub work_over_33_3_ms: usize,
+    /// Largest-work frame, absent when no completed frame was sampled.
+    pub slowest: Option<SlowFrameView>,
+    /// Exact-window metadata when profiling was armed through
+    /// [`Request::BeginPerformanceWindow`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<FrameProfileWindowView>,
+}
+
+/// State of one shell-side exact profile window.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FrameProfileWindowView {
+    /// Requested first tick.
+    pub from_tick: u64,
+    /// Requested exclusive end tick.
+    pub to_tick: u64,
+    /// Whether the shell reached `to_tick` and auto-paused.
+    pub complete: bool,
+    /// Wall time from the first sampled frame's start through the final
+    /// sampled frame's completed CPU work.
+    pub elapsed_ms: f64,
+    /// Whether bounded retention evicted any sampled frame.
+    pub truncated: bool,
 }
 
 /// Where a screenshot landed.
@@ -283,7 +380,7 @@ pub struct ResponseEnvelope {
 
 #[derive(Debug, Clone, PartialEq)]
 enum Outcome {
-    Ok(Reply),
+    Ok(Box<Reply>),
     Err(String),
 }
 
@@ -292,7 +389,7 @@ impl ResponseEnvelope {
     pub fn ok(id: u64, reply: Reply) -> Self {
         Self {
             id,
-            outcome: Outcome::Ok(reply),
+            outcome: Outcome::Ok(Box::new(reply)),
         }
     }
 
@@ -307,7 +404,7 @@ impl ResponseEnvelope {
     /// Consumes the envelope into the reply or the error message.
     pub fn into_result(self) -> Result<Reply, String> {
         match self.outcome {
-            Outcome::Ok(reply) => Ok(reply),
+            Outcome::Ok(reply) => Ok(*reply),
             Outcome::Err(message) => Err(message),
         }
     }
@@ -406,23 +503,25 @@ mod tests {
             Request::QueryFogView { .. } => 2,
             Request::QueryCamera => 3,
             Request::QueryUi => 4,
-            Request::StateHash => 5,
-            Request::AdvanceTicks { .. } => 6,
-            Request::PresentTicks { .. } => 7,
-            Request::Pause => 8,
-            Request::Resume => 9,
-            Request::SetSpeed { .. } => 10,
-            Request::SendCommand { .. } => 11,
-            Request::InjectEvent { .. } => 12,
-            Request::Screenshot { .. } => 13,
-            Request::ToggleOverlay => 14,
-            Request::LoadScenario { .. } => 15,
-            Request::LoadReplay { .. } => 16,
-            Request::SaveReplay { .. } => 17,
+            Request::QueryPerformance { .. } => 5,
+            Request::BeginPerformanceWindow { .. } => 6,
+            Request::StateHash => 7,
+            Request::AdvanceTicks { .. } => 8,
+            Request::PresentTicks { .. } => 9,
+            Request::Pause => 10,
+            Request::Resume => 11,
+            Request::SetSpeed { .. } => 12,
+            Request::SendCommand { .. } => 13,
+            Request::InjectEvent { .. } => 14,
+            Request::Screenshot { .. } => 15,
+            Request::ToggleOverlay => 16,
+            Request::LoadScenario { .. } => 17,
+            Request::LoadReplay { .. } => 18,
+            Request::SaveReplay { .. } => 19,
         }
     }
 
-    const REQUEST_VARIANTS: usize = 18;
+    const REQUEST_VARIANTS: usize = 20;
 
     /// Contiguous index per [`Reply`] variant, in declaration order.
     fn reply_tag(reply: &Reply) -> usize {
@@ -433,16 +532,17 @@ mod tests {
             Reply::Fog(_) => 3,
             Reply::Camera(_) => 4,
             Reply::Ui(_) => 5,
-            Reply::Hash(_) => 6,
-            Reply::Advanced(_) => 7,
-            Reply::Presented(_) => 8,
-            Reply::Screenshot(_) => 9,
-            Reply::Overlay(_) => 10,
-            Reply::Saved(_) => 11,
+            Reply::Performance(_) => 6,
+            Reply::Hash(_) => 7,
+            Reply::Advanced(_) => 8,
+            Reply::Presented(_) => 9,
+            Reply::Screenshot(_) => 10,
+            Reply::Overlay(_) => 11,
+            Reply::Saved(_) => 12,
         }
     }
 
-    const REPLY_VARIANTS: usize = 12;
+    const REPLY_VARIANTS: usize = 13;
 
     /// Contiguous index per [`Command`] variant, in declaration order.
     /// The sim's verbs ride this wire through [`Request::SendCommand`],
@@ -551,6 +651,11 @@ mod tests {
             },
             Request::QueryCamera,
             Request::QueryUi,
+            Request::QueryPerformance { reset: true },
+            Request::BeginPerformanceWindow {
+                from_tick: 100,
+                to_tick: 200,
+            },
             Request::StateHash,
             Request::AdvanceTicks { ticks: 12 },
             Request::PresentTicks { ticks: 2 },
@@ -735,6 +840,44 @@ mod tests {
                 chrome: Some([
                     32.0, 764.0, 1048.0, 616.0, 220.0, 150.0, 900.0, 0.0, 500.0, 60.0, 200.0,
                 ]),
+            }),
+            Reply::Performance(FrameProfileView {
+                renderer: "gpu".into(),
+                frames: 3,
+                tick_start: 100,
+                tick_end: 108,
+                ticks_presented: 8,
+                work: TimingSummary {
+                    mean_ms: 4.0,
+                    p50_ms: 3.0,
+                    p95_ms: 6.0,
+                    p99_ms: 6.0,
+                    max_ms: 6.0,
+                },
+                interval: TimingSummary {
+                    mean_ms: 16.7,
+                    p50_ms: 16.7,
+                    p95_ms: 17.0,
+                    p99_ms: 17.0,
+                    max_ms: 17.0,
+                },
+                work_over_16_7_ms: 0,
+                work_over_33_3_ms: 0,
+                slowest: Some(SlowFrameView {
+                    mode: "playback".into(),
+                    tick_start: 105,
+                    tick_end: 108,
+                    work_ms: 6.0,
+                    units: 20,
+                    buildings: 8,
+                }),
+                window: Some(FrameProfileWindowView {
+                    from_tick: 100,
+                    to_tick: 108,
+                    complete: true,
+                    elapsed_ms: 51.2,
+                    truncated: false,
+                }),
             }),
             Reply::Hash(HashView {
                 tick: 5,

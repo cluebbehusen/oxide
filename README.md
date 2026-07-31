@@ -243,6 +243,7 @@ cargo run -p oxide-driver -- live save-replay replays/session.json
 cargo run -p oxide-driver -- replay replays/session.json   # → same hash
 cargo run -p oxide-driver -- replay-inspect replays/session.json --tick 0,1200 --fog-seat 1 --map
 cargo run -p oxide-driver -- live load-replay replays/session.json  # resume
+cargo run -p oxide-driver -- profile-shell replays/session.json --from 4500 --to 5750 --speed 8
 ```
 
 `live --help` lists the rest (state queries with ASCII maps, fog-honest
@@ -252,6 +253,14 @@ per-seat views, key/click injection, camera, overlay, scenario loading).
 per-seat command activity and longest silence, plus exact snapshots. A snapshot
 at tick `N` is the state immediately before commands stamped `N` execute;
 repeat `--tick` or pass a comma-separated list, and omit it for the final state.
+`profile-shell` builds an optimized native shell, reconstructs the record through
+`--from`, then resumes it as a real live Playing match with the normal HUD, fog,
+and bots. The record's later commands are not replayed: this is an honest live
+continuation from that save point. The shell records every active Playing frame
+while the ticks span the exact requested window, auto-pauses at `--to`, and returns
+bounded work-time percentiles plus achieved simulation throughput. The window
+must end before the live continuation's match result so terminal-screen work is
+never mixed into a gameplay profile.
 
 No window at all: `cargo run -p oxide-driver -- session` serves the same
 protocol windowless (no GPU, sim time moves only on request), and every
