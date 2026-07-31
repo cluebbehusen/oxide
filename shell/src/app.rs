@@ -478,7 +478,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         let mut events = if app.args.automation {
             Vec::new()
         } else {
-            input::poll_events()
+            input::poll_events(matches!(&screen, Screen::Pause(pause) if pause.naming()))
         };
         if let Some((frame, last_top)) = trace_frames.as_mut() {
             *frame += 1;

@@ -3076,7 +3076,7 @@ fn drag_feedback_starts_before_box_selection_does() {
 fn a_press_mid_flight_anchors_the_box_where_it_landed() {
     use macroquad::miniquad::EventHandler;
     // Retina: the platform speaks backing-store pixels, the shell logical ones.
-    let mut stream = PointerStream::new(2.0);
+    let mut stream = PointerStream::new(2.0, false);
     stream.mouse_motion_event(600.0, 400.0);
     stream.mouse_motion_event(760.0, 400.0);
     stream.mouse_button_down_event(macroquad::miniquad::MouseButton::Left, 768.0, 400.0);
@@ -3114,10 +3114,18 @@ fn a_press_mid_flight_anchors_the_box_where_it_landed() {
 }
 
 #[test]
-fn the_hardware_stream_preserves_only_backspace_key_repeat() {
+fn the_hardware_stream_preserves_backspace_repeat_only_when_requested() {
     use macroquad::miniquad::EventHandler;
-    let mut stream = PointerStream::new(1.0);
     let mods = macroquad::miniquad::KeyMods::default();
+
+    let mut disabled = PointerStream::new(1.0, false);
+    disabled.key_down_event(macroquad::miniquad::KeyCode::Backspace, mods, true);
+    assert!(
+        disabled.events.is_empty(),
+        "ordinary screens keep every binding edge-only"
+    );
+
+    let mut stream = PointerStream::new(1.0, true);
     stream.key_down_event(macroquad::miniquad::KeyCode::Backspace, mods, false);
     stream.key_down_event(macroquad::miniquad::KeyCode::A, mods, true);
     stream.key_down_event(macroquad::miniquad::KeyCode::Backspace, mods, true);
@@ -3162,7 +3170,7 @@ fn the_stretch_between_press_and_frame_end_still_selects() {
 
     // One frame: the pointer flies past `a`, the button lands there,
     // and the pointer carries on to `b` before the frame ends.
-    let mut stream = PointerStream::new(1.0);
+    let mut stream = PointerStream::new(1.0, false);
     stream.mouse_motion_event(a.x - 40.0, a.y - 40.0);
     stream.mouse_button_down_event(macroquad::miniquad::MouseButton::Left, a.x, a.y);
     stream.mouse_motion_event(b.x, b.y);

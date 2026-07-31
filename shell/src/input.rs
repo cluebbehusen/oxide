@@ -536,14 +536,16 @@ fn touch_event(phase: mq::TouchPhase, id: u64, x: f32, y: f32) -> Option<RawEven
 /// injected (never queried) so the whole adapter runs headless.
 pub(crate) struct PointerStream {
     dpi: f32,
+    accept_backspace_repeat: bool,
     /// Translated events, in arrival order.
     pub(crate) events: Vec<RawEvent>,
 }
 
 impl PointerStream {
-    pub(crate) fn new(dpi: f32) -> Self {
+    pub(crate) fn new(dpi: f32, accept_backspace_repeat: bool) -> Self {
         Self {
             dpi: if dpi > 0.0 { dpi } else { 1.0 },
+            accept_backspace_repeat,
             events: Vec::new(),
         }
     }
@@ -596,16 +598,18 @@ impl macroquad::miniquad::EventHandler for PointerStream {
     }
 
     /// The polled keyboard surface exposes the initial edge but drops OS
-    /// repeat. Preserve only repeated Backspace presses; the save-name field
-    /// is the sole consumer, while every gameplay binding keeps edge-only
-    /// semantics.
+    /// repeat. Preserve repeated Backspace presses only while the save-name
+    /// field owns input; every gameplay binding keeps edge-only semantics.
     fn key_down_event(
         &mut self,
         keycode: macroquad::miniquad::KeyCode,
         _keymods: macroquad::miniquad::KeyMods,
         repeat: bool,
     ) {
-        if repeat && keycode == macroquad::miniquad::KeyCode::Backspace {
+        if self.accept_backspace_repeat
+            && repeat
+            && keycode == macroquad::miniquad::KeyCode::Backspace
+        {
             self.events.push(RawEvent::KeyDown {
                 key: Key::Backspace,
             });
@@ -652,7 +656,7 @@ pub fn arm_hardware() {
     POINTER_SUB.get_or_init(mq::utils::register_input_subscriber);
 }
 
-pub fn poll_events() -> Vec<RawEvent> {
+pub fn poll_events(accept_backspace_repeat: bool) -> Vec<RawEvent> {
     TOUCH_SETUP.call_once(|| mq::simulate_mouse_with_touch(false));
     let mut events = Vec::new();
     for touch in mq::touches() {
@@ -673,7 +677,10 @@ pub fn poll_events() -> Vec<RawEvent> {
         let (x, y) = mq::mouse_position();
         events.push(RawEvent::MouseMove { x, y });
     });
-    let mut stream = PointerStream::new(macroquad::miniquad::window::dpi_scale());
+    let mut stream = PointerStream::new(
+        macroquad::miniquad::window::dpi_scale(),
+        accept_backspace_repeat,
+    );
     mq::utils::repeat_all_miniquad_input(&mut stream, sub);
     events.append(&mut stream.events);
     // macroquad's mouse_leave_event marks held buttons released in the
