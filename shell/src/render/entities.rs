@@ -274,6 +274,10 @@ pub(crate) fn draw_breadcrumbs(game: &Game, input: &InputState) {
 }
 
 fn production_head_advancing(building: &oxide_sim::Building) -> bool {
+    // A visible Fabricator's moving machinery is deliberately scoutable even
+    // though its queue and exact progress remain private. The sprite depicts
+    // physical work; showing an idle loop for an active enemy would contradict
+    // the same cue on the player's structure.
     building.built
         && building
             .queue
@@ -1502,6 +1506,11 @@ mod tests {
         assert!(building_work_speed(&fabricator).is_none());
         fabricator.queue.push_back(oxide_sim::UnitKind::Scuttler);
         assert!(building_work_speed(&fabricator).is_some());
+        fabricator.player = oxide_sim::PlayerId(1);
+        assert!(
+            building_work_speed(&fabricator).is_some(),
+            "visible hostile production activity is intentionally scoutable"
+        );
         fabricator.progress = oxide_sim::UnitKind::Scuttler.stats().train_ticks;
         assert!(
             building_work_speed(&fabricator).is_none(),

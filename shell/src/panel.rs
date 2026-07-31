@@ -377,14 +377,12 @@ pub fn combat_lines(kind: UnitKind) -> Vec<CombatFact> {
 
 fn tick_time_label(ticks: u32) -> String {
     let per_second = oxide_sim::TICKS_PER_SECOND;
-    let whole = ticks / per_second;
-    let hundredths = ticks % per_second * 100 / per_second;
-    if hundredths == 0 {
+    let tenths = ticks.saturating_mul(10).div_ceil(per_second);
+    let whole = tenths / 10;
+    if tenths.is_multiple_of(10) {
         format!("{whole}s")
-    } else if hundredths.is_multiple_of(10) {
-        format!("{whole}.{}s", hundredths / 10)
     } else {
-        format!("{whole}.{hundredths:02}s")
+        format!("{whole}.{}s", tenths % 10)
     }
 }
 
@@ -1222,7 +1220,7 @@ mod tests {
             },
         }]);
         let panel = build(&game, &BindingMap::classic()).expect("queued panel");
-        assert_eq!(panel.queue_label, "queue 4.95s");
+        assert_eq!(panel.queue_label, "queue 5s");
         game.state.tick(&[]);
         let panel = build(&game, &BindingMap::classic()).expect("progressing panel");
         assert_eq!(panel.queue_label, "queue 4.9s");
@@ -1813,7 +1811,7 @@ mod tests {
         let queue = std::collections::VecDeque::from([UnitKind::Harvester, UnitKind::Sentinel]);
         assert_eq!(
             production_queue_label(&queue, 25).as_deref(),
-            Some("queue 11.25s"),
+            Some("queue 11.3s"),
             "75 head ticks plus 150 queued ticks"
         );
         assert_eq!(
