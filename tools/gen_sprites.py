@@ -15,9 +15,11 @@ Cupric corrodes teal. Units face up; the shell rotates them toward their
 heading.
 """
 
+import itertools
 import json
 import math
 import random
+import tempfile
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -270,7 +272,7 @@ def _peak_mass(d, rng, sky, caps, base_y=64, cap_below=16):
     sprites root their bottom tile there."""
 
     def sky_y(x):
-        for (x0, y0), (x1, y1) in zip(sky, sky[1:]):
+        for (x0, y0), (x1, y1) in itertools.pairwise(sky):
             if x0 <= x <= x1:
                 t = 0.0 if x1 == x0 else (x - x0) / (x1 - x0)
                 return y0 + (y1 - y0) * t
@@ -1127,6 +1129,160 @@ def decal(name: str, seed: int, style: str) -> None:
     finish(img, px, name)
 
 
+def theme_prop(theme: str, variant: int) -> None:
+    """One-tile, ground-painted dressing for a shipped map theme.
+
+    These stay deliberately flat and translucent: they are surface history,
+    never a resource, structure, or pathing promise. The shell rotates them
+    in quarter turns, so each variant must read from every orientation.
+    """
+    px = 64
+    img, d = canvas(px)
+    rng = random.Random(2000 + sum(theme.encode()) * 17 + variant * 101)
+
+    if theme == "rusted_yard":
+        if variant == 0:
+            # Rails buried flush in the yard, with faded cross-ties.
+            for y in (23, 41):
+                d.line([(s(5), s(y)), (s(59), s(y))], fill=(76, 55, 49, 120), width=s(3))
+                d.line([(s(5), s(y - 1)), (s(59), s(y - 1))], fill=(133, 71, 49, 90), width=SS)
+            for x in range(10, 60, 10):
+                d.line([(s(x), s(18)), (s(x), s(46))], fill=(47, 43, 45, 100), width=s(2))
+        elif variant == 1:
+            # A riveted repair plate, inset into rather than sitting on the floor.
+            pts = [(12, 17), (48, 12), (55, 43), (18, 51)]
+            d.polygon([(s(x), s(y)) for x, y in pts], fill=(66, 51, 49, 72))
+            d.line(
+                [(s(x), s(y)) for x, y in [*pts, pts[0]]],
+                fill=(137, 70, 48, 105),
+                width=s(2),
+            )
+            for x, y in pts:
+                d.ellipse([s(x - 1), s(y - 1), s(x + 1), s(y + 1)], fill=(173, 102, 70, 130))
+        else:
+            # Oil soaked into oxidized concrete.
+            for _ in range(5):
+                cx, cy = rng.randrange(18, 47), rng.randrange(18, 47)
+                rx, ry = rng.randrange(6, 14), rng.randrange(3, 9)
+                d.ellipse(
+                    [s(cx - rx), s(cy - ry), s(cx + rx), s(cy + ry)],
+                    fill=(24, 20, 22, 42),
+                )
+            d.arc([s(15), s(19), s(50), s(48)], 12, 196, fill=(127, 65, 45, 85), width=s(2))
+    elif theme == "cold_circuitry":
+        if variant == 0:
+            # An exposed trace with low, flush contact pads.
+            pts = [(7, 42), (22, 42), (22, 19), (43, 19), (43, 51), (58, 51)]
+            d.line([(s(x), s(y)) for x, y in pts], fill=(92, 160, 174, 115), width=s(2))
+            for x, y in (pts[0], pts[-1], (22, 19), (43, 51)):
+                d.rectangle([s(x - 2), s(y - 2), s(x + 2), s(y + 2)], fill=(138, 193, 202, 125))
+        elif variant == 1:
+            # A recessed cooling grille.
+            d.rounded_rectangle(
+                [s(12), s(18), s(52), s(46)],
+                radius=s(4),
+                fill=(30, 43, 50, 75),
+                outline=(96, 133, 144, 105),
+                width=s(2),
+            )
+            for x in range(18, 50, 7):
+                d.line([(s(x), s(23)), (s(x), s(41))], fill=(15, 25, 31, 115), width=SS)
+        else:
+            # Hairline panel seams and cold status marks.
+            pts = [(6, 27), (18, 15), (48, 15), (58, 25), (48, 49), (18, 49), (6, 37)]
+            d.line([(s(x), s(y)) for x, y in pts], fill=(76, 111, 124, 85), width=SS)
+            d.line([(s(18), s(49)), (s(18), s(33)), (s(37), s(33))], fill=(114, 180, 190, 95), width=SS)
+    elif theme == "quarry_dust":
+        if variant == 0:
+            # Twin vehicle ruts, broken so they do not resemble walls.
+            for y in (22, 42):
+                for x in range(5, 58, 12):
+                    d.line([(s(x), s(y)), (s(x + 7), s(y))], fill=(104, 88, 67, 92), width=s(3))
+                    d.line([(s(x), s(y - 1)), (s(x + 7), s(y - 1))], fill=(150, 130, 96, 55), width=SS)
+        elif variant == 1:
+            # Saw scoring left in a worked stone floor.
+            for offset in (-7, 0, 7):
+                d.arc(
+                    [s(9 + offset), s(10), s(55 + offset), s(55)],
+                    205,
+                    320,
+                    fill=(126, 108, 82, 92),
+                    width=s(2),
+                )
+        else:
+            # Shallow drill-test dimples, not a loose pile.
+            for angle in range(0, 360, 45):
+                rad = math.radians(angle)
+                x, y = 32 + math.cos(rad) * 17, 32 + math.sin(rad) * 12
+                d.ellipse([s(x - 2), s(y - 2), s(x + 2), s(y + 2)], fill=(82, 72, 62, 105))
+                d.point((s(x - 0.5), s(y - 0.5)), fill=(173, 151, 112, 85))
+    elif theme == "basalt":
+        if variant == 0:
+            # A branching cooled fracture.
+            pts = [(5, 47), (19, 39), (27, 25), (39, 29), (57, 12)]
+            d.line([(s(x), s(y)) for x, y in pts], fill=(20, 20, 29, 150), width=s(2))
+            d.line([(s(27), s(25)), (s(23), s(11))], fill=(71, 67, 91, 80), width=SS)
+            d.line([(s(39), s(29)), (s(50), s(43))], fill=(71, 67, 91, 70), width=SS)
+        elif variant == 1:
+            # A glassy seam with a faint mineral edge.
+            pts = [(3, 38), (15, 31), (25, 34), (38, 24), (60, 29)]
+            d.line([(s(x), s(y)) for x, y in pts], fill=(15, 16, 23, 120), width=s(5))
+            d.line([(s(x), s(y - 2)) for x, y in pts], fill=(86, 76, 112, 65), width=SS)
+        else:
+            # Interlocking lava joints: broad geometry, no raised boulders.
+            joints = [(8, 31), (18, 15), (38, 13), (54, 28), (45, 49), (23, 52), (8, 31)]
+            d.line([(s(x), s(y)) for x, y in joints], fill=(70, 65, 91, 82), width=s(2))
+            d.line([(s(18), s(15)), (s(27), s(32)), (s(23), s(52))], fill=(24, 23, 34, 115), width=SS)
+            d.line([(s(54), s(28)), (s(27), s(32))], fill=(24, 23, 34, 100), width=SS)
+    elif theme == "slag":
+        if variant == 0:
+            # A thin plate of vitrified slag fused to the floor.
+            pts = [(10, 19), (39, 11), (55, 26), (48, 48), (21, 53), (7, 36)]
+            d.polygon([(s(x), s(y)) for x, y in pts], fill=(35, 28, 31, 62))
+            d.line([(s(x), s(y)) for x, y in [*pts, pts[0]]], fill=(120, 63, 62, 75), width=SS)
+            d.line([(s(18), s(43)), (s(34), s(29)), (s(48), s(35))], fill=(157, 72, 61, 58), width=SS)
+        elif variant == 1:
+            # Heat bloom baked into the surface.
+            for rx, ry, alpha in ((23, 14, 30), (16, 9, 40), (9, 5, 48)):
+                d.ellipse(
+                    [s(32 - rx), s(32 - ry), s(32 + rx), s(32 + ry)],
+                    outline=(137, 56, 52, alpha),
+                    width=s(3),
+                )
+        else:
+            # Parallel runoff channels, recessed and discontinuous.
+            for offset in (-9, 0, 9):
+                pts = [(7, 18 + offset), (23, 25 + offset), (38, 22 + offset), (57, 34 + offset)]
+                d.line([(s(x), s(y)) for x, y in pts], fill=(45, 31, 34, 105), width=s(2))
+    elif theme == "verdigris":
+        if variant == 0:
+            # Copper panel seams with oxidized edges.
+            pts = [(9, 18), (31, 11), (55, 22), (49, 48), (22, 53), (9, 39), (9, 18)]
+            d.line([(s(x), s(y)) for x, y in pts], fill=(74, 126, 111, 95), width=s(2))
+            for x, y in pts[:-1:2]:
+                d.ellipse([s(x - 1), s(y - 1), s(x + 1), s(y + 1)], fill=(142, 94, 60, 105))
+        elif variant == 1:
+            # A buried conduit with flush junction caps.
+            pts = [(4, 43), (18, 43), (27, 27), (46, 27), (58, 15)]
+            d.line([(s(x), s(y)) for x, y in pts], fill=(119, 76, 52, 105), width=s(3))
+            d.line([(s(x), s(y - 1)) for x, y in pts], fill=(69, 153, 132, 105), width=SS)
+            for x, y in ((18, 43), (46, 27)):
+                d.ellipse([s(x - 3), s(y - 3), s(x + 3), s(y + 3)], fill=(48, 106, 94, 105))
+        else:
+            # Patina leaching through the floor in an irregular bloom.
+            for _ in range(7):
+                cx, cy = rng.randrange(16, 49), rng.randrange(16, 49)
+                rx, ry = rng.randrange(4, 11), rng.randrange(3, 8)
+                d.ellipse(
+                    [s(cx - rx), s(cy - ry), s(cx + rx), s(cy + ry)],
+                    fill=(58, 151, 130, 24 + rng.randrange(0, 25)),
+                )
+    else:
+        raise ValueError(f"unknown theme {theme!r}")
+
+    finish(img, px, f"theme_{theme}_{variant}")
+
+
 def scrap_rich() -> None:
     """A dense, tall heap — the 'S' legend's double-value node."""
     scrap_pile("scrap_rich", seed=23, pieces=30, spread=19, lift=7)
@@ -1300,7 +1456,21 @@ def icon_idle() -> None:
     finish(img, ICON, "icon_idle")
 
 
-def main() -> None:
+THEMES = (
+    "rusted_yard",
+    "cold_circuitry",
+    "quarry_dust",
+    "basalt",
+    "slag",
+    "verdigris",
+)
+
+
+def generate(output: Path) -> None:
+    """Generates the complete sprite directory at `output`."""
+    global OUT
+    OUT = output
+    REGISTRY.clear()
     OUT.mkdir(parents=True, exist_ok=True)
     print(f"writing {OUT}")
     for i in range(6):
@@ -1318,6 +1488,9 @@ def main() -> None:
     decal("decal_plate", 42, "plate")
     decal("decal_stain", 43, "stain")
     decal("decal_wreck", 44, "wreck")
+    for theme in THEMES:
+        for variant in range(3):
+            theme_prop(theme, variant)
     scrap_rich()
     muzzle_flash()
     scorch()
@@ -1369,6 +1542,45 @@ def main() -> None:
     icon_idle()
     pack_atlas()
     print("done")
+
+
+def check_reproducible() -> None:
+    """Regenerates out of tree and compares every committed asset byte."""
+    committed = Path(__file__).resolve().parent.parent / "assets" / "sprites"
+    with tempfile.TemporaryDirectory(prefix="oxide-sprite-check-") as temp:
+        generated = Path(temp) / "sprites"
+        generate(generated)
+        expected_files = {p.name: p.read_bytes() for p in committed.iterdir() if p.is_file()}
+        actual_files = {p.name: p.read_bytes() for p in generated.iterdir() if p.is_file()}
+    missing = sorted(expected_files.keys() - actual_files.keys())
+    extra = sorted(actual_files.keys() - expected_files.keys())
+    changed = sorted(
+        name
+        for name in expected_files.keys() & actual_files.keys()
+        if expected_files[name] != actual_files[name]
+    )
+    if missing or extra or changed:
+        raise SystemExit(
+            "generated sprites differ from the committed source of truth: "
+            f"missing={missing}, extra={extra}, changed={changed}"
+        )
+    print(f"reproducible: {len(actual_files)} files match byte-for-byte")
+
+
+def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="regenerate in a temporary directory and compare committed bytes",
+    )
+    args = parser.parse_args()
+    if args.check:
+        check_reproducible()
+    else:
+        generate(Path(__file__).resolve().parent.parent / "assets" / "sprites")
 
 
 if __name__ == "__main__":

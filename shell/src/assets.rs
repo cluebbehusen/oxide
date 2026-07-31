@@ -25,6 +25,8 @@ pub struct Sprites {
     turret_barrel: [Rect; 3],
     rock_skirt: Rect,
     decals: [Rect; 4],
+    /// Three flat ground-dressing variants for each shipped theme.
+    theme_props: [Rect; 18],
     scrap_full: Rect,
     scrap_mid: Rect,
     scrap_low: Rect,
@@ -125,6 +127,41 @@ const PEAK_LONE_KEYS: [&str; 2] = ["peak_lone_0", "peak_lone_1"];
 const PEAK_BODY_KEYS: [&str; 2] = ["peak_body_0", "peak_body_1"];
 
 const DECAL_KEYS: [&str; 4] = ["decal_crack", "decal_plate", "decal_stain", "decal_wreck"];
+
+/// Three flat ground-dressing sprites per shipped theme. Theme order is
+/// mirrored by [`Sprites::theme_prop`].
+const THEME_PROP_KEYS: [&str; 18] = [
+    "theme_rusted_yard_0",
+    "theme_rusted_yard_1",
+    "theme_rusted_yard_2",
+    "theme_cold_circuitry_0",
+    "theme_cold_circuitry_1",
+    "theme_cold_circuitry_2",
+    "theme_quarry_dust_0",
+    "theme_quarry_dust_1",
+    "theme_quarry_dust_2",
+    "theme_basalt_0",
+    "theme_basalt_1",
+    "theme_basalt_2",
+    "theme_slag_0",
+    "theme_slag_1",
+    "theme_slag_2",
+    "theme_verdigris_0",
+    "theme_verdigris_1",
+    "theme_verdigris_2",
+];
+
+fn theme_prop_row(theme: &str) -> Option<usize> {
+    match theme {
+        "rusted-yard" => Some(0),
+        "cold-circuitry" => Some(1),
+        "quarry-dust" => Some(2),
+        "basalt" => Some(3),
+        "slag" => Some(4),
+        "verdigris" => Some(5),
+        _ => None,
+    }
+}
 
 const SCAFFOLD_KEYS: [&str; 2] = ["scaffold_dense", "scaffold_sparse"];
 
@@ -230,6 +267,7 @@ fn atlas_keys() -> Vec<String> {
         .chain(PEAK_LONE_KEYS.iter())
         .chain(PEAK_BODY_KEYS.iter())
         .chain(DECAL_KEYS.iter())
+        .chain(THEME_PROP_KEYS.iter())
         .chain(SCAFFOLD_KEYS.iter())
         .chain(DEBRIS_KEYS.iter())
         .map(|key| (*key).to_string())
@@ -311,6 +349,7 @@ impl Sprites {
             turret_barrel: variant_row(&rects, TURRET_BARREL_STEM, "")?,
             rock_skirt,
             decals: pick(&rects, DECAL_KEYS)?,
+            theme_props: pick(&rects, THEME_PROP_KEYS)?,
             scrap_full,
             scrap_mid,
             scrap_low,
@@ -403,6 +442,12 @@ impl Sprites {
     /// A ground decal's atlas region.
     pub fn decal(&self, variant: usize) -> Rect {
         self.decals[variant % self.decals.len()]
+    }
+
+    /// A flat ground-dressing sprite for a shipped map theme.
+    pub fn theme_prop(&self, theme: &str, variant: usize) -> Option<Rect> {
+        let row = theme_prop_row(theme)?;
+        Some(self.theme_props[row * 3 + variant % 3])
     }
 
     /// The scrap sprite region for a remaining amount: anything above a
@@ -653,5 +698,29 @@ mod tests {
                 assert!(atlas.contains_key(&key), "no {key} in the atlas");
             }
         }
+    }
+
+    #[test]
+    fn every_theme_prop_row_is_tile_sized_and_ordered_like_the_lookup() {
+        let atlas = manifest();
+        for (row, (theme, stem)) in [
+            ("rusted-yard", "rusted_yard"),
+            ("cold-circuitry", "cold_circuitry"),
+            ("quarry-dust", "quarry_dust"),
+            ("basalt", "basalt"),
+            ("slag", "slag"),
+            ("verdigris", "verdigris"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(theme_prop_row(theme), Some(row));
+            for variant in 0..3 {
+                let key = format!("theme_{stem}_{variant}");
+                assert_eq!(THEME_PROP_KEYS[row * 3 + variant], key);
+                assert_eq!(atlas[&key][2..], [64.0, 64.0]);
+            }
+        }
+        assert_eq!(theme_prop_row("unknown"), None);
     }
 }

@@ -102,20 +102,20 @@
   64
  ],
  "debris_0": [
-  210,
-  1578,
+  470,
+  1714,
   32,
   32
  ],
  "debris_1": [
-  246,
-  1578,
+  2,
+  1766,
   32,
   32
  ],
  "debris_2": [
-  282,
-  1578,
+  38,
+  1766,
   32,
   32
  ],
@@ -306,74 +306,74 @@
   64
  ],
  "icon_attack": [
-  70,
-  1510,
+  342,
+  1646,
   48,
   48
  ],
  "icon_attack_move": [
-  122,
-  1510,
+  394,
+  1646,
   48,
   48
  ],
  "icon_build": [
-  174,
-  1510,
+  446,
+  1646,
   48,
   48
  ],
  "icon_cancel": [
-  226,
-  1510,
+  2,
+  1714,
   48,
   48
  ],
  "icon_harvest": [
-  278,
-  1510,
+  54,
+  1714,
   48,
   48
  ],
  "icon_idle": [
-  330,
-  1510,
+  106,
+  1714,
   48,
   48
  ],
  "icon_move": [
-  382,
-  1510,
+  158,
+  1714,
   48,
   48
  ],
  "icon_patrol": [
-  434,
-  1510,
+  210,
+  1714,
   48,
   48
  ],
  "icon_rally": [
-  2,
-  1578,
+  262,
+  1714,
   48,
   48
  ],
  "icon_repair": [
-  54,
-  1578,
+  314,
+  1714,
   48,
   48
  ],
  "icon_salvage": [
-  106,
-  1578,
+  366,
+  1714,
   48,
   48
  ],
  "icon_stop": [
-  158,
-  1578,
+  418,
+  1714,
   48,
   48
  ],
@@ -396,8 +396,8 @@
   64
  ],
  "muzzle_flash": [
-  318,
-  1578,
+  74,
+  1766,
   32,
   32
  ],
@@ -653,63 +653,171 @@
   64,
   64
  ],
- "turret_accent": [
+ "theme_basalt_0": [
   342,
   1374,
   64,
   64
  ],
- "turret_barrel_accent": [
+ "theme_basalt_1": [
   410,
   1374,
   64,
   64
  ],
- "turret_barrel_cupric": [
+ "theme_basalt_2": [
   2,
   1442,
   64,
   64
  ],
- "turret_barrel_ferrous": [
+ "theme_cold_circuitry_0": [
   70,
   1442,
   64,
   64
  ],
- "turret_cupric": [
+ "theme_cold_circuitry_1": [
   138,
   1442,
   64,
   64
  ],
- "turret_ferrous": [
+ "theme_cold_circuitry_2": [
   206,
   1442,
   64,
   64
  ],
- "wisp_accent": [
+ "theme_quarry_dust_0": [
   274,
   1442,
   64,
   64
  ],
- "wisp_cupric": [
+ "theme_quarry_dust_1": [
   342,
   1442,
   64,
   64
  ],
- "wisp_ferrous": [
+ "theme_quarry_dust_2": [
   410,
   1442,
   64,
   64
  ],
- "wreck_pile": [
+ "theme_rusted_yard_0": [
   2,
   1510,
+  64,
+  64
+ ],
+ "theme_rusted_yard_1": [
+  70,
+  1510,
+  64,
+  64
+ ],
+ "theme_rusted_yard_2": [
+  138,
+  1510,
+  64,
+  64
+ ],
+ "theme_slag_0": [
+  206,
+  1510,
+  64,
+  64
+ ],
+ "theme_slag_1": [
+  274,
+  1510,
+  64,
+  64
+ ],
+ "theme_slag_2": [
+  342,
+  1510,
+  64,
+  64
+ ],
+ "theme_verdigris_0": [
+  410,
+  1510,
+  64,
+  64
+ ],
+ "theme_verdigris_1": [
+  2,
+  1578,
+  64,
+  64
+ ],
+ "theme_verdigris_2": [
+  70,
+  1578,
+  64,
+  64
+ ],
+ "turret_accent": [
+  138,
+  1578,
+  64,
+  64
+ ],
+ "turret_barrel_accent": [
+  206,
+  1578,
+  64,
+  64
+ ],
+ "turret_barrel_cupric": [
+  274,
+  1578,
+  64,
+  64
+ ],
+ "turret_barrel_ferrous": [
+  342,
+  1578,
+  64,
+  64
+ ],
+ "turret_cupric": [
+  410,
+  1578,
+  64,
+  64
+ ],
+ "turret_ferrous": [
+  2,
+  1646,
+  64,
+  64
+ ],
+ "wisp_accent": [
+  70,
+  1646,
+  64,
+  64
+ ],
+ "wisp_cupric": [
+  138,
+  1646,
+  64,
+  64
+ ],
+ "wisp_ferrous": [
+  206,
+  1646,
+  64,
+  64
+ ],
+ "wreck_pile": [
+  274,
+  1646,
   64,
   64
  ]
