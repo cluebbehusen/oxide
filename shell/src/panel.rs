@@ -83,6 +83,8 @@ pub enum CardAction {
     Dispatch(Action),
     /// Arm building placement (what the palette digit does).
     ArmBuild(BuildingKind),
+    /// Arm the next world/minimap click as this producer's rally.
+    ArmRally(BuildingId),
     /// Remove a queued unit from a producer (full refund).
     CancelQueue(BuildingId, u8),
     /// Clear a producer's rally point.
@@ -562,6 +564,24 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
                 progress: None,
             });
         }
+        panel.cards.push(Card {
+            icon: CardIcon::Verb(VerbIcon::Rally),
+            title: if building.rally.is_some() {
+                "Reset rally".into()
+            } else {
+                "Set rally".into()
+            },
+            cost: None,
+            hotkey: String::new(),
+            action: CardAction::ArmRally(building.id),
+            enabled: true,
+            why: None,
+            desc: vec![
+                "Choose where newly trained units report.".into(),
+                "A scrap rally sends new Harvesters straight to work.".into(),
+            ],
+            progress: None,
+        });
         if building.rally.is_some() {
             panel.cards.push(Card {
                 icon: CardIcon::Verb(VerbIcon::Rally),
@@ -897,7 +917,7 @@ mod tests {
         game.selection.building = Some(human_foundry(&game));
         let panel = build(&game, &BindingMap::classic()).expect("panel");
         assert_eq!(panel.title, "FOUNDRY");
-        assert_eq!(panel.cards.len(), 2, "harvester and sentinel");
+        assert_eq!(panel.cards.len(), 3, "two units plus the rally affordance");
         assert_eq!(panel.cards[0].hotkey, "1");
         assert_eq!(panel.cards[0].cost, Some(50));
         assert!(panel.cards[0].enabled, "150 scrap affords a harvester");
@@ -911,6 +931,38 @@ mod tests {
         // the sentinel's carries both of its guns.
         assert!(!panel.cards[0].desc.iter().any(|l| l.contains("damage")));
         assert!(panel.cards[1].desc.iter().any(|l| l.contains("damage")));
+        assert_eq!(panel.cards[2].title, "Set rally");
+        assert_eq!(
+            panel.cards[2].action,
+            CardAction::ArmRally(human_foundry(&game))
+        );
+    }
+
+    #[test]
+    fn a_producer_always_exposes_set_reset_and_clear_rally_actions() {
+        let mut game = game();
+        let foundry = human_foundry(&game);
+        game.selection.building = Some(foundry);
+        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        assert!(panel.cards.iter().any(|card| {
+            card.title == "Set rally" && card.action == CardAction::ArmRally(foundry)
+        }));
+        assert!(!panel.cards.iter().any(|card| card.title == "Clear rally"));
+
+        game.state.tick(&[PlayerCommand {
+            player: game.human,
+            command: Command::SetRally {
+                building: foundry,
+                rally: Some(chassis::grid::TilePos::new(12, 8)),
+            },
+        }]);
+        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        assert!(panel.cards.iter().any(|card| {
+            card.title == "Reset rally" && card.action == CardAction::ArmRally(foundry)
+        }));
+        assert!(panel.cards.iter().any(|card| {
+            card.title == "Clear rally" && card.action == CardAction::ClearRally(foundry)
+        }));
     }
 
     #[test]
@@ -950,12 +1002,19 @@ mod tests {
         let queued = game.state.building(foundry).unwrap().queue.len();
         assert_eq!(queued, oxide_sim::stats::QUEUE_CAP, "the sim capped it");
         let panel = build(&game, &BindingMap::classic()).expect("panel");
-        assert!(panel.cards.iter().all(|c| !c.enabled));
         assert!(
             panel
                 .cards
                 .iter()
-                .all(|c| c.why.as_deref() == Some("queue is full")),
+                .filter(|card| card.cost.is_some())
+                .all(|card| !card.enabled)
+        );
+        assert!(
+            panel
+                .cards
+                .iter()
+                .filter(|card| card.cost.is_some())
+                .all(|card| card.why.as_deref() == Some("queue is full")),
             "the reason names the cap, not the bank"
         );
     }

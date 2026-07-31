@@ -114,6 +114,8 @@ pub struct InputState {
     /// Armed attack-move: the next ground click sends the selection on
     /// a fighting march that chases enemies along its route.
     pub(crate) attacking: bool,
+    /// Producer whose rally point the next world/minimap click sets.
+    pub(crate) rallying: Option<oxide_sim::BuildingId>,
     /// Whether the build palette is open (`B`; digits pick a structure).
     pub(crate) build_menu: bool,
     /// This frame's chrome scale (dpi x user), injected by the frame
@@ -316,6 +318,7 @@ impl InputState {
             repairing: false,
             running: false,
             attacking: false,
+            rallying: None,
             build_menu: false,
             ui: 1.0,
             now: 0.0,
@@ -342,7 +345,7 @@ impl InputState {
     /// held-state otherwise pans the camera forever (or fires a phantom
     /// box-select) after resuming.
     /// One armed left-click verb at a time: arming placement, salvage,
-    /// repair, run, or attack-move stands the others down. `armed_click`
+    /// repair, run, attack-move, or rally stands the others down. `armed_click`
     /// resolves modes in a fixed priority order, so two live at once
     /// would make the next click do something other than what the toast
     /// promised — press M while placing and the click would still stamp
@@ -354,6 +357,7 @@ impl InputState {
         self.repairing = false;
         self.running = false;
         self.attacking = false;
+        self.rallying = None;
     }
 
     pub fn reset_transient(&mut self) {
@@ -368,6 +372,7 @@ impl InputState {
         self.repairing = false;
         self.running = false;
         self.attacking = false;
+        self.rallying = None;
         self.build_menu = false;
         self.touches.clear();
         self.last_tap = None;
@@ -696,6 +701,7 @@ pub fn desired_cursor(game: &Game, input: &InputState) -> macroquad::miniquad::C
         || input.repairing
         || input.running
         || input.attacking
+        || input.rallying.is_some()
     {
         return CursorIcon::Crosshair;
     }
@@ -871,6 +877,19 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 y,
             } => {
                 input.mouse = vec2(x, y);
+                // A contextual order is a new intent, so it also exits
+                // any one-shot mode left armed by a prior build/salvage/
+                // weld/run/attack-move gesture. In particular, a move
+                // away from a deferred Found order must not leave a
+                // placement ghost stuck to the cursor. Patrol is the
+                // exception: its right-clicks are collecting the route.
+                if input.patrol_route.is_none() {
+                    let cancelled_placement = input.placing.is_some();
+                    input.disarm_click_verbs();
+                    if cancelled_placement {
+                        game.toast("placement cancelled; issuing new order");
+                    }
+                }
                 // A right-click on the minimap orders to that world tile
                 // (ground semantics — entities can't be picked at that
                 // scale); anywhere else, full context ordering. HUD chrome
@@ -1130,6 +1149,21 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
 /// Mouse and touch route here identically: a fingertip that armed a
 /// Build card completes the build with its next tap.
 fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
+    if let Some(building) = input.rallying {
+        let world = crate::render::minimap_world_at(game, p)
+            .or_else(|| (!click_on_hud(game, p)).then(|| game.camera.to_world(p)));
+        if let Some(world) = world {
+            let rally = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+            game.issue(Command::SetRally {
+                building,
+                rally: Some(rally),
+            });
+            game.ping(world, PingKind::Rally);
+            input.rallying = None;
+            game.toast("rally point set");
+        }
+        return true;
+    }
     if let Some(kind) = input.placing {
         // The minimap keeps its meaning while placing: jump the
         // camera, never misread the click as world ground (that would
@@ -1366,6 +1400,11 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
                 kind.name(),
                 cost
             ));
+        }
+        crate::panel::CardAction::ArmRally(building) => {
+            input.disarm_click_verbs();
+            input.rallying = Some(building);
+            game.toast("set rally: click the battlefield or minimap, Esc to cancel");
         }
         crate::panel::CardAction::CancelQueue(building, index) => {
             game.issue(Command::CancelTrain { building, index });

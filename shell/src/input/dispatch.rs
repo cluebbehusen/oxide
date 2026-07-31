@@ -154,6 +154,10 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 game.toast("attack-move cancelled");
                 return;
             }
+            if input.rallying.take().is_some() {
+                game.toast("rally placement cancelled");
+                return;
+            }
             if input.patrol_route.take().is_some() {
                 game.toast("patrol cancelled");
                 return;

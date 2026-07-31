@@ -235,6 +235,186 @@ fn a_right_click_on_ground_stages_an_advance() {
 }
 
 #[test]
+fn a_context_order_cancels_placement_and_every_deferred_build_ghost() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let builder = game
+        .state
+        .units()
+        .iter()
+        .find(|unit| unit.player == game.human && unit.kind == UnitKind::Harvester)
+        .expect("a starting Harvester")
+        .id;
+    let start = game.state.unit(builder).unwrap().tile();
+    let kind = oxide_sim::BuildingKind::Turret;
+    let claims = [
+        PlayerCommand {
+            player: game.human,
+            command: Command::Build {
+                units: vec![builder],
+                kind,
+                anchor: start.offset(5, 0),
+                queue: false,
+                defer: true,
+            },
+        },
+        PlayerCommand {
+            player: game.human,
+            command: Command::Build {
+                units: vec![builder],
+                kind,
+                anchor: start.offset(6, 0),
+                queue: true,
+                defer: true,
+            },
+        },
+    ];
+    let setup = game.state.tick(&claims);
+    assert!(
+        !setup
+            .events
+            .iter()
+            .any(|event| matches!(event, oxide_sim::Event::CommandRejected { .. })),
+        "premise: both deferred claims are accepted: {:?}",
+        setup.events
+    );
+    game.selection.units = vec![builder];
+    input.placing = Some(kind);
+
+    let goal = start.offset(0, 4);
+    let point = game
+        .camera
+        .to_screen(vec2(goal.x as f32 + 0.5, goal.y as f32 + 0.5));
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::MouseDown {
+            button: MouseButton::Right,
+            x: point.x,
+            y: point.y,
+        }],
+    );
+
+    assert!(
+        input.placing.is_none(),
+        "the cursor ghost exits as soon as a new contextual order is given"
+    );
+    assert!(matches!(
+        game.pending.as_slice(),
+        [PlayerCommand {
+            command: Command::Advance { queue: false, .. },
+            ..
+        }]
+    ));
+
+    let commands = std::mem::take(&mut game.pending);
+    let report = game.state.tick(&commands);
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| matches!(event, oxide_sim::Event::CommandRejected { .. }))
+    );
+    let builder = game.state.unit(builder).unwrap();
+    assert!(matches!(builder.order, oxide_sim::Order::Move { .. }));
+    assert!(
+        builder.queue.is_empty(),
+        "replacement clears queued claims too"
+    );
+    assert!(
+        std::iter::once(&builder.order)
+            .chain(builder.queue.iter())
+            .all(|order| !matches!(order, oxide_sim::Order::Found { .. })),
+        "no deferred footprint remains for the renderer to ghost"
+    );
+}
+
+#[test]
+fn the_rally_card_arms_a_touchable_world_target() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let foundry = game
+        .state
+        .buildings()
+        .iter()
+        .find(|building| building.player == game.human)
+        .expect("human Foundry")
+        .id;
+    game.selection.building = Some(foundry);
+
+    let card = macroquad::math::Rect::new(300.0, 700.0, 60.0, 60.0);
+    let zero = macroquad::math::Rect::new(0.0, 0.0, 0.0, 0.0);
+    let mut cards = [(zero, crate::panel::CardAction::None); 16];
+    cards[0] = (card, crate::panel::CardAction::ArmRally(foundry));
+    game.layout.set(crate::layout::LayoutModel::compute(
+        vec2(1280.0, 800.0),
+        1.0,
+        680.0,
+        500.0,
+        zero,
+        zero,
+        zero,
+        cards,
+        1,
+        [(zero, crate::panel::CardAction::None); 8],
+        0,
+    ));
+
+    input.now = 1.0;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::TouchDown {
+                id: 1,
+                x: card.x + 20.0,
+                y: card.y + 20.0,
+            },
+            RawEvent::TouchUp {
+                id: 1,
+                x: card.x + 20.0,
+                y: card.y + 20.0,
+            },
+        ],
+    );
+    assert_eq!(input.rallying, Some(foundry));
+
+    let rally = chassis::grid::TilePos::new(14, 9);
+    let point = game
+        .camera
+        .to_screen(vec2(rally.x as f32 + 0.5, rally.y as f32 + 0.5));
+    input.now = 2.0;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::TouchDown {
+                id: 2,
+                x: point.x,
+                y: point.y,
+            },
+            RawEvent::TouchUp {
+                id: 2,
+                x: point.x,
+                y: point.y,
+            },
+        ],
+    );
+
+    assert!(matches!(
+        game.pending.as_slice(),
+        [PlayerCommand {
+            command: Command::SetRally {
+                building,
+                rally: Some(staged),
+            },
+            ..
+        }] if *building == foundry && *staged == rally
+    ));
+    assert_eq!(input.rallying, None, "one target consumes the armed card");
+}
+
+#[test]
 fn double_click_timing_obeys_the_injected_clock() {
     let mut game = headless_game();
     let mut input = InputState::new();
