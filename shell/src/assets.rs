@@ -743,6 +743,59 @@ mod tests {
         }
     }
 
+    fn sprite_image(name: &str) -> macroquad::prelude::Image {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../assets/sprites")
+            .join(format!("{name}.png"));
+        let bytes =
+            std::fs::read(&path).unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
+        macroquad::prelude::Image::from_file_with_format(
+            &bytes,
+            Some(macroquad::prelude::ImageFormat::Png),
+        )
+        .unwrap_or_else(|err| panic!("decoding {}: {err}", path.display()))
+    }
+
+    fn alpha_bytes(image: &macroquad::prelude::Image) -> impl Iterator<Item = u8> + '_ {
+        image.bytes.chunks_exact(4).map(|pixel| pixel[3])
+    }
+
+    #[test]
+    fn defense_mount_art_covers_its_pivot_and_carries_an_allegiance_mask() {
+        for stem in [TURRET_BARREL_STEM, FLAK_MOUNT_STEM, BASTION_MOUNT_STEM] {
+            let ferrous = sprite_image(&format!("{stem}_ferrous"));
+            let cupric = sprite_image(&format!("{stem}_cupric"));
+            let accent = sprite_image(&format!("{stem}_accent"));
+
+            assert_eq!(
+                (ferrous.width, ferrous.height),
+                (cupric.width, cupric.height)
+            );
+            assert_eq!(
+                (ferrous.width, ferrous.height),
+                (accent.width, accent.height)
+            );
+            assert_eq!(
+                alpha_bytes(&ferrous).collect::<Vec<_>>(),
+                alpha_bytes(&cupric).collect::<Vec<_>>(),
+                "{stem} variants must rotate as one silhouette"
+            );
+
+            let center = (usize::from(ferrous.height / 2) * usize::from(ferrous.width)
+                + usize::from(ferrous.width / 2))
+                * 4;
+            assert_ne!(
+                ferrous.bytes[center + 3],
+                0,
+                "{stem} must cover its centered rotation pivot"
+            );
+            assert!(
+                alpha_bytes(&accent).any(|alpha| alpha > 0),
+                "{stem} needs a non-empty allegiance mask"
+            );
+        }
+    }
+
     #[test]
     fn every_theme_prop_row_is_tile_sized_and_ordered_like_the_lookup() {
         let atlas = manifest();

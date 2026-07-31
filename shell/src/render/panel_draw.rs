@@ -89,6 +89,15 @@ pub(crate) fn draw_panel(
             },
         );
     };
+    // Defense art is authored as a base plus a north-facing live mount.
+    // Static cards compose the same silhouette without inventing aim.
+    let blit_building =
+        |dest: Rect, kind: oxide_sim::BuildingKind, faction: oxide_sim::Faction, tint: Color| {
+            blit(dest, sprites.building(kind, faction), tint);
+            if let Some(mount) = sprites.defense_mount(kind, faction) {
+                blit(dest, mount, tint);
+            }
+        };
     // An order chip is two composed draws: the subject's own silhouette
     // (translucent under a scaffold while its site is still rising) and
     // the verb as a corner badge on a dark plate, so the pictogram
@@ -101,27 +110,35 @@ pub(crate) fn draw_panel(
             ghost,
         } = icon
         else {
-            let source = match icon {
-                CardIcon::Unit(kind) => sprites.unit(*kind, faction),
-                CardIcon::Building(kind) => sprites.building(*kind, faction),
-                CardIcon::Verb(v) => sprites.verb_icon(*v),
-                CardIcon::Order { verb, .. } => sprites.verb_icon(*verb),
-            };
-            blit(dest, source, tint);
+            match icon {
+                CardIcon::Unit(kind) => blit(dest, sprites.unit(*kind, faction), tint),
+                CardIcon::Building(kind) => blit_building(dest, *kind, faction, tint),
+                CardIcon::Verb(v) => blit(dest, sprites.verb_icon(*v), tint),
+                CardIcon::Order { verb, .. } => blit(dest, sprites.verb_icon(*verb), tint),
+            }
             return;
         };
         // The subject wears ITS OWN colors: an attack chip's victim is
         // not the panel owner's faction.
-        let source = match subject {
-            crate::panel::OrderSubject::Unit(kind, f) => sprites.unit(*kind, *f),
-            crate::panel::OrderSubject::Building(kind, f) => sprites.building(*kind, *f),
-        };
         let hull = if *ghost {
             Color::new(tint.r, tint.g, tint.b, tint.a * 0.7)
         } else {
             tint
         };
-        blit(dest, source, hull);
+        match subject {
+            crate::panel::OrderSubject::Unit(kind, f) => {
+                blit(dest, sprites.unit(*kind, *f), hull);
+            }
+            crate::panel::OrderSubject::Building(kind, f) => {
+                blit(dest, sprites.building(*kind, *f), hull);
+                // A construction ghost is still a bare foundation under
+                // scaffold; live targets and finished orders keep the
+                // complete defense silhouette.
+                if !*ghost && let Some(mount) = sprites.defense_mount(*kind, *f) {
+                    blit(dest, mount, hull);
+                }
+            }
+        }
         if *ghost {
             // The sparse lattice, not the dense one the world opens
             // with: at chip size a full scaffold reads as noise over

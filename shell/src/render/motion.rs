@@ -111,6 +111,10 @@ pub(crate) fn mount_pose(
         BuildingKind::Bastion => (0.34, 0.060, 0.24),
         _ => (0.0, 0.0, 0.0),
     };
+    // A presentation stamp should never sit ahead of the presentation
+    // clock, but clamping the envelope here keeps a seek/reset race from
+    // exaggerating recoil or producing a flash brighter than authored.
+    let shot_age = shot_age.max(0.0);
     let recoil = if reduced || duration == 0.0 || shot_age >= duration {
         0.0
     } else {
@@ -169,11 +173,42 @@ mod tests {
     }
 
     #[test]
-    fn reduced_mount_keeps_aim_and_drops_recoil() {
+    fn pose_envelopes_stay_finite_and_inside_authored_bounds() {
+        for id in [0, 1, 17, u16::MAX as u32] {
+            for step in 0..=240 {
+                let time = step as f32 / 24.0;
+                for airborne in [false, true] {
+                    let pose = unit_pose(time, id, true, airborne, false);
+                    for value in [
+                        pose.lateral,
+                        pose.lift,
+                        pose.width_scale,
+                        pose.height_scale,
+                        pose.dust,
+                        pose.thruster,
+                    ] {
+                        assert!(value.is_finite());
+                    }
+                    assert!((0.9..=1.1).contains(&pose.width_scale));
+                    assert!((0.9..=1.1).contains(&pose.height_scale));
+                    assert!((0.0..=1.0).contains(&pose.dust));
+                    assert!((0.0..=1.0).contains(&pose.thruster));
+                }
+                assert!((0.0..=1.0).contains(&activity_phase(time, id, 8.0, false)));
+            }
+        }
+    }
+
+    #[test]
+    fn reduced_mount_keeps_aim_and_shot_envelopes_are_bounded() {
         let live = mount_pose(BuildingKind::Bastion, 1.25, 0.05, false);
         assert_eq!(live.angle, 1.25);
         assert!(live.recoil > 0.0);
         assert!(live.flash > 0.0);
+
+        let early = mount_pose(BuildingKind::Bastion, 1.25, -0.05, false);
+        assert_eq!(early.recoil, 0.060);
+        assert_eq!(early.flash, 1.0);
 
         let held = mount_pose(BuildingKind::Bastion, 1.25, 0.05, true);
         assert_eq!(held.angle, 1.25);

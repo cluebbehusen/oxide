@@ -347,18 +347,17 @@ fn draw_defense_mount(
         );
     }
     if pose.flash > 0.0 {
-        let muzzle = center
-            + forward
-                * dest.x
-                * match building.kind {
-                    oxide_sim::BuildingKind::Bastion => 0.45,
-                    _ => 0.40,
-                };
-        let offsets: &[f32] = if building.kind == oxide_sim::BuildingKind::FlakTurret {
-            &[-0.12, 0.12]
-        } else {
-            &[0.0]
+        // These fractions mirror the generated canvases: all mounts pivot
+        // at center, while Flak's four authored barrels own four flashes.
+        let (muzzle_reach, offsets): (f32, &[f32]) = match building.kind {
+            oxide_sim::BuildingKind::Turret => (0.44, &[0.0]),
+            oxide_sim::BuildingKind::FlakTurret => {
+                (0.47, &[-0.203_125, -0.109_375, 0.109_375, 0.203_125])
+            }
+            oxide_sim::BuildingKind::Bastion => (0.46, &[0.0]),
+            _ => (0.0, &[]),
         };
+        let muzzle = center + forward * dest.x * muzzle_reach;
         for offset in offsets {
             let flash = muzzle + right * dest.x * *offset;
             draw_circle(
@@ -673,7 +672,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                         game.fx_time(),
                         building.id.0,
                         2.4,
-                        reduced_motion(),
+                        reduced_motion() || !active,
                     );
                     let gantry_x = screen.x + dest.x * (0.32 + phase * 0.36);
                     draw_rectangle(
