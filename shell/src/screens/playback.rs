@@ -72,6 +72,16 @@ impl PlaybackSession {
             scrubbing: false,
         })
     }
+
+    /// Opens a completed record as a frozen battlefield inspection.
+    /// The seek is budgeted through the ordinary viewer update so a very
+    /// long match reports progress instead of freezing the render thread.
+    pub fn from_replay_at_end(replay: GameReplay) -> Result<Self> {
+        let mut session = Self::from_replay(replay)?;
+        session.paused = true;
+        session.seeking = Some(session.engine.total());
+        Ok(session)
+    }
 }
 
 /// Where the scrub bar lives: a strip above the transport line,
@@ -430,14 +440,18 @@ mod tests {
     use super::*;
     use macroquad::prelude::vec2;
 
-    fn session() -> PlaybackSession {
+    fn replay() -> GameReplay {
         // A short real replay: run the embedded skirmish headless and
         // record it, exactly what a save file contains.
         let scenario = oxide_sim::Scenario::skirmish();
         let outcome = oxide_kit::runner::run_scenario(&scenario, 60, true, true).expect("run");
         let mut replay = outcome.replay.expect("recorded");
         replay.meta.ticks = Some(60);
-        PlaybackSession::from_replay(replay).expect("session opens")
+        replay
+    }
+
+    fn session() -> PlaybackSession {
+        PlaybackSession::from_replay(replay()).expect("session opens")
     }
 
     fn key(session: &mut PlaybackSession, key: Key) -> bool {
@@ -481,6 +495,22 @@ mod tests {
         replay.meta.ticks = Some(60);
         let pb = PlaybackSession::from_replay(replay).expect("a spectator needs no command seat");
         assert!(pb.game.spectate, "the viewer stays fog-free");
+    }
+
+    #[test]
+    fn final_map_opens_paused_and_seeks_to_the_record_tail() {
+        let mut pb = PlaybackSession::from_replay_at_end(replay()).expect("final map opens");
+        assert!(pb.paused);
+        assert_eq!(pb.seeking, Some(60));
+        assert!(pb.game.recorder.commands.is_empty());
+
+        let mut mouse = vec2(0.0, 0.0);
+        assert!(!pb.update(&[], 0.0, vec2(1280.0, 800.0), false, 1.0, &mut mouse,));
+        assert_eq!(pb.engine.position(), 60);
+        assert!(pb.engine.at_end());
+        assert!(pb.paused);
+        assert!(pb.seeking.is_none());
+        assert!(key(&mut pb, Key::Escape));
     }
 
     #[test]

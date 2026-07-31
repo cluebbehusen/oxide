@@ -7,9 +7,17 @@ use crate::game::{Game, SoundKind};
 use crate::{render, theme};
 use macroquad::prelude::*;
 use oxide_protocol::{Key, MouseButton, RawEvent};
-use oxide_sim::{GameResult, PlayerId, TICKS_PER_SECOND};
+use oxide_sim::{GameResult, PlayerId, TICKS_PER_SECOND, bot::Level};
 
-const ACTIONS: [&str; 3] = ["REMATCH", "WATCH REPLAY", "HOME"];
+const ACTIONS: [&str; 4] = ["REMATCH", "WATCH REPLAY", "VIEW FINAL MAP", "HOME"];
+const WIDE_STAT_HEADERS: [&str; 6] = [
+    "PEAK ARMY VALUE",
+    "UNITS BUILT",
+    "BUILDINGS BUILT",
+    "UNITS LOST",
+    "BUILDINGS LOST",
+    "SCRAP COLLECTED",
+];
 
 /// What a result frame decided.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +28,8 @@ pub enum Out {
     Rematch,
     /// Watch the completed command record.
     Watch,
+    /// Inspect the completed battlefield through the read-only replay viewer.
+    ViewFinalMap,
     /// Return to the front door.
     Home,
 }
@@ -28,38 +38,35 @@ fn out_for(index: usize) -> Out {
     match index {
         0 => Out::Rematch,
         1 => Out::Watch,
+        2 => Out::ViewFinalMap,
         _ => Out::Home,
     }
 }
 
 /// Touchable action geometry, injected for headless tests.
-pub(crate) fn action_rects(viewport: Vec2, scale: f32) -> [Rect; 3] {
+pub(crate) fn action_rects(viewport: Vec2, scale: f32) -> [Rect; ACTIONS.len()] {
     let gap = 10.0 * scale;
     let margin = 24.0 * scale;
-    let available = (viewport.x - margin * 2.0 - gap * 2.0).max(3.0);
-    let width = (available / 3.0).min(210.0 * scale);
-    let total = width * 3.0 + gap * 2.0;
+    let action_count = ACTIONS.len() as f32;
+    let available = (viewport.x - margin * 2.0 - gap * (action_count - 1.0)).max(action_count);
+    let width = (available / action_count).min(210.0 * scale);
+    let total = width * action_count + gap * (action_count - 1.0);
     let x = (viewport.x - total) * 0.5;
     let y = viewport.y - 60.0 * scale;
-    [
-        Rect::new(x, y, width, crate::layout::MIN_TOUCH_TARGET * scale),
+    std::array::from_fn(|index| {
         Rect::new(
-            x + width + gap,
+            x + (width + gap) * index as f32,
             y,
             width,
             crate::layout::MIN_TOUCH_TARGET * scale,
-        ),
-        Rect::new(
-            x + (width + gap) * 2.0,
-            y,
-            width,
-            crate::layout::MIN_TOUCH_TARGET * scale,
-        ),
-    ]
+        )
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
 struct ResultsLayout {
+    compact_roster: bool,
+    wide_table: bool,
     title_y: f32,
     title_size: f32,
     meta_y: f32,
@@ -71,13 +78,17 @@ struct ResultsLayout {
     row_size: f32,
     row_baseline: f32,
     marker_radius: f32,
+    graph_title_size: f32,
+    graph_label_size: f32,
     graph_top: f32,
     graph_bottom: f32,
 }
 
 fn results_layout(viewport: Vec2, scale: f32, player_count: usize) -> ResultsLayout {
+    let logical_width = viewport.x / scale.max(f32::EPSILON);
     let logical_height = viewport.y / scale.max(f32::EPSILON);
     let compact_roster = logical_height <= 480.0 && player_count >= 6;
+    let wide_table = !compact_roster && logical_width >= 1_100.0;
     let (
         title_y,
         title_size,
@@ -101,12 +112,12 @@ fn results_layout(viewport: Vec2, scale: f32, player_count: usize) -> ResultsLay
             48.0,
             40.0,
             68.0,
-            15.0,
+            17.0,
             91.0,
-            13.0,
+            17.0,
             16.0,
-            if logical_height <= 480.0 { 19.0 } else { 23.0 },
-            14.0,
+            if logical_height <= 480.0 { 22.0 } else { 27.0 },
+            18.0,
             0.85,
             4.0,
             1.15,
@@ -120,6 +131,8 @@ fn results_layout(viewport: Vec2, scale: f32, player_count: usize) -> ResultsLay
     let graph_bottom = action_rects(viewport, scale)[0].y / scale - 25.0;
 
     ResultsLayout {
+        compact_roster,
+        wide_table,
         title_y: title_y * scale,
         title_size: title_size * scale,
         meta_y: meta_y * scale,
@@ -131,6 +144,8 @@ fn results_layout(viewport: Vec2, scale: f32, player_count: usize) -> ResultsLay
         row_size: row_size * scale,
         row_baseline,
         marker_radius: marker_radius * scale,
+        graph_title_size: (if compact_roster { 14.0 } else { 17.0 }) * scale,
+        graph_label_size: (if compact_roster { 13.0 } else { 16.0 }) * scale,
         graph_top: graph_top * scale,
         graph_bottom: graph_bottom * scale,
     }
@@ -140,6 +155,65 @@ fn action_at(point: Vec2, viewport: Vec2, scale: f32) -> Option<usize> {
     action_rects(viewport, scale)
         .iter()
         .position(|rect| rect.contains(point))
+}
+
+fn table_columns(left: f32, right: f32, wide: bool) -> [f32; 7] {
+    let width = right - left;
+    if wide {
+        let stats_left = left + width * 0.34;
+        let stat_width = (right - stats_left) / 6.0;
+        return std::array::from_fn(|index| {
+            if index == 0 {
+                left
+            } else {
+                stats_left + (index as f32 - 0.5) * stat_width
+            }
+        });
+    }
+    [
+        left,
+        left + width * 0.39,
+        left + width * 0.50,
+        left + width * 0.59,
+        left + width * 0.68,
+        left + width * 0.77,
+        left + width * 0.87,
+    ]
+}
+
+fn draw_centered_text(text: &str, x: f32, y: f32, size: f32, color: Color) {
+    let width = measure_text(text, None, size as u16, 1.0).width;
+    draw_text(text, x - width * 0.5, y, size, color);
+}
+
+fn level_name(level: Level) -> &'static str {
+    match level {
+        Level::Easy => "EASY",
+        Level::Medium => "MEDIUM",
+        Level::Hard => "HARD",
+        Level::Expert => "EXPERT",
+    }
+}
+
+fn player_name_with_difficulty(
+    game: &Game,
+    seat: usize,
+    max_name_chars: usize,
+    compact: bool,
+) -> String {
+    let player = &game.state.players()[seat];
+    let name = clipped_name(&player.name, max_name_chars);
+    let Some(spec) = game.scenario.players.get(seat) else {
+        return name;
+    };
+    if !spec.bot {
+        return name;
+    }
+    match spec.bot_config {
+        Some(config) if compact => format!("{name}  {}", level_name(config.level)),
+        Some(config) => format!("{name}  {} AI", level_name(config.level)),
+        None => format!("{name}  AI"),
+    }
 }
 
 /// Stateful pointer/keyboard ownership for the report.
@@ -323,16 +397,7 @@ impl ResultsScreen {
         let row_h = layout.row_height;
         let left = panel.x + 20.0 * s;
         let right = panel.x + panel.w - 20.0 * s;
-        let table_w = right - left;
-        let columns = [
-            left,
-            left + table_w * 0.39,
-            left + table_w * 0.50,
-            left + table_w * 0.59,
-            left + table_w * 0.68,
-            left + table_w * 0.77,
-            left + table_w * 0.87,
-        ];
+        let columns = table_columns(left, right, layout.wide_table);
         draw_text(
             "PLAYER",
             columns[0],
@@ -340,46 +405,61 @@ impl ResultsScreen {
             layout.header_size,
             theme::TEXT_SECONDARY,
         );
-        draw_text(
-            "PEAK",
-            columns[1],
-            header_y,
-            layout.header_size,
-            theme::TEXT_SECONDARY,
-        );
-        draw_text(
-            "BUILT",
-            (columns[2] + columns[3]) * 0.5 - 17.0 * s,
-            header_y,
-            layout.header_size,
-            theme::TEXT_SECONDARY,
-        );
-        draw_text(
-            "LOST",
-            (columns[4] + columns[5]) * 0.5 - 14.0 * s,
-            header_y,
-            layout.header_size,
-            theme::TEXT_SECONDARY,
-        );
-        draw_text(
-            "SCRAP",
-            columns[6],
-            header_y,
-            layout.header_size,
-            theme::TEXT_SECONDARY,
-        );
-        for (x, kind) in [
-            (columns[2], StatIcon::Unit),
-            (columns[3], StatIcon::Building),
-            (columns[4], StatIcon::Unit),
-            (columns[5], StatIcon::Building),
-        ] {
-            draw_stat_icon(
-                vec2(x + 5.0 * s, header_y + 9.0 * s),
-                4.5 * s,
-                kind,
-                theme::TEXT_BODY,
+        if layout.wide_table {
+            for (label, x) in WIDE_STAT_HEADERS
+                .into_iter()
+                .zip(columns[1..].iter().copied())
+            {
+                draw_centered_text(
+                    label,
+                    x,
+                    header_y,
+                    layout.header_size,
+                    theme::TEXT_SECONDARY,
+                );
+            }
+        } else {
+            draw_text(
+                "PEAK",
+                columns[1],
+                header_y,
+                layout.header_size,
+                theme::TEXT_SECONDARY,
             );
+            draw_text(
+                "BUILT",
+                (columns[2] + columns[3]) * 0.5 - 17.0 * s,
+                header_y,
+                layout.header_size,
+                theme::TEXT_SECONDARY,
+            );
+            draw_text(
+                "LOST",
+                (columns[4] + columns[5]) * 0.5 - 14.0 * s,
+                header_y,
+                layout.header_size,
+                theme::TEXT_SECONDARY,
+            );
+            draw_text(
+                "SCRAP",
+                columns[6],
+                header_y,
+                layout.header_size,
+                theme::TEXT_SECONDARY,
+            );
+            for (x, kind) in [
+                (columns[2], StatIcon::Unit),
+                (columns[3], StatIcon::Building),
+                (columns[4], StatIcon::Unit),
+                (columns[5], StatIcon::Building),
+            ] {
+                draw_stat_icon(
+                    vec2(x + 5.0 * s, header_y + 9.0 * s),
+                    4.5 * s,
+                    kind,
+                    theme::TEXT_BODY,
+                );
+            }
         }
         let rule_y = header_y + layout.rule_offset;
         draw_line(left, rule_y, right, rule_y, 1.0 * s, theme::TEXT_DISABLED);
@@ -404,7 +484,17 @@ impl ResultsScreen {
                 );
                 let winner = game.state.winners().contains(&PlayerId(seat as u8));
                 let crown = if winner { " *" } else { "" };
-                let name = clipped_name(&player.name, if viewport.x < 800.0 { 15 } else { 24 });
+                let max_name_chars = if viewport.x < 800.0 {
+                    if game.scenario.players.get(seat).is_some_and(|spec| spec.bot) {
+                        12
+                    } else {
+                        15
+                    }
+                } else {
+                    24
+                };
+                let name =
+                    player_name_with_difficulty(game, seat, max_name_chars, layout.compact_roster);
                 draw_text(
                     format!("T{}  {}{}", player.team + 1, name, crown),
                     columns[0] + 11.0 * s,
@@ -422,7 +512,11 @@ impl ResultsScreen {
                         (numbers.buildings_lost.to_string(), columns[5]),
                         (numbers.scrap_collected.to_string(), columns[6]),
                     ] {
-                        draw_text(&text, x, y, layout.row_size, theme::TEXT_BODY);
+                        if layout.wide_table {
+                            draw_centered_text(&text, x, y, layout.row_size, theme::TEXT_BODY);
+                        } else {
+                            draw_text(&text, x, y, layout.row_size, theme::TEXT_BODY);
+                        }
                     }
                 }
             }
@@ -438,6 +532,8 @@ impl ResultsScreen {
                         layout.graph_bottom - layout.graph_top,
                     ),
                     s,
+                    layout.graph_title_size,
+                    layout.graph_label_size,
                 );
             }
         } else {
@@ -475,12 +571,13 @@ impl ResultsScreen {
                     theme::TEXT_DISABLED
                 },
             );
-            let dims = measure_text(label, None, (14.0 * s) as u16, 1.0);
+            let action_size = 16.0 * s;
+            let dims = measure_text(label, None, action_size as u16, 1.0);
             draw_text(
                 label,
                 rect.x + (rect.w - dims.width) * 0.5,
                 rect.y + rect.h * 0.62,
-                14.0 * s,
+                action_size,
                 if active {
                     theme::TEXT_PRIMARY
                 } else {
@@ -675,7 +772,14 @@ fn draw_marker(x: f32, y: f32, r: f32, seat: usize, color: Color) {
     }
 }
 
-fn draw_army_graph(game: &Game, report: &oxide_kit::stats::MatchStats, rect: Rect, scale: f32) {
+fn draw_army_graph(
+    game: &Game,
+    report: &oxide_kit::stats::MatchStats,
+    rect: Rect,
+    scale: f32,
+    title_size: f32,
+    label_size: f32,
+) {
     draw_rectangle(rect.x, rect.y, rect.w, rect.h, theme::SURFACE_PANEL);
     draw_rectangle_lines(
         rect.x,
@@ -697,7 +801,7 @@ fn draw_army_graph(game: &Game, report: &oxide_kit::stats::MatchStats, rect: Rec
         "ARMY VALUE",
         rect.x + 9.0 * scale,
         rect.y + 17.0 * scale,
-        14.0 * scale,
+        title_size,
         theme::TEXT_BODY,
     );
     let plot = Rect::new(
@@ -717,12 +821,12 @@ fn draw_army_graph(game: &Game, report: &oxide_kit::stats::MatchStats, rect: Rec
             Color::new(0.55, 0.55, 0.62, 0.18),
         );
         let label = value.to_string();
-        let dims = measure_text(&label, None, (13.0 * scale) as u16, 1.0);
+        let dims = measure_text(&label, None, label_size as u16, 1.0);
         draw_text(
             &label,
             plot.x - dims.width - 5.0 * scale,
             y + 4.0 * scale,
-            13.0 * scale,
+            label_size,
             theme::TEXT_BODY,
         );
     }
@@ -740,14 +844,14 @@ fn draw_army_graph(game: &Game, report: &oxide_kit::stats::MatchStats, rect: Rec
             Color::new(0.55, 0.55, 0.62, 0.13),
         );
         let label = format_duration(tick);
-        let dims = measure_text(&label, None, (13.0 * scale) as u16, 1.0);
+        let dims = measure_text(&label, None, label_size as u16, 1.0);
         let label_x =
             (x - dims.width * 0.5).clamp(rect.x + 2.0, rect.x + rect.w - dims.width - 2.0);
         draw_text(
             &label,
             label_x,
             plot.y + plot.h + 15.0 * scale,
-            13.0 * scale,
+            label_size,
             theme::TEXT_BODY,
         );
     }
@@ -830,7 +934,8 @@ mod tests {
         for viewport in [vec2(640.0, 400.0), vec2(1024.0, 768.0)] {
             let rects = action_rects(viewport, 1.0);
             assert!(rects[0].x >= 0.0);
-            assert!(rects[2].x + rects[2].w <= viewport.x);
+            let last = rects.last().expect("results always has actions");
+            assert!(last.x + last.w <= viewport.x);
             assert!(
                 rects
                     .iter()
@@ -851,10 +956,38 @@ mod tests {
             layout.header_y + layout.rule_offset + (7.0 + layout.row_baseline) * layout.row_height;
 
         assert_eq!(layout.title_size, 32.0);
+        assert!(layout.compact_roster);
+        assert!(!layout.wide_table);
+        assert_eq!(layout.row_size, 12.0);
         assert!(layout.meta_y < layout.header_y);
         assert!(last_row + layout.marker_radius < layout.graph_top);
         assert!(layout.graph_bottom - layout.graph_top >= 80.0);
         assert!(layout.graph_bottom < action_rects(vec2(640.0, 400.0), 1.0)[0].y);
+    }
+
+    #[test]
+    fn wide_results_use_room_for_readable_table_copy() {
+        let layout = results_layout(vec2(1280.0, 800.0), 1.0, 2);
+        let columns = table_columns(32.0, 1248.0, layout.wide_table);
+
+        assert!(!layout.compact_roster);
+        assert!(layout.wide_table);
+        assert_eq!(layout.header_size, 17.0);
+        assert_eq!(layout.row_size, 18.0);
+        assert_eq!(layout.graph_label_size, 16.0);
+        assert!(columns.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(columns[6] < 1248.0);
+        assert_eq!(
+            WIDE_STAT_HEADERS,
+            [
+                "PEAK ARMY VALUE",
+                "UNITS BUILT",
+                "BUILDINGS BUILT",
+                "UNITS LOST",
+                "BUILDINGS LOST",
+                "SCRAP COLLECTED",
+            ]
+        );
     }
 
     #[test]
@@ -872,7 +1005,7 @@ mod tests {
             ),
             Out::Home
         );
-        assert_eq!(screen.selected(), 2);
+        assert_eq!(screen.selected(), 3);
         assert_eq!(
             screen.update(
                 &[key(Key::Escape)],
@@ -883,6 +1016,53 @@ mod tests {
             ),
             Out::Home
         );
+    }
+
+    #[test]
+    fn final_map_action_is_touchable_and_named_for_automation() {
+        let viewport = vec2(640.0, 400.0);
+        let rect = action_rects(viewport, 1.0)[2];
+        let at = vec2(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
+        let mut screen = ResultsScreen::open();
+        let mut mouse = vec2(0.0, 0.0);
+        let mut sounds = Vec::new();
+
+        assert_eq!(screen.items()[2], "VIEW FINAL MAP");
+        assert_eq!(
+            screen.update(
+                &[
+                    RawEvent::TouchDown {
+                        id: 11,
+                        x: at.x,
+                        y: at.y,
+                    },
+                    RawEvent::TouchUp {
+                        id: 11,
+                        x: at.x,
+                        y: at.y,
+                    },
+                ],
+                &mut mouse,
+                viewport,
+                1.0,
+                &mut sounds,
+            ),
+            Out::ViewFinalMap
+        );
+    }
+
+    #[test]
+    fn results_name_shows_the_bot_difficulty() {
+        let game = Game::new(oxide_sim::Scenario::skirmish()).expect("skirmish builds");
+        assert_eq!(
+            player_name_with_difficulty(&game, 1, 24, false),
+            "Cupric  MEDIUM AI"
+        );
+        assert_eq!(
+            player_name_with_difficulty(&game, 1, 24, true),
+            "Cupric  MEDIUM"
+        );
+        assert_eq!(player_name_with_difficulty(&game, 0, 24, false), "Ferrous");
     }
 
     #[test]

@@ -300,6 +300,18 @@ fn match_soundtrack_scene(game: &Game, paused: bool) -> crate::soundtrack::Scene
     }
 }
 
+fn result_playback(game: &Game, final_map: bool) -> Result<PlaybackSession> {
+    let mut replay = game.recorder.clone();
+    replay.meta.ticks = Some(game.state.current_tick());
+    let mut session = if final_map {
+        PlaybackSession::from_replay_at_end(replay)?
+    } else {
+        PlaybackSession::from_replay(replay)?
+    };
+    session.return_to = PlaybackReturn::Results;
+    Ok(session)
+}
+
 fn soundtrack_scene(screen: &Screen, game: &Game) -> crate::soundtrack::Scene {
     match screen {
         Screen::Playing => match_soundtrack_scene(game, false),
@@ -849,24 +861,28 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                             Screen::Results(results)
                         }
                     },
-                    screens::results::Out::Watch => {
-                        let mut replay = app.game.recorder.clone();
-                        replay.meta.ticks = Some(app.game.state.current_tick());
-                        match PlaybackSession::from_replay(replay) {
-                            Ok(mut session) => {
-                                session.return_to = PlaybackReturn::Results;
-                                rerun = true;
-                                Screen::Playback(Box::new(session))
-                            }
-                            Err(err) => {
-                                app.menu_notice = Some((
-                                    format!("cannot open playback: {err}"),
-                                    get_time() + 5.0,
-                                ));
-                                Screen::Results(results)
-                            }
+                    screens::results::Out::Watch => match result_playback(&app.game, false) {
+                        Ok(session) => {
+                            rerun = true;
+                            Screen::Playback(Box::new(session))
                         }
-                    }
+                        Err(err) => {
+                            app.menu_notice =
+                                Some((format!("cannot open playback: {err}"), get_time() + 5.0));
+                            Screen::Results(results)
+                        }
+                    },
+                    screens::results::Out::ViewFinalMap => match result_playback(&app.game, true) {
+                        Ok(session) => {
+                            rerun = true;
+                            Screen::Playback(Box::new(session))
+                        }
+                        Err(err) => {
+                            app.menu_notice =
+                                Some((format!("cannot open final map: {err}"), get_time() + 5.0));
+                            Screen::Results(results)
+                        }
+                    },
                     screens::results::Out::Home => match autosave::save(&mut app.game) {
                         Ok(_) => {
                             rerun = true;
@@ -1283,7 +1299,7 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
                 title: Some("MATCH RESULT".to_string()),
                 selected: Some(results.selected()),
                 items: results.items(),
-                visible_range: Some([0, 3]),
+                visible_range: Some([0, 4]),
                 hover: results.hover(),
                 chrome: None,
             };
@@ -1721,5 +1737,21 @@ mod tests {
             crate::soundtrack::Scene::Defeat,
             "a resigned human never hears a teammate's eventual win as their victory"
         );
+    }
+
+    #[test]
+    fn result_viewers_return_to_the_report_and_final_map_starts_frozen() {
+        let game = Game::new(Scenario::skirmish()).expect("game");
+
+        let watch = result_playback(&game, false).expect("watch replay");
+        assert_eq!(watch.return_to, PlaybackReturn::Results);
+        assert!(!watch.paused);
+        assert!(watch.seeking.is_none());
+
+        let final_map = result_playback(&game, true).expect("view final map");
+        assert_eq!(final_map.return_to, PlaybackReturn::Results);
+        assert!(final_map.paused);
+        assert_eq!(final_map.seeking, Some(final_map.engine.total()));
+        assert!(final_map.game.recorder.commands.is_empty());
     }
 }
