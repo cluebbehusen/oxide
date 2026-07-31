@@ -18,14 +18,14 @@ use super::observation::{Observation, UnitObs};
 use super::orient::Orientation;
 use super::utility::{Dials, UtilityPolicy};
 use crate::command::{Command, PlayerCommand};
-use crate::ids::PlayerId;
+use crate::ids::{BuildingId, PlayerId, UnitId};
 use crate::state::State;
 use crate::stats::{BuildingKind, Domain, Role, UnitKind};
 use chassis::grid::TilePos;
 
 /// Bump when actions or features change shape — recorded checkpoints
 /// and shipped weights must refuse mismatched worlds.
-pub const GYM_VERSION: u32 = 7;
+pub const GYM_VERSION: u32 = 8;
 
 /// The global macro menu, partitioned among [`ACTION_HEADS`]. Training
 /// slots are role-indexed where the factions differ: one action means
@@ -129,6 +129,67 @@ pub const CONSTRUCTION_PLAN_TIMEOUT_TICKS: u64 = 1_200;
 /// turns every small map into a deterministic build-order loss.
 const FABRICATOR_MIN_HARVESTERS: usize = 4;
 const FABRICATOR_MIN_SCREEN_STRENGTH: i64 = 150;
+
+/// How long a witnessed threat, hit, or own loss keeps nearby salvage
+/// suspect. Bot memory is deliberately coarser than vision memory: it
+/// remembers danger, not hidden units.
+const DANGER_MEMORY_TICKS: u64 = 1_800;
+/// A source inside this Chebyshev radius of remembered danger is guarded.
+const DANGER_RADIUS: i32 = 7;
+/// Nearby danger samples coalesce so a walking hostile does not grow an
+/// unbounded breadcrumb trail in bot-local memory.
+const DANGER_MERGE_RADIUS: i32 = 2;
+/// Bot-local tactical memory stays small even when several contacts walk
+/// through vision for the full cooling window.
+const MAX_DANGER_MEMORIES: usize = 64;
+/// One cheap Foundry screen is the minimum recovery escort.
+const RECOVERY_SCREEN_SIZE: u32 = 1;
+/// A screen that reaches this close to a guarded source has contested it.
+const RECOVERY_SECURE_RADIUS: i32 = 3;
+/// A rejected or stalled worker hold is retried on a bounded cadence.
+const RECOVERY_HOLD_RETRY_TICKS: u64 = 120;
+/// A critically wounded, undefended Foundry under visible pressure cannot
+/// plausibly wait out the public fallback-income clock.
+const RECOVERY_CONCEDE_HP_NUM: u32 = 1;
+const RECOVERY_CONCEDE_HP_DEN: u32 = 4;
+const RECOVERY_HOME_DANGER_RADIUS: i32 = 8;
+/// Finishing needs a real body, not one expensive machine that happens to
+/// score highly in the strength estimate.
+const FINISH_MIN_FIGHTERS: usize = 5;
+/// The ordinary finish gate is a conservative 3:2 advantage over the
+/// strongest justified opposition estimate.
+const FINISH_MARGIN_NUM: u64 = 3;
+const FINISH_MARGIN_DEN: u64 = 2;
+/// Late enough and large enough that continuing to grow is less coherent
+/// than making the known enemy answer the army.
+const FINISH_LATE_TICK: u64 = 24_000;
+const FINISH_LATE_FIGHTERS: usize = 16;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DangerMemory {
+    tile: TilePos,
+    strength: u64,
+    seen_at: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OwnUnitMemory {
+    id: UnitId,
+    tile: TilePos,
+    hp: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoveryPosture {
+    Inactive,
+    Saving,
+    QueueHarvester,
+    QueuePackage,
+    Prospect,
+    Contest(TilePos),
+    Harvest(TilePos),
+    Concede,
+}
 
 /// One name per feature index, emitted in the gym hello and asserted
 /// by the trainer — Rust/Python index skew fails loudly at handshake
@@ -390,6 +451,23 @@ pub struct GymBot {
     capital_retry_after: u64,
     build_retry_after: Vec<(BuildingKind, u64)>,
     founding_since: Vec<(BuildingKind, TilePos, u64)>,
+    /// Threat samples justified by sight, radar, incoming fire, or damage
+    /// to our own machines. Positions stay in world space and are oriented
+    /// only while a policy decision is made.
+    danger: Vec<DangerMemory>,
+    /// Previous own-unit observations, used to turn damage and deaths into
+    /// legitimate danger memory without reading an attacker's hidden state.
+    own_units_seen: Vec<OwnUnitMemory>,
+    memory_tick: Option<u64>,
+    /// A broken economy remains under recovery reconciliation until a
+    /// replacement Harvester has a safe job.
+    recovery_active: bool,
+    /// The guarded source currently being contested, in oriented space.
+    recovery_target: Option<TilePos>,
+    /// Last attempt to hold the replacement worker near home.
+    recovery_worker_hold: Option<(UnitId, u64)>,
+    /// Avoid restarting the same deliberate liquidation every think.
+    recovery_liquidation: Option<BuildingId>,
 }
 
 /// What the world looks like at a decision point.
@@ -428,6 +506,13 @@ impl GymBot {
             capital_retry_after: 0,
             build_retry_after: Vec::new(),
             founding_since: Vec::new(),
+            danger: Vec::new(),
+            own_units_seen: Vec::new(),
+            memory_tick: None,
+            recovery_active: false,
+            recovery_target: None,
+            recovery_worker_hold: None,
+            recovery_liquidation: None,
         }
     }
 
@@ -452,6 +537,7 @@ impl GymBot {
     /// what the subsequent lowering will see.
     pub fn decision(&mut self, state: &State) -> Decision {
         let (world, orientation) = self.observe(state);
+        self.refresh_tactical_memory(&world);
         self.remember(&world);
         let rear = rear_tile(&world);
         let mut projected = self.exec.clone();
@@ -957,14 +1043,24 @@ impl GymBot {
                 for action in OPERATION_ACTIONS {
                     mask[action] = action == defense as usize;
                 }
+            } else if let Some(finish) = self.finish_operation(&obs, &armies, h) {
+                for action in OPERATION_ACTIONS {
+                    mask[action] = action == finish as usize;
+                }
             }
         }
-        if let Some(recovery) = projected.harvester_recovery(self.player, &obs) {
+        let recovery = self.recovery_posture(&obs, &orientation);
+        if recovery != RecoveryPosture::Inactive {
             mask.fill(false);
-            let action = if recovery.is_empty() {
-                Action::Idle
-            } else {
-                Action::TrainHarvester
+            let action = match recovery {
+                RecoveryPosture::QueueHarvester => Action::TrainHarvester,
+                RecoveryPosture::Inactive
+                | RecoveryPosture::Saving
+                | RecoveryPosture::QueuePackage
+                | RecoveryPosture::Prospect
+                | RecoveryPosture::Contest(_)
+                | RecoveryPosture::Harvest(_)
+                | RecoveryPosture::Concede => Action::Idle,
             };
             mask[action as usize] = true;
             mask[Action::NoConstruction as usize] = true;
@@ -983,6 +1079,8 @@ impl GymBot {
     /// executive housekeeping, and returns this tick's commands.
     pub fn step_plan(&mut self, state: &State, plan: ActionPlan) -> Vec<PlayerCommand> {
         let (world, orientation) = self.observe(state);
+        self.refresh_tactical_memory(&world);
+        self.remember(&world);
         let rear = rear_tile(&world);
         let mut commands = self.exec.maintain_repair_capable(self.player, &world, rear);
 
@@ -993,16 +1091,25 @@ impl GymBot {
         let Some(home) = home_tile(&obs) else {
             return commands; // eliminated
         };
-        if let Some(recovery) = self.exec.harvester_recovery(self.player, &obs) {
-            commands.extend(recovery);
-            return commands;
-        }
         let armies: Vec<_> = self
             .exec
             .armies()
             .iter()
             .map(|a| orientation.army(a.clone()))
             .collect();
+        let recovery = self.recovery_posture(&obs, &orientation);
+        if recovery != RecoveryPosture::Inactive {
+            commands.extend(self.apply_recovery(
+                state,
+                &world,
+                &obs,
+                &orientation,
+                &armies,
+                home,
+                recovery,
+            ));
+            return commands;
+        }
         let enlisted: Vec<_> = self.exec.enlisted().collect();
 
         self.policy.audit_harvests(&obs);
@@ -1020,6 +1127,12 @@ impl GymBot {
             .min_by_key(|a| a.id);
         let enemy_site = UtilityPolicy::enemy_site(&obs, home);
         let home_intruder = nearest_home_intruder(&obs, home);
+        let mut plan = plan;
+        if home_intruder.is_none()
+            && let Some(finish) = self.finish_operation(&obs, &armies, home)
+        {
+            plan.operation = finish;
+        }
 
         if let Some(kind) = plan.construction.building()
             && self.can_plan_build(&obs, &enlisted, home, kind)
@@ -1491,6 +1604,713 @@ impl GymBot {
         }
     }
 
+    /// Refreshes only from information a human commander could justify:
+    /// visible/shared hostile units, radar contacts, visible incoming
+    /// impacts, and changes to our own units. Calling `decision` followed
+    /// by `step_plan` at the same tick is idempotent.
+    fn refresh_tactical_memory(&mut self, world: &Observation) {
+        if self.memory_tick == Some(world.tick) {
+            return;
+        }
+        self.danger
+            .retain(|memory| world.tick.saturating_sub(memory.seen_at) <= DANGER_MEMORY_TICKS);
+
+        let mut samples: Vec<(TilePos, u64)> = Vec::new();
+        for previous in &self.own_units_seen {
+            match world.my_units.iter().find(|unit| unit.id == previous.id) {
+                Some(unit) if unit.hp < previous.hp => {
+                    samples.push((unit.tile, recovery_uncertainty_floor()));
+                }
+                None => samples.push((previous.tile, recovery_uncertainty_floor())),
+                Some(_) => {}
+            }
+        }
+        samples.extend(
+            world
+                .enemy_units
+                .iter()
+                .filter(|unit| unit.kind.stats().can_target(Domain::Ground))
+                .map(|unit| {
+                    (
+                        unit.tile,
+                        super::executive::unit_strength(unit).max(recovery_uncertainty_floor()),
+                    )
+                }),
+        );
+        samples.extend(world.enemy_buildings.iter().filter_map(|building| {
+            let strength = super::executive::building_strength(building);
+            (strength > 0).then_some((building.anchor, strength.max(recovery_uncertainty_floor())))
+        }));
+        samples.extend(
+            world
+                .blips
+                .iter()
+                .copied()
+                .map(|tile| (tile, recovery_uncertainty_floor())),
+        );
+        samples.extend(
+            world
+                .incoming_shells
+                .iter()
+                .copied()
+                .map(|tile| (tile, recovery_uncertainty_floor())),
+        );
+        samples.sort_unstable_by_key(|(tile, strength)| (tile.y, tile.x, *strength));
+        for (tile, strength) in samples {
+            self.remember_danger(tile, strength, world.tick);
+        }
+
+        self.own_units_seen = world
+            .my_units
+            .iter()
+            .map(|unit| OwnUnitMemory {
+                id: unit.id,
+                tile: unit.tile,
+                hp: unit.hp,
+            })
+            .collect();
+        self.memory_tick = Some(world.tick);
+    }
+
+    fn remember_danger(&mut self, tile: TilePos, strength: u64, tick: u64) {
+        let merge = self
+            .danger
+            .iter()
+            .enumerate()
+            .filter(|(_, memory)| memory.tile.chebyshev(tile) <= DANGER_MERGE_RADIUS)
+            .map(|(index, memory)| {
+                (
+                    memory.tile.chebyshev(tile),
+                    memory.tile.y,
+                    memory.tile.x,
+                    index,
+                )
+            })
+            .min()
+            .map(|(.., index)| index);
+        if let Some(index) = merge {
+            let memory = &mut self.danger[index];
+            memory.tile = tile;
+            memory.strength = memory.strength.max(strength);
+            memory.seen_at = tick;
+        } else {
+            self.danger.push(DangerMemory {
+                tile,
+                strength,
+                seen_at: tick,
+            });
+        }
+        while self.danger.len() > MAX_DANGER_MEMORIES {
+            let remove = self
+                .danger
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, memory)| {
+                    (
+                        memory.seen_at,
+                        memory.strength,
+                        memory.tile.y,
+                        memory.tile.x,
+                    )
+                })
+                .map(|(index, _)| index)
+                .expect("an over-cap danger ledger is non-empty");
+            self.danger.remove(remove);
+        }
+        self.danger
+            .sort_unstable_by_key(|memory| (memory.tile.y, memory.tile.x, memory.seen_at));
+    }
+
+    fn danger_strength_at(&self, tick: u64, source: TilePos, orientation: &Orientation) -> u64 {
+        self.danger
+            .iter()
+            .filter(|memory| orientation.tile(memory.tile).chebyshev(source) <= DANGER_RADIUS)
+            .map(|memory| {
+                let age = tick.saturating_sub(memory.seen_at);
+                let remaining = DANGER_MEMORY_TICKS.saturating_sub(age);
+                memory.strength.saturating_mul(remaining) / DANGER_MEMORY_TICKS
+            })
+            .fold(0u64, u64::saturating_add)
+    }
+
+    fn recovery_posture(
+        &mut self,
+        obs: &Observation,
+        orientation: &Orientation,
+    ) -> RecoveryPosture {
+        let has_foundry = obs
+            .my_buildings
+            .iter()
+            .any(|building| building.kind == BuildingKind::Foundry && building.built);
+        if !has_foundry {
+            self.recovery_active = false;
+            self.recovery_target = None;
+            return RecoveryPosture::Inactive;
+        }
+
+        let harvesters: Vec<&UnitObs> = obs
+            .my_units
+            .iter()
+            .filter(|unit| unit.kind == UnitKind::Harvester)
+            .collect();
+        let queued_harvester = obs
+            .my_queues
+            .iter()
+            .flatten()
+            .any(|kind| *kind == UnitKind::Harvester);
+        if harvesters.is_empty() {
+            self.recovery_active = true;
+        }
+        if !self.recovery_active {
+            return RecoveryPosture::Inactive;
+        }
+        let Some(home) = home_tile(obs) else {
+            return RecoveryPosture::Inactive;
+        };
+        let mut sources: Vec<TilePos> = obs
+            .known_scrap
+            .iter()
+            .chain(&obs.known_wrecks)
+            .filter(|(_, amount)| *amount > 0)
+            .map(|(tile, _)| *tile)
+            .collect();
+        sources.sort_unstable_by_key(|tile| (tile.manhattan(home), tile.y, tile.x));
+        sources.dedup();
+        let danger = |source: TilePos| {
+            let remembered = self.danger_strength_at(obs.tick, source, orientation);
+            let static_guard = obs
+                .enemy_buildings
+                .iter()
+                .filter(|building| building.anchor.chebyshev(source) <= DANGER_RADIUS)
+                .map(super::executive::building_strength)
+                .fold(0u64, u64::saturating_add);
+            remembered.saturating_add(static_guard)
+        };
+        let safe = sources.iter().copied().find(|source| danger(*source) == 0);
+
+        if !harvesters.is_empty() {
+            if let Some(source) = safe {
+                return RecoveryPosture::Harvest(source);
+            }
+            if sources.is_empty() {
+                self.recovery_target = None;
+                return RecoveryPosture::Prospect;
+            }
+            let target = self
+                .recovery_target
+                .filter(|target| sources.contains(target) && danger(*target) > 0)
+                .unwrap_or_else(|| {
+                    sources
+                        .iter()
+                        .copied()
+                        .min_by_key(|source| {
+                            (danger(*source), source.manhattan(home), source.y, source.x)
+                        })
+                        .expect("the guarded source list is non-empty")
+                });
+            self.recovery_target = Some(target);
+            return RecoveryPosture::Contest(target);
+        }
+
+        if sources.is_empty() || safe.is_some() {
+            return if queued_harvester {
+                RecoveryPosture::Saving
+            } else if obs.scrap >= UnitKind::Harvester.stats().cost {
+                RecoveryPosture::QueueHarvester
+            } else {
+                RecoveryPosture::Saving
+            };
+        }
+
+        let live_screen = recovery_screen_units(obs).next().is_some();
+        let queued_screen = obs
+            .my_queues
+            .iter()
+            .flatten()
+            .any(|kind| recovery_screen_kind(*kind));
+        if live_screen {
+            if queued_harvester {
+                RecoveryPosture::Saving
+            } else if obs.scrap >= UnitKind::Harvester.stats().cost {
+                RecoveryPosture::QueueHarvester
+            } else {
+                RecoveryPosture::Saving
+            }
+        } else if queued_screen {
+            RecoveryPosture::QueuePackage
+        } else if recovery_is_conclusive(obs, home) {
+            RecoveryPosture::Concede
+        } else {
+            // A prepaid naked worker suppresses the public emergency
+            // income. QueuePackage cancels it first, then saves for the
+            // screen and replacement as one coherent purchase.
+            RecoveryPosture::QueuePackage
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_recovery(
+        &mut self,
+        state: &State,
+        world: &Observation,
+        obs: &Observation,
+        orientation: &Orientation,
+        armies: &[super::executive::Army],
+        home: TilePos,
+        posture: RecoveryPosture,
+    ) -> Vec<PlayerCommand> {
+        let mut commands = Vec::new();
+        let lower = |this: &mut Self, intents: Vec<Intent>| {
+            let vision = state.vision(this.player);
+            let defer_needed = |kind: BuildingKind, anchor: TilePos| {
+                let (w, h) = kind.stats().size;
+                (0..h).any(|dy| (0..w).any(|dx| !vision.visible(anchor.offset(dx, dy))))
+            };
+            this.exec.apply_with(
+                this.player,
+                world,
+                &orientation.emit(intents),
+                &LoweringRules::gym(&defer_needed),
+            )
+        };
+
+        match posture {
+            RecoveryPosture::Inactive | RecoveryPosture::Saving => {}
+            RecoveryPosture::Concede => commands.push(PlayerCommand {
+                player: self.player,
+                command: Command::Surrender,
+            }),
+            RecoveryPosture::QueueHarvester => {
+                if let Some(foundry) = open_foundry(obs, 1) {
+                    commands.push(PlayerCommand {
+                        player: self.player,
+                        command: Command::Train {
+                            building: foundry,
+                            kind: UnitKind::Harvester,
+                        },
+                    });
+                }
+            }
+            RecoveryPosture::QueuePackage => {
+                self.clear_planned_build();
+                let (
+                    mut cancellations,
+                    projected_scrap,
+                    screen_queued,
+                    worker_queued,
+                    foundry_slots,
+                ) = self.cancel_for_recovery(obs);
+                commands.append(&mut cancellations);
+                let live_screen = recovery_screen_units(obs).next().is_some();
+                let need_screen = !live_screen && !screen_queued;
+                let need_worker = !worker_queued;
+                let buy_screen = need_screen && projected_scrap >= UnitKind::Sentinel.stats().cost;
+                let after_screen = projected_scrap
+                    .saturating_sub(u32::from(buy_screen) * UnitKind::Sentinel.stats().cost);
+                let mut buy_worker = need_worker
+                    && (!need_screen || buy_screen)
+                    && after_screen >= UnitKind::Harvester.stats().cost;
+                let mut slots = usize::from(buy_screen) + usize::from(buy_worker);
+                let mut foundry = foundry_slots
+                    .iter()
+                    .find(|(_, available)| *available >= slots)
+                    .map(|(building, _)| *building);
+                if foundry.is_none() && buy_screen && buy_worker {
+                    buy_worker = false;
+                    slots = 1;
+                    foundry = foundry_slots
+                        .iter()
+                        .find(|(_, available)| *available >= slots)
+                        .map(|(building, _)| *building);
+                }
+                if let Some(foundry) = foundry {
+                    if buy_screen {
+                        commands.push(PlayerCommand {
+                            player: self.player,
+                            command: Command::Train {
+                                building: foundry,
+                                kind: UnitKind::Sentinel,
+                            },
+                        });
+                    }
+                    if buy_worker {
+                        commands.push(PlayerCommand {
+                            player: self.player,
+                            command: Command::Train {
+                                building: foundry,
+                                kind: UnitKind::Harvester,
+                            },
+                        });
+                    }
+                }
+            }
+            RecoveryPosture::Prospect => {
+                self.policy.audit_harvests(obs);
+                let mut intents = Vec::new();
+                self.policy.prospect(obs, &[], &mut intents);
+                commands.extend(lower(self, intents));
+            }
+            RecoveryPosture::Harvest(source) => {
+                if let Some(worker) = recovery_worker(obs) {
+                    commands.extend(lower(
+                        self,
+                        vec![Intent::AssignHarvest {
+                            unit: worker,
+                            node: source,
+                        }],
+                    ));
+                    self.recovery_active = false;
+                    self.recovery_target = None;
+                    self.recovery_worker_hold = None;
+                    self.recovery_liquidation = None;
+                }
+            }
+            RecoveryPosture::Contest(source) => {
+                let Some(worker) = recovery_worker(obs) else {
+                    return commands;
+                };
+                let live_screen: Vec<UnitId> = recovery_screen_units(obs).collect();
+                if live_screen.is_empty() {
+                    self.recovery_liquidation = self.recovery_liquidation.filter(|building| {
+                        obs.my_units
+                            .iter()
+                            .any(|unit| unit.salvaging == Some(*building))
+                    });
+                    let mut liquidating = self.recovery_liquidation.is_some();
+                    if obs.scrap >= UnitKind::Sentinel.stats().cost
+                        && let Some(foundry) = open_foundry(obs, 1)
+                    {
+                        commands.push(PlayerCommand {
+                            player: self.player,
+                            command: Command::Train {
+                                building: foundry,
+                                kind: UnitKind::Sentinel,
+                            },
+                        });
+                    } else if self.recovery_liquidation.is_none()
+                        && let Some(building) = useful_recovery_liquidation(obs)
+                    {
+                        commands.extend(lower(self, vec![Intent::Salvage { building }]));
+                        self.recovery_liquidation = Some(building);
+                        liquidating = true;
+                    }
+                    if !liquidating {
+                        commands.extend(self.hold_recovery_worker(obs, worker, home, orientation));
+                    }
+                    return commands;
+                }
+
+                let staging = armies
+                    .iter()
+                    .filter(|army| army.state == ArmyState::Staging)
+                    .min_by_key(|army| army.id);
+                let contesting = armies.iter().find(|army| {
+                    army.target == Some(source)
+                        && matches!(army.state, ArmyState::Pushing | ArmyState::Engaging)
+                });
+                let screen_on_source = live_screen.iter().any(|member| {
+                    obs.my_units.iter().any(|unit| {
+                        unit.id == *member && unit.tile.chebyshev(source) <= RECOVERY_SECURE_RADIUS
+                    })
+                });
+                let secured = screen_on_source
+                    && !obs.enemy_units.iter().any(|enemy| {
+                        enemy.kind.stats().can_target(Domain::Ground)
+                            && enemy.tile.chebyshev(source) <= DANGER_RADIUS
+                    })
+                    && !obs.enemy_buildings.iter().any(|building| {
+                        super::executive::building_strength(building) > 0
+                            && building.anchor.chebyshev(source) <= DANGER_RADIUS
+                    })
+                    && !obs
+                        .blips
+                        .iter()
+                        .any(|blip| blip.chebyshev(source) <= DANGER_RADIUS);
+                if secured {
+                    commands.extend(lower(
+                        self,
+                        vec![Intent::AssignHarvest {
+                            unit: worker,
+                            node: source,
+                        }],
+                    ));
+                    self.danger.retain(|memory| {
+                        orientation.tile(memory.tile).chebyshev(source) > DANGER_RADIUS
+                    });
+                    self.recovery_active = false;
+                    self.recovery_target = None;
+                    self.recovery_worker_hold = None;
+                    self.recovery_liquidation = None;
+                } else {
+                    let intent = if contesting.is_some()
+                        || armies
+                            .iter()
+                            .any(|army| army.state == ArmyState::Withdrawing)
+                    {
+                        None
+                    } else if let Some(army) = staging {
+                        Some(Intent::PushArmy {
+                            army: army.id,
+                            target: source,
+                        })
+                    } else {
+                        let rally = self.policy.rally_point(obs, None, Some(source), home);
+                        Some(Intent::FormArmy {
+                            staging: rally,
+                            size: RECOVERY_SCREEN_SIZE,
+                        })
+                    };
+                    if let Some(intent) = intent {
+                        commands.extend(lower(self, vec![intent]));
+                    }
+                    commands.extend(self.hold_recovery_worker(obs, worker, home, orientation));
+                }
+            }
+        }
+        commands
+    }
+
+    fn cancel_for_recovery(
+        &mut self,
+        obs: &Observation,
+    ) -> (
+        Vec<PlayerCommand>,
+        u32,
+        bool,
+        bool,
+        Vec<(BuildingId, usize)>,
+    ) {
+        let mut commands = Vec::new();
+        let mut projected = obs.scrap;
+        let mut retained = vec![0usize; obs.my_buildings.len()];
+        let screen_to_keep = obs
+            .my_queues
+            .iter()
+            .enumerate()
+            .flat_map(|(queue_index, queue)| {
+                queue
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .filter(|(_, kind)| recovery_screen_kind(*kind))
+                    .map(move |(index, _)| (queue_index, index))
+            })
+            .min_by_key(|(queue_index, index)| (*index, obs.my_buildings[*queue_index].id));
+        let worker_to_keep = (recovery_screen_units(obs).next().is_some()
+            || screen_to_keep.is_some())
+        .then(|| {
+            obs.my_queues
+                .iter()
+                .enumerate()
+                .flat_map(|(queue_index, queue)| {
+                    queue
+                        .iter()
+                        .copied()
+                        .enumerate()
+                        .filter(|(_, kind)| *kind == UnitKind::Harvester)
+                        .map(move |(index, _)| (queue_index, index))
+                })
+                .min_by_key(|(queue_index, index)| (*index, obs.my_buildings[*queue_index].id))
+        })
+        .flatten();
+
+        for (queue_index, building) in obs.my_buildings.iter().enumerate() {
+            for (index, kind) in obs.my_queues[queue_index].iter().copied().enumerate().rev() {
+                let keep = screen_to_keep == Some((queue_index, index))
+                    || worker_to_keep == Some((queue_index, index));
+                if keep {
+                    retained[queue_index] += 1;
+                } else {
+                    commands.push(PlayerCommand {
+                        player: self.player,
+                        command: Command::CancelTrain {
+                            building: building.id,
+                            index: index as u8,
+                        },
+                    });
+                    projected = projected.saturating_add(kind.stats().cost);
+                }
+            }
+        }
+
+        for building in obs.my_buildings.iter().filter(|building| !building.built) {
+            commands.push(PlayerCommand {
+                player: self.player,
+                command: Command::Cancel {
+                    building: building.id,
+                },
+            });
+            if let Some(construction) = building.kind.stats().construction {
+                projected = projected
+                    .saturating_add(construction.cost * building.hp / building.kind.stats().max_hp);
+            }
+        }
+        let founders: Vec<UnitId> = obs
+            .my_units
+            .iter()
+            .filter(|unit| unit.founding.is_some())
+            .map(|unit| unit.id)
+            .collect();
+        if !founders.is_empty() {
+            commands.push(PlayerCommand {
+                player: self.player,
+                command: Command::Stop { units: founders },
+            });
+        }
+        let foundry_slots = obs
+            .my_buildings
+            .iter()
+            .enumerate()
+            .filter(|(_, building)| building.kind == BuildingKind::Foundry && building.built)
+            .map(|(index, building)| {
+                (
+                    building.id,
+                    crate::stats::QUEUE_CAP.saturating_sub(retained[index]),
+                )
+            })
+            .collect();
+        (
+            commands,
+            projected,
+            screen_to_keep.is_some(),
+            worker_to_keep.is_some(),
+            foundry_slots,
+        )
+    }
+
+    fn hold_recovery_worker(
+        &mut self,
+        obs: &Observation,
+        worker: UnitId,
+        home: TilePos,
+        orientation: &Orientation,
+    ) -> Vec<PlayerCommand> {
+        let parked = obs
+            .my_units
+            .iter()
+            .find(|unit| unit.id == worker)
+            .is_some_and(|unit| unit.idle && unit.tile.chebyshev(home) <= 3);
+        if parked {
+            self.recovery_worker_hold = Some((worker, obs.tick));
+            return Vec::new();
+        }
+        if self.recovery_worker_hold.is_some_and(|(held, issued_at)| {
+            held == worker && obs.tick.saturating_sub(issued_at) < RECOVERY_HOLD_RETRY_TICKS
+        }) {
+            return Vec::new();
+        }
+        self.recovery_worker_hold = Some((worker, obs.tick));
+        vec![PlayerCommand {
+            player: self.player,
+            command: Command::Move {
+                units: vec![worker],
+                goal: orientation.tile(home),
+                queue: false,
+            },
+        }]
+    }
+
+    fn finish_operation(
+        &mut self,
+        obs: &Observation,
+        armies: &[super::executive::Army],
+        home: TilePos,
+    ) -> Option<Action> {
+        let _target = UtilityPolicy::enemy_site(obs, home)?;
+        if armies
+            .iter()
+            .any(|army| army.state == ArmyState::Withdrawing)
+        {
+            return None;
+        }
+
+        let fighters: Vec<&UnitObs> = obs
+            .my_units
+            .iter()
+            .filter(|unit| {
+                let stats = unit.kind.stats();
+                stats.domain == Domain::Ground && stats.can_target(Domain::Ground)
+            })
+            .collect();
+        let own_strength: u64 = fighters
+            .iter()
+            .map(|unit| super::executive::unit_strength(unit))
+            .sum();
+        let known_enemy = obs
+            .enemy_units
+            .iter()
+            .map(super::executive::unit_strength)
+            .sum::<u64>()
+            + obs
+                .enemy_buildings
+                .iter()
+                .map(super::executive::building_strength)
+                .sum::<u64>();
+        let remembered =
+            if self.seen_at > 0 && obs.tick.saturating_sub(self.seen_at) <= DANGER_MEMORY_TICKS {
+                self.seen_strength
+            } else {
+                0
+            };
+        let intel_fresh = self.policy.intel_age(obs.tick) <= DANGER_MEMORY_TICKS;
+        let uncertainty = recovery_uncertainty_floor() * if intel_fresh { 3 } else { 5 };
+        let opposition = known_enemy.max(remembered).max(uncertainty);
+        let ordinary_advantage = fighters.len() >= FINISH_MIN_FIGHTERS
+            && own_strength.saturating_mul(FINISH_MARGIN_DEN)
+                >= opposition.saturating_mul(FINISH_MARGIN_NUM);
+        let late_commitment = obs.tick >= FINISH_LATE_TICK
+            && fighters.len() >= FINISH_LATE_FIGHTERS
+            && own_strength >= opposition;
+        if !ordinary_advantage && !late_commitment {
+            return None;
+        }
+
+        // An army already marching or fighting owns its own lifecycle.
+        // Lock the learned operation head to a no-op: Recall must not
+        // interrupt a justified finish, while reissuing Push would reset
+        // paths and weapon opportunities.
+        if armies
+            .iter()
+            .any(|army| matches!(army.state, ArmyState::Pushing | ArmyState::Engaging))
+        {
+            return Some(Action::NoOperation);
+        }
+        let staging = armies
+            .iter()
+            .filter(|army| army.state == ArmyState::Staging)
+            .min_by_key(|army| army.id);
+        let staging_strength = staging.map_or(0, |army| {
+            obs.my_units
+                .iter()
+                .filter(|unit| army.members.contains(&unit.id))
+                .map(super::executive::unit_strength)
+                .sum::<u64>()
+        });
+        let staging_advantage = staging.is_some_and(|army| {
+            army.members.len() >= FINISH_MIN_FIGHTERS
+                && staging_strength.saturating_mul(FINISH_MARGIN_DEN)
+                    >= opposition.saturating_mul(FINISH_MARGIN_NUM)
+        });
+        let staging_late = staging.is_some_and(|army| {
+            obs.tick >= FINISH_LATE_TICK
+                && army.members.len() >= FINISH_LATE_FIGHTERS
+                && staging_strength >= opposition
+        });
+        if staging_advantage || staging_late {
+            Some(Action::Push)
+        } else if obs.my_units.iter().any(|unit| {
+            let stats = unit.kind.stats();
+            stats.domain == Domain::Ground
+                && stats.can_target(Domain::Ground)
+                && unit.idle
+                && !self.exec.enlisted().any(|id| id == unit.id)
+        }) {
+            Some(Action::FormArmy)
+        } else {
+            Some(Action::NoOperation)
+        }
+    }
+
     /// Updates fog memory from a world-space observation: while any
     /// enemy fighter is visible, the remembered army is what's visible
     /// now (strength and centroid tile); the timestamp freezes when
@@ -1684,4 +2504,158 @@ fn home_tile(obs: &Observation) -> Option<TilePos> {
         .filter(|b| b.kind == BuildingKind::Foundry && b.built)
         .min_by_key(|b| b.id)
         .map(|b| b.anchor)
+}
+
+fn recovery_uncertainty_floor() -> u64 {
+    let sentinel = UnitKind::Sentinel.stats();
+    let weapon = sentinel
+        .weapons
+        .iter()
+        .find(|weapon| weapon.targets.covers(Domain::Ground))
+        .expect("the recovery screen can fight ground");
+    u64::from(sentinel.max_hp) * (u64::from(weapon.damage) * 100 / u64::from(weapon.cooldown_ticks))
+}
+
+fn recovery_screen_kind(kind: UnitKind) -> bool {
+    let stats = kind.stats();
+    stats.domain == Domain::Ground && stats.can_target(Domain::Ground)
+}
+
+fn recovery_screen_units(obs: &Observation) -> impl Iterator<Item = UnitId> + '_ {
+    obs.my_units
+        .iter()
+        .filter(|unit| recovery_screen_kind(unit.kind))
+        .map(|unit| unit.id)
+}
+
+fn recovery_worker(obs: &Observation) -> Option<UnitId> {
+    obs.my_units
+        .iter()
+        .filter(|unit| {
+            unit.kind == UnitKind::Harvester
+                && unit.site.is_none()
+                && unit.founding.is_none()
+                && unit.salvaging.is_none()
+        })
+        .map(|unit| unit.id)
+        .min()
+}
+
+fn recovery_is_conclusive(obs: &Observation, home: TilePos) -> bool {
+    let foundry = obs
+        .my_buildings
+        .iter()
+        .filter(|building| building.kind == BuildingKind::Foundry && building.built)
+        .min_by_key(|building| building.id);
+    let Some(foundry) = foundry else {
+        return false;
+    };
+    let critically_wounded = foundry.hp.saturating_mul(RECOVERY_CONCEDE_HP_DEN)
+        <= foundry
+            .kind
+            .stats()
+            .max_hp
+            .saturating_mul(RECOVERY_CONCEDE_HP_NUM);
+    let visible_pressure = obs.enemy_units.iter().any(|unit| {
+        unit.kind.stats().can_target(Domain::Ground)
+            && unit.tile.chebyshev(home) <= RECOVERY_HOME_DANGER_RADIUS
+    });
+    let ally_can_intervene = obs
+        .ally_units
+        .iter()
+        .any(|unit| unit.kind.stats().can_target(Domain::Ground))
+        || obs
+            .ally_buildings
+            .iter()
+            .any(|building| building.kind == BuildingKind::Foundry && building.built);
+    let refundable_commitment = obs.my_buildings.iter().any(|building| !building.built)
+        || obs.my_queues.iter().flatten().next().is_some();
+    let salvageable_asset = obs
+        .my_buildings
+        .iter()
+        .any(|building| building.built && SALVAGE_PRIORITY.contains(&building.kind));
+    critically_wounded
+        && visible_pressure
+        && !ally_can_intervene
+        && !refundable_commitment
+        && !salvageable_asset
+        && obs.scrap < UnitKind::Sentinel.stats().cost
+}
+
+fn open_foundry(obs: &Observation, slots: usize) -> Option<BuildingId> {
+    obs.my_buildings
+        .iter()
+        .enumerate()
+        .filter(|(queue_index, building)| {
+            building.kind == BuildingKind::Foundry
+                && building.built
+                && obs.my_queues[*queue_index].len().saturating_add(slots)
+                    <= crate::stats::QUEUE_CAP
+        })
+        .map(|(_, building)| building.id)
+        .min()
+}
+
+fn useful_recovery_liquidation(obs: &Observation) -> Option<BuildingId> {
+    let active: Vec<BuildingId> = obs
+        .my_units
+        .iter()
+        .filter_map(|unit| unit.salvaging)
+        .collect();
+    obs.my_buildings
+        .iter()
+        .filter(|building| building.built && !active.contains(&building.id))
+        .filter_map(|building| {
+            let rank = SALVAGE_PRIORITY
+                .iter()
+                .position(|kind| *kind == building.kind)?;
+            let construction = building.kind.stats().construction?;
+            let refund = u64::from(construction.cost)
+                * u64::from(building.hp)
+                * crate::stats::SALVAGE_REFUND_PERMILLE
+                / (1000 * u64::from(building.kind.stats().max_hp));
+            (u64::from(obs.scrap).saturating_add(refund)
+                >= u64::from(UnitKind::Sentinel.stats().cost))
+            .then_some((rank, building.anchor.y, building.anchor.x, building.id))
+        })
+        .min()
+        .map(|(.., building)| building)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn danger_memory_is_bounded_and_cools_deterministically() {
+        let mut bot = GymBot::new(PlayerId(0));
+        for tick in 0..100 {
+            bot.remember_danger(
+                TilePos::new(i32::try_from(tick * 3).unwrap(), 0),
+                recovery_uncertainty_floor(),
+                tick,
+            );
+        }
+        assert_eq!(bot.danger.len(), MAX_DANGER_MEMORIES);
+        assert_eq!(
+            bot.danger.iter().map(|memory| memory.seen_at).min(),
+            Some(100 - MAX_DANGER_MEMORIES as u64)
+        );
+
+        let state = crate::Scenario::skirmish().build().unwrap();
+        let (_, orientation) = bot.observe(&state);
+        let source = TilePos::new(7, 2);
+        let strength = recovery_uncertainty_floor();
+        bot.danger.clear();
+        bot.remember_danger(source, strength, 0);
+        assert_eq!(bot.danger_strength_at(0, source, &orientation), strength);
+        assert_eq!(
+            bot.danger_strength_at(DANGER_MEMORY_TICKS / 2, source, &orientation),
+            strength / 2
+        );
+        assert_eq!(
+            bot.danger_strength_at(DANGER_MEMORY_TICKS, source, &orientation),
+            0
+        );
+    }
 }
