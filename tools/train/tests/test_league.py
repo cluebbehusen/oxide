@@ -487,7 +487,7 @@ class TestProfileCurriculum:
         assert [
             (profile.hesitation_permille, profile.cadence)
             for profile in SHIPPED_EXECUTION_PROFILES
-        ] == [(350, 56), (190, 36), (5, 28), (0, 28)]
+        ] == [(350, 56), (190, 36), (5, 34), (0, 37)]
 
 
 class TestMaybeBlunder:

@@ -24,8 +24,10 @@ fn obs_base() -> Observation {
         ally_buildings: Vec::new(),
         enemy_units: Vec::new(),
         enemy_buildings: Vec::new(),
+        explored: vec![true; 24 * 13],
         known_scrap: Vec::new(),
         known_rock: Vec::new(),
+        known_peaks: Vec::new(),
         known_wrecks: Vec::new(),
         blips: Vec::new(),
         faction: Faction::Ferrous,
@@ -65,6 +67,10 @@ fn building_obs(id: u32, player: u8, kind: BuildingKind, x: i32, y: i32) -> Buil
 /// so a field the orientation forgets to flip fails the round-trip.
 fn full_obs() -> Observation {
     let mut obs = obs_base();
+    obs.explored.fill(false);
+    let explored = TilePos::new(4, 3);
+    let explored_index = usize::try_from(explored.y * obs.map_width + explored.x).unwrap();
+    obs.explored[explored_index] = true;
     obs.my_units = vec![
         unit_obs(0, 0, UnitKind::Harvester, 3, 2),
         unit_obs(1, 0, UnitKind::Bombard, 4, 5),
@@ -77,6 +83,7 @@ fn full_obs() -> Observation {
     obs.enemy_buildings = vec![building_obs(5, 2, BuildingKind::Bastion, 18, 8)];
     obs.known_scrap = vec![(TilePos::new(5, 5), 200), (TilePos::new(12, 4), 400)];
     obs.known_rock = vec![TilePos::new(10, 6), TilePos::new(11, 6)];
+    obs.known_peaks = vec![TilePos::new(11, 6)];
     obs.known_wrecks = vec![(TilePos::new(9, 9), 30)];
     obs.blips = vec![TilePos::new(15, 2), TilePos::new(16, 11)];
     obs
@@ -89,6 +96,8 @@ fn orientation_is_an_involution_over_every_positioned_field() {
     let orientation = Orientation::for_home(&obs, TilePos::new(20, 10));
     assert!(!orientation.is_identity());
     let flipped = orientation.observe(&obs);
+    assert!(flipped.explored(orientation.tile(TilePos::new(4, 3))));
+    assert!(!flipped.explored(TilePos::new(4, 3)));
     assert_ne!(
         serde_json::to_string(&obs).unwrap(),
         serde_json::to_string(&flipped).unwrap(),
@@ -100,11 +109,13 @@ fn orientation_is_an_involution_over_every_positioned_field() {
     back.known_scrap.sort_by_key(|(p, _)| (p.y, p.x));
     back.known_wrecks.sort_by_key(|(p, _)| (p.y, p.x));
     back.known_rock.sort_by_key(|p| (p.y, p.x));
+    back.known_peaks.sort_by_key(|p| (p.y, p.x));
     back.blips.sort_by_key(|p| (p.y, p.x));
     let mut want = obs.clone();
     want.known_scrap.sort_by_key(|(p, _)| (p.y, p.x));
     want.known_wrecks.sort_by_key(|(p, _)| (p.y, p.x));
     want.known_rock.sort_by_key(|p| (p.y, p.x));
+    want.known_peaks.sort_by_key(|p| (p.y, p.x));
     want.blips.sort_by_key(|p| (p.y, p.x));
     assert_eq!(
         serde_json::to_string(&want).unwrap(),

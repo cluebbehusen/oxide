@@ -1,13 +1,13 @@
 //! Deterministic construction-time bot profile contract.
 
-use oxide_sim::Faction;
-use oxide_sim::PlayerId;
+use chassis::hash::state_hash;
 use oxide_sim::bot::{
     DECISION_STREAM_BASE, Level, NAMED_VARIANT_COUNT, NeuralBot, PROFILE_CONDITION_NAMES,
-    PROFILE_ROLE_STREAM, PROFILE_STYLE_STREAM_BASE, PROFILE_VARIANT_STREAM_BASE, QuantNet,
-    resolve_bot_profiles, seat_bots,
+    PROFILE_ROLE_STREAM, PROFILE_STYLE_STREAM_BASE, PROFILE_TEAM_ROLES,
+    PROFILE_VARIANT_STREAM_BASE, QuantNet, resolve_bot_profiles, seat_bots,
 };
 use oxide_sim::scenario::{BotConfig, NamedStyle, Scenario, TeamRole};
+use oxide_sim::{BuildingKind, Command, Faction, PlayerCommand, PlayerId, UnitKind};
 use std::collections::BTreeSet;
 
 fn shipped(name: &str) -> Scenario {
@@ -443,11 +443,318 @@ fn same_style_variants_produce_distinct_deterministic_command_histories() {
     assert_profile_behavioral_diversity(QuantNet::ladder());
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct CommandBehavior {
+    trace_hash: u64,
+    harvesters: usize,
+    fighters: usize,
+    scuttlers: usize,
+    air_units: usize,
+    development_builds: usize,
+    fortification_builds: usize,
+}
+
+fn command_behavior(
+    net: &QuantNet,
+    style: NamedStyle,
+    variant: u8,
+    role: TeamRole,
+    seed: u64,
+    ticks: u64,
+) -> CommandBehavior {
+    command_behavior_in(
+        net,
+        Scenario::skirmish(),
+        PlayerId(1),
+        style,
+        variant,
+        role,
+        seed,
+        ticks,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn command_behavior_in(
+    net: &QuantNet,
+    mut scenario: Scenario,
+    player: PlayerId,
+    style: NamedStyle,
+    variant: u8,
+    role: TeamRole,
+    seed: u64,
+    ticks: u64,
+) -> CommandBehavior {
+    scenario.seed = seed;
+    scenario.players[usize::from(player.0)].bot_config = Some(BotConfig {
+        level: Level::Expert,
+        aggression: None,
+        style: Some(style),
+        variant: Some(variant),
+        team_role: Some(role),
+    });
+    let profile = resolve_bot_profiles(&scenario).unwrap()[usize::from(player.0)]
+        .expect("configured profile");
+    let mut state = scenario.build().expect("scenario");
+    let mut bot = NeuralBot::ladder_resolved_with_net(
+        player,
+        scenario.seed,
+        profile,
+        scenario.players[usize::from(player.0)].faction,
+        net.clone(),
+    );
+    let mut behavior = CommandBehavior::default();
+    let mut trace: Vec<(u64, Vec<PlayerCommand>)> = Vec::new();
+    for _ in 0..ticks {
+        let tick = state.current_tick();
+        let commands = bot.act(&state);
+        if !commands.is_empty() {
+            trace.push((tick, commands.clone()));
+        }
+        for command in &commands {
+            match &command.command {
+                Command::Train { kind, .. } => match kind {
+                    UnitKind::Harvester => behavior.harvesters += 1,
+                    UnitKind::Scuttler => {
+                        behavior.fighters += 1;
+                        behavior.scuttlers += 1;
+                    }
+                    UnitKind::Buzzard | UnitKind::Darter | UnitKind::Talon | UnitKind::Wisp => {
+                        behavior.fighters += 1;
+                        behavior.air_units += 1;
+                    }
+                    UnitKind::Lancer | UnitKind::Bombard => {
+                        behavior.fighters += 1;
+                    }
+                    UnitKind::Sentinel | UnitKind::Flakhound | UnitKind::Stinger => {
+                        behavior.fighters += 1;
+                    }
+                },
+                Command::Build { kind, .. } => match kind {
+                    BuildingKind::Fabricator | BuildingKind::Reclaimer => {
+                        behavior.development_builds += 1;
+                    }
+                    BuildingKind::Turret
+                    | BuildingKind::FlakTurret
+                    | BuildingKind::Bastion
+                    | BuildingKind::Array
+                    | BuildingKind::RepairBay => behavior.fortification_builds += 1,
+                    BuildingKind::Foundry => {}
+                },
+                _ => {}
+            }
+        }
+        state.tick(&commands);
+    }
+    behavior.trace_hash = state_hash(&trace);
+    behavior
+}
+
+fn team_role_trace_cohort(net: &QuantNet) -> Vec<[u64; PROFILE_TEAM_ROLES.len()]> {
+    let team = shipped("twin-forges.json");
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = PROFILE_BEHAVIOR_SEEDS
+            .into_iter()
+            .map(|seed| {
+                let team = &team;
+                scope.spawn(move || {
+                    NamedStyle::ALL
+                        .into_iter()
+                        .flat_map(|style| {
+                            (0..NAMED_VARIANT_COUNT).map(move |variant| {
+                                PROFILE_TEAM_ROLES.map(|role| {
+                                    command_behavior_in(
+                                        net,
+                                        team.clone(),
+                                        PlayerId(1),
+                                        style,
+                                        variant,
+                                        role,
+                                        seed,
+                                        2_000,
+                                    )
+                                    .trace_hash
+                                })
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().expect("team-role trace run panicked"))
+            .collect()
+    })
+}
+
+fn assert_team_role_behavioral_liveness(net: &QuantNet) {
+    let first = team_role_trace_cohort(net);
+    let second = team_role_trace_cohort(net);
+    assert_eq!(
+        first, second,
+        "team-role command traces must be deterministic"
+    );
+
+    let cells = first.len();
+    let minimum_role_reach = cells.div_ceil(6);
+    let minimum_broad_diversity = cells.div_ceil(4);
+    let mut different_from_generalist = [0_usize; PROFILE_TEAM_ROLES.len()];
+    let mut broadly_distinct = 0;
+    for traces in &first {
+        for (index, trace) in traces.iter().enumerate().skip(1) {
+            different_from_generalist[index] += usize::from(*trace != traces[0]);
+        }
+        broadly_distinct += usize::from(traces.iter().collect::<BTreeSet<_>>().len() >= 3);
+    }
+    eprintln!(
+        "team-role command divergence from Generalist: {different_from_generalist:?} / {cells}; >=3 traces in {broadly_distinct} cells"
+    );
+    for (index, role) in PROFILE_TEAM_ROLES.iter().enumerate().skip(1) {
+        assert!(
+            different_from_generalist[index] >= minimum_role_reach,
+            "{role:?} must alter actual commands in at least {minimum_role_reach}/{cells} fixed profile/seed cells: {different_from_generalist:?}"
+        );
+    }
+    assert!(
+        broadly_distinct >= minimum_broad_diversity,
+        "at least three role traces must coexist in {minimum_broad_diversity}/{cells} cells, got {broadly_distinct}"
+    );
+}
+
+#[test]
+fn same_profile_team_roles_change_actual_commands_deterministically() {
+    assert_team_role_behavioral_liveness(QuantNet::ladder());
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct FamilyBehavior {
+    trace_hashes: Vec<u64>,
+    harvesters: usize,
+    fighters: usize,
+    scuttlers: usize,
+    air_units: usize,
+    development_builds: usize,
+    fortification_builds: usize,
+}
+
+impl FamilyBehavior {
+    fn add(&mut self, behavior: CommandBehavior) {
+        self.trace_hashes.push(behavior.trace_hash);
+        self.harvesters += behavior.harvesters;
+        self.fighters += behavior.fighters;
+        self.scuttlers += behavior.scuttlers;
+        self.air_units += behavior.air_units;
+        self.development_builds += behavior.development_builds;
+        self.fortification_builds += behavior.fortification_builds;
+    }
+
+    fn development(&self) -> usize {
+        self.harvesters + self.development_builds
+    }
+
+    fn mobile_pressure(&self) -> usize {
+        self.scuttlers + self.air_units
+    }
+}
+
+fn family_behavior_cohort(net: &QuantNet) -> Vec<[FamilyBehavior; NamedStyle::ALL.len()]> {
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = PROFILE_BEHAVIOR_SEEDS
+            .into_iter()
+            .map(|seed| {
+                scope.spawn(move || {
+                    NamedStyle::ALL.map(|style| {
+                        let mut family = FamilyBehavior::default();
+                        for variant in 0..NAMED_VARIANT_COUNT {
+                            family.add(command_behavior(
+                                net,
+                                style,
+                                variant,
+                                TeamRole::Generalist,
+                                seed,
+                                4_000,
+                            ));
+                        }
+                        family
+                    })
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("style-family trace run panicked"))
+            .collect()
+    })
+}
+
+fn assert_style_family_separation(net: &QuantNet) {
+    let first = family_behavior_cohort(net);
+    let second = family_behavior_cohort(net);
+    assert_eq!(
+        first, second,
+        "style-family command metrics must be deterministic"
+    );
+
+    let mut development = 0;
+    let mut fortification = 0;
+    let mut force = 0;
+    let mut mobile_pressure = 0;
+    for row in &first {
+        let [turtle, balanced, aggressive] = row;
+        development += usize::from(
+            turtle.development() > balanced.development()
+                && turtle.development() > aggressive.development(),
+        );
+        fortification += usize::from(
+            turtle.fortification_builds > balanced.fortification_builds
+                && balanced.fortification_builds > aggressive.fortification_builds,
+        );
+        force += usize::from(
+            aggressive.fighters > balanced.fighters && balanced.fighters > turtle.fighters,
+        );
+        mobile_pressure += usize::from(
+            aggressive.mobile_pressure() > balanced.mobile_pressure()
+                && balanced.mobile_pressure() > turtle.mobile_pressure(),
+        );
+    }
+    let required = PROFILE_PAIR_DIVERGENCE_MIN;
+    eprintln!(
+        "style-family signatures / {} seeds: development {development}, fortification {fortification}, force {force}, mobile pressure {mobile_pressure}",
+        first.len()
+    );
+    for (dimension, reached) in [
+        ("Turtle-led development", development),
+        (
+            "Turtle-to-Balanced-to-Aggressive fortification",
+            fortification,
+        ),
+        ("Aggressive-to-Balanced-to-Turtle force production", force),
+        (
+            "Aggressive-to-Balanced-to-Turtle mobile pressure",
+            mobile_pressure,
+        ),
+    ] {
+        assert!(
+            reached >= required,
+            "{dimension} must hold in at least {required}/{} fixed seeds, got {reached}",
+            first.len()
+        );
+    }
+}
+
+#[test]
+fn named_style_families_have_recognizable_command_signatures() {
+    assert_style_family_separation(QuantNet::ladder());
+}
+
 #[test]
 #[ignore = "candidate gate: set OXIDE_PROFILE_WEIGHTS to an exported v8 artifact"]
-fn candidate_same_style_variants_produce_distinct_deterministic_command_histories() {
+fn candidate_profile_behavior_gates() {
     let path = std::env::var("OXIDE_PROFILE_WEIGHTS").expect("OXIDE_PROFILE_WEIGHTS");
     let json = std::fs::read_to_string(path).expect("candidate artifact");
     let net = QuantNet::from_json(&json).expect("valid v8 artifact");
     assert_profile_behavioral_diversity(&net);
+    assert_team_role_behavioral_liveness(&net);
+    assert_style_family_separation(&net);
 }

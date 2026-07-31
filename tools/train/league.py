@@ -171,8 +171,8 @@ class EpisodeDials:
 SHIPPED_EXECUTION_PROFILES = (
     ExecutionProfile("easy", 350, 56),
     ExecutionProfile("medium", 190, 36),
-    ExecutionProfile("hard", 5, 28),
-    ExecutionProfile("expert", 0, 28),
+    ExecutionProfile("hard", 5, 34),
+    ExecutionProfile("expert", 0, 37),
 )
 SHIPPED_AGGRESSION_DISTRIBUTION: AggressionDistribution = (
     (250, 399, 0.6),

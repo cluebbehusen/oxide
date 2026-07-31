@@ -3,9 +3,16 @@
 //! Every test here runs the real skirmish scenario — if determinism breaks
 //! anywhere in the sim, a hash comparison in this file goes red.
 
+mod common;
+
+use chassis::grid::TilePos;
 use chassis::replay::Replay;
 use oxide_sim::bot::Bot;
-use oxide_sim::{GameResult, PlayerCommand, SIM_VERSION, Scenario, State};
+use oxide_sim::{
+    Command, GameResult, Order, PlayerCommand, SIM_VERSION, Scenario, State, UnitKind,
+};
+
+use common::{cmd, open_arena, unit};
 
 /// Advances one tick with bot commands included, optionally recording them.
 fn tick_with_bots(
@@ -109,6 +116,57 @@ fn replay_reproduces_a_recorded_run() {
     }
     assert!(cursor.is_finished());
     assert_eq!(replayed.hash(), live_hash);
+}
+
+#[test]
+fn replay_roundtrip_executes_and_reproduces_advance() {
+    let scenario = open_arena(24, 12, vec![unit(0, UnitKind::Sentinel, 3, 6)]);
+    let mut live = scenario.clone().build().unwrap();
+    let mover = live.units()[0].id;
+    let goal = TilePos::new(18, 6);
+    let advance = cmd(
+        0,
+        Command::Advance {
+            units: vec![mover],
+            goal,
+            queue: false,
+        },
+    );
+    let mut replay = Replay::new(SIM_VERSION, scenario);
+    replay.record(live.current_tick(), advance.clone());
+    live.tick(&[advance]);
+    assert_eq!(live.unit(mover).unwrap().order, Order::Advance { goal });
+    for _ in 1..100 {
+        live.tick(&[]);
+    }
+    let live_hash = live.hash();
+
+    let replay: Replay<Scenario, PlayerCommand> =
+        serde_json::from_str(&serde_json::to_string(&replay).unwrap()).unwrap();
+    assert!(matches!(
+        replay.commands.as_slice(),
+        [stamped] if matches!(
+            stamped.command.command,
+            Command::Advance { goal: recorded, .. } if recorded == goal
+        )
+    ));
+
+    let mut replayed = replay.setup.build().unwrap();
+    let mut cursor = replay.cursor();
+    for tick in 0..100 {
+        let commands: Vec<PlayerCommand> = cursor
+            .take_tick(replayed.current_tick())
+            .iter()
+            .map(|stamped| stamped.command.clone())
+            .collect();
+        replayed.tick(&commands);
+        if tick == 0 {
+            assert_eq!(replayed.unit(mover).unwrap().order, Order::Advance { goal });
+        }
+    }
+    assert!(cursor.is_finished());
+    assert_eq!(replayed.hash(), live_hash);
+    assert_eq!(replayed.unit(mover).unwrap().order, Order::Advance { goal });
 }
 
 #[test]

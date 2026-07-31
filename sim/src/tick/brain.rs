@@ -207,19 +207,34 @@ fn resolve_hits(
     drains: Vec<PendingHpDrain>,
     events: &mut Vec<Event>,
 ) {
+    let mut incidents = Vec::new();
     for hit in &hits {
         match hit.victim {
             Target::Unit(uid) => {
                 if let Some(v) = state.unit_mut(uid) {
+                    let relevant_hit = v.kind == crate::stats::UnitKind::Harvester;
+                    let relevant_loss =
+                        hit.damage >= v.hp && v.kind.stats().domain == crate::stats::Domain::Ground;
+                    if v.hp > 0 && hit.damage > 0 && (relevant_hit || relevant_loss) {
+                        incidents.push((v.player, v.tile()));
+                    }
                     v.hp = v.hp.saturating_sub(hit.damage);
                 }
             }
             Target::Building(bid) => {
                 if let Some(b) = state.building_mut(bid) {
+                    let relevant_hit = b.kind == crate::stats::BuildingKind::Reclaimer;
+                    let relevant_loss = hit.damage >= b.hp;
+                    if b.hp > 0 && hit.damage > 0 && (relevant_hit || relevant_loss) {
+                        incidents.push((b.player, chassis::grid::TilePos::containing(b.center())));
+                    }
                     b.hp = b.hp.saturating_sub(hit.damage);
                 }
             }
         }
+    }
+    for (victim, tile) in incidents {
+        state.record_salvage_incident(victim, tile);
     }
     // Stacked welders each prepaid their own meter against the same
     // start-of-tick hp reading, but the ceiling accepts hp in decision

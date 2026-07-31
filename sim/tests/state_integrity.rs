@@ -174,6 +174,11 @@ fn ghost(owner: u32, x: i32, y: i32) -> Value {
     json!({"kind": "turret", "owner": owner, "anchor": {"x": x, "y": y}, "hp": 350})
 }
 
+/// A well-formed recent allied impact record.
+fn incident(x: i32, y: i32, expires_at: u64) -> Value {
+    json!({"tile": {"x": x, "y": y}, "expires_at": expires_at})
+}
+
 #[test]
 fn the_base_snapshot_is_accepted() {
     // Every forgery below is a single poke on this document; if the
@@ -189,6 +194,7 @@ fn well_formed_additions_are_accepted() {
     // mutate must themselves be legal — otherwise a fixture could be
     // passing for the wrong reason.
     let mut base = snapshot();
+    base["tick"] = json!(100);
     base["shells"].as_array_mut().unwrap().push(shell(
         json!({"kind": "unit", "id": 1}),
         0,
@@ -199,7 +205,18 @@ fn well_formed_additions_are_accepted() {
         .unwrap()
         .push(ghost(1, 12, 5));
     base["vision"][0]["contacts"] = json!([{"x": 3, "y": 3}, {"x": 1, "y": 4}]);
+    base["vision"][0]["salvage_incidents"] = json!([incident(4, 3, 100), incident(2, 4, 100)]);
     serde_json::from_value::<State>(base).expect("legal additions stay legal");
+}
+
+#[test]
+fn a_decided_state_may_age_past_an_incident_expiry() {
+    let mut base = snapshot();
+    base["tick"] = json!(100);
+    base["result"] = json!({"outcome": "victory", "team": 0});
+    base["vision"][0]["salvage_incidents"] = json!([incident(3, 3, 99)]);
+    serde_json::from_value::<State>(base)
+        .expect("decided worlds stop refreshing vision while their clock may still advance");
 }
 
 /// Contiguous index per checklist row, in declaration order. The
@@ -254,10 +271,15 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::UnsortedGhosts(_) => 41,
         E::ContactOutsideEnvelope(_) => 42,
         E::UnsortedContacts(_) => 43,
+        E::OverlongSalvageIncidentMemory(_) => 44,
+        E::SalvageIncidentOutsideEnvelope(_) => 45,
+        E::ExpiredSalvageIncident(_) => 46,
+        E::SalvageIncidentExpiryBeyondHorizon(_) => 47,
+        E::UnsortedSalvageIncidents(_) => 48,
     }
 }
 
-const ROWS: usize = 44;
+const ROWS: usize = 49;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -314,6 +336,11 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::UnsortedGhosts(PlayerId(0)),
         E::ContactOutsideEnvelope(PlayerId(0)),
         E::UnsortedContacts(PlayerId(0)),
+        E::OverlongSalvageIncidentMemory(PlayerId(0)),
+        E::SalvageIncidentOutsideEnvelope(PlayerId(0)),
+        E::ExpiredSalvageIncident(PlayerId(0)),
+        E::SalvageIncidentExpiryBeyondHorizon(PlayerId(0)),
+        E::UnsortedSalvageIncidents(PlayerId(0)),
     ]
 }
 
@@ -621,6 +648,52 @@ fn every_checklist_row_refuses_its_forgery() {
             "radar blips out of canonical order",
             |d| d["vision"][0]["contacts"] = json!([{"x": 1, "y": 4}, {"x": 3, "y": 3}]),
             "player p0 holds radar contacts out of canonical order",
+        ),
+        (
+            "more recent impact sites than the bounded memory permits",
+            |d| {
+                d["vision"][0]["salvage_incidents"] = json!(
+                    (0..=oxide_sim::stats::HARVEST_INCIDENT_CAP)
+                        .map(|x| incident(x as i32, 3, 100))
+                        .collect::<Vec<_>>()
+                );
+            },
+            "player p0 holds more salvage incidents than the cap allows",
+        ),
+        (
+            "a recent impact site at the far end of the coordinate space",
+            |d| {
+                d["vision"][0]["salvage_incidents"] = json!([incident(i32::MAX, 3, 100)]);
+            },
+            "player p0 remembers a salvage incident outside the envelope",
+        ),
+        (
+            "an impact site that expired before the current tick",
+            |d| {
+                d["tick"] = json!(100);
+                d["vision"][0]["salvage_incidents"] = json!([incident(3, 3, 99)]);
+            },
+            "player p0 carries an expired salvage incident in an active match",
+        ),
+        (
+            "a recent impact expiry beyond the state's memory horizon",
+            |d| {
+                d["tick"] = json!(100);
+                d["vision"][0]["salvage_incidents"] = json!([incident(
+                    3,
+                    3,
+                    101 + oxide_sim::stats::HARVEST_INCIDENT_MEMORY_TICKS
+                )]);
+            },
+            "player p0 carries a salvage incident expiry beyond its memory horizon",
+        ),
+        (
+            "recent impact sites out of canonical order",
+            |d| {
+                d["vision"][0]["salvage_incidents"] =
+                    json!([incident(2, 4, 100), incident(4, 3, 100)]);
+            },
+            "player p0 holds salvage incidents out of canonical order",
         ),
     ];
 

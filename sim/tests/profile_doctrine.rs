@@ -3,9 +3,9 @@
 
 use oxide_sim::bot::{
     ACTION_HEADS, Action, ActionPlan, CONSTRUCTION_ACTIONS, GymBot, PRODUCTION_ACTIONS,
-    ProfileFacets,
+    PROFILE_TEAM_ROLES, ProfileFacets, canonical_profiles,
 };
-use oxide_sim::scenario::{BuildingSpec, UnitSpec};
+use oxide_sim::scenario::{BuildingSpec, TeamRole, UnitSpec};
 use oxide_sim::{BuildingKind, Faction, Order, PlayerId, Scenario, State, UnitKind};
 
 fn facets(economy: u32, air: u32, siege: u32, support: u32) -> ProfileFacets {
@@ -20,6 +20,28 @@ fn facets(economy: u32, air: u32, siege: u32, support: u32) -> ProfileFacets {
 
 fn profiled(facets: ProfileFacets) -> GymBot {
     GymBot::with_profile_facets(PlayerId(0), 8, facets)
+}
+
+#[test]
+fn canonical_catalog_reserves_the_commitment_ceiling_for_vanguard() {
+    for profile in canonical_profiles() {
+        for role in PROFILE_TEAM_ROLES {
+            let commitment = profile.facets.with_role(role).commitment_bias;
+            if role == TeamRole::Vanguard {
+                assert_eq!(
+                    commitment, 1_000,
+                    "{} Vanguard must carry the exact finite-screen marker",
+                    profile.name
+                );
+            } else {
+                assert!(
+                    commitment < 1_000,
+                    "{} {role:?} must preserve the learned opening, got {commitment}",
+                    profile.name
+                );
+            }
+        }
+    }
 }
 
 fn only_enabled(mask: &[bool], head: &[usize]) -> Vec<usize> {
@@ -292,6 +314,78 @@ fn industry_compounds_then_fields_one_mixed_reserve_and_reclaimer() {
         decision.mask[Action::TrainScuttler as usize]
             && decision.mask[Action::TrainLancer as usize],
         "Cupric industry recognizes its Stinger as the faction AA commitment"
+    );
+}
+
+#[test]
+fn vanguard_commitment_fields_one_direct_ground_screen_then_releases_production() {
+    let solo_aggressive = ProfileFacets {
+        commitment_bias: 950,
+        ..ProfileFacets::ZERO
+    };
+    let ordinary = profiled(solo_aggressive).decision(&Scenario::skirmish().build().unwrap());
+    assert!(
+        ordinary.mask[Action::Idle as usize]
+            && ordinary.mask[Action::TrainHarvester as usize]
+            && ordinary.mask[Action::TrainSentinel as usize],
+        "solo Aggressive profiles retain the learned opening instead of inheriting a team job"
+    );
+
+    let vanguard_commitment = ProfileFacets {
+        commitment_bias: 1000,
+        ..ProfileFacets::ZERO
+    };
+    let mut bot = profiled(vanguard_commitment);
+    let scenario = Scenario::skirmish();
+    let decision = bot.decision(&scenario.build().unwrap());
+    assert_eq!(
+        only_enabled(&decision.mask, &PRODUCTION_ACTIONS),
+        vec![Action::TrainSentinel as usize],
+        "the shipped one-Sentinel opening needs two more direct ground bodies"
+    );
+
+    let mut indirect_only = scenario.clone();
+    for (index, kind) in [UnitKind::Bombard, UnitKind::Flakhound]
+        .into_iter()
+        .enumerate()
+    {
+        indirect_only.units.push(UnitSpec {
+            player: 0,
+            kind,
+            x: 10 + i32::try_from(index).unwrap(),
+            y: 5,
+        });
+    }
+    let decision = bot.decision(&indirect_only.build().unwrap());
+    assert_eq!(
+        only_enabled(&decision.mask, &PRODUCTION_ACTIONS),
+        vec![Action::TrainSentinel as usize],
+        "artillery and anti-air do not satisfy a direct ground screen"
+    );
+
+    let mut committed = serde_json::to_value(scenario.build().unwrap()).unwrap();
+    let foundry = committed["buildings"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|building| building["player"] == 0 && building["kind"] == "foundry")
+        .unwrap();
+    foundry["queue"] = serde_json::json!(["sentinel", "sentinel"]);
+    let committed: State = serde_json::from_value(committed).unwrap();
+    let decision = bot.decision(&committed);
+    assert!(
+        decision.mask[Action::Idle as usize]
+            && only_enabled(&decision.mask, &PRODUCTION_ACTIONS)
+                != vec![Action::TrainSentinel as usize],
+        "live and queued direct fighters satisfy the finite opening while the bodies are still queued"
+    );
+
+    let decision = bot.decision(&scenario.build().unwrap());
+    assert!(
+        decision.mask[Action::Idle as usize]
+            && decision.mask[Action::TrainHarvester as usize]
+            && decision.mask[Action::TrainSentinel as usize],
+        "the Vanguard screen is a one-way milestone, not a replacement quota"
     );
 }
 

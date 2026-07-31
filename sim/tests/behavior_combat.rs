@@ -120,6 +120,49 @@ fn attack_move_with_only_harvesters_degrades_to_move() {
 }
 
 #[test]
+fn unqueued_advance_replaces_an_acquired_attack_on_the_command_tick() {
+    let mut state = open_arena(
+        22,
+        12,
+        vec![
+            unit(0, UnitKind::Sentinel, 4, 4),
+            unit(1, UnitKind::Harvester, 6, 4),
+        ],
+    )
+    .build()
+    .unwrap();
+    let (mover, target) = (state.units()[0].id, state.units()[1].id);
+
+    state.tick(&[]);
+    assert_eq!(
+        state.unit(mover).unwrap().order,
+        Order::Attack {
+            target: Target::Unit(target),
+            resume: None,
+        },
+        "test premise: idle acquisition installed a chase"
+    );
+
+    let goal = TilePos::new(16, 4);
+    state.tick(&[cmd(
+        0,
+        Command::Advance {
+            units: vec![mover],
+            goal,
+            queue: false,
+        },
+    )]);
+
+    let mover = state.unit(mover).unwrap();
+    assert_eq!(mover.order, Order::Advance { goal });
+    assert!(
+        mover.path.is_some(),
+        "the replacement starts routing immediately"
+    );
+    assert!(mover.queue.is_empty());
+}
+
+#[test]
 fn advance_moves_and_fires_without_replacing_its_route() {
     let mut state = open_arena(
         20,

@@ -20,7 +20,7 @@
 use super::executive::{Army, ArmyState, Intent};
 use super::observation::{Observation, UnitObs};
 use crate::ids::UnitId;
-use crate::stats::{BuildingKind, UnitKind};
+use crate::stats::{BuildingKind, Domain, UnitKind};
 use chassis::grid::TilePos;
 use serde::{Deserialize, Serialize};
 
@@ -1184,33 +1184,85 @@ impl UtilityPolicy {
                         continue;
                     }
                     let anchor = near.offset(dx, dy);
-                    if self.dead_anchors.contains(&anchor) {
-                        continue;
-                    }
-                    let in_bounds = |t: TilePos| {
-                        t.x >= 0 && t.y >= 0 && t.x < obs.map_width && t.y < obs.map_height
-                    };
-                    let footprint_ok = (0..w).all(|fx| {
-                        (0..h).all(|fy| {
-                            let t = anchor.offset(fx, fy);
-                            in_bounds(t) && self.tile_open(obs, t)
-                        })
-                    });
-                    // A builder needs somewhere to stand.
-                    let doorstep = (-1..=w).any(|fx| {
-                        (-1..=h).any(|fy| {
-                            let core = (0..w).contains(&fx) && (0..h).contains(&fy);
-                            let t = anchor.offset(fx, fy);
-                            !core && in_bounds(t) && self.tile_open(obs, t)
-                        })
-                    });
-                    if footprint_ok && doorstep {
+                    if self.placement_valid(obs, anchor, w, h) {
                         return Some(anchor);
                     }
                 }
             }
         }
         None
+    }
+
+    /// Every valid anchor in the same bounded field as [`Self::placement_near`].
+    /// Defense placement uses the full set; ordinary scripted construction keeps
+    /// the historical first-anchor behavior above.
+    pub(super) fn placements_near(
+        &self,
+        obs: &Observation,
+        kind: BuildingKind,
+        near: TilePos,
+    ) -> Vec<TilePos> {
+        let (w, h) = kind.stats().size;
+        let mut anchors = Vec::new();
+        for r in 3i32..=7 {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if dx.abs().max(dy.abs()) != r {
+                        continue;
+                    }
+                    let anchor = near.offset(dx, dy);
+                    if self.placement_valid(obs, anchor, w, h) {
+                        anchors.push(anchor);
+                    }
+                }
+            }
+        }
+        anchors
+    }
+
+    fn placement_valid(&self, obs: &Observation, anchor: TilePos, width: i32, height: i32) -> bool {
+        if self.dead_anchors.contains(&anchor) {
+            return false;
+        }
+        let in_bounds = |tile: TilePos| {
+            tile.x >= 0 && tile.y >= 0 && tile.x < obs.map_width && tile.y < obs.map_height
+        };
+        let footprint_ok = (0..width).all(|dx| {
+            (0..height).all(|dy| {
+                let tile = anchor.offset(dx, dy);
+                in_bounds(tile) && obs.explored(tile) && self.placement_tile_open(obs, tile)
+            })
+        });
+        if !footprint_ok {
+            return false;
+        }
+        (-1..=width).any(|dx| {
+            (-1..=height).any(|dy| {
+                let core = (0..width).contains(&dx) && (0..height).contains(&dy);
+                let tile = anchor.offset(dx, dy);
+                !core && in_bounds(tile) && obs.explored(tile) && self.tile_open(obs, tile)
+            })
+        })
+    }
+
+    fn placement_tile_open(&self, obs: &Observation, tile: TilePos) -> bool {
+        if !self.tile_open(obs, tile) {
+            return false;
+        }
+        let claimed = obs.my_units.iter().any(|unit| {
+            unit.founding.is_some_and(|(kind, anchor)| {
+                let (width, height) = kind.stats().size;
+                tile.x >= anchor.x
+                    && tile.x < anchor.x + width
+                    && tile.y >= anchor.y
+                    && tile.y < anchor.y + height
+            })
+        });
+        !claimed
+            && !obs
+                .enemy_units
+                .iter()
+                .any(|unit| unit.kind.stats().domain == Domain::Ground && unit.tile == tile)
     }
 
     /// Known-buildable: not rock, not scrap, not under any known
@@ -1284,8 +1336,10 @@ mod tests {
             ally_buildings: Vec::new(),
             enemy_units: Vec::new(),
             enemy_buildings: Vec::new(),
+            explored: vec![true; 32 * 20],
             known_scrap: Vec::new(),
             known_rock: Vec::new(),
+            known_peaks: Vec::new(),
             known_wrecks: Vec::new(),
             blips: Vec::new(),
             faction: crate::state::Faction::Ferrous,

@@ -727,8 +727,10 @@ fn approach_source(
         SourceKind::Wreck => goal == source.pos,
         SourceKind::Scrap => tile_adjacent_to_rect(goal, source.pos, (1, 1)),
     };
+    let from = unit.tile();
     let keep = unit.path.as_ref().is_some_and(|path| {
-        goal_matches(path.goal) && near_route_is_safe(path, |waypoint| !danger.contains(waypoint))
+        goal_matches(path.goal)
+            && near_route_is_safe(path, |waypoint| danger.route_safe_from(from, waypoint))
     });
     if keep {
         return true;
@@ -768,13 +770,15 @@ fn approach_authoritative_source(
 ) -> bool {
     let unit = state.unit(id).expect("caller checked");
     let player = unit.player;
+    let from = unit.tile();
     let goal_matches = |goal: TilePos| match source.kind {
         SourceKind::Wreck => goal == source.pos,
         SourceKind::Scrap => tile_adjacent_to_rect(goal, source.pos, (1, 1)),
     };
     if let Some(path) = unit.path.as_ref().filter(|path| goal_matches(path.goal)) {
         let near_route_is_clear = near_route_is_safe(path, |waypoint| {
-            known_ground_passable(state, danger, player, waypoint) && !danger.contains(waypoint)
+            known_ground_passable(state, danger, player, waypoint)
+                && danger.route_safe_from(from, waypoint)
         });
         if near_route_is_clear {
             return true;
@@ -863,7 +867,8 @@ fn source_route_avoiding_danger(
             goal,
             |tile| {
                 known_ground_passable(state, danger, player, tile)
-                    && ((allow_dangerous_goal && tile == goal) || !danger.contains(tile))
+                    && ((allow_dangerous_goal && tile == goal)
+                        || danger.route_safe_from(from, tile))
             },
             crate::stats::PATH_EXPANSION_CAP,
         )
@@ -945,12 +950,14 @@ fn approach_safe_rect(
 ) -> SafeApproach {
     let unit = state.unit(id).expect("caller checked");
     let player = unit.player;
+    let from = unit.tile();
     if let Some(path) = unit
         .path
         .as_ref()
         .filter(|path| tile_adjacent_to_rect(path.goal, anchor, size))
         && near_route_is_safe(path, |waypoint| {
-            known_ground_passable(state, danger, player, waypoint) && !danger.contains(waypoint)
+            known_ground_passable(state, danger, player, waypoint)
+                && danger.route_safe_from(from, waypoint)
         })
     {
         return SafeApproach::Moving;
@@ -1001,7 +1008,7 @@ fn known_rect_route(
             goal,
             |tile| {
                 known_ground_passable(state, danger, player, tile)
-                    && (!avoid_danger || !danger.contains(tile))
+                    && (!avoid_danger || danger.route_safe_from(from, tile))
             },
             crate::stats::PATH_EXPANSION_CAP,
         )

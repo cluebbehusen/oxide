@@ -950,9 +950,23 @@ pub const HARVEST_ZONE_RADIUS: i32 = 7;
 /// blip must not retire an otherwise healthy work zone.
 pub const HARVEST_RADAR_DANGER_RADIUS: i32 = 4;
 
+/// How long an observed hit on an allied asset keeps its location unsafe
+/// for autonomous salvage work. The memory contains only the ally's impact
+/// tile, never the hidden attacker's identity or position.
+pub const HARVEST_INCIDENT_MEMORY_TICKS: crate::Tick = 15 * crate::TICKS_PER_SECOND as crate::Tick;
+
+/// Radius around a recent allied impact or loss that autonomous Harvest
+/// treats as unsafe while the incident memory is live.
+pub const HARVEST_INCIDENT_DANGER_RADIUS: i32 = 4;
+
+/// Maximum recent allied impact sites retained per team. Incidents at one
+/// tile coalesce, and the oldest expiry is evicted first at the ceiling.
+pub const HARVEST_INCIDENT_CAP: usize = 64;
+
 /// Mobile ground threats are treated as dangerous this many tiles beyond
 /// their current weapon reach. It gives a visible raider's approach time
-/// weight without inventing memory after sight is lost.
+/// weight while sight is live; incident memory is the separate, deliberately
+/// less informative signal that remains after sight is lost.
 pub const HARVEST_MOBILE_DANGER_MARGIN: Fx = Fx::lit("3");
 
 /// Remembered hostile emplacements are static, so their conservative

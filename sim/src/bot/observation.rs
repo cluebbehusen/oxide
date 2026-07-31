@@ -29,7 +29,10 @@ use serde::{Deserialize, Serialize};
 /// have made the mismatch fail confusingly instead of cleanly.
 /// v6: `UnitObs` gained the required `founding` field (0.13, fog
 /// placement Part B) — same rule.
-pub const OBSERVATION_VERSION: u32 = 6;
+/// v7: terrain knowledge gained the required `known_peaks` subset and
+/// exact explored mask so defense roles can distinguish mountain barriers
+/// from flyable rock without proposing foundations in unknown ground.
+pub const OBSERVATION_VERSION: u32 = 7;
 
 /// One unit as a bot sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,6 +121,10 @@ pub struct Observation {
     pub enemy_units: Vec<UnitObs>,
     /// Enemy buildings — live where seen, ghosts where remembered.
     pub enemy_buildings: Vec<BuildingObs>,
+    /// Row-major fog exploration mask. This is the exact knowledge boundary
+    /// for deferred placement: a bot may assume unknown routes continue, but
+    /// it may not promise a foundation on a tile its team has never seen.
+    pub explored: Vec<bool>,
     /// Scrap nodes as known: `(tile, amount)` — live amounts under the
     /// omniscient builder, remembered amounts under the fog-honest one.
     /// Sorted by (y, x).
@@ -127,6 +134,10 @@ pub struct Observation {
     /// static, so once seen it is known forever). What placement and
     /// staging decisions steer around; sorted by (y, x).
     pub known_rock: Vec<TilePos>,
+    /// Explored peak terrain, also present in `known_rock`. This separate
+    /// subset is what air routing and peak-blocked fire steer around while
+    /// ordinary rock remains open sky. Sorted by (y, x).
+    pub known_peaks: Vec<TilePos>,
     /// Wreck salvage as known: `(tile, amount)` — live under the
     /// omniscient builder, remembered under the fog-honest one. Sorted
     /// by (y, x).
@@ -149,6 +160,27 @@ pub struct Observation {
 }
 
 impl Observation {
+    /// Whether `tile` has ever been seen by this seat's team.
+    pub fn explored(&self, tile: TilePos) -> bool {
+        if tile.x < 0 || tile.y < 0 || tile.x >= self.map_width || tile.y >= self.map_height {
+            return false;
+        }
+        let Ok(width) = usize::try_from(self.map_width) else {
+            return false;
+        };
+        let Ok(x) = usize::try_from(tile.x) else {
+            return false;
+        };
+        let Ok(y) = usize::try_from(tile.y) else {
+            return false;
+        };
+        y.checked_mul(width)
+            .and_then(|row| row.checked_add(x))
+            .and_then(|index| self.explored.get(index))
+            .copied()
+            .unwrap_or(false)
+    }
+
     /// The classic cheating commander's view: everything, live.
     pub fn omniscient(state: &State, me: PlayerId) -> Self {
         let mut obs = Self::base(state, me);
@@ -200,7 +232,11 @@ impl Observation {
             if tile.terrain != crate::map::Terrain::Ground {
                 obs.known_rock.push(pos);
             }
+            if tile.terrain == crate::map::Terrain::Peak {
+                obs.known_peaks.push(pos);
+            }
         }
+        obs.explored = vec![true; state.map().iter().count()];
         obs.my_shells = state.shells().iter().filter(|s| s.player == me).count();
         obs.incoming_shells = state
             .shells()
@@ -286,6 +322,7 @@ impl Observation {
         // Remembered salvage: what this player last saw, everywhere. Rock
         // is static, so explored is knowledge enough.
         for (pos, tile) in state.map().iter() {
+            obs.explored.push(vision.explored(pos));
             let amount = if vision.visible(pos) {
                 state.map().scrap_at(pos)
             } else {
@@ -304,6 +341,9 @@ impl Observation {
             }
             if tile.terrain != crate::map::Terrain::Ground && vision.explored(pos) {
                 obs.known_rock.push(pos);
+            }
+            if tile.terrain == crate::map::Terrain::Peak && vision.explored(pos) {
+                obs.known_peaks.push(pos);
             }
         }
         // Blips ride through untouched: tiles only, by construction.
@@ -335,8 +375,10 @@ impl Observation {
             ally_buildings: Vec::new(),
             enemy_units: Vec::new(),
             enemy_buildings: Vec::new(),
+            explored: Vec::new(),
             known_scrap: Vec::new(),
             known_rock: Vec::new(),
+            known_peaks: Vec::new(),
             known_wrecks: Vec::new(),
             blips: Vec::new(),
             faction: state.player(me).faction,

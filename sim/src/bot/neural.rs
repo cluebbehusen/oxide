@@ -150,11 +150,12 @@ impl Level {
             // and Hard on both the pinned two-style yardstick and a
             // disjoint-seed holdout; 26 collapses that holdout margin.
             Level::Medium => 36,
-            // The upper rungs share the measured 28-tick local optimum;
-            // Hard's small exact hesitation is the only remaining
-            // handicap, keeping wins and pace ordered on both slates.
-            Level::Hard => 28,
-            Level::Expert => 28,
+            // Defense placement moved both upper-rung optima. The cadence
+            // response is discontinuous: 34 with Hard's small hesitation and
+            // 37 without it keep the pinned slate, a disjoint holdout, and the
+            // canonical-profile cup ordered without sacrificing decisiveness.
+            Level::Hard => 34,
+            Level::Expert => 37,
         }
     }
 }

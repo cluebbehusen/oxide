@@ -90,6 +90,14 @@ impl Orientation {
             return obs.clone();
         }
         let mut o = obs.clone();
+        o.explored = (0..self.height)
+            .flat_map(|y| {
+                (0..self.width).map(move |x| {
+                    let source = self.tile(TilePos::new(x, y));
+                    obs.explored(source)
+                })
+            })
+            .collect();
         for u in o
             .my_units
             .iter_mut()
@@ -121,6 +129,7 @@ impl Orientation {
         for pos in o
             .known_rock
             .iter_mut()
+            .chain(o.known_peaks.iter_mut())
             .chain(o.blips.iter_mut())
             .chain(o.incoming_shells.iter_mut())
         {
@@ -129,6 +138,7 @@ impl Orientation {
         o.known_scrap.sort_by_key(|(p, _)| (p.y, p.x));
         o.known_wrecks.sort_by_key(|(p, _)| (p.y, p.x));
         o.known_rock.sort_by_key(|p| (p.y, p.x));
+        o.known_peaks.sort_by_key(|p| (p.y, p.x));
         o.blips.sort_by_key(|p| (p.y, p.x));
         o.incoming_shells.sort_by_key(|p| (p.y, p.x));
         o.enemy_buildings

@@ -336,7 +336,7 @@ The shipped opponent is a neural policy embedded in `oxide-sim`
 `i64` — no floats, so neural matches replay bit-identically and the
 hash fixtures pin the weights like any other rule). Difficulty is an
 execution handicap around one strategic mind: Easy/Medium/Hard/Expert
-use cadence 56/36/28/28 and exact hesitation 350/190/5/0 per mille.
+use cadence 56/36/34/37 and exact hesitation 350/190/5/0 per mille.
 Named difficulty no longer feeds the learned skill input. It changes
 only cadence and hesitation, so the shipped ladder degrades execution
 rather than asking one continuous neural input to order itself. Player-facing
@@ -427,16 +427,20 @@ screen, then a Scuttler, faction anti-air, and Lancer; it also commits a
 Reclaimer once nearby salvage falls below 450 and the bank covers its cost
 plus 70 scrap. High air commits a Fabricator, both faction air roles, and a
 Lancer; high siege commits a Fabricator and Bombard; high support commits one
-Turret. Progress latches one-way and counts live or queued units, completed or
-paid sites, and deferred founding claims, so a lost commitment never becomes
-a standing replacement quota. Recovery, forced home defense or finishing,
-and an existing saved capital plan take precedence. Zero facets bypass this
+Turret; Vanguard's ceiling commitment fields a three-body direct-ground screen
+before releasing production. Progress latches one-way and counts live or queued
+units, completed or paid sites, and deferred founding claims, so a lost
+commitment never becomes a standing replacement quota. Recovery, forced home
+defense or finishing, and an existing saved capital plan take precedence. Zero facets bypass this
 doctrine exactly, preserving R2's raw mask, command, and state-hash path.
 `sim/tests/profile_doctrine.rs` pins every finite package and precedence rule;
 `sim/tests/bot_profiles.rs` requires every same-style variant pair to change
 actual play across a majority of seven fixed seeds (the promoted combination
-differs on all seven for every pair), and the driver fixtures hold external-gym
-profile masks to the same native decision surface.
+differs on all seven for every pair), every specialist team role to change
+commands in a deterministic cohort, and Turtle/Balanced/Aggressive to retain
+recognizable economy, fortification, force, and mobile-pressure signatures.
+The driver fixtures hold external-gym profile masks to the same native decision
+surface.
 Training slots are role-indexed
 where the factions differ, so one action space serves both rosters.
 Since v4 every
@@ -1035,6 +1039,26 @@ comparisons don't survive GPU churn, so CI never runs it.
   fixtures untouched (proven unblessed); it shows at longer horizons
   on the fogged maps, where remembered-node turrets found instead of
   bouncing.
+- **GymBot defense placement scores the field, not the first legal ring tile
+  (0.14).** Turret, Flak Turret, and Bastion construction enumerates every
+  valid radius-three-through-seven anchor around its fog-honest foci. The
+  footprint and doorstep must be explored, unclaimed, and clear of visible
+  hostile ground bodies, and an available builder must reach the doorstep over
+  known passable ground; that real route supplies the travel score, so a sealed
+  salient pocket cannot steal the build. Candidates then compare threat
+  direction, protected value, firing coverage, spacing, congestion, builder
+  safety, and travel. Ground emplacements also score an indexed primary
+  approach and one Pareto alternate per source/target pair within twice the
+  primary travel under a bounded label budget; bypass credit is the
+  worse-covered route, so a lexicographic A* lane cannot masquerade as a sealed
+  choke. Remembered scrap blocks those ground routes.
+  Flak instead scores peak-aware air ingress and airspace coverage, routing
+  around an explored peak when straight ingress is sealed, with no ground choke
+  or bypass credit. Every role's coverage follows its real fire gate: ordinary
+  rock blocks Turret ground fire, Flak and Bastion ignore it, and peaks block all
+  three. Candidate ties end in `(y, x)` in oriented space. The scripted utility
+  policy deliberately keeps its historical first-valid placement path as a
+  frozen training yardstick.
 - **Fog of war enforces exactly one thing in the sim**: targeted attacks
   need the issuer to *see* the victim. Rendering honors fog fully
   (unexplored void, explored dim, unseen enemies culled) but the debug
@@ -1129,7 +1153,8 @@ comparisons don't survive GPU churn, so CI never runs it.
   pairing, and breaks Bombard/Bastion arcs — siege-safe geography.
   Vision deliberately ignores peaks (cover is a firing rule, not a
   stealth system). Wrecks never land on them; `known_rock` in the bot
-  observation includes them as known impassable terrain. Authoring:
+  observation includes them as known ground-impassable terrain, while the
+  `known_peaks` subset preserves the air/fire distinction. Authoring:
   the map border is rock and rock is open sky, so a ridge meant to
   wall flyers must claim its border cells too; a rock plug inside a
   peak wall makes an air-only door (Basalt Spine's centerpiece).
@@ -1176,6 +1201,13 @@ comparisons don't survive GPU churn, so CI never runs it.
   built own Foundry, advances one queued order, then idles. Losing sight
   cannot wake stale salvage memory back up, and a source just beyond the
   original anchor's radius never becomes eligible through hop drift.
+  A nonlethal hit on a Harvester or Reclaimer, or the loss of an own ground
+  unit or building, adds only the allied impact tile to a team-shared incident
+  ledger: never the attacker's identity or location. Its radius-four caution
+  ring expires after 15 seconds and is capped at 64 canonical entries. Workers
+  outside cannot route into it; a worker already struck inside may route
+  laterally or outward so the warning cannot trap its victim. Live threats,
+  radar contacts, and remembered armed structures remain hard route barriers.
 - **A Reclaimer is paid insurance, not an opening build.** Each completed
   Reclaimer credits one scrap every 24 ticks. At 150 scrap it repays its
   purchase after 3,600 ticks, then remains the efficient answer to an
@@ -1195,7 +1227,10 @@ comparisons don't survive GPU churn, so CI never runs it.
   are per seat, never per Foundry. Automatic Repair Bays preserve the
   recovery entitlement. The neural executive forms a screen-and-worker
   package when a known source is guarded; the replay-era classic bot
-  remains untouched.
+  remains untouched. Emergency reconciliation remains active until an emitted
+  Harvest command is observed as non-retiring work over a fog-honest safe route;
+  a rejected, stalled, or danger-crossing assignment is retried instead of
+  silently returning the replacement to ordinary policy.
 - **Repair reuses construction's machinery.** Welding feeds buffered
   hp gains through the same resolve path as building (fire wins ties),
   stalls broke, and stacks across welders. Since 0.11 the three
@@ -1521,16 +1556,18 @@ comparisons don't survive GPU churn, so CI never runs it.
   yardstick read 101 < 116 < 135 < 140, and its native cup read 580/800
   with zero caps or draws. Those are historical v7 results, not permanent
   thresholds. The shipped v8 R2 update-140 policy retains the execution-only
-  difficulty ladder while adding the resolved named-profile contract. Its raw
-  zero-facet 160-match yardstick reads Easy 103 wins and 3,274,331 ticks,
-  Medium 125 and 2,459,207, Hard 144 and 1,643,189, and Expert 147 and
-  1,544,745: wins rise and the horizon-priced tick total falls at every rung.
-  Its final canonical-profile native cup matrix reads FF 115 wins with 13
-  caps, FC 133 with 7, CF 139 with 8, and CC 157 with 2, each over 300
-  games, for 544/1,200 wins with 30 caps. Every cap remained active. Zero
-  caps is therefore historical
-  evidence, not a standing rule: the current gate rejects unhealthy tails
-  while permitting active wars at the horizon.
+  difficulty ladder while adding the resolved named-profile contract. The 0.14
+  movement, recovery, and defense changes re-rolled its execution schedule;
+  the final raw zero-facet 160-match yardstick reads Easy 92 wins and 3,485,769
+  ticks, Medium 117 and 2,663,240, Hard 131 and 2,186,609, and Expert 140 and
+  1,908,468. A disjoint ten-seed holdout reads 99/3,358,762,
+  124/2,297,158, 129/2,255,052, and 140/1,904,296 in the same order. Wins rise
+  and the horizon-priced tick total falls at every rung on both slates. The
+  final canonical-profile native cup matrix reads FF 119 wins with 0 caps, FC
+  131 with 0, CF 123 with 4, and CC 135 with 4, each over 300 games, for
+  508/1,200 wins with 8 caps. Every cap remained active. Zero caps is therefore
+  historical evidence, not a standing rule: the current gate rejects unhealthy
+  tails while permitting active wars at the horizon.
 
 ## Gotchas learned the hard way
 

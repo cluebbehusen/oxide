@@ -614,9 +614,9 @@ impl State {
     ///   seat's faction, a coherent salvage ledger, and no live salvage
     ///   marker.
     /// - Shells: coordinates inside the envelope, shooter minted.
-    /// - Vision: ghost owners in the table and hostile to the viewer,
-    ///   ghosts and contacts in canonical order, all of it inside the
-    ///   envelope.
+    /// - Vision: ghost owners in the table and hostile to the viewer;
+    ///   ghosts, contacts, and recent allied impact sites inside their
+    ///   bounds and in canonical order.
     ///
     /// Two rules are deliberately *permissive*, because tighter ones would
     /// refuse legitimately reachable states. References are checked
@@ -879,6 +879,38 @@ impl State {
             {
                 return Err(E::UnsortedContacts(seat));
             }
+            if v.salvage_incidents().len() > crate::stats::HARVEST_INCIDENT_CAP {
+                return Err(E::OverlongSalvageIncidentMemory(seat));
+            }
+            if v.salvage_incidents()
+                .iter()
+                .any(|incident| !tile_inside_envelope(incident.tile))
+            {
+                return Err(E::SalvageIncidentOutsideEnvelope(seat));
+            }
+            if self.result.is_none()
+                && v.salvage_incidents()
+                    .iter()
+                    .any(|incident| incident.expires_at < self.tick)
+            {
+                return Err(E::ExpiredSalvageIncident(seat));
+            }
+            let expiry_horizon = self
+                .tick
+                .saturating_add(crate::stats::HARVEST_INCIDENT_MEMORY_TICKS);
+            if v.salvage_incidents()
+                .iter()
+                .any(|incident| incident.expires_at > expiry_horizon)
+            {
+                return Err(E::SalvageIncidentExpiryBeyondHorizon(seat));
+            }
+            if !v
+                .salvage_incidents()
+                .windows(2)
+                .all(|a| (a[0].tile.y, a[0].tile.x) < (a[1].tile.y, a[1].tile.x))
+            {
+                return Err(E::UnsortedSalvageIncidents(seat));
+            }
         }
         Ok(())
     }
@@ -965,6 +997,22 @@ impl State {
         for (building, keep) in self.buildings.iter_mut().zip(keep) {
             if !keep {
                 building.focus = None;
+            }
+        }
+    }
+
+    /// Remembers only where this team suffered combat damage, never where
+    /// the attacker stood. Every teammate receives the same deterministic
+    /// record so team-shared vision cannot depend on seat iteration order.
+    pub(crate) fn record_salvage_incident(&mut self, victim: PlayerId, tile: TilePos) {
+        let team = self.player(victim).team;
+        let expires_at = self
+            .tick
+            .saturating_add(crate::stats::HARVEST_INCIDENT_MEMORY_TICKS)
+            .saturating_add(1);
+        for (player, vision) in self.players.iter().zip(&mut self.vision) {
+            if player.team == team {
+                vision.remember_salvage_incident(tile, expires_at);
             }
         }
     }
@@ -1733,6 +1781,23 @@ pub enum StateIntegrityError {
     /// A player's radar contacts are not sorted and deduplicated.
     #[error("player {0} holds radar contacts out of canonical order")]
     UnsortedContacts(PlayerId),
+    /// A team carries more recent allied impact sites than the bounded
+    /// memory permits.
+    #[error("player {0} holds more salvage incidents than the cap allows")]
+    OverlongSalvageIncidentMemory(PlayerId),
+    /// A recent allied impact site sits outside the sanity envelope.
+    #[error("player {0} remembers a salvage incident outside the envelope")]
+    SalvageIncidentOutsideEnvelope(PlayerId),
+    /// An active match retained an allied impact past its expiry.
+    #[error("player {0} carries an expired salvage incident in an active match")]
+    ExpiredSalvageIncident(PlayerId),
+    /// A recent allied impact expiry sits beyond one legal cooldown from
+    /// the state's current tick.
+    #[error("player {0} carries a salvage incident expiry beyond its memory horizon")]
+    SalvageIncidentExpiryBeyondHorizon(PlayerId),
+    /// Recent allied impact sites are not sorted and deduplicated.
+    #[error("player {0} holds salvage incidents out of canonical order")]
+    UnsortedSalvageIncidents(PlayerId),
 }
 
 /// A shell in flight: launched at the victim's fire-time position,

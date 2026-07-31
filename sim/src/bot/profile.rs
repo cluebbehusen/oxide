@@ -19,6 +19,14 @@ use chassis::rng::Pcg32;
 /// Number of curated variants within every named style.
 pub const NAMED_VARIANT_COUNT: u8 = 3;
 
+// Strong facets cross this shared boundary into GymBot's finite authored
+// doctrine instead of remaining only a neural preference.
+pub(super) const PROFILE_DOCTRINE_THRESHOLD: u32 = 800;
+/// Only an explicit Vanguard role receives the finite direct-ground screen.
+/// Aggressive solo profiles peak below this threshold, preserving their
+/// learned openings instead of silently rewriting every high-commitment game.
+pub(super) const PROFILE_COMMITMENT_THRESHOLD: u32 = 1000;
+
 /// Number of high-level profile facets appended to the neural condition.
 pub const PROFILE_CONDITION_COUNT: usize = 5;
 
@@ -111,7 +119,8 @@ impl ProfileFacets {
             TeamRole::Generalist => self,
             TeamRole::Vanguard => Self {
                 support_bias: adjust(self.support_bias, -50),
-                commitment_bias: adjust(self.commitment_bias, 150),
+                commitment_bias: adjust(self.commitment_bias, 150)
+                    .max(PROFILE_COMMITMENT_THRESHOLD),
                 ..self
             },
             TeamRole::Industry => Self {
@@ -126,7 +135,7 @@ impl ProfileFacets {
             },
             TeamRole::Siege => Self {
                 air_bias: adjust(self.air_bias, -50),
-                siege_bias: adjust(self.siege_bias, 200),
+                siege_bias: adjust(self.siege_bias, 200).max(PROFILE_DOCTRINE_THRESHOLD),
                 ..self
             },
         }
@@ -862,5 +871,23 @@ mod tests {
         assert_ne!(PROFILE_STYLE_STREAM_BASE, PROFILE_VARIANT_STREAM_BASE);
         assert_ne!(PROFILE_STYLE_STREAM_BASE, PROFILE_ROLE_STREAM);
         assert_ne!(PROFILE_VARIANT_STREAM_BASE, PROFILE_ROLE_STREAM);
+    }
+
+    #[test]
+    fn vanguard_and_siege_roles_reach_finite_doctrine_without_losing_their_tradeoff() {
+        let base = ProfileFacets {
+            economy_bias: 500,
+            air_bias: 300,
+            siege_bias: 200,
+            support_bias: 550,
+            commitment_bias: 250,
+        };
+        let vanguard = base.with_role(TeamRole::Vanguard);
+        assert_eq!(vanguard.commitment_bias, PROFILE_COMMITMENT_THRESHOLD);
+        assert_eq!(vanguard.support_bias, 500);
+
+        let siege = base.with_role(TeamRole::Siege);
+        assert_eq!(siege.siege_bias, PROFILE_DOCTRINE_THRESHOLD);
+        assert_eq!(siege.air_bias, 250);
     }
 }

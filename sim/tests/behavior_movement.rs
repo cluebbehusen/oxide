@@ -448,6 +448,49 @@ fn queued_orders_execute_in_sequence() {
 }
 
 #[test]
+fn queued_advance_executes_after_the_current_leg() {
+    let mut state = open_arena(24, 12, vec![unit(0, UnitKind::Sentinel, 3, 6)])
+        .build()
+        .unwrap();
+    let mover = state.units()[0].id;
+    let (first, advance_goal) = (TilePos::new(8, 6), TilePos::new(18, 6));
+    state.tick(&[
+        cmd(
+            0,
+            Command::Move {
+                units: vec![mover],
+                goal: first,
+                queue: false,
+            },
+        ),
+        cmd(
+            0,
+            Command::Advance {
+                units: vec![mover],
+                goal: advance_goal,
+                queue: true,
+            },
+        ),
+    ]);
+    assert_eq!(
+        state.unit(mover).unwrap().queue.front(),
+        Some(&Order::Advance { goal: advance_goal })
+    );
+
+    run_until(&mut state, 300, |state, _| {
+        matches!(
+            state.unit(mover).unwrap().order,
+            Order::Advance { goal } if goal == advance_goal
+        )
+    });
+    assert!(state.unit(mover).unwrap().queue.is_empty());
+    run_until(&mut state, 400, |state, _| {
+        let unit = state.unit(mover).unwrap();
+        unit.tile() == advance_goal && unit.order == Order::Idle
+    });
+}
+
+#[test]
 fn direct_order_replaces_the_whole_queue() {
     let mut state = arena(vec![unit(0, UnitKind::Harvester, 2, 6)])
         .build()

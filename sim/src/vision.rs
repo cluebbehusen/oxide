@@ -54,6 +54,19 @@ impl GhostBuilding {
     }
 }
 
+/// A recent hostile hit remembered by the team that suffered it.
+///
+/// Only the allied victim's tile is retained. The record deliberately does
+/// not identify or locate the attacker, so artillery landing from fog adds
+/// caution without turning damage into reconnaissance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SalvageIncident {
+    /// Where the allied asset stood when damage landed.
+    pub(crate) tile: TilePos,
+    /// First tick on which this caution zone no longer applies.
+    pub(crate) expires_at: crate::Tick,
+}
+
 /// One player's view of the map.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Vision {
@@ -76,6 +89,10 @@ pub struct Vision {
     /// Array's outer ring but outside true sight. A contact without
     /// identity — no kind, no owner, no memory (rebuilt every tick).
     contacts: Vec<TilePos>,
+    /// Recent tiles where this team saw one of its own assets take damage.
+    /// Sorted and deduplicated by (y, x); old snapshots predate the field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    salvage_incidents: Vec<SalvageIncident>,
 }
 
 impl Vision {
@@ -87,6 +104,7 @@ impl Vision {
             remembered_scrap: Grid::new(width, height, 0),
             remembered_wreck: Grid::new(width, height, 0),
             contacts: Vec::new(),
+            salvage_incidents: Vec::new(),
         }
     }
 
@@ -139,6 +157,48 @@ impl Vision {
         &self.contacts
     }
 
+    pub(crate) fn salvage_incidents(&self) -> &[SalvageIncident] {
+        &self.salvage_incidents
+    }
+
+    pub(crate) fn remember_salvage_incident(&mut self, tile: TilePos, expires_at: crate::Tick) {
+        let key = (tile.y, tile.x);
+        match self
+            .salvage_incidents
+            .binary_search_by_key(&key, |incident| (incident.tile.y, incident.tile.x))
+        {
+            Ok(index) => {
+                self.salvage_incidents[index].expires_at =
+                    self.salvage_incidents[index].expires_at.max(expires_at);
+            }
+            Err(mut index) => {
+                if self.salvage_incidents.len() == crate::stats::HARVEST_INCIDENT_CAP {
+                    let evict = self
+                        .salvage_incidents
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, incident)| {
+                            (incident.expires_at, incident.tile.y, incident.tile.x)
+                        })
+                        .map(|(index, _)| index)
+                        .expect("a full incident table is nonempty");
+                    self.salvage_incidents.remove(evict);
+                    index = self
+                        .salvage_incidents
+                        .binary_search_by_key(&key, |incident| (incident.tile.y, incident.tile.x))
+                        .unwrap_or_else(|index| index);
+                }
+                self.salvage_incidents
+                    .insert(index, SalvageIncident { tile, expires_at });
+            }
+        }
+    }
+
+    fn prune_salvage_incidents(&mut self, tick: crate::Tick) {
+        self.salvage_incidents
+            .retain(|incident| incident.expires_at > tick);
+    }
+
     /// Whether the player currently sees `pos`.
     pub fn visible(&self, pos: TilePos) -> bool {
         self.visible.get(pos).copied().unwrap_or(false)
@@ -187,8 +247,10 @@ impl Vision {
 /// current team vision contains their tile, and nearby friendly ground
 /// firepower can screen equal or weaker pressure. Static weapons come
 /// from the vision's own building memories, and unidentified radar
-/// contacts matter only in a tight local ring. Nothing here remembers a
-/// mobile unit after sight is lost or reads an unseen live building.
+/// contacts matter only in a tight local ring. Recent allied impact sites
+/// remain as anonymous caution zones for a short cooldown; nothing here
+/// remembers a mobile enemy's identity or position after sight is lost, or
+/// reads an unseen live building.
 #[derive(Debug, Clone, Copy)]
 struct MobileGroundPressure {
     pos: Vec2Fx,
@@ -209,10 +271,12 @@ struct StaticGroundPressure {
 /// threat records instead of repeatedly rescanning the full game state.
 pub(crate) struct GroundSalvageDanger {
     contacts: Vec<TilePos>,
+    incidents: Vec<TilePos>,
     mobile: Vec<MobileGroundPressure>,
     statics: Vec<StaticGroundPressure>,
     building_blocks: Vec<Vec<(i32, i32)>>,
     cache: RefCell<Vec<Vec<(i32, bool)>>>,
+    observed_cache: RefCell<Vec<Vec<(i32, bool)>>>,
 }
 
 impl GroundSalvageDanger {
@@ -295,40 +359,42 @@ impl GroundSalvageDanger {
         }
         Self {
             contacts: vision.contacts().to_vec(),
+            incidents: vision
+                .salvage_incidents()
+                .iter()
+                .filter(|incident| incident.expires_at > state.tick)
+                .map(|incident| incident.tile)
+                .collect(),
             mobile,
             statics,
             building_blocks,
             cache: RefCell::new(vec![Vec::new(); state.map.height() as usize]),
+            observed_cache: RefCell::new(vec![Vec::new(); state.map.height() as usize]),
         }
     }
 
     /// Whether this snapshot marks one tile as too dangerous for
     /// autonomous salvage work.
     pub(crate) fn contains(&self, source: TilePos) -> bool {
-        let Some(row_index) = usize::try_from(source.y)
-            .ok()
-            .filter(|row| *row < self.cache.borrow().len())
-        else {
-            return self.compute_contains(source);
-        };
-        let cached = {
-            let cache = self.cache.borrow();
-            let row = &cache[row_index];
-            row.binary_search_by_key(&source.x, |hit| hit.0)
-                .ok()
-                .map(|index| row[index].1)
-        };
-        if let Some(dangerous) = cached {
-            return dangerous;
+        cached_tile_predicate(&self.cache, source, || self.compute_contains(source))
+    }
+
+    /// Whether an autonomous route may traverse `tile` from its current
+    /// planning origin. Live threats, radar, and static fire remain hard
+    /// barriers. A worker already inside an anonymous incident ring may
+    /// move laterally or outward, but never closer to that impact; a worker
+    /// outside cannot enter it.
+    pub(crate) fn route_safe_from(&self, from: TilePos, tile: TilePos) -> bool {
+        if cached_tile_predicate(&self.observed_cache, tile, || {
+            self.compute_observed_contains(tile)
+        }) {
+            return false;
         }
-        let dangerous = self.compute_contains(source);
-        let mut cache = self.cache.borrow_mut();
-        let row = &mut cache[row_index];
-        let index = row
-            .binary_search_by_key(&source.x, |hit| hit.0)
-            .unwrap_or_else(|index| index);
-        row.insert(index, (source.x, dangerous));
-        dangerous
+        !self.incidents.iter().any(|incident| {
+            let next_distance = incident.chebyshev(tile);
+            next_distance <= crate::stats::HARVEST_INCIDENT_DANGER_RADIUS
+                && next_distance < incident.chebyshev(from)
+        })
     }
 
     /// Whether a building occupies this tile in the viewer's shared
@@ -347,6 +413,15 @@ impl GroundSalvageDanger {
     }
 
     fn compute_contains(&self, source: TilePos) -> bool {
+        if self.incidents.iter().any(|incident| {
+            incident.chebyshev(source) <= crate::stats::HARVEST_INCIDENT_DANGER_RADIUS
+        }) {
+            return true;
+        }
+        self.compute_observed_contains(source)
+    }
+
+    fn compute_observed_contains(&self, source: TilePos) -> bool {
         if self
             .contacts
             .iter()
@@ -374,6 +449,37 @@ impl GroundSalvageDanger {
                 <= pressure.reach_sq
         })
     }
+}
+
+fn cached_tile_predicate(
+    cache: &RefCell<Vec<Vec<(i32, bool)>>>,
+    tile: TilePos,
+    compute: impl FnOnce() -> bool,
+) -> bool {
+    let Some(row_index) = usize::try_from(tile.y)
+        .ok()
+        .filter(|row| *row < cache.borrow().len())
+    else {
+        return compute();
+    };
+    let cached = {
+        let cache = cache.borrow();
+        let row = &cache[row_index];
+        row.binary_search_by_key(&tile.x, |hit| hit.0)
+            .ok()
+            .map(|index| row[index].1)
+    };
+    if let Some(value) = cached {
+        return value;
+    }
+    let value = compute();
+    let mut cache = cache.borrow_mut();
+    let row = &mut cache[row_index];
+    let index = row
+        .binary_search_by_key(&tile.x, |hit| hit.0)
+        .unwrap_or_else(|index| index);
+    row.insert(index, (tile.x, value));
+    value
 }
 
 fn stamp_blocked_rect(
@@ -466,6 +572,7 @@ pub(crate) fn refresh(state: &mut State) {
             continue;
         }
         let view = &mut vision[index];
+        view.prune_salvage_incidents(state.tick);
         let my_team = state.players[index].team;
         let allied = |p: PlayerId| state.players[p.0 as usize].team == my_team;
         view.visible.fill(false);
@@ -560,6 +667,43 @@ mod danger_tests {
     use super::*;
     use crate::scenario::{PlayerSpec, UnitSpec};
     use crate::{Faction, Scenario, UnitKind};
+
+    fn player(name: &str, faction: Faction, team: Option<u8>) -> PlayerSpec {
+        PlayerSpec {
+            name: name.into(),
+            faction,
+            team,
+            scrap: 0,
+            bot: false,
+            bot_config: None,
+        }
+    }
+
+    fn allied_incident_state() -> State {
+        Scenario {
+            name: "allied-incidents".into(),
+            seed: 5,
+            map: vec![
+                "########################".into(),
+                "#1.........2........3..#".into(),
+                "#......................#".into(),
+                "#......................#".into(),
+                "#......................#".into(),
+                "#......................#".into(),
+                "########################".into(),
+            ],
+            players: vec![
+                player("West", Faction::Ferrous, Some(0)),
+                player("Center", Faction::Cupric, Some(0)),
+                player("East", Faction::Ferrous, Some(1)),
+            ],
+            units: Vec::new(),
+            buildings: Vec::new(),
+            meta: None,
+        }
+        .build()
+        .unwrap()
+    }
 
     fn screened_source(extra_hostile: bool) -> (State, TilePos) {
         let source = TilePos::new(10, 5);
@@ -665,6 +809,90 @@ mod danger_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn allied_impact_memory_is_shared_bounded_and_cools_down() {
+        let mut state = allied_incident_state();
+        let source = TilePos::new(10, 4);
+        state.record_salvage_incident(PlayerId(1), source);
+
+        let west = state.vision(PlayerId(0)).salvage_incidents();
+        let center = state.vision(PlayerId(1)).salvage_incidents();
+        assert_eq!(west, center, "teammates receive one shared memory");
+        assert_eq!(west.len(), 1);
+        assert_eq!(west[0].tile, source);
+        assert_eq!(
+            west[0].expires_at,
+            state.current_tick() + crate::stats::HARVEST_INCIDENT_MEMORY_TICKS + 1
+        );
+        let danger = GroundSalvageDanger::capture(&state, PlayerId(0));
+        assert!(
+            danger.contains(source),
+            "the incident source stays ineligible"
+        );
+        assert!(
+            danger.route_safe_from(source, source.offset(-1, 0)),
+            "a worker inside the ring may step outward"
+        );
+        assert!(
+            danger.route_safe_from(source.offset(-2, 0), source.offset(-3, 0)),
+            "an outward route may keep leaving the ring"
+        );
+        assert!(
+            !danger.route_safe_from(source.offset(-2, 0), source.offset(-1, 0)),
+            "an escape cannot turn back toward the impact"
+        );
+        assert!(
+            !danger.route_safe_from(source.offset(-5, 0), source.offset(-4, 0)),
+            "a route originating outside cannot enter the incident ring"
+        );
+        assert!(
+            state.vision(PlayerId(2)).salvage_incidents().is_empty(),
+            "the hostile team learns nothing from its victim's memory"
+        );
+
+        state.tick = west[0].expires_at;
+        assert!(
+            !GroundSalvageDanger::capture(&state, PlayerId(0)).contains(source),
+            "the incident stops affecting routes exactly at expiry"
+        );
+        state.refresh_vision();
+        assert!(
+            state.vision(PlayerId(0)).salvage_incidents().is_empty(),
+            "refresh prunes expired state instead of accumulating history"
+        );
+        assert_eq!(state.vision(PlayerId(0)), state.vision(PlayerId(1)));
+    }
+
+    #[test]
+    fn incident_memory_coalesces_and_evicts_deterministically() {
+        let mut state = allied_incident_state();
+        let repeated = TilePos::new(8, 3);
+        state.record_salvage_incident(PlayerId(0), repeated);
+        let first_expiry = state.vision(PlayerId(0)).salvage_incidents()[0].expires_at;
+        state.tick += 7;
+        state.record_salvage_incident(PlayerId(1), repeated);
+        let incidents = state.vision(PlayerId(0)).salvage_incidents();
+        assert_eq!(incidents.len(), 1);
+        assert_eq!(incidents[0].expires_at, first_expiry + 7);
+
+        let mut state = allied_incident_state();
+        for x in 0..=crate::stats::HARVEST_INCIDENT_CAP {
+            state.record_salvage_incident(PlayerId(0), TilePos::new(x as i32, 3));
+        }
+        let incidents = state.vision(PlayerId(0)).salvage_incidents();
+        assert_eq!(incidents.len(), crate::stats::HARVEST_INCIDENT_CAP);
+        assert_eq!(
+            incidents[0].tile,
+            TilePos::new(1, 3),
+            "equal-expiry overflow evicts the row-major first site"
+        );
+        assert!(
+            incidents.windows(2).all(|pair| {
+                (pair[0].tile.y, pair[0].tile.x) < (pair[1].tile.y, pair[1].tile.x)
+            })
+        );
     }
 
     #[test]

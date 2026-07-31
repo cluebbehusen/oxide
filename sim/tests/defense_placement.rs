@@ -8,7 +8,7 @@ use oxide_sim::bot::{Action, GymBot};
 use oxide_sim::scenario::{BuildingSpec, UnitSpec};
 use oxide_sim::{BuildingKind, Command, PlayerId, Scenario, UnitKind};
 
-use common::{open_arena, unit};
+use common::{open_arena, open_arena_with, unit};
 
 fn set_tile(scenario: &mut Scenario, tile: TilePos, value: char) {
     let mut row: Vec<_> = scenario.map[tile.y as usize].chars().collect();
@@ -69,7 +69,7 @@ fn defense_placement_is_deterministic() {
     let mut scenario = placement_scenario(vec![unit(0, UnitKind::Harvester, 5, 5)]);
     set_tile(&mut scenario, TilePos::new(15, 8), 's');
     set_tile(&mut scenario, TilePos::new(22, 11), 's');
-    let state = with_remembered_scrap(scenario.build().unwrap(), 0);
+    let state = scenario.build().unwrap();
 
     for (action, kind) in [
         (Action::BuildTurret, BuildingKind::Turret),
@@ -165,7 +165,7 @@ fn flak_leans_into_visible_air_while_ground_turrets_hold_the_line() {
     ]);
     let salvage = TilePos::new(22, 10);
     set_tile(&mut scenario, salvage, 's');
-    let state = scenario.build().unwrap();
+    let state = with_remembered_scrap(scenario.build().unwrap(), 0);
     let air = TilePos::new(9, 5);
     assert!(
         state.vision(PlayerId(0)).visible(air),
@@ -177,6 +177,93 @@ fn flak_leans_into_visible_air_while_ground_turrets_hold_the_line() {
     assert!(
         flak.chebyshev(air) < turret.chebyshev(air),
         "anti-air placement should answer the visible wing: {flak:?} vs {turret:?}"
+    );
+}
+
+#[test]
+fn flak_ingress_ignores_remote_ground_barriers() {
+    let units = vec![unit(0, UnitKind::Harvester, 5, 5)];
+    let salvage = TilePos::new(16, 12);
+    let mut open = open_arena(52, 26, units.clone());
+    set_tile(&mut open, salvage, 's');
+    open.players[0].scrap = 1_000;
+
+    let mut divided = open_arena_with(52, 26, units, |rows| {
+        for row in rows.iter_mut().take(25).skip(1) {
+            row[34] = '#';
+        }
+        rows[2][34] = '.';
+    });
+    set_tile(&mut divided, salvage, 's');
+    divided.players[0].scrap = 1_000;
+
+    let open = with_remembered_scrap(open.build().unwrap(), 0);
+    let divided = with_remembered_scrap(divided.build().unwrap(), 0);
+    assert_eq!(
+        build_anchor(&open, 0, Action::BuildFlak, BuildingKind::FlakTurret),
+        build_anchor(&divided, 0, Action::BuildFlak, BuildingKind::FlakTurret),
+        "air ingress ignores remote walls that do not change the emplacement field"
+    );
+}
+
+#[test]
+fn defense_placement_refuses_a_builder_sealed_pocket() {
+    let mut scenario = placement_scenario(vec![
+        unit(0, UnitKind::Harvester, 5, 5),
+        unit(0, UnitKind::Buzzard, 22, 10),
+    ]);
+    for x in 13..=31 {
+        set_tile(&mut scenario, TilePos::new(x, 4), '#');
+        set_tile(&mut scenario, TilePos::new(x, 18), '#');
+    }
+    for y in 4..=18 {
+        set_tile(&mut scenario, TilePos::new(13, y), '#');
+        set_tile(&mut scenario, TilePos::new(31, y), '#');
+    }
+    let salvage = TilePos::new(22, 11);
+    set_tile(&mut scenario, salvage, 's');
+    let mut state = scenario.build().unwrap();
+    assert!(state.vision(PlayerId(0)).visible(salvage));
+
+    let commands = GymBot::new(PlayerId(0)).step(&state, Action::BuildTurret);
+    let anchor = commands
+        .iter()
+        .find_map(|command| match command.command {
+            Command::Build {
+                kind: BuildingKind::Turret,
+                anchor,
+                ..
+            } => Some(anchor),
+            _ => None,
+        })
+        .expect("an accessible home-field defense remains available");
+    assert!(
+        anchor.x < 13 || anchor.x > 31 || anchor.y < 4 || anchor.y > 18,
+        "a flyer may reveal a salient pocket without making it builder-reachable: {anchor:?}"
+    );
+
+    let report = state.tick(&commands);
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| matches!(event, oxide_sim::Event::CommandRejected { .. })),
+        "the route-filtered defense command must survive authoritative validation: {:?}",
+        report.events
+    );
+    assert!(
+        state
+            .buildings()
+            .iter()
+            .any(|building| building.player == PlayerId(0) && building.anchor == anchor)
+            || state.units().iter().any(|unit| matches!(
+                unit.order,
+                oxide_sim::Order::Found {
+                    kind: BuildingKind::Turret,
+                    anchor: claimed,
+                } if claimed == anchor
+            )),
+        "an accepted defense must become either a paid site or a live founding claim"
     );
 }
 
@@ -200,5 +287,40 @@ fn a_second_emplacement_spreads_across_the_salvage_line() {
     assert!(
         first.chebyshev(second) >= 4,
         "spacing should buy a second coverage cell, not a turret clump: {first:?}, {second:?}"
+    );
+}
+
+#[test]
+fn direct_fire_scores_beyond_the_first_site_with_a_scrap_blocked_lane() {
+    let choke_x = 22usize;
+    let gaps = [7i32, 12, 17];
+    let mut scenario = open_arena_with(44, 24, vec![unit(0, UnitKind::Harvester, 5, 5)], |rows| {
+        for (y, row) in rows.iter_mut().enumerate().take(23).skip(1) {
+            if !gaps.contains(&i32::try_from(y).unwrap()) {
+                row[choke_x] = '#';
+            }
+        }
+    });
+    scenario.players[0].scrap = 1_000;
+    set_tile(&mut scenario, TilePos::new(choke_x as i32, gaps[1]), 's');
+    let state = with_remembered_scrap(scenario.build().unwrap(), 0);
+
+    let anchor = build_anchor(&state, 0, Action::BuildTurret, BuildingKind::Turret);
+    assert_ne!(
+        anchor,
+        TilePos::new(19, 9),
+        "the first valid ring-scanned site must not stand in for scoring the full field"
+    );
+    let covered = [gaps[0], gaps[2]]
+        .into_iter()
+        .filter(|gap_y| {
+            let dx = anchor.x - choke_x as i32;
+            let dy = anchor.y - *gap_y;
+            dx * dx + dy * dy <= 25
+        })
+        .count();
+    assert!(
+        covered >= 1,
+        "route-aware point defense should cover a genuinely walkable passage: {anchor:?}"
     );
 }

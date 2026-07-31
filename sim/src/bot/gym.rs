@@ -16,13 +16,14 @@
 use super::executive::{ArmyState, Executive, Intent, LoweringRules};
 use super::observation::{Observation, UnitObs};
 use super::orient::Orientation;
-use super::profile::ProfileFacets;
+use super::profile::{PROFILE_COMMITMENT_THRESHOLD, PROFILE_DOCTRINE_THRESHOLD, ProfileFacets};
 use super::utility::{Dials, UtilityPolicy};
 use crate::command::{Command, PlayerCommand};
 use crate::ids::{BuildingId, PlayerId, UnitId};
-use crate::state::State;
+use crate::state::{Order, State};
 use crate::stats::{BuildingKind, Domain, Role, UnitKind};
-use chassis::grid::TilePos;
+use chassis::fx::{Fx, HALF, Vec2Fx};
+use chassis::grid::{CARDINALS, DIAGONALS, TilePos};
 
 /// Bump when actions or features change shape — recorded checkpoints
 /// and shipped weights must refuse mismatched worlds.
@@ -131,15 +132,14 @@ pub const CONSTRUCTION_PLAN_TIMEOUT_TICKS: u64 = 1_200;
 const FABRICATOR_MIN_HARVESTERS: usize = 4;
 const FABRICATOR_MIN_SCREEN_STRENGTH: i64 = 150;
 
-/// A named profile becomes an authored strategic commitment only at the
-/// deliberately strong end of one facet. Lower values remain preferences for
-/// the actor to learn rather than a second scripted policy.
-const PROFILE_DOCTRINE_THRESHOLD: u32 = 800;
 /// A complementary team Industry role should still express its economy lean
 /// even when the underlying style does not cross the full doctrine threshold.
 const PROFILE_RECLAIMER_THRESHOLD: u32 = 700;
 /// The industrial opening compounds one worker beyond the generalist target.
 const PROFILE_HARVESTER_TARGET: usize = 5;
+/// Vanguard commitment adds two direct-fire bodies to the shipped one-Sentinel
+/// opening, then permanently releases production back to the learned policy.
+const PROFILE_COMMITMENT_SCREEN_TARGET: usize = 3;
 /// The authored Reclaimer milestone uses the same retirement economics as the
 /// utility policy: nearby salvage must be low and one fighting purchase stays
 /// banked beyond the site's cost.
@@ -194,6 +194,43 @@ struct OwnUnitMemory {
     id: UnitId,
     tile: TilePos,
     hp: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RecoveryAssignment {
+    worker: UnitId,
+    source: TilePos,
+    issued_at: u64,
+    secured_target: bool,
+}
+
+fn recovery_ring_blocks(start: TilePos, tile: TilePos, danger: TilePos, radius: i32) -> bool {
+    let start_distance = start.chebyshev(danger);
+    let next_distance = tile.chebyshev(danger);
+    if start_distance <= radius {
+        next_distance <= radius && next_distance < start_distance
+    } else {
+        next_distance <= radius
+    }
+}
+
+fn recovery_reach_contains(distance: Fx, reach: Fx) -> bool {
+    distance <= reach * reach
+}
+
+fn recovery_rect_closest_point(anchor: TilePos, size: (i32, i32), from: Vec2Fx) -> Vec2Fx {
+    let min = anchor.center() - Vec2Fx::new(HALF, HALF);
+    let max = min + Vec2Fx::new(Fx::from_num(size.0), Fx::from_num(size.1));
+    Vec2Fx::new(from.x.clamp(min.x, max.x), from.y.clamp(min.y, max.y))
+}
+
+fn recovery_building_ground_reach(kind: BuildingKind) -> Option<Fx> {
+    kind.stats()
+        .weapons
+        .iter()
+        .filter(|weapon| weapon.targets.covers(Domain::Ground))
+        .map(|weapon| weapon.range)
+        .max()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -452,6 +489,7 @@ impl Default for ActionPlan {
 #[derive(Debug, Clone, Copy, Default)]
 struct ProfileDoctrineProgress {
     workforce: bool,
+    commitment_screen: bool,
     fabricator: bool,
     reclaimer: bool,
     air_ground: bool,
@@ -497,6 +535,8 @@ pub struct GymBot {
     /// A broken economy remains under recovery reconciliation until a
     /// replacement Harvester has a safe job.
     recovery_active: bool,
+    /// An emitted emergency assignment awaiting confirmation in sim state.
+    recovery_assignment: Option<RecoveryAssignment>,
     /// The guarded source currently being contested, in oriented space.
     recovery_target: Option<TilePos>,
     /// Last attempt to hold the replacement worker near home.
@@ -560,6 +600,7 @@ impl GymBot {
             own_units_seen: Vec::new(),
             memory_tick: None,
             recovery_active: false,
+            recovery_assignment: None,
             recovery_target: None,
             recovery_worker_hold: None,
             recovery_liquidation: None,
@@ -588,11 +629,12 @@ impl GymBot {
     pub fn decision(&mut self, state: &State) -> Decision {
         let (world, orientation) = self.observe(state);
         self.refresh_tactical_memory(&world);
+        let obs = orientation.observe(&world);
+        self.refresh_recovery_assignment(state, &obs, &orientation);
         self.remember(&world);
         let rear = rear_tile(&world);
         let mut projected = self.exec.clone();
         let _ = projected.maintain_repair_capable(self.player, &world, rear);
-        let obs = orientation.observe(&world);
         self.refresh_founding_claims(&obs);
         self.reconcile_plan(&obs);
         self.refresh_profile_progress(&obs);
@@ -1148,6 +1190,12 @@ impl GymBot {
         mask: &[bool; ACTION_COUNT],
     ) -> Option<Action> {
         let facets = self.profile_facets;
+        if facets.commitment_bias >= PROFILE_COMMITMENT_THRESHOLD
+            && !self.profile_progress.commitment_screen
+            && mask[Action::TrainSentinel as usize]
+        {
+            return Some(Action::TrainSentinel);
+        }
         if facets.economy_bias >= PROFILE_RECLAIMER_THRESHOLD
             && !self.profile_progress.workforce
             && mask[Action::TrainHarvester as usize]
@@ -1247,6 +1295,8 @@ impl GymBot {
         }
         self.profile_progress.workforce |=
             committed_units(obs, UnitKind::Harvester) >= PROFILE_HARVESTER_TARGET;
+        self.profile_progress.commitment_screen |=
+            committed_direct_ground_fighters(obs) >= PROFILE_COMMITMENT_SCREEN_TARGET;
         self.profile_progress.fabricator |= committed_buildings(obs, BuildingKind::Fabricator) > 0;
         self.profile_progress.reclaimer |= committed_buildings(obs, BuildingKind::Reclaimer) > 0;
         self.profile_progress.air_ground |=
@@ -1272,11 +1322,12 @@ impl GymBot {
     pub fn step_plan(&mut self, state: &State, plan: ActionPlan) -> Vec<PlayerCommand> {
         let (world, orientation) = self.observe(state);
         self.refresh_tactical_memory(&world);
+        let obs = orientation.observe(&world);
+        self.refresh_recovery_assignment(state, &obs, &orientation);
         self.remember(&world);
         let rear = rear_tile(&world);
         let mut commands = self.exec.maintain_repair_capable(self.player, &world, rear);
 
-        let obs = orientation.observe(&world);
         self.refresh_founding_claims(&obs);
         self.reconcile_plan(&obs);
         commands.extend(self.cancel_stale_founding(&obs));
@@ -1733,18 +1784,41 @@ impl GymBot {
                 .iter()
                 .any(|(blocked, retry_after)| *blocked == kind && obs.tick < *retry_after)
             && free_builder(obs, enlisted)
-            && self.build_anchor(obs, home, kind).is_some()
+            && self.has_build_anchor(obs, enlisted, home, kind)
+    }
+
+    fn has_build_anchor(
+        &self,
+        obs: &Observation,
+        enlisted: &[UnitId],
+        home: TilePos,
+        kind: BuildingKind,
+    ) -> bool {
+        match kind {
+            BuildingKind::Turret | BuildingKind::FlakTurret | BuildingKind::Bastion => {
+                let passability = KnownPassability::from_observation(obs);
+                let builders = DefenseBuilderRoutes::measure(obs, enlisted, &passability);
+                defense_foci(obs, home, kind)
+                    .into_iter()
+                    .chain(std::iter::once(home))
+                    .flat_map(|focus| self.policy.placements_near(obs, kind, focus))
+                    .any(|anchor| builders.travel_to(anchor, kind).is_some())
+            }
+            BuildingKind::Foundry => false,
+            _ => self.policy.placement_near(obs, kind, home).is_some(),
+        }
     }
 
     fn build_anchor(
         &self,
         obs: &Observation,
+        enlisted: &[UnitId],
         home: TilePos,
         kind: BuildingKind,
     ) -> Option<TilePos> {
         match kind {
             BuildingKind::Turret | BuildingKind::FlakTurret | BuildingKind::Bastion => {
-                self.defense_anchor(obs, home, kind)
+                self.defense_anchor(obs, enlisted, home, kind)
             }
             BuildingKind::Foundry => None,
             _ => self.policy.placement_near(obs, kind, home),
@@ -1754,6 +1828,7 @@ impl GymBot {
     fn defense_anchor(
         &self,
         obs: &Observation,
+        enlisted: &[UnitId],
         home: TilePos,
         kind: BuildingKind,
     ) -> Option<TilePos> {
@@ -1763,30 +1838,29 @@ impl GymBot {
 
         let mut candidates: Vec<_> = foci
             .into_iter()
-            .filter_map(|focus| self.policy.placement_near(obs, kind, focus))
+            .flat_map(|focus| self.policy.placements_near(obs, kind, focus))
             .collect();
         candidates.sort_unstable_by_key(|anchor| (anchor.y, anchor.x));
         candidates.dedup();
+        let traffic = DefenseTraffic::measure(obs, home, kind);
+        let builders = DefenseBuilderRoutes::measure(obs, enlisted, &traffic.passability);
+        candidates.retain(|anchor| builders.travel_to(*anchor, kind).is_some());
+        if candidates.is_empty() {
+            candidates = self.policy.placements_near(obs, kind, home);
+            candidates.retain(|anchor| builders.travel_to(*anchor, kind).is_some());
+        }
         if candidates.is_empty() {
             return None;
         }
-
         let metrics: Vec<_> = candidates
             .iter()
             .copied()
-            .map(|anchor| DefenseMetrics::measure(obs, home, kind, anchor))
+            .map(|anchor| DefenseMetrics::measure(obs, home, kind, anchor, &traffic, &builders))
             .collect();
         let bounds = DefenseBounds::from_metrics(&metrics);
-        let preferred_spacing = metrics
-            .iter()
-            .map(|metric| metric.spacing)
-            .max()
-            .unwrap_or(0)
-            .min(8);
         candidates
             .into_iter()
             .zip(metrics)
-            .filter(|(_, metrics)| metrics.spacing >= preferred_spacing)
             .map(|(anchor, metrics)| {
                 (
                     std::cmp::Reverse(metrics.score(kind, bounds)),
@@ -1815,7 +1889,7 @@ impl GymBot {
         {
             return None;
         }
-        let anchor = self.build_anchor(obs, home, kind)?;
+        let anchor = self.build_anchor(obs, enlisted, home, kind)?;
         self.policy.note_pending_site(anchor);
         intents.push(Intent::Build { kind, anchor });
         self.clear_planned_build();
@@ -1972,6 +2046,132 @@ impl GymBot {
             .fold(0u64, u64::saturating_add)
     }
 
+    fn recovery_route_is_safe(
+        &self,
+        obs: &Observation,
+        orientation: &Orientation,
+        worker: UnitId,
+        source: TilePos,
+        secured_target: bool,
+        observed_path: Option<&crate::state::PathFollow>,
+    ) -> bool {
+        let Some(start) = obs
+            .my_units
+            .iter()
+            .find(|unit| unit.id == worker)
+            .map(|unit| unit.tile)
+        else {
+            return false;
+        };
+        let source_is_scrap = obs
+            .known_scrap
+            .iter()
+            .any(|(tile, amount)| *tile == source && *amount > 0);
+        let source_is_wreck = obs
+            .known_wrecks
+            .iter()
+            .any(|(tile, amount)| *tile == source && *amount > 0);
+        if !source_is_scrap && !source_is_wreck {
+            return false;
+        }
+
+        let passability = KnownPassability::from_observation(obs);
+        let remembered: Vec<_> = self
+            .danger
+            .iter()
+            .filter(|memory| {
+                memory.strength > 0
+                    && obs.tick.saturating_sub(memory.seen_at) < DANGER_MEMORY_TICKS
+                    && (!secured_target
+                        || orientation.tile(memory.tile).chebyshev(source) > DANGER_RADIUS)
+            })
+            .map(|memory| orientation.tile(memory.tile))
+            .collect();
+        let dangerous = |tile: TilePos| {
+            if remembered
+                .iter()
+                .any(|danger| recovery_ring_blocks(start, tile, *danger, DANGER_RADIUS))
+            {
+                return true;
+            }
+            let tile_point = tile.center();
+            if obs.enemy_units.iter().any(|unit| {
+                unit.kind
+                    .stats()
+                    .max_range_vs(Domain::Ground)
+                    .is_some_and(|range| {
+                        let reach = range + crate::stats::HARVEST_MOBILE_DANGER_MARGIN;
+                        recovery_reach_contains(
+                            recovery_rect_closest_point(unit.tile, (1, 1), tile_point)
+                                .dist_sq(tile_point),
+                            reach,
+                        )
+                    })
+            }) {
+                return true;
+            }
+            if obs.enemy_buildings.iter().any(|building| {
+                building.built
+                    && recovery_building_ground_reach(building.kind).is_some_and(|range| {
+                        let reach = range + crate::stats::HARVEST_STATIC_DANGER_MARGIN;
+                        let size = building.kind.stats().size;
+                        recovery_reach_contains(
+                            recovery_rect_closest_point(building.anchor, size, tile_point)
+                                .dist_sq(tile_point),
+                            reach,
+                        )
+                    })
+            }) {
+                return true;
+            }
+            obs.blips
+                .iter()
+                .any(|danger| danger.chebyshev(tile) <= crate::stats::HARVEST_RADAR_DANGER_RADIUS)
+                || obs.incoming_shells.iter().any(|danger| {
+                    danger.chebyshev(tile) <= crate::stats::HARVEST_INCIDENT_DANGER_RADIUS
+                })
+        };
+        let known_scrap = |tile: TilePos| {
+            obs.known_scrap
+                .iter()
+                .any(|(known, amount)| *known == tile && *amount > 0)
+        };
+        let passable =
+            |tile: TilePos| passability.route_open(tile) && !known_scrap(tile) && !dangerous(tile);
+        if observed_path.is_some_and(|path| {
+            path.waypoints
+                .iter()
+                .skip(path.next as usize)
+                .copied()
+                .map(|waypoint| orientation.tile(waypoint))
+                .any(dangerous)
+        }) {
+            return false;
+        }
+
+        let mut goals = if source_is_scrap {
+            CARDINALS
+                .into_iter()
+                .chain(DIAGONALS)
+                .map(|(dx, dy)| source.offset(dx, dy))
+                .collect::<Vec<_>>()
+        } else {
+            vec![source]
+        };
+        goals.sort_unstable_by_key(|goal| (goal.manhattan(start), goal.y, goal.x));
+        goals.into_iter().any(|goal| {
+            chassis::path::astar(
+                obs.map_width,
+                obs.map_height,
+                start,
+                goal,
+                passable,
+                crate::stats::PATH_EXPANSION_CAP,
+            )
+            .is_some()
+        })
+    }
+
     fn recovery_posture(
         &mut self,
         obs: &Observation,
@@ -1983,6 +2183,7 @@ impl GymBot {
             .any(|building| building.kind == BuildingKind::Foundry && building.built);
         if !has_foundry {
             self.recovery_active = false;
+            self.recovery_assignment = None;
             self.recovery_target = None;
             return RecoveryPosture::Inactive;
         }
@@ -2002,6 +2203,9 @@ impl GymBot {
         }
         if !self.recovery_active {
             return RecoveryPosture::Inactive;
+        }
+        if self.recovery_assignment.is_some() {
+            return RecoveryPosture::Saving;
         }
         let Some(home) = home_tile(obs) else {
             return RecoveryPosture::Inactive;
@@ -2025,7 +2229,13 @@ impl GymBot {
                 .fold(0u64, u64::saturating_add);
             remembered.saturating_add(static_guard)
         };
-        let safe = sources.iter().copied().find(|source| danger(*source) == 0);
+        let recovery_worker = recovery_worker(obs);
+        let safe = sources.iter().copied().find(|source| {
+            danger(*source) == 0
+                && recovery_worker.is_none_or(|worker| {
+                    self.recovery_route_is_safe(obs, orientation, worker, *source, false, None)
+                })
+        });
 
         if !harvesters.is_empty() {
             if let Some(source) = safe {
@@ -2191,17 +2401,15 @@ impl GymBot {
             }
             RecoveryPosture::Harvest(source) => {
                 if let Some(worker) = recovery_worker(obs) {
-                    commands.extend(lower(
+                    let assignment = lower(
                         self,
                         vec![Intent::AssignHarvest {
                             unit: worker,
                             node: source,
                         }],
-                    ));
-                    self.recovery_active = false;
-                    self.recovery_target = None;
-                    self.recovery_worker_hold = None;
-                    self.recovery_liquidation = None;
+                    );
+                    self.remember_recovery_assignment(&assignment, worker, obs.tick, false);
+                    commands.extend(assignment);
                 }
             }
             RecoveryPosture::Contest(source) => {
@@ -2273,21 +2481,18 @@ impl GymBot {
                         .blips
                         .iter()
                         .any(|blip| blip.chebyshev(source) <= DANGER_RADIUS);
-                if secured {
-                    commands.extend(lower(
+                let route_secured = secured
+                    && self.recovery_route_is_safe(obs, orientation, worker, source, true, None);
+                if route_secured {
+                    let assignment = lower(
                         self,
                         vec![Intent::AssignHarvest {
                             unit: worker,
                             node: source,
                         }],
-                    ));
-                    self.danger.retain(|memory| {
-                        orientation.tile(memory.tile).chebyshev(source) > DANGER_RADIUS
-                    });
-                    self.recovery_active = false;
-                    self.recovery_target = None;
-                    self.recovery_worker_hold = None;
-                    self.recovery_liquidation = None;
+                    );
+                    self.remember_recovery_assignment(&assignment, worker, obs.tick, true);
+                    commands.extend(assignment);
                 } else {
                     let intent = if contesting.is_some()
                         || armies
@@ -2315,6 +2520,72 @@ impl GymBot {
             }
         }
         commands
+    }
+
+    fn remember_recovery_assignment(
+        &mut self,
+        commands: &[PlayerCommand],
+        worker: UnitId,
+        tick: u64,
+        secured_target: bool,
+    ) {
+        if let Some(source) = commands.iter().find_map(|command| match &command.command {
+            Command::Harvest { units, node, .. } if units.contains(&worker) => Some(*node),
+            _ => None,
+        }) {
+            self.recovery_assignment = Some(RecoveryAssignment {
+                worker,
+                source,
+                issued_at: tick,
+                secured_target,
+            });
+        }
+    }
+
+    fn refresh_recovery_assignment(
+        &mut self,
+        state: &State,
+        obs: &Observation,
+        orientation: &Orientation,
+    ) {
+        let Some(assignment) = self.recovery_assignment else {
+            return;
+        };
+        if state.current_tick() <= assignment.issued_at {
+            return;
+        }
+        let working = state.units().iter().find(|unit| {
+            unit.id == assignment.worker
+                && matches!(
+                    unit.order,
+                    Order::Harvest {
+                        node,
+                        anchor,
+                        retiring: false,
+                    } if anchor.unwrap_or(node) == assignment.source
+                )
+                && (unit.path.is_some() || unit.progress > 0 || unit.carrying > 0)
+        });
+        let source = orientation.tile(assignment.source);
+        let viable = working.is_some_and(|unit| {
+            self.recovery_route_is_safe(
+                obs,
+                orientation,
+                assignment.worker,
+                source,
+                assignment.secured_target,
+                unit.path.as_ref(),
+            )
+        });
+        self.recovery_assignment = None;
+        if viable {
+            self.danger
+                .retain(|memory| memory.tile.chebyshev(assignment.source) > DANGER_RADIUS);
+            self.recovery_active = false;
+            self.recovery_target = None;
+            self.recovery_worker_hold = None;
+            self.recovery_liquidation = None;
+        }
     }
 
     fn cancel_for_recovery(
@@ -2673,11 +2944,642 @@ impl Point2 {
         (self.x - other.x).abs().max((self.y - other.y).abs())
     }
 
-    fn manhattan(self, other: Self) -> i32 {
-        (self.x - other.x)
-            .abs()
-            .saturating_add((self.y - other.y).abs())
+    fn within_reach(self, other: Self, minimum_reach: i32, reach: i32) -> bool {
+        let dx = i64::from(self.x) - i64::from(other.x);
+        let dy = i64::from(self.y) - i64::from(other.y);
+        let distance_sq = dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy));
+        let minimum = i64::from(minimum_reach);
+        let maximum = i64::from(reach);
+        distance_sq >= minimum.saturating_mul(minimum)
+            && distance_sq <= maximum.saturating_mul(maximum)
     }
+
+    fn as_tile(self) -> TilePos {
+        TilePos::new(self.x.div_euclid(2), self.y.div_euclid(2))
+    }
+
+    fn as_vec(self) -> chassis::fx::Vec2Fx {
+        let half = chassis::fx::HALF;
+        chassis::fx::Vec2Fx::new(
+            chassis::fx::Fx::from_num(self.x) * half,
+            chassis::fx::Fx::from_num(self.y) * half,
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KnownPassability {
+    width: i32,
+    height: i32,
+    terrain_open: Vec<bool>,
+    air_open: Vec<bool>,
+    route_open: Vec<bool>,
+}
+
+impl KnownPassability {
+    fn from_observation(obs: &Observation) -> Self {
+        let width = obs.map_width.max(0);
+        let height = obs.map_height.max(0);
+        let len = usize::try_from(width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .unwrap_or(0);
+        let mut terrain_open = vec![true; len];
+        for &tile in &obs.known_rock {
+            if let Some(index) = Self::index_for(width, height, tile) {
+                terrain_open[index] = false;
+            }
+        }
+        let mut air_open = vec![true; len];
+        for &tile in &obs.known_peaks {
+            if let Some(index) = Self::index_for(width, height, tile) {
+                air_open[index] = false;
+            }
+        }
+        let mut route_open = terrain_open.clone();
+        for &(tile, amount) in &obs.known_scrap {
+            if amount > 0
+                && let Some(index) = Self::index_for(width, height, tile)
+            {
+                route_open[index] = false;
+            }
+        }
+        for building in obs
+            .my_buildings
+            .iter()
+            .chain(obs.ally_buildings.iter())
+            .chain(obs.enemy_buildings.iter())
+        {
+            let (building_width, building_height) = building.kind.stats().size;
+            for dy in 0..building_height {
+                for dx in 0..building_width {
+                    let tile = building.anchor.offset(dx, dy);
+                    if let Some(index) = Self::index_for(width, height, tile) {
+                        route_open[index] = false;
+                    }
+                }
+            }
+        }
+        Self {
+            width,
+            height,
+            terrain_open,
+            air_open,
+            route_open,
+        }
+    }
+
+    fn index_for(width: i32, height: i32, tile: TilePos) -> Option<usize> {
+        if tile.x < 0 || tile.y < 0 || tile.x >= width || tile.y >= height {
+            return None;
+        }
+        let width = usize::try_from(width).ok()?;
+        let x = usize::try_from(tile.x).ok()?;
+        let y = usize::try_from(tile.y).ok()?;
+        y.checked_mul(width)?.checked_add(x)
+    }
+
+    fn index(&self, tile: TilePos) -> Option<usize> {
+        Self::index_for(self.width, self.height, tile)
+    }
+
+    fn route_open(&self, tile: TilePos) -> bool {
+        self.index(tile)
+            .and_then(|index| self.route_open.get(index))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    fn terrain_open(&self, tile: TilePos) -> bool {
+        self.index(tile)
+            .and_then(|index| self.terrain_open.get(index))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    fn air_open(&self, tile: TilePos) -> bool {
+        self.index(tile)
+            .and_then(|index| self.air_open.get(index))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    fn target_open(&self, kind: BuildingKind, tile: TilePos) -> bool {
+        if kind == BuildingKind::FlakTurret {
+            self.air_open(tile)
+        } else {
+            self.terrain_open(tile)
+        }
+    }
+
+    fn fire_clear(&self, kind: BuildingKind, from: Point2, to: Point2) -> bool {
+        let open = |tile| {
+            if kind == BuildingKind::Turret {
+                self.terrain_open(tile)
+            } else {
+                self.air_open(tile)
+            }
+        };
+        open(to.as_tile()) && !chassis::path::line_blocked(from.as_vec(), to.as_vec(), open)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DefenseBuilderRoutes {
+    width: i32,
+    height: i32,
+    travel: Vec<u32>,
+}
+
+impl DefenseBuilderRoutes {
+    fn measure(obs: &Observation, enlisted: &[UnitId], passability: &KnownPassability) -> Self {
+        let mut travel = vec![u32::MAX; passability.route_open.len()];
+        let mut open = std::collections::BinaryHeap::new();
+        let known_open = |tile: TilePos| obs.explored(tile) && passability.route_open(tile);
+        for unit in obs.my_units.iter().filter(|unit| {
+            unit.kind == UnitKind::Harvester
+                && unit.site.is_none()
+                && unit.founding.is_none()
+                && !enlisted.contains(&unit.id)
+        }) {
+            let Some(index) = passability.index(unit.tile) else {
+                continue;
+            };
+            if known_open(unit.tile) && travel[index] != 0 {
+                travel[index] = 0;
+                open.push(std::cmp::Reverse((0u32, index)));
+            }
+        }
+
+        while let Some(std::cmp::Reverse((distance, current_index))) = open.pop() {
+            if travel[current_index] != distance {
+                continue;
+            }
+            let Ok(width) = usize::try_from(passability.width) else {
+                break;
+            };
+            let current = TilePos::new(
+                i32::try_from(current_index % width).unwrap_or(0),
+                i32::try_from(current_index / width).unwrap_or(0),
+            );
+            let mut visit = |next: TilePos, step: u32| {
+                let Some(index) = passability.index(next) else {
+                    return;
+                };
+                let candidate = distance.saturating_add(step);
+                if known_open(next) && candidate < travel[index] {
+                    travel[index] = candidate;
+                    open.push(std::cmp::Reverse((candidate, index)));
+                }
+            };
+            for (dx, dy) in CARDINALS {
+                visit(current.offset(dx, dy), 10);
+            }
+            for (dx, dy) in DIAGONALS {
+                let next = current.offset(dx, dy);
+                if known_open(current.offset(dx, 0)) && known_open(current.offset(0, dy)) {
+                    visit(next, 14);
+                }
+            }
+        }
+
+        Self {
+            width: passability.width,
+            height: passability.height,
+            travel,
+        }
+    }
+
+    fn travel_to(&self, anchor: TilePos, kind: BuildingKind) -> Option<u32> {
+        let (width, height) = kind.stats().size;
+        (-1..=width)
+            .flat_map(|dx| (-1..=height).map(move |dy| (dx, dy)))
+            .filter(|(dx, dy)| !(0..width).contains(dx) || !(0..height).contains(dy))
+            .filter_map(|(dx, dy)| {
+                KnownPassability::index_for(self.width, self.height, anchor.offset(dx, dy))
+                    .and_then(|index| self.travel.get(index))
+                    .copied()
+                    .filter(|distance| *distance != u32::MAX)
+            })
+            .min()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DefenseApproach {
+    value: i64,
+    routes: Vec<Vec<TilePos>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DefenseTraffic {
+    approaches: Vec<DefenseApproach>,
+    passability: KnownPassability,
+    kind: BuildingKind,
+    ground_routes: bool,
+}
+
+// Sharing the primary is expensive enough to prefer a real parallel lane,
+// while the explicit stretch ceiling keeps a remote map-edge tour from
+// masquerading as a practical bypass.
+const DEFENSE_ALTERNATE_OVERLAP_COST: u32 = 40;
+const DEFENSE_ALTERNATE_MAX_STRETCH: u32 = 2;
+// The caller budgets roughly two tile expansions per map cell. A
+// resource-constrained search can retain several nondominated labels at one
+// cell, so give that same spatial budget room for a small Pareto frontier.
+const DEFENSE_ALTERNATE_LABEL_BUDGET_FACTOR: u32 = 4;
+
+impl DefenseTraffic {
+    fn measure(obs: &Observation, home: TilePos, kind: BuildingKind) -> Self {
+        let passability = KnownPassability::from_observation(obs);
+        let mut targets: Vec<_> = protected_points(obs, kind)
+            .into_iter()
+            .map(|(point, value)| (point.as_tile(), value))
+            .collect();
+        targets.push((home, 1_800));
+        targets.sort_unstable_by_key(|(tile, value)| (tile.y, tile.x, std::cmp::Reverse(*value)));
+        targets.dedup_by_key(|(tile, _)| *tile);
+        targets.sort_unstable_by_key(|(tile, value)| {
+            (
+                std::cmp::Reverse(*value),
+                tile.manhattan(home),
+                tile.y,
+                tile.x,
+            )
+        });
+        targets.truncate(4);
+
+        let mut sources: Vec<_> = defense_threats(obs, kind)
+            .into_iter()
+            .map(|(point, value)| (point.as_tile(), value.clamp(1_000, 12_000)))
+            .collect();
+        let far_x = (obs.map_width - 2).max(0);
+        let far_y = (obs.map_height - 2).max(0);
+        sources.extend([
+            (TilePos::new(far_x, obs.map_height / 4), 500),
+            (TilePos::new(far_x, obs.map_height / 2), 500),
+            (TilePos::new(far_x, obs.map_height * 3 / 4), 500),
+            (TilePos::new(obs.map_width / 4, far_y), 500),
+            (TilePos::new(obs.map_width / 2, far_y), 500),
+            (TilePos::new(obs.map_width * 3 / 4, far_y), 500),
+        ]);
+        sources.sort_unstable_by_key(|(tile, value)| (tile.y, tile.x, std::cmp::Reverse(*value)));
+        sources.dedup_by_key(|(tile, _)| *tile);
+        sources.sort_unstable_by_key(|(tile, value)| {
+            (
+                std::cmp::Reverse(*value),
+                std::cmp::Reverse(tile.manhattan(home)),
+                tile.y,
+                tile.x,
+            )
+        });
+        sources.truncate(10);
+
+        let max_expansions = u32::try_from(
+            i64::from(obs.map_width)
+                .saturating_mul(i64::from(obs.map_height))
+                .saturating_mul(2),
+        )
+        .unwrap_or(u32::MAX);
+        let ground_routes = kind != BuildingKind::FlakTurret;
+        let mut approaches = Vec::new();
+        for (target, target_value) in targets {
+            for (source, source_value) in &sources {
+                let routes = if ground_routes {
+                    let Some(target) = nearest_known_route_tile(&passability, target) else {
+                        continue;
+                    };
+                    let Some(source) = nearest_known_route_tile(&passability, *source) else {
+                        continue;
+                    };
+                    let Some(mut primary) = chassis::path::astar(
+                        obs.map_width,
+                        obs.map_height,
+                        source,
+                        target,
+                        |tile| passability.route_open(tile),
+                        max_expansions,
+                    ) else {
+                        continue;
+                    };
+                    primary.insert(0, source);
+                    let mut routes = vec![primary.clone()];
+                    if let Some(alternate) = alternate_ground_route(
+                        &passability,
+                        source,
+                        target,
+                        &primary,
+                        max_expansions,
+                    ) && alternate != primary
+                    {
+                        routes.push(alternate);
+                    }
+                    routes
+                } else {
+                    let Some(route) =
+                        known_air_route(&passability, *source, target, max_expansions)
+                    else {
+                        continue;
+                    };
+                    vec![route]
+                };
+                approaches.push(DefenseApproach {
+                    value: target_value.saturating_add(*source_value),
+                    routes,
+                });
+            }
+        }
+        Self {
+            approaches,
+            passability,
+            kind,
+            ground_routes,
+        }
+    }
+
+    fn score_at(&self, center: Point2, minimum_reach: i32, reach: i32) -> (i64, i64, i64) {
+        let mut traffic = 0i64;
+        let mut choke = 0i64;
+        let mut bypass = 0i64;
+        for approach in &self.approaches {
+            let mut coverage_sum = 0i64;
+            let mut choke_sum = 0i64;
+            let mut minimum_coverage = i64::MAX;
+            for route in &approach.routes {
+                let mut covered = 0i64;
+                let mut constrained = 0i64;
+                for tile in route {
+                    if !center.within_reach(Point2::tile(*tile), minimum_reach, reach) {
+                        continue;
+                    }
+                    if !self
+                        .passability
+                        .fire_clear(self.kind, center, Point2::tile(*tile))
+                    {
+                        continue;
+                    }
+                    covered += 1;
+                    if self.ground_routes {
+                        let exits = chassis::grid::CARDINALS
+                            .into_iter()
+                            .filter(|(dx, dy)| self.passability.route_open(tile.offset(*dx, *dy)))
+                            .count();
+                        constrained += i64::try_from(4usize.saturating_sub(exits)).unwrap_or(4);
+                    }
+                }
+                let length = i64::try_from(route.len()).unwrap_or(i64::MAX).max(1);
+                let fraction = covered.saturating_mul(1_000) / length;
+                coverage_sum = coverage_sum.saturating_add(fraction);
+                minimum_coverage = minimum_coverage.min(fraction);
+                if self.ground_routes {
+                    choke_sum =
+                        choke_sum.saturating_add(constrained.saturating_mul(1_000) / length);
+                }
+            }
+            let route_count = i64::try_from(approach.routes.len())
+                .unwrap_or(i64::MAX)
+                .max(1);
+            traffic =
+                traffic.saturating_add((coverage_sum / route_count).saturating_mul(approach.value));
+            if self.ground_routes {
+                choke =
+                    choke.saturating_add((choke_sum / route_count).saturating_mul(approach.value));
+                bypass = bypass.saturating_add(minimum_coverage.saturating_mul(approach.value));
+            }
+        }
+        (traffic, choke, bypass)
+    }
+}
+
+fn straight_air_route(start: TilePos, end: TilePos) -> Vec<TilePos> {
+    let mut route = Vec::new();
+    let mut x = i64::from(start.x);
+    let mut y = i64::from(start.y);
+    let end_x = i64::from(end.x);
+    let end_y = i64::from(end.y);
+    let dx = (end_x - x).abs();
+    let step_x = if x < end_x { 1 } else { -1 };
+    let dy = -(end_y - y).abs();
+    let step_y = if y < end_y { 1 } else { -1 };
+    let mut error = dx + dy;
+    loop {
+        route.push(TilePos::new(
+            i32::try_from(x).unwrap_or(start.x),
+            i32::try_from(y).unwrap_or(start.y),
+        ));
+        if x == end_x && y == end_y {
+            break;
+        }
+        let doubled = error.saturating_mul(2);
+        if doubled >= dy {
+            error = error.saturating_add(dy);
+            x += step_x;
+        }
+        if doubled <= dx {
+            error = error.saturating_add(dx);
+            y += step_y;
+        }
+    }
+    route
+}
+
+fn known_air_route(
+    passability: &KnownPassability,
+    start: TilePos,
+    goal: TilePos,
+    max_expansions: u32,
+) -> Option<Vec<TilePos>> {
+    let start = nearest_known_air_tile(passability, start)?;
+    let goal = nearest_known_air_tile(passability, goal)?;
+    let straight = straight_air_route(start, goal);
+    if passability.fire_clear(
+        BuildingKind::FlakTurret,
+        Point2::tile(start),
+        Point2::tile(goal),
+    ) {
+        return Some(straight);
+    }
+    let mut route = chassis::path::astar(
+        passability.width,
+        passability.height,
+        start,
+        goal,
+        |tile| passability.air_open(tile),
+        max_expansions,
+    )?;
+    route.insert(0, start);
+    Some(route)
+}
+
+fn alternate_ground_route(
+    passability: &KnownPassability,
+    start: TilePos,
+    goal: TilePos,
+    primary: &[TilePos],
+    max_expansions: u32,
+) -> Option<Vec<TilePos>> {
+    #[derive(Clone, Copy)]
+    struct Label {
+        score: u32,
+        overlap: u32,
+        travel: u32,
+        tile_index: usize,
+        previous: Option<usize>,
+        active: bool,
+    }
+
+    let start_index = passability.index(start)?;
+    let goal_index = passability.index(goal)?;
+    let maximum_travel =
+        defense_route_travel(primary)?.saturating_mul(DEFENSE_ALTERNATE_MAX_STRETCH);
+    let mut primary_interior = vec![false; passability.route_open.len()];
+    for &tile in primary.iter().skip(1).take(primary.len().saturating_sub(2)) {
+        if let Some(index) = passability.index(tile) {
+            primary_interior[index] = true;
+        }
+    }
+
+    let mut labels = vec![Label {
+        score: 0,
+        overlap: 0,
+        travel: 0,
+        tile_index: start_index,
+        previous: None,
+        active: true,
+    }];
+    let mut labels_at = vec![Vec::new(); passability.route_open.len()];
+    labels_at[start_index].push(0);
+    let mut open = std::collections::BinaryHeap::new();
+    open.push(std::cmp::Reverse((0u32, 0u32, 0u32, start_index, 0usize)));
+
+    let label_expansion_budget =
+        max_expansions.saturating_mul(DEFENSE_ALTERNATE_LABEL_BUDGET_FACTOR);
+    let mut expansions = 0u32;
+    while let Some(std::cmp::Reverse((score, overlap, travel, current_index, label_index))) =
+        open.pop()
+    {
+        let label = labels[label_index];
+        if !label.active
+            || (label.score, label.overlap, label.travel, label.tile_index)
+                != (score, overlap, travel, current_index)
+        {
+            continue;
+        }
+        if current_index == goal_index {
+            let width = usize::try_from(passability.width).ok()?;
+            let mut route = Vec::new();
+            let mut cursor = Some(label_index);
+            while let Some(index) = cursor {
+                let label = labels[index];
+                route.push(TilePos::new(
+                    i32::try_from(label.tile_index % width).ok()?,
+                    i32::try_from(label.tile_index / width).ok()?,
+                ));
+                cursor = label.previous;
+            }
+            route.reverse();
+            return Some(route);
+        }
+        expansions = expansions.saturating_add(1);
+        if expansions > label_expansion_budget {
+            return None;
+        }
+
+        let width = usize::try_from(passability.width).ok()?;
+        let current = TilePos::new(
+            i32::try_from(current_index % width).ok()?,
+            i32::try_from(current_index / width).ok()?,
+        );
+        let mut visit = |next: TilePos, step: u32| {
+            let Some(next_index) = passability.index(next) else {
+                return;
+            };
+            let overlap_step = u32::from(primary_interior[next_index]);
+            let candidate_travel = travel.saturating_add(step);
+            if candidate_travel > maximum_travel {
+                return;
+            }
+            let candidate = (
+                score
+                    .saturating_add(step)
+                    .saturating_add(overlap_step.saturating_mul(DEFENSE_ALTERNATE_OVERLAP_COST)),
+                overlap.saturating_add(overlap_step),
+                candidate_travel,
+            );
+            let existing = labels_at[next_index].clone();
+            if existing.iter().any(|index| {
+                let label = labels[*index];
+                label.active
+                    && label.travel <= candidate.2
+                    && (label.score < candidate.0
+                        || (label.score == candidate.0 && label.overlap <= candidate.1))
+            }) {
+                return;
+            }
+            for index in existing {
+                let label = &mut labels[index];
+                if label.active
+                    && candidate.2 <= label.travel
+                    && (candidate.0 < label.score
+                        || (candidate.0 == label.score && candidate.1 <= label.overlap))
+                {
+                    label.active = false;
+                }
+            }
+            labels_at[next_index].retain(|index| labels[*index].active);
+            let next_label = labels.len();
+            labels.push(Label {
+                score: candidate.0,
+                overlap: candidate.1,
+                travel: candidate.2,
+                tile_index: next_index,
+                previous: Some(label_index),
+                active: true,
+            });
+            labels_at[next_index].push(next_label);
+            open.push(std::cmp::Reverse((
+                candidate.0,
+                candidate.1,
+                candidate.2,
+                next_index,
+                next_label,
+            )));
+        };
+
+        for (dx, dy) in chassis::grid::CARDINALS {
+            let next = current.offset(dx, dy);
+            if passability.route_open(next) {
+                visit(next, 10);
+            }
+        }
+        for (dx, dy) in chassis::grid::DIAGONALS {
+            let next = current.offset(dx, dy);
+            if passability.route_open(next)
+                && passability.route_open(current.offset(dx, 0))
+                && passability.route_open(current.offset(0, dy))
+            {
+                visit(next, 14);
+            }
+        }
+    }
+    None
+}
+
+fn defense_route_travel(route: &[TilePos]) -> Option<u32> {
+    route.windows(2).try_fold(0u32, |travel, pair| {
+        let dx = (pair[0].x - pair[1].x).abs();
+        let dy = (pair[0].y - pair[1].y).abs();
+        let step = match (dx, dy) {
+            (1, 1) => 14,
+            (1, 0) | (0, 1) => 10,
+            _ => return None,
+        };
+        Some(travel.saturating_add(step))
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2685,6 +3587,9 @@ struct DefenseMetrics {
     threat: i64,
     protected_value: i64,
     coverage: i64,
+    traffic: i64,
+    choke: i64,
+    bypass: i64,
     vision: i64,
     spacing: i64,
     congestion: i64,
@@ -2693,12 +3598,20 @@ struct DefenseMetrics {
 }
 
 impl DefenseMetrics {
-    fn measure(obs: &Observation, home: TilePos, kind: BuildingKind, anchor: TilePos) -> Self {
+    fn measure(
+        obs: &Observation,
+        home: TilePos,
+        kind: BuildingKind,
+        anchor: TilePos,
+        traffic: &DefenseTraffic,
+        builders: &DefenseBuilderRoutes,
+    ) -> Self {
         let center = Point2::building(anchor, kind);
         let home = Point2::tile(home);
         let (minimum_reach, reach) = defense_reach2(kind);
         let protected = protected_points(obs, kind);
         let threats = defense_threats(obs, kind);
+        let (traffic_score, choke, bypass) = traffic.score_at(center, minimum_reach, reach);
 
         let threat = threats
             .iter()
@@ -2716,15 +3629,17 @@ impl DefenseMetrics {
         let protected_coverage: i64 = protected
             .iter()
             .filter(|(point, _)| {
-                let distance = center.chebyshev(*point);
-                distance >= minimum_reach && distance <= reach
+                center.within_reach(*point, minimum_reach, reach)
+                    && traffic.passability.fire_clear(kind, center, *point)
             })
             .map(|(_, value)| value / 50)
             .sum();
         let approach_coverage: i64 = threats
             .iter()
             .filter(|(point, _)| {
-                home.chebyshev(center) < home.chebyshev(*point)
+                center.within_reach(*point, minimum_reach, reach)
+                    && traffic.passability.fire_clear(kind, center, *point)
+                    && home.chebyshev(center) < home.chebyshev(*point)
                     && home
                         .chebyshev(center)
                         .saturating_add(center.chebyshev(*point))
@@ -2732,7 +3647,8 @@ impl DefenseMetrics {
             })
             .map(|(_, value)| value / 50)
             .sum();
-        let open_coverage = known_open_coverage(obs, center, minimum_reach, reach);
+        let open_coverage =
+            known_open_coverage(&traffic.passability, center, minimum_reach, reach, kind);
 
         let vision = obs
             .my_units
@@ -2809,15 +3725,7 @@ impl DefenseMetrics {
             .unwrap_or(64)
             .min(64);
 
-        let builder_travel = obs
-            .my_units
-            .iter()
-            .filter(|unit| {
-                unit.kind == UnitKind::Harvester && unit.site.is_none() && unit.founding.is_none()
-            })
-            .map(|unit| center.manhattan(Point2::tile(unit.tile)))
-            .min()
-            .unwrap_or(i32::MAX);
+        let builder_travel = builders.travel_to(anchor, kind).unwrap_or(u32::MAX);
 
         Self {
             threat,
@@ -2825,6 +3733,9 @@ impl DefenseMetrics {
             coverage: protected_coverage
                 .saturating_add(approach_coverage)
                 .saturating_add(open_coverage),
+            traffic: traffic_score,
+            choke,
+            bypass,
             vision,
             spacing: i64::from(spacing),
             congestion: i64::try_from(congestion).unwrap_or(i64::MAX),
@@ -2838,6 +3749,9 @@ impl DefenseMetrics {
             normalized(self.threat, bounds.threat, false),
             normalized(self.protected_value, bounds.protected_value, false),
             normalized(self.coverage, bounds.coverage, false),
+            normalized(self.traffic, bounds.traffic, false),
+            normalized(self.choke, bounds.choke, false),
+            normalized(self.bypass, bounds.bypass, false),
             normalized(self.vision, bounds.vision, false),
             normalized(self.spacing, bounds.spacing, false),
             normalized(self.congestion, bounds.congestion, true),
@@ -2845,10 +3759,10 @@ impl DefenseMetrics {
             normalized(self.builder_travel, bounds.builder_travel, true),
         ];
         let weights = match kind {
-            BuildingKind::Turret => [24, 24, 15, 5, 10, 7, 8, 7],
-            BuildingKind::FlakTurret => [29, 23, 13, 6, 9, 7, 8, 5],
-            BuildingKind::Bastion => [24, 16, 22, 14, 8, 5, 7, 4],
-            _ => [0; 8],
+            BuildingKind::Turret => [16, 18, 10, 15, 12, 10, 3, 8, 3, 3, 2],
+            BuildingKind::FlakTurret => [40, 17, 8, 14, 0, 0, 5, 7, 3, 4, 2],
+            BuildingKind::Bastion => [15, 12, 14, 14, 12, 12, 10, 5, 2, 2, 2],
+            _ => [0; 11],
         };
         values
             .into_iter()
@@ -2863,6 +3777,9 @@ struct DefenseBounds {
     threat: (i64, i64),
     protected_value: (i64, i64),
     coverage: (i64, i64),
+    traffic: (i64, i64),
+    choke: (i64, i64),
+    bypass: (i64, i64),
     vision: (i64, i64),
     spacing: (i64, i64),
     congestion: (i64, i64),
@@ -2885,6 +3802,9 @@ impl DefenseBounds {
             threat: bounds(|metric| metric.threat),
             protected_value: bounds(|metric| metric.protected_value),
             coverage: bounds(|metric| metric.coverage),
+            traffic: bounds(|metric| metric.traffic),
+            choke: bounds(|metric| metric.choke),
+            bypass: bounds(|metric| metric.bypass),
             vision: bounds(|metric| metric.vision),
             spacing: bounds(|metric| metric.spacing),
             congestion: bounds(|metric| metric.congestion),
@@ -3091,17 +4011,57 @@ fn protected_points(obs: &Observation, kind: BuildingKind) -> Vec<(Point2, i64)>
     protected
 }
 
-fn known_open_coverage(obs: &Observation, center: Point2, minimum_reach: i32, reach: i32) -> i64 {
+fn nearest_known_route_tile(passability: &KnownPassability, wanted: TilePos) -> Option<TilePos> {
+    for radius in 0i32..=4 {
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                if dx.abs().max(dy.abs()) == radius {
+                    let tile = wanted.offset(dx, dy);
+                    if passability.route_open(tile) {
+                        return Some(tile);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn nearest_known_air_tile(passability: &KnownPassability, wanted: TilePos) -> Option<TilePos> {
+    for radius in 0i32..=4 {
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                if dx.abs().max(dy.abs()) == radius {
+                    let tile = wanted.offset(dx, dy);
+                    if passability.air_open(tile) {
+                        return Some(tile);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn known_open_coverage(
+    passability: &KnownPassability,
+    center: Point2,
+    minimum_reach: i32,
+    reach: i32,
+    kind: BuildingKind,
+) -> i64 {
     let min_x = ((center.x - reach - 1) / 2).max(0);
-    let max_x = ((center.x + reach - 1) / 2).min(obs.map_width - 1);
+    let max_x = ((center.x + reach - 1) / 2).min(passability.width - 1);
     let min_y = ((center.y - reach - 1) / 2).max(0);
-    let max_y = ((center.y + reach - 1) / 2).min(obs.map_height - 1);
+    let max_y = ((center.y + reach - 1) / 2).min(passability.height - 1);
     let mut open = 0i64;
     for y in min_y..=max_y {
         for x in min_x..=max_x {
             let tile = TilePos::new(x, y);
-            let distance = center.chebyshev(Point2::tile(tile));
-            if distance >= minimum_reach && distance <= reach && !obs.known_rock.contains(&tile) {
+            if center.within_reach(Point2::tile(tile), minimum_reach, reach)
+                && passability.target_open(kind, tile)
+                && passability.fire_clear(kind, center, Point2::tile(tile))
+            {
                 open += 1;
             }
         }
@@ -3179,6 +4139,19 @@ fn committed_units(obs: &Observation, kind: UnitKind) -> usize {
             .iter()
             .flatten()
             .filter(|queued| **queued == kind)
+            .count()
+}
+
+fn committed_direct_ground_fighters(obs: &Observation) -> usize {
+    obs.my_units
+        .iter()
+        .filter(|unit| unit.kind.is_recovery_screen())
+        .count()
+        + obs
+            .my_queues
+            .iter()
+            .flatten()
+            .filter(|kind| kind.is_recovery_screen())
             .count()
 }
 
@@ -3436,6 +4409,71 @@ mod tests {
     }
 
     #[test]
+    fn recovery_danger_allows_escape_without_allowing_entry() {
+        let danger = TilePos::new(10, 10);
+        let inside = TilePos::new(5, 10);
+        assert!(!recovery_ring_blocks(
+            inside,
+            TilePos::new(4, 10),
+            danger,
+            DANGER_RADIUS
+        ));
+        assert!(!recovery_ring_blocks(
+            inside,
+            TilePos::new(5, 11),
+            danger,
+            DANGER_RADIUS
+        ));
+        assert!(recovery_ring_blocks(
+            inside,
+            TilePos::new(6, 10),
+            danger,
+            DANGER_RADIUS
+        ));
+        assert!(recovery_ring_blocks(
+            TilePos::new(2, 10),
+            TilePos::new(3, 10),
+            danger,
+            DANGER_RADIUS
+        ));
+    }
+
+    #[test]
+    fn recovery_route_uses_visible_siege_weapon_reach() {
+        let danger = TilePos::new(0, 0);
+        let worker = TilePos::new(2, 0);
+        let bombard_tile = TilePos::new(10, 0);
+        assert!(bombard_tile.chebyshev(danger) > DANGER_RADIUS);
+        let bombard_reach = UnitKind::Bombard
+            .stats()
+            .max_range_vs(Domain::Ground)
+            .unwrap()
+            + crate::stats::HARVEST_MOBILE_DANGER_MARGIN;
+        assert!(recovery_reach_contains(
+            danger.center().dist_sq(bombard_tile.center()),
+            bombard_reach,
+        ));
+        assert!(
+            danger.center().dist_sq(worker.center())
+                < danger.center().dist_sq(bombard_tile.center()),
+            "moving outward from inside visible siege reach is still unsafe"
+        );
+
+        let bastion = BuildingKind::Bastion;
+        let bastion_anchor = TilePos::new(0, 0);
+        let bastion_tile = TilePos::new(10, 0);
+        assert!(bastion_tile.chebyshev(bastion_anchor) > DANGER_RADIUS);
+        let bastion_reach = recovery_building_ground_reach(bastion).unwrap()
+            + crate::stats::HARVEST_STATIC_DANGER_MARGIN;
+        let size = bastion.stats().size;
+        let tile_point = bastion_tile.center();
+        assert!(recovery_reach_contains(
+            recovery_rect_closest_point(bastion_anchor, size, tile_point).dist_sq(tile_point),
+            bastion_reach,
+        ));
+    }
+
+    #[test]
     fn defense_reach_is_derived_from_the_weapon_role() {
         assert_eq!(defense_reach2(BuildingKind::Turret), (0, 10));
         assert_eq!(defense_reach2(BuildingKind::FlakTurret), (0, 11));
@@ -3448,11 +4486,352 @@ mod tests {
     }
 
     #[test]
+    fn defense_range_uses_euclidean_weapon_reach() {
+        let center = Point2::tile(TilePos::new(2, 2));
+        assert!(center.within_reach(Point2::tile(TilePos::new(7, 2)), 0, 10));
+        assert!(
+            !center.within_reach(Point2::tile(TilePos::new(6, 6)), 0, 10),
+            "the corner of the old Chebyshev square lies beyond a five-tile weapon radius"
+        );
+        assert!(
+            !center.within_reach(Point2::tile(TilePos::new(3, 2)), 5, 19),
+            "the Bastion's minimum range is an annulus, not a square"
+        );
+    }
+
+    #[test]
+    fn defense_routes_sample_the_other_twin_lane() {
+        let rows = [
+            "###############",
+            "#......#......#",
+            "#.............#",
+            "#......#......#",
+            "#......#......#",
+            "#......#......#",
+            "#.............#",
+            "#......#......#",
+            "###############",
+        ];
+        let width = i32::try_from(rows[0].len()).unwrap();
+        let height = i32::try_from(rows.len()).unwrap();
+        let route_open: Vec<_> = rows
+            .iter()
+            .flat_map(|row| row.bytes().map(|tile| tile != b'#'))
+            .collect();
+        let passability = KnownPassability {
+            width,
+            height,
+            terrain_open: route_open.clone(),
+            air_open: vec![true; route_open.len()],
+            route_open,
+        };
+        let start = TilePos::new(13, 4);
+        let goal = TilePos::new(1, 4);
+        let mut primary = chassis::path::astar(
+            width,
+            height,
+            start,
+            goal,
+            |tile| passability.route_open(tile),
+            u32::try_from(width * height * 2).unwrap(),
+        )
+        .unwrap();
+        primary.insert(0, start);
+        let alternate = alternate_ground_route(
+            &passability,
+            start,
+            goal,
+            &primary,
+            u32::try_from(width * height * 2).unwrap(),
+        )
+        .unwrap();
+
+        let upper_gap = TilePos::new(7, 2);
+        let lower_gap = TilePos::new(7, 6);
+        assert!(primary.contains(&upper_gap) ^ primary.contains(&lower_gap));
+        assert!(alternate.contains(&upper_gap) ^ alternate.contains(&lower_gap));
+        assert_ne!(
+            primary.contains(&upper_gap),
+            alternate.contains(&upper_gap),
+            "the alternate must sample the parallel lane, not retrace the deterministic primary"
+        );
+    }
+
+    #[test]
+    fn defense_routes_reject_a_remote_detour_as_a_bypass() {
+        let width = 7;
+        let height = 9;
+        let mut route_open = vec![false; usize::try_from(width * height).unwrap()];
+        let mut open = |tile| {
+            let index = KnownPassability::index_for(width, height, tile).unwrap();
+            route_open[index] = true;
+        };
+        for x in 1..=5 {
+            open(TilePos::new(x, 1));
+            open(TilePos::new(x, 7));
+        }
+        for y in 1..=7 {
+            open(TilePos::new(1, y));
+            open(TilePos::new(5, y));
+        }
+        let passability = KnownPassability {
+            width,
+            height,
+            terrain_open: route_open.clone(),
+            air_open: vec![true; route_open.len()],
+            route_open,
+        };
+        let start = TilePos::new(1, 1);
+        let goal = TilePos::new(5, 1);
+        let primary: Vec<_> = (1..=5).map(|x| TilePos::new(x, 1)).collect();
+        let chosen = alternate_ground_route(
+            &passability,
+            start,
+            goal,
+            &primary,
+            u32::try_from(width * height * 2).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(defense_route_travel(&primary), Some(40));
+        assert_eq!(chosen, primary);
+        assert!(
+            !chosen.contains(&TilePos::new(3, 7)),
+            "a four-times-longer shelf-edge loop is not a useful battlefield bypass"
+        );
+    }
+
+    #[test]
+    fn defense_routes_keep_a_shorter_pareto_prefix() {
+        let rows = ["......", ".##...", "..#.#.", "......", "#..#..", "..##.#"];
+        let width = i32::try_from(rows[0].len()).unwrap();
+        let height = i32::try_from(rows.len()).unwrap();
+        let route_open: Vec<_> = rows
+            .iter()
+            .flat_map(|row| row.bytes().map(|tile| tile != b'#'))
+            .collect();
+        let passability = KnownPassability {
+            width,
+            height,
+            terrain_open: route_open.clone(),
+            air_open: vec![true; route_open.len()],
+            route_open,
+        };
+        let start = TilePos::new(0, 3);
+        let goal = TilePos::new(5, 3);
+        let primary: Vec<_> = (0..=5).map(|x| TilePos::new(x, 3)).collect();
+        let alternate = alternate_ground_route(
+            &passability,
+            start,
+            goal,
+            &primary,
+            u32::try_from(width * height * 4).unwrap(),
+        )
+        .expect("a feasible alternate remains below twice the primary travel");
+
+        assert_ne!(alternate, primary);
+        assert!(
+            defense_route_travel(&alternate).unwrap()
+                <= defense_route_travel(&primary).unwrap() * DEFENSE_ALTERNATE_MAX_STRETCH
+        );
+    }
+
+    #[test]
+    fn defense_route_budget_counts_pareto_labels() {
+        let rows = [
+            "....##..", ".PPP....", "P.#P#...", "P#.P..##", "S#.P.#PG", "#.#P#.P#", "##.P##P.",
+            "#..PPPP#",
+        ];
+        let width = i32::try_from(rows[0].len()).unwrap();
+        let height = i32::try_from(rows.len()).unwrap();
+        let route_open: Vec<_> = rows
+            .iter()
+            .flat_map(|row| row.bytes().map(|tile| tile != b'#'))
+            .collect();
+        let passability = KnownPassability {
+            width,
+            height,
+            terrain_open: route_open.clone(),
+            air_open: vec![true; route_open.len()],
+            route_open,
+        };
+        let start = TilePos::new(0, 4);
+        let goal = TilePos::new(7, 4);
+        let primary = [
+            (0, 4),
+            (0, 3),
+            (0, 2),
+            (1, 1),
+            (2, 1),
+            (3, 1),
+            (3, 2),
+            (3, 3),
+            (3, 4),
+            (3, 5),
+            (3, 6),
+            (3, 7),
+            (4, 7),
+            (5, 7),
+            (6, 7),
+            (6, 6),
+            (6, 5),
+            (6, 4),
+            (7, 4),
+        ]
+        .map(|(x, y)| TilePos::new(x, y));
+        let alternate = alternate_ground_route(
+            &passability,
+            start,
+            goal,
+            &primary,
+            u32::try_from(width * height * 2).unwrap(),
+        )
+        .expect("the label frontier must not exhaust a tile-sized search budget");
+
+        assert_ne!(alternate, primary);
+        assert!(
+            defense_route_travel(&alternate).unwrap()
+                <= defense_route_travel(&primary).unwrap() * DEFENSE_ALTERNATE_MAX_STRETCH
+        );
+    }
+
+    #[test]
+    fn known_scrap_blocks_ground_routes_but_not_fire_or_airspace() {
+        let state = crate::Scenario::skirmish().build().unwrap();
+        let obs = Observation::omniscient(&state, PlayerId(0));
+        let node = obs
+            .known_scrap
+            .iter()
+            .find_map(|(tile, amount)| (*amount > 0).then_some(*tile))
+            .expect("the skirmish fixture carries salvage");
+        let passability = KnownPassability::from_observation(&obs);
+        assert!(!passability.route_open(node));
+        assert!(passability.terrain_open(node));
+        assert!(passability.air_open(node));
+    }
+
+    #[test]
+    fn bypass_score_uses_the_less_covered_route_variant() {
+        let passability = KnownPassability {
+            width: 5,
+            height: 5,
+            terrain_open: vec![true; 25],
+            air_open: vec![true; 25],
+            route_open: vec![true; 25],
+        };
+        let traffic = DefenseTraffic {
+            approaches: vec![DefenseApproach {
+                value: 100,
+                routes: vec![
+                    (0..5).map(|x| TilePos::new(x, 1)).collect(),
+                    (0..5).map(|x| TilePos::new(x, 3)).collect(),
+                ],
+            }],
+            passability,
+            kind: BuildingKind::Turret,
+            ground_routes: true,
+        };
+        let (_, _, one_lane) = traffic.score_at(Point2::tile(TilePos::new(2, 1)), 0, 2);
+        let (_, _, both_lanes) = traffic.score_at(Point2::tile(TilePos::new(2, 2)), 0, 2);
+        assert_eq!(one_lane, 0);
+        assert!(
+            both_lanes > one_lane,
+            "bypass value comes from the route an emplacement covers least"
+        );
+    }
+
+    #[test]
+    fn flak_coverage_counts_airspace_over_known_ground_barriers() {
+        let mut terrain_open = vec![true; 25];
+        terrain_open[0] = false;
+        let passability = KnownPassability {
+            width: 5,
+            height: 5,
+            route_open: terrain_open.clone(),
+            terrain_open,
+            air_open: vec![true; 25],
+        };
+        let center = Point2::tile(TilePos::new(2, 2));
+        assert_eq!(
+            known_open_coverage(&passability, center, 0, 10, BuildingKind::Turret),
+            24
+        );
+        assert_eq!(
+            known_open_coverage(&passability, center, 0, 10, BuildingKind::FlakTurret,),
+            25,
+            "anti-air coverage includes flyable space over known ground barriers"
+        );
+        let air_traffic = DefenseTraffic {
+            approaches: vec![DefenseApproach {
+                value: 100,
+                routes: vec![straight_air_route(TilePos::new(0, 0), TilePos::new(4, 4))],
+            }],
+            passability,
+            kind: BuildingKind::FlakTurret,
+            ground_routes: false,
+        };
+        let (traffic, choke, bypass) = air_traffic.score_at(center, 0, 10);
+        assert!(traffic > 0);
+        assert_eq!((choke, bypass), (0, 0));
+    }
+
+    #[test]
+    fn peak_ridges_block_every_defense_role_and_air_ingress() {
+        let width = 7;
+        let height = 5;
+        let mut terrain_open = vec![true; usize::try_from(width * height).unwrap()];
+        let mut air_open = terrain_open.clone();
+        for y in 0..height - 1 {
+            let index = KnownPassability::index_for(width, height, TilePos::new(3, y)).unwrap();
+            terrain_open[index] = false;
+            air_open[index] = false;
+        }
+        let passability = KnownPassability {
+            width,
+            height,
+            route_open: terrain_open.clone(),
+            terrain_open,
+            air_open,
+        };
+        let west = Point2::tile(TilePos::new(1, 2));
+        let east = Point2::tile(TilePos::new(5, 2));
+        for kind in [
+            BuildingKind::Turret,
+            BuildingKind::FlakTurret,
+            BuildingKind::Bastion,
+        ] {
+            assert!(
+                !passability.fire_clear(kind, west, east),
+                "{kind:?} must not receive coverage through a peak ridge"
+            );
+        }
+
+        let route = known_air_route(
+            &passability,
+            west.as_tile(),
+            east.as_tile(),
+            u32::try_from(width * height * 2).unwrap(),
+        )
+        .expect("the ridge leaves one flyable gap");
+        assert!(route.contains(&TilePos::new(3, height - 1)));
+        assert!(route.iter().all(|tile| passability.air_open(*tile)));
+
+        let mut rock_only = passability.clone();
+        rock_only.air_open.fill(true);
+        assert!(!rock_only.fire_clear(BuildingKind::Turret, west, east));
+        assert!(rock_only.fire_clear(BuildingKind::FlakTurret, west, east));
+        assert!(rock_only.fire_clear(BuildingKind::Bastion, west, east));
+    }
+
+    #[test]
     fn defense_scoring_rewards_builder_safety_and_low_congestion() {
         let bounds = DefenseBounds {
             threat: (0, 0),
             protected_value: (0, 0),
             coverage: (0, 0),
+            traffic: (0, 0),
+            choke: (0, 0),
+            bypass: (0, 0),
             vision: (0, 0),
             spacing: (0, 0),
             congestion: (0, 10),
@@ -3463,6 +4842,9 @@ mod tests {
             threat: 0,
             protected_value: 0,
             coverage: 0,
+            traffic: 0,
+            choke: 0,
+            bypass: 0,
             vision: 0,
             spacing: 0,
             congestion: 10,

@@ -9,7 +9,7 @@ use oxide_sim::scenario::BuildingSpec;
 use oxide_sim::stats::{
     BuildingKind, HARVEST_MOBILE_DANGER_MARGIN, HARVEST_RADAR_DANGER_RADIUS, HARVEST_ZONE_RADIUS,
 };
-use oxide_sim::{Command, Event, Order, PlayerId, State, UnitKind};
+use oxide_sim::{Command, Event, Order, PlayerId, State, Target, UnitKind};
 use serde_json::json;
 
 use common::{cmd, open_arena_with, run_until, unit};
@@ -55,6 +55,18 @@ fn set_cargo(mut state: State, worker: oxide_sim::UnitId, carrying: u32) -> Stat
         .expect("worker exists");
     let mut doc = serde_json::to_value(&state).unwrap();
     doc["units"][slot]["carrying"] = json!(carrying);
+    state = serde_json::from_value(doc).unwrap();
+    state
+}
+
+fn set_building_hp(mut state: State, building: oxide_sim::BuildingId, hp: u32) -> State {
+    let slot = state
+        .buildings()
+        .iter()
+        .position(|candidate| candidate.id == building)
+        .expect("building exists");
+    let mut doc = serde_json::to_value(&state).unwrap();
+    doc["buildings"][slot]["hp"] = json!(hp);
     state = serde_json::from_value(doc).unwrap();
     state
 }
@@ -364,6 +376,186 @@ fn shared_sight_retires_an_autonomous_retarget_but_not_before_it_is_known() {
         state.map().scrap_at(fallback) > 0,
         "losing sight cannot send the retired worker back into the zone"
     );
+}
+
+#[test]
+fn a_hidden_artillery_hit_diverts_autonomous_work_without_revealing_the_gun() {
+    let (safe, anchor, exposed) = (TilePos::new(8, 5), TilePos::new(13, 5), TilePos::new(15, 5));
+    let mut state = state_with_salvage(
+        32,
+        &[(safe, 20), (anchor, 1), (exposed, 30)],
+        &[],
+        vec![
+            unit(0, UnitKind::Harvester, 12, 5),
+            unit(1, UnitKind::Bombard, 22, 4),
+            unit(1, UnitKind::Harvester, 19, 4),
+        ],
+        vec![],
+    );
+    let (worker, bombard) = (state.units()[0].id, state.units()[1].id);
+    assert!(
+        !state.can_see(PlayerId(0), state.unit(bombard).unwrap().tile()),
+        "the victim's team cannot see the artillery"
+    );
+
+    state.tick(&[cmd(
+        0,
+        Command::Harvest {
+            units: vec![worker],
+            node: anchor,
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 300, |state, _| {
+        matches!(
+            state.unit(worker).unwrap().order,
+            Order::Harvest {
+                node,
+                anchor: Some(work_anchor),
+                retiring: false,
+            } if node == exposed && work_anchor == anchor
+        ) && state.can_see(PlayerId(1), state.unit(worker).unwrap().tile())
+    });
+    assert!(
+        state.can_see(PlayerId(1), state.unit(worker).unwrap().tile()),
+        "the spotter sees the worker without making the gun visible in return"
+    );
+    let before = state.unit(worker).unwrap().hp;
+    state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: vec![bombard],
+            target: Target::Unit(worker),
+            queue: false,
+        },
+    )]);
+    assert!(
+        !state.shells().is_empty(),
+        "the hidden gun launched through its spotter"
+    );
+    state.tick(&[cmd(
+        1,
+        Command::Stop {
+            units: vec![bombard],
+        },
+    )]);
+    run_until(&mut state, 100, |state, events| {
+        events
+            .iter()
+            .any(|event| matches!(event, Event::ShellLanded { .. }))
+            && state.unit(worker).unwrap().hp < before
+    });
+    let exposed_after_hit = state.map().scrap_at(exposed);
+    assert!(
+        !state.can_see(PlayerId(0), state.unit(bombard).unwrap().tile()),
+        "taking damage does not disclose the hidden shooter's tile"
+    );
+
+    state.tick(&[]);
+    assert!(matches!(
+        state.unit(worker).unwrap().order,
+        Order::Harvest {
+            node,
+            anchor: Some(work_anchor),
+            retiring: false,
+        } if node == safe && work_anchor == anchor
+    ));
+    assert_eq!(
+        state.map().scrap_at(exposed),
+        exposed_after_hit,
+        "the anonymous incident, not hidden enemy state, diverted the worker"
+    );
+}
+
+#[test]
+fn an_own_loss_retires_a_worker_home_before_it_surfaces_idle() {
+    let anchor = TilePos::new(13, 5);
+    let exposed = TilePos::new(15, 5);
+    let struck = TilePos::new(19, 4);
+    let mut state = state_with_salvage(
+        32,
+        &[(anchor, 1), (exposed, 30)],
+        &[],
+        vec![
+            unit(0, UnitKind::Harvester, 12, 5),
+            unit(1, UnitKind::Bombard, 24, 4),
+            unit(1, UnitKind::Harvester, 21, 4),
+        ],
+        vec![BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Reclaimer,
+            x: struck.x,
+            y: struck.y,
+        }],
+    );
+    let (worker, bombard) = (state.units()[0].id, state.units()[1].id);
+    let victim = state
+        .buildings()
+        .iter()
+        .find(|building| building.anchor == struck)
+        .unwrap()
+        .id;
+    state = set_building_hp(state, victim, 40);
+
+    state.tick(&[
+        cmd(
+            0,
+            Command::Harvest {
+                units: vec![worker],
+                node: anchor,
+                queue: false,
+            },
+        ),
+        cmd(
+            1,
+            Command::Attack {
+                units: vec![bombard],
+                target: Target::Building(victim),
+                queue: false,
+            },
+        ),
+    ]);
+    state.tick(&[cmd(
+        1,
+        Command::Stop {
+            units: vec![bombard],
+        },
+    )]);
+    run_until(&mut state, 300, |state, _| {
+        matches!(
+            state.unit(worker).unwrap().order,
+            Order::Harvest { node, .. } if node == exposed
+        )
+    });
+    let impact_events = run_until(&mut state, 100, |state, events| {
+        state.building(victim).is_none()
+            && events
+                .iter()
+                .any(|event| matches!(event, Event::BuildingDestroyed { building, .. } if *building == victim))
+    });
+    assert!(impact_events.iter().any(
+        |event| matches!(event, Event::BuildingDestroyed { building, .. } if *building == victim)
+    ));
+    assert!(
+        !state.can_see(PlayerId(0), state.unit(bombard).unwrap().tile()),
+        "the loss records its own location without revealing the attacker"
+    );
+
+    state.tick(&[]);
+    assert!(matches!(
+        state.unit(worker).unwrap().order,
+        Order::Harvest { retiring: true, .. }
+    ));
+    let events = run_until(&mut state, 800, |state, _| {
+        state.unit(worker).unwrap().order == Order::Idle
+    });
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::ScrapDeposited { .. }))
+    );
+    assert!(state.map().scrap_at(exposed) > 0);
+    assert!(state.map().wreck_at(struck) > 0);
 }
 
 #[test]

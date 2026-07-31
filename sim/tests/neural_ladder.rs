@@ -15,6 +15,7 @@ use oxide_sim::state::GameResult;
 use oxide_sim::{Faction, PlayerId, Scenario};
 
 const RAW_AGGRESSION_CENTERS: [u32; 2] = [300, 550];
+const YARDSTICK_SEEDS: [u64; 10] = [3000, 3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009];
 
 fn ladder_match(hi: Level, lo: Level, hi_seat: u8, seed: u64) -> (Option<bool>, u64) {
     let mut scenario = Scenario::skirmish();
@@ -70,18 +71,26 @@ fn embedded_weights_parse() {
 /// single monotone instrument. Every match is an independent
 /// deterministic sim, so the slate fans out across threads; the
 /// totals are order-free.
-fn yardstick_with_net(level: Level, net: &QuantNet) -> (u32, u64) {
+fn yardstick_with_net_at_cadence(level: Level, net: &QuantNet, cadence: Option<u64>) -> (u32, u64) {
+    yardstick_with_net_at_cadence_on_seeds(level, net, cadence, &YARDSTICK_SEEDS)
+}
+
+fn yardstick_with_net_at_cadence_on_seeds(
+    level: Level,
+    net: &QuantNet,
+    cadence: Option<u64>,
+    seeds: &[u64],
+) -> (u32, u64) {
     use oxide_sim::state::GameResult as GR;
     // Ten seeds across every tier and two raw-aggression centers: the 0.12
     // pursuit-tether work re-rolled enough chaotic outcomes to show
     // the old 24-match sample inverting rungs. The 160-match truth is
     // the stable instrument the ladder deserves.
-    const SEEDS: [u64; 10] = [3000, 3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009];
     let slate: [(Difficulty, &[u64]); 4] = [
-        (Difficulty::Scrapheap, &SEEDS),
-        (Difficulty::Standard, &SEEDS),
-        (Difficulty::Veteran, &SEEDS),
-        (Difficulty::Prime, &SEEDS),
+        (Difficulty::Scrapheap, seeds),
+        (Difficulty::Standard, seeds),
+        (Difficulty::Veteran, seeds),
+        (Difficulty::Prime, seeds),
     ];
     let mut matches = Vec::new();
     for aggression in RAW_AGGRESSION_CENTERS {
@@ -103,14 +112,26 @@ fn yardstick_with_net(level: Level, net: &QuantNet) -> (u32, u64) {
                     sc.seed = seed;
                     let mut state = sc.build().unwrap();
                     let faction = sc.players[seat as usize].faction;
-                    let mut bot = NeuralBot::ladder_with_net(
-                        PlayerId(seat),
-                        seed,
-                        level,
-                        Some(aggression),
-                        faction,
-                        net,
-                    );
+                    let mut bot = if let Some(cadence) = cadence {
+                        NeuralBot::ladder_with_net_at_cadence(
+                            PlayerId(seat),
+                            seed,
+                            level,
+                            Some(aggression),
+                            faction,
+                            net,
+                            cadence,
+                        )
+                    } else {
+                        NeuralBot::ladder_with_net(
+                            PlayerId(seat),
+                            seed,
+                            level,
+                            Some(aggression),
+                            faction,
+                            net,
+                        )
+                    };
                     let mut opp = Brain::for_tier(PlayerId(1 - seat), seed, tier);
                     let horizon = 40_000u32;
                     let mut end = u64::from(horizon);
@@ -140,8 +161,71 @@ fn yardstick_with_net(level: Level, net: &QuantNet) -> (u32, u64) {
     })
 }
 
+fn yardstick_with_net(level: Level, net: &QuantNet) -> (u32, u64) {
+    yardstick_with_net_at_cadence(level, net, None)
+}
+
 fn yardstick(level: Level) -> (u32, u64) {
     yardstick_with_net(level, QuantNet::ladder())
+}
+
+#[test]
+#[ignore = "diagnostic: set OXIDE_LADDER_CADENCE while recalibrating the ladder"]
+fn cadence_yardstick() {
+    let cadence = std::env::var("OXIDE_LADDER_CADENCE")
+        .expect("OXIDE_LADDER_CADENCE")
+        .parse::<u64>()
+        .expect("positive integer cadence");
+    assert!(cadence > 0, "cadence must be positive");
+    let level = match std::env::var("OXIDE_LADDER_LEVEL").as_deref() {
+        Ok("easy") => Level::Easy,
+        Ok("medium") => Level::Medium,
+        Ok("expert") => Level::Expert,
+        Ok("hard") | Err(_) => Level::Hard,
+        Ok(value) => panic!("unknown OXIDE_LADDER_LEVEL {value}"),
+    };
+    let seed_base = std::env::var("OXIDE_YARDSTICK_SEED_BASE")
+        .ok()
+        .map(|value| value.parse::<u64>().expect("integer seed base"));
+    let seeds = seed_base.map(|base| (base..base + 10).collect::<Vec<_>>());
+    let seeds = seeds.as_deref().unwrap_or(&YARDSTICK_SEEDS);
+    let (wins, ticks) =
+        yardstick_with_net_at_cadence_on_seeds(level, QuantNet::ladder(), Some(cadence), seeds);
+    println!(
+        "{level:?} cadence {cadence}, seed base {}: wins {wins}/160, tick total {ticks}",
+        seed_base.unwrap_or(YARDSTICK_SEEDS[0])
+    );
+}
+
+#[test]
+#[ignore = "diagnostic: set OXIDE_HARD_CADENCE while recalibrating the ladder"]
+fn ladder_cadence_holdout() {
+    let cadence = std::env::var("OXIDE_HARD_CADENCE")
+        .expect("OXIDE_HARD_CADENCE")
+        .parse::<u64>()
+        .expect("positive integer cadence");
+    assert!(cadence > 0, "cadence must be positive");
+    let seed_base = std::env::var("OXIDE_YARDSTICK_SEED_BASE").map_or(4_000, |value| {
+        value.parse::<u64>().expect("integer seed base")
+    });
+    let seeds: Vec<u64> = (seed_base..seed_base + 10).collect();
+    let totals: Vec<(u32, u64)> = Level::LADDER
+        .iter()
+        .map(|level| {
+            let override_cadence = (*level == Level::Hard).then_some(cadence);
+            yardstick_with_net_at_cadence_on_seeds(
+                *level,
+                QuantNet::ladder(),
+                override_cadence,
+                &seeds,
+            )
+        })
+        .collect();
+    println!("Disjoint seed base {seed_base}, Hard cadence {cadence}: {totals:?}");
+    for pair in totals.windows(2) {
+        assert!(pair[0].0 < pair[1].0, "win ordering failed: {totals:?}");
+        assert!(pair[0].1 > pair[1].1, "pace ordering failed: {totals:?}");
+    }
 }
 
 #[test]
