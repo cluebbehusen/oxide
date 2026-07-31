@@ -273,15 +273,54 @@ pub(crate) fn draw_breadcrumbs(game: &Game, input: &InputState) {
     }
 }
 
-fn building_work_speed(kind: oxide_sim::BuildingKind) -> Option<f32> {
-    match kind {
+fn production_head_advancing(building: &oxide_sim::Building) -> bool {
+    building.built
+        && building
+            .queue
+            .front()
+            .is_some_and(|kind| building.progress < kind.stats().train_ticks)
+}
+
+fn building_work_speed(building: &oxide_sim::Building) -> Option<f32> {
+    if !building.built {
+        return None;
+    }
+    match building.kind {
         oxide_sim::BuildingKind::Foundry => Some(2.0),
-        oxide_sim::BuildingKind::Fabricator => Some(3.0),
+        oxide_sim::BuildingKind::Fabricator if production_head_advancing(building) => Some(3.0),
+        oxide_sim::BuildingKind::Fabricator => None,
         oxide_sim::BuildingKind::Array => Some(3.5),
         oxide_sim::BuildingKind::Reclaimer => Some(4.0),
         oxide_sim::BuildingKind::RepairBay => Some(5.0),
         _ => None,
     }
+}
+
+fn tile_adjacent_to_building(tile: TilePos, building: &oxide_sim::Building) -> bool {
+    let (w, h) = building.kind.stats().size;
+    let anchor = building.anchor;
+    let inside =
+        tile.x >= anchor.x && tile.y >= anchor.y && tile.x < anchor.x + w && tile.y < anchor.y + h;
+    !inside
+        && tile.x >= anchor.x - 1
+        && tile.y >= anchor.y - 1
+        && tile.x <= anchor.x + w
+        && tile.y <= anchor.y + h
+}
+
+fn construction_site_active(game: &Game, building: &oxide_sim::Building) -> bool {
+    if building.built {
+        return false;
+    }
+    game.state.units().iter().any(|unit| {
+        unit.player == building.player
+            && unit.kind == oxide_sim::UnitKind::Harvester
+            && matches!(unit.order, oxide_sim::Order::Build { site } if site == building.id)
+            && tile_adjacent_to_building(unit.tile(), building)
+            && (unit.player == game.human
+                || game.all_seeing()
+                || game.my_vision().visible(unit.tile()))
+    })
 }
 
 fn production_progress_visible(game: &Game, building: &oxide_sim::Building) -> bool {
@@ -491,7 +530,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
         let (w, h) = building.kind.stats().size;
         let dest = vec2(w as f32 * zoom, h as f32 * zoom);
         let (source, accent_source) = if building.built {
-            let speed = building_work_speed(building.kind);
+            let speed = building_work_speed(building);
             let frame = super::motion::loop_frame(
                 game.fx_time(),
                 building.id.0,
@@ -515,7 +554,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 ticks,
                 game.fx_time(),
                 building.id.0,
-                reduced_motion(),
+                reduced_motion() || !construction_site_active(game, building),
             );
             (
                 sprites.construction(building.kind, faction, stage, phase),
@@ -1444,20 +1483,131 @@ mod tests {
     use super::*;
 
     #[test]
-    fn work_cycles_are_ambient_instead_of_private_activity_indicators() {
+    fn ambient_work_cycles_exclude_defenses_and_an_idle_fabricator() {
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+            player: 0,
+            kind: oxide_sim::BuildingKind::Fabricator,
+            x: 9,
+            y: 3,
+        });
+        let game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("fixture builds");
+        let mut fabricator = game
+            .state
+            .buildings()
+            .iter()
+            .find(|building| building.kind == oxide_sim::BuildingKind::Fabricator)
+            .expect("Fabricator")
+            .clone();
+        assert!(building_work_speed(&fabricator).is_none());
+        fabricator.queue.push_back(oxide_sim::UnitKind::Scuttler);
+        assert!(building_work_speed(&fabricator).is_some());
+        fabricator.progress = oxide_sim::UnitKind::Scuttler.stats().train_ticks;
+        assert!(
+            building_work_speed(&fabricator).is_none(),
+            "a completed head waiting for a doorstep holds the machinery"
+        );
+
         for kind in [
             oxide_sim::BuildingKind::Foundry,
-            oxide_sim::BuildingKind::Fabricator,
             oxide_sim::BuildingKind::Array,
             oxide_sim::BuildingKind::Reclaimer,
             oxide_sim::BuildingKind::RepairBay,
         ] {
-            assert!(
-                building_work_speed(kind).is_some(),
-                "{kind:?} should animate without consulting its queue or nearby units"
-            );
+            let mut building = game
+                .state
+                .buildings()
+                .iter()
+                .find(|building| building.kind == kind)
+                .cloned()
+                .unwrap_or_else(|| fabricator.clone());
+            building.kind = kind;
+            building.queue.clear();
+            building.progress = 0;
+            assert!(building_work_speed(&building).is_some(), "{kind:?}");
         }
-        assert!(building_work_speed(oxide_sim::BuildingKind::Turret).is_none());
+        let mut turret = fabricator;
+        turret.kind = oxide_sim::BuildingKind::Turret;
+        turret.queue.clear();
+        turret.progress = 0;
+        assert!(building_work_speed(&turret).is_none());
+    }
+
+    #[test]
+    fn a_site_moves_only_for_an_adjacent_matching_builder() {
+        let mut game = Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0))
+            .expect("embedded skirmish builds");
+        let builder = game
+            .state
+            .units()
+            .iter()
+            .find(|unit| unit.player == game.human && unit.kind == oxide_sim::UnitKind::Harvester)
+            .expect("human Harvester")
+            .id;
+        let anchor = TilePos::new(8, 5);
+        let kind = oxide_sim::BuildingKind::Turret;
+        game.state.tick(&[oxide_sim::PlayerCommand {
+            player: game.human,
+            command: oxide_sim::Command::Build {
+                units: vec![builder],
+                kind,
+                anchor,
+                queue: false,
+                defer: false,
+            },
+        }]);
+        let site = game
+            .state
+            .buildings()
+            .iter()
+            .find(|building| building.anchor == anchor && !building.built)
+            .expect("site was placed")
+            .id;
+        assert!(construction_site_active(
+            &game,
+            game.state.building(site).expect("site")
+        ));
+        let mut unrelated_site = game.state.building(site).expect("site").clone();
+        unrelated_site.id = oxide_sim::BuildingId(site.0 + 100);
+        assert!(
+            !construction_site_active(&game, &unrelated_site),
+            "a nearby Harvester working another site cannot animate this one"
+        );
+
+        game.state.tick(&[oxide_sim::PlayerCommand {
+            player: game.human,
+            command: oxide_sim::Command::Move {
+                units: vec![builder],
+                goal: TilePos::new(16, 5),
+                queue: false,
+            },
+        }]);
+        for _ in 0..40 {
+            game.state.tick(&[]);
+        }
+        assert!(!construction_site_active(
+            &game,
+            game.state.building(site).expect("site")
+        ));
+
+        game.state.tick(&[oxide_sim::PlayerCommand {
+            player: game.human,
+            command: oxide_sim::Command::Build {
+                units: vec![builder],
+                kind,
+                anchor,
+                queue: false,
+                defer: false,
+            },
+        }]);
+        assert!(matches!(
+            game.state.unit(builder).expect("builder").order,
+            oxide_sim::Order::Build { site: ordered } if ordered == site
+        ));
+        assert!(
+            !construction_site_active(&game, game.state.building(site).expect("site")),
+            "the en-route Build order is not work yet"
+        );
     }
 
     #[test]

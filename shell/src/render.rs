@@ -228,8 +228,6 @@ fn combat_icon_color(icon: crate::panel::CombatIcon) -> Color {
         CombatIcon::Vision => Color::new(0.63, 0.77, 0.94, 0.86),
         CombatIcon::Radar => Color::new(0.22, 0.76, 0.72, 0.90),
         CombatIcon::Repair => Color::new(0.38, 0.82, 0.45, 0.90),
-        CombatIcon::Speed => Color::new(0.76, 0.78, 0.83, 0.90),
-        CombatIcon::Unarmed => TEXT_DISABLED,
     }
 }
 
@@ -298,46 +296,54 @@ fn draw_combat_icon(
             }
         }
         CombatIcon::AirWeapon => {
-            // A tiny top-down aircraft: pointed nose, broad wings, and a
-            // split tail. It stays recognizable beside the ground gun's
-            // circular crosshair even when both rings overlap.
+            // A top-down aircraft inside four targeting brackets. The
+            // aircraft names the domain; the brackets make this an attack
+            // reach mark rather than a place the selected unit can fly.
+            let corner = radius * 0.34;
+            for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                let x = center.x + sx * radius;
+                let y = center.y + sy * radius;
+                draw_line(x, y, x - sx * corner, y, stroke, color);
+                draw_line(x, y, x, y - sy * corner, stroke, color);
+            }
+            let aircraft = radius * 0.66;
             draw_line(
                 center.x,
-                center.y - radius,
+                center.y - aircraft,
                 center.x,
-                center.y + radius * 0.82,
+                center.y + aircraft * 0.82,
                 stroke,
                 color,
             );
             draw_line(
                 center.x,
-                center.y - radius * 0.18,
-                center.x - radius,
-                center.y + radius * 0.34,
+                center.y - aircraft * 0.18,
+                center.x - aircraft,
+                center.y + aircraft * 0.34,
                 stroke,
                 color,
             );
             draw_line(
                 center.x,
-                center.y - radius * 0.18,
-                center.x + radius,
-                center.y + radius * 0.34,
+                center.y - aircraft * 0.18,
+                center.x + aircraft,
+                center.y + aircraft * 0.34,
                 stroke,
                 color,
             );
             draw_line(
                 center.x,
-                center.y + radius * 0.48,
-                center.x - radius * 0.48,
-                center.y + radius * 0.82,
+                center.y + aircraft * 0.48,
+                center.x - aircraft * 0.48,
+                center.y + aircraft * 0.82,
                 stroke,
                 color,
             );
             draw_line(
                 center.x,
-                center.y + radius * 0.48,
-                center.x + radius * 0.48,
-                center.y + radius * 0.82,
+                center.y + aircraft * 0.48,
+                center.x + aircraft * 0.48,
+                center.y + aircraft * 0.82,
                 stroke,
                 color,
             );
@@ -388,38 +394,6 @@ fn draw_combat_icon(
                 center.x,
                 center.y + radius,
                 stroke * 1.25,
-                color,
-            );
-        }
-        CombatIcon::Speed => {
-            for offset in [-0.42, 0.28] {
-                let x = center.x + radius * offset;
-                draw_line(
-                    x - radius * 0.38,
-                    center.y - radius * 0.62,
-                    x + radius * 0.28,
-                    center.y,
-                    stroke,
-                    color,
-                );
-                draw_line(
-                    x + radius * 0.28,
-                    center.y,
-                    x - radius * 0.38,
-                    center.y + radius * 0.62,
-                    stroke,
-                    color,
-                );
-            }
-        }
-        CombatIcon::Unarmed => {
-            draw_circle_lines(center.x, center.y, radius * 0.72, stroke, color);
-            draw_line(
-                center.x - radius * 0.64,
-                center.y + radius * 0.64,
-                center.x + radius * 0.64,
-                center.y - radius * 0.64,
-                stroke,
                 color,
             );
         }

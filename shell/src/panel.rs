@@ -136,10 +136,6 @@ pub enum CombatIcon {
     Radar,
     /// Automatic repair reach.
     Repair,
-    /// Movement speed.
-    Speed,
-    /// No weapon fitted.
-    Unarmed,
 }
 
 /// One compact capability row in the selection panel.
@@ -355,7 +351,7 @@ fn building_combat_lines(kind: BuildingKind) -> Vec<CombatFact> {
     lines
 }
 
-/// Always-visible capability facts for a selected unit.
+/// Always-visible combat facts for a selected unit.
 pub fn combat_lines(kind: UnitKind) -> Vec<CombatFact> {
     let stats = kind.stats();
     let mut lines: Vec<_> = stats
@@ -376,20 +372,55 @@ pub fn combat_lines(kind: UnitKind) -> Vec<CombatFact> {
             text: format!("{} tiles", stats.vision),
         });
     }
-    if lines.is_empty() {
-        lines.push(CombatFact {
-            icon: CombatIcon::Unarmed,
-            text: "unarmed".to_string(),
+    lines
+}
+
+fn tick_time_label(ticks: u32) -> String {
+    let per_second = oxide_sim::TICKS_PER_SECOND;
+    let whole = ticks / per_second;
+    let hundredths = ticks % per_second * 100 / per_second;
+    if hundredths == 0 {
+        format!("{whole}s")
+    } else if hundredths.is_multiple_of(10) {
+        format!("{whole}.{}s", hundredths / 10)
+    } else {
+        format!("{whole}.{hundredths:02}s")
+    }
+}
+
+/// Compact build-time mark shown directly on a unit's training card.
+pub fn unit_train_time_label(kind: UnitKind) -> String {
+    tick_time_label(kind.stats().train_ticks)
+}
+
+fn unit_speed_label(kind: UnitKind) -> String {
+    format!(
+        "{:.1} tiles/sec",
+        kind.stats().speed.to_num::<f32>() * oxide_sim::TICKS_PER_SECOND as f32
+    )
+}
+
+fn production_queue_label(
+    queue: &std::collections::VecDeque<UnitKind>,
+    progress: u32,
+) -> Option<String> {
+    let head = queue.front()?;
+    let head_ticks = head.stats().train_ticks;
+    let ready = progress >= head_ticks;
+    let later_ticks = queue
+        .iter()
+        .skip(1)
+        .map(|kind| kind.stats().train_ticks)
+        .sum::<u32>();
+    if ready {
+        return Some(if later_ticks == 0 {
+            "queue ready".to_string()
+        } else {
+            format!("queue ready + {}", tick_time_label(later_ticks))
         });
     }
-    lines.push(CombatFact {
-        icon: CombatIcon::Speed,
-        text: format!(
-            "{:.1} tiles/sec",
-            stats.speed.to_num::<f32>() * oxide_sim::TICKS_PER_SECOND as f32
-        ),
-    });
-    lines
+    let remaining = head_ticks - progress + later_ticks;
+    Some(format!("queue {}", tick_time_label(remaining)))
 }
 
 fn bot_level_label(game: &Game, player: oxide_sim::PlayerId) -> Option<&'static str> {
@@ -732,7 +763,8 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             roster: Vec::new(),
             cards: Vec::new(),
             queue: Vec::new(),
-            queue_label: "queue".to_string(),
+            queue_label: production_queue_label(&building.queue, building.progress)
+                .unwrap_or_else(|| "queue".to_string()),
         };
         if owner != game.human {
             // Foreign buildings inspect read-only: an allied building says
@@ -874,7 +906,12 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             format!("{} UNITS", units.len())
         },
         sub: if units.len() == 1 {
-            format!("{}/{} hp", first.hp, first.kind.stats().max_hp)
+            format!(
+                "{}/{} hp | speed {}",
+                first.hp,
+                first.kind.stats().max_hp,
+                unit_speed_label(first.kind)
+            )
         } else {
             let (kinds, extra) = {
                 let mut ks: Vec<UnitKind> = units.iter().map(|u| u.kind).collect();
@@ -1154,7 +1191,8 @@ mod tests {
     #[test]
     fn the_foundry_panel_speaks_its_roster() {
         let mut game = game();
-        game.selection.buildings = vec![human_foundry(&game)];
+        let foundry = human_foundry(&game);
+        game.selection.buildings = vec![foundry];
         let panel = build(&game, &BindingMap::classic()).expect("panel");
         assert_eq!(panel.title, "FOUNDRY");
         assert_eq!(panel.cards.len(), 3, "two units plus the rally affordance");
@@ -1162,6 +1200,8 @@ mod tests {
         assert_eq!(panel.cards[0].action, CardAction::ArmRally);
         assert_eq!(panel.cards[1].hotkey, "1");
         assert_eq!(panel.cards[1].cost, Some(50));
+        assert_eq!(unit_train_time_label(UnitKind::Harvester), "5s");
+        assert_eq!(unit_train_time_label(UnitKind::Sentinel), "7.5s");
         assert!(panel.cards[1].enabled, "150 scrap affords a harvester");
         assert_eq!(
             panel.cards[1].action,
@@ -1169,10 +1209,23 @@ mod tests {
             "the card IS its hotkey"
         );
         assert!(panel.queue.is_empty(), "nothing queued yet");
-        // The harvester is unarmed — its card carries no weapon line;
-        // the sentinel's carries both of its guns.
+        // The harvester's card carries no weapon line; the sentinel's
+        // carries both of its guns.
         assert!(!panel.cards[1].desc.iter().any(|l| l.contains("dmg")));
         assert!(panel.cards[2].desc.iter().any(|l| l.contains("dmg")));
+
+        game.state.tick(&[PlayerCommand {
+            player: game.human,
+            command: Command::Train {
+                building: foundry,
+                kind: UnitKind::Harvester,
+            },
+        }]);
+        let panel = build(&game, &BindingMap::classic()).expect("queued panel");
+        assert_eq!(panel.queue_label, "queue 4.95s");
+        game.state.tick(&[]);
+        let panel = build(&game, &BindingMap::classic()).expect("progressing panel");
+        assert_eq!(panel.queue_label, "queue 4.9s");
     }
 
     #[test]
@@ -1341,20 +1394,11 @@ mod tests {
         assert_eq!(panel.cards[1].title, "Run");
         assert_eq!(panel.cards[2].title, "Attack-move");
         assert_eq!(panel.cards[3].title, "Patrol");
-        assert_eq!(
-            panel.combat,
-            vec![
-                CombatFact {
-                    icon: CombatIcon::Unarmed,
-                    text: "unarmed".to_string(),
-                },
-                CombatFact {
-                    icon: CombatIcon::Speed,
-                    text: "2.5 tiles/sec".to_string(),
-                },
-            ],
-            "an unarmed unit still gives a combat answer and movement speed"
+        assert!(
+            panel.combat.is_empty(),
+            "an unarmed unit needs no capability band"
         );
+        assert_eq!(panel.sub, "60/60 hp | speed 2.5 tiles/sec");
         let builds: Vec<_> = panel
             .cards
             .iter()
@@ -1703,7 +1747,11 @@ mod tests {
             .id;
         game.selection.units = vec![sentinel];
         let panel = build(&game, &BindingMap::classic()).expect("panel");
-        assert_eq!(panel.combat.len(), 3, "two weapons plus movement speed");
+        assert_eq!(
+            panel.combat.len(),
+            2,
+            "the two weapons stay in the combat band"
+        );
         assert!(
             panel
                 .combat
@@ -1715,14 +1763,9 @@ mod tests {
                 .combat
                 .iter()
                 .any(|fact| fact.icon == CombatIcon::AirWeapon && fact.text.contains("air")),
-            "the anti-air range uses an aircraft silhouette"
+            "the anti-air range uses a targeted-aircraft mark"
         );
-        assert!(
-            panel
-                .combat
-                .iter()
-                .any(|fact| fact.icon == CombatIcon::Speed && fact.text == "2.2 tiles/sec")
-        );
+        assert!(panel.sub.ends_with("speed 2.2 tiles/sec"));
         assert!(
             panel
                 .combat
@@ -1763,5 +1806,28 @@ mod tests {
                 .all(|card| !matches!(card.action, CardAction::FilterKind(_))),
             "roster filters cannot consume command-card capacity"
         );
+    }
+
+    #[test]
+    fn production_queue_time_counts_partial_head_and_marks_a_blocked_spawn_ready() {
+        let queue = std::collections::VecDeque::from([UnitKind::Harvester, UnitKind::Sentinel]);
+        assert_eq!(
+            production_queue_label(&queue, 25).as_deref(),
+            Some("queue 11.25s"),
+            "75 head ticks plus 150 queued ticks"
+        );
+        assert_eq!(
+            production_queue_label(&queue, UnitKind::Harvester.stats().train_ticks).as_deref(),
+            Some("queue ready + 7.5s")
+        );
+        assert_eq!(
+            production_queue_label(
+                &std::collections::VecDeque::from([UnitKind::Harvester]),
+                UnitKind::Harvester.stats().train_ticks,
+            )
+            .as_deref(),
+            Some("queue ready")
+        );
+        assert!(production_queue_label(&std::collections::VecDeque::new(), 0).is_none());
     }
 }

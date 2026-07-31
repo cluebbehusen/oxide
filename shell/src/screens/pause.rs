@@ -636,6 +636,33 @@ mod tests {
     }
 
     #[test]
+    fn repeated_backspace_edges_clear_the_name_field_in_one_frame() {
+        let mut p = PauseScreen::open(false, true);
+        p.begin_naming("oxide".to_string());
+        let mut mouse = vec2(0.0, 0.0);
+        let mut sounds = Vec::new();
+        let repeats = [
+            RawEvent::KeyDown {
+                key: Key::Backspace,
+            },
+            RawEvent::KeyDown {
+                key: Key::Backspace,
+            },
+            RawEvent::KeyDown {
+                key: Key::Backspace,
+            },
+            RawEvent::KeyDown {
+                key: Key::Backspace,
+            },
+            RawEvent::KeyDown {
+                key: Key::Backspace,
+            },
+        ];
+        assert_eq!(p.update(&repeats, &mut mouse, &mut sounds), Out::Stay);
+        assert_eq!(p.menu.items[0], "_");
+    }
+
+    #[test]
     fn the_name_field_caps_its_length_and_the_verdict_shows_until_the_next_pick() {
         let mut p = PauseScreen::open(false, true);
         p.begin_naming("x".repeat(40));

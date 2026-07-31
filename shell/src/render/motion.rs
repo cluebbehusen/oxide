@@ -84,18 +84,18 @@ pub(crate) fn loop_frame(
     ((tick + u64::from(id).wrapping_mul(7)) % frame_count as u64) as usize
 }
 
-/// Selects a construction sprite's progress stage and ambient machinery phase.
-/// Public site progress chooses the stage; no builder order or other private
-/// activity can leak through presentation. Reduced motion holds the crane.
+/// Selects a construction sprite's progress stage and machinery phase.
+/// Public site progress chooses the stage; presentation decides whether the
+/// machinery is active. Reduced motion and idle sites hold the crane.
 pub(crate) fn construction_frame(
     progress: u32,
     total: u32,
     time: f32,
     id: u32,
-    reduced: bool,
+    held: bool,
 ) -> (usize, usize) {
     let stage = ((u64::from(progress) * 3) / u64::from(total.max(1))).min(2) as usize;
-    let phase = loop_frame(time, id, 3.0, 2, reduced);
+    let phase = loop_frame(time, id, 3.0, 2, held);
     (stage, phase)
 }
 
@@ -224,9 +224,13 @@ mod tests {
         assert_ne!(
             construction_frame(100, 300, 9.0, 4, false).1,
             construction_frame(100, 300, 9.4, 4, false).1,
-            "every visible site carries the ambient crane loop"
+            "active construction advances its authored machinery"
         );
-        assert_eq!(construction_frame(100, 300, 9.0, 4, true), (1, 0));
+        assert_eq!(
+            construction_frame(100, 300, 9.0, 4, true),
+            (1, 0),
+            "an idle or reduced-motion site holds its machinery"
+        );
     }
 
     #[test]

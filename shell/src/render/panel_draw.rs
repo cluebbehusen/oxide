@@ -187,6 +187,13 @@ fn grouped_card_gap(
     (available - ordinary_width).clamp(0.0, 10.0 * card_width / 66.0)
 }
 
+fn panel_sub_lines(sub: &str) -> Vec<String> {
+    sub.split_once(" | speed ").map_or_else(
+        || vec![sub.to_string()],
+        |(detail, speed)| vec![detail.to_string(), format!("speed {speed}")],
+    )
+}
+
 /// Packs every visible queue chip above the command band. A single
 /// column stays pleasantly quiet when it fits; a full eight-slot
 /// production queue becomes a 2×4 dock at the 640×400 contract instead
@@ -432,13 +439,23 @@ pub(crate) fn draw_panel(
             17.0 * s,
             TEXT_PRIMARY,
         );
-        draw_text(
-            &panel.sub,
-            12.0 * s,
-            top + 106.0 * s,
-            14.0 * s,
-            TEXT_SECONDARY,
-        );
+        let sub_lines = panel_sub_lines(&panel.sub);
+        let max_width = cards_x - 24.0 * s;
+        let base_size = if sub_lines.len() > 1 { 12.0 } else { 14.0 } * s;
+        for (index, line) in sub_lines.iter().enumerate() {
+            let mut size = base_size;
+            while measure_text(line, None, size as u16, 1.0).width > max_width && size > 8.0 * s {
+                size -= 0.5 * s;
+            }
+            draw_text(
+                line,
+                12.0 * s,
+                top + (if sub_lines.len() > 1 { 103.0 } else { 106.0 }) * s
+                    + index as f32 * 14.0 * s,
+                size,
+                TEXT_SECONDARY,
+            );
+        }
     }
 
     // A single entity publishes its static combat capability without a
@@ -626,6 +643,23 @@ pub(crate) fn draw_panel(
                 TEXT_SECONDARY,
             );
         }
+        if let (CardAction::Dispatch(crate::action::Action::TrainSlot(_)), CardIcon::Unit(kind)) =
+            (card.action, card.icon)
+        {
+            let label = crate::panel::unit_train_time_label(kind);
+            let dims = measure_text(&label, None, (11.0 * s) as u16, 1.0);
+            draw_text(
+                &label,
+                rect.x + rect.w - dims.width - 3.0 * s,
+                rect.y + 13.0 * s,
+                11.0 * s,
+                if card.enabled {
+                    TEXT_SECONDARY
+                } else {
+                    TEXT_DISABLED
+                },
+            );
+        }
         cards[card_count] = (
             rect,
             if card.enabled {
@@ -643,7 +677,10 @@ pub(crate) fn draw_panel(
     let mut queue_count = 0;
     let mut dock = Rect::new(0.0, 0.0, 0.0, 0.0);
     if !panel.queue.is_empty() {
-        let (grid_dock, grid_slots, n) = queue_grid(panel.queue.len(), top, s);
+        let (mut grid_dock, grid_slots, n) = queue_grid(panel.queue.len(), top, s);
+        let queue_label_width =
+            measure_text(&panel.queue_label, None, (13.0 * s) as u16, 1.0).width + 16.0 * s;
+        grid_dock.w = grid_dock.w.max(queue_label_width);
         dock = grid_dock;
         let hidden = panel.queue.len().saturating_sub(n);
         let more_h = if hidden > 0 { 16.0 * s } else { 0.0 };
@@ -692,9 +729,9 @@ pub(crate) fn draw_panel(
                 rect.h,
                 Color::new(0.14, 0.14, 0.18, 1.0),
             );
-            // The chip in progress wears the bright border, not just a
-            // "(now)" hidden in its tooltip.
-            let active = orders_dock && i == 0;
+            // The active order or production head wears the bright border;
+            // a ready-but-blocked head remains the queue's current job.
+            let active = i == 0;
             draw_rectangle_lines(
                 rect.x,
                 rect.y,
@@ -980,5 +1017,18 @@ mod tests {
         assert_eq!(compact.band_h, 72.0);
         assert_eq!(ordinary.band_h, 120.0);
         assert_eq!(compact.top, viewport.y - 72.0);
+    }
+
+    #[test]
+    fn unit_speed_breaks_onto_a_second_portrait_line() {
+        assert_eq!(
+            panel_sub_lines("60/60 hp | speed 2.5 tiles/sec"),
+            ["60/60 hp", "speed 2.5 tiles/sec"]
+        );
+        assert_eq!(
+            panel_sub_lines("hostile | Hard | 60/60 hp | speed 3.1 tiles/sec"),
+            ["hostile | Hard | 60/60 hp", "speed 3.1 tiles/sec"]
+        );
+        assert_eq!(panel_sub_lines("3 types"), ["3 types"]);
     }
 }

@@ -595,6 +595,23 @@ impl macroquad::miniquad::EventHandler for PointerStream {
     fn touch_event(&mut self, _phase: macroquad::miniquad::TouchPhase, _id: u64, _x: f32, _y: f32) {
     }
 
+    /// The polled keyboard surface exposes the initial edge but drops OS
+    /// repeat. Preserve only repeated Backspace presses; the save-name field
+    /// is the sole consumer, while every gameplay binding keeps edge-only
+    /// semantics.
+    fn key_down_event(
+        &mut self,
+        keycode: macroquad::miniquad::KeyCode,
+        _keymods: macroquad::miniquad::KeyMods,
+        repeat: bool,
+    ) {
+        if repeat && keycode == macroquad::miniquad::KeyCode::Backspace {
+            self.events.push(RawEvent::KeyDown {
+                key: Key::Backspace,
+            });
+        }
+    }
+
     /// Typed characters, layout- and shift-resolved by the OS — a
     /// Key-to-character table would get every non-US layout wrong.
     /// Printable ASCII only, filtered AT INGEST: the menu font is

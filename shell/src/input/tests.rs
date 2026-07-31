@@ -1728,10 +1728,11 @@ fn an_ally_selection_reads_its_orders_but_takes_none() {
     let panel = crate::panel::build(&game, &input.bindings).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on an ally panel");
     assert!(panel.sub.contains("Easy"), "bot difficulty stays visible");
-    assert_eq!(panel.combat.len(), 2);
-    assert_eq!(panel.combat[0].icon, crate::panel::CombatIcon::Unarmed);
-    assert_eq!(panel.combat[0].text, "unarmed");
-    assert_eq!(panel.combat[1].icon, crate::panel::CombatIcon::Speed);
+    assert!(
+        panel.combat.is_empty(),
+        "an unarmed ally needs no capability band"
+    );
+    assert!(panel.sub.contains("speed 2.5 tiles/sec"));
     assert!(!panel.queue.is_empty(), "the ally's orders show");
     assert_eq!(
         panel.faction,
@@ -1786,7 +1787,7 @@ fn a_hostile_selection_inspects_and_leaks_nothing() {
     assert!(panel.cards.is_empty(), "no verbs on a hostile panel");
     assert!(panel.queue.is_empty(), "no order chips on a hostile panel");
     assert!(panel.sub.contains("Hard"), "enemy difficulty stays visible");
-    assert_eq!(panel.combat.len(), 2);
+    assert_eq!(panel.combat.len(), 1);
     assert_eq!(panel.combat[0].icon, crate::panel::CombatIcon::Weapon);
     assert!(panel.combat[0].text.contains("dmg"));
     assert!(panel.combat[0].text.contains("tiles"));
@@ -3109,6 +3110,29 @@ fn a_press_mid_flight_anchors_the_box_where_it_landed() {
     assert!(
         input.mouse.distance(input.drag_origin.expect("dragging")) > drag_threshold(input.ui),
         "and the rect is already drawable on the press frame itself"
+    );
+}
+
+#[test]
+fn the_hardware_stream_preserves_only_backspace_key_repeat() {
+    use macroquad::miniquad::EventHandler;
+    let mut stream = PointerStream::new(1.0);
+    let mods = macroquad::miniquad::KeyMods::default();
+    stream.key_down_event(macroquad::miniquad::KeyCode::Backspace, mods, false);
+    stream.key_down_event(macroquad::miniquad::KeyCode::A, mods, true);
+    stream.key_down_event(macroquad::miniquad::KeyCode::Backspace, mods, true);
+    stream.key_down_event(macroquad::miniquad::KeyCode::Backspace, mods, true);
+    assert_eq!(
+        stream.events,
+        vec![
+            RawEvent::KeyDown {
+                key: Key::Backspace
+            },
+            RawEvent::KeyDown {
+                key: Key::Backspace
+            },
+        ],
+        "the initial edge still comes from polling; only repeat edges use the subscriber"
     );
 }
 
