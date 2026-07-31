@@ -2147,8 +2147,8 @@ def theme_prop(theme: str, variant: int) -> None:
 
     The first bank is surface history; the second is low-profile machinery,
     material, and recesses. None resembles a resource, structure, or cover
-    marker. The shell rotates props, so every variant reads from any quarter
-    turn.
+    marker. Surface marks in the first bank can rotate freely. The raised
+    second bank keeps its authored world-space lighting upright in the shell.
     """
     px = 64
     img, d = canvas(px)

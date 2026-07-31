@@ -54,6 +54,20 @@ struct ThemePropPlacement {
     quarter_turns: u8,
 }
 
+impl ThemePropPlacement {
+    fn rotation(self) -> f32 {
+        // The first prop bank is made of flat surface marks. The second bank
+        // contains raised objects with a baked world-space highlight and
+        // shadow, so rotating those objects also rotates their lighting.
+        let turns = if self.variant < 3 {
+            self.quarter_turns
+        } else {
+            0
+        };
+        f32::from(turns) * std::f32::consts::FRAC_PI_2
+    }
+}
+
 fn theme_code(theme: &str) -> Option<u32> {
     // Stable layout salts, chosen so each shipped theme exercises its complete
     // prop row without changing the shared density rule.
@@ -69,8 +83,8 @@ fn theme_code(theme: &str) -> Option<u32> {
 }
 
 /// Sparse dressing picked from a coordinate and its 180-degree partner.
-/// Both halves therefore choose the same art; the far half adds a half-turn
-/// so directional marks preserve the shipped maps' visual symmetry.
+/// Both halves therefore choose the same art; the far half records a half-turn
+/// so rotatable surface marks preserve the shipped maps' visual symmetry.
 fn symmetric_theme_prop(
     theme: &str,
     pos: TilePos,
@@ -220,13 +234,9 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
                 Some((sprites.decal(3), 0.0, tint))
             } else if let Some(placement) = prop_candidate {
                 if symmetric_safe_theme_prop_tile(&game.scenario.map, pos) {
-                    sprites.theme_prop(theme, placement.variant).map(|source| {
-                        (
-                            source,
-                            f32::from(placement.quarter_turns) * std::f32::consts::FRAC_PI_2,
-                            WHITE,
-                        )
-                    })
+                    sprites
+                        .theme_prop(theme, placement.variant)
+                        .map(|source| (source, placement.rotation(), WHITE))
                 } else {
                     None
                 }
@@ -384,7 +394,7 @@ mod tests {
     ];
 
     #[test]
-    fn theme_prop_selection_is_a_rotated_180_degree_pair() {
+    fn theme_prop_selection_is_a_180_degree_pair() {
         for theme in THEMES {
             for height in [31, 32] {
                 for width in [47, 48] {
@@ -413,6 +423,29 @@ mod tests {
             symmetric_theme_prop("basalt", TilePos::new(4, 4), 9, 9),
             None
         );
+    }
+
+    #[test]
+    fn raised_theme_props_keep_world_space_lighting_upright() {
+        for quarter_turns in 0..4 {
+            for variant in 0..3 {
+                let placement = ThemePropPlacement {
+                    variant,
+                    quarter_turns,
+                };
+                assert_eq!(
+                    placement.rotation(),
+                    f32::from(quarter_turns) * std::f32::consts::FRAC_PI_2
+                );
+            }
+            for variant in 3..6 {
+                let placement = ThemePropPlacement {
+                    variant,
+                    quarter_turns,
+                };
+                assert_eq!(placement.rotation(), 0.0);
+            }
+        }
     }
 
     #[test]
