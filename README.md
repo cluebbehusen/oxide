@@ -132,9 +132,10 @@ only what's still standing — damage burns salvage.
 | Ctrl + `1`-`5`                     | Assign the selection to a control group                                                                                                                                      |
 | `1`-`5`                            | Recall the group — tap again to center the camera on it                                                                                                                      |
 | Left click on minimap              | Jump the camera there                                                                                                                                                        |
-| Right click                        | Contextual order: enemy → attack, scrap → harvest, ground → **move engaging everything on the way** (fire at will is the only stance; combat units always defend themselves) |
+| Right click                        | Contextual order: enemy → attack, scrap → harvest, ground → **advance** (keep moving while the primary weapon fires at in-range targets; never chase)                       |
 | Shift + right click                | Queue the order behind the current one                                                                                                                                       |
-| `M`                                | Units selected: arm run — click ground to move **without** engaging, the recall that works while standing next to an enemy (Esc cancels)                                     |
+| `M`                                | Units selected: arm run — click ground to move without firing or engaging, the strict disengage and recall command (Esc cancels)                                            |
+| `F`                                | Units selected: arm attack-move — click ground to engage and chase enemies along the route (Esc cancels; Shift chains)                                                       |
 | `R`                                | Arm a patrol: right-click waypoints, `R` again to start the loop — patrollers engage everything met and never settle                                                         |
 | `B`                                | With harvesters selected: open the build palette — digits pick the structure, the ghost shows validity on ground you have seen (green claims now, amber on remembered ground sends the crew to found on arrival), click commits the whole selected crew, Esc cancels |
 | Right click a damaged own building | With harvesters selected: weld it (billed per hp — pricier than building, cheaper than losing it)                                                                            |
@@ -143,7 +144,8 @@ only what's still standing — damage burns salvage.
 | Right click an own unfinished site | With harvesters selected: resume construction — several builders stack                                                                                                       |
 | `V`                                | With harvesters selected: arm salvage — click an own built building to strip it for a partial refund (Foundries refuse; Shift chains teardowns)                              |
 | `X`                                | Units selected: stop in place. Construction site selected: scrap it for a partial refund                                                                                     |
-| Right click on minimap             | Send the selection there, fighting through                                                                                                                                   |
+| Right click on minimap             | Advance the selection there without stopping to chase                                                                                                                        |
+| Touch                              | Tap selects, drag pans, pinch zooms, two fingers box-select, and a still long-press performs the same contextual order as right click                                        |
 | Right click (Foundry selected)     | Set the rally point — rally a scrap node and fresh harvesters mine it; fresh Sentinels attack-move to it                                                                     |
 | Mouse wheel                        | Zoom (toward the cursor)                                                                                                                                                     |
 | Arrow keys                         | Pan                                                                                                                                                                          |
@@ -175,8 +177,9 @@ ground again — a ghost is a belief, and beliefs go stale. The minimap
 (bottom-right) follows the same rules. Units are solid — a chokepoint held
 by a wall of Sentinels is actually held. Sound follows sight: you hear
 fights you can see, and your own losses always. Scout early, set a rally,
-keep the Foundry queue warm, and attack-move (never plain move) into
-territory you don't control.
+keep the Foundry queue warm, advance through light resistance, and use
+attack-move (`F`) when you need the army to clear territory instead of
+holding its route.
 
 ## How it's put together
 
@@ -216,6 +219,7 @@ cargo run -p oxide-driver -- matchup --a sentinel:8 --b bombard:2,sentinel:4
 cargo run -p oxide-driver -- bench                  # 500-unit ticks/s
 cargo run -p oxide-driver -- live status
 cargo run -p oxide-driver -- live harvest 0 --units 0,1,2 --node 7,2
+cargo run -p oxide-driver -- live advance-units 0 --units 3 --to 34,18
 cargo run -p oxide-driver -- live attack-move 0 --units 3 --to 34,18
 cargo run -p oxide-driver -- live step 1              # effects + sim events
 cargo run -p oxide-driver -- live advance 300         # exactly 300 ticks
@@ -299,7 +303,7 @@ palette from turrets to radar to Reclaimers, wreck salvage and repair
 welding (buildings and ground machines alike), team games from 2v2 to
 4v4 with shared sight, order queues
 and patrols, solid
-units that crowd without gridlocking, attack-move with line-of-sight
+units that crowd without gridlocking, zero-chase advances and attack-move with line-of-sight
 fire, damage retaliation, rally points, control groups, shift-select,
 order feedback, a fog-aware minimap, sound, twenty-five maps in a
 thumbnail-grid browser sectioned by format (sixteen duels, five 2v2s,

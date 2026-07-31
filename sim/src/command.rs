@@ -172,8 +172,7 @@ pub enum Command {
     /// Air patients refuse — a harvester cannot service a machine
     /// hovering where it cannot stand. The patient's own orders are
     /// untouched: a fleeing machine keeps fleeing and simply goes
-    /// unwelded while out of reach. (Last variant by appending
-    /// discipline: earlier discriminants keep their serialized bytes.)
+    /// unwelded while out of reach.
     RepairUnit {
         /// The units to commit (only harvesters are accepted; the
         /// patient itself never joins its own crew).
@@ -181,6 +180,20 @@ pub enum Command {
         /// The wounded machine.
         target: UnitId,
         /// Append behind current orders instead of replacing them.
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        queue: bool,
+    },
+    /// Move to a tile while taking primary-weapon shots that are already
+    /// available. Unlike [`Command::AttackMove`], units never chase,
+    /// stop for, or retaliate against targets during this move. Units
+    /// that cannot fight walk there normally. (Last variant by appending
+    /// discipline: earlier discriminants keep their serialized bytes.)
+    Advance {
+        /// The units to commit.
+        units: Vec<UnitId>,
+        /// Destination tile (snapped like a move goal).
+        goal: TilePos,
+        /// Append instead of replace (see [`Command::Move::queue`]).
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         queue: bool,
     },

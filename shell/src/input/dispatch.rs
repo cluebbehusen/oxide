@@ -149,6 +149,11 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 game.toast("run cancelled");
                 return;
             }
+            if input.attacking {
+                input.attacking = false;
+                game.toast("attack-move cancelled");
+                return;
+            }
             if input.patrol_route.take().is_some() {
                 game.toast("patrol cancelled");
                 return;
@@ -224,6 +229,25 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 game.toast("run: click ground to move without engaging, Esc to cancel");
             } else {
                 game.toast("no machines selected to run");
+            }
+        }
+        Action::AttackMove => {
+            if input.attacking {
+                input.attacking = false;
+                game.toast("attack-move cancelled");
+                return;
+            }
+            let has_own_unit = game
+                .selection
+                .units
+                .iter()
+                .any(|id| game.state.unit(*id).is_some_and(|u| u.player == game.human));
+            if has_own_unit {
+                input.disarm_click_verbs();
+                input.attacking = true;
+                game.toast("attack-move: click ground to engage and chase, Esc to cancel");
+            } else {
+                game.toast("no machines selected to attack-move");
             }
         }
         Action::CycleIdleWorker => cycle_idle_worker(game),

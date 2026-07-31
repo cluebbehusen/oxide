@@ -60,13 +60,14 @@ enum CommandTag {
     SetRally,
     Surrender,
     RepairUnit,
+    Advance,
 }
 
 /// The draw pool. Paired with the exhaustive matches below, the array and
 /// the variant list cannot drift apart — the old `next_below(10)` bound
 /// against nine arms is exactly how `Repair`, `Salvage`, and
 /// `CancelTrain` went unfuzzed.
-const COMMAND_TAGS: [CommandTag; 15] = [
+const COMMAND_TAGS: [CommandTag; 16] = [
     CommandTag::Move,
     CommandTag::Attack,
     CommandTag::AttackMove,
@@ -82,6 +83,7 @@ const COMMAND_TAGS: [CommandTag; 15] = [
     CommandTag::SetRally,
     CommandTag::Surrender,
     CommandTag::RepairUnit,
+    CommandTag::Advance,
 ];
 
 /// How rarely a drawn [`CommandTag::Surrender`] is kept: one landed
@@ -113,6 +115,7 @@ fn tag_index(tag: CommandTag) -> usize {
         CommandTag::SetRally => 12,
         CommandTag::Surrender => 13,
         CommandTag::RepairUnit => 14,
+        CommandTag::Advance => 15,
     }
 }
 
@@ -134,6 +137,7 @@ fn tag_of(command: &Command) -> CommandTag {
         Command::SetRally { .. } => CommandTag::SetRally,
         Command::Surrender => CommandTag::Surrender,
         Command::RepairUnit { .. } => CommandTag::RepairUnit,
+        Command::Advance { .. } => CommandTag::Advance,
     }
 }
 
@@ -327,6 +331,11 @@ fn generate(tag: CommandTag, rng: &mut Pcg32, state: &State) -> Command {
             queue: queue(rng),
         },
         CommandTag::AttackMove => Command::AttackMove {
+            units: units(rng, state),
+            goal: tile(rng, state),
+            queue: queue(rng),
+        },
+        CommandTag::Advance => Command::Advance {
             units: units(rng, state),
             goal: tile(rng, state),
             queue: queue(rng),

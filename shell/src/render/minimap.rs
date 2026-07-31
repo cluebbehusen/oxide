@@ -78,7 +78,7 @@ pub fn minimap_rect(game: &Game) -> Rect {
 }
 
 /// The world point under a screen position, if it lies on the minimap —
-/// how clicks jump the camera (and where armed attack-moves land).
+/// how clicks jump the camera (and where armed ground orders land).
 pub fn minimap_world_at(game: &Game, screen: Vec2) -> Option<Vec2> {
     // The *published* rect, not a recomputation — hit-testing reads the
     // LayoutModel like all chrome, and never touches the window (which

@@ -154,6 +154,7 @@ driver() { cargo run -q -p oxide-driver -- "$@"; }
 driver live status
 driver live state --map            # ASCII map with entities overlaid
 driver live harvest 0 --units 0,1,2 --node 7,2
+driver live advance-units 0 --units 3 --to 34,18
 driver live attack-move 0 --units 3 --to 34,18
 driver live rally 0 --building 0 --tile 7,2   # or --clear
 driver live step 1                 # presented tick + exact sim events
@@ -883,8 +884,10 @@ comparisons don't survive GPU churn, so CI never runs it.
   contact with settled neighbors near a shared goal (`ARRIVAL_NEAR`), group
   orders fan out over a deterministic ring of per-unit goals, anchored
   workers take `ANCHORED_PUSH_SHARE` of pair separation so crowds flow
-  around them, and collision applies pairs Gauss-Seidel-style in id order —
-  symmetric cancellation once froze the whole economy.
+  around them, and collision applies pairs Gauss-Seidel-style in id order
+  under one per-unit correction budget shared by every relaxation pass in
+  the tick — symmetric cancellation once froze the whole economy, while
+  resetting the cap per pass made packed bodies visibly burst outward.
 - **Moving bodies slide, parked bodies push (0.12).** `movement::run`
   hands its per-tick displacement to the collision resolver; a body
   that traveled INTO a contact takes its correction as
@@ -992,10 +995,14 @@ comparisons don't survive GPU churn, so CI never runs it.
 - **Units are solid but never block tiles.** Collision is iterative pair
   relaxation after movement; pathfinding ignores units entirely, so crowds
   jostle but can't deadlock a corridor the way tile-reservation schemes do.
-- **Fire at will is the only stance — but stationed guards fight on a
-  tether (0.12).** The shell's right-click issues `AttackMove` for
-  ground orders: units engage in aggro range, fight via
-  `Order::Attack { resume: Some(goal) }`, and pick the march back up.
+- **Movement has three explicit stances (0.14), and stationed guards fight
+  on a tether (0.12).** The shell's default ground right-click issues
+  `Advance`: combat units keep their path and take primary-weapon shots
+  only when a visible target is already in range and line of fire. They
+  never stop, chase, or retaliate; pacifists degrade to `Move`. `F` (and
+  the touchable panel card) arms the committed `AttackMove`: units engage
+  in aggro range, fight via `Order::Attack { resume: Some(goal) }`, and
+  pick the march back up.
   Idle units auto-acquire, and a machine that stood
   `LEASH_STATION_TICKS` first acquires on a leash: free hunting
   inside `LEASH_RADIUS` of its anchor (kept ≥ the Bombard's reach so
@@ -1009,9 +1016,10 @@ comparisons don't survive GPU churn, so CI never runs it.
   before — tethering those collapsed the scripted tier ladder to a
   seat-parity coin. Player commands are commitments: an explicit
   attack never tethers, and `assign` clears any leash unconditionally,
-  no-op reissues included. Plain `Move` stays oblivious and since 0.12
-  is the player's **Run** verb (`M`, panel card between Stop and
-  Patrol) — the recall that works while standing next to an enemy.
+  no-op reissues included. Plain `Move` never fires and stays the player's
+  **Run** verb (`M`, panel card beside Attack-move and Patrol). `Advance`
+  is deliberately absent from retaliation's eligible orders, while
+  `AttackMove` retains its destination as the retaliation resume.
   `sim/tests/behavior_leash.rs` pins the contract.
 - **Ghost memory lives in `Vision`**: enemy-building records refresh while
   their ground is visible and freeze when sight is lost; seeing the ground
@@ -1142,8 +1150,8 @@ comparisons don't survive GPU churn, so CI never runs it.
   weld/salvage meters saturate one shy of the validator's
   `PROGRESS_ENVELOPE` (economy's `metered`), so a torch held on one
   job for millions of ticks never overflows the u32 step math.
-- **Machines weld too since 0.13** (`Command::RepairUnit`, appended
-  last — postcard discipline): harvesters chase a wounded own GROUND
+- **Machines weld too since 0.13** (`Command::RepairUnit`, appended in
+  that release without disturbing older postcard discriminants): harvesters chase a wounded own GROUND
   unit and weld it at body contact (`REPAIR_REACH`), billed per hp
   against the patient's cost at the same 850‰ through the same
   prepaid meter (ramp = max_hp over train_ticks). The torch holds

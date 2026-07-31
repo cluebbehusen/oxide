@@ -34,14 +34,15 @@ fn command_tag(command: &Command) -> usize {
         Command::SetRally { .. } => 12,
         Command::Surrender => 13,
         Command::RepairUnit { .. } => 14,
+        Command::Advance { .. } => 15,
     }
 }
 
-const COMMAND_VARIANTS: usize = 15;
+const COMMAND_VARIANTS: usize = 16;
 
 /// The verbs that carry a unit list — every one of them owes this file a
 /// duplicate-id row.
-const UNIT_BEARING_TAGS: [usize; 10] = [0, 1, 2, 3, 4, 5, 7, 8, 9, 14];
+const UNIT_BEARING_TAGS: [usize; 11] = [0, 1, 2, 3, 4, 5, 7, 8, 9, 14, 15];
 
 /// The verbs that address a building alone, with no list to canonicalize.
 const BUILDING_ONLY_TAGS: [usize; 4] = [6, 10, 11, 12];
@@ -222,6 +223,15 @@ fn families(stage: &Stage) -> Vec<Family> {
             name: "attack-move",
             actor: guard,
             make: Box::new(move |units, queue| Command::AttackMove {
+                units,
+                goal: ground,
+                queue,
+            }),
+        },
+        Family {
+            name: "advance",
+            actor: guard,
+            make: Box::new(move |units, queue| Command::Advance {
                 units,
                 goal: ground,
                 queue,

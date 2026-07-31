@@ -134,12 +134,18 @@ pub enum Order {
     /// Chase a wounded own ground unit and weld it back toward full
     /// (harvesters only; billed per hp against the patient's cost).
     /// The weld ticks only while welder and patient both stand still
-    /// within [`crate::stats::REPAIR_REACH`]. (Last variant by
-    /// appending discipline: earlier discriminants keep their
-    /// serialized bytes.)
+    /// within [`crate::stats::REPAIR_REACH`].
     RepairUnit {
         /// The patient.
         unit: crate::ids::UnitId,
+    },
+    /// Move to a tile without chasing or stopping, taking only
+    /// primary-weapon shots that are already in range and visible.
+    /// (Last variant by appending discipline: earlier discriminants
+    /// keep their serialized bytes.)
+    Advance {
+        /// Destination (always passable — commands snap it).
+        goal: TilePos,
     },
 }
 
@@ -1202,7 +1208,9 @@ fn order_inside_envelope(order: &Order) -> bool {
         | Order::Repair { .. }
         | Order::Salvage { .. }
         | Order::RepairUnit { .. } => true,
-        Order::Move { goal } | Order::AttackMove { goal } => tile_inside_envelope(*goal),
+        Order::Move { goal } | Order::AttackMove { goal } | Order::Advance { goal } => {
+            tile_inside_envelope(*goal)
+        }
         Order::Harvest { node } => tile_inside_envelope(*node),
         Order::Attack { resume, .. } => resume.is_none_or(tile_inside_envelope),
         Order::Found { anchor, .. } => tile_inside_envelope(*anchor),
@@ -1217,6 +1225,7 @@ fn order_reference(order: &Order) -> Option<Target> {
         | Order::Move { .. }
         | Order::Harvest { .. }
         | Order::AttackMove { .. }
+        | Order::Advance { .. }
         | Order::Found { .. } => None,
         Order::Attack { target, .. } => Some(*target),
         Order::Build { site } => Some(Target::Building(*site)),

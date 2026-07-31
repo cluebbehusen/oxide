@@ -95,6 +95,7 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
     }
     let verb_color = |order: &oxide_sim::Order| match order {
         oxide_sim::Order::Move { .. } => BONE_FAINT,
+        oxide_sim::Order::Advance { .. } => Color::new(0.95, 0.76, 0.28, 0.62),
         // A chase and a march are different promises: the chase burns
         // crimson at its victim, the fighting march runs ember toward
         // ground.
@@ -110,7 +111,9 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
     };
     let goal_of = |order: &oxide_sim::Order| {
         let goal = match order {
-            oxide_sim::Order::Move { goal } | oxide_sim::Order::AttackMove { goal } => *goal,
+            oxide_sim::Order::Move { goal }
+            | oxide_sim::Order::Advance { goal }
+            | oxide_sim::Order::AttackMove { goal } => *goal,
             oxide_sim::Order::Harvest { node } => *node,
             oxide_sim::Order::Build { site } => game.state.building(*site)?.anchor,
             oxide_sim::Order::Found { anchor, .. } => *anchor,

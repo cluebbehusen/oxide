@@ -24,7 +24,8 @@ pub enum CardIcon {
     Verb(VerbIcon),
     /// An order chip that knows what it acts on: the subject's own
     /// sprite under a corner verb badge. Orders with no subject
-    /// (Idle, Move, Attack-move, Harvest) stay plain [`CardIcon::Verb`].
+    /// (Idle, Move, Advance, Attack-move, Harvest) stay plain
+    /// [`CardIcon::Verb`].
     Order {
         /// The machine or works the verb acts on.
         subject: OrderSubject,
@@ -333,7 +334,11 @@ fn order_subject(game: &Game, order: &Order) -> Option<(OrderSubject, String, bo
             true,
             None,
         )),
-        Order::Idle | Order::Move { .. } | Order::Harvest { .. } | Order::AttackMove { .. } => None,
+        Order::Idle
+        | Order::Move { .. }
+        | Order::Harvest { .. }
+        | Order::AttackMove { .. }
+        | Order::Advance { .. } => None,
     }
 }
 
@@ -369,6 +374,11 @@ fn order_card(game: &Game, order: &Order, active: bool, own: bool) -> Card {
             VerbIcon::AttackMove,
             "Attack-move",
             "Moving while engaging enemies along the route.",
+        ),
+        Order::Advance { .. } => (
+            VerbIcon::AttackMove,
+            "Advance",
+            "Moving while the primary weapon fires at targets already in range; never chasing.",
         ),
         Order::Salvage { .. } => (
             VerbIcon::Salvage,
@@ -717,6 +727,20 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         progress: None,
     });
     panel.cards.push(Card {
+        icon: CardIcon::Verb(VerbIcon::AttackMove),
+        title: "Attack-move".into(),
+        cost: None,
+        hotkey: chord(bindings, Action::AttackMove),
+        action: CardAction::Dispatch(Action::AttackMove),
+        enabled: true,
+        why: None,
+        desc: vec![
+            "Move to the selected ground while engaging enemies.".into(),
+            "Machines stop and chase targets along the route.".into(),
+        ],
+        progress: None,
+    });
+    panel.cards.push(Card {
         icon: CardIcon::Verb(VerbIcon::Patrol),
         title: "Patrol".into(),
         cost: None,
@@ -851,6 +875,13 @@ mod tests {
             .expect("patrol card");
         assert_eq!(patrol.icon, CardIcon::Verb(VerbIcon::Patrol));
         assert_eq!(patrol.hotkey, "R", "the tooltip chord stays live");
+        let attack_move = panel
+            .cards
+            .iter()
+            .find(|c| c.title == "Attack-move")
+            .expect("attack-move card");
+        assert_eq!(attack_move.action, CardAction::Dispatch(Action::AttackMove));
+        assert_eq!(attack_move.hotkey, "F");
         let chip = &panel.queue[0];
         assert!(chip.title.starts_with("Attack-move"), "{}", chip.title);
         assert_eq!(
@@ -944,7 +975,8 @@ mod tests {
         assert_eq!(panel.title, "HARVESTER");
         assert_eq!(panel.cards[0].title, "Stop");
         assert_eq!(panel.cards[1].title, "Run");
-        assert_eq!(panel.cards[2].title, "Patrol");
+        assert_eq!(panel.cards[2].title, "Attack-move");
+        assert_eq!(panel.cards[3].title, "Patrol");
         assert_eq!(
             panel.combat,
             vec!["unarmed"],

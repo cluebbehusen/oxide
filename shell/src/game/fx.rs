@@ -51,7 +51,7 @@ pub enum SoundKind {
 /// What an order-acknowledgment ping means (decides its color).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PingKind {
-    /// Move / attack-move destination.
+    /// Move / advance / attack-move destination.
     Move,
     /// Attack target.
     Attack,

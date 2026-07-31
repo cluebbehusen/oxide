@@ -173,7 +173,8 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
         };
         let segments = [
             "LMB select".to_string(),
-            "RMB move/engage".to_string(),
+            "RMB advance".to_string(),
+            format!("{} attack-move", label(Action::AttackMove)),
             "Shift queues".to_string(),
             "1-9 train".to_string(),
             format!("{} build", label(Action::ToggleBuildPalette)),

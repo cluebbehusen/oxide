@@ -5,7 +5,7 @@
 
 use super::super::route_for;
 use super::PendingHit;
-use super::locomotion::approach_rect;
+use super::locomotion::{approach_rect, walk};
 use crate::event::{Event, StallReason};
 use crate::ids::{PlayerId, Target, UnitId};
 use crate::state::{Order, PathFollow, State};
@@ -351,6 +351,127 @@ pub(super) fn acquire_target(
         .filter(|(d, _)| *d <= aggro_sq)
         .min()
         .map(|(_, bid)| Target::Building(bid))
+}
+
+/// Keeps an advance moving while the primary weapon takes a shot that is
+/// already available. There is deliberately no acquisition transition:
+/// the order and path remain `Advance`, blocked and out-of-range targets
+/// are ignored, and retaliation does not recognize this stance. Units
+/// therefore never spend movement chasing a pot-shot.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn advance(
+    state: &mut State,
+    index: &super::super::spatial::UnitIndex,
+    id: UnitId,
+    goal: TilePos,
+    events: &mut Vec<Event>,
+    hits: &mut Vec<PendingHit>,
+    launches: &mut Vec<crate::state::Shell>,
+) {
+    walk(state, id, goal, events);
+    if !state
+        .unit(id)
+        .is_some_and(|u| matches!(u.order, Order::Advance { goal: current } if current == goal))
+    {
+        return;
+    }
+
+    let unit = state.unit(id).expect("caller checked");
+    let stats = unit.kind.stats();
+    let Some(weapon) = stats.weapons.first().copied() else {
+        return;
+    };
+    if unit.cooldowns[0] > 0 {
+        return;
+    }
+    let (pos, home, me, kind) = (unit.pos, unit.tile(), unit.player, unit.kind);
+    let range_sq = weapon.range * weapon.range;
+    let reach = weapon.range.floor().to_num::<i32>() + 1;
+    let shot_open = |t: TilePos, full: bool| {
+        let Some(tile) = state.map.tile(t) else {
+            return false;
+        };
+        if tile.terrain == crate::map::Terrain::Peak {
+            return false;
+        }
+        !full || tile.terrain == crate::map::Terrain::Ground
+    };
+
+    let mut unit_target: Option<(chassis::fx::Fx, UnitId, Vec2Fx)> = None;
+    for dy in -reach..=reach {
+        for &(_, slot) in index.row_span(home.y + dy, home.x - reach, home.x + reach) {
+            let target = &state.units[slot];
+            let domain = target.kind.stats().domain;
+            if target.hp == 0
+                || !state.hostile(me, target.player)
+                || !weapon.targets.covers(domain)
+                || !state.can_see(me, target.tile())
+            {
+                continue;
+            }
+            let dist = pos.dist_sq(target.pos);
+            let full = traces_terrain(&weapon, stats.domain, domain);
+            if dist > range_sq
+                || !shot_open(target.tile(), full)
+                || chassis::path::line_blocked(pos, target.pos, |t| shot_open(t, full))
+            {
+                continue;
+            }
+            if unit_target.is_none_or(|best| (dist, target.id) < (best.0, best.1)) {
+                unit_target = Some((dist, target.id, target.pos));
+            }
+        }
+    }
+
+    let target = unit_target
+        .map(|(_, uid, aim)| (Target::Unit(uid), aim))
+        .or_else(|| {
+            if !weapon.targets.covers(Domain::Ground) {
+                return None;
+            }
+            state
+                .buildings
+                .iter()
+                .filter(|b| b.hp > 0 && state.hostile(me, b.player))
+                .filter(|b| b.tiles().any(|tile| state.can_see(me, tile)))
+                .map(|b| {
+                    let aim = b.closest_point_to(pos);
+                    (pos.dist_sq(aim), b.id, aim)
+                })
+                .filter(|(dist, _, aim)| {
+                    let full = traces_terrain(&weapon, stats.domain, Domain::Ground);
+                    *dist <= range_sq
+                        && shot_open(TilePos::containing(*aim), full)
+                        && !chassis::path::line_blocked(pos, *aim, |t| shot_open(t, full))
+                })
+                .min_by_key(|(dist, bid, _)| (*dist, *bid))
+                .map(|(_, bid, aim)| (Target::Building(bid), aim))
+        });
+    let Some((target, aim)) = target else {
+        return;
+    };
+
+    state.unit_mut(id).expect("caller checked").cooldowns[0] = weapon.cooldown_ticks;
+    if weapon.projectile {
+        let flight = launch_shell(state, launches, Target::Unit(id), me, pos, aim, &weapon);
+        events.push(Event::ShellLaunched {
+            shooter: Target::Unit(id),
+            player: me,
+            from: pos,
+            to: aim,
+            flight,
+        });
+    } else {
+        buffer_shot(state, Target::Unit(id), me, target, aim, &weapon, hits);
+        events.push(Event::AttackHit {
+            attacker: id,
+            attacker_kind: kind,
+            weapon: 0,
+            target,
+            attacker_pos: pos,
+            target_pos: aim,
+        });
+    }
 }
 
 /// Chase-and-hit. Range is measured to the target's closest point and

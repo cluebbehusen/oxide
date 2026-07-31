@@ -466,10 +466,11 @@ mod tests {
             Command::SetRally { .. } => 12,
             Command::Surrender => 13,
             Command::RepairUnit { .. } => 14,
+            Command::Advance { .. } => 15,
         }
     }
 
-    const COMMAND_VARIANTS: usize = 15;
+    const COMMAND_VARIANTS: usize = 16;
 
     #[test]
     fn an_omitted_screenshot_path_survives_the_roundtrip() {
@@ -661,6 +662,11 @@ mod tests {
                 units: vec![UnitId(10)],
                 target: UnitId(11),
                 queue: false,
+            },
+            Command::Advance {
+                units: vec![UnitId(12)],
+                goal: TilePos::new(8, 5),
+                queue: true,
             },
         ];
         assert_every_tag_sampled(

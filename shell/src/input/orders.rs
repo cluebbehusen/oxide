@@ -230,10 +230,10 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         game.ping(world, PingKind::Harvest);
         return;
     }
-    // Fire at will: ground orders engage whatever shows up on the way.
-    // Combat units attack-move; the sim degrades harvesters to a plain
-    // walk. There is no hold-fire stance (yet — nothing to hide from).
-    game.issue(Command::AttackMove {
+    // Default ground movement keeps formation intent: weapons take
+    // already-available shots, but machines never stop or chase.
+    // Explicit attack-move is the F verb.
+    game.issue(Command::Advance {
         units,
         goal: tile,
         queue,

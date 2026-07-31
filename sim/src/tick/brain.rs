@@ -150,6 +150,9 @@ pub(super) fn run(
                 &mut launches,
             ),
             Order::AttackMove { goal } => attack_move(state, index, id, goal, events),
+            Order::Advance { goal } => {
+                advance(state, index, id, goal, events, &mut hits, &mut launches)
+            }
             Order::Build { site } => build(state, id, site, events, &mut builds),
             Order::Repair { building } => repair(state, id, building, events, &mut builds),
             Order::Salvage { building } => salvage(state, id, building, events, &mut drains),
@@ -173,7 +176,7 @@ mod economy;
 mod locomotion;
 
 use combat::attack;
-use combat::{land_shells, retaliate, target_standing, turret_fire};
+use combat::{advance, land_shells, retaliate, target_standing, turret_fire};
 use economy::{build, commit_unit_welds, found, harvest, repair, repair_unit, salvage};
 use locomotion::{attack_move, idle, walk};
 

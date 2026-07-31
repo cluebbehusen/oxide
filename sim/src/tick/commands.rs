@@ -102,6 +102,9 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
                 target,
                 queue,
             } => apply_repair_unit(state, pc.player, &canonical_units(units), *target, *queue),
+            Command::Advance { units, goal, queue } => {
+                apply_advance(state, pc.player, &canonical_units(units), *goal, *queue)
+            }
         };
         if let Err(reason) = outcome {
             events.push(Event::CommandRejected {
@@ -413,6 +416,49 @@ fn apply_attack_move(
             let unit = state.unit_mut(id).expect("filtered above");
             let order = if unit.kind.stats().can_fight() {
                 Order::AttackMove { goal }
+            } else {
+                Order::Move { goal }
+            };
+            if assign(unit, order, queue) {
+                landed += 1;
+            }
+        }
+    }
+    if !routed {
+        return Err(RejectReason::UnreachableGoal);
+    }
+    (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
+}
+
+fn apply_advance(
+    state: &mut State,
+    player: PlayerId,
+    units: &[UnitId],
+    goal: TilePos,
+    queue: bool,
+) -> Result<(), RejectReason> {
+    if !in_envelope(state, goal) {
+        return Err(RejectReason::OutOfBounds);
+    }
+    let accepted = accepted_units(state, player, units);
+    if accepted.is_empty() {
+        return Err(RejectReason::NoValidUnits);
+    }
+    let mut landed = 0;
+    let mut routed = false;
+    for (ids, domain) in split_domains(state, accepted) {
+        if ids.is_empty() {
+            continue;
+        }
+        let Some(snapped) = domain_goal(state, goal, domain) else {
+            continue;
+        };
+        routed = true;
+        let goals = spread_goals(state, snapped, ids.len(), domain);
+        for (id, goal) in ids.into_iter().zip(goals) {
+            let unit = state.unit_mut(id).expect("filtered above");
+            let order = if unit.kind.stats().can_fight() {
+                Order::Advance { goal }
             } else {
                 Order::Move { goal }
             };

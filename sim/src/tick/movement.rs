@@ -222,8 +222,8 @@ const STACKED_DIRS: [Vec2Fx; 8] = [
 /// push overlapping pairs apart, half the overlap each, so units cannot
 /// stack — grouped movers fan out and a body-blocked unit stays blocked. A
 /// push that would land in an impassable tile is discarded (rocks beat
-/// crowd pressure), and each pass caps per-unit displacement so packed
-/// crowds settle instead of exploding.
+/// crowd pressure), and one per-unit budget spans every pass in the tick
+/// so packed crowds settle instead of exploding.
 ///
 /// `travel` is each unit's displacement from this tick's path
 /// following: a unit that actually TRAVELED into a contact takes its
@@ -238,7 +238,7 @@ pub(super) fn resolve_collisions(
     // Direction alternates by tick parity — Gauss-Seidel's sequential
     // application must not always favor the same ids (see brain::run).
     let reversed = state.tick % 2 == 1;
-    let mut spent: Vec<Fx> = Vec::new();
+    let mut spent = vec![Fx::ZERO; state.units.len()];
     for _ in 0..COLLISION_ITERATIONS {
         if !relaxation_pass(state, reversed, travel, index, &mut spent) {
             break;
@@ -309,12 +309,15 @@ fn relaxation_pass(
     index.rebuild(&state.units);
 
     let mut any_overlap = false;
-    // Per-unit displacement budget for this pass. Clamping only per pair
-    // lets a unit in k overlaps move k × the cap — dense stacks visibly
-    // exploded outward. Spent distance is tracked per unit instead, so the
-    // cap in stats.rs means what it says.
-    spent.clear();
-    spent.resize(n, Fx::ZERO);
+    // One per-unit displacement budget spans all relaxation passes in a
+    // tick. Clamping only per pair lets a unit in k overlaps move k × the
+    // cap, while resetting here lets it move one cap per pass; both made
+    // dense stacks visibly explode outward. Direct unit tests may call one
+    // pass with a fresh buffer, so initialize only when its shape differs.
+    if spent.len() != n {
+        spent.clear();
+        spent.resize(n, Fx::ZERO);
+    }
     for k in 0..n {
         let i = if reversed { n - 1 - k } else { k };
         if state.units[i].hp == 0 {
@@ -501,6 +504,29 @@ mod tests {
                     "{edge} pair with outside slot {outside_slot} was not separated"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn collision_budget_spans_every_relaxation_pass_in_a_tick() {
+        let mut state = boundary_pair();
+        let stacked = TilePos::new(5, 2).center();
+        for unit in &mut state.units {
+            unit.pos = stacked;
+        }
+        let before: Vec<Vec2Fx> = state.units.iter().map(|u| u.pos).collect();
+        let travel = vec![Vec2Fx::ZERO; state.units.len()];
+        let mut index = UnitIndex::new();
+
+        resolve_collisions(&mut state, &travel, &mut index);
+
+        for (unit, before) in state.units.iter().zip(before) {
+            let correction = unit.pos.dist(before);
+            assert!(
+                correction <= COLLISION_MAX_STEP,
+                "{:?} received {correction:?} of correction in one tick",
+                unit.id
+            );
         }
     }
 }

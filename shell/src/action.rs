@@ -61,9 +61,11 @@ pub enum Action {
     /// selected harvesters to strip it for a partial refund.
     Salvage,
     /// Arm run: the next ground click sends the selection walking
-    /// WITHOUT engaging — the recall verb. Right-click stays the
-    /// fighting march; this is how machines disengage on command.
+    /// WITHOUT firing — the strict disengage and recall verb.
     Run,
+    /// Arm attack-move: the next ground click sends the selection
+    /// fighting and chasing along the route.
+    AttackMove,
     /// Remember the camera position in slot 0-3.
     SetBookmark(u8),
     /// Return the camera to a remembered slot.
@@ -100,6 +102,7 @@ impl Action {
             Action::JumpToLastAlert => "Jump to last alert".to_string(),
             Action::Salvage => "Salvage".to_string(),
             Action::Run => "Run".to_string(),
+            Action::AttackMove => "Attack-move".to_string(),
             Action::SetBookmark(n) => format!("Set bookmark {}", n + 1),
             Action::RecallBookmark(n) => format!("Recall bookmark {}", n + 1),
             Action::RepairUnit => "Weld unit".to_string(),
@@ -249,6 +252,10 @@ impl BindingMap {
                 action: Action::Run,
             },
             Binding {
+                chord: Chord::bare(Key::F),
+                action: Action::AttackMove,
+            },
+            Binding {
                 chord: Chord::bare(Key::W),
                 action: Action::RepairUnit,
             },
@@ -299,6 +306,8 @@ impl BindingMap {
             // Classic's M belongs to StopOrScrap over here; Run takes
             // the freed right-index H (TrainSlot 1 moved to K).
             (Action::Run, Key::H),
+            // The explicit fighting march sits beside Run.
+            (Action::AttackMove, Key::G),
             // Weld crosses to the right hand's remaining top-row key.
             (Action::RepairUnit, Key::Y),
         ] {
@@ -528,6 +537,11 @@ mod tests {
             map.chord_for(Action::StopOrScrap),
             Some(Chord::bare(Key::M))
         );
+        assert_eq!(
+            map.chord_for(Action::AttackMove),
+            Some(Chord::bare(Key::G)),
+            "attack-move crosses beside run"
+        );
     }
 
     #[test]
@@ -623,6 +637,7 @@ mod tests {
             Key::P,
             Key::B,
             Key::R,
+            Key::F,
             Key::F1,
             Key::Escape,
             Key::Space,

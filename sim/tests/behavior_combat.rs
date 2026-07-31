@@ -120,6 +120,353 @@ fn attack_move_with_only_harvesters_degrades_to_move() {
 }
 
 #[test]
+fn advance_moves_and_fires_without_replacing_its_route() {
+    let mut state = open_arena(
+        20,
+        12,
+        vec![
+            unit(0, UnitKind::Sentinel, 4, 4),
+            unit(1, UnitKind::Harvester, 6, 4),
+        ],
+    )
+    .build()
+    .unwrap();
+    let (mover, target) = (state.units()[0].id, state.units()[1].id);
+    let before_pos = state.unit(mover).unwrap().pos;
+    let before_hp = state.unit(target).unwrap().hp;
+    let goal = TilePos::new(14, 4);
+
+    let report = state.tick(&[cmd(
+        0,
+        Command::Advance {
+            units: vec![mover],
+            goal,
+            queue: false,
+        },
+    )]);
+
+    let mover = state.unit(mover).unwrap();
+    assert!(mover.pos != before_pos, "the shot must not stop movement");
+    assert_eq!(mover.order, Order::Advance { goal });
+    assert!(
+        mover.path.is_some(),
+        "the advance route must survive firing"
+    );
+    assert!(state.unit(target).unwrap().hp < before_hp);
+    assert!(
+        report.events.iter().any(
+            |event| matches!(event, Event::AttackHit { attacker, .. } if *attacker == mover.id)
+        )
+    );
+}
+
+#[test]
+fn advance_chooses_equal_range_targets_by_id() {
+    let mut state = open_arena(
+        20,
+        12,
+        vec![
+            unit(0, UnitKind::Sentinel, 4, 4),
+            unit(1, UnitKind::Harvester, 6, 3),
+            unit(1, UnitKind::Harvester, 6, 5),
+        ],
+    )
+    .build()
+    .unwrap();
+    let (mover, lower, higher) = (
+        state.units()[0].id,
+        state.units()[1].id,
+        state.units()[2].id,
+    );
+    let full = UnitKind::Harvester.stats().max_hp;
+
+    state.tick(&[cmd(
+        0,
+        Command::Advance {
+            units: vec![mover],
+            goal: TilePos::new(14, 4),
+            queue: false,
+        },
+    )]);
+
+    assert!(
+        state.unit(lower).unwrap().hp < full,
+        "the lower id wins an exact distance tie"
+    );
+    assert_eq!(
+        state.unit(higher).unwrap().hp,
+        full,
+        "one ready primary weapon takes one deterministic shot"
+    );
+}
+
+#[test]
+fn advance_does_not_fire_a_secondary_weapon() {
+    let mut state = open_arena(
+        20,
+        12,
+        vec![
+            unit(0, UnitKind::Sentinel, 4, 4),
+            unit(1, UnitKind::Wisp, 6, 4),
+        ],
+    )
+    .build()
+    .unwrap();
+    let (mover, flyer) = (state.units()[0].id, state.units()[1].id);
+    let before = state.unit(flyer).unwrap().hp;
+
+    let report = state.tick(&[cmd(
+        0,
+        Command::Advance {
+            units: vec![mover],
+            goal: TilePos::new(14, 4),
+            queue: false,
+        },
+    )]);
+
+    assert_eq!(
+        state.unit(flyer).unwrap().hp,
+        before,
+        "Advance promises primary-weapon pot-shots, not sidearm fire"
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::AttackHit { attacker, .. } if *attacker == mover)),
+        "the Sentinel's anti-air secondary stays quiet"
+    );
+    assert!(matches!(
+        state.unit(mover).unwrap().order,
+        Order::Advance { .. }
+    ));
+}
+
+#[test]
+fn advance_respects_cover_without_diverting_around_it() {
+    let mut state = open_arena_with(
+        20,
+        12,
+        vec![
+            unit(0, UnitKind::Sentinel, 4, 4),
+            unit(1, UnitKind::Harvester, 6, 4),
+        ],
+        |rows| rows[4][5] = '#',
+    )
+    .build()
+    .unwrap();
+    let (mover, target) = (state.units()[0].id, state.units()[1].id);
+    let before = state.unit(target).unwrap().hp;
+    let goal = TilePos::new(4, 8);
+
+    let report = state.tick(&[cmd(
+        0,
+        Command::Advance {
+            units: vec![mover],
+            goal,
+            queue: false,
+        },
+    )]);
+
+    assert_eq!(
+        state.unit(target).unwrap().hp,
+        before,
+        "direct primary fire cannot pass through rock"
+    );
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::AttackHit { attacker, .. } if *attacker == mover))
+    );
+    assert_eq!(
+        state.unit(mover).unwrap().order,
+        Order::Advance { goal },
+        "cover cannot turn the route into a chase"
+    );
+}
+
+#[test]
+fn advance_projectiles_launch_unguided_without_stopping() {
+    let mut state = open_arena(
+        24,
+        14,
+        vec![
+            unit(0, UnitKind::Bombard, 4, 5),
+            unit(0, UnitKind::Sentinel, 9, 7),
+            unit(1, UnitKind::Harvester, 11, 5),
+        ],
+    )
+    .build()
+    .unwrap();
+    let (bombard, victim) = (state.units()[0].id, state.units()[2].id);
+    let before_pos = state.unit(bombard).unwrap().pos;
+    let before_hp = state.unit(victim).unwrap().hp;
+    assert!(
+        state.can_see(oxide_sim::PlayerId(0), state.unit(victim).unwrap().tile()),
+        "the allied spotter makes the launch legal"
+    );
+
+    let report = state.tick(&[cmd(
+        0,
+        Command::Advance {
+            units: vec![bombard],
+            goal: TilePos::new(17, 5),
+            queue: false,
+        },
+    )]);
+
+    assert!(
+        report.events.iter().any(|event| matches!(
+            event,
+            Event::ShellLaunched {
+                shooter: Target::Unit(id),
+                ..
+            } if *id == bombard
+        )),
+        "the Bombard's primary uses the ordinary projectile pipeline"
+    );
+    assert_eq!(
+        state.unit(victim).unwrap().hp,
+        before_hp,
+        "an unguided shell does not deal launch-tick damage"
+    );
+    assert_ne!(
+        state.unit(bombard).unwrap().pos,
+        before_pos,
+        "launching does not stop the Advance"
+    );
+    assert!(matches!(
+        state.unit(bombard).unwrap().order,
+        Order::Advance { .. }
+    ));
+}
+
+#[test]
+fn advance_never_fires_into_fog() {
+    let mut state = open_arena(
+        26,
+        14,
+        vec![
+            unit(0, UnitKind::Bombard, 4, 5),
+            unit(1, UnitKind::Harvester, 12, 5),
+        ],
+    )
+    .build()
+    .unwrap();
+    let (bombard, unseen) = (state.units()[0].id, state.units()[1].id);
+    assert!(
+        !state.can_see(oxide_sim::PlayerId(0), state.unit(unseen).unwrap().tile()),
+        "the victim starts inside weapon range but outside all allied sight"
+    );
+    let before_hp = state.unit(unseen).unwrap().hp;
+
+    let report = state.tick(&[cmd(
+        0,
+        Command::Advance {
+            units: vec![bombard],
+            goal: TilePos::new(18, 5),
+            queue: false,
+        },
+    )]);
+
+    assert_eq!(state.unit(unseen).unwrap().hp, before_hp);
+    assert!(
+        !report.events.iter().any(|event| matches!(
+            event,
+            Event::ShellLaunched {
+                shooter: Target::Unit(id),
+                ..
+            } if *id == bombard
+        )),
+        "weapon range is not free vision"
+    );
+    assert!(matches!(
+        state.unit(bombard).unwrap().order,
+        Order::Advance { .. }
+    ));
+}
+
+#[test]
+fn advance_never_chases_an_out_of_range_bystander() {
+    let mut state = open_arena(
+        22,
+        13,
+        vec![
+            unit(0, UnitKind::Sentinel, 3, 3),
+            unit(1, UnitKind::Harvester, 8, 7),
+        ],
+    )
+    .build()
+    .unwrap();
+    let (mover, bystander) = (state.units()[0].id, state.units()[1].id);
+    let before_hp = state.unit(bystander).unwrap().hp;
+    let goal = TilePos::new(17, 3);
+    state.tick(&[cmd(
+        0,
+        Command::Advance {
+            units: vec![mover],
+            goal,
+            queue: false,
+        },
+    )]);
+
+    run_until(&mut state, 400, |state, _| {
+        let mover = state.unit(mover).unwrap();
+        mover.tile() == goal && mover.order == Order::Idle
+    });
+    assert_eq!(state.unit(bystander).unwrap().hp, before_hp);
+}
+
+#[test]
+fn advance_ignores_retaliation_and_pacifists_use_plain_move() {
+    let mut state = open_arena(
+        20,
+        12,
+        vec![
+            unit(0, UnitKind::Sentinel, 4, 4),
+            unit(0, UnitKind::Harvester, 4, 6),
+            unit(1, UnitKind::Sentinel, 6, 4),
+        ],
+    )
+    .build()
+    .unwrap();
+    let (guard, worker, attacker) = (
+        state.units()[0].id,
+        state.units()[1].id,
+        state.units()[2].id,
+    );
+    let goal = TilePos::new(14, 4);
+    state.tick(&[
+        cmd(
+            0,
+            Command::Advance {
+                units: vec![guard, worker],
+                goal,
+                queue: false,
+            },
+        ),
+        cmd(
+            1,
+            Command::Attack {
+                units: vec![attacker],
+                target: Target::Unit(guard),
+                queue: false,
+            },
+        ),
+    ]);
+
+    assert!(matches!(
+        state.unit(guard).unwrap().order,
+        Order::Advance { .. }
+    ));
+    assert!(matches!(
+        state.unit(worker).unwrap().order,
+        Order::Move { .. }
+    ));
+}
+
+#[test]
 fn rock_is_cover_until_the_attacker_repositions() {
     // Attacker and victim sit exactly 2 tiles apart — inside range 2.5 —
     // with a 1-thick rock wall between them. Without LOS the first shot

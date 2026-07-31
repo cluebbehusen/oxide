@@ -204,7 +204,7 @@ fn a_click_on_a_unit_selects_it_headlessly() {
 }
 
 #[test]
-fn a_right_click_on_ground_stages_an_attack_move() {
+fn a_right_click_on_ground_stages_an_advance() {
     let mut game = headless_game();
     let mut input = InputState::new();
     let pos = game.state.units()[0].pos;
@@ -228,8 +228,8 @@ fn a_right_click_on_ground_stages_an_attack_move() {
     assert!(
         game.pending
             .iter()
-            .any(|c| matches!(c.command, Command::AttackMove { .. })),
-        "fire-at-will ground order staged: {:?}",
+            .any(|c| matches!(c.command, Command::Advance { .. })),
+        "zero-chase advance staged: {:?}",
         game.pending
     );
 }
@@ -637,7 +637,7 @@ fn the_armed_run_verb_issues_an_oblivious_move() {
     assert!(input.running, "M arms the recall");
 
     // The click sends a plain Move — the OBLIVIOUS walk, not the
-    // fighting march the right-click issues — and stands down.
+    // explicit fighting march armed with F — and stands down.
     let home = game.state.unit(fighter).unwrap().tile();
     let goal = TilePos::new(home.x + 3, home.y);
     let p = game
@@ -749,6 +749,135 @@ fn arming_run_stands_the_other_verbs_down() {
     );
     assert!(input.salvaging, "V arms salvage");
     assert!(!input.running, "and the run stood down");
+}
+
+#[test]
+fn f_arms_explicit_attack_move_and_the_click_consumes_it() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let fighter = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind.stats().can_fight())
+        .expect("a starting combat unit")
+        .id;
+    game.selection.units = vec![fighter];
+    apply_events(
+        &mut game,
+        &mut input,
+        &[
+            RawEvent::KeyDown { key: Key::F },
+            RawEvent::KeyUp { key: Key::F },
+        ],
+    );
+    assert!(input.attacking, "F arms the fighting march");
+    assert!(!input.running, "attack-move and run are mutually exclusive");
+
+    let goal = game.state.unit(fighter).unwrap().tile().offset(4, 1);
+    let p = game
+        .camera
+        .to_screen(vec2(goal.x as f32 + 0.5, goal.y as f32 + 0.5));
+    apply_events(&mut game, &mut input, &click(p.x, p.y));
+
+    assert!(game.pending.iter().any(|command| matches!(
+        command.command,
+        Command::AttackMove {
+            goal: staged,
+            queue: false,
+            ..
+        } if staged == goal
+    )));
+    assert!(!input.attacking, "a plain click consumes the armed verb");
+}
+
+#[test]
+fn the_attack_move_card_is_touchable_and_arms_the_same_world_tap() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let fighter = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind.stats().can_fight())
+        .expect("a starting combat unit")
+        .id;
+    game.selection.units = vec![fighter];
+
+    let card = macroquad::math::Rect::new(300.0, 700.0, 60.0, 60.0);
+    let zero = macroquad::math::Rect::new(0.0, 0.0, 0.0, 0.0);
+    let mut cards = [(zero, crate::panel::CardAction::None); 16];
+    cards[0] = (card, crate::panel::CardAction::Dispatch(Action::AttackMove));
+    game.layout.set(crate::layout::LayoutModel::compute(
+        vec2(1280.0, 800.0),
+        1.0,
+        680.0,
+        500.0,
+        zero,
+        zero,
+        zero,
+        cards,
+        1,
+        [(zero, crate::panel::CardAction::None); 8],
+        0,
+    ));
+
+    input.now = 2.0;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchDown {
+            id: 1,
+            x: card.x + 20.0,
+            y: card.y + 20.0,
+        }],
+    );
+    input.now = 2.1;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchUp {
+            id: 1,
+            x: card.x + 20.0,
+            y: card.y + 20.0,
+        }],
+    );
+    assert!(input.attacking, "the fingertip arms the panel verb");
+
+    let goal = game.state.unit(fighter).unwrap().tile().offset(4, 1);
+    let point = game
+        .camera
+        .to_screen(vec2(goal.x as f32 + 0.5, goal.y as f32 + 0.5));
+    input.now = 3.0;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchDown {
+            id: 2,
+            x: point.x,
+            y: point.y,
+        }],
+    );
+    input.now = 3.1;
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::TouchUp {
+            id: 2,
+            x: point.x,
+            y: point.y,
+        }],
+    );
+
+    assert!(game.pending.iter().any(|command| matches!(
+        command.command,
+        Command::AttackMove {
+            goal: staged,
+            queue: false,
+            ..
+        } if staged == goal
+    )));
+    assert!(!input.attacking, "the world tap consumes the armed verb");
 }
 
 #[test]
@@ -1289,7 +1418,7 @@ fn touch_taps_select_and_a_still_hold_orders() {
     assert!(
         game.pending
             .iter()
-            .any(|c| matches!(c.command, Command::AttackMove { .. })),
+            .any(|c| matches!(c.command, Command::Advance { .. })),
         "the held finger issued the ground order: {:?}",
         game.pending
     );
@@ -2061,7 +2190,7 @@ fn a_minimap_right_click_never_commands_a_foreign_selection() {
     assert!(
         game.pending
             .iter()
-            .any(|c| matches!(c.command, Command::AttackMove { .. })),
+            .any(|c| matches!(c.command, Command::Advance { .. })),
         "own machines still take the minimap order"
     );
 }
@@ -3177,7 +3306,7 @@ fn the_tutorial_survives_its_own_literal_instructions() {
     right_click(&mut game, &mut input, vec2(12.5, 9.5));
     game.do_tick();
     assert!(t.advance(&game.demo));
-    assert_eq!(t.step, 5, "attack-move graduates the march lesson");
+    assert_eq!(t.step, 5, "advance graduates the march lesson");
 
     // Lesson 6 is the pause menu, a frame-loop act outside the
     // command stream; its flag flips in main.rs.

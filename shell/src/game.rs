@@ -393,9 +393,9 @@ impl Game {
                     }
                     Command::Harvest { .. } => self.demo.harvested = true,
                     Command::Build { .. } => self.demo.built = true,
-                    // The march lesson teaches attack-move specifically;
-                    // a targeted attack is a different verb.
-                    Command::AttackMove { .. } => self.demo.attack_moved = true,
+                    // The march lesson teaches the default zero-chase advance;
+                    // explicit attack-move is a different stance.
+                    Command::Advance { .. } => self.demo.advanced = true,
                     _ => {}
                 }
             }
@@ -775,7 +775,7 @@ mod tests {
         for _ in 0..20 {
             game.do_tick();
         }
-        assert!(!game.demo.attack_moved);
+        assert!(!game.demo.advanced);
         assert!(!game.demo.built);
     }
 

@@ -111,6 +111,9 @@ pub struct InputState {
     /// Armed run: the next ground click sends the selection walking
     /// obliviously — no engaging, no auto-acquire en route.
     pub(crate) running: bool,
+    /// Armed attack-move: the next ground click sends the selection on
+    /// a fighting march that chases enemies along its route.
+    pub(crate) attacking: bool,
     /// Whether the build palette is open (`B`; digits pick a structure).
     pub(crate) build_menu: bool,
     /// This frame's chrome scale (dpi x user), injected by the frame
@@ -312,6 +315,7 @@ impl InputState {
             salvaging: false,
             repairing: false,
             running: false,
+            attacking: false,
             build_menu: false,
             ui: 1.0,
             now: 0.0,
@@ -338,16 +342,18 @@ impl InputState {
     /// held-state otherwise pans the camera forever (or fires a phantom
     /// box-select) after resuming.
     /// One armed left-click verb at a time: arming placement, salvage,
-    /// or run stands the others down. `armed_click` resolves modes in
-    /// a fixed priority order, so two live at once would make the next
-    /// click do something other than what the toast promised — press M
-    /// while placing and the click would still stamp a building.
+    /// repair, run, or attack-move stands the others down. `armed_click`
+    /// resolves modes in a fixed priority order, so two live at once
+    /// would make the next click do something other than what the toast
+    /// promised — press M while placing and the click would still stamp
+    /// a building.
     pub(crate) fn disarm_click_verbs(&mut self) {
         self.placing = None;
         self.placing_stroke = None;
         self.salvaging = false;
         self.repairing = false;
         self.running = false;
+        self.attacking = false;
     }
 
     pub fn reset_transient(&mut self) {
@@ -361,6 +367,7 @@ impl InputState {
         self.salvaging = false;
         self.repairing = false;
         self.running = false;
+        self.attacking = false;
         self.build_menu = false;
         self.touches.clear();
         self.last_tap = None;
@@ -688,6 +695,7 @@ pub fn desired_cursor(game: &Game, input: &InputState) -> macroquad::miniquad::C
         || input.salvaging
         || input.repairing
         || input.running
+        || input.attacking
     {
         return CursorIcon::Crosshair;
     }
@@ -883,7 +891,7 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         // applies: an inspected ally or enemy takes no
                         // orders from the minimap either.
                         if !units.is_empty() && game.selection_commandable() {
-                            game.issue(Command::AttackMove {
+                            game.issue(Command::Advance {
                                 units,
                                 goal: tile,
                                 queue,
@@ -1116,8 +1124,8 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
     }
 }
 
-/// One armed world click or tap — placement or salvage — at screen
-/// point `p`. Returns whether an armed mode consumed the event
+/// One armed world click or tap at screen point `p`. Returns whether
+/// an armed mode consumed the event
 /// (whatever the outcome: issued, denied, or a minimap camera jump).
 /// Mouse and touch route here identically: a fingertip that armed a
 /// Build card completes the build with its next tap.
@@ -1311,6 +1319,28 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             game.ping(world, PingKind::Move);
             if !input.resolver.shift_held() {
                 input.running = false;
+            }
+        }
+        return true;
+    }
+    if input.attacking {
+        // Explicit fighting march: minimap jumps the camera, HUD
+        // swallows, and Shift chains legs while keeping the verb armed.
+        if let Some(world) = crate::render::minimap_world_at(game, p) {
+            game.camera.center = world;
+            game.camera.pan(Vec2::ZERO); // re-clamp
+        } else if !click_on_hud(game, p) {
+            let world = game.camera.to_world(p);
+            let goal = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+            let units = game.selection.units.clone();
+            game.issue(Command::AttackMove {
+                units,
+                goal,
+                queue: input.resolver.shift_held(),
+            });
+            game.ping(world, PingKind::Attack);
+            if !input.resolver.shift_held() {
+                input.attacking = false;
             }
         }
         return true;

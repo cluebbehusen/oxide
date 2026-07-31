@@ -20,8 +20,8 @@ pub struct Demo {
     pub deposited: bool,
     /// Placed a construction site.
     pub built: bool,
-    /// Issued an attack-move.
-    pub attack_moved: bool,
+    /// Issued a default advance.
+    pub advanced: bool,
     /// Opened the pause menu.
     pub paused_menu: bool,
 }
@@ -69,10 +69,11 @@ pub const STEPS: [Step; 6] = [
         ],
     },
     Step {
-        title: "Use attack-move",
+        title: "Advance under fire",
         body: &[
-            "Right-click ground with a combat unit selected to attack-move.",
-            "Units move toward the destination and engage enemies they encounter.",
+            "Right-click ground with a combat unit selected.",
+            "Units keep moving and fire at enemies already in range.",
+            "Press F for attack-move when you want them to stop and chase.",
         ],
     },
     Step {
@@ -141,7 +142,7 @@ impl Tutorial {
                 1 => demo.deposited,
                 2 => demo.built,
                 3 => demo.trained_fighter,
-                4 => demo.attack_moved,
+                4 => demo.advanced,
                 5 => demo.paused_menu,
                 _ => return false,
             };
@@ -234,7 +235,7 @@ mod tests {
             harvested: true,
             deposited: true,
             built: true,
-            attack_moved: true,
+            advanced: true,
             paused_menu: true,
         };
         assert!(!t.advance(&demo), "nothing left to teach");

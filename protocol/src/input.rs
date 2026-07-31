@@ -218,8 +218,7 @@ pub enum Key {
     R,
     /// Open the build palette (harvester selected).
     B,
-    /// Reserved. Formerly armed fabricator placement; the build palette
-    /// superseded it. Kept for wire compatibility.
+    /// Select and center the next idle own Harvester.
     N,
     /// Scrap the selected construction site (partial refund).
     X,
@@ -277,7 +276,7 @@ pub enum Key {
     D,
     /// See [`Key::C`].
     E,
-    /// See [`Key::C`].
+    /// Arm attack-move in the classic profile.
     F,
     /// See [`Key::C`].
     G,

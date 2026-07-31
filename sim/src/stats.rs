@@ -939,8 +939,9 @@ pub const ARRIVAL_NEAR: Fx = Fx::lit("1.5");
 /// hold); the mover takes the rest. Passers-by flow around workers.
 pub const ANCHORED_PUSH_SHARE: Fx = Fx::lit("0.1");
 
-/// Furthest one collision pass may displace one unit, in tiles. Keeps
-/// packed crowds settling smoothly instead of popping apart.
+/// Furthest collision resolution may displace one unit in a whole tick,
+/// across every relaxation pass. Keeps packed crowds settling smoothly
+/// instead of popping apart.
 pub const COLLISION_MAX_STEP: Fx = Fx::lit("0.12");
 
 /// The slide blend for a MOVING unit's collision correction: instead
