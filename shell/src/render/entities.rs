@@ -41,6 +41,19 @@ pub(crate) fn draw_placement_ghost(game: &Game, sprites: &Sprites, input: &Input
             ..Default::default()
         },
     );
+    if let Some(source) = sprites.defense_mount(kind, faction) {
+        draw_texture_ex(
+            sprites.texture(),
+            screen.x,
+            screen.y,
+            tint,
+            DrawTextureParams {
+                dest_size: Some(dest),
+                source: Some(source),
+                ..Default::default()
+            },
+        );
+    }
 }
 
 /// Every deferred claim the human's crews are walking out to, drawn as
@@ -74,6 +87,19 @@ pub(crate) fn draw_pending_founds(game: &Game, sprites: &Sprites) {
                     ..Default::default()
                 },
             );
+            if let Some(source) = sprites.defense_mount(*kind, faction) {
+                draw_texture_ex(
+                    sprites.texture(),
+                    screen.x,
+                    screen.y,
+                    Color::new(1.0, 0.85, 0.45, 0.3),
+                    DrawTextureParams {
+                        dest_size: Some(vec2(w as f32 * zoom, h as f32 * zoom)),
+                        source: Some(source),
+                        ..Default::default()
+                    },
+                );
+            }
         }
     }
 }
@@ -114,7 +140,7 @@ pub(crate) fn breadcrumb_points(game: &Game, unit: &oxide_sim::Unit) -> Vec<(usi
             oxide_sim::Order::Move { goal }
             | oxide_sim::Order::Advance { goal }
             | oxide_sim::Order::AttackMove { goal } => *goal,
-            oxide_sim::Order::Harvest { node } => *node,
+            oxide_sim::Order::Harvest { node, .. } => *node,
             oxide_sim::Order::Build { site } => game.state.building(*site)?.anchor,
             oxide_sim::Order::Found { anchor, .. } => *anchor,
             oxide_sim::Order::Repair { building } | oxide_sim::Order::Salvage { building } => {
@@ -247,6 +273,122 @@ pub(crate) fn draw_breadcrumbs(game: &Game, input: &InputState) {
     }
 }
 
+fn draw_work_sparks(at: Vec2, scale: f32, phase: f32, color: Color) {
+    let turn = phase * std::f32::consts::TAU;
+    for i in 0..3 {
+        let angle = turn + i as f32 * std::f32::consts::TAU / 3.0;
+        let dir = vec2(angle.cos(), angle.sin());
+        let inner = at + dir * scale * 0.07;
+        let outer = at + dir * scale * (0.12 + i as f32 * 0.015);
+        draw_line(inner.x, inner.y, outer.x, outer.y, 1.2, color);
+        draw_circle(outer.x, outer.y, scale * 0.012, color);
+    }
+}
+
+fn repair_bay_active(game: &Game, building: &oxide_sim::Building) -> bool {
+    let radius = oxide_sim::stats::REPAIR_BAY_RADIUS;
+    game.state.units().iter().any(|unit| {
+        unit.player == building.player
+            && unit.hp < unit.kind.stats().max_hp
+            && (game.all_seeing()
+                || unit.player == game.human
+                || game.my_vision().visible(unit.tile()))
+            && building.closest_point_to(unit.pos).dist_sq(unit.pos) <= radius * radius
+    })
+}
+
+fn draw_defense_mount(
+    game: &Game,
+    sprites: &Sprites,
+    building: &oxide_sim::Building,
+    faction: oxide_sim::Faction,
+    screen: Vec2,
+    dest: Vec2,
+    accent_tint: Option<Color>,
+) {
+    let Some(source) = sprites.defense_mount(building.kind, faction) else {
+        return;
+    };
+    let (angle, age) = game
+        .aim_buildings
+        .get(&building.id.0)
+        .map(|(angle, at)| (*angle, game.fx_time() - at))
+        .unwrap_or((0.0, f32::MAX));
+    let pose = super::motion::mount_pose(building.kind, angle, age, reduced_motion());
+    let forward = vec2(pose.angle.sin(), -pose.angle.cos());
+    let right = vec2(pose.angle.cos(), pose.angle.sin());
+    let center = screen + dest * 0.5 - forward * dest.x * pose.recoil;
+    let at = center - dest * 0.5;
+    draw_texture_ex(
+        sprites.texture(),
+        at.x,
+        at.y,
+        WHITE,
+        DrawTextureParams {
+            dest_size: Some(dest),
+            source: Some(source),
+            rotation: pose.angle,
+            ..Default::default()
+        },
+    );
+    if let (Some(accent), Some(source)) = (accent_tint, sprites.defense_mount_accent(building.kind))
+    {
+        draw_texture_ex(
+            sprites.texture(),
+            at.x,
+            at.y,
+            accent,
+            DrawTextureParams {
+                dest_size: Some(dest),
+                source: Some(source),
+                rotation: pose.angle,
+                ..Default::default()
+            },
+        );
+    }
+    if pose.flash > 0.0 {
+        let muzzle = center
+            + forward
+                * dest.x
+                * match building.kind {
+                    oxide_sim::BuildingKind::Bastion => 0.45,
+                    _ => 0.40,
+                };
+        let offsets: &[f32] = if building.kind == oxide_sim::BuildingKind::FlakTurret {
+            &[-0.12, 0.12]
+        } else {
+            &[0.0]
+        };
+        for offset in offsets {
+            let flash = muzzle + right * dest.x * *offset;
+            draw_circle(
+                flash.x,
+                flash.y,
+                dest.x * (0.025 + pose.flash * 0.025),
+                Color::new(1.0, 0.86, 0.58, pose.flash * 0.82),
+            );
+        }
+    }
+    // A gun's reset is operational state, not decorative motion. Heavy
+    // cooldowns show unbidden; selecting a lighter defense opts it in.
+    // The fixed eye therefore keeps filling in reduced motion.
+    if building.cooldown > 0
+        && let Some(weapon) = building.kind.stats().weapons.first()
+        && (weapon.cooldown_ticks >= CHARGE_EYE_COOLDOWN
+            || game.selection.building == Some(building.id))
+    {
+        let ready = 1.0 - building.cooldown as f32 / weapon.cooldown_ticks.max(1) as f32;
+        let r = dest.x * 0.055;
+        draw_circle_lines(center.x, center.y, r, 1.0, SCRAP_COLOR);
+        draw_circle(
+            center.x,
+            center.y,
+            r * ready.clamp(0.0, 1.0).sqrt(),
+            SCRAP_COLOR,
+        );
+    }
+}
+
 pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
     let zoom = game.camera.zoom;
     // Buildings an own crew is actively stripping (the salvage
@@ -315,11 +457,19 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
             if let Some(accent) = accent_tint {
                 layers.push((sprites.building_accent(ghost.kind), accent));
             }
-            if ghost.kind == oxide_sim::BuildingKind::Turret {
-                // The base ships bare; the remembered gun points up.
-                layers.push((sprites.turret_barrel(faction), tint));
+            if ghost.built
+                && let Some(mount) = sprites.defense_mount(ghost.kind, faction)
+            {
+                // Defense bases ship bare; memories retain a static,
+                // north-facing silhouette without inventing live aim.
+                layers.push((mount, tint));
                 if let Some(accent) = accent_tint {
-                    layers.push((sprites.turret_barrel_accent(), accent));
+                    layers.push((
+                        sprites
+                            .defense_mount_accent(ghost.kind)
+                            .expect("a defense mount has an accent"),
+                        accent,
+                    ));
                 }
             }
             for (source, color) in layers {
@@ -414,6 +564,20 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                     ..Default::default()
                 },
             );
+            if building.progress > 0 {
+                let phase = super::motion::activity_phase(
+                    game.fx_time(),
+                    building.id.0,
+                    8.0,
+                    reduced_motion(),
+                );
+                draw_work_sparks(
+                    vec2(screen.x + dest.x * 0.72, screen.y + dest.y * 0.72),
+                    dest.x.min(dest.y),
+                    phase,
+                    Color::new(0.95, 0.76, 0.32, 0.72),
+                );
+            }
         }
         if building.built && building.kind == oxide_sim::BuildingKind::Foundry {
             // The melt pool breathes: a soft faction-tinted pulse.
@@ -440,128 +604,133 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
         if building.built {
             let center = vec2(screen.x + dest.x * 0.5, screen.y + dest.y * 0.5);
             match building.kind {
-                // Guns wear their aim in their own idiom: the Turret's
-                // gun is a separate sprite that tracks (with recoil);
-                // the flak battery flashes its skyward quad; the
-                // Bastion's mortar throat glows on launch. Painting one
-                // generic barrel over all three doubled the turret's
-                // art and contradicted the other two entirely.
-                oxide_sim::BuildingKind::Turret => {
-                    let (angle, age) = game
-                        .aim_buildings
-                        .get(&building.id.0)
-                        .map(|(a, at)| (*a, game.fx_time() - at))
-                        .unwrap_or((0.0, f32::MAX));
-                    let dir = vec2(angle.sin(), -angle.cos());
-                    let kick = if !reduced_motion() && age < 0.12 {
-                        -dir * dest.x * 0.05 * (1.0 - age / 0.12)
-                    } else {
-                        vec2(0.0, 0.0)
-                    };
-                    let size = dest.x * 1.0;
-                    let at = center + kick - vec2(size, size) * 0.5;
-                    draw_texture_ex(
-                        sprites.texture(),
-                        at.x,
-                        at.y,
-                        WHITE,
-                        DrawTextureParams {
-                            dest_size: Some(vec2(size, size)),
-                            source: Some(sprites.turret_barrel(faction)),
-                            rotation: angle,
-                            ..Default::default()
-                        },
-                    );
-                    if let Some(accent) = accent_tint {
-                        draw_texture_ex(
-                            sprites.texture(),
-                            at.x,
-                            at.y,
-                            accent,
-                            DrawTextureParams {
-                                dest_size: Some(vec2(size, size)),
-                                source: Some(sprites.turret_barrel_accent()),
-                                rotation: angle,
-                                ..Default::default()
-                            },
-                        );
-                    }
+                oxide_sim::BuildingKind::Turret
+                | oxide_sim::BuildingKind::FlakTurret
+                | oxide_sim::BuildingKind::Bastion => {
+                    draw_defense_mount(game, sprites, building, faction, screen, dest, accent_tint);
                 }
-                oxide_sim::BuildingKind::FlakTurret => {
-                    if let Some((_, at)) = game.aim_buildings.get(&building.id.0) {
-                        let age = game.fx_time() - at;
-                        if age < 0.18 && !reduced_motion() {
-                            let a = 1.0 - age / 0.18;
-                            for (ox, oy) in [(0.39, 0.39), (0.61, 0.39), (0.39, 0.61), (0.61, 0.61)]
-                            {
-                                draw_circle(
-                                    screen.x + dest.x * ox,
-                                    screen.y + dest.y * oy,
-                                    dest.x * 0.05,
-                                    Color::new(0.95, 0.9, 0.7, 0.8 * a),
-                                );
-                            }
-                        }
-                    }
-                }
-                oxide_sim::BuildingKind::Bastion => {
-                    if let Some((_, at)) = game.aim_buildings.get(&building.id.0) {
-                        let age = game.fx_time() - at;
-                        if age < 0.3 && !reduced_motion() {
-                            let a = 1.0 - age / 0.3;
-                            draw_circle(
-                                center.x,
-                                center.y,
-                                dest.x * (0.10 + 0.05 * a),
-                                Color::new(0.98, 0.8, 0.5, 0.7 * a),
-                            );
-                        }
-                    }
-                }
-                // The radar sweeps its ring — damped to a steady mast.
+                // The radar sweeps its ring; reduced motion holds the
+                // beam north instead of removing the Array's activity cue.
                 oxide_sim::BuildingKind::Array => {
-                    if !reduced_motion() {
-                        let sweep = game.fx_time() * 1.1 % (2.0 * std::f32::consts::PI);
-                        let reach = zoom * 4.0;
-                        let tip = center + vec2(sweep.cos(), sweep.sin()) * reach;
-                        draw_line(
-                            center.x,
-                            center.y,
-                            tip.x,
-                            tip.y,
-                            1.5,
-                            Color::new(0.55, 0.87, 0.78, 0.20),
-                        );
-                    }
-                }
-                // The reclaimer breathes its trickle.
-                oxide_sim::BuildingKind::Reclaimer => {
-                    let pulse = if reduced_motion() {
-                        0.5
+                    let sweep = if reduced_motion() {
+                        -std::f32::consts::FRAC_PI_2
                     } else {
-                        ((f64::from(game.fx_time()) * 1.7 + f64::from(building.id.0)).sin() * 0.5
-                            + 0.5) as f32
+                        game.fx_time() * 1.1 % std::f32::consts::TAU
                     };
+                    let reach = if reduced_motion() {
+                        dest.x * 0.32
+                    } else {
+                        zoom * 4.0
+                    };
+                    let tip = center + vec2(sweep.cos(), sweep.sin()) * reach;
+                    draw_line(
+                        center.x,
+                        center.y,
+                        tip.x,
+                        tip.y,
+                        1.5,
+                        Color::new(0.55, 0.87, 0.78, 0.20),
+                    );
+                }
+                // The grinder breathes and its six teeth visibly turn.
+                oxide_sim::BuildingKind::Reclaimer => {
+                    let pulse = super::motion::activity_phase(
+                        game.fx_time(),
+                        building.id.0,
+                        1.7,
+                        reduced_motion(),
+                    );
                     draw_circle(
                         center.x,
                         center.y,
                         dest.x * 0.18 * (1.0 + 0.1 * pulse),
                         Color::new(0.75, 0.68, 0.4, 0.08 + 0.08 * pulse),
                     );
-                }
-                // The fabricator's work light blinks.
-                oxide_sim::BuildingKind::Fabricator => {
-                    let on = reduced_motion()
-                        || ((f64::from(game.fx_time()) * 1.4 + f64::from(building.id.0)).fract()
-                            < 0.5);
-                    if on {
-                        draw_circle(
-                            screen.x + dest.x * 0.82,
-                            screen.y + dest.y * 0.18,
-                            2.5 * ui_scale(),
-                            SCRAP_COLOR,
+                    let turn = if reduced_motion() {
+                        0.0
+                    } else {
+                        game.fx_time() * 2.1
+                    };
+                    for tooth in 0..6 {
+                        let angle = turn + tooth as f32 * std::f32::consts::TAU / 6.0;
+                        let inner = center + vec2(angle.cos(), angle.sin()) * dest.x * 0.09;
+                        let outer = center + vec2(angle.cos(), angle.sin()) * dest.x * 0.17;
+                        draw_line(
+                            inner.x,
+                            inner.y,
+                            outer.x,
+                            outer.y,
+                            1.5,
+                            Color::new(0.86, 0.67, 0.30, 0.46),
                         );
                     }
+                }
+                // A live production queue moves the gantry and throws
+                // sparks; an idle Fabricator keeps one dim ready lamp.
+                oxide_sim::BuildingKind::Fabricator => {
+                    let active = !building.queue.is_empty();
+                    let phase = super::motion::activity_phase(
+                        game.fx_time(),
+                        building.id.0,
+                        2.4,
+                        reduced_motion(),
+                    );
+                    let gantry_x = screen.x + dest.x * (0.32 + phase * 0.36);
+                    draw_rectangle(
+                        gantry_x - dest.x * 0.03,
+                        screen.y + dest.y * 0.38,
+                        dest.x * 0.06,
+                        dest.y * 0.28,
+                        Color::new(0.88, 0.72, 0.34, if active { 0.42 } else { 0.15 }),
+                    );
+                    draw_circle(
+                        screen.x + dest.x * 0.82,
+                        screen.y + dest.y * 0.18,
+                        2.5 * ui_scale(),
+                        Color::new(
+                            SCRAP_COLOR.r,
+                            SCRAP_COLOR.g,
+                            SCRAP_COLOR.b,
+                            if active { 1.0 } else { 0.35 },
+                        ),
+                    );
+                    if active {
+                        draw_work_sparks(
+                            vec2(gantry_x, screen.y + dest.y * 0.68),
+                            dest.x * 0.55,
+                            phase,
+                            Color::new(0.98, 0.78, 0.36, 0.74),
+                        );
+                    }
+                }
+                oxide_sim::BuildingKind::RepairBay if repair_bay_active(game, building) => {
+                    let phase = super::motion::activity_phase(
+                        game.fx_time(),
+                        building.id.0,
+                        7.0,
+                        reduced_motion(),
+                    );
+                    let weld = vec2(
+                        center.x + (phase - 0.5) * dest.x * 0.32,
+                        center.y + dest.y * 0.08,
+                    );
+                    draw_line(
+                        center.x - dest.x * 0.25,
+                        center.y,
+                        weld.x,
+                        weld.y,
+                        2.0,
+                        Color::new(0.42, 0.86, 0.70, 0.55),
+                    );
+                    draw_line(
+                        center.x + dest.x * 0.25,
+                        center.y,
+                        weld.x,
+                        weld.y,
+                        2.0,
+                        Color::new(0.42, 0.86, 0.70, 0.55),
+                    );
+                    draw_work_sparks(weld, dest.x, phase, Color::new(0.72, 1.0, 0.86, 0.82));
                 }
                 _ => {}
             }

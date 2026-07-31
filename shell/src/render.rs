@@ -99,6 +99,7 @@ pub fn staleness_fade(age: f32) -> f32 {
 mod chrome;
 pub(crate) mod entities;
 mod minimap;
+mod motion;
 mod panel_draw;
 mod world;
 use chrome::*;
@@ -325,6 +326,27 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         let pos = game.draw_pos(unit.id, unit.pos, alpha);
         let mut screen = game.camera.to_screen(pos);
         let dest = zoom * 1.05;
+        let current = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
+        let moving = game
+            .prev_pos
+            .get(&unit.id.0)
+            .is_some_and(|previous| (*previous - current).length_squared() > 1e-6);
+        let pose = motion::unit_pose(
+            game.fx_time(),
+            unit.id.0,
+            moving,
+            airborne,
+            reduced_motion(),
+        );
+        // A recent shot owns the heading: the chassis tracks its victim
+        // for a beat, then movement facing resumes.
+        let aim = game.aim_units.get(&unit.id.0).copied();
+        let rotation = match aim {
+            Some((angle, at)) if game.fx_time() - at < 1.2 => angle,
+            _ => game.facing.get(&unit.id.0).copied().unwrap_or(0.0),
+        };
+        let forward = vec2(rotation.sin(), -rotation.cos());
+        let right = vec2(rotation.cos(), rotation.sin());
         if airborne {
             let shadow = zoom * 0.9;
             draw_texture_ex(
@@ -340,6 +362,34 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             );
             // The body rides visibly above its shadow.
             screen.y -= zoom * 0.18;
+        } else if pose.dust > 0.02 {
+            // Two faint puffs alternate behind the moving chassis. They
+            // are presentation-only and deliberately hug the ground:
+            // cadence, not a persistent trail or pathing mark.
+            let wake = screen - forward * dest * 0.34;
+            let alpha = 0.08 + pose.dust * 0.12;
+            for side in [-1.0f32, 1.0] {
+                let at = wake + right * side * dest * 0.18;
+                draw_circle(
+                    at.x,
+                    at.y,
+                    dest * (0.055 + pose.dust * 0.025),
+                    Color::new(0.58, 0.53, 0.47, alpha),
+                );
+            }
+        }
+        let mut body = screen + right * pose.lateral * dest + vec2(0.0, pose.lift * dest);
+        if airborne && pose.thruster > 0.0 {
+            // The steady reduced-motion flame still communicates that a
+            // moving flyer is powered; only its flicker and bank freeze.
+            let exhaust = body - forward * dest * 0.38;
+            let half = right * dest * 0.055;
+            draw_triangle(
+                exhaust - half,
+                exhaust + half,
+                exhaust - forward * dest * (0.09 + 0.07 * pose.thruster),
+                Color::new(0.95, 0.68, 0.28, 0.32 + 0.30 * pose.thruster),
+            );
         }
         if game.selection.units.contains(&unit.id) {
             if unit.player == game.human {
@@ -363,15 +413,7 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                 );
             }
         }
-        // A recent shot owns the heading: the mount tracks its victim
-        // for a beat, with a recoil nudge fading over the first tenth
-        // of a second, then movement facing resumes.
-        let aim = game.aim_units.get(&unit.id.0).copied();
-        let rotation = match aim {
-            Some((angle, at)) if game.fx_time() - at < 1.2 => angle,
-            _ => game.facing.get(&unit.id.0).copied().unwrap_or(0.0),
-        };
-        let mut body = screen;
+        // Direct-fire chassis kick on top of the locomotion pose.
         if !reduced_motion()
             && let Some((angle, at)) = aim
         {
@@ -381,12 +423,13 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                 body -= dir * zoom * 0.07 * (1.0 - age / 0.12);
             }
         }
+        let body_size = vec2(dest * pose.width_scale, dest * pose.height_scale);
         // A working harvester runs its scoop cycle — dig frames while it
         // stands at its source, the travel pose everywhere else. Under
         // reduced motion the cycle freezes on the travel pose.
         let (source, accent) = if unit.kind == UnitKind::Harvester
             && !reduced_motion()
-            && matches!(unit.order, oxide_sim::Order::Harvest { node }
+            && matches!(unit.order, oxide_sim::Order::Harvest { node, .. }
                 if unit.tile().chebyshev(node) <= 1)
         {
             let frame = [0usize, 1, 2, 1][((game.fx_time() * 4.0) as usize) % 4];
@@ -402,11 +445,11 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         };
         draw_texture_ex(
             sprites.texture(),
-            body.x - dest * 0.5,
-            body.y - dest * 0.5,
+            body.x - body_size.x * 0.5,
+            body.y - body_size.y * 0.5,
             WHITE,
             DrawTextureParams {
-                dest_size: Some(vec2(dest, dest)),
+                dest_size: Some(body_size),
                 source: Some(source),
                 rotation,
                 ..Default::default()
@@ -418,11 +461,11 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         if let Some(tint) = allegiance_tint(allegiance_cue(game, unit.player)) {
             draw_texture_ex(
                 sprites.texture(),
-                body.x - dest * 0.5,
-                body.y - dest * 0.5,
+                body.x - body_size.x * 0.5,
+                body.y - body_size.y * 0.5,
                 tint,
                 DrawTextureParams {
-                    dest_size: Some(vec2(dest, dest)),
+                    dest_size: Some(body_size),
                     source: Some(accent),
                     rotation,
                     ..Default::default()

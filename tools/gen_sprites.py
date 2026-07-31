@@ -885,28 +885,69 @@ def wisp(faction: str) -> None:
 
 
 def flak_turret(faction: str) -> None:
-    """1x1 anti-air emplacement: the ground turret's slab, but the gun is
-    a quad battery aimed at the ceiling — no forward barrel at all."""
+    """1x1 anti-air foundation: a low cruciform slab and broad turntable.
+
+    The directional quad battery is a separate sprite so its silhouette
+    can track aircraft and kick independently of the foundation.
+    """
     px = 64
     pal = FACTIONS[faction]
     img, d = canvas(px)
-    d.rounded_rectangle([s(6), s(6), s(58), s(58)], radius=s(8), fill=(*IRON_DARK, 255))
-    d.rounded_rectangle([s(10), s(10), s(54), s(54)], radius=s(6), fill=(*IRON, 255))
+    # A clipped cross reads differently from the ordinary Turret's square
+    # slab while keeping every occupied corner visually low.
+    outer = [(18, 5), (46, 5), (59, 18), (59, 46), (46, 59), (18, 59), (5, 46), (5, 18)]
+    inner = [(20, 10), (44, 10), (54, 20), (54, 44), (44, 54), (20, 54), (10, 44), (10, 20)]
+    d.polygon([(s(x), s(y)) for x, y in outer], fill=(*IRON_DARK, 255))
+    d.polygon([(s(x), s(y)) for x, y in inner], fill=(*IRON, 255))
     for bx, by in ((13, 13), (51, 13), (13, 51), (51, 51)):
         d.ellipse([s(bx - 3), s(by - 3), s(bx + 3), s(by + 3)], fill=(*IRON_DARK, 255))
     d.ellipse([s(14), s(14), s(50), s(50)], fill=(*pal["dark"], 255))
-    d.ellipse([s(18), s(18), s(46), s(46)], fill=(*pal["base"], 255))
-    # Quad skyward muzzles.
-    for cx, cy in ((25, 25), (39, 25), (25, 39), (39, 39)):
-        d.ellipse([s(cx - 6), s(cy - 6), s(cx + 6), s(cy + 6)], fill=(*IRON_DARK, 255))
-        d.ellipse([s(cx - 4), s(cy - 4), s(cx + 4), s(cy + 4)], fill=(*IRON_LIGHT, 255))
-        d.ellipse([s(cx - 1.5), s(cy - 1.5), s(cx + 1.5), s(cy + 1.5)], fill=(*pal["light"], 255))
+    d.ellipse([s(19), s(19), s(45), s(45)], fill=(*IRON_DARK, 255))
+    d.ellipse([s(23), s(23), s(41), s(41)], fill=(*pal["base"], 255))
     finish(img, px, f"flak_turret_{faction}")
 
 
+def flak_mount(faction: str) -> None:
+    """Directional quad cannon with its pivot at canvas center."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    # Two armored feed pods make a wide, unmistakable AA head.
+    for x0, x1 in ((15, 29), (35, 49)):
+        d.rounded_rectangle(
+            [s(x0), s(22), s(x1), s(43)],
+            radius=s(4),
+            fill=(*IRON_DARK, 255),
+        )
+        d.rounded_rectangle(
+            [s(x0 + 3), s(25), s(x1 - 3), s(40)],
+            radius=s(2),
+            fill=(*pal["base"], 255),
+        )
+    # Four parallel barrels point up; spaced muzzles still read at the
+    # shell's ordinary zoom instead of collapsing into one dark dot.
+    for x in (19, 25, 39, 45):
+        d.rounded_rectangle(
+            [s(x - 2), s(4), s(x + 2), s(29)],
+            radius=s(1.5),
+            fill=(*IRON_DARK, 255),
+        )
+        d.rectangle([s(x - 1), s(5), s(x + 1), s(27)], fill=(*IRON_LIGHT, 255))
+        d.ellipse([s(x - 2.5), s(2), s(x + 2.5), s(7)], fill=(*pal["light"], 255))
+        d.ellipse([s(x - 1), s(2.5), s(x + 1), s(5.5)], fill=(*IRON_DARK, 255))
+    # Common traverse hub and rear ammunition bridge.
+    d.ellipse([s(24), s(25), s(40), s(41)], fill=(*pal["light"], 255))
+    d.ellipse([s(28), s(29), s(36), s(37)], fill=(*IRON_DARK, 255))
+    d.rounded_rectangle([s(17), s(40), s(47), s(48)], radius=s(3), fill=(*pal["dark"], 255))
+    finish(img, px, f"flak_mount_{faction}")
+
+
 def bastion(faction: str) -> None:
-    """2x2 artillery emplacement: a fortress ring around one enormous
-    mortar throat — the gun that shells what it cannot see."""
+    """2x2 artillery foundation: an octagonal bunker and traverse ring.
+
+    The cannon is authored separately so the live silhouette can aim and
+    recoil instead of behaving like a painted circle.
+    """
     px = 128
     pal = FACTIONS[faction]
     img, d = canvas(px)
@@ -918,12 +959,11 @@ def bastion(faction: str) -> None:
     # Faction rampart wedges.
     d.polygon([(s(46), s(16)), (s(82), s(16)), (s(64), s(40))], fill=(*pal["dark"], 255))
     d.polygon([(s(46), s(112)), (s(82), s(112)), (s(64), s(88))], fill=(*pal["dark"], 255))
-    # The pit and the throat.
+    # Traverse pit. Its empty center is intentional: the mount fills it.
     d.ellipse([s(28), s(28), s(100), s(100)], fill=(*pal["base"], 255))
     d.ellipse([s(38), s(38), s(90), s(90)], fill=(*IRON_DARK, 255))
-    d.ellipse([s(46), s(46), s(82), s(82)], fill=(*IRON_LIGHT, 255))
-    d.ellipse([s(54), s(54), s(74), s(74)], fill=(*pal["dark"], 255))
-    d.ellipse([s(60), s(60), s(68), s(68)], fill=(12, 10, 10, 255))
+    d.ellipse([s(45), s(45), s(83), s(83)], fill=(*IRON, 255))
+    d.ellipse([s(51), s(51), s(77), s(77)], fill=(*pal["dark"], 255))
     # Shell racks on two corners.
     for cx, cy in ((26, 100), (100, 26)):
         for i in range(3):
@@ -932,6 +972,37 @@ def bastion(faction: str) -> None:
                 fill=(*SCRAP_DARK, 255),
             )
     finish(img, px, f"bastion_{faction}")
+
+
+def bastion_mount(faction: str) -> None:
+    """Heavy directional siege cannon, pivoted at the footprint center."""
+    px = 128
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    # Twin recoil rails and one broad armored barrel point up.
+    for x in (53, 75):
+        d.rounded_rectangle(
+            [s(x - 4), s(18), s(x + 4), s(72)],
+            radius=s(3),
+            fill=(*IRON_DARK, 255),
+        )
+        d.rectangle([s(x - 1.5), s(19), s(x + 1.5), s(68)], fill=(*IRON_LIGHT, 255))
+    d.rounded_rectangle([s(57), s(8), s(71), s(67)], radius=s(5), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle([s(60), s(9), s(68), s(63)], radius=s(3), fill=(*IRON_LIGHT, 255))
+    d.rectangle([s(59), s(8), s(69), s(15)], fill=(*pal["light"], 255))
+    d.rectangle([s(61), s(5), s(67), s(11)], fill=(15, 13, 14, 255))
+    # The breech is deliberately larger than a unit and asymmetrical
+    # fore/aft, making rotation legible even from the map-scale camera.
+    housing = [(42, 48), (86, 48), (96, 68), (84, 88), (44, 88), (32, 68)]
+    d.polygon([(s(x), s(y)) for x, y in housing], fill=(*IRON_DARK, 255))
+    inner = [(47, 53), (81, 53), (88, 68), (78, 81), (50, 81), (40, 68)]
+    d.polygon([(s(x), s(y)) for x, y in inner], fill=(*pal["base"], 255))
+    d.ellipse([s(51), s(55), s(77), s(81)], fill=(*pal["dark"], 255))
+    d.ellipse([s(58), s(62), s(70), s(74)], fill=(*IRON_LIGHT, 255))
+    # Rear counterweight and loader hatch.
+    d.rounded_rectangle([s(47), s(84), s(81), s(104)], radius=s(6), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle([s(52), s(87), s(76), s(99)], radius=s(4), fill=(*pal["dark"], 255))
+    finish(img, px, f"bastion_mount_{faction}")
 
 
 def array(faction: str) -> None:
@@ -1523,7 +1594,9 @@ def generate(output: Path) -> None:
         turret_barrel(faction)
         fabricator(faction)
         flak_turret(faction)
+        flak_mount(faction)
         bastion(faction)
+        bastion_mount(faction)
         array(faction)
         reclaimer(faction)
         repair_bay(faction)
