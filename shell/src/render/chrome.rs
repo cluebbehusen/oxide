@@ -282,162 +282,35 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
     }
 }
 
-/// The endgame verdict, drawn over every other layer — at 640x400 the
-/// old in-HUD version collided with the minimap and pushed its graph
-/// off screen. Geometry clamps to the viewport. The same overlay
-/// serves a team game's concede moment: the match is undecided, but
-/// the conceded human gets its numbers-so-far and the Esc exit while
-/// the ally plays on.
+/// A team-game concession can leave the match undecided while the ally
+/// keeps fighting. This compact exit offer is the only result-like layer
+/// gameplay still draws; a decided match moves to the dedicated Results
+/// screen with touchable next steps.
 pub(crate) fn draw_result_overlay(game: &Game) {
-    let s = ui_scale();
-    let overlay = if let Some(result) = game.state.result() {
-        // The human's verdict first — the game knows whose screen this
-        // is; "FERROUS WINS" made every ending read like someone else's.
-        let winners = game.state.winners();
-        let (text, color) = match result {
-            GameResult::Victory { .. } if winners.contains(&game.human) => ("VICTORY", SCRAP_COLOR),
-            // A conceded defeat says so — the player chose this end.
-            GameResult::Victory { .. } if game.state.player(game.human).resigned => {
-                ("SURRENDERED", DANGER)
-            }
-            GameResult::Victory { .. } => ("DEFEAT", DANGER),
-            GameResult::Draw => ("MUTUAL DESTRUCTION", TEXT_BODY),
-        };
-        let sub = match result {
-            GameResult::Victory { .. } => {
-                let names: Vec<String> = winners
-                    .into_iter()
-                    .map(|p| game.state.player(p).name.to_uppercase())
-                    .collect();
-                format!("{} take the field", names.join(" & "))
-            }
-            GameResult::Draw => "no foundry survived".to_string(),
-        };
-        Some((text, color, sub, game.end_stats.as_ref()))
-    } else if game.conceded_banner {
-        Some((
-            "SURRENDERED",
-            DANGER,
-            "your team fights on".to_string(),
-            game.concede_stats.as_ref(),
-        ))
-    } else {
-        None
-    };
-    if let Some((text, color, sub, stats)) = overlay {
-        let size = 56.0 * s;
-        let dims = measure_text(text, None, size as u16, 1.0);
-        let x = (screen_width() - dims.width) * 0.5;
-        // The whole column (banner + stats + curves + caption) must fit
-        // the viewport: center it, then clamp against both edges.
-        let seats = game.state.players().len() as f32;
-        let column_h = 124.0 * s + seats * 22.0 * s + 96.0 * s + 60.0 * s;
-        let y = (screen_height() * 0.4)
-            .min(screen_height() - column_h + 48.0 * s)
-            .max(56.0 * s);
-        draw_rectangle(
-            x - 24.0 * s,
-            y - 48.0 * s,
-            dims.width + 48.0 * s,
-            124.0 * s,
-            PANEL,
-        );
-        draw_text(text, x, y, size, color);
-        let sub_dims = measure_text(&sub, None, (20.0 * s) as u16, 1.0);
-        draw_text(
-            &sub,
-            (screen_width() - sub_dims.width) * 0.5,
-            y + 26.0 * s,
-            20.0 * s,
-            TEXT_BODY,
-        );
-        // The match in numbers: one line per seat from the recomputed
-        // record — losses and the peak army it ever fielded — then the
-        // army curves themselves, seat-colored, so the shape of the
-        // game (the swing, the collapse, the long grind) reads at a
-        // glance.
-        if let Some(stats) = stats {
-            let curves_y = y + (92.0 + 22.0 * stats.players.len() as f32) * s;
-            let (gw, gh) = (
-                (360.0 * s).min(screen_width() - 48.0 * s),
-                (96.0 * s).min(screen_height() * 0.2),
-            );
-            let gx = (screen_width() - gw) * 0.5;
-            draw_rectangle(
-                gx - 8.0 * s,
-                curves_y - 8.0 * s,
-                gw + 16.0 * s,
-                gh + 16.0 * s,
-                PANEL,
-            );
-            let top = stats
-                .players
-                .iter()
-                .flat_map(|p| p.army_value.iter().copied())
-                .max()
-                .unwrap_or(1)
-                .max(1) as f32;
-            for (i, seat) in stats.players.iter().enumerate() {
-                let faction = game
-                    .state
-                    .players()
-                    .get(i)
-                    .map(|p| p.faction)
-                    .unwrap_or(oxide_sim::Faction::Ferrous);
-                let color = mini_faction_color(faction);
-                let n = seat.army_value.len().max(2);
-                let mut prev: Option<macroquad::prelude::Vec2> = None;
-                for (k, &v) in seat.army_value.iter().enumerate() {
-                    let px = gx + gw * k as f32 / (n - 1) as f32;
-                    let py = curves_y + gh - gh * (v as f32 / top);
-                    let point = vec2(px, py);
-                    if let Some(a) = prev {
-                        draw_line(a.x, a.y, point.x, point.y, 1.5 * s, color);
-                    }
-                    prev = Some(point);
-                }
-            }
-            let cap = "army value over the match";
-            let cap_dims = measure_text(cap, None, (13.0 * s) as u16, 1.0);
-            draw_text(
-                cap,
-                (screen_width() - cap_dims.width) * 0.5,
-                curves_y + gh + 14.0 * s,
-                13.0 * s,
-                TEXT_SECONDARY,
-            );
-            for (i, seat) in stats.players.iter().enumerate() {
-                let name = game
-                    .state
-                    .players()
-                    .get(i)
-                    .map(|p| p.name.clone())
-                    .unwrap_or_else(|| format!("seat {i}"));
-                let peak = seat.army_value.iter().copied().max().unwrap_or(0);
-                let line = format!(
-                    "{name}: lost {} units, {} buildings · peak army {peak} · scrap {}",
-                    seat.units_lost,
-                    seat.buildings_lost,
-                    seat.scrap.last().copied().unwrap_or(0),
-                );
-                let dims = measure_text(&line, None, (16.0 * s) as u16, 1.0);
-                draw_text(
-                    &line,
-                    (screen_width() - dims.width) * 0.5,
-                    y + (86.0 + 22.0 * i as f32) * s,
-                    16.0 * s,
-                    TEXT_BODY,
-                );
-            }
-        }
-        let hint = "Press Esc to continue";
-        let hint_dims = measure_text(hint, None, (20.0 * s) as u16, 1.0);
-        draw_text(
-            hint,
-            (screen_width() - hint_dims.width) * 0.5,
-            y + 52.0 * s,
-            20.0 * s,
-            TEXT_SECONDARY,
-        );
+    if !game.conceded_banner || game.state.result().is_some() {
+        return;
     }
+    let s = ui_scale();
+    let text = "SURRENDERED";
+    let size = 48.0 * s;
+    let dims = measure_text(text, None, size as u16, 1.0);
+    let x = (screen_width() - dims.width) * 0.5;
+    let y = screen_height() * 0.38;
+    draw_rectangle(
+        x - 24.0 * s,
+        y - 48.0 * s,
+        dims.width + 48.0 * s,
+        112.0 * s,
+        PANEL,
+    );
+    draw_text(text, x, y, size, DANGER);
+    let sub = "your team fights on · Esc for options";
+    let sub_dims = measure_text(sub, None, (18.0 * s) as u16, 1.0);
+    draw_text(
+        sub,
+        (screen_width() - sub_dims.width) * 0.5,
+        y + 28.0 * s,
+        18.0 * s,
+        TEXT_BODY,
+    );
 }

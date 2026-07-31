@@ -17,6 +17,12 @@ pub struct PlayerStats {
     pub scrap: Vec<u32>,
     /// Standing army value (sum of living units' costs) per sample.
     pub army_value: Vec<u32>,
+    /// Scrap brought home by Harvesters across the whole match.
+    pub scrap_collected: u32,
+    /// Units completed across the whole match.
+    pub units_trained: u32,
+    /// Buildings completed across the whole match.
+    pub buildings_completed: u32,
     /// Units lost across the whole match.
     pub units_lost: u32,
     /// Buildings lost across the whole match.
@@ -68,6 +74,9 @@ pub fn compute(replay: &GameReplay, every: u64) -> Result<MatchStats> {
             seat: seat as u8,
             scrap: Vec::new(),
             army_value: Vec::new(),
+            scrap_collected: 0,
+            units_trained: 0,
+            buildings_completed: 0,
             units_lost: 0,
             buildings_lost: 0,
             buildings_salvaged: 0,
@@ -100,6 +109,17 @@ pub fn compute(replay: &GameReplay, every: u64) -> Result<MatchStats> {
         let report = state.tick(&commands);
         for event in &report.events {
             match event {
+                Event::ScrapDeposited { player, amount } => {
+                    stats[player.0 as usize].scrap_collected = stats[player.0 as usize]
+                        .scrap_collected
+                        .saturating_add(*amount);
+                }
+                Event::UnitTrained { player, .. } => {
+                    stats[player.0 as usize].units_trained += 1;
+                }
+                Event::BuildingCompleted { player, .. } => {
+                    stats[player.0 as usize].buildings_completed += 1;
+                }
                 Event::UnitDied { player, .. } => {
                     stats[player.0 as usize].units_lost += 1;
                 }
@@ -183,6 +203,9 @@ mod tests {
         for (pa, pb) in a.players.iter().zip(&b.players) {
             assert_eq!(pa.scrap, pb.scrap, "the record computes one truth");
             assert_eq!(pa.army_value, pb.army_value);
+            assert_eq!(pa.scrap_collected, pb.scrap_collected);
+            assert_eq!(pa.units_trained, pb.units_trained);
+            assert_eq!(pa.buildings_completed, pb.buildings_completed);
         }
         // A bot match spends and fields: the series must move.
         assert!(
@@ -190,6 +213,14 @@ mod tests {
                 .iter()
                 .any(|p| p.army_value.iter().any(|&v| v > 0)),
             "somebody fielded an army"
+        );
+        assert!(
+            a.players.iter().any(|p| p.scrap_collected > 0),
+            "somebody delivered salvage"
+        );
+        assert!(
+            a.players.iter().any(|p| p.units_trained > 0),
+            "somebody completed production"
         );
     }
 }

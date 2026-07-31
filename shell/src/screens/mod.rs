@@ -10,6 +10,7 @@ pub mod browser;
 pub mod home;
 pub mod pause;
 pub mod playback;
+pub mod results;
 pub mod settings;
 pub mod shelf;
 pub mod wizard;

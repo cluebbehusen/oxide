@@ -17,9 +17,7 @@ const MINI_PEAK: Color = color_u8!(108, 104, 126, 255);
 /// surfaces; which faction an enemy runs is the battlefield's story,
 /// not the minimap's.
 fn mini_entity_color(game: &Game, owner: oxide_sim::PlayerId) -> Color {
-    let cue = super::allegiance_cue(game, owner);
-    super::allegiance_tint(cue)
-        .unwrap_or_else(|| mini_faction_color(game.state.player(owner).faction))
+    super::seat_identity_color(game, owner)
 }
 
 fn dim(color: Color) -> Color {
@@ -45,10 +43,6 @@ fn memory_age(game: &Game, key: (i32, i32)) -> f32 {
     let mut seen = game.last_seen.borrow_mut();
     let stamp = *seen.entry(key).or_insert_with(|| game.fx_time());
     game.fx_time() - stamp
-}
-
-pub(crate) fn mini_faction_color(faction: oxide_sim::Faction) -> Color {
-    super::faction_accent(faction)
 }
 
 /// Where the minimap sits (flush bottom-right, matching the command

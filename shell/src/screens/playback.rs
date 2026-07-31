@@ -10,6 +10,17 @@ use macroquad::prelude::*;
 use oxide_protocol::{Key, MouseButton, RawEvent};
 use oxide_sim::SIM_VERSION;
 
+/// Where closing a playback viewer returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReturnTo {
+    /// A cold launch or replay-shelf viewer returns to Home.
+    Home,
+    /// A viewer opened over a paused live match returns to Pause.
+    Pause,
+    /// A completed match's viewer returns to its report.
+    Results,
+}
+
 /// A playback viewing session: the engine owns truth, the `Game` is a
 /// render vehicle whose state gets replaced after every advance — its
 /// recorder, sounds, and effects are simply never fed.
@@ -22,10 +33,10 @@ pub struct PlaybackSession {
     pub held: [bool; 4],
     /// A held minimap press steers the camera, like live play.
     pub minimap_drag: bool,
-    /// Whether the viewer was opened from a live pause menu — leaving
-    /// returns there; every other origin goes Home. A tick-count
-    /// heuristic resurrected matches Main Menu had already discarded.
-    pub from_pause: bool,
+    /// Explicit return destination. A tick-count heuristic resurrected
+    /// matches Main Menu had already discarded, while a boolean origin
+    /// could not distinguish the replay shelf from a match report.
+    pub return_to: ReturnTo,
     /// A seek in flight: the target tick, chipped away a budget per
     /// frame so the render thread never freezes on a long jump.
     pub seeking: Option<u64>,
@@ -56,7 +67,7 @@ impl PlaybackSession {
             accum: 0.0,
             held: [false; 4],
             minimap_drag: false,
-            from_pause: false,
+            return_to: ReturnTo::Home,
             seeking: None,
             scrubbing: false,
         })

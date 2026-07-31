@@ -21,7 +21,8 @@ use crate::game::{Game, GameReplay, SoundKind};
 use crate::menu::{Menu, PreviewCache};
 use crate::screens::home::HomeScreen;
 use crate::screens::pause::PauseScreen;
-use crate::screens::playback::PlaybackSession;
+use crate::screens::playback::{PlaybackSession, ReturnTo as PlaybackReturn};
+use crate::screens::results::ResultsScreen;
 use crate::screens::settings::SettingsScreen;
 use crate::screens::shelf::Shelf;
 use crate::screens::wizard::{NewMatchDraft, Out as WizardOut, Step as WizardStep, Wizard};
@@ -65,6 +66,8 @@ enum Screen {
     Playback(Box<PlaybackSession>),
     /// The replay shelf.
     Replays(Shelf),
+    /// Decided-match report and next steps.
+    Results(ResultsScreen),
     /// Game visible but veiled; the pause screen owns input,
     /// confirmation and save-naming state included.
     Pause(PauseScreen),
@@ -308,6 +311,7 @@ fn soundtrack_scene(screen: &Screen, game: &Game) -> crate::soundtrack::Scene {
         Screen::Settings { back, .. } if matches!(**back, Screen::Pause(_)) => {
             match_soundtrack_scene(game, true)
         }
+        Screen::Results(_) => match_soundtrack_scene(game, false),
         Screen::Home(_) | Screen::Settings { .. } | Screen::Wizard(_) | Screen::Replays(_) => {
             crate::soundtrack::Scene::Menu
         }
@@ -502,7 +506,9 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         // pause-menu path stays frozen. Playing and Playback advance their
         // own clocks below, while Pause deliberately advances neither.
         match &screen {
-            Screen::Home(_) | Screen::Wizard(_) | Screen::Replays(_) => app.game.update_fx(dt),
+            Screen::Home(_) | Screen::Wizard(_) | Screen::Replays(_) | Screen::Results(_) => {
+                app.game.update_fx(dt);
+            }
             Screen::Settings { back, .. } if !matches!(**back, Screen::Pause(_)) => {
                 app.game.update_fx(dt);
             }
@@ -776,6 +782,12 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                     app.game.end_stats =
                         oxide_kit::stats::compute(&replay, (total / 48).max(1)).ok();
                 }
+                if app.game.state.result().is_some() && app.game.end_stats.is_some() {
+                    next = Some(Screen::Results(ResultsScreen::open()));
+                    // Re-enter immediately so the first decided frame is
+                    // the report, not a bare frozen battlefield.
+                    rerun = true;
+                }
                 render::draw(&app.game, &app.sprites, &app.input);
                 if let Some(t) = &app.tutorial {
                     render::draw_tutorial(t, &app.game);
@@ -793,21 +805,81 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                 );
                 if leave {
                     rerun = true;
-                    // Opened from a live pause? Return there; the
-                    // match is still waiting. Cold --watch or the
-                    // shelf goes back Home.
-                    if pb.from_pause {
-                        Screen::Pause(PauseScreen::open(
+                    match pb.return_to {
+                        PlaybackReturn::Pause => Screen::Pause(PauseScreen::open(
                             app.game.state.result().is_some(),
                             can_surrender(&app.game),
-                        ))
-                    } else {
-                        Screen::Home(HomeScreen::open())
+                        )),
+                        PlaybackReturn::Results => Screen::Results(ResultsScreen::open()),
+                        PlaybackReturn::Home => Screen::Home(HomeScreen::open()),
                     }
                 } else {
                     render::draw(&pb.game, &app.sprites, &app.input);
                     screens::playback::playback_hud(&pb, vec2(screen_width(), screen_height()));
                     Screen::Playback(pb)
+                }
+            }
+            Screen::Results(mut results) => {
+                let out = results.update(
+                    &events,
+                    &mut app.input.mouse,
+                    vec2(screen_width(), screen_height()),
+                    render::ui_scale(),
+                    &mut app.game.sounds_pending,
+                );
+                render::draw(&app.game, &app.sprites, &app.input);
+                results.draw(&app.game);
+                match out {
+                    screens::results::Out::Stay => Screen::Results(results),
+                    screens::results::Out::Rematch => match autosave::save(&mut app.game) {
+                        Ok(_) => {
+                            let fresh = Game::new(app.game.scenario.clone())?;
+                            app.game = keep_flags(fresh, &app.game);
+                            app.game.paused = app.args.paused;
+                            app.tutorial = None;
+                            app.input.reset_session();
+                            rerun = true;
+                            Screen::Playing
+                        }
+                        Err(err) => {
+                            app.menu_notice = Some((
+                                format!("cannot save result: {}", err.player_line()),
+                                get_time() + 5.0,
+                            ));
+                            Screen::Results(results)
+                        }
+                    },
+                    screens::results::Out::Watch => {
+                        let mut replay = app.game.recorder.clone();
+                        replay.meta.ticks = Some(app.game.state.current_tick());
+                        match PlaybackSession::from_replay(replay) {
+                            Ok(mut session) => {
+                                session.return_to = PlaybackReturn::Results;
+                                rerun = true;
+                                Screen::Playback(Box::new(session))
+                            }
+                            Err(err) => {
+                                app.menu_notice = Some((
+                                    format!("cannot open playback: {err}"),
+                                    get_time() + 5.0,
+                                ));
+                                Screen::Results(results)
+                            }
+                        }
+                    }
+                    screens::results::Out::Home => match autosave::save(&mut app.game) {
+                        Ok(_) => {
+                            rerun = true;
+                            Screen::Home(HomeScreen::open())
+                        }
+                        Err(err) => Screen::Pause(PauseScreen::open_save_failed(
+                            err.player_line(),
+                            screens::pause::LeaveVerb::MainMenu,
+                            true,
+                            false,
+                            false,
+                        )),
+                    },
                 }
             }
             Screen::Replays(mut shelf) => {
@@ -926,7 +998,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                         replay.meta.ticks = Some(app.game.state.current_tick());
                         match PlaybackSession::from_replay(replay) {
                             Ok(mut session) => {
-                                session.from_pause = true;
+                                session.return_to = PlaybackReturn::Pause;
                                 Screen::Playback(Box::new(session))
                             }
                             Err(err) => {
@@ -999,10 +1071,16 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             if get_time() < *until {
                 let s = render::ui_scale();
                 let width = measure_text(msg, None, (16.0 * s) as u16, 1.0).width;
+                let y = if matches!(screen, Screen::Results(_)) {
+                    screens::results::action_rects(vec2(screen_width(), screen_height()), s)[0].y
+                        - 10.0 * s
+                } else {
+                    screen_height() - 48.0 * s
+                };
                 draw_text(
                     msg,
                     (screen_width() - width) * 0.5,
-                    screen_height() - 48.0 * s,
+                    y,
                     16.0 * s,
                     theme::TEXT_DANGER,
                 );
@@ -1125,9 +1203,12 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                     // a Home-classified Cancel would strand it with no
                     // route back.
                     let over_a_match = match &screen {
-                        Screen::Playing | Screen::Pause(_) => true,
+                        Screen::Playing | Screen::Results(_) | Screen::Pause(_) => true,
                         Screen::Settings { back, .. } => matches!(**back, Screen::Pause(_)),
-                        Screen::Playback(pb) => pb.from_pause,
+                        Screen::Playback(pb) => matches!(
+                            pb.return_to,
+                            PlaybackReturn::Pause | PlaybackReturn::Results
+                        ),
                         Screen::Home(_) | Screen::Wizard(_) | Screen::Replays(_) => false,
                     };
                     screen = Screen::Pause(PauseScreen::open_save_failed(
@@ -1196,6 +1277,17 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
         }
         Screen::Playing => ("playing", None),
         Screen::Playback(_) => ("playback", None),
+        Screen::Results(results) => {
+            return UiView {
+                mode: "results".to_string(),
+                title: Some("MATCH RESULT".to_string()),
+                selected: Some(results.selected()),
+                items: results.items(),
+                visible_range: Some([0, 3]),
+                hover: results.hover(),
+                chrome: None,
+            };
+        }
         Screen::Replays(shelf) => ("replays", Some(&shelf.menu)),
         Screen::Pause(ps) => (
             if ps.saving_failed() {

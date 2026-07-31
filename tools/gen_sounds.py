@@ -16,12 +16,54 @@ import argparse
 import io
 import math
 import random
+import struct
 import wave
+from itertools import pairwise
 from pathlib import Path
 
 RATE = 22050
+MUSIC_SECONDS = 12
+MUSIC_FRAMES = MUSIC_SECONDS * RATE
+MUSIC_MAX_PEAK = 0.82
+MUSIC_MAX_DC = 0.0005
+MUSIC_MAX_SEAM = 0.001
+# Five percent of full scale admits the authored upper partials but rejects
+# the one-sample edge that produced the combat-layer speaker pop.
+MUSIC_MAX_DELTA = 0.05
 OUT = Path(__file__).resolve().parent.parent / "assets" / "sounds"
 GENERATED: dict[str, bytes] = {}
+
+
+def validate_music_wav(name: str, data: bytes) -> dict[str, float]:
+    """Checks the score's loop, PCM format, and click-prevention budget."""
+    with wave.open(io.BytesIO(data), "rb") as f:
+        if (f.getnchannels(), f.getsampwidth(), f.getframerate()) != (1, 2, RATE):
+            raise ValueError(f"{name}: music must be mono 16-bit PCM at {RATE} Hz")
+        if f.getnframes() != MUSIC_FRAMES:
+            raise ValueError(
+                f"{name}: expected {MUSIC_FRAMES} frames, got {f.getnframes()}"
+            )
+        if f.getcomptype() != "NONE":
+            raise ValueError(f"{name}: music must be uncompressed PCM")
+        frames = f.readframes(MUSIC_FRAMES)
+
+    pcm = [sample[0] for sample in struct.iter_unpack("<h", frames)]
+    normalized = [sample / 32768.0 for sample in pcm]
+    peak = max(abs(sample) for sample in normalized)
+    dc = abs(sum(normalized) / len(normalized))
+    seam = abs(normalized[0] - normalized[-1])
+    delta = max(abs(current - previous) for previous, current in pairwise(normalized))
+    if max(abs(sample) for sample in pcm) >= 32767 or peak > MUSIC_MAX_PEAK:
+        raise ValueError(f"{name}: peak {peak:.6f} leaves inadequate headroom")
+    if dc > MUSIC_MAX_DC:
+        raise ValueError(f"{name}: DC offset {dc:.6f} exceeds {MUSIC_MAX_DC}")
+    if seam > MUSIC_MAX_SEAM:
+        raise ValueError(f"{name}: loop seam {seam:.6f} exceeds {MUSIC_MAX_SEAM}")
+    if delta > MUSIC_MAX_DELTA:
+        raise ValueError(
+            f"{name}: adjacent delta {delta:.6f} exceeds {MUSIC_MAX_DELTA}"
+        )
+    return {"peak": peak, "dc": dc, "seam": seam, "delta": delta}
 
 
 def write(name: str, samples: list[float]) -> None:
@@ -35,8 +77,16 @@ def write(name: str, samples: list[float]) -> None:
             v = max(-1.0, min(1.0, s))
             frames += int(v * 32767).to_bytes(2, "little", signed=True)
         f.writeframes(bytes(frames))
-    GENERATED[f"{name}.wav"] = data.getvalue()
-    print(f"  {name}.wav ({len(samples) / RATE:.2f}s)")
+    wav = data.getvalue()
+    GENERATED[f"{name}.wav"] = wav
+    detail = ""
+    if name.startswith("music_"):
+        metrics = validate_music_wav(name, wav)
+        detail = (
+            f", peak {metrics['peak']:.3f}, seam {metrics['seam']:.6f}, "
+            f"dc {metrics['dc']:.6f}, delta {metrics['delta']:.3f}"
+        )
+    print(f"  {name}.wav ({len(samples) / RATE:.2f}s{detail})")
 
 
 def decay(i: int, n: int, sharpness: float = 5.0) -> float:
@@ -185,86 +235,188 @@ def artillery_launch() -> None:
     write("artillery_launch", out)
 
 
-def loop_frequency(target: float, seconds: float) -> float:
-    """Quantizes a tone to a whole number of cycles per loop."""
-    return round(target * seconds) / seconds
+MUSIC_BEAT = 2.0 / 3.0
+MUSIC_STEP = MUSIC_BEAT / 2.0
+MUSIC_PHRASE = 6.0 * MUSIC_BEAT
 
 
-def music_pad(
-    name: str,
-    tones: list[tuple[float, float]],
+def raised_cosine_hit(i: int, n: int, attack: int, release: int) -> float:
+    """A click-free attack/release envelope that reaches zero at both ends."""
+    if not (1 < attack < n and 1 < release < n):
+        raise ValueError("a music hit needs non-trivial attack and release")
+    if i < attack:
+        return 0.5 - 0.5 * math.cos(math.pi * i / (attack - 1))
+    release_at = n - release
+    if i >= release_at:
+        remaining = n - 1 - i
+        return 0.5 - 0.5 * math.cos(math.pi * remaining / (release - 1))
+    return 1.0
+
+
+def note_frequency(root: float, semitones: int) -> float:
+    return root * 2.0 ** (semitones / 12.0)
+
+
+def add_tone_hit(
+    out: list[float],
+    start_seconds: float,
+    duration: float,
+    frequency: float,
+    volume: float,
     *,
-    seed: int,
-    motion_cycles: int,
+    metallic: bool,
 ) -> None:
-    """A slow industrial harmonic field, deliberately without a melody."""
-    seconds = 12.0
-    n = int(seconds * RATE)
-    rng = random.Random(seed)
-    phases = [rng.random() for _ in tones]
-    freqs = [loop_frequency(freq, seconds) for freq, _ in tones]
-    texture_phases = [rng.random(), rng.random()]
-    texture_freqs = [
-        loop_frequency(713.0, seconds),
-        loop_frequency(997.0, seconds),
-    ]
-    weight = sum(level for _, level in tones)
-    out: list[float] = []
+    """Adds one gated tone; even its faintest partial shares the envelope."""
+    start = round(start_seconds * RATE)
+    n = round(duration * RATE)
+    if start < 0 or start + n > len(out):
+        raise ValueError("music hit crosses the loop boundary")
+    attack = max(2, round((0.014 if metallic else 0.022) * RATE))
+    release = max(2, round((0.07 if metallic else 0.11) * RATE))
+    partials = (
+        ((1.0, 0.74), (2.01, 0.17), (3.97, 0.07), (6.03, 0.02))
+        if metallic
+        else ((1.0, 0.82), (2.0, 0.18))
+    )
     for i in range(n):
-        t = i / RATE
-        phase = i / n
-        bed = 0.0
-        for (_, level), freq, offset in zip(tones, freqs, phases, strict=True):
-            fundamental = math.sin(2 * math.pi * (freq * t + offset))
-            overtone = math.sin(2 * math.pi * (freq * 2.0 * t + offset * 0.5))
-            bed += level * (0.82 * fundamental + 0.18 * overtone)
-        bed /= weight
-        motion = 0.78 + 0.22 * math.sin(
-            2 * math.pi * (motion_cycles * phase + phases[0])
+        envelope = raised_cosine_hit(i, n, attack, release)
+        age = i / RATE
+        color = sum(
+            weight * math.sin(2.0 * math.pi * frequency * ratio * age)
+            for ratio, weight in partials
         )
-        texture = sum(
-            math.sin(2 * math.pi * (freq * t + offset))
-            for freq, offset in zip(texture_freqs, texture_phases, strict=True)
-        )
-        out.append(0.58 * bed * motion + 0.006 * texture)
-    write(name, out)
+        out[start + i] += volume * envelope * color
+
+
+def add_noise_hit(
+    out: list[float],
+    start_seconds: float,
+    duration: float,
+    volume: float,
+    rng: random.Random,
+) -> None:
+    """Adds a softened metal scrape with no discontinuous noise edge."""
+    start = round(start_seconds * RATE)
+    n = round(duration * RATE)
+    if start < 0 or start + n > len(out):
+        raise ValueError("music noise crosses the loop boundary")
+    attack = max(2, round(0.012 * RATE))
+    release = max(2, round(0.055 * RATE))
+    fast = 0.0
+    slow = 0.0
+    for i in range(n):
+        raw = rng.uniform(-1.0, 1.0)
+        fast += 0.16 * (raw - fast)
+        slow += 0.035 * (raw - slow)
+        band = fast - slow
+        ring = math.sin(2.0 * math.pi * 1080.0 * i / RATE)
+        envelope = raised_cosine_hit(i, n, attack, release)
+        out[start + i] += volume * envelope * (0.78 * band + 0.22 * ring)
+
+
+def finish_music(out: list[float]) -> list[float]:
+    """Centers a stem while retaining the identical silent loop endpoints."""
+    dc = sum(out) / len(out)
+    return [sample - dc for sample in out]
+
+
+def music_bed(
+    name: str,
+    *,
+    root: float,
+    ostinato: tuple[int | None, ...],
+    motif: tuple[int, ...],
+    bass: tuple[int, ...],
+    seed: int,
+) -> None:
+    """A gated industrial pulse with a sparse four-note melodic phrase."""
+    if len(ostinato) != 12 or len(motif) != 12 or len(bass) != 9:
+        raise ValueError("music beds require three complete four-second phrases")
+    out = [0.0] * MUSIC_FRAMES
+    rng = random.Random(seed)
+    motif_steps = (2, 5, 8, 10)
+    for phrase in range(3):
+        phrase_at = phrase * MUSIC_PHRASE
+        for step, degree in enumerate(ostinato):
+            if degree is None or step in motif_steps:
+                continue
+            add_tone_hit(
+                out,
+                phrase_at + step * MUSIC_STEP,
+                0.19,
+                note_frequency(root * 2.0, degree),
+                0.09,
+                metallic=True,
+            )
+        for step, degree in zip(
+            motif_steps, motif[phrase * 4 : phrase * 4 + 4], strict=True
+        ):
+            add_tone_hit(
+                out,
+                phrase_at + step * MUSIC_STEP,
+                0.3,
+                note_frequency(root * 4.0, degree),
+                0.15,
+                metallic=True,
+            )
+        for bass_slot, degree in enumerate(bass[phrase * 3 : phrase * 3 + 3]):
+            add_tone_hit(
+                out,
+                phrase_at + bass_slot * 2.0 * MUSIC_BEAT,
+                0.44,
+                note_frequency(root, degree),
+                0.18,
+                metallic=False,
+            )
+        for step in (3, 9):
+            add_noise_hit(
+                out,
+                phrase_at + step * MUSIC_STEP,
+                0.15,
+                0.055,
+                rng,
+            )
+    write(name, finish_music(out))
 
 
 def music_combat() -> None:
-    """A pressure stem that can sit over the calm match bed."""
-    seconds = 12.0
-    n = int(seconds * RATE)
-    out = [0.0] * n
+    """A syncopated D-minor pressure layer for the calm match stem."""
+    out = [0.0] * MUSIC_FRAMES
     rng = random.Random(140)
-    beat = 0.75
-    for step in range(int(seconds / beat)):
-        start = int((0.3 + step * beat) * RATE)
-        length = int(0.24 * RATE)
-        for i in range(length):
-            at = start + i
-            if at >= n:
-                break
-            t = i / RATE
-            sweep = 72.0 - 25.0 * i / length
-            kick = math.sin(2 * math.pi * sweep * t) * decay(i, length, 7.0)
-            out[at] += 0.68 * kick
-        if step % 2 == 1:
-            start += int(0.36 * RATE)
-            length = int(0.11 * RATE)
-            if start + length >= n:
-                continue
-            filtered = 0.0
-            for i in range(length):
-                at = start + i
-                if at >= n:
-                    break
-                filtered += 0.5 * (rng.uniform(-1.0, 1.0) - filtered)
-                out[at] += 0.24 * filtered * decay(i, length, 10.0)
-    drone = loop_frequency(46.25, seconds)
-    for i in range(n):
-        t = i / RATE
-        out[i] += 0.13 * math.sin(2 * math.pi * drone * t)
-    write("music_combat", out)
+    motif = (0, 7, 10, 3, 0, 10, 7, 12, 10, 7, 3, 0)
+    motif_steps = (1, 4, 7, 10)
+    for phrase in range(3):
+        phrase_at = phrase * MUSIC_PHRASE
+        for beat in range(6):
+            degree = 0 if beat % 3 != 2 else -5
+            add_tone_hit(
+                out,
+                phrase_at + beat * MUSIC_BEAT,
+                0.26,
+                note_frequency(73.42, degree),
+                0.2,
+                metallic=False,
+            )
+        for step, degree in zip(
+            motif_steps, motif[phrase * 4 : phrase * 4 + 4], strict=True
+        ):
+            add_tone_hit(
+                out,
+                phrase_at + step * MUSIC_STEP,
+                0.22,
+                note_frequency(73.42 * 4.0, degree),
+                0.18,
+                metallic=True,
+            )
+        for step in (1, 3, 5, 7, 9, 11):
+            add_noise_hit(
+                out,
+                phrase_at + step * MUSIC_STEP,
+                0.12,
+                0.065,
+                rng,
+            )
+    write("music_combat", finish_music(out))
 
 
 def emit(check: bool) -> None:
@@ -314,36 +466,46 @@ def main() -> None:
     chime("denied", [233.08, 174.61], 0.09, 0.4, dark=True)
     chime("victory", [523.25, 659.25, 783.99, 1046.5], 0.16, 0.45)
     chime("defeat", [392.0, 329.63, 261.63, 196.0], 0.16, 0.45, dark=True)
-    music_pad(
+    music_bed(
         "music_menu",
-        [(55.0, 1.0), (82.5, 0.7), (110.0, 0.45), (165.0, 0.18)],
+        root=82.41,
+        ostinato=(0, None, 7, 0, 3, None, 7, 10, 0, None, 3, 7),
+        motif=(0, 3, 7, 10, 0, 7, 12, 10, 7, 3, 0, 7),
+        bass=(0, 0, 3, 0, 10, 7, 0, 3, 0),
         seed=114,
-        motion_cycles=2,
     )
-    music_pad(
+    music_bed(
         "music_calm",
-        [(46.25, 1.0), (69.38, 0.7), (92.5, 0.42), (138.75, 0.16)],
+        root=73.42,
+        ostinato=(0, None, 7, 0, 3, None, 0, 10, 0, None, 7, 3),
+        motif=(0, 3, 7, 10, 0, 7, 3, 12, 10, 7, 3, 0),
+        bass=(0, 0, 3, 0, 10, 7, 0, 3, 0),
         seed=214,
-        motion_cycles=1,
     )
     music_combat()
-    music_pad(
+    music_bed(
         "music_result",
-        [(61.74, 1.0), (92.5, 0.65), (123.47, 0.4), (185.0, 0.14)],
+        root=65.41,
+        ostinato=(0, None, 7, 0, 5, None, 10, 7, 0, None, 5, 10),
+        motif=(0, 5, 7, 10, 0, 7, 5, 12, 10, 7, 5, 0),
+        bass=(0, 0, 5, 0, 10, 7, 0, 5, 0),
         seed=314,
-        motion_cycles=1,
     )
-    music_pad(
+    music_bed(
         "music_victory",
-        [(55.0, 1.0), (82.5, 0.62), (110.0, 0.4), (138.6, 0.3), (165.0, 0.16)],
+        root=73.42,
+        ostinato=(0, None, 7, 0, 4, None, 7, 12, 0, None, 4, 7),
+        motif=(0, 4, 7, 12, 4, 7, 11, 12, 7, 4, 9, 12),
+        bass=(0, 0, 5, 0, 7, 5, 0, 5, 0),
         seed=414,
-        motion_cycles=2,
     )
-    music_pad(
+    music_bed(
         "music_defeat",
-        [(49.0, 1.0), (73.5, 0.68), (98.0, 0.4), (116.5, 0.24), (147.0, 0.12)],
+        root=73.42,
+        ostinato=(0, None, 3, 0, -2, None, 3, 7, 0, None, -2, 3),
+        motif=(10, 7, 3, 0, 7, 3, 0, -2, 3, 0, -2, -5),
+        bass=(0, -2, -5, 0, -2, -5, 0, -5, -12),
         seed=514,
-        motion_cycles=1,
     )
     emit(args.check)
     print("done")

@@ -88,6 +88,84 @@ pub(crate) fn allegiance_tint(cue: AllegianceCue) -> Option<Color> {
     }
 }
 
+/// A stable seat accent inside the stronger allegiance vocabulary.
+///
+/// Allies stay in a cool family and hostiles stay in a warm family,
+/// but seats within either family receive distinct accents in seat order.
+/// The underlying silhouette, allegiance ring, and friend/foe family still
+/// carry meaning when hue cannot; the per-seat tint is an identity aid, not
+/// the only allegiance signal.
+pub(crate) fn seat_identity_color(game: &crate::game::Game, owner: oxide_sim::PlayerId) -> Color {
+    let cue = allegiance_cue(game, owner);
+    if cue == AllegianceCue::Mine {
+        return faction_accent(game.state.player(owner).faction);
+    }
+    let semantic = allegiance_tint(cue).expect("non-own allegiance has a semantic tint");
+    let rank = game
+        .state
+        .players()
+        .iter()
+        .enumerate()
+        .map(|(seat, _)| oxide_sim::PlayerId(seat as u8))
+        .filter(|seat| {
+            let other = allegiance_cue(game, *seat);
+            matches!(
+                (cue, other),
+                (AllegianceCue::Ally, AllegianceCue::Ally)
+                    | (
+                        AllegianceCue::Hostile | AllegianceCue::HostileTwin,
+                        AllegianceCue::Hostile | AllegianceCue::HostileTwin
+                    )
+            )
+        })
+        .position(|seat| seat == owner)
+        .unwrap_or(0);
+    let allies = if colorblind() {
+        [
+            semantic,
+            color_u8!(112, 184, 238, 255),
+            color_u8!(181, 158, 232, 255),
+            color_u8!(145, 207, 190, 255),
+        ]
+    } else {
+        [
+            semantic,
+            color_u8!(68, 190, 205, 255),
+            color_u8!(165, 139, 235, 255),
+            color_u8!(132, 201, 170, 255),
+        ]
+    };
+    let hostiles = if colorblind() {
+        [
+            color_u8!(211, 65, 60, 255),
+            color_u8!(232, 128, 35, 255),
+            color_u8!(173, 72, 125, 255),
+            color_u8!(151, 87, 61, 255),
+        ]
+    } else {
+        [
+            semantic,
+            color_u8!(232, 105, 42, 255),
+            color_u8!(199, 66, 132, 255),
+            color_u8!(172, 83, 57, 255),
+        ]
+    };
+    match cue {
+        AllegianceCue::Ally => allies[rank % allies.len()],
+        AllegianceCue::Hostile | AllegianceCue::HostileTwin => hostiles[rank % hostiles.len()],
+        AllegianceCue::Mine => unreachable!("mine returned above"),
+    }
+}
+
+/// The seat-aware sprite/minimap accent. Own machines keep their faction
+/// art; every other seat receives its stable ally- or enemy-family tint.
+pub(crate) fn seat_identity_tint(
+    game: &crate::game::Game,
+    owner: oxide_sim::PlayerId,
+) -> Option<Color> {
+    (owner != game.human).then(|| seat_identity_color(game, owner))
+}
+
 /// How faded a memory draws after `age` seconds unseen: 0 fresh,
 /// climbing to a 0.55 fade over ninety seconds. Memories never vanish
 /// — the player recorded them honestly — they just stop pretending to
@@ -112,8 +190,8 @@ use crate::game::{EffectKind, Game};
 use crate::input::InputState;
 use chassis::grid::TilePos;
 use macroquad::prelude::*;
+use oxide_sim::UnitKind;
 use oxide_sim::stats::SCRAP_NODE_AMOUNT;
-use oxide_sim::{GameResult, UnitKind};
 
 pub(crate) use crate::theme::{
     SURFACE_CARD, TEXT_BODY, TEXT_DISABLED, TEXT_PRIMARY, TEXT_SECONDARY,
@@ -458,7 +536,7 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         // The allegiance accent rides the body draw exactly — same
         // pose, same frame — and draws UNCONDITIONALLY for non-own
         // machines: selection must never repaint a foe as a friend.
-        if let Some(tint) = allegiance_tint(allegiance_cue(game, unit.player)) {
+        if let Some(tint) = seat_identity_tint(game, unit.player) {
             draw_texture_ex(
                 sprites.texture(),
                 body.x - body_size.x * 0.5,
@@ -721,5 +799,42 @@ mod tests {
             "colorblind mode splits friend from foe by luminance, not hue"
         );
         super::set_colorblind(false);
+    }
+
+    #[test]
+    fn every_team_seat_gets_a_stable_identity_inside_its_allegiance_family() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../scenarios/compass-grand.json");
+        let scenario = oxide_sim::Scenario::load(&path).expect("shipped map loads");
+        let game =
+            crate::game::Game::with_viewport(scenario, macroquad::prelude::vec2(1280.0, 800.0))
+                .expect("compass grand builds");
+        super::set_colorblind(false);
+        let key = |seat: u8| {
+            let color = super::seat_identity_color(&game, oxide_sim::PlayerId(seat));
+            (
+                (color.r * 255.0).round() as u8,
+                (color.g * 255.0).round() as u8,
+                (color.b * 255.0).round() as u8,
+            )
+        };
+        let allies = [1, 2, 3].map(key);
+        let hostiles = [4, 5, 6, 7].map(key);
+        for colors in [allies.as_slice(), hostiles.as_slice()] {
+            for (index, color) in colors.iter().enumerate() {
+                assert!(
+                    !colors[..index].contains(color),
+                    "each seat in one allegiance family needs a distinct accent"
+                );
+            }
+        }
+        assert!(
+            allies.iter().all(|(r, _, b)| b > r),
+            "allies stay in the cool family"
+        );
+        assert!(
+            hostiles.iter().all(|(r, _, b)| r > b),
+            "hostiles stay in the warm family"
+        );
     }
 }

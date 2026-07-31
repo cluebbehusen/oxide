@@ -449,8 +449,8 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
             // own alpha: a translucent own-faction sprite is also how
             // the player's own construction sites draw, and a memory
             // must never masquerade as one of those.
-            let accent_tint = allegiance_tint(allegiance_cue(game, ghost.owner))
-                .map(|c| Color::new(c.r, c.g, c.b, tint.a));
+            let accent_tint =
+                seat_identity_tint(game, ghost.owner).map(|c| Color::new(c.r, c.g, c.b, tint.a));
             let dest = vec2(w as f32 * zoom, h as f32 * zoom);
             let mut layers = vec![(sprites.building(ghost.kind, faction), tint)];
             if let Some(accent) = accent_tint {
@@ -526,8 +526,8 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
         );
         // The allegiance accent, at the hull's own alpha so a rising
         // hostile site solidifies accent and all.
-        let accent_tint = allegiance_tint(allegiance_cue(game, building.player))
-            .map(|c| Color::new(c.r, c.g, c.b, tint.a));
+        let accent_tint =
+            seat_identity_tint(game, building.player).map(|c| Color::new(c.r, c.g, c.b, tint.a));
         if let Some(accent) = accent_tint {
             draw_texture_ex(
                 sprites.texture(),
@@ -1113,6 +1113,7 @@ enum BuildingRangeShape {
 }
 
 impl BuildingRangeShape {
+    #[cfg(test)]
     fn outer_bounds(self) -> (Vec2, Vec2) {
         match self {
             Self::Circle { center, radius } => {
@@ -1131,6 +1132,107 @@ impl BuildingRangeShape {
 struct BuildingRange {
     kind: BuildingRangeKind,
     shape: BuildingRangeShape,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RangeStroke {
+    Solid,
+    LongDash,
+    Dotted,
+    DashDot,
+}
+
+impl RangeStroke {
+    fn visible(self, distance: f32, scale: f32) -> bool {
+        let scale = scale.max(0.25);
+        match self {
+            Self::Solid => true,
+            Self::LongDash => (distance / scale).rem_euclid(20.0) < 12.0,
+            Self::Dotted => (distance / scale).rem_euclid(9.0) < 2.5,
+            Self::DashDot => {
+                let phase = (distance / scale).rem_euclid(26.0);
+                phase < 11.0 || (16.0..19.0).contains(&phase)
+            }
+        }
+    }
+}
+
+fn range_stroke(kind: BuildingRangeKind) -> RangeStroke {
+    match kind {
+        BuildingRangeKind::Weapon => RangeStroke::Solid,
+        BuildingRangeKind::Vision => RangeStroke::LongDash,
+        BuildingRangeKind::Radar => RangeStroke::Dotted,
+        BuildingRangeKind::Repair => RangeStroke::DashDot,
+    }
+}
+
+fn stroke_patterned_path(
+    points: &[Vec2],
+    stroke: RangeStroke,
+    thickness: f32,
+    color: Color,
+    scale: f32,
+) {
+    let mut traveled = 0.0;
+    let sample = (3.0 * scale).max(1.5);
+    for pair in points.windows(2) {
+        let delta = pair[1] - pair[0];
+        let length = delta.length();
+        if length <= f32::EPSILON {
+            continue;
+        }
+        let steps = (length / sample).ceil().max(1.0) as usize;
+        for step in 0..steps {
+            let a_t = step as f32 / steps as f32;
+            let b_t = (step + 1) as f32 / steps as f32;
+            let midpoint = traveled + length * (a_t + b_t) * 0.5;
+            if stroke.visible(midpoint, scale) {
+                let a = pair[0] + delta * a_t;
+                let b = pair[0] + delta * b_t;
+                draw_line(a.x, a.y, b.x, b.y, thickness, color);
+            }
+        }
+        traveled += length;
+    }
+}
+
+fn circle_path(center: Vec2, radius: f32) -> Vec<Vec2> {
+    let segments = ((std::f32::consts::TAU * radius / 4.0).ceil() as usize).clamp(48, 240);
+    (0..=segments)
+        .map(|segment| {
+            let angle = std::f32::consts::TAU * segment as f32 / segments as f32;
+            center + vec2(angle.cos(), angle.sin()) * radius
+        })
+        .collect()
+}
+
+fn rounded_footprint_path(min: Vec2, max: Vec2, radius: f32) -> Vec<Vec2> {
+    const CORNER_SEGMENTS: usize = 12;
+    let outer_min = min - vec2(radius, radius);
+    let outer_max = max + vec2(radius, radius);
+    let mut points = Vec::with_capacity(4 * (CORNER_SEGMENTS + 2) + 1);
+    points.push(vec2(min.x, outer_min.y));
+    points.push(vec2(max.x, outer_min.y));
+    for (center, start) in [
+        (vec2(max.x, min.y), -std::f32::consts::FRAC_PI_2),
+        (max, 0.0),
+        (vec2(min.x, max.y), std::f32::consts::FRAC_PI_2),
+        (min, std::f32::consts::PI),
+    ] {
+        for segment in 1..=CORNER_SEGMENTS {
+            let angle =
+                start + std::f32::consts::FRAC_PI_2 * segment as f32 / CORNER_SEGMENTS as f32;
+            points.push(center + vec2(angle.cos(), angle.sin()) * radius);
+        }
+        let next = match start {
+            value if value < 0.0 => vec2(outer_max.x, max.y),
+            0.0 => vec2(min.x, outer_max.y),
+            value if value < std::f32::consts::PI => vec2(outer_min.x, min.y),
+            _ => points[0],
+        };
+        points.push(next);
+    }
+    points
 }
 
 /// One range vocabulary serves selected buildings and placement ghosts.
@@ -1192,63 +1294,60 @@ fn visit_building_ranges(
 
 pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
     let s = ui_scale();
-    let ring = |world: Vec2, radius: f32, color: Color| {
+    let ring = |world: Vec2, radius: f32, stroke: RangeStroke, color: Color| {
         if radius <= 0.0 {
             return;
         }
         let center = game.camera.to_screen(world);
-        draw_circle_lines(
-            center.x,
-            center.y,
-            radius * game.camera.zoom,
-            1.5 * s,
-            color,
-        );
-    };
-    let footprint_offset = |min: Vec2, max: Vec2, radius: f32, color: Color| {
-        if radius <= 0.0 {
+        if stroke == RangeStroke::Solid {
+            draw_circle_lines(
+                center.x,
+                center.y,
+                radius * game.camera.zoom,
+                1.7 * s,
+                color,
+            );
             return;
         }
-        let (outer_min, outer_max) =
-            (BuildingRangeShape::FootprintOffset { min, max, radius }).outer_bounds();
-        let min = game.camera.to_screen(min);
-        let max = game.camera.to_screen(max);
-        let outer_min = game.camera.to_screen(outer_min);
-        let outer_max = game.camera.to_screen(outer_max);
-        let radius = radius * game.camera.zoom;
-        let thickness = 1.5 * s;
-
-        draw_line(min.x, outer_min.y, max.x, outer_min.y, thickness, color);
-        draw_line(min.x, outer_max.y, max.x, outer_max.y, thickness, color);
-        draw_line(outer_min.x, min.y, outer_min.x, max.y, thickness, color);
-        draw_line(outer_max.x, min.y, outer_max.x, max.y, thickness, color);
-
-        const CORNER_SEGMENTS: usize = 12;
-        let corner = |center: Vec2, start: f32| {
-            let sweep = std::f32::consts::FRAC_PI_2;
-            let mut previous = center + vec2(start.cos(), start.sin()) * radius;
-            for segment in 1..=CORNER_SEGMENTS {
-                let angle = start + sweep * segment as f32 / CORNER_SEGMENTS as f32;
-                let next = center + vec2(angle.cos(), angle.sin()) * radius;
-                draw_line(previous.x, previous.y, next.x, next.y, thickness, color);
-                previous = next;
-            }
-        };
-        corner(min, std::f32::consts::PI);
-        corner(vec2(max.x, min.y), std::f32::consts::FRAC_PI_2 * 3.0);
-        corner(max, 0.0);
-        corner(vec2(min.x, max.y), std::f32::consts::FRAC_PI_2);
+        stroke_patterned_path(
+            &circle_path(center, radius * game.camera.zoom),
+            stroke,
+            1.7 * s,
+            color,
+            s,
+        );
     };
+    let footprint_offset =
+        |min: Vec2, max: Vec2, radius: f32, stroke: RangeStroke, color: Color| {
+            if radius <= 0.0 {
+                return;
+            }
+            let min = game.camera.to_screen(min);
+            let max = game.camera.to_screen(max);
+            let radius = radius * game.camera.zoom;
+            stroke_patterned_path(
+                &rounded_footprint_path(min, max, radius),
+                stroke,
+                1.7 * s,
+                color,
+                s,
+            );
+        };
     let weapon_color = Color::new(0.85, 0.32, 0.29, 0.55);
     let sidearm_color = Color::new(0.85, 0.32, 0.29, 0.30);
-    let vision_color = Color::new(0.91, 0.89, 0.85, 0.25);
-    let radar_color = Color::new(0.25, 0.58, 0.51, 0.45);
-    let repair_color = Color::new(0.38, 0.78, 0.48, 0.48);
+    let vision_color = Color::new(0.63, 0.77, 0.94, 0.42);
+    let radar_color = Color::new(0.22, 0.76, 0.72, 0.52);
+    let repair_color = Color::new(0.38, 0.82, 0.45, 0.55);
 
     let unit_rings = |world: Vec2, stats: &oxide_sim::stats::UnitStats| {
         for (i, weapon) in stats.weapons.iter().enumerate() {
             let color = if i == 0 { weapon_color } else { sidearm_color };
-            ring(world, weapon.range.to_num::<f32>(), color);
+            ring(
+                world,
+                weapon.range.to_num::<f32>(),
+                RangeStroke::Solid,
+                color,
+            );
         }
         // Guns past their own eyes need a spotter: show the gap.
         if stats
@@ -1256,7 +1355,12 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
             .iter()
             .any(|w| w.range.to_num::<f32>() > stats.vision as f32)
         {
-            ring(world, stats.vision as f32, vision_color);
+            ring(
+                world,
+                stats.vision as f32,
+                RangeStroke::LongDash,
+                vision_color,
+            );
         }
     };
     let building_rings = |anchor: Vec2, kind: oxide_sim::BuildingKind| {
@@ -1267,10 +1371,13 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
                 BuildingRangeKind::Radar => radar_color,
                 BuildingRangeKind::Repair => repair_color,
             };
+            let stroke = range_stroke(range.kind);
             match range.shape {
-                BuildingRangeShape::Circle { center, radius } => ring(center, radius, color),
+                BuildingRangeShape::Circle { center, radius } => {
+                    ring(center, radius, stroke, color);
+                }
                 BuildingRangeShape::FootprintOffset { min, max, radius } => {
-                    footprint_offset(min, max, radius, color);
+                    footprint_offset(min, max, radius, stroke, color);
                 }
             }
         });
@@ -1455,5 +1562,62 @@ mod tests {
                 radius: kind.stats().weapons[0].range.to_num::<f32>(),
             }
         );
+    }
+
+    #[test]
+    fn every_range_meaning_has_its_own_line_texture() {
+        let strokes = [
+            range_stroke(BuildingRangeKind::Weapon),
+            range_stroke(BuildingRangeKind::Vision),
+            range_stroke(BuildingRangeKind::Radar),
+            range_stroke(BuildingRangeKind::Repair),
+        ];
+        for (index, stroke) in strokes.iter().enumerate() {
+            assert!(
+                strokes[..index].iter().all(|other| other != stroke),
+                "{stroke:?} was reused for two range meanings"
+            );
+        }
+
+        for stroke in [
+            RangeStroke::LongDash,
+            RangeStroke::Dotted,
+            RangeStroke::DashDot,
+        ] {
+            for scale in [0.75, 1.0, 2.0] {
+                let samples: Vec<bool> = (0..240)
+                    .map(|sample| stroke.visible(sample as f32 * scale * 0.5, scale))
+                    .collect();
+                assert!(samples.iter().any(|visible| *visible));
+                assert!(
+                    samples.iter().any(|visible| !*visible),
+                    "{stroke:?} became solid at {scale}x"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn patterned_paths_close_on_their_authored_outer_bounds() {
+        let center = vec2(30.0, 40.0);
+        let circle = circle_path(center, 12.0);
+        assert!((circle[0] - circle[circle.len() - 1]).length() < 1.0e-4);
+
+        let min = vec2(10.0, 20.0);
+        let max = vec2(24.0, 31.0);
+        let radius = 7.0;
+        let footprint = rounded_footprint_path(min, max, radius);
+        assert!((footprint[0] - footprint[footprint.len() - 1]).length() < 1.0e-4);
+        let low = footprint
+            .iter()
+            .fold(vec2(f32::INFINITY, f32::INFINITY), |bound, point| {
+                bound.min(*point)
+            });
+        let high = footprint.iter().fold(
+            vec2(f32::NEG_INFINITY, f32::NEG_INFINITY),
+            |bound, point| bound.max(*point),
+        );
+        assert!((low - (min - vec2(radius, radius))).length() < 1.0e-4);
+        assert!((high - (max + vec2(radius, radius))).length() < 1.0e-4);
     }
 }
