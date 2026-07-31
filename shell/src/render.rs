@@ -638,8 +638,8 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             }
         }
         let body_size = vec2(dest * pose.width_scale, dest * pose.height_scale);
-        // Locomotion and harvesting use whole authored frames. Ground
-        // chassis stay planted while tread cleats or the scoop itself move.
+        // Locomotion and harvesting use whole authored frames, so mechanical
+        // motion remains part of the machine rather than a detached overlay.
         let (source, accent) = if unit.kind == UnitKind::Harvester
             && matches!(unit.order, oxide_sim::Order::Harvest { node, .. }
                 if unit.tile().chebyshev(node) <= 1)

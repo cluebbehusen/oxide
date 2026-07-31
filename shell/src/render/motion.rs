@@ -33,8 +33,8 @@ impl UnitPose {
 
 /// Presentation pose for one unit.
 ///
-/// Ground locomotion lives in authored sprite frames, so a tracked chassis
-/// remains planted instead of wobbling or squashing. Air units retain a small
+/// Ground locomotion lives in authored sprite frames, keeping tread, wheel,
+/// leg, and chassis motion inside the machine art. Air units retain a small
 /// bank and exhaust; entity id offsets keep a formation out of lockstep.
 pub(crate) fn unit_pose(
     time: f32,

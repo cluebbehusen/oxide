@@ -564,26 +564,65 @@ def debris(variant: int) -> None:
     finish(img, px, f"debris_{variant}")
 
 
-def sentinel(faction: str) -> None:
+def sentinel(faction: str, move: int = 0) -> None:
     px = 64
     pal = FACTIONS[faction]
     img, d = canvas(px)
+    phase = move % 3
+    body_dy = (0, -1, 1)[phase]
+    # Armored runner pads stay under the hull while their lit suspension
+    # blocks trade load front-to-rear. The body settles against them in the
+    # two travel phases, giving the otherwise enclosed chassis visible weight.
+    runner_y = ((36, 36), (29, 42), (42, 29))[phase]
+    for x, load_y in zip((14, 46), runner_y, strict=True):
+        d.rounded_rectangle(
+            [s(x), s(25), s(x + 5), s(51)], radius=s(2), fill=(*IRON_DARK, 255)
+        )
+        d.rounded_rectangle(
+            [s(x + 1), s(load_y), s(x + 4), s(load_y + 7)],
+            radius=s(1),
+            fill=(*IRON_LIGHT, 255),
+        )
     # Angular chassis: a blunt arrowhead pointing up.
-    hull = [(32, 6), (50, 30), (46, 54), (18, 54), (14, 30)]
+    hull = [
+        (32, 6 + body_dy),
+        (50, 30 + body_dy),
+        (46, 54 + body_dy),
+        (18, 54 + body_dy),
+        (14, 30 + body_dy),
+    ]
     d.polygon([(s(x), s(y)) for x, y in hull], fill=(*IRON, 255))
-    inner = [(32, 12), (45, 31), (42, 49), (22, 49), (19, 31)]
+    inner = [
+        (32, 12 + body_dy),
+        (45, 31 + body_dy),
+        (42, 49 + body_dy),
+        (22, 49 + body_dy),
+        (19, 31 + body_dy),
+    ]
     d.polygon([(s(x), s(y)) for x, y in inner], fill=(*pal["base"], 255))
-    core = [(32, 22), (39, 33), (37, 44), (27, 44), (25, 33)]
+    core = [
+        (32, 22 + body_dy),
+        (39, 33 + body_dy),
+        (37, 44 + body_dy),
+        (27, 44 + body_dy),
+        (25, 33 + body_dy),
+    ]
     d.polygon([(s(x), s(y)) for x, y in core], fill=(*pal["dark"], 255))
     # Weapon pods.
-    d.ellipse([s(15), s(30), s(25), s(40)], fill=(*IRON_DARK, 255))
-    d.ellipse([s(39), s(30), s(49), s(40)], fill=(*IRON_DARK, 255))
+    d.ellipse([s(15), s(30 + body_dy), s(25), s(40 + body_dy)], fill=(*IRON_DARK, 255))
+    d.ellipse([s(39), s(30 + body_dy), s(49), s(40 + body_dy)], fill=(*IRON_DARK, 255))
     # Barrel, forward.
-    d.rectangle([s(29), s(2), s(35), s(20)], fill=(*IRON_DARK, 255))
-    d.rectangle([s(30.5), s(2), s(33.5), s(18)], fill=(*IRON_LIGHT, 255))
+    d.rectangle([s(29), s(2 + body_dy), s(35), s(20 + body_dy)], fill=(*IRON_DARK, 255))
+    d.rectangle(
+        [s(30.5), s(2 + body_dy), s(33.5), s(18 + body_dy)],
+        fill=(*IRON_LIGHT, 255),
+    )
     # Sight.
-    d.ellipse([s(29), s(24), s(35), s(30)], fill=(*pal["light"], 255))
-    finish(img, px, f"sentinel_{faction}")
+    d.ellipse(
+        [s(29), s(24 + body_dy), s(35), s(30 + body_dy)], fill=(*pal["light"], 255)
+    )
+    suffix = "" if move == 0 else f"_move{move}"
+    finish(img, px, f"sentinel_{faction}{suffix}")
 
 
 def turret(faction: str) -> None:
@@ -674,19 +713,27 @@ def fabricator(faction: str, work: int = 0) -> None:
     finish(img, px, f"fabricator_{faction}{suffix}")
 
 
-def scuttler(faction: str) -> None:
+def scuttler(faction: str, move: int = 0) -> None:
     """Low, wide, and mean: a six-legged shredder that reads as vermin
     next to the Sentinel's arrowhead."""
     px = 64
     pal = FACTIONS[faction]
     img, d = canvas(px)
+    phase = move % 3
+    gait = ((0, 0, 0), (-4, 3, -3), (3, -4, 3))[phase]
     # Legs splay from under the carapace, three per side.
     for side in (-1, 1):
         for i, ly in enumerate((24, 34, 44)):
             x0 = 32 + side * 12
             x1 = 32 + side * (24 + 2 * i)
+            step = gait[i] * side
+            foot_y = ly + 6 + step
             d.line(
-                [(s(x0), s(ly)), (s(x1), s(ly + 6))], fill=(*IRON_DARK, 255), width=s(3)
+                [(s(x0), s(ly)), (s(x1), s(foot_y))], fill=(*IRON_DARK, 255), width=s(3)
+            )
+            d.ellipse(
+                [s(x1 - 2), s(foot_y - 2), s(x1 + 2), s(foot_y + 2)],
+                fill=(*IRON_LIGHT, 255),
             )
     # Carapace: a squat oval, wider than tall.
     d.ellipse([s(12), s(18), s(52), s(50)], fill=(*IRON, 255))
@@ -697,66 +744,126 @@ def scuttler(faction: str) -> None:
     d.polygon([(s(40), s(20)), (s(34), s(8)), (s(32), s(18))], fill=(*IRON_LIGHT, 255))
     # A single hungry eye.
     d.ellipse([s(29), s(24), s(35), s(30)], fill=(*pal["light"], 255))
-    finish(img, px, f"scuttler_{faction}")
+    suffix = "" if move == 0 else f"_move{move}"
+    finish(img, px, f"scuttler_{faction}{suffix}")
 
 
-def lancer(faction: str) -> None:
+def lancer(faction: str, move: int = 0) -> None:
     """Artillery on legs: a narrow chassis dwarfed by its rail — the
     barrel is the silhouette."""
     px = 64
     pal = FACTIONS[faction]
     img, d = canvas(px)
-    # Braced stance: four stubby stabilizer feet.
-    for fx, fy in ((16, 34), (48, 34), (20, 52), (44, 52)):
+    phase = move % 3
+    body_dx = (0, -1, 1)[phase]
+    feet = (
+        ((16, 34), (48, 34), (20, 52), (44, 52)),
+        ((14, 30), (49, 37), (22, 55), (42, 49)),
+        ((15, 37), (50, 30), (18, 49), (46, 55)),
+    )[phase]
+    anchors = ((23, 36), (41, 36), (24, 48), (40, 48))
+    # Four stabilizer legs walk diagonally while the heavy rail shifts its
+    # weight over the planted pair.
+    for (fx, fy), (ax, ay) in zip(feet, anchors, strict=True):
+        d.line(
+            [(s(ax + body_dx), s(ay)), (s(fx), s(fy))],
+            fill=(*IRON_DARK, 255),
+            width=s(3),
+        )
         d.ellipse([s(fx - 4), s(fy - 4), s(fx + 4), s(fy + 4)], fill=(*IRON_DARK, 255))
     # Compact hull sitting low and back.
-    d.rounded_rectangle([s(20), s(30), s(44), s(56)], radius=s(5), fill=(*IRON, 255))
     d.rounded_rectangle(
-        [s(23), s(33), s(41), s(53)], radius=s(4), fill=(*pal["base"], 255)
+        [s(20 + body_dx), s(30), s(44 + body_dx), s(56)],
+        radius=s(5),
+        fill=(*IRON, 255),
     )
     d.rounded_rectangle(
-        [s(27), s(40), s(37), s(50)], radius=s(3), fill=(*pal["dark"], 255)
+        [s(23 + body_dx), s(33), s(41 + body_dx), s(53)],
+        radius=s(4),
+        fill=(*pal["base"], 255),
+    )
+    d.rounded_rectangle(
+        [s(27 + body_dx), s(40), s(37 + body_dx), s(50)],
+        radius=s(3),
+        fill=(*pal["dark"], 255),
     )
     # The rail: long, thin, unmistakable, reaching well past the hull.
-    d.rectangle([s(28), s(0), s(36), s(34)], fill=(*IRON_DARK, 255))
-    d.rectangle([s(30), s(0), s(34), s(32)], fill=(*IRON_LIGHT, 255))
-    d.rectangle([s(31), s(0), s(33), s(30)], fill=(*pal["light"], 255))
+    d.rectangle([s(28 + body_dx), s(0), s(36 + body_dx), s(34)], fill=(*IRON_DARK, 255))
+    d.rectangle(
+        [s(30 + body_dx), s(0), s(34 + body_dx), s(32)], fill=(*IRON_LIGHT, 255)
+    )
+    d.rectangle(
+        [s(31 + body_dx), s(0), s(33 + body_dx), s(30)], fill=(*pal["light"], 255)
+    )
     # Recoil shrouds flanking the rail base.
-    d.rectangle([s(24), s(26), s(28), s(38)], fill=(*IRON_DARK, 255))
-    d.rectangle([s(36), s(26), s(40), s(38)], fill=(*IRON_DARK, 255))
-    finish(img, px, f"lancer_{faction}")
+    d.rectangle(
+        [s(24 + body_dx), s(26), s(28 + body_dx), s(38)], fill=(*IRON_DARK, 255)
+    )
+    d.rectangle(
+        [s(36 + body_dx), s(26), s(40 + body_dx), s(38)], fill=(*IRON_DARK, 255)
+    )
+    suffix = "" if move == 0 else f"_move{move}"
+    finish(img, px, f"lancer_{faction}{suffix}")
 
 
-def bombard(faction: str) -> None:
+def bombard(faction: str, move: int = 0) -> None:
     """Heavy siege mortar: a broad braced platform under one fat, short
     tube — the anti-silhouette of the Lancer's needle rail."""
     px = 64
     pal = FACTIONS[faction]
     img, d = canvas(px)
-    # Recoil spades splayed at the rear corners.
-    for sx in (14, 50):
+    phase = move % 3
+    body_dx = (0, -1, 1)[phase]
+    rear_steps = ((0, 0), (-4, 3), (3, -4))[phase]
+    front_feet = (((14, 31), (50, 31)), ((12, 27), (51, 35)), ((13, 35), (52, 27)))[
+        phase
+    ]
+    # Front walking shoes and rear recoil spades alternate as a slow,
+    # four-point siege gait. The mortar body settles over the planted side.
+    for (fx, fy), ax in zip(front_feet, (20, 44), strict=True):
+        d.line(
+            [(s(ax + body_dx), s(34)), (s(fx), s(fy))],
+            fill=(*IRON_DARK, 255),
+            width=s(3),
+        )
+        d.ellipse([s(fx - 4), s(fy - 3), s(fx + 4), s(fy + 3)], fill=(*IRON_DARK, 255))
+    for side, sx in enumerate((14, 50)):
+        step = rear_steps[side]
         d.polygon(
             [
                 (s(sx), s(46)),
-                (s(sx - 6 if sx < 32 else sx + 6), s(58)),
-                (s(sx + 4 if sx < 32 else sx - 4), s(56)),
+                (s(sx - 6 if sx < 32 else sx + 6), s(58 + step)),
+                (s(sx + 4 if sx < 32 else sx - 4), s(56 + step)),
             ],
             fill=(*IRON_DARK, 255),
         )
     # Wide low hull.
-    d.rounded_rectangle([s(14), s(26), s(50), s(56)], radius=s(6), fill=(*IRON, 255))
     d.rounded_rectangle(
-        [s(18), s(30), s(46), s(52)], radius=s(5), fill=(*pal["base"], 255)
+        [s(14 + body_dx), s(26), s(50 + body_dx), s(56)],
+        radius=s(6),
+        fill=(*IRON, 255),
+    )
+    d.rounded_rectangle(
+        [s(18 + body_dx), s(30), s(46 + body_dx), s(52)],
+        radius=s(5),
+        fill=(*pal["base"], 255),
     )
     # Base ring for the tube.
-    d.ellipse([s(20), s(18), s(44), s(42)], fill=(*IRON_DARK, 255))
-    d.ellipse([s(24), s(22), s(40), s(38)], fill=(*pal["dark"], 255))
+    d.ellipse([s(20 + body_dx), s(18), s(44 + body_dx), s(42)], fill=(*IRON_DARK, 255))
+    d.ellipse(
+        [s(24 + body_dx), s(22), s(40 + body_dx), s(38)], fill=(*pal["dark"], 255)
+    )
     # The mortar tube: short, fat, forward, with a gaping muzzle.
-    d.rectangle([s(26), s(6), s(38), s(30)], fill=(*IRON_DARK, 255))
-    d.rectangle([s(28), s(6), s(36), s(28)], fill=(*IRON_LIGHT, 255))
-    d.ellipse([s(25), s(2), s(39), s(14)], fill=(*IRON_DARK, 255))
-    d.ellipse([s(28), s(5), s(36), s(11)], fill=(*pal["light"], 255))
-    finish(img, px, f"bombard_{faction}")
+    d.rectangle([s(26 + body_dx), s(6), s(38 + body_dx), s(30)], fill=(*IRON_DARK, 255))
+    d.rectangle(
+        [s(28 + body_dx), s(6), s(36 + body_dx), s(28)], fill=(*IRON_LIGHT, 255)
+    )
+    d.ellipse([s(25 + body_dx), s(2), s(39 + body_dx), s(14)], fill=(*IRON_DARK, 255))
+    d.ellipse(
+        [s(28 + body_dx), s(5), s(36 + body_dx), s(11)], fill=(*pal["light"], 255)
+    )
+    suffix = "" if move == 0 else f"_move{move}"
+    finish(img, px, f"bombard_{faction}{suffix}")
 
 
 def flakhound(faction: str, tread: int = 0) -> None:
@@ -802,15 +909,32 @@ def flakhound(faction: str, tread: int = 0) -> None:
     finish(img, px, f"flakhound_{faction}{suffix}")
 
 
-def stinger(faction: str) -> None:
+def stinger(faction: str, move: int = 0) -> None:
     """Cupric-pattern anti-air skiff: light chassis under a three-rocket
     rack — cheap, quick, and pointing at the sky."""
     px = 64
     pal = FACTIONS[faction]
     img, d = canvas(px)
-    # Three splayed wheel-legs.
-    for x0, y0, x1, y1 in ((24, 40, 14, 52), (40, 40, 50, 52), (32, 44, 32, 58)):
+    phase = move % 3
+    # Three splayed wheel-legs. Each travel phase extends a different pair,
+    # making the quick skiff's suspension readable after battlefield downscale.
+    legs = (
+        ((24, 40, 14, 52), (40, 40, 50, 52), (32, 44, 32, 58)),
+        ((24, 40, 12, 49), (40, 40, 52, 54), (32, 44, 30, 59)),
+        ((24, 40, 16, 54), (40, 40, 48, 49), (32, 44, 34, 59)),
+    )[phase]
+    for x0, y0, x1, y1 in legs:
         d.line([(s(x0), s(y0)), (s(x1), s(y1))], fill=(*IRON_DARK, 255), width=s(3))
+        d.ellipse([s(x1 - 5), s(y1 - 5), s(x1 + 5), s(y1 + 5)], fill=(*IRON_DARK, 255))
+        spoke = ((0, -4, 0, 4), (-3, -3, 3, 3), (-4, 0, 4, 0))[phase]
+        d.line(
+            [
+                (s(x1 + spoke[0]), s(y1 + spoke[1])),
+                (s(x1 + spoke[2]), s(y1 + spoke[3])),
+            ],
+            fill=(*pal["light"], 255),
+            width=s(3),
+        )
     # Slim triangular chassis.
     d.polygon([(s(32), s(14)), (s(46), s(46)), (s(18), s(46))], fill=(*IRON, 255))
     d.polygon(
@@ -821,7 +945,8 @@ def stinger(faction: str) -> None:
         tip = pal["light"] if i == 0 else IRON_LIGHT
         d.ellipse([s(28), s(cy - 3), s(36), s(cy + 5)], fill=(*IRON_DARK, 255))
         d.ellipse([s(30), s(cy - 1), s(34), s(cy + 3)], fill=(*tip, 255))
-    finish(img, px, f"stinger_{faction}")
+    suffix = "" if move == 0 else f"_move{move}"
+    finish(img, px, f"stinger_{faction}{suffix}")
 
 
 def buzzard(faction: str) -> None:
@@ -2590,13 +2715,23 @@ def generate(output: Path) -> None:
         harvester(faction, tread=1)
         harvester(faction, tread=2)
         sentinel(faction)
+        sentinel(faction, move=1)
+        sentinel(faction, move=2)
         scuttler(faction)
+        scuttler(faction, move=1)
+        scuttler(faction, move=2)
         lancer(faction)
+        lancer(faction, move=1)
+        lancer(faction, move=2)
         bombard(faction)
+        bombard(faction, move=1)
+        bombard(faction, move=2)
         flakhound(faction)
         flakhound(faction, tread=1)
         flakhound(faction, tread=2)
         stinger(faction)
+        stinger(faction, move=1)
+        stinger(faction, move=2)
         buzzard(faction)
         darter(faction)
         talon(faction)

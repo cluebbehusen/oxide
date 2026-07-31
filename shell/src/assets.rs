@@ -56,12 +56,17 @@ pub struct Sprites {
     scaffold: [Rect; 2],
     debris: [Rect; 3],
     scuttler: [Rect; 3],
+    scuttler_move: [[Rect; 3]; 2],
     lancer: [Rect; 3],
+    lancer_move: [[Rect; 3]; 2],
     sentinel: [Rect; 3],
+    sentinel_move: [[Rect; 3]; 2],
     bombard: [Rect; 3],
+    bombard_move: [[Rect; 3]; 2],
     flakhound: [Rect; 3],
     flakhound_tread: [[Rect; 3]; 2],
     stinger: [Rect; 3],
+    stinger_move: [[Rect; 3]; 2],
     buzzard: [Rect; 3],
     darter: [Rect; 3],
     talon: [Rect; 3],
@@ -222,6 +227,7 @@ const BASTION_MOUNT_STEM: &str = "bastion_mount";
 /// The Harvester's dig frames hang off its own stem.
 const SCOOP_SUFFIXES: [&str; 2] = ["_scoop1", "_scoop2"];
 const TREAD_SUFFIXES: [&str; 2] = ["_tread1", "_tread2"];
+const MOVE_SUFFIXES: [&str; 2] = ["_move1", "_move2"];
 const WORK_SUFFIXES: [&str; 3] = ["_work1", "_work2", "_work3"];
 const SITE_STAGES: usize = 3;
 const SITE_PHASES: usize = 2;
@@ -394,6 +400,17 @@ fn atlas_keys() -> Vec<String> {
             keys.extend(variant_keys(unit_stem(kind), suffix));
         }
     }
+    for kind in [
+        UnitKind::Sentinel,
+        UnitKind::Scuttler,
+        UnitKind::Lancer,
+        UnitKind::Bombard,
+        UnitKind::Stinger,
+    ] {
+        for suffix in MOVE_SUFFIXES {
+            keys.extend(variant_keys(unit_stem(kind), suffix));
+        }
+    }
     for kind in WORK_BUILDING_KINDS {
         for suffix in WORK_SUFFIXES {
             keys.extend(variant_keys(building_stem(kind), suffix));
@@ -506,12 +523,17 @@ impl Sprites {
             scaffold: pick(&rects, SCAFFOLD_KEYS)?,
             debris: pick(&rects, DEBRIS_KEYS)?,
             scuttler: unit(UnitKind::Scuttler)?,
+            scuttler_move: variant_rows(&rects, unit_stem(UnitKind::Scuttler), MOVE_SUFFIXES)?,
             lancer: unit(UnitKind::Lancer)?,
+            lancer_move: variant_rows(&rects, unit_stem(UnitKind::Lancer), MOVE_SUFFIXES)?,
             sentinel: unit(UnitKind::Sentinel)?,
+            sentinel_move: variant_rows(&rects, unit_stem(UnitKind::Sentinel), MOVE_SUFFIXES)?,
             bombard: unit(UnitKind::Bombard)?,
+            bombard_move: variant_rows(&rects, unit_stem(UnitKind::Bombard), MOVE_SUFFIXES)?,
             flakhound: unit(UnitKind::Flakhound)?,
             flakhound_tread: variant_rows(&rects, unit_stem(UnitKind::Flakhound), TREAD_SUFFIXES)?,
             stinger: unit(UnitKind::Stinger)?,
+            stinger_move: variant_rows(&rects, unit_stem(UnitKind::Stinger), MOVE_SUFFIXES)?,
             buzzard: unit(UnitKind::Buzzard)?,
             darter: unit(UnitKind::Darter)?,
             talon: unit(UnitKind::Talon)?,
@@ -718,14 +740,19 @@ impl Sprites {
     fn moving_unit_row(&self, kind: UnitKind, frame: usize) -> &[Rect; 3] {
         let rows = match kind {
             UnitKind::Harvester => Some(&self.harvester_tread),
+            UnitKind::Sentinel => Some(&self.sentinel_move),
+            UnitKind::Scuttler => Some(&self.scuttler_move),
+            UnitKind::Lancer => Some(&self.lancer_move),
+            UnitKind::Bombard => Some(&self.bombard_move),
             UnitKind::Flakhound => Some(&self.flakhound_tread),
+            UnitKind::Stinger => Some(&self.stinger_move),
             _ => None,
         };
         rows.and_then(|rows| frame.checked_sub(1).and_then(|index| rows.get(index)))
             .unwrap_or_else(|| self.unit_row(kind))
     }
 
-    /// A tracked unit's authored tread phase. Other units safely return
+    /// A ground unit's authored locomotion phase. Air units safely return
     /// their base frame so callers need no art-specific branch.
     pub fn unit_moving(&self, kind: UnitKind, faction: Faction, frame: usize) -> Rect {
         self.moving_unit_row(kind, frame)[faction_index(faction)]
@@ -1094,15 +1121,31 @@ mod tests {
 
     #[test]
     fn authored_animation_families_are_complete_distinct_and_faction_safe() {
-        for stem in ["harvester", "flakhound"] {
-            let base = sprite_image(&format!("{stem}_ferrous"));
-            for suffix in TREAD_SUFFIXES {
+        for (stem, suffixes) in [
+            ("harvester", TREAD_SUFFIXES),
+            ("sentinel", MOVE_SUFFIXES),
+            ("scuttler", MOVE_SUFFIXES),
+            ("lancer", MOVE_SUFFIXES),
+            ("bombard", MOVE_SUFFIXES),
+            ("flakhound", TREAD_SUFFIXES),
+            ("stinger", MOVE_SUFFIXES),
+        ] {
+            let mut ferrous_seen = vec![sprite_image(&format!("{stem}_ferrous")).bytes];
+            let mut cupric_seen = vec![sprite_image(&format!("{stem}_cupric")).bytes];
+            for suffix in suffixes {
                 assert_animation_variant(stem, suffix);
-                assert_ne!(
-                    sprite_image(&format!("{stem}_ferrous{suffix}")).bytes,
-                    base.bytes,
-                    "{stem}{suffix} must visibly move the treads"
+                let ferrous = sprite_image(&format!("{stem}_ferrous{suffix}")).bytes;
+                let cupric = sprite_image(&format!("{stem}_cupric{suffix}")).bytes;
+                assert!(
+                    !ferrous_seen.contains(&ferrous),
+                    "{stem}{suffix} must be distinct from every other Ferrous locomotion phase"
                 );
+                assert!(
+                    !cupric_seen.contains(&cupric),
+                    "{stem}{suffix} must be distinct from every other Cupric locomotion phase"
+                );
+                ferrous_seen.push(ferrous);
+                cupric_seen.push(cupric);
             }
         }
         for kind in WORK_BUILDING_KINDS {
