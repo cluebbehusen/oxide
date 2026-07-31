@@ -120,6 +120,49 @@ pub fn line_blocked(a: Vec2Fx, b: Vec2Fx, mut passable: impl FnMut(TilePos) -> b
 const STRAIGHT_COST: u32 = 10;
 const DIAGONAL_COST: u32 = 14;
 
+/// Reusable allocation storage for repeated A* queries on one thread.
+///
+/// A full query clears the heap and resets the active grid cells. A query that
+/// exhausts its reachable component leaves that proof available until the next
+/// call; cheap invalid/trivial/blocked-goal exits hide any prior proof without
+/// paying to clear the retained capacity. Reusing allocations keeps
+/// [`astar_with_scratch`] behavior identical to [`astar`].
+#[derive(Default)]
+pub struct AstarScratch {
+    best_g: Vec<u32>,
+    came_from: Vec<usize>,
+    open: BinaryHeap<Reverse<(u32, u32, usize)>>,
+    last_width: i32,
+    last_height: i32,
+    last_exhausted: bool,
+}
+
+impl AstarScratch {
+    /// Whether the previous query exhausted the complete reachable component
+    /// instead of finding its goal or hitting the expansion cap.
+    pub fn last_search_exhausted(&self) -> bool {
+        self.last_exhausted
+    }
+
+    /// Whether the previous exhausted query proved `tile` belongs to the
+    /// start's reachable component.
+    ///
+    /// This is useful after an exhausted search proves that several alternate
+    /// goals are unreachable from the same origin under the same predicate.
+    pub fn last_search_reached(&self, tile: TilePos) -> bool {
+        if !self.last_exhausted
+            || tile.x < 0
+            || tile.y < 0
+            || tile.x >= self.last_width
+            || tile.y >= self.last_height
+        {
+            return false;
+        }
+        let index = (tile.y as usize) * (self.last_width as usize) + tile.x as usize;
+        self.best_g.get(index).is_some_and(|cost| *cost != u32::MAX)
+    }
+}
+
 /// Octile distance times 10 — exact (not just admissible) for 8-directional
 /// grid movement with 10/14 costs.
 fn heuristic(a: TilePos, b: TilePos) -> u32 {
@@ -142,27 +185,61 @@ pub fn astar(
     height: i32,
     start: TilePos,
     goal: TilePos,
-    mut passable: impl FnMut(TilePos) -> bool,
+    passable: impl FnMut(TilePos) -> bool,
     max_expansions: u32,
 ) -> Option<Vec<TilePos>> {
+    astar_with_scratch(
+        width,
+        height,
+        start,
+        goal,
+        passable,
+        max_expansions,
+        &mut AstarScratch::default(),
+    )
+}
+
+/// Finds the same shortest path as [`astar`] while reusing caller-owned
+/// allocation storage across sequential queries.
+pub fn astar_with_scratch(
+    width: i32,
+    height: i32,
+    start: TilePos,
+    goal: TilePos,
+    mut passable: impl FnMut(TilePos) -> bool,
+    max_expansions: u32,
+    scratch: &mut AstarScratch,
+) -> Option<Vec<TilePos>> {
+    scratch.last_width = width.max(0);
+    scratch.last_height = height.max(0);
+    scratch.last_exhausted = false;
+    scratch.open.clear();
     let in_bounds = |p: TilePos| p.x >= 0 && p.y >= 0 && p.x < width && p.y < height;
     if !in_bounds(start) || !in_bounds(goal) {
         return None;
     }
+    let index = |p: TilePos| (p.y as usize) * (width as usize) + (p.x as usize);
     if start == goal {
         return Some(Vec::new());
     }
     if !passable(goal) {
         return None;
     }
+    let cell_count = (width as usize).checked_mul(height as usize)?;
+    scratch.best_g.resize(cell_count, u32::MAX);
+    scratch.best_g.fill(u32::MAX);
+    scratch.came_from.resize(cell_count, usize::MAX);
+    scratch.came_from.fill(usize::MAX);
+    scratch.best_g[index(start)] = 0;
 
-    let index = |p: TilePos| (p.y as usize) * (width as usize) + (p.x as usize);
-    let cell_count = (width as usize) * (height as usize);
-    let mut best_g = vec![u32::MAX; cell_count];
-    let mut came_from = vec![usize::MAX; cell_count];
+    let AstarScratch {
+        best_g,
+        came_from,
+        open,
+        last_exhausted,
+        ..
+    } = scratch;
 
-    let mut open = BinaryHeap::new();
-    best_g[index(start)] = 0;
     open.push(Reverse((
         heuristic(start, goal),
         heuristic(start, goal),
@@ -212,7 +289,7 @@ pub fn astar(
         for (dx, dy) in CARDINALS {
             let next = current.offset(dx, dy);
             if in_bounds(next) && passable(next) {
-                visit(next, STRAIGHT_COST, &mut open);
+                visit(next, STRAIGHT_COST, open);
             }
         }
         for (dx, dy) in DIAGONALS {
@@ -223,10 +300,11 @@ pub fn astar(
                 && passable(current.offset(dx, 0))
                 && passable(current.offset(0, dy))
             {
-                visit(next, DIAGONAL_COST, &mut open);
+                visit(next, DIAGONAL_COST, open);
             }
         }
     }
+    *last_exhausted = true;
     None
 }
 
@@ -311,6 +389,258 @@ mod tests {
         for _ in 0..10 {
             assert_eq!(find(rows, (0, 0), (7, 3)).unwrap(), first);
         }
+    }
+
+    #[test]
+    fn reusable_scratch_matches_fresh_queries_across_maps_and_failures() {
+        let cases = [
+            (&["....", ".##.", "...."][..], (0, 0), (3, 2)),
+            (&[".#.", "###", ".#."][..], (0, 0), (2, 2)),
+            (&["...."][..], (2, 0), (2, 0)),
+        ];
+        let mut scratch = AstarScratch::default();
+        for (rows, start, goal) in cases {
+            let (grid, width, height) = arena(rows);
+            let start = TilePos::new(start.0, start.1);
+            let goal = TilePos::new(goal.0, goal.1);
+            let fresh = astar(
+                width,
+                height,
+                start,
+                goal,
+                |tile| *grid.get(tile).unwrap(),
+                10_000,
+            );
+            let reused = astar_with_scratch(
+                width,
+                height,
+                start,
+                goal,
+                |tile| *grid.get(tile).unwrap(),
+                10_000,
+                &mut scratch,
+            );
+            assert_eq!(reused, fresh);
+        }
+    }
+
+    fn prime_exhausted_scratch(scratch: &mut AstarScratch) {
+        let (grid, width, height) = arena(&["..#..", "..#..", "..#.."][..]);
+        assert_eq!(
+            astar_with_scratch(
+                width,
+                height,
+                TilePos::new(0, 1),
+                TilePos::new(4, 1),
+                |tile| *grid.get(tile).unwrap(),
+                10_000,
+                scratch,
+            ),
+            None
+        );
+        assert!(scratch.last_search_exhausted());
+        assert!(scratch.last_search_reached(TilePos::new(1, 2)));
+    }
+
+    #[test]
+    fn every_early_return_clears_previous_reachability() {
+        let mut scratch = AstarScratch::default();
+
+        prime_exhausted_scratch(&mut scratch);
+        assert_eq!(
+            astar_with_scratch(
+                5,
+                3,
+                TilePos::new(0, 0),
+                TilePos::new(0, 0),
+                |_| true,
+                10_000,
+                &mut scratch,
+            ),
+            Some(Vec::new())
+        );
+        assert!(!scratch.last_search_exhausted());
+        assert!(!scratch.last_search_reached(TilePos::new(0, 1)));
+        assert!(!scratch.last_search_reached(TilePos::new(1, 2)));
+
+        prime_exhausted_scratch(&mut scratch);
+        assert_eq!(
+            astar_with_scratch(
+                5,
+                3,
+                TilePos::new(0, 0),
+                TilePos::new(4, 2),
+                |tile| tile != TilePos::new(4, 2),
+                10_000,
+                &mut scratch,
+            ),
+            None
+        );
+        assert!(!scratch.last_search_exhausted());
+        assert!(!scratch.last_search_reached(TilePos::new(1, 2)));
+
+        prime_exhausted_scratch(&mut scratch);
+        assert_eq!(
+            astar_with_scratch(
+                5,
+                3,
+                TilePos::new(-1, 0),
+                TilePos::new(4, 2),
+                |_| true,
+                10_000,
+                &mut scratch,
+            ),
+            None
+        );
+        assert!(!scratch.last_search_exhausted());
+        assert!(!scratch.last_search_reached(TilePos::new(1, 2)));
+    }
+
+    #[test]
+    fn cheap_failures_do_not_allocate_the_claimed_grid() {
+        let mut scratch = AstarScratch::default();
+        prime_exhausted_scratch(&mut scratch);
+        let retained_cells = scratch.best_g.len();
+
+        assert_eq!(
+            astar_with_scratch(
+                i32::MAX,
+                i32::MAX,
+                TilePos::new(-1, 0),
+                TilePos::new(1, 0),
+                |_| true,
+                1,
+                &mut scratch,
+            ),
+            None
+        );
+        assert_eq!(scratch.best_g.len(), retained_cells);
+
+        assert_eq!(
+            astar_with_scratch(
+                100_000,
+                100_000,
+                TilePos::new(0, 0),
+                TilePos::new(1, 0),
+                |_| false,
+                1,
+                &mut scratch,
+            ),
+            None
+        );
+        assert_eq!(scratch.best_g.len(), retained_cells);
+        assert!(!scratch.last_search_exhausted());
+        assert!(!scratch.last_search_reached(TilePos::new(1, 2)));
+    }
+
+    #[test]
+    fn only_complete_component_searches_advertise_reachability() {
+        let mut scratch = AstarScratch::default();
+        let open = [".....", ".....", "....."];
+        let (grid, width, height) = arena(&open);
+
+        assert!(
+            astar_with_scratch(
+                width,
+                height,
+                TilePos::new(0, 1),
+                TilePos::new(4, 1),
+                |tile| *grid.get(tile).unwrap(),
+                10_000,
+                &mut scratch,
+            )
+            .is_some()
+        );
+        assert!(!scratch.last_search_exhausted());
+
+        assert_eq!(
+            astar_with_scratch(
+                width,
+                height,
+                TilePos::new(0, 1),
+                TilePos::new(4, 1),
+                |tile| *grid.get(tile).unwrap(),
+                0,
+                &mut scratch,
+            ),
+            None
+        );
+        assert!(!scratch.last_search_exhausted());
+        assert!(!scratch.last_search_reached(TilePos::new(0, 1)));
+    }
+
+    #[test]
+    fn scratch_reuse_preserves_exact_ties_across_dimension_changes() {
+        let mut scratch = AstarScratch::default();
+        let (large, width, height) =
+            arena(&[".......", ".......", "...#...", ".......", "......."]);
+        let first = astar_with_scratch(
+            width,
+            height,
+            TilePos::new(0, 2),
+            TilePos::new(6, 2),
+            |tile| *large.get(tile).unwrap(),
+            10_000,
+            &mut scratch,
+        )
+        .unwrap();
+        assert_eq!(
+            first,
+            vec![
+                TilePos::new(1, 2),
+                TilePos::new(2, 1),
+                TilePos::new(3, 1),
+                TilePos::new(4, 1),
+                TilePos::new(5, 2),
+                TilePos::new(6, 2),
+            ]
+        );
+
+        let (small, small_width, small_height) = arena(&[".#.", "###", ".#."]);
+        assert_eq!(
+            astar_with_scratch(
+                small_width,
+                small_height,
+                TilePos::new(0, 0),
+                TilePos::new(2, 2),
+                |tile| *small.get(tile).unwrap(),
+                10_000,
+                &mut scratch,
+            ),
+            None
+        );
+        assert!(scratch.last_search_exhausted());
+
+        let again = astar_with_scratch(
+            width,
+            height,
+            TilePos::new(0, 2),
+            TilePos::new(6, 2),
+            |tile| *large.get(tile).unwrap(),
+            10_000,
+            &mut scratch,
+        )
+        .unwrap();
+        assert_eq!(again, first);
+    }
+
+    #[test]
+    fn exhausted_search_proves_reachability_for_alternate_goals() {
+        let (grid, width, height) = arena(&["..#..", "..#..", "..#.."]);
+        let mut scratch = AstarScratch::default();
+        let path = astar_with_scratch(
+            width,
+            height,
+            TilePos::new(0, 1),
+            TilePos::new(4, 1),
+            |tile| *grid.get(tile).unwrap(),
+            10_000,
+            &mut scratch,
+        );
+        assert_eq!(path, None);
+        assert!(scratch.last_search_exhausted());
+        assert!(scratch.last_search_reached(TilePos::new(1, 2)));
+        assert!(!scratch.last_search_reached(TilePos::new(3, 1)));
     }
 
     fn center(x: i32, y: i32) -> Vec2Fx {

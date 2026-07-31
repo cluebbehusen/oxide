@@ -662,7 +662,8 @@ fn replacement_source(
     exclude: Option<TilePos>,
 ) -> Option<KnownSource> {
     let unit = state.unit(id).expect("caller checked");
-    let mut best: Option<(SourceScore, KnownSource)> = None;
+    let from = unit.tile();
+    let mut candidates = Vec::new();
     for dy in -HARVEST_ZONE_RADIUS..=HARVEST_ZONE_RADIUS {
         for dx in -HARVEST_ZONE_RADIUS..=HARVEST_ZONE_RADIUS {
             let pos = anchor.offset(dx, dy);
@@ -672,28 +673,39 @@ fn replacement_source(
             let Some(source) = known_source(state, unit.player, pos) else {
                 continue;
             };
-            if danger.contains(pos) {
-                continue;
+            if !danger.contains(pos) {
+                candidates.push((pos.manhattan(from), source));
             }
-            let Some(route_len) = source_route_len(state, danger, id, source) else {
-                continue;
-            };
-            let kind_key = match source.kind {
-                SourceKind::Wreck => 0,
-                SourceKind::Scrap => 1,
-            };
-            let key = (
-                pos.manhattan(unit.tile()),
-                route_len,
-                Reverse(source.amount),
-                pos.chebyshev(anchor),
-                kind_key,
-                pos.y,
-                pos.x,
-            );
-            if best.as_ref().is_none_or(|(old, _)| key < *old) {
-                best = Some((key, source));
-            }
+        }
+    }
+    // Distance is the leading selection key. Once any source at the nearest
+    // reachable distance wins, no farther source can displace it, so avoid
+    // paying for routes whose first key component already loses.
+    candidates.sort_by_key(|(distance, source)| (*distance, source.pos.y, source.pos.x));
+    let mut best: Option<(SourceScore, KnownSource)> = None;
+    for (distance, source) in candidates {
+        if best.as_ref().is_some_and(|(key, _)| distance > key.0) {
+            break;
+        }
+        let Some(route_len) = source_route_len(state, danger, id, source) else {
+            continue;
+        };
+        let kind_key = match source.kind {
+            SourceKind::Wreck => 0,
+            SourceKind::Scrap => 1,
+        };
+        let pos = source.pos;
+        let key = (
+            distance,
+            route_len,
+            Reverse(source.amount),
+            pos.chebyshev(anchor),
+            kind_key,
+            pos.y,
+            pos.x,
+        );
+        if best.as_ref().is_none_or(|(old, _)| key < *old) {
+            best = Some((key, source));
         }
     }
     best.map(|(_, source)| source)
@@ -860,18 +872,10 @@ fn source_route_avoiding_danger(
     let from = unit.tile();
     let player = unit.player;
     let safe_route = |goal| {
-        chassis::path::astar(
-            state.map.width(),
-            state.map.height(),
-            from,
-            goal,
-            |tile| {
-                known_ground_passable(state, danger, player, tile)
-                    && ((allow_dangerous_goal && tile == goal)
-                        || danger.route_safe_from(from, tile))
-            },
-            crate::stats::PATH_EXPANSION_CAP,
-        )
+        danger.find_route(from, goal, |tile| {
+            known_ground_passable(state, danger, player, tile)
+                && ((allow_dangerous_goal && tile == goal) || danger.route_safe_from(from, tile))
+        })
     };
     match source.kind {
         SourceKind::Wreck => safe_route(source.pos).map(|route| (source.pos, route)),
@@ -885,19 +889,53 @@ fn source_route_avoiding_danger(
             if near > 1 {
                 candidates[..near].rotate_left(id.0 as usize % near);
             }
-            candidates
-                .into_iter()
-                .enumerate()
-                .filter_map(|(rank, goal)| {
-                    safe_route(goal).map(|route| {
-                        let key = (route.len(), goal.chebyshev(from), rank);
-                        (key, goal, route)
-                    })
-                })
-                .min_by_key(|(key, _, _)| *key)
-                .map(|(_, goal, route)| (goal, route))
+            let mut reachability = None;
+            best_candidate_route(&candidates, from, |rank, goal| {
+                if reachability
+                    .as_ref()
+                    .is_some_and(|reachable: &Vec<bool>| !reachable[rank])
+                {
+                    return None;
+                }
+                let route = safe_route(goal);
+                if route.is_none() && reachability.is_none() {
+                    reachability =
+                        danger.last_route_reachability(&candidates, allow_dangerous_goal);
+                }
+                route
+            })
         }
     }
+}
+
+/// Finds the route-minimal doorstep without running A* after every remaining
+/// candidate's geometric lower bound can no longer beat the current winner.
+type RankedRoute = ((usize, i32, usize), TilePos, Vec<TilePos>);
+
+fn best_candidate_route(
+    candidates: &[TilePos],
+    from: TilePos,
+    mut route_to: impl FnMut(usize, TilePos) -> Option<Vec<TilePos>>,
+) -> Option<(TilePos, Vec<TilePos>)> {
+    let mut best: Option<RankedRoute> = None;
+    for (rank, &goal) in candidates.iter().enumerate() {
+        if let Some(route) = route_to(rank, goal) {
+            let key = (route.len(), goal.chebyshev(from), rank);
+            if best.as_ref().is_none_or(|(old, _, _)| key < *old) {
+                best = Some((key, goal, route));
+            }
+        }
+        let remaining_lower_bound = candidates[rank + 1..]
+            .iter()
+            .map(|goal| goal.chebyshev(from) as usize)
+            .min();
+        if let (Some((key, _, _)), Some(lower_bound)) = (&best, remaining_lower_bound)
+            && key.0 <= lower_bound
+        {
+            break;
+        }
+    }
+    best.map(|(_, goal, route)| (goal, route))
 }
 
 /// Ground occupancy as the worker's team can know it. Visible tiles use
@@ -1001,18 +1039,12 @@ fn known_rect_route(
         candidates[..near].rotate_left(id.0 as usize % near);
     }
     candidates.into_iter().find_map(|goal| {
-        chassis::path::astar(
-            state.map.width(),
-            state.map.height(),
-            from,
-            goal,
-            |tile| {
+        danger
+            .find_route(from, goal, |tile| {
                 known_ground_passable(state, danger, player, tile)
                     && (!avoid_danger || danger.route_safe_from(from, tile))
-            },
-            crate::stats::PATH_EXPANSION_CAP,
-        )
-        .map(|waypoints| (goal, waypoints))
+            })
+            .map(|waypoints| (goal, waypoints))
     })
 }
 
@@ -1241,6 +1273,115 @@ mod harvest_zone_tests {
         // than re-centered after each hop, so this exact reach cannot
         // walk onward into a second field.
         assert_eq!(HARVEST_ZONE_RADIUS, 7);
+    }
+
+    #[test]
+    fn doorstep_search_stops_only_after_remaining_routes_cannot_win() {
+        use std::cell::Cell;
+
+        let from = TilePos::new(0, 0);
+        let candidates = [TilePos::new(4, 0), TilePos::new(3, 0), TilePos::new(5, 0)];
+        let route_len = |goal: TilePos| match goal.x {
+            3 => 3,
+            4 => 5,
+            5 => 5,
+            _ => unreachable!(),
+        };
+        let exhaustive = candidates
+            .iter()
+            .enumerate()
+            .map(|(rank, &goal)| ((route_len(goal), goal.chebyshev(from), rank), goal))
+            .min_by_key(|(key, _)| *key)
+            .map(|(_, goal)| goal);
+        let calls = Cell::new(0);
+        let chosen = best_candidate_route(&candidates, from, |_, goal| {
+            calls.set(calls.get() + 1);
+            Some(vec![goal; route_len(goal)])
+        })
+        .map(|(goal, _)| goal);
+
+        assert_eq!(chosen, exhaustive);
+        assert_eq!(calls.get(), 2, "the dominated final A* is skipped");
+    }
+
+    #[test]
+    fn doorstep_pruning_matches_exhaustive_selection_across_ties_and_failures() {
+        use std::cell::Cell;
+
+        struct Case {
+            name: &'static str,
+            candidates: Vec<TilePos>,
+            route_lengths: Vec<Option<usize>>,
+            expected_calls: usize,
+        }
+        let cases = [
+            Case {
+                name: "first unreachable",
+                candidates: vec![TilePos::new(1, 0), TilePos::new(2, 0), TilePos::new(3, 0)],
+                route_lengths: vec![None, Some(2), Some(3)],
+                expected_calls: 2,
+            },
+            Case {
+                name: "later shorter geometric candidate",
+                candidates: vec![TilePos::new(4, 0), TilePos::new(2, 0), TilePos::new(5, 0)],
+                route_lengths: vec![Some(6), Some(2), Some(5)],
+                expected_calls: 2,
+            },
+            Case {
+                name: "equal length and distance keeps earlier rotated rank",
+                candidates: vec![TilePos::new(-2, 0), TilePos::new(2, 0), TilePos::new(3, 0)],
+                route_lengths: vec![Some(2), Some(2), Some(3)],
+                expected_calls: 1,
+            },
+            Case {
+                name: "equal length keeps smaller distance",
+                candidates: vec![TilePos::new(2, 0), TilePos::new(3, 0)],
+                route_lengths: vec![Some(3), Some(3)],
+                expected_calls: 1,
+            },
+            Case {
+                name: "rotated nearest four",
+                candidates: vec![
+                    TilePos::new(4, 0),
+                    TilePos::new(2, 0),
+                    TilePos::new(1, 0),
+                    TilePos::new(3, 0),
+                    TilePos::new(5, 0),
+                ],
+                route_lengths: vec![Some(4), Some(2), Some(1), Some(3), Some(5)],
+                expected_calls: 3,
+            },
+        ];
+        let from = TilePos::new(0, 0);
+        for case in cases {
+            for (goal, route_len) in case.candidates.iter().zip(&case.route_lengths) {
+                if let Some(route_len) = route_len {
+                    assert!(
+                        *route_len >= goal.chebyshev(from) as usize,
+                        "{} violates the geometric lower bound",
+                        case.name
+                    );
+                }
+            }
+            let exhaustive = case
+                .candidates
+                .iter()
+                .copied()
+                .enumerate()
+                .filter_map(|(rank, goal)| {
+                    case.route_lengths[rank].map(|len| ((len, goal.chebyshev(from), rank), goal))
+                })
+                .min_by_key(|(key, _)| *key)
+                .map(|(_, goal)| goal);
+            let calls = Cell::new(0);
+            let optimized = best_candidate_route(&case.candidates, from, |rank, goal| {
+                calls.set(calls.get() + 1);
+                case.route_lengths[rank].map(|len| vec![goal; len])
+            })
+            .map(|(goal, _)| goal);
+            assert_eq!(optimized, exhaustive, "{}", case.name);
+            assert_eq!(calls.get(), case.expected_calls, "{}", case.name);
+        }
     }
 
     #[test]

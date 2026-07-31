@@ -16,7 +16,8 @@ use crate::ids::PlayerId;
 use crate::state::State;
 use crate::stats::{BuildingKind, Domain};
 use chassis::fx::{Fx, HALF, Vec2Fx};
-use chassis::grid::{Grid, TilePos};
+use chassis::grid::{CARDINALS, Grid, TilePos};
+use chassis::path::AstarScratch;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 
@@ -270,13 +271,16 @@ struct StaticGroundPressure {
 /// brain phase. Capturing once makes every A* predicate a walk over compact
 /// threat records instead of repeatedly rescanning the full game state.
 pub(crate) struct GroundSalvageDanger {
+    width: i32,
+    height: i32,
     contacts: Vec<TilePos>,
     incidents: Vec<TilePos>,
     mobile: Vec<MobileGroundPressure>,
     statics: Vec<StaticGroundPressure>,
     building_blocks: Vec<Vec<(i32, i32)>>,
-    cache: RefCell<Vec<Vec<(i32, bool)>>>,
-    observed_cache: RefCell<Vec<Vec<(i32, bool)>>>,
+    cache: RefCell<Vec<Option<bool>>>,
+    observed_cache: RefCell<Vec<Option<bool>>>,
+    path_scratch: RefCell<AstarScratch>,
 }
 
 impl GroundSalvageDanger {
@@ -357,7 +361,10 @@ impl GroundSalvageDanger {
         for row in &mut building_blocks {
             merge_spans(row);
         }
+        let cell_count = (state.map.width() as usize) * (state.map.height() as usize);
         Self {
+            width: state.map.width(),
+            height: state.map.height(),
             contacts: vision.contacts().to_vec(),
             incidents: vision
                 .salvage_incidents()
@@ -368,15 +375,18 @@ impl GroundSalvageDanger {
             mobile,
             statics,
             building_blocks,
-            cache: RefCell::new(vec![Vec::new(); state.map.height() as usize]),
-            observed_cache: RefCell::new(vec![Vec::new(); state.map.height() as usize]),
+            cache: RefCell::new(vec![None; cell_count]),
+            observed_cache: RefCell::new(vec![None; cell_count]),
+            path_scratch: RefCell::new(AstarScratch::default()),
         }
     }
 
     /// Whether this snapshot marks one tile as too dangerous for
     /// autonomous salvage work.
     pub(crate) fn contains(&self, source: TilePos) -> bool {
-        cached_tile_predicate(&self.cache, source, || self.compute_contains(source))
+        cached_tile_predicate(&self.cache, self.width, self.height, source, || {
+            self.compute_contains(source)
+        })
     }
 
     /// Whether an autonomous route may traverse `tile` from its current
@@ -385,7 +395,7 @@ impl GroundSalvageDanger {
     /// move laterally or outward, but never closer to that impact; a worker
     /// outside cannot enter it.
     pub(crate) fn route_safe_from(&self, from: TilePos, tile: TilePos) -> bool {
-        if cached_tile_predicate(&self.observed_cache, tile, || {
+        if cached_tile_predicate(&self.observed_cache, self.width, self.height, tile, || {
             self.compute_observed_contains(tile)
         }) {
             return false;
@@ -410,6 +420,52 @@ impl GroundSalvageDanger {
         let index = row.partition_point(|&(_, end)| end < tile.x);
         row.get(index)
             .is_some_and(|&(start, end)| tile.x >= start && tile.x <= end)
+    }
+
+    /// Runs one behavior-identical A* query while reusing this team phase's
+    /// allocation storage. Brain phases are sequential, so one scratch arena
+    /// serves every Harvester without entering deterministic state.
+    pub(crate) fn find_route(
+        &self,
+        start: TilePos,
+        goal: TilePos,
+        passable: impl FnMut(TilePos) -> bool,
+    ) -> Option<Vec<TilePos>> {
+        chassis::path::astar_with_scratch(
+            self.width,
+            self.height,
+            start,
+            goal,
+            passable,
+            crate::stats::PATH_EXPANSION_CAP,
+            &mut self.path_scratch.borrow_mut(),
+        )
+    }
+
+    /// Reachability of alternate goals proved by the most recent exhausted
+    /// route search. `allow_goal_only` handles a goal-specific exception to
+    /// the common passability predicate: an alternate goal can be entered iff
+    /// the explored component reaches one of its cardinal neighbors. (A legal
+    /// diagonal entry also makes a cardinal companion reachable.) `None`
+    /// means the search did not explore the complete component.
+    pub(crate) fn last_route_reachability(
+        &self,
+        goals: &[TilePos],
+        allow_goal_only: bool,
+    ) -> Option<Vec<bool>> {
+        let scratch = self.path_scratch.borrow();
+        scratch.last_search_exhausted().then(|| {
+            goals
+                .iter()
+                .map(|goal| {
+                    scratch.last_search_reached(*goal)
+                        || (allow_goal_only
+                            && CARDINALS
+                                .into_iter()
+                                .any(|(dx, dy)| scratch.last_search_reached(goal.offset(dx, dy))))
+                })
+                .collect()
+        })
     }
 
     fn compute_contains(&self, source: TilePos) -> bool {
@@ -452,33 +508,22 @@ impl GroundSalvageDanger {
 }
 
 fn cached_tile_predicate(
-    cache: &RefCell<Vec<Vec<(i32, bool)>>>,
+    cache: &RefCell<Vec<Option<bool>>>,
+    width: i32,
+    height: i32,
     tile: TilePos,
     compute: impl FnOnce() -> bool,
 ) -> bool {
-    let Some(row_index) = usize::try_from(tile.y)
-        .ok()
-        .filter(|row| *row < cache.borrow().len())
-    else {
+    if tile.x < 0 || tile.y < 0 || tile.x >= width || tile.y >= height {
         return compute();
-    };
-    let cached = {
-        let cache = cache.borrow();
-        let row = &cache[row_index];
-        row.binary_search_by_key(&tile.x, |hit| hit.0)
-            .ok()
-            .map(|index| row[index].1)
-    };
+    }
+    let index = (tile.y as usize) * (width as usize) + tile.x as usize;
+    let cached = cache.borrow()[index];
     if let Some(value) = cached {
         return value;
     }
     let value = compute();
-    let mut cache = cache.borrow_mut();
-    let row = &mut cache[row_index];
-    let index = row
-        .binary_search_by_key(&tile.x, |hit| hit.0)
-        .unwrap_or_else(|index| index);
-    row.insert(index, (tile.x, value));
+    cache.borrow_mut()[index] = Some(value);
     value
 }
 
@@ -809,6 +854,38 @@ mod danger_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn exhausted_route_cache_preserves_a_goal_only_danger_exception() {
+        let (state, _) = screened_source(false);
+        let danger = GroundSalvageDanger::capture(&state, PlayerId(0));
+        let start = TilePos::new(2, 3);
+        let unreachable = TilePos::new(15, 3);
+        let exceptional_goal = TilePos::new(10, 3);
+
+        assert!(
+            danger
+                .find_route(start, unreachable, |tile| tile.x != 10)
+                .is_none()
+        );
+        assert_eq!(
+            danger.last_route_reachability(&[exceptional_goal, unreachable], false),
+            Some(vec![false, false])
+        );
+        assert_eq!(
+            danger.last_route_reachability(&[exceptional_goal, unreachable], true),
+            Some(vec![true, false]),
+            "a goal-specific exception is reachable through its explored cardinal neighbor"
+        );
+        assert!(
+            danger
+                .find_route(start, exceptional_goal, |tile| {
+                    tile == exceptional_goal || tile.x != 10
+                })
+                .is_some(),
+            "the cached exception agrees with a real goal-specific A*"
+        );
     }
 
     #[test]
