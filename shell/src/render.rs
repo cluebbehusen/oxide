@@ -118,7 +118,7 @@ pub(crate) use crate::theme::{
     SURFACE_CARD, TEXT_BODY, TEXT_DISABLED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
 
-const OUTSIDE: Color = color_u8!(20, 20, 25, 255);
+pub(crate) const OUTSIDE: Color = color_u8!(20, 20, 25, 255);
 // World decoration (selection rings, rally poles, breadcrumbs) keeps
 // its own bone pair: the text tiers in crate::theme answer for
 // legibility, and raising them must never thicken the world's weight.

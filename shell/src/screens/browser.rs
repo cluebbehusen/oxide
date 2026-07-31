@@ -43,27 +43,31 @@ pub struct Layout {
     pub more_above: bool,
     /// See `more_above`.
     pub more_below: bool,
-    /// How many grid lines the window is showing (scrollbar math).
-    pub lines_shown: usize,
-    /// How many grid lines the shelf has in total.
-    pub lines_total: usize,
+    /// Pixel offset into the shelf.
+    pub scroll_offset: f32,
+    /// Furthest valid pixel offset.
+    pub scroll_max: f32,
+    /// Height of the visible shelf window.
+    pub viewport_height: f32,
+    /// Full height of the shelf's contents.
+    pub content_height: f32,
 }
 
 /// Grid state: the selected entry, scroll, and pointer bookkeeping.
 pub struct Browser {
     /// Selected entry index (into the discovery list).
     pub selected: usize,
-    /// First visible line of the grid.
-    scroll_line: usize,
+    /// Pixel offset into the grid.
+    scroll_y: f32,
     /// The card under the pointer — exposed (read-only) through the
     /// wizard's protocol surface so hover-driven row discovery in the
     /// UX battery works on the grid like it does on row menus.
     pub(crate) hover: Option<usize>,
     pressed: Option<usize>,
-    /// Fractional wheel accumulation: trackpads deliver hundredths per
-    /// event, and one grid line per nonzero event raced through the
-    /// shelf. Whole notches only, like the row menus.
-    wheel_accum: f32,
+    touch_id: Option<u64>,
+    touch_last_y: f32,
+    touch_travel: f32,
+    touch_pressed: Option<usize>,
     /// The viewport the last frame handled — resize detection for the
     /// snap-back guard, which must fire on resize and NEVER per frame.
     last_view: Vec2,
@@ -106,29 +110,34 @@ fn lines(entries: &[ScenarioEntry], cols: usize) -> Vec<Line> {
     out
 }
 
-/// The furthest first-line that still FILLS the window: walk the line
-/// heights backward from the end until one more would overflow. Past
-/// this point the tail row would sit alone under an empty screen, which
-/// is what an unclamped wheel used to allow. `ensure_visible` and End
-/// reach the tail from below and so never pass it.
-fn max_scroll(all: &[Line], view: Vec2, ui: f32) -> usize {
-    let (_, _, _, card_h, heading_h, top, bottom) = metrics(view, ui);
-    let gap = 16.0 * ui; // matches layout()
-    let mut used = 0.0;
-    let mut first = all.len();
-    for (i, line) in all.iter().enumerate().rev() {
-        let h = match line {
-            Line::Heading(_) => heading_h,
-            Line::Cards(_) => card_h + gap,
-        };
-        if used + h > bottom - top {
-            break;
-        }
-        used += h;
-        first = i;
+/// Height of one grid line, including the gap after a card row.
+fn line_height(line: &Line, card_h: f32, heading_h: f32, gap: f32) -> f32 {
+    match line {
+        Line::Heading(_) => heading_h,
+        Line::Cards(_) => card_h + gap,
     }
-    // A window too small for even one line still scrolls line by line.
-    first.min(all.len().saturating_sub(1))
+}
+
+/// Full content height. The final row does not owe a trailing gap.
+fn content_height(all: &[Line], card_h: f32, heading_h: f32, gap: f32) -> f32 {
+    let height: f32 = all
+        .iter()
+        .map(|line| line_height(line, card_h, heading_h, gap))
+        .sum();
+    if matches!(all.last(), Some(Line::Cards(_))) {
+        (height - gap).max(0.0)
+    } else {
+        height
+    }
+}
+
+/// Furthest valid pixel offset. At the clamp the tail sits against the
+/// bottom of the window, so scrolling can never park one row above an
+/// otherwise empty screen.
+fn max_scroll(all: &[Line], view: Vec2, ui: f32) -> f32 {
+    let (_, _, _, card_h, heading_h, top, bottom) = metrics(view, ui);
+    let gap = 16.0 * ui;
+    (content_height(all, card_h, heading_h, gap) - (bottom - top)).max(0.0)
 }
 
 /// Card and band sizes at this viewport. Returns
@@ -167,10 +176,13 @@ impl Browser {
     pub fn new() -> Self {
         Self {
             selected: 0,
-            scroll_line: 0,
+            scroll_y: 0.0,
             hover: None,
             pressed: None,
-            wheel_accum: 0.0,
+            touch_id: None,
+            touch_last_y: 0.0,
+            touch_travel: 0.0,
+            touch_pressed: None,
             last_view: vec2(0.0, 0.0),
         }
     }
@@ -191,44 +203,43 @@ impl Browser {
         let cols = columns(view.x, ui);
         let gap = 16.0 * ui;
         let all = lines(entries, cols);
-        let mut y = top;
+        let content_height = content_height(&all, card_h, heading_h, gap);
+        let viewport_height = bottom - top;
+        let scroll_max = (content_height - viewport_height).max(0.0);
+        let scroll_offset = self.scroll_y.clamp(0.0, scroll_max);
+        let mut y = top - scroll_offset;
         let mut headings = Vec::new();
         let mut cards = Vec::new();
-        let mut more_below = false;
-        let mut lines_shown = 0usize;
-        for (li, line) in all.iter().enumerate() {
-            if li < self.scroll_line {
-                continue;
-            }
-            let h = match line {
+        for line in &all {
+            let advance = line_height(line, card_h, heading_h, gap);
+            let drawn_h = match line {
                 Line::Heading(_) => heading_h,
-                Line::Cards(_) => card_h + gap,
+                Line::Cards(_) => card_h,
             };
-            if y + h > bottom {
-                more_below = true;
-                break;
-            }
-            match line {
-                Line::Heading(label) => {
-                    headings.push((label.clone(), Rect::new(band_x, y, band_w, heading_h)));
-                }
-                Line::Cards(row) => {
-                    for (ci, &entry) in row.iter().enumerate() {
-                        let x = band_x + ci as f32 * (card_w + gap);
-                        cards.push((entry, Rect::new(x, y, card_w, card_h)));
+            if y + drawn_h > top && y < bottom {
+                match line {
+                    Line::Heading(label) => {
+                        headings.push((label.clone(), Rect::new(band_x, y, band_w, heading_h)));
+                    }
+                    Line::Cards(row) => {
+                        for (ci, &entry) in row.iter().enumerate() {
+                            let x = band_x + ci as f32 * (card_w + gap);
+                            cards.push((entry, Rect::new(x, y, card_w, card_h)));
+                        }
                     }
                 }
             }
-            lines_shown += 1;
-            y += h;
+            y += advance;
         }
         Layout {
             headings,
             cards,
-            more_above: self.scroll_line > 0,
-            more_below,
-            lines_shown,
-            lines_total: all.len(),
+            more_above: scroll_offset > 0.5,
+            more_below: scroll_offset + 0.5 < scroll_max,
+            scroll_offset,
+            scroll_max,
+            viewport_height,
+            content_height,
         }
     }
 
@@ -245,28 +256,30 @@ impl Browser {
     }
 
     fn ensure_visible(&mut self, entries: &[ScenarioEntry]) {
-        // Approximate the window in lines from the default viewport;
-        // exactness comes from layout() at draw, and the clamp below
-        // keeps the selection inside whatever is really shown.
         let view = crate::render::viewport();
         let ui = crate::render::ui_scale();
         let cols = columns(view.x, ui);
+        let all = lines(entries, cols);
+        let (_, _, _, card_h, heading_h, top, bottom) = metrics(view, ui);
+        let gap = 16.0 * ui;
         let (li, _) = Self::locate(entries, cols, self.selected);
-        if li < self.scroll_line {
-            // Show the section heading above a first-in-section card.
-            self.scroll_line = li.saturating_sub(1);
+        let mut line_top = 0.0;
+        for line in &all[..li] {
+            line_top += line_height(line, card_h, heading_h, gap);
         }
-        // Walk the window forward until the selected line fits.
-        for _ in 0..64 {
-            let visible: Vec<usize> = {
-                let l = self.layout(entries, view, ui);
-                l.cards.iter().map(|(e, _)| *e).collect()
+        let line_bottom = line_top + card_h;
+        let viewport_h = bottom - top;
+        if line_top < self.scroll_y {
+            // Keep the section label with its first row when possible.
+            self.scroll_y = if li > 0 && matches!(all[li - 1], Line::Heading(_)) {
+                line_top - heading_h
+            } else {
+                line_top
             };
-            if visible.contains(&self.selected) {
-                break;
-            }
-            self.scroll_line += 1;
+        } else if line_bottom > self.scroll_y + viewport_h {
+            self.scroll_y = line_bottom - viewport_h;
         }
+        self.scroll_y = self.scroll_y.clamp(0.0, max_scroll(&all, view, ui));
     }
 
     /// Feeds a frame of events; `mouse` tracks the pointer like the
@@ -291,19 +304,23 @@ impl Browser {
         if self.last_view != view {
             self.last_view = view;
             let max = max_scroll(&lines(entries, cols), view, ui);
-            self.scroll_line = self.scroll_line.min(max);
-            let shown: Vec<usize> = self
-                .layout(entries, view, ui)
-                .cards
-                .iter()
-                .map(|(e, _)| *e)
-                .collect();
-            if !shown.is_empty() && !shown.contains(&self.selected) {
+            self.scroll_y = self.scroll_y.clamp(0.0, max);
+            let layout = self.layout(entries, view, ui);
+            let selected_fully_visible = layout.cards.iter().any(|(entry, rect)| {
+                *entry == self.selected
+                    && rect.y >= metrics(view, ui).5
+                    && rect.y + rect.h <= metrics(view, ui).6
+            });
+            if !layout.cards.is_empty() && !selected_fully_visible {
                 self.ensure_visible(entries);
             }
         }
+        let (_, _, _, _, _, shelf_top, shelf_bottom) = metrics(view, ui);
         let last = entries.len() - 1;
         let card_at = |browser: &Self, p: Vec2| {
+            if p.y < shelf_top || p.y >= shelf_bottom {
+                return None;
+            }
             browser
                 .layout(entries, view, ui)
                 .cards
@@ -318,13 +335,12 @@ impl Browser {
                     // Enter never fires a card the player can't see:
                     // an off-screen selection scrolls into view first,
                     // and the SECOND Enter commits.
-                    let shown: Vec<usize> = self
-                        .layout(entries, view, ui)
-                        .cards
-                        .iter()
-                        .map(|(e, _)| *e)
-                        .collect();
-                    if shown.contains(&self.selected) {
+                    let shown = self.layout(entries, view, ui);
+                    if shown.cards.iter().any(|(entry, rect)| {
+                        *entry == self.selected
+                            && rect.y >= shelf_top
+                            && rect.y + rect.h <= shelf_bottom
+                    }) {
                         return Out::Pick(self.selected);
                     }
                     self.ensure_visible(entries);
@@ -356,30 +372,19 @@ impl Browser {
                 }
                 RawEvent::KeyDown { key: Key::Home } => {
                     self.selected = 0;
-                    self.scroll_line = 0;
+                    self.scroll_y = 0.0;
                 }
                 RawEvent::KeyDown { key: Key::End } => {
                     self.selected = last;
                     self.ensure_visible(entries);
                 }
                 RawEvent::Wheel { delta } => {
-                    // Whole notches only — fractions accumulate, or a
-                    // trackpad swipe's dozens of tiny deltas each cost
-                    // a full grid line.
-                    self.wheel_accum += delta;
-                    let steps = self.wheel_accum.trunc();
-                    if steps == 0.0 {
+                    if !delta.is_finite() {
                         continue;
                     }
-                    self.wheel_accum -= steps;
-                    // The window stops when it is still FULL: the last
-                    // line as the TOP line left a nearly empty screen.
                     let max = max_scroll(&lines(entries, cols), view, ui);
-                    if steps > 0.0 {
-                        self.scroll_line = self.scroll_line.saturating_sub(steps as usize);
-                    } else {
-                        self.scroll_line = (self.scroll_line + (-steps) as usize).min(max);
-                    }
+                    let wheel_pixels = 56.0 * ui;
+                    self.scroll_y = (self.scroll_y - delta * wheel_pixels).clamp(0.0, max);
                     self.hover = card_at(self, *mouse);
                     // Browsing is not choosing: the wheel moves the
                     // window and ONLY the window. (The old drag-along
@@ -418,6 +423,43 @@ impl Browser {
                         self.selected = a;
                     }
                 }
+                RawEvent::TouchDown { id, x, y } => {
+                    if self.touch_id.is_none() && y >= shelf_top && y < shelf_bottom {
+                        let point = vec2(x, y);
+                        self.touch_id = Some(id);
+                        self.touch_last_y = y;
+                        self.touch_travel = 0.0;
+                        self.touch_pressed = card_at(self, point);
+                        *mouse = point;
+                        self.hover = self.touch_pressed;
+                    }
+                }
+                RawEvent::TouchMove { id, x, y } if self.touch_id == Some(id) => {
+                    let dy = y - self.touch_last_y;
+                    self.touch_last_y = y;
+                    self.touch_travel += dy.abs();
+                    let max = max_scroll(&lines(entries, cols), view, ui);
+                    self.scroll_y = (self.scroll_y - dy).clamp(0.0, max);
+                    *mouse = vec2(x, y);
+                    self.hover = None;
+                }
+                RawEvent::TouchUp { id, x, y } if self.touch_id == Some(id) => {
+                    let released = card_at(self, vec2(x, y));
+                    let armed = self.touch_pressed.take();
+                    self.touch_id = None;
+                    let was_tap = self.touch_travel <= 8.0 * ui;
+                    self.touch_travel = 0.0;
+                    self.hover = None;
+                    if was_tap
+                        && let (Some(a), Some(r)) = (armed, released)
+                        && a == r
+                    {
+                        if a == self.selected {
+                            return Out::Pick(a);
+                        }
+                        self.selected = a;
+                    }
+                }
                 _ => {}
             }
         }
@@ -429,15 +471,6 @@ impl Browser {
     pub fn draw(&self, entries: &[ScenarioEntry], previews: &mut PreviewCache) {
         let view = crate::render::viewport();
         let ui = crate::render::ui_scale();
-        let title_size = 64.0 * ui;
-        let dims = measure_text("OXIDE", None, title_size as u16, 1.0);
-        draw_text(
-            "OXIDE",
-            (view.x - dims.width) * 0.5,
-            72.0 * ui,
-            title_size,
-            TEXT_TITLE,
-        );
         let layout = self.layout(entries, view, ui);
         for (label, rect) in &layout.headings {
             draw_text(label, rect.x, rect.y + rect.h * 0.62, 22.0 * ui, TEXT_TITLE);
@@ -505,8 +538,28 @@ impl Browser {
                 },
             );
         }
-        // Scroll cues.
+        // Edge rows stay at their true translated positions so wheel
+        // and touch input move continuously. Opaque chrome masks clip
+        // the portions outside the shelf.
         let (band_x, band_w, _, _, _, top, bottom) = metrics(view, ui);
+        draw_rectangle(0.0, 0.0, view.x, top, crate::render::OUTSIDE);
+        draw_rectangle(
+            0.0,
+            bottom,
+            view.x,
+            (view.y - bottom).max(0.0),
+            crate::render::OUTSIDE,
+        );
+        let title_size = 64.0 * ui;
+        let dims = measure_text("OXIDE", None, title_size as u16, 1.0);
+        draw_text(
+            "OXIDE",
+            (view.x - dims.width) * 0.5,
+            72.0 * ui,
+            title_size,
+            TEXT_TITLE,
+        );
+        // Scroll cues.
         if layout.more_above {
             draw_text(
                 "^",
@@ -530,18 +583,19 @@ impl Browser {
         // the truth about how much shelf is off screen.
         if layout.more_above || layout.more_below {
             let track_h = bottom - top;
-            let frac = |n: usize| n as f32 / layout.lines_total.max(1) as f32;
-            let thumb_top = top + frac(self.scroll_line) * track_h;
-            let thumb_h = (frac(layout.lines_shown) * track_h).max(24.0 * ui);
+            let thumb_h = if layout.content_height > 0.0 {
+                (layout.viewport_height / layout.content_height * track_h).clamp(24.0 * ui, track_h)
+            } else {
+                track_h
+            };
+            let thumb_top = if layout.scroll_max > 0.0 {
+                top + layout.scroll_offset / layout.scroll_max * (track_h - thumb_h)
+            } else {
+                top
+            };
             let x = (band_x + band_w + 10.0 * ui).min(view.x - 8.0 * ui);
             draw_rectangle(x, top, 3.0 * ui, track_h, SURFACE_MENU);
-            draw_rectangle(
-                x,
-                thumb_top.min(bottom - thumb_h),
-                3.0 * ui,
-                thumb_h,
-                TEXT_SECONDARY,
-            );
+            draw_rectangle(x, thumb_top, 3.0 * ui, thumb_h, TEXT_SECONDARY);
         }
         // The selected map's story, above the hint line.
         if let Some(entry) = entries.get(self.selected) {
@@ -637,20 +691,23 @@ mod tests {
             b.handle(&entries, &[], &mut mouse);
             assert_eq!(b.selected, 0, "the wheel chose a map");
         }
-        // The window moved (and stopped at the last full screenful —
-        // see `the_wheel_stops_at_the_last_full_screenful`).
-        assert!(b.scroll_line > 0, "the window actually moved");
+        // The window moved (and stopped with its tail against the
+        // viewport — see `the_wheel_stops_at_the_last_full_screenful`).
+        assert!(b.scroll_y > 0.0, "the window actually moved");
 
         // Enter with the selection off screen scrolls it back first;
         // only the second Enter commits — it never fires blind.
         let view = crate::render::viewport();
         let ui = crate::render::ui_scale();
+        let (_, _, _, _, _, shelf_top, shelf_bottom) = metrics(view, ui);
         assert!(
             !b.layout(&entries, view, ui)
                 .cards
                 .iter()
-                .any(|(e, _)| *e == b.selected),
-            "precondition: the selection is off screen"
+                .any(|(e, rect)| *e == b.selected
+                    && rect.y >= shelf_top
+                    && rect.y + rect.h <= shelf_bottom),
+            "precondition: the selection is not fully visible"
         );
         let out = b.handle(
             &entries,
@@ -662,8 +719,10 @@ mod tests {
             b.layout(&entries, view, ui)
                 .cards
                 .iter()
-                .any(|(e, _)| *e == b.selected),
-            "the selection is back on screen"
+                .any(|(e, rect)| *e == b.selected
+                    && rect.y >= shelf_top
+                    && rect.y + rect.h <= shelf_bottom),
+            "the selection is fully back on screen"
         );
         let out = b.handle(
             &entries,
@@ -680,8 +739,8 @@ mod tests {
         let mut mouse = vec2(0.0, 0.0);
         let view = crate::render::viewport();
         let ui = crate::render::ui_scale();
-        let full = b.layout(&entries, view, ui).lines_shown;
-        assert!(full >= 3, "precondition: the window shows several lines");
+        let full = b.layout(&entries, view, ui).cards.len();
+        assert!(full >= 4, "precondition: the window shows several cards");
         // Scroll far past the end: the wheel once clamped to the LAST
         // line, parking the tail row alone at the top of empty screen.
         for _ in 0..60 {
@@ -689,14 +748,22 @@ mod tests {
         }
         let end = b.layout(&entries, view, ui);
         assert!(!end.more_below, "the shelf's tail is on screen");
+        let (_, _, _, _, _, _, shelf_bottom) = metrics(view, ui);
+        let tail_bottom = end
+            .cards
+            .iter()
+            .map(|(_, rect)| rect.y + rect.h)
+            .fold(f32::NEG_INFINITY, f32::max);
         assert!(
-            end.lines_shown > 1,
-            "the tail row is not parked alone above empty screen (showing {} of {})",
-            end.lines_shown,
-            end.lines_total
+            (tail_bottom - shelf_bottom).abs() < 0.01,
+            "the tail sits against the viewport instead of above empty space"
         );
-        // And the clamp is EXACTLY the last full screenful: one line
-        // back and the tail no longer fits.
+        assert_eq!(
+            end.scroll_offset, end.scroll_max,
+            "the pixel clamp lands exactly at the shelf tail"
+        );
+        // Moving back by any visible amount puts the tail below the
+        // viewport again.
         b.handle(&entries, &[RawEvent::Wheel { delta: 1.0 }], &mut mouse);
         assert!(
             b.layout(&entries, view, ui).more_below,
@@ -715,19 +782,27 @@ mod tests {
     }
 
     #[test]
-    fn trackpad_fractions_accumulate_into_whole_lines() {
+    fn trackpad_fractions_scroll_immediately_and_smoothly() {
         let entries = shelf();
         let mut b = Browser::new();
         let mut mouse = vec2(0.0, 0.0);
-        // Nine hundredths: no scroll yet. The tenth crosses a whole
-        // notch and moves exactly one line — a trackpad swipe once
-        // cost a full grid line per fractional event.
-        for _ in 0..9 {
-            b.handle(&entries, &[RawEvent::Wheel { delta: -0.11 }], &mut mouse);
-            assert_eq!(b.scroll_line, 0, "fractions alone must not scroll");
-        }
+        let before = b.layout(
+            &entries,
+            crate::render::viewport(),
+            crate::render::ui_scale(),
+        );
         b.handle(&entries, &[RawEvent::Wheel { delta: -0.11 }], &mut mouse);
-        assert_eq!(b.scroll_line, 1, "the accumulated whole notch scrolls once");
+        let first = b.scroll_y;
+        assert!(first > 0.0, "a fractional trackpad event moves immediately");
+        assert!(
+            first < before.viewport_height / 4.0,
+            "a tiny gesture cannot jump a substantial part of the shelf"
+        );
+        b.handle(&entries, &[RawEvent::Wheel { delta: -0.11 }], &mut mouse);
+        assert!(
+            b.scroll_y > first && b.scroll_y < first * 2.1,
+            "equal fractional events produce continuous pixel motion"
+        );
     }
 
     #[test]
@@ -833,6 +908,54 @@ mod tests {
             &mut mouse,
         );
         assert_eq!(out, Out::Stay);
+    }
+
+    #[test]
+    fn touch_drag_scrolls_while_touch_taps_select_and_commit() {
+        let entries = shelf();
+        let mut b = Browser::new();
+        let view = crate::render::viewport();
+        let ui = crate::render::ui_scale();
+        let (_, rect) = b.layout(&entries, view, ui).cards[2];
+        let (x, y) = (rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
+        let mut mouse = vec2(0.0, 0.0);
+
+        b.handle(&entries, &[RawEvent::TouchDown { id: 1, x, y }], &mut mouse);
+        let out = b.handle(
+            &entries,
+            &[RawEvent::TouchMove {
+                id: 1,
+                x,
+                y: y - 30.0,
+            }],
+            &mut mouse,
+        );
+        assert_eq!(out, Out::Stay);
+        assert!(b.scroll_y > 0.0, "an upward drag moves down the shelf");
+        let out = b.handle(
+            &entries,
+            &[RawEvent::TouchUp {
+                id: 1,
+                x,
+                y: y - 30.0,
+            }],
+            &mut mouse,
+        );
+        assert_eq!(out, Out::Stay, "a drag cannot activate a card");
+        assert_eq!(b.selected, 0, "a drag cannot retarget keyboard focus");
+
+        b.scroll_y = 0.0;
+        let tap = [
+            RawEvent::TouchDown { id: 2, x, y },
+            RawEvent::TouchUp { id: 2, x, y },
+        ];
+        assert_eq!(b.handle(&entries, &tap, &mut mouse), Out::Stay);
+        assert_eq!(b.selected, 2, "the first tap selects");
+        assert_eq!(
+            b.handle(&entries, &tap, &mut mouse),
+            Out::Pick(2),
+            "a second tap commits"
+        );
     }
 
     #[test]
