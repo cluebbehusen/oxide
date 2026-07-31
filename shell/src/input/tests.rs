@@ -1686,7 +1686,8 @@ fn team_game() -> Game {
             {\"name\": \"me\", \"faction\": \"ferrous\", \"scrap\": 100, \"bot\": false, \"team\": 1},
             {\"name\": \"pal\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true, \"team\": 1,
              \"bot_config\": {\"level\": \"easy\"}},
-            {\"name\": \"foe\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true}
+            {\"name\": \"foe\", \"faction\": \"cupric\", \"scrap\": 100, \"bot\": true,
+             \"bot_config\": {\"level\": \"hard\"}}
         ],
         \"map\": [
             \"########################\",
@@ -1726,9 +1727,11 @@ fn an_ally_selection_reads_its_orders_but_takes_none() {
     // static combat capability and its order chips.
     let panel = crate::panel::build(&game, &input.bindings).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on an ally panel");
-    assert_eq!(panel.combat.len(), 1);
+    assert!(panel.sub.contains("Easy"), "bot difficulty stays visible");
+    assert_eq!(panel.combat.len(), 2);
     assert_eq!(panel.combat[0].icon, crate::panel::CombatIcon::Unarmed);
     assert_eq!(panel.combat[0].text, "unarmed");
+    assert_eq!(panel.combat[1].icon, crate::panel::CombatIcon::Speed);
     assert!(!panel.queue.is_empty(), "the ally's orders show");
     assert_eq!(
         panel.faction,
@@ -1782,7 +1785,8 @@ fn a_hostile_selection_inspects_and_leaks_nothing() {
     let panel = crate::panel::build(&game, &input.bindings).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on a hostile panel");
     assert!(panel.queue.is_empty(), "no order chips on a hostile panel");
-    assert_eq!(panel.combat.len(), 1);
+    assert!(panel.sub.contains("Hard"), "enemy difficulty stays visible");
+    assert_eq!(panel.combat.len(), 2);
     assert_eq!(panel.combat[0].icon, crate::panel::CombatIcon::Weapon);
     assert!(panel.combat[0].text.contains("dmg"));
     assert!(panel.combat[0].text.contains("tiles"));

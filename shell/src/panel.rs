@@ -124,8 +124,10 @@ pub struct Card {
 /// Compact semantic mark paired with an always-visible combat fact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CombatIcon {
-    /// Weapon reach and damage.
+    /// Weapon reach and damage against ground targets.
     Weapon,
+    /// Weapon reach and damage against air targets.
+    AirWeapon,
     /// Ground too close for the weapon to fire.
     DeadZone,
     /// Direct line of sight.
@@ -134,6 +136,8 @@ pub enum CombatIcon {
     Radar,
     /// Automatic repair reach.
     Repair,
+    /// Movement speed.
+    Speed,
     /// No weapon fitted.
     Unarmed,
 }
@@ -159,7 +163,7 @@ pub struct Panel {
     /// entity's owner, not the viewer (an inspected Cupric ally must
     /// not draw in Ferrous rust).
     pub faction: oxide_sim::Faction,
-    /// Static weapon and range facts for a singly selected entity. These
+    /// Static capability facts for a singly selected entity. These
     /// are drawn without a hover and deliberately contain no order,
     /// target, or cooldown state, so inspecting a visible enemy reveals
     /// capability without revealing intent.
@@ -283,6 +287,19 @@ fn weapon_line(weapon: &WeaponStats) -> String {
     )
 }
 
+/// The compact mark shared by a weapon fact and its battlefield range.
+/// Air-only weapons need a different silhouette, not just a quieter copy
+/// of the ground ring, because the Sentinel exposes both at once.
+pub(crate) fn weapon_combat_icon(weapon: &WeaponStats) -> CombatIcon {
+    if weapon.targets.covers(oxide_sim::stats::Domain::Air)
+        && !weapon.targets.covers(oxide_sim::stats::Domain::Ground)
+    {
+        CombatIcon::AirWeapon
+    } else {
+        CombatIcon::Weapon
+    }
+}
+
 /// Human lines for a kind's weapons, from the stats table.
 pub fn weapon_lines(kind: UnitKind) -> Vec<String> {
     kind.stats().weapons.iter().map(weapon_line).collect()
@@ -294,7 +311,7 @@ fn building_combat_lines(kind: BuildingKind) -> Vec<CombatFact> {
         .weapons
         .iter()
         .map(|weapon| CombatFact {
-            icon: CombatIcon::Weapon,
+            icon: weapon_combat_icon(weapon),
             text: weapon_line(weapon),
         })
         .collect();
@@ -338,14 +355,14 @@ fn building_combat_lines(kind: BuildingKind) -> Vec<CombatFact> {
     lines
 }
 
-/// Always-visible combat facts for a selected unit.
+/// Always-visible capability facts for a selected unit.
 pub fn combat_lines(kind: UnitKind) -> Vec<CombatFact> {
     let stats = kind.stats();
     let mut lines: Vec<_> = stats
         .weapons
         .iter()
         .map(|weapon| CombatFact {
-            icon: CombatIcon::Weapon,
+            icon: weapon_combat_icon(weapon),
             text: weapon_line(weapon),
         })
         .collect();
@@ -360,12 +377,41 @@ pub fn combat_lines(kind: UnitKind) -> Vec<CombatFact> {
         });
     }
     if lines.is_empty() {
-        vec![CombatFact {
+        lines.push(CombatFact {
             icon: CombatIcon::Unarmed,
             text: "unarmed".to_string(),
-        }]
+        });
+    }
+    lines.push(CombatFact {
+        icon: CombatIcon::Speed,
+        text: format!(
+            "{:.1} tiles/sec",
+            stats.speed.to_num::<f32>() * oxide_sim::TICKS_PER_SECOND as f32
+        ),
+    });
+    lines
+}
+
+fn bot_level_label(game: &Game, player: oxide_sim::PlayerId) -> Option<&'static str> {
+    let spec = game.scenario.players.get(usize::from(player.0))?;
+    if !spec.bot {
+        return None;
+    }
+    Some(match spec.bot_config.map(|config| config.level) {
+        Some(oxide_sim::bot::Level::Easy) => "Easy",
+        Some(oxide_sim::bot::Level::Medium) => "Medium",
+        Some(oxide_sim::bot::Level::Hard) => "Hard",
+        Some(oxide_sim::bot::Level::Expert) => "Expert",
+        None => "Classic",
+    })
+}
+
+fn foreign_sub(game: &Game, owner: oxide_sim::PlayerId, hostile: bool, detail: &str) -> String {
+    let relation = if hostile { "hostile" } else { "ally" };
+    if let Some(level) = bot_level_label(game, owner) {
+        format!("{relation} | {level} | {detail}")
     } else {
-        lines
+        format!("{relation} | {detail}")
     }
 }
 
@@ -625,11 +671,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         };
         if owner != game.human {
             let hostile = game.state.hostile(game.human, owner);
-            panel.sub = format!(
-                "{} | {}",
-                if hostile { "hostile" } else { "ally" },
-                panel.sub
-            );
+            panel.sub = foreign_sub(game, owner, hostile, &panel.sub);
             return Some(panel);
         }
         let producers: Vec<BuildingId> = selected_buildings
@@ -698,11 +740,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             // more — no queue chips, no cards, no rally, no reach
             // into anyone's production.
             let hostile = game.state.hostile(game.human, owner);
-            panel.sub = format!(
-                "{} | {}",
-                if hostile { "hostile" } else { "ally" },
-                panel.sub
-            );
+            panel.sub = foreign_sub(game, owner, hostile, &panel.sub);
             if !hostile {
                 panel.cards.push(Card {
                     icon: CardIcon::Verb(VerbIcon::Idle),
@@ -876,11 +914,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         // for any visible unit. An ally also shows its orders, while a
         // hostile's order state remains hidden because it reveals intent.
         let hostile = game.state.hostile(game.human, owner);
-        panel.sub = format!(
-            "{} | {}",
-            if hostile { "hostile" } else { "ally" },
-            panel.sub
-        );
+        panel.sub = foreign_sub(game, owner, hostile, &panel.sub);
         if !hostile && units.len() == 1 {
             panel
                 .queue
@@ -904,6 +938,10 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             }
         }
         if counts.len() > 1 {
+            // The counted portrait tiles below already name every kind.
+            // Repeating the same list here makes long mixed selections run
+            // into those tiles and gives the eye two competing summaries.
+            panel.sub.clear();
             counts.sort_by_key(|(k, _)| k.name());
             for (kind, n) in counts.into_iter().take(8) {
                 panel.roster.push(Card {
@@ -1217,6 +1255,7 @@ mod tests {
         game.selection.buildings = vec![turret];
 
         let panel = build(&game, &BindingMap::classic()).expect("Turret panel");
+        assert!(panel.cards.is_empty(), "the turret has no command row");
         assert!(
             panel
                 .cards
@@ -1304,11 +1343,17 @@ mod tests {
         assert_eq!(panel.cards[3].title, "Patrol");
         assert_eq!(
             panel.combat,
-            vec![CombatFact {
-                icon: CombatIcon::Unarmed,
-                text: "unarmed".to_string(),
-            }],
-            "an unarmed unit still gives an explicit combat answer"
+            vec![
+                CombatFact {
+                    icon: CombatIcon::Unarmed,
+                    text: "unarmed".to_string(),
+                },
+                CombatFact {
+                    icon: CombatIcon::Speed,
+                    text: "2.5 tiles/sec".to_string(),
+                },
+            ],
+            "an unarmed unit still gives a combat answer and movement speed"
         );
         let builds: Vec<_> = panel
             .cards
@@ -1658,14 +1703,33 @@ mod tests {
             .id;
         game.selection.units = vec![sentinel];
         let panel = build(&game, &BindingMap::classic()).expect("panel");
-        assert_eq!(panel.combat.len(), 2, "one line per weapon");
+        assert_eq!(panel.combat.len(), 3, "two weapons plus movement speed");
         assert!(
             panel
                 .combat
                 .iter()
-                .all(|fact| fact.icon == CombatIcon::Weapon)
+                .any(|fact| fact.icon == CombatIcon::Weapon && fact.text.contains("ground"))
         );
-        assert!(panel.combat.iter().all(|fact| fact.text.contains("dmg")));
+        assert!(
+            panel
+                .combat
+                .iter()
+                .any(|fact| fact.icon == CombatIcon::AirWeapon && fact.text.contains("air")),
+            "the anti-air range uses an aircraft silhouette"
+        );
+        assert!(
+            panel
+                .combat
+                .iter()
+                .any(|fact| fact.icon == CombatIcon::Speed && fact.text == "2.2 tiles/sec")
+        );
+        assert!(
+            panel
+                .combat
+                .iter()
+                .filter(|fact| { matches!(fact.icon, CombatIcon::Weapon | CombatIcon::AirWeapon) })
+                .all(|fact| fact.text.contains("dmg"))
+        );
         assert!(panel.combat.iter().all(|fact| fact.text.contains("tiles")));
         assert!(panel.combat.iter().any(|fact| fact.text.contains("ground")));
         assert!(panel.combat.iter().any(|fact| fact.text.contains("air")));
@@ -1687,6 +1751,10 @@ mod tests {
             panel.roster.len(),
             2,
             "each selected kind gets one roster chip"
+        );
+        assert!(
+            panel.sub.is_empty(),
+            "the counted roster tiles replace the redundant kind list"
         );
         assert!(
             panel

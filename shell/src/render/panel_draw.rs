@@ -43,9 +43,10 @@ fn panel_packing_at_right(
     roster_shown: usize,
     cards_shown: usize,
     combat_len: usize,
+    compact: bool,
     hides_minimap: bool,
 ) -> PanelPacking {
-    let cards_x = 150.0 * scale;
+    let cards_x = if compact { 210.0 } else { 150.0 } * scale;
     let (card_w, card_h, gap) = (66.0 * scale, 80.0 * scale, 6.0 * scale);
     let available = (right - cards_x).max(card_w);
     let per_row = (((available + gap) / (card_w + gap)).floor() as usize).max(1);
@@ -58,14 +59,18 @@ fn panel_packing_at_right(
     } else {
         22.0 * scale + roster_rows as f32 * (roster_h + 5.0 * scale)
     };
-    let rows = grouped_card_rows(cards_shown, per_row);
+    let cards_h = if cards_shown == 0 {
+        0.0
+    } else {
+        grouped_card_rows(cards_shown, per_row) as f32 * (card_h + 4.0 * scale)
+    };
     let combat_h = if combat_len == 0 {
         0.0
     } else {
         (22.0 + 18.0 * combat_len as f32) * scale
     };
-    let band_h = (20.0 * scale + combat_h + roster_h + rows as f32 * (card_h + 4.0 * scale))
-        .max(120.0 * scale);
+    let minimum_h = if compact { 72.0 } else { 120.0 } * scale;
+    let band_h = (20.0 * scale + combat_h + roster_h + cards_h).max(minimum_h);
     PanelPacking {
         right,
         available,
@@ -88,6 +93,7 @@ fn panel_packing(
     roster_len: usize,
     cards_len: usize,
     combat_len: usize,
+    compact: bool,
 ) -> PanelPacking {
     let roster_shown = roster_len.min(8);
     let cards_shown = cards_len.min(16);
@@ -104,6 +110,7 @@ fn panel_packing(
         roster_shown,
         cards_shown,
         combat_len,
+        compact,
         false,
     );
     if packing.band_h > max_band_h && reserved_right < viewport.x {
@@ -114,6 +121,7 @@ fn panel_packing(
             roster_shown,
             cards_shown,
             combat_len,
+            compact,
             true,
         );
     }
@@ -125,11 +133,21 @@ fn panel_packing(
             0,
             cards_shown,
             combat_len,
+            compact,
             true,
         );
     }
     if packing.band_h > max_band_h && packing.combat_shown > 0 {
-        packing = panel_packing_at_right(viewport, scale, viewport.x, 0, cards_shown, 0, true);
+        packing = panel_packing_at_right(
+            viewport,
+            scale,
+            viewport.x,
+            0,
+            cards_shown,
+            0,
+            compact,
+            true,
+        );
     }
     packing
 }
@@ -212,6 +230,9 @@ pub(crate) fn draw_panel(
     use crate::panel::{CardAction, CardIcon};
     let s = ui_scale();
     let mini = minimap_rect(game);
+    let compact = matches!(panel.portrait, CardIcon::Building(_))
+        && panel.cards.is_empty()
+        && panel.roster.is_empty();
     let packing = panel_packing(
         vec2(screen_width(), screen_height()),
         mini,
@@ -219,6 +240,7 @@ pub(crate) fn draw_panel(
         panel.roster.len(),
         panel.cards.len(),
         panel.combat.len(),
+        compact,
     );
     let right = packing.right;
     // Cards wrap instead of vanishing. If reserving the minimap would
@@ -226,7 +248,7 @@ pub(crate) fn draw_panel(
     // width for this frame; only a still-overfull palette temporarily
     // yields the mixed roster.
     let (cw, ch, gap) = (66.0 * s, 80.0 * s, 6.0 * s);
-    let cards_x = 150.0 * s;
+    let cards_x = if compact { 210.0 } else { 150.0 } * s;
     let available = packing.available;
     let per_row = packing.per_row;
     let roster_shown = packing.roster_shown;
@@ -243,8 +265,12 @@ pub(crate) fn draw_panel(
     let combat_h = packing.combat_h;
     let band_h = packing.band_h;
     let top = packing.top;
-    let used_cols = shown.min(per_row).max(1) as f32;
-    let cards_w = (cards_x + used_cols * (cw + gap)).max(220.0 * s) + 6.0 * s;
+    let cards_w = if shown == 0 {
+        cards_x
+    } else {
+        let used_cols = shown.min(per_row).max(1) as f32;
+        (cards_x + used_cols * (cw + gap)).max(220.0 * s) + 6.0 * s
+    };
     let combat_w = panel
         .combat
         .iter()
@@ -361,30 +387,62 @@ pub(crate) fn draw_panel(
         blit(plate, sprites.verb_icon(*verb), tint);
     };
 
-    // Portrait block: sprite, name, status.
-    let psize = 56.0 * s;
-    draw_icon(
-        Rect::new(12.0 * s, top + 12.0 * s, psize, psize),
-        &panel.portrait,
-        WHITE,
-    );
-    draw_text(
-        &panel.title,
-        12.0 * s,
-        top + 88.0 * s,
-        17.0 * s,
-        TEXT_PRIMARY,
-    );
-    draw_text(
-        &panel.sub,
-        12.0 * s,
-        top + 106.0 * s,
-        14.0 * s,
-        TEXT_SECONDARY,
-    );
+    // Portrait block: commandless buildings place their labels beside a
+    // smaller portrait, reclaiming the empty card row below them.
+    if compact {
+        let psize = 42.0 * s;
+        draw_icon(
+            Rect::new(10.0 * s, top + 14.0 * s, psize, psize),
+            &panel.portrait,
+            WHITE,
+        );
+        let text_x = 62.0 * s;
+        let max_width = cards_x - text_x - 8.0 * s;
+        let mut title_size = 15.0 * s;
+        while measure_text(&panel.title, None, title_size as u16, 1.0).width > max_width
+            && title_size > 10.0 * s
+        {
+            title_size -= 0.5 * s;
+        }
+        let mut sub_size = 12.0 * s;
+        while measure_text(&panel.sub, None, sub_size as u16, 1.0).width > max_width
+            && sub_size > 8.0 * s
+        {
+            sub_size -= 0.5 * s;
+        }
+        draw_text(
+            &panel.title,
+            text_x,
+            top + 31.0 * s,
+            title_size,
+            TEXT_PRIMARY,
+        );
+        draw_text(&panel.sub, text_x, top + 50.0 * s, sub_size, TEXT_SECONDARY);
+    } else {
+        let psize = 56.0 * s;
+        draw_icon(
+            Rect::new(12.0 * s, top + 12.0 * s, psize, psize),
+            &panel.portrait,
+            WHITE,
+        );
+        draw_text(
+            &panel.title,
+            12.0 * s,
+            top + 88.0 * s,
+            17.0 * s,
+            TEXT_PRIMARY,
+        );
+        draw_text(
+            &panel.sub,
+            12.0 * s,
+            top + 106.0 * s,
+            14.0 * s,
+            TEXT_SECONDARY,
+        );
+    }
 
     // A single entity publishes its static combat capability without a
-    // hover. The model contains kind-level weapon and range facts only,
+    // hover. The model contains kind-level capability facts only,
     // never a live target, current cooldown, or private order state.
     if combat_shown > 0 {
         draw_text(
@@ -872,7 +930,7 @@ mod tests {
     fn a_dense_small_window_panel_yields_the_minimap_before_overflowing() {
         let viewport = vec2(640.0, 400.0);
         let minimap = minimap_rect_scaled(40, 24, viewport, 1.0);
-        let packing = panel_packing(viewport, minimap, 1.0, 8, 16, 5);
+        let packing = panel_packing(viewport, minimap, 1.0, 8, 16, 5, false);
 
         assert!(packing.hides_minimap);
         assert_eq!(packing.right, viewport.x);
@@ -886,7 +944,7 @@ mod tests {
     fn a_mixed_small_window_selection_keeps_its_large_roster() {
         let viewport = vec2(640.0, 400.0);
         let minimap = minimap_rect_scaled(40, 24, viewport, 1.0);
-        let packing = panel_packing(viewport, minimap, 1.0, 8, 6, 0);
+        let packing = panel_packing(viewport, minimap, 1.0, 8, 6, 0, false);
 
         assert!(packing.hides_minimap);
         assert_eq!(packing.roster_shown, 8);
@@ -906,9 +964,21 @@ mod tests {
     fn a_simple_panel_keeps_the_minimap() {
         let viewport = vec2(640.0, 400.0);
         let minimap = minimap_rect_scaled(40, 24, viewport, 1.0);
-        let packing = panel_packing(viewport, minimap, 1.0, 0, 2, 0);
+        let packing = panel_packing(viewport, minimap, 1.0, 0, 2, 0, false);
 
         assert!(!packing.hides_minimap);
         assert!(packing.right < viewport.x);
+    }
+
+    #[test]
+    fn a_commandless_building_does_not_reserve_an_empty_card_row() {
+        let viewport = vec2(1280.0, 800.0);
+        let minimap = minimap_rect_scaled(40, 24, viewport, 1.0);
+        let compact = panel_packing(viewport, minimap, 1.0, 0, 0, 1, true);
+        let ordinary = panel_packing(viewport, minimap, 1.0, 0, 0, 1, false);
+
+        assert_eq!(compact.band_h, 72.0);
+        assert_eq!(ordinary.band_h, 120.0);
+        assert_eq!(compact.top, viewport.y - 72.0);
     }
 }

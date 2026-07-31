@@ -1232,19 +1232,24 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
     };
     let weapon_color = Color::new(0.85, 0.32, 0.29, 0.55);
     let dead_zone_color = Color::new(1.0, 0.68, 0.18, 0.78);
-    let sidearm_color = Color::new(0.85, 0.32, 0.29, 0.30);
+    let air_weapon_color = Color::new(0.38, 0.70, 0.95, 0.52);
     let vision_color = Color::new(0.63, 0.77, 0.94, 0.42);
     let radar_color = Color::new(0.22, 0.76, 0.72, 0.52);
     let repair_color = Color::new(0.38, 0.82, 0.45, 0.55);
 
     let unit_rings = |world: Vec2, stats: &oxide_sim::stats::UnitStats| {
-        for (i, weapon) in stats.weapons.iter().enumerate() {
-            let color = if i == 0 { weapon_color } else { sidearm_color };
+        for weapon in stats.weapons {
+            let icon = crate::panel::weapon_combat_icon(weapon);
+            let color = if icon == crate::panel::CombatIcon::AirWeapon {
+                air_weapon_color
+            } else {
+                weapon_color
+            };
             ring(
                 world,
                 weapon.range.to_num::<f32>(),
                 RangeStroke::Solid,
-                crate::panel::CombatIcon::Weapon,
+                icon,
                 color,
                 1.7,
             );
