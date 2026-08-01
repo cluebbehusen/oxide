@@ -281,18 +281,13 @@ fn production_head_advancing(building: &oxide_sim::Building) -> bool {
             .is_some_and(|kind| building.progress < kind.stats().train_ticks)
 }
 
-fn building_work_speed(game: &Game, building: &oxide_sim::Building) -> Option<f32> {
+fn building_work_speed(building: &oxide_sim::Building) -> Option<f32> {
     if !building.built {
         return None;
     }
     match building.kind {
         oxide_sim::BuildingKind::Foundry => Some(2.0),
-        oxide_sim::BuildingKind::Fabricator
-            if production_progress_visible(game, building)
-                && production_head_advancing(building) =>
-        {
-            Some(3.0)
-        }
+        oxide_sim::BuildingKind::Fabricator if production_head_advancing(building) => Some(3.0),
         oxide_sim::BuildingKind::Fabricator => None,
         oxide_sim::BuildingKind::Array => Some(3.5),
         oxide_sim::BuildingKind::Reclaimer => Some(4.0),
@@ -535,7 +530,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
         let (w, h) = building.kind.stats().size;
         let dest = vec2(w as f32 * zoom, h as f32 * zoom);
         let (source, accent_source) = if building.built {
-            let speed = building_work_speed(game, building);
+            let speed = building_work_speed(building);
             let frame = super::motion::loop_frame(
                 game.fx_time(),
                 building.id.0,
@@ -1504,18 +1499,17 @@ mod tests {
             .find(|building| building.kind == oxide_sim::BuildingKind::Fabricator)
             .expect("Fabricator")
             .clone();
-        assert!(building_work_speed(&game, &fabricator).is_none());
+        assert!(building_work_speed(&fabricator).is_none());
         fabricator.queue.push_back(oxide_sim::UnitKind::Scuttler);
-        assert!(building_work_speed(&game, &fabricator).is_some());
+        assert!(building_work_speed(&fabricator).is_some());
         fabricator.player = oxide_sim::PlayerId(1);
         assert!(
-            building_work_speed(&game, &fabricator).is_none(),
-            "hostile queues stay private instead of leaking through animation"
+            building_work_speed(&fabricator).is_some(),
+            "visible hostile production activity is physically observable"
         );
-        fabricator.player = game.human;
         fabricator.progress = oxide_sim::UnitKind::Scuttler.stats().train_ticks;
         assert!(
-            building_work_speed(&game, &fabricator).is_none(),
+            building_work_speed(&fabricator).is_none(),
             "a completed head waiting for a doorstep holds the machinery"
         );
 
@@ -1535,13 +1529,13 @@ mod tests {
             building.kind = kind;
             building.queue.clear();
             building.progress = 0;
-            assert!(building_work_speed(&game, &building).is_some(), "{kind:?}");
+            assert!(building_work_speed(&building).is_some(), "{kind:?}");
         }
         let mut turret = fabricator;
         turret.kind = oxide_sim::BuildingKind::Turret;
         turret.queue.clear();
         turret.progress = 0;
-        assert!(building_work_speed(&game, &turret).is_none());
+        assert!(building_work_speed(&turret).is_none());
     }
 
     #[test]
