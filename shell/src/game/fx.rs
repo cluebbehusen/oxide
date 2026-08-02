@@ -1,4 +1,4 @@
-//! Presentation effects: the visual vocabulary (bolts, arcs, bursts,
+//! Presentation effects: the visual vocabulary (shots, shells, bursts,
 //! pings), the sound kinds, and the event-to-effect mapping that turns
 //! sim reports into transient visuals and positional audio. Nothing
 //! here is sim-relevant; dropping it all is always safe.
@@ -83,41 +83,77 @@ pub enum PingKind {
 /// (shooter kind, weapon slot) the hit event names, so every weapon
 /// reads as itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BoltStyle {
-    /// The line infantry's thin fast tracer.
+pub enum ShotStyle {
+    /// A contact tool: target sparks, never a ranged projectile.
+    Contact,
+    /// A short physical bullet tracer at the impact end of its path.
     Tracer,
     /// The Lancer's rail: heavy, bright, lingering.
     Rail,
-    /// Anti-air flak: a faint line and puffs bursting at the target.
-    Flak,
-    /// Air-to-ground ordnance: a cooler, steeper bolt.
-    AirStrike,
+    /// One logical anti-air attack shown as a paired ballistic burst.
+    FlakBurst,
+    /// A large direct-fire round, dark-bodied with a warm short tail.
+    HeavyRound,
 }
 
-impl BoltStyle {
-    /// Seconds the bolt stays on screen.
+impl ShotStyle {
+    /// Seconds the report stays on screen.
     pub fn life(self) -> f32 {
         match self {
-            BoltStyle::Tracer => 0.15,
-            BoltStyle::Rail => 0.28,
-            BoltStyle::Flak => 0.20,
-            BoltStyle::AirStrike => 0.18,
+            ShotStyle::Contact => 0.12,
+            ShotStyle::Tracer => 0.14,
+            ShotStyle::Rail => 0.24,
+            ShotStyle::FlakBurst => 0.18,
+            ShotStyle::HeavyRound => 0.18,
         }
     }
 }
 
-/// Which bolt family a unit's weapon slot fires.
-fn unit_bolt_style(kind: oxide_sim::UnitKind, weapon: usize) -> BoltStyle {
+/// Which report family a unit's weapon slot fires.
+fn unit_shot_style(kind: oxide_sim::UnitKind, weapon: usize) -> ShotStyle {
     use oxide_sim::UnitKind;
     match (kind, weapon) {
-        (UnitKind::Lancer, _) => BoltStyle::Rail,
-        (UnitKind::Flakhound | UnitKind::Stinger, _) => BoltStyle::Flak,
-        // The Sentinel's sidearm is its anti-air poke.
-        (UnitKind::Sentinel, 1) => BoltStyle::Flak,
-        (UnitKind::Buzzard | UnitKind::Darter | UnitKind::Talon | UnitKind::Wisp, _) => {
-            BoltStyle::AirStrike
-        }
-        _ => BoltStyle::Tracer,
+        (UnitKind::Scuttler, _) => ShotStyle::Contact,
+        (UnitKind::Lancer, _) => ShotStyle::Rail,
+        (UnitKind::Flakhound | UnitKind::Stinger, _) => ShotStyle::FlakBurst,
+        (UnitKind::Buzzard, _) => ShotStyle::HeavyRound,
+        _ => ShotStyle::Tracer,
+    }
+}
+
+fn defense_shot_style(kind: oxide_sim::BuildingKind) -> ShotStyle {
+    debug_assert!(
+        kind.stats().weapons.iter().all(|weapon| !weapon.projectile),
+        "real shell weapons must arrive through ShellLaunched"
+    );
+    match kind {
+        oxide_sim::BuildingKind::FlakTurret => ShotStyle::FlakBurst,
+        oxide_sim::BuildingKind::Bastion => ShotStyle::HeavyRound,
+        _ => ShotStyle::Tracer,
+    }
+}
+
+fn visual_shot_origin(from: Vec2, to: Vec2, reach: f32) -> Vec2 {
+    let direction = to - from;
+    if direction.length_squared() <= f32::EPSILON {
+        from
+    } else {
+        from + direction.normalize() * reach
+    }
+}
+
+fn unit_muzzle_reach(kind: oxide_sim::UnitKind) -> f32 {
+    match kind.stats().domain {
+        oxide_sim::stats::Domain::Ground => 0.38,
+        oxide_sim::stats::Domain::Air => 0.32,
+    }
+}
+
+fn defense_muzzle_reach(kind: oxide_sim::BuildingKind) -> f32 {
+    match kind {
+        oxide_sim::BuildingKind::Bastion => kind.stats().size.0 as f32 * 0.49,
+        oxide_sim::BuildingKind::FlakTurret => 0.47,
+        _ => 0.44,
     }
 }
 
@@ -155,9 +191,9 @@ fn shell_fire_sound(shooter: oxide_sim::Target) -> SoundKind {
 /// Effect shapes.
 pub enum EffectKind {
     /// A direct-fire shot, styled by the weapon family that spoke.
-    Bolt {
-        /// Visual family (tracer, rail, flak, air strike).
-        style: BoltStyle,
+    DirectShot {
+        /// Visual family (contact, tracer, rail, flak, heavy round).
+        style: ShotStyle,
         /// Muzzle, world coords.
         from: Vec2,
         /// Impact, world coords.
@@ -201,6 +237,27 @@ pub enum EffectKind {
     },
 }
 
+fn push_direct_report(
+    effects: &mut Vec<Effect>,
+    style: ShotStyle,
+    from: Vec2,
+    to: Vec2,
+    splash: Option<f32>,
+) {
+    // The area bloom stays behind the weapon report. In particular, an
+    // opaque flak burst must not paint over the paired terminal tracers.
+    if let Some(radius) = splash {
+        effects.push(Effect {
+            kind: EffectKind::Burst { at: to, radius },
+            age: 0.0,
+        });
+    }
+    effects.push(Effect {
+        kind: EffectKind::DirectShot { style, from, to },
+        age: 0.0,
+    });
+}
+
 impl Game {
     pub fn update_fx(&mut self, dt: f32) {
         self.fx_clock += dt;
@@ -214,7 +271,7 @@ impl Game {
         self.fx.retain(|fx| {
             fx.age
                 < match fx.kind {
-                    EffectKind::Bolt { style, .. } => style.life(),
+                    EffectKind::DirectShot { style, .. } => style.life(),
                     EffectKind::Puff { .. } => 0.4,
                     EffectKind::Falling { .. } => 0.7,
                     EffectKind::Ping { .. } => 0.5,
@@ -298,23 +355,17 @@ impl Game {
                         };
                         self.sounds_pending.push((sound, Some(world_vec(at))));
                     }
-                    self.fx.push(Effect {
-                        kind: EffectKind::Bolt {
-                            style: unit_bolt_style(*attacker_kind, *weapon),
-                            from: world_vec(*attacker_pos),
-                            to: world_vec(*target_pos),
-                        },
-                        age: 0.0,
-                    });
-                    if let Some(radius) = splash {
-                        self.fx.push(Effect {
-                            kind: EffectKind::Burst {
-                                at: world_vec(*target_pos),
-                                radius,
-                            },
-                            age: 0.0,
-                        });
-                    }
+                    push_direct_report(
+                        &mut self.fx,
+                        unit_shot_style(*attacker_kind, *weapon),
+                        visual_shot_origin(
+                            world_vec(*attacker_pos),
+                            world_vec(*target_pos),
+                            unit_muzzle_reach(*attacker_kind),
+                        ),
+                        world_vec(*target_pos),
+                        splash,
+                    );
                 }
                 Event::TurretFired {
                     kind,
@@ -365,27 +416,17 @@ impl Game {
                         };
                         self.sounds_pending.push((sound, Some(world_vec(at))));
                     }
-                    self.fx.push(Effect {
-                        kind: EffectKind::Bolt {
-                            style: match kind {
-                                oxide_sim::BuildingKind::FlakTurret => BoltStyle::Flak,
-                                oxide_sim::BuildingKind::Bastion => BoltStyle::Rail,
-                                _ => BoltStyle::Tracer,
-                            },
-                            from: world_vec(*turret_pos),
-                            to: world_vec(*target_pos),
-                        },
-                        age: 0.0,
-                    });
-                    if let Some(radius) = splash {
-                        self.fx.push(Effect {
-                            kind: EffectKind::Burst {
-                                at: world_vec(*target_pos),
-                                radius,
-                            },
-                            age: 0.0,
-                        });
-                    }
+                    push_direct_report(
+                        &mut self.fx,
+                        defense_shot_style(*kind),
+                        visual_shot_origin(
+                            world_vec(*turret_pos),
+                            world_vec(*target_pos),
+                            defense_muzzle_reach(*kind),
+                        ),
+                        world_vec(*target_pos),
+                        splash,
+                    );
                 }
                 Event::BuildingCompleted { player, kind, .. } if *player == self.human => {
                     self.sounds_pending.push((SoundKind::TrainDone, None));
@@ -637,17 +678,86 @@ mod tests {
     use oxide_sim::{BuildingId, BuildingKind, Target, UnitId, UnitKind};
 
     #[test]
-    fn every_weapon_family_fires_its_own_bolt() {
-        assert_eq!(unit_bolt_style(UnitKind::Lancer, 0), BoltStyle::Rail);
-        assert_eq!(unit_bolt_style(UnitKind::Flakhound, 0), BoltStyle::Flak);
-        assert_eq!(unit_bolt_style(UnitKind::Stinger, 0), BoltStyle::Flak);
-        // The Sentinel's main gun is a tracer; its sidearm slot is the
-        // anti-air poke.
-        assert_eq!(unit_bolt_style(UnitKind::Sentinel, 0), BoltStyle::Tracer);
-        assert_eq!(unit_bolt_style(UnitKind::Sentinel, 1), BoltStyle::Flak);
-        assert_eq!(unit_bolt_style(UnitKind::Buzzard, 0), BoltStyle::AirStrike);
-        assert_eq!(unit_bolt_style(UnitKind::Wisp, 0), BoltStyle::AirStrike);
-        assert_eq!(unit_bolt_style(UnitKind::Scuttler, 0), BoltStyle::Tracer);
+    fn every_weapon_family_uses_its_physical_report() {
+        assert_eq!(unit_shot_style(UnitKind::Scuttler, 0), ShotStyle::Contact);
+        assert_eq!(unit_shot_style(UnitKind::Lancer, 0), ShotStyle::Rail);
+        assert_eq!(
+            unit_shot_style(UnitKind::Flakhound, 0),
+            ShotStyle::FlakBurst
+        );
+        assert_eq!(unit_shot_style(UnitKind::Stinger, 0), ShotStyle::FlakBurst);
+        // Both Sentinel slots speak through its one physical barrel;
+        // the second is a weaker skyward poke, not a paired flak gun.
+        assert_eq!(unit_shot_style(UnitKind::Sentinel, 0), ShotStyle::Tracer);
+        assert_eq!(unit_shot_style(UnitKind::Sentinel, 1), ShotStyle::Tracer);
+        assert_eq!(unit_shot_style(UnitKind::Buzzard, 0), ShotStyle::HeavyRound);
+        assert_eq!(unit_shot_style(UnitKind::Darter, 0), ShotStyle::Tracer);
+        assert_eq!(unit_shot_style(UnitKind::Talon, 0), ShotStyle::Tracer);
+        assert_eq!(unit_shot_style(UnitKind::Wisp, 0), ShotStyle::Tracer);
+        assert_eq!(
+            defense_shot_style(BuildingKind::FlakTurret),
+            ShotStyle::FlakBurst
+        );
+        assert_eq!(defense_shot_style(BuildingKind::Turret), ShotStyle::Tracer);
+    }
+
+    #[test]
+    fn splash_bloom_draws_behind_the_direct_report() {
+        let mut effects = Vec::new();
+        push_direct_report(
+            &mut effects,
+            ShotStyle::FlakBurst,
+            Vec2::ZERO,
+            Vec2::ONE,
+            Some(1.25),
+        );
+
+        assert!(matches!(effects[0].kind, EffectKind::Burst { .. }));
+        assert!(matches!(
+            effects[1].kind,
+            EffectKind::DirectShot {
+                style: ShotStyle::FlakBurst,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn only_bombard_and_bastion_use_real_shell_entities() {
+        let units = [
+            UnitKind::Harvester,
+            UnitKind::Sentinel,
+            UnitKind::Scuttler,
+            UnitKind::Lancer,
+            UnitKind::Bombard,
+            UnitKind::Flakhound,
+            UnitKind::Stinger,
+            UnitKind::Buzzard,
+            UnitKind::Darter,
+            UnitKind::Talon,
+            UnitKind::Wisp,
+        ];
+        let unit_shells: Vec<_> = units
+            .into_iter()
+            .filter(|kind| kind.stats().weapons.iter().any(|weapon| weapon.projectile))
+            .collect();
+        assert_eq!(unit_shells, vec![UnitKind::Bombard]);
+
+        let buildings = [
+            BuildingKind::Foundry,
+            BuildingKind::Turret,
+            BuildingKind::Fabricator,
+            BuildingKind::FlakTurret,
+            BuildingKind::Bastion,
+            BuildingKind::Array,
+            BuildingKind::Reclaimer,
+            BuildingKind::RepairBay,
+        ];
+        let building_shells: Vec<_> = buildings
+            .into_iter()
+            .filter(|kind| kind.stats().weapons.iter().any(|weapon| weapon.projectile))
+            .collect();
+        assert_eq!(building_shells, vec![BuildingKind::Bastion]);
     }
 
     #[test]
@@ -681,6 +791,21 @@ mod tests {
     fn unfinished_combat_audio_keeps_the_generic_report() {
         assert_eq!(unit_fire_sound(UnitKind::Scuttler), SoundKind::Laser);
         assert_eq!(defense_fire_sound(BuildingKind::Turret), SoundKind::Laser);
+    }
+
+    #[test]
+    fn shot_visuals_begin_at_the_authored_muzzle_not_chassis_center() {
+        let from = macroquad::prelude::vec2(2.0, 3.0);
+        let to = macroquad::prelude::vec2(12.0, 3.0);
+        assert_eq!(
+            visual_shot_origin(from, to, 0.38),
+            macroquad::prelude::vec2(2.38, 3.0)
+        );
+        assert_eq!(visual_shot_origin(from, from, 0.38), from);
+        assert!(
+            defense_muzzle_reach(BuildingKind::Bastion)
+                > defense_muzzle_reach(BuildingKind::Turret)
+        );
     }
 
     #[test]

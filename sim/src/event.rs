@@ -63,7 +63,7 @@ pub enum Event {
     },
     /// An attack landed this tick. Positions ride along because the victim
     /// may be gone by the time a renderer resolves the ids — a lethal hit
-    /// deserves its beam too.
+    /// still deserves the weapon's report.
     AttackHit {
         /// Who fired.
         attacker: UnitId,

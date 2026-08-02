@@ -273,56 +273,6 @@ pub(crate) fn draw_breadcrumbs(game: &Game, input: &InputState) {
     }
 }
 
-fn production_head_advancing(building: &oxide_sim::Building) -> bool {
-    building.built
-        && building
-            .queue
-            .front()
-            .is_some_and(|kind| building.progress < kind.stats().train_ticks)
-}
-
-fn building_work_speed(building: &oxide_sim::Building) -> Option<f32> {
-    if !building.built {
-        return None;
-    }
-    match building.kind {
-        oxide_sim::BuildingKind::Foundry => Some(2.0),
-        oxide_sim::BuildingKind::Fabricator if production_head_advancing(building) => Some(3.0),
-        oxide_sim::BuildingKind::Fabricator => None,
-        oxide_sim::BuildingKind::Array => Some(3.5),
-        oxide_sim::BuildingKind::Reclaimer => Some(4.0),
-        oxide_sim::BuildingKind::RepairBay => Some(5.0),
-        _ => None,
-    }
-}
-
-fn tile_adjacent_to_building(tile: TilePos, building: &oxide_sim::Building) -> bool {
-    let (w, h) = building.kind.stats().size;
-    let anchor = building.anchor;
-    let inside =
-        tile.x >= anchor.x && tile.y >= anchor.y && tile.x < anchor.x + w && tile.y < anchor.y + h;
-    !inside
-        && tile.x >= anchor.x - 1
-        && tile.y >= anchor.y - 1
-        && tile.x <= anchor.x + w
-        && tile.y <= anchor.y + h
-}
-
-fn construction_site_active(game: &Game, building: &oxide_sim::Building) -> bool {
-    if building.built {
-        return false;
-    }
-    game.state.units().iter().any(|unit| {
-        unit.player == building.player
-            && unit.kind == oxide_sim::UnitKind::Harvester
-            && matches!(unit.order, oxide_sim::Order::Build { site } if site == building.id)
-            && tile_adjacent_to_building(unit.tile(), building)
-            && (unit.player == game.human
-                || game.all_seeing()
-                || game.my_vision().visible(unit.tile()))
-    })
-}
-
 fn production_progress_visible(game: &Game, building: &oxide_sim::Building) -> bool {
     building.player == game.human || game.all_seeing()
 }
@@ -331,91 +281,88 @@ fn draw_defense_mount(
     game: &Game,
     sprites: &Sprites,
     building: &oxide_sim::Building,
-    faction: oxide_sim::Faction,
-    screen: Vec2,
-    dest: Vec2,
-    accent_tint: Option<Color>,
+    action: Option<usize>,
 ) {
-    let Some(source) = sprites.defense_mount(building.kind, faction) else {
+    let faction = game.state.player(building.player).faction;
+    let screen = game
+        .camera
+        .to_screen(vec2(building.anchor.x as f32, building.anchor.y as f32));
+    let (width, height) = building.kind.stats().size;
+    let dest = vec2(
+        width as f32 * game.camera.zoom,
+        height as f32 * game.camera.zoom,
+    );
+    let source = match action {
+        Some(frame) => sprites.defense_mount_action(building.kind, faction, frame),
+        None => sprites.defense_mount(building.kind, faction),
+    };
+    let Some(source) = source else {
         return;
     };
-    let (angle, age) = game
+    let angle = game
         .aim_buildings
         .get(&building.id.0)
-        .map(|(angle, at)| (*angle, game.fx_time() - at))
-        .unwrap_or((0.0, f32::MAX));
-    let pose = super::motion::mount_pose(building.kind, angle, age, reduced_motion());
-    let forward = vec2(pose.angle.sin(), -pose.angle.cos());
-    let right = vec2(pose.angle.cos(), pose.angle.sin());
-    let center = screen + dest * 0.5 - forward * dest.x * pose.recoil;
-    let at = center - dest * 0.5;
+        .map_or(0.0, |(angle, _)| *angle);
     draw_texture_ex(
         sprites.texture(),
-        at.x,
-        at.y,
+        screen.x,
+        screen.y,
         WHITE,
         DrawTextureParams {
             dest_size: Some(dest),
             source: Some(source),
-            rotation: pose.angle,
+            rotation: angle,
             ..Default::default()
         },
     );
-    if let (Some(accent), Some(source)) = (accent_tint, sprites.defense_mount_accent(building.kind))
+    let accent_source = match action {
+        Some(frame) => sprites.defense_mount_action_accent(building.kind, frame),
+        None => sprites.defense_mount_accent(building.kind),
+    };
+    if let (Some(accent), Some(source)) = (seat_identity_tint(game, building.player), accent_source)
     {
         draw_texture_ex(
             sprites.texture(),
-            at.x,
-            at.y,
+            screen.x,
+            screen.y,
             accent,
             DrawTextureParams {
                 dest_size: Some(dest),
                 source: Some(source),
-                rotation: pose.angle,
+                rotation: angle,
                 ..Default::default()
             },
         );
     }
-    if pose.flash > 0.0 {
-        // These fractions mirror the generated canvases: all mounts pivot
-        // at center, while Flak's four authored barrels own four flashes.
-        let (muzzle_reach, offsets): (f32, &[f32]) = match building.kind {
-            oxide_sim::BuildingKind::Turret => (0.44, &[0.0]),
-            oxide_sim::BuildingKind::FlakTurret => {
-                (0.47, &[-0.203_125, -0.109_375, 0.109_375, 0.203_125])
-            }
-            oxide_sim::BuildingKind::Bastion => (0.49, &[0.0]),
-            _ => (0.0, &[]),
-        };
-        let muzzle = center + forward * dest.x * muzzle_reach;
-        for offset in offsets {
-            let flash = muzzle + right * dest.x * *offset;
-            draw_circle(
-                flash.x,
-                flash.y,
-                dest.x * (0.025 + pose.flash * 0.025),
-                Color::new(1.0, 0.86, 0.58, pose.flash * 0.82),
-            );
-        }
-    }
-    // A gun's reset is operational state, not decorative motion. Heavy
-    // cooldowns show unbidden; selecting a lighter defense opts it in.
-    // The fixed eye therefore keeps filling in reduced motion.
-    if building.cooldown > 0
-        && let Some(weapon) = building.kind.stats().weapons.first()
-        && (weapon.cooldown_ticks >= CHARGE_EYE_COOLDOWN
-            || game.selection.buildings.contains(&building.id))
-    {
-        let ready = 1.0 - building.cooldown as f32 / weapon.cooldown_ticks.max(1) as f32;
-        let r = dest.x * 0.055;
-        draw_circle_lines(center.x, center.y, r, 1.0, SCRAP_COLOR);
-        draw_circle(
-            center.x,
-            center.y,
-            r * ready.clamp(0.0, 1.0).sqrt(),
-            SCRAP_COLOR,
-        );
-    }
+}
+
+fn draw_bastion_charge_overlay(
+    game: &Game,
+    sprites: &Sprites,
+    building: &oxide_sim::Building,
+    action: Option<usize>,
+) {
+    let faction = game.state.player(building.player).faction;
+    let (source, placement) = sprites.bastion_charge_overlay(faction, action);
+    let screen = game
+        .camera
+        .to_screen(vec2(building.anchor.x as f32, building.anchor.y as f32));
+    let (width, height) = building.kind.stats().size;
+    let footprint = vec2(
+        width as f32 * game.camera.zoom,
+        height as f32 * game.camera.zoom,
+    );
+    draw_texture_ex(
+        sprites.texture(),
+        screen.x + footprint.x * placement.x,
+        screen.y + footprint.y * placement.y,
+        WHITE,
+        DrawTextureParams {
+            dest_size: Some(vec2(footprint.x * placement.w, footprint.y * placement.h)),
+            source: Some(source),
+            ..Default::default()
+        },
+    );
 }
 
 pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
@@ -529,37 +476,34 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
             .to_screen(vec2(building.anchor.x as f32, building.anchor.y as f32));
         let (w, h) = building.kind.stats().size;
         let dest = vec2(w as f32 * zoom, h as f32 * zoom);
-        let (source, accent_source) = if building.built {
-            let speed = building_work_speed(building);
-            let frame = super::motion::loop_frame(
-                game.fx_time(),
-                building.id.0,
-                speed.unwrap_or(0.0),
-                4,
-                reduced_motion() || speed.is_none(),
-            );
-            (
-                sprites.building_working(building.kind, faction, frame),
-                sprites.building_working_accent(building.kind, frame),
-            )
-        } else {
-            let ticks = building
-                .kind
-                .stats()
-                .construction
-                .map(|c| c.build_ticks)
-                .unwrap_or(1);
-            let (stage, phase) = super::motion::construction_frame(
-                building.progress,
-                ticks,
-                game.fx_time(),
-                building.id.0,
-                reduced_motion() || !construction_site_active(game, building),
-            );
-            (
+        let animation = game.animations.building_state(
+            crate::presentation_animation::BuildingAnimationFacts::capture(&game.state, building),
+            crate::presentation_animation::AnimationClock::from_state(
+                &game.state,
+                game.tick_fraction(),
+            ),
+            crate::presentation_animation::AnimationOptions {
+                reduced_motion: reduced_motion(),
+            },
+        );
+        let frame = super::motion::building_frame(building.kind, animation);
+        let (source, accent_source) = match frame.body {
+            super::motion::BuildingBodyFrame::Idle => (
+                sprites.building(building.kind, faction),
+                sprites.building_accent(building.kind),
+            ),
+            super::motion::BuildingBodyFrame::Work(work) => (
+                sprites.building_working(building.kind, faction, work + 1),
+                sprites.building_working_accent(building.kind, work + 1),
+            ),
+            super::motion::BuildingBodyFrame::Construction { stage, phase } => (
                 sprites.construction(building.kind, faction, stage, phase),
                 sprites.construction_accent(building.kind, stage, phase),
-            )
+            ),
+            super::motion::BuildingBodyFrame::Action(action) => (
+                sprites.building_action(building.kind, faction, action),
+                sprites.building_action_accent(building.kind, action),
+            ),
         };
         draw_texture_ex(
             sprites.texture(),
@@ -591,7 +535,10 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 oxide_sim::BuildingKind::Turret
                 | oxide_sim::BuildingKind::FlakTurret
                 | oxide_sim::BuildingKind::Bastion => {
-                    draw_defense_mount(game, sprites, building, faction, screen, dest, accent_tint);
+                    draw_defense_mount(game, sprites, building, frame.mount_action);
+                    if building.kind == oxide_sim::BuildingKind::Bastion {
+                        draw_bastion_charge_overlay(game, sprites, building, frame.mount_action);
+                    }
                 }
                 _ => {}
             }
@@ -694,19 +641,65 @@ pub(crate) fn draw_units(game: &Game, sprites: &Sprites, alpha: f32) {
 }
 
 fn shell_visual_origin(launch: Vec2, impact: Vec2, shooter: oxide_sim::Target) -> Vec2 {
-    if !matches!(shooter, oxide_sim::Target::Building(_)) {
-        return launch;
-    }
     let direction = impact - launch;
     if direction.length_squared() <= f32::EPSILON {
         return launch;
     }
-    let bastion_width = oxide_sim::BuildingKind::Bastion.stats().size.0 as f32;
-    launch + direction.normalize() * bastion_width * 0.49
+    let reach = match shooter {
+        oxide_sim::Target::Unit(_) => 0.46,
+        oxide_sim::Target::Building(_) => {
+            oxide_sim::BuildingKind::Bastion.stats().size.0 as f32 * 0.49
+        }
+    };
+    launch + direction.normalize() * reach
 }
 
-fn shell_arc_lift(screen_distance: f32, zoom: f32) -> f32 {
-    (screen_distance * 0.09).min(zoom * 1.2)
+fn shell_arc_lift(screen_distance: f32, zoom: f32, shooter: oxide_sim::Target) -> f32 {
+    match shooter {
+        // Bombard remains visibly indirect artillery, but never throws
+        // its shell more than three-fifths of a tile above the flat path.
+        oxide_sim::Target::Unit(_) => (screen_distance * 0.06).min(zoom * 0.60),
+        // Bastion is a low-carriage siege gun: its old moonshot made the
+        // compact shell look detached from the barrel and impact.
+        oxide_sim::Target::Building(_) => (screen_distance * 0.04).min(zoom * 0.40),
+    }
+}
+
+fn shell_tail_start(progress: f32, world_distance: f32) -> f32 {
+    if world_distance <= f32::EPSILON {
+        return progress;
+    }
+    (progress - 0.34 / world_distance).max(0.0)
+}
+
+fn terminal_segment(from: Vec2, to: Vec2, length: f32) -> (Vec2, Vec2) {
+    let path = to - from;
+    let distance = path.length();
+    if distance <= f32::EPSILON {
+        return (to, to);
+    }
+    (to - path / distance * length.min(distance), to)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShotVisibility {
+    Hidden,
+    ImpactOnly,
+    Full,
+}
+
+fn shot_visibility(
+    style: crate::game::ShotStyle,
+    source_visible: bool,
+    impact_visible: bool,
+) -> ShotVisibility {
+    if !impact_visible {
+        ShotVisibility::Hidden
+    } else if style == crate::game::ShotStyle::Contact || !source_visible {
+        ShotVisibility::ImpactOnly
+    } else {
+        ShotVisibility::Full
+    }
 }
 
 pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
@@ -732,66 +725,81 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
         // launch stays at the stable footprint center; presentation
         // advances that point to the authored barrel mouth.
         let from = shell_visual_origin(launch, to, shell.shooter);
-        // Fog rule: own and allied shells draw whole; a hostile arc
-        // draws only segments crossing ground the player can see.
-        // Anchoring a trail at a fogged muzzle would pinpoint exactly
-        // the hidden artillery the spotter-weapon design protects —
-        // the sim's incoming-shell sense exposes the impact tile,
-        // never the launch, and the renderer must match it.
+        // Fog rule: own and allied shells draw throughout their flight;
+        // a hostile shell appears only while its current local segment
+        // crosses visible ground. Nothing anchors a trail at a fogged
+        // muzzle and pinpoints the hidden artillery.
         let mine = !game.state.hostile(game.human, shell.player);
         let flat_seen = |k: f32| sees(from.lerp(to, k));
-        if !game.all_seeing() && !mine && !(0..=10).any(|i| flat_seen(i as f32 / 10.0)) {
-            continue;
-        }
         // Reconstruct flight length the way the launch computed it, so
-        // the dot lands exactly when the sim resolves the hit.
+        // the shell lands exactly when the sim resolves the hit.
         let total = (launch.distance(to) / shell_speed).ceil().max(1.0);
         let elapsed = total - (shell.arrival as f32 - now);
         let t = (elapsed / total).clamp(0.0, 1.0);
+        if !game.all_seeing() && !mine && !flat_seen(t) {
+            continue;
+        }
         let a = game.camera.to_screen(from);
         let b = game.camera.to_screen(to);
         let dist = (b - a).length();
-        let lift = shell_arc_lift(dist, game.camera.zoom);
+        let lift = shell_arc_lift(dist, game.camera.zoom, shell.shooter);
         let at = |t: f32| {
             let flat = a.lerp(b, t);
             vec2(flat.x, flat.y - lift * 4.0 * t * (1.0 - t))
         };
-        let mut prev = at(0.0);
-        let steps = 10;
-        for i in 1..=((t * steps as f32) as usize).max(1) {
-            let p = at(i as f32 / steps as f32);
-            let visible = game.all_seeing()
-                || mine
-                || (flat_seen((i - 1) as f32 / steps as f32) && flat_seen(i as f32 / steps as f32));
-            if visible {
-                let fade = 0.35 * (1.0 - t);
-                draw_line(
-                    prev.x,
-                    prev.y,
-                    p.x,
-                    p.y,
-                    1.5,
-                    Color::new(0.95, 0.75, 0.5, fade),
-                );
-            }
-            prev = p;
-        }
-        if !(game.all_seeing() || mine || flat_seen(t)) {
-            continue;
-        }
-        let dot = at(t);
+        let tail_t = shell_tail_start(t, from.distance(to));
+        let tail = at(tail_t);
+        let shell_at = at(t);
+        let flat = a.lerp(b, t);
+        let radius = (game.camera.zoom * 0.075).clamp(2.2, 4.0);
+        // The tiny flat-path shadow makes the restrained lift legible
+        // without restoring the old launch-to-impact glowing arc.
         draw_circle(
-            dot.x,
-            dot.y,
-            3.0,
-            Color::new(0.98, 0.93, 0.8, 1.0 - t * 0.5),
+            flat.x,
+            flat.y,
+            radius * 0.7,
+            Color::new(0.03, 0.03, 0.04, 0.35),
+        );
+        if game.all_seeing() || mine || flat_seen(tail_t) {
+            draw_line(
+                tail.x,
+                tail.y,
+                shell_at.x,
+                shell_at.y,
+                radius * 1.15,
+                Color::new(0.18, 0.16, 0.15, 0.95),
+            );
+            let hot_tail = tail.lerp(shell_at, 0.55);
+            draw_line(
+                hot_tail.x,
+                hot_tail.y,
+                shell_at.x,
+                shell_at.y,
+                radius * 0.42,
+                Color::new(0.95, 0.65, 0.32, 0.72),
+            );
+        }
+        draw_circle(
+            shell_at.x,
+            shell_at.y,
+            radius,
+            Color::new(0.12, 0.12, 0.14, 1.0),
+        );
+        draw_circle(
+            shell_at.x,
+            shell_at.y,
+            radius * 0.42,
+            Color::new(0.92, 0.86, 0.72, 1.0),
         );
     }
     for fx in &game.fx {
-        // A beam needs BOTH endpoints in sight: a half-fogged laser would
-        // pinpoint an unseen combatant at its far end.
+        // A visible impact may always spark so incoming damage reads.
+        // Directional geometry still requires a visible source and must
+        // not pinpoint a fogged shooter.
         let in_sight = match fx.kind {
-            EffectKind::Bolt { from, to, .. } => sees(from) && sees(to),
+            EffectKind::DirectShot { style, from, to } => {
+                shot_visibility(style, sees(from), sees(to)) != ShotVisibility::Hidden
+            }
             EffectKind::Puff { at } => sees(at),
             EffectKind::Falling { at, .. } => sees(at),
             EffectKind::Burst { at, .. } => sees(at),
@@ -804,67 +812,135 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
             continue;
         }
         match fx.kind {
-            EffectKind::Bolt { style, from, to } => {
-                use crate::game::BoltStyle;
+            EffectKind::DirectShot { style, from, to } => {
+                use crate::game::ShotStyle;
                 let a = game.camera.to_screen(from);
                 let b = game.camera.to_screen(to);
-                let fade = (1.0 - fx.age / style.life()).clamp(0.0, 1.0);
-                let (w, glow, core) = match style {
-                    BoltStyle::Tracer => (
-                        1.0,
-                        Color::new(0.95, 0.75, 0.5, 0.22 * fade),
-                        Color::new(0.98, 0.93, 0.8, fade),
-                    ),
-                    BoltStyle::Rail => (
-                        2.0,
-                        Color::new(0.75, 0.85, 1.0, 0.28 * fade),
-                        Color::new(0.92, 0.96, 1.0, fade),
-                    ),
-                    BoltStyle::Flak => (
-                        0.8,
-                        Color::new(0.85, 0.85, 0.75, 0.15 * fade),
-                        Color::new(0.9, 0.9, 0.82, 0.7 * fade),
-                    ),
-                    BoltStyle::AirStrike => (
-                        1.4,
-                        Color::new(0.55, 0.9, 0.8, 0.25 * fade),
-                        Color::new(0.8, 1.0, 0.94, fade),
-                    ),
-                };
-                draw_line(a.x, a.y, b.x, b.y, 7.0 * w * fade.max(0.3), glow);
-                draw_line(a.x, a.y, b.x, b.y, 2.5 * w * fade.max(0.2), core);
-                // Flak detonates in the air around its target: three
-                // pseudo-random puffs blooming outward as the bolt ages.
-                if style == BoltStyle::Flak {
-                    let h = (to.x * 31.7 + to.y * 17.3).abs();
+                let progress = (fx.age / style.life()).clamp(0.0, 1.0);
+                let fade = 1.0 - progress;
+                let visibility = shot_visibility(
+                    style,
+                    game.all_seeing() || sees(from),
+                    game.all_seeing() || sees(to),
+                );
+                if visibility == ShotVisibility::ImpactOnly {
+                    let seed = (to.x * 31.7 + to.y * 17.3).abs();
                     for i in 0..3 {
-                        let angle = h + i as f32 * 2.1;
-                        let reach = (fx.age / style.life()) * game.camera.zoom * 0.6;
-                        let puff = b + vec2(angle.cos(), angle.sin()) * reach;
-                        draw_circle(
-                            puff.x,
-                            puff.y,
-                            game.camera.zoom * 0.12 * (1.0 - fx.age / style.life() * 0.5),
-                            Color::new(0.88, 0.88, 0.8, 0.5 * fade),
+                        let angle = seed + i as f32 * 2.1;
+                        let reach = game.camera.zoom * (0.08 + progress * 0.12);
+                        let tip = b + vec2(angle.cos(), angle.sin()) * reach;
+                        draw_line(
+                            b.x,
+                            b.y,
+                            tip.x,
+                            tip.y,
+                            1.5,
+                            Color::new(0.95, 0.67, 0.34, fade),
                         );
                     }
+                    continue;
                 }
-                if fx.age < 0.07 && !reduced_motion() {
-                    let dir = b - a;
-                    let rotation = dir.y.atan2(dir.x) + std::f32::consts::FRAC_PI_2;
-                    let flash = game.camera.zoom * 0.5;
-                    draw_texture_ex(
-                        sprites.texture(),
-                        a.x - flash * 0.5,
-                        a.y - flash * 0.5,
-                        WHITE,
-                        DrawTextureParams {
-                            dest_size: Some(vec2(flash, flash)),
-                            source: Some(sprites.muzzle_flash()),
-                            rotation,
-                            ..Default::default()
-                        },
-                    );
+                match style {
+                    ShotStyle::Contact => {}
+                    ShotStyle::Tracer => {
+                        let length = game.camera.zoom * 0.34 * (0.75 + fade * 0.25);
+                        let (start, end) = terminal_segment(a, b, length);
+                        draw_line(
+                            start.x,
+                            start.y,
+                            end.x,
+                            end.y,
+                            3.2,
+                            Color::new(0.12, 0.11, 0.11, 0.85 * fade),
+                        );
+                        draw_line(
+                            start.x,
+                            start.y,
+                            end.x,
+                            end.y,
+                            1.2,
+                            Color::new(0.98, 0.80, 0.52, fade),
+                        );
+                    }
+                    ShotStyle::Rail => {
+                        draw_line(
+                            a.x,
+                            a.y,
+                            b.x,
+                            b.y,
+                            10.0 * fade.max(0.25),
+                            Color::new(0.64, 0.78, 0.96, 0.24 * fade),
+                        );
+                        draw_line(
+                            a.x,
+                            a.y,
+                            b.x,
+                            b.y,
+                            3.5 * fade.max(0.3),
+                            Color::new(0.92, 0.96, 1.0, fade),
+                        );
+                    }
+                    ShotStyle::FlakBurst => {
+                        let direction = (b - a).normalize_or_zero();
+                        let normal = vec2(-direction.y, direction.x);
+                        for (side, stagger) in [(-1.0, 0.12), (1.0, 0.0)] {
+                            let end = b + normal * side * game.camera.zoom * 0.055
+                                - direction * game.camera.zoom * stagger;
+                            let (start, end) = terminal_segment(
+                                a + normal * side * game.camera.zoom * 0.055,
+                                end,
+                                game.camera.zoom * 0.32,
+                            );
+                            draw_line(
+                                start.x,
+                                start.y,
+                                end.x,
+                                end.y,
+                                3.0,
+                                Color::new(0.10, 0.10, 0.10, 0.82 * fade),
+                            );
+                            draw_line(
+                                start.x,
+                                start.y,
+                                end.x,
+                                end.y,
+                                1.1,
+                                Color::new(0.90, 0.86, 0.70, fade),
+                            );
+                        }
+                        let seed = (to.x * 31.7 + to.y * 17.3).abs();
+                        for i in 0..3 {
+                            let angle = seed + i as f32 * 2.1;
+                            let reach = progress * game.camera.zoom * 0.28;
+                            let puff = b + vec2(angle.cos(), angle.sin()) * reach;
+                            draw_circle(
+                                puff.x,
+                                puff.y,
+                                game.camera.zoom * 0.07 * (1.0 - progress * 0.45),
+                                Color::new(0.66, 0.65, 0.58, 0.42 * fade),
+                            );
+                        }
+                    }
+                    ShotStyle::HeavyRound => {
+                        let (start, end) = terminal_segment(a, b, game.camera.zoom * 0.48);
+                        draw_line(
+                            start.x,
+                            start.y,
+                            end.x,
+                            end.y,
+                            5.0,
+                            Color::new(0.10, 0.09, 0.09, 0.9 * fade),
+                        );
+                        draw_line(
+                            start.lerp(end, 0.52).x,
+                            start.lerp(end, 0.52).y,
+                            end.x,
+                            end.y,
+                            1.7,
+                            Color::new(0.94, 0.62, 0.30, 0.8 * fade),
+                        );
+                        draw_circle(end.x, end.y, 2.4, Color::new(0.13, 0.12, 0.12, fade));
+                    }
                 }
             }
             EffectKind::Falling { at, unit, faction } => {
@@ -1483,139 +1559,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ambient_work_cycles_exclude_defenses_and_an_idle_fabricator() {
-        let mut scenario = oxide_sim::Scenario::skirmish();
-        scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
-            player: 0,
-            kind: oxide_sim::BuildingKind::Fabricator,
-            x: 9,
-            y: 3,
-        });
-        let game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("fixture builds");
-        let mut fabricator = game
-            .state
-            .buildings()
-            .iter()
-            .find(|building| building.kind == oxide_sim::BuildingKind::Fabricator)
-            .expect("Fabricator")
-            .clone();
-        assert!(building_work_speed(&fabricator).is_none());
-        fabricator.queue.push_back(oxide_sim::UnitKind::Scuttler);
-        assert!(building_work_speed(&fabricator).is_some());
-        fabricator.player = oxide_sim::PlayerId(1);
-        assert!(
-            building_work_speed(&fabricator).is_some(),
-            "visible hostile production activity is physically observable"
-        );
-        fabricator.progress = oxide_sim::UnitKind::Scuttler.stats().train_ticks;
-        assert!(
-            building_work_speed(&fabricator).is_none(),
-            "a completed head waiting for a doorstep holds the machinery"
-        );
-
-        for kind in [
-            oxide_sim::BuildingKind::Foundry,
-            oxide_sim::BuildingKind::Array,
-            oxide_sim::BuildingKind::Reclaimer,
-            oxide_sim::BuildingKind::RepairBay,
-        ] {
-            let mut building = game
-                .state
-                .buildings()
-                .iter()
-                .find(|building| building.kind == kind)
-                .cloned()
-                .unwrap_or_else(|| fabricator.clone());
-            building.kind = kind;
-            building.queue.clear();
-            building.progress = 0;
-            assert!(building_work_speed(&building).is_some(), "{kind:?}");
-        }
-        let mut turret = fabricator;
-        turret.kind = oxide_sim::BuildingKind::Turret;
-        turret.queue.clear();
-        turret.progress = 0;
-        assert!(building_work_speed(&turret).is_none());
-    }
-
-    #[test]
-    fn a_site_moves_only_for_an_adjacent_matching_builder() {
-        let mut game = Game::with_viewport(oxide_sim::Scenario::skirmish(), vec2(1280.0, 800.0))
-            .expect("embedded skirmish builds");
-        let builder = game
-            .state
-            .units()
-            .iter()
-            .find(|unit| unit.player == game.human && unit.kind == oxide_sim::UnitKind::Harvester)
-            .expect("human Harvester")
-            .id;
-        let anchor = TilePos::new(8, 5);
-        let kind = oxide_sim::BuildingKind::Turret;
-        game.state.tick(&[oxide_sim::PlayerCommand {
-            player: game.human,
-            command: oxide_sim::Command::Build {
-                units: vec![builder],
-                kind,
-                anchor,
-                queue: false,
-                defer: false,
-            },
-        }]);
-        let site = game
-            .state
-            .buildings()
-            .iter()
-            .find(|building| building.anchor == anchor && !building.built)
-            .expect("site was placed")
-            .id;
-        assert!(construction_site_active(
-            &game,
-            game.state.building(site).expect("site")
-        ));
-        let mut unrelated_site = game.state.building(site).expect("site").clone();
-        unrelated_site.id = oxide_sim::BuildingId(site.0 + 100);
-        assert!(
-            !construction_site_active(&game, &unrelated_site),
-            "a nearby Harvester working another site cannot animate this one"
-        );
-
-        game.state.tick(&[oxide_sim::PlayerCommand {
-            player: game.human,
-            command: oxide_sim::Command::Move {
-                units: vec![builder],
-                goal: TilePos::new(16, 5),
-                queue: false,
-            },
-        }]);
-        for _ in 0..40 {
-            game.state.tick(&[]);
-        }
-        assert!(!construction_site_active(
-            &game,
-            game.state.building(site).expect("site")
-        ));
-
-        game.state.tick(&[oxide_sim::PlayerCommand {
-            player: game.human,
-            command: oxide_sim::Command::Build {
-                units: vec![builder],
-                kind,
-                anchor,
-                queue: false,
-                defer: false,
-            },
-        }]);
-        assert!(matches!(
-            game.state.unit(builder).expect("builder").order,
-            oxide_sim::Order::Build { site: ordered } if ordered == site
-        ));
-        assert!(
-            !construction_site_active(&game, game.state.building(site).expect("site")),
-            "the en-route Build order is not work yet"
-        );
-    }
-
-    #[test]
     fn range_rings_have_one_clear_subject() {
         let unit = oxide_sim::UnitId(3);
         let building = oxide_sim::BuildingId(5);
@@ -1791,7 +1734,7 @@ mod tests {
     }
 
     #[test]
-    fn bastion_shells_begin_at_the_barrel_and_use_a_low_arc() {
+    fn artillery_shells_begin_at_the_barrel_and_use_a_low_arc() {
         let launch = vec2(5.0, 7.0);
         let impact = vec2(15.0, 7.0);
         let from = shell_visual_origin(
@@ -1801,19 +1744,65 @@ mod tests {
         );
         assert!((from.x - 5.98).abs() < 1.0e-4);
         assert_eq!(from.y, launch.y);
+        let bombard_from = shell_visual_origin(
+            launch,
+            impact,
+            oxide_sim::Target::Unit(oxide_sim::UnitId(4)),
+        );
+        assert!((bombard_from.x - 5.46).abs() < 1.0e-4);
+        assert_eq!(bombard_from.y, launch.y);
         assert_eq!(
             shell_visual_origin(
                 launch,
-                impact,
+                launch,
                 oxide_sim::Target::Unit(oxide_sim::UnitId(4))
             ),
-            launch,
-            "unit-fired shells retain their authored body origin"
+            launch
         );
 
         let zoom = 32.0;
-        assert!((shell_arc_lift(320.0, zoom) - 28.8).abs() < 1.0e-4);
-        assert_eq!(shell_arc_lift(1_000.0, zoom), zoom * 1.2);
+        let bombard = oxide_sim::Target::Unit(oxide_sim::UnitId(4));
+        let bastion = oxide_sim::Target::Building(oxide_sim::BuildingId(4));
+        assert!((shell_arc_lift(320.0, zoom, bombard) - 19.2).abs() < 1.0e-4);
+        assert!((shell_arc_lift(320.0, zoom, bastion) - 12.8).abs() < 1.0e-4);
+        assert_eq!(shell_arc_lift(1_000.0, zoom, bombard), zoom * 0.60);
+        assert_eq!(shell_arc_lift(1_000.0, zoom, bastion), zoom * 0.40);
+
+        let tail = shell_tail_start(0.5, 10.0);
+        assert!((tail - 0.466).abs() < 1.0e-4);
+        assert!((0.5 - tail) * 10.0 <= 0.340_001);
+    }
+
+    #[test]
+    fn physical_direct_shots_use_short_terminal_segments() {
+        let (start, end) = terminal_segment(vec2(0.0, 0.0), vec2(100.0, 0.0), 12.0);
+        assert_eq!(start, vec2(88.0, 0.0));
+        assert_eq!(end, vec2(100.0, 0.0));
+
+        let (start, end) = terminal_segment(vec2(4.0, 8.0), vec2(4.0, 8.0), 12.0);
+        assert_eq!(start, end);
+    }
+
+    #[test]
+    fn shot_visibility_never_points_into_fog() {
+        use crate::game::ShotStyle;
+
+        assert_eq!(
+            shot_visibility(ShotStyle::Rail, true, true),
+            ShotVisibility::Full
+        );
+        assert_eq!(
+            shot_visibility(ShotStyle::Tracer, false, true),
+            ShotVisibility::ImpactOnly
+        );
+        assert_eq!(
+            shot_visibility(ShotStyle::Contact, true, true),
+            ShotVisibility::ImpactOnly
+        );
+        assert_eq!(
+            shot_visibility(ShotStyle::HeavyRound, true, false),
+            ShotVisibility::Hidden
+        );
     }
 
     #[test]

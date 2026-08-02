@@ -72,6 +72,16 @@ impl PlaybackSession {
             scrubbing: false,
         })
     }
+
+    fn sync_render_clock(&mut self) {
+        self.game
+            .sync_external_tick_fraction(self.accum / game::TICK_DT);
+    }
+
+    fn reset_clock_debt(&mut self) {
+        self.accum = 0.0;
+        self.sync_render_clock();
+    }
 }
 
 /// Where the scrub bar lives: a strip above the transport line,
@@ -307,11 +317,11 @@ impl PlaybackSession {
             // second, so 2000 is comfortably under a frame.
             if self.engine.seek_step(target, 2_000) {
                 self.seeking = None;
-                // A seek is a bulk jump: presentation resyncs silently
-                // instead of replaying a burst.
-                self.game.drop_presentation();
             }
-            self.game.state = self.engine.state.clone();
+            // Every budgeted chunk is a bulk jump. Establish the new
+            // destination as both interpolation endpoints instead of
+            // drawing motion from the prior timeline while seeking.
+            self.game.replace_state_after_jump(&self.engine.state);
         } else if !self.paused && !self.engine.at_end() {
             self.accum += dt * self.speed;
             let ticks = (self.accum / game::TICK_DT) as u64;
@@ -332,8 +342,9 @@ impl PlaybackSession {
             }
         }
         if self.game.state.current_tick() != self.engine.position() {
-            self.game.state = self.engine.state.clone();
+            self.game.replace_state_after_jump(&self.engine.state);
         }
+        self.sync_render_clock();
         self.game.paused = self.paused;
         self.game.update_wall_clock_fx(dt);
         self.game.camera.set_viewport(viewport);
@@ -375,11 +386,10 @@ impl oxide_protocol::DebugSession for PlaybackSession {
         // pending, the stale target resumes next frame and rewinds the
         // replay this reply just reported as advanced.
         self.seeking = None;
-        self.accum = 0.0;
+        self.reset_clock_debt();
         let before = self.engine.position();
         self.engine.seek(before.saturating_add(ticks));
-        self.game.drop_presentation();
-        self.game.state = self.engine.state.clone();
+        self.game.replace_state_after_jump(&self.engine.state);
         oxide_protocol::AdvancedView {
             ticks: self.engine.position() - before,
             tick: self.engine.state.current_tick(),
@@ -389,7 +399,7 @@ impl oxide_protocol::DebugSession for PlaybackSession {
 
     fn present(&mut self, ticks: u64) -> oxide_protocol::PresentedView {
         self.seeking = None;
-        self.accum = 0.0;
+        self.reset_clock_debt();
         let before = self.engine.position();
         let mut events = Vec::new();
         for _ in 0..ticks {
@@ -648,12 +658,51 @@ mod tests {
     }
 
     #[test]
+    fn replay_fraction_drives_interpolation_and_authored_cycles() {
+        let mut pb = session();
+        let mut mouse = vec2(0.0, 0.0);
+        let start = pb.engine.position();
+
+        pb.update(
+            &[],
+            game::TICK_DT * 0.25,
+            vec2(1280.0, 800.0),
+            false,
+            1.0,
+            &mut mouse,
+        );
+        assert_eq!(pb.engine.position(), start);
+        assert!((pb.game.tick_fraction() - 0.25).abs() < 1e-6);
+        assert!((pb.game.render_alpha() - 0.25).abs() < 1e-6);
+
+        pb.update(
+            &[],
+            game::TICK_DT,
+            vec2(1280.0, 800.0),
+            false,
+            1.0,
+            &mut mouse,
+        );
+        assert_eq!(pb.engine.position(), start + 1);
+        assert!((pb.game.tick_fraction() - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
     fn driven_steps_discard_partial_wall_clock_debt() {
         use oxide_protocol::DebugSession;
 
         for present in [false, true] {
             let mut pb = session();
-            pb.accum = game::TICK_DT * 0.75;
+            let mut mouse = vec2(0.0, 0.0);
+            pb.update(
+                &[],
+                game::TICK_DT * 0.75,
+                vec2(1280.0, 800.0),
+                false,
+                1.0,
+                &mut mouse,
+            );
+            assert!((pb.game.tick_fraction() - 0.75).abs() < 1e-6);
 
             if present {
                 DebugSession::present(&mut pb, 1);
@@ -665,8 +714,8 @@ mod tests {
                 pb.accum, 0.0,
                 "a driven step must reset the viewer clock like a live session"
             );
+            assert_eq!(pb.game.tick_fraction(), 0.0);
             let after_step = pb.engine.position();
-            let mut mouse = vec2(0.0, 0.0);
             pb.update(
                 &[],
                 game::TICK_DT * 0.3,
@@ -680,6 +729,26 @@ mod tests {
                 after_step,
                 "a sub-tick frame after a driven step must not consume old debt"
             );
+        }
+    }
+
+    #[test]
+    fn seek_replacement_resets_interpolation_and_old_timeline_facing() {
+        use oxide_protocol::DebugSession;
+
+        let mut pb = session();
+        pb.game
+            .prev_pos
+            .values_mut()
+            .for_each(|position| *position += vec2(99.0, 99.0));
+        pb.game.facing.insert(0, 1.25);
+
+        DebugSession::advance(&mut pb, 40);
+
+        assert!(pb.game.facing.is_empty());
+        for unit in pb.game.state.units() {
+            let expected = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
+            assert_eq!(pb.game.prev_pos.get(&unit.id.0), Some(&expected));
         }
     }
 }

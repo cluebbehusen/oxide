@@ -23,6 +23,7 @@ mod layout;
 mod menu;
 mod panel;
 mod paths;
+mod presentation_animation;
 mod render;
 mod saves;
 mod screens;

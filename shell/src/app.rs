@@ -210,7 +210,7 @@ struct PendingScreenshot {
 }
 
 /// Plays queued clips with a per-kind rate limit, so twenty simultaneous
-/// lasers read as battle, not noise.
+/// weapon reports read as battle, not noise.
 #[derive(Default)]
 struct Mixer {
     last_played: std::collections::HashMap<SoundKind, f64>,

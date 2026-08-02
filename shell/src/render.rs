@@ -7,7 +7,7 @@
 //! previous and current tick so 20 sim ticks per second still looks like
 //! 60fps motion.
 
-use crate::assets::Sprites;
+use crate::assets::{HarvesterPose as SpriteHarvesterPose, Sprites};
 static COLORBLIND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Colorblind accents: swap allegiance-critical indicator colors for a
@@ -201,7 +201,6 @@ use crate::game::{EffectKind, Game};
 use crate::input::InputState;
 use chassis::grid::TilePos;
 use macroquad::prelude::*;
-use oxide_sim::UnitKind;
 use oxide_sim::stats::SCRAP_NODE_AMOUNT;
 
 pub(crate) use crate::theme::{
@@ -582,6 +581,25 @@ pub fn theme_tint(theme: &str) -> Color {
 
 const GHOST_TINT: Color = color_u8!(150, 150, 165, 210);
 
+fn unit_work_facing(
+    from: chassis::fx::Vec2Fx,
+    work: crate::presentation_animation::UnitWorkState,
+) -> Option<f32> {
+    use crate::presentation_animation::UnitWorkState;
+    let target = match work {
+        UnitWorkState::Harvesting { target, .. }
+        | UnitWorkState::Constructing { target, .. }
+        | UnitWorkState::Repairing { target, .. }
+        | UnitWorkState::Salvaging { target, .. } => target,
+        UnitWorkState::Idle => return None,
+    };
+    let to_screen_space =
+        |point: chassis::fx::Vec2Fx| vec2(point.x.to_num::<f32>(), point.y.to_num::<f32>());
+    let direction = to_screen_space(target) - to_screen_space(from);
+    (direction.length_squared() > 1e-6)
+        .then(|| direction.y.atan2(direction.x) + std::f32::consts::FRAC_PI_2)
+}
+
 fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim::stats::Domain) {
     let zoom = game.camera.zoom;
     let airborne = domain == oxide_sim::stats::Domain::Air;
@@ -602,22 +620,37 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             .prev_pos
             .get(&unit.id.0)
             .is_some_and(|previous| (*previous - current).length_squared() > 1e-6);
-        let pose = motion::unit_pose(
-            game.fx_time(),
-            unit.id.0,
-            moving,
-            airborne,
-            reduced_motion(),
+        let animation = game.animations.unit_state(
+            crate::presentation_animation::UnitAnimationFacts::capture(&game.state, unit, moving),
+            crate::presentation_animation::AnimationClock::from_state(
+                &game.state,
+                game.tick_fraction(),
+            ),
+            crate::presentation_animation::AnimationOptions {
+                reduced_motion: reduced_motion(),
+            },
         );
-        // A recent shot owns the heading: the chassis tracks its victim
-        // for a beat, then movement facing resumes.
+        let frame = motion::unit_frame(unit.kind, animation);
+        let preparing = animation.weapons.iter().any(|cycle| {
+            matches!(
+                cycle,
+                crate::presentation_animation::WeaponCycle::Preparing { .. }
+            )
+        });
+        // Report/recovery owns the heading. A stationary heavy weapon
+        // then keeps that aim throughout its physical reload; real
+        // locomotion resumes movement facing instead of sliding sideways.
         let aim = game.aim_units.get(&unit.id.0).copied();
+        let work_facing = unit_work_facing(unit.pos, animation.work);
         let rotation = match aim {
-            Some((angle, at)) if game.fx_time() - at < 1.2 => angle,
-            _ => game.facing.get(&unit.id.0).copied().unwrap_or(0.0),
+            Some((angle, at))
+                if animation.attack.is_some()
+                    || !moving && (preparing || game.fx_time() - at < 1.2) =>
+            {
+                angle
+            }
+            _ => work_facing.unwrap_or_else(|| game.facing.get(&unit.id.0).copied().unwrap_or(0.0)),
         };
-        let forward = vec2(rotation.sin(), -rotation.cos());
-        let right = vec2(rotation.cos(), rotation.sin());
         if airborne {
             let shadow = zoom * 0.9;
             draw_texture_ex(
@@ -634,19 +667,7 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             // The body rides visibly above its shadow.
             screen.y -= zoom * 0.18;
         }
-        let mut body = screen + right * pose.lateral * dest + vec2(0.0, pose.lift * dest);
-        if airborne && pose.thruster > 0.0 {
-            // The steady reduced-motion flame still communicates that a
-            // moving flyer is powered; only its flicker and bank freeze.
-            let exhaust = body - forward * dest * 0.38;
-            let half = right * dest * 0.055;
-            draw_triangle(
-                exhaust - half,
-                exhaust + half,
-                exhaust - forward * dest * (0.09 + 0.07 * pose.thruster),
-                Color::new(0.95, 0.68, 0.28, 0.32 + 0.30 * pose.thruster),
-            );
-        }
+        let body = screen;
         if game.selection.units.contains(&unit.id) {
             if unit.player == game.human {
                 draw_circle_lines(
@@ -669,40 +690,33 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                 );
             }
         }
-        // Direct-fire chassis kick on top of the locomotion pose.
-        if !reduced_motion()
-            && let Some((angle, at)) = aim
-        {
-            let age = game.fx_time() - at;
-            if age < 0.12 {
-                let dir = vec2(angle.sin(), -angle.cos());
-                body -= dir * zoom * 0.07 * (1.0 - age / 0.12);
-            }
-        }
-        let body_size = vec2(dest * pose.width_scale, dest * pose.height_scale);
-        // Locomotion and harvesting use whole authored frames, so mechanical
-        // motion remains part of the machine rather than a detached overlay.
-        let (source, accent) = if unit.kind == UnitKind::Harvester
-            && matches!(unit.order, oxide_sim::Order::Harvest { node, .. }
-                if unit.tile().chebyshev(node) <= 1)
-        {
-            let cycle = motion::loop_frame(game.fx_time(), unit.id.0, 4.0, 4, reduced_motion());
-            let frame = [0usize, 1, 2, 1][cycle];
-            (
-                sprites.harvester_working(faction, frame),
-                sprites.harvester_working_accent(frame),
-            )
-        } else if moving {
-            let frame = motion::loop_frame(game.fx_time(), unit.id.0, 8.0, 3, reduced_motion());
-            (
-                sprites.unit_moving(unit.kind, faction, frame),
-                sprites.unit_moving_accent(unit.kind, frame),
-            )
-        } else {
-            (
+        let body_size = vec2(dest, dest);
+        let (source, accent) = match frame {
+            motion::UnitFrame::Idle => (
                 sprites.unit(unit.kind, faction),
                 sprites.unit_accent(unit.kind),
-            )
+            ),
+            motion::UnitFrame::Moving(phase) => (
+                sprites.unit_moving(unit.kind, faction, phase + 1),
+                sprites.unit_moving_accent(unit.kind, phase + 1),
+            ),
+            motion::UnitFrame::Action(action) => (
+                sprites.unit_action(unit.kind, faction, action),
+                sprites.unit_action_accent(unit.kind, action),
+            ),
+            motion::UnitFrame::Harvester { cargo, pose } => {
+                let pose = match pose {
+                    motion::HarvesterPose::Idle => SpriteHarvesterPose::Idle,
+                    motion::HarvesterPose::Moving(0) => SpriteHarvesterPose::Tread1,
+                    motion::HarvesterPose::Moving(_) => SpriteHarvesterPose::Tread2,
+                    motion::HarvesterPose::Scoop(0) => SpriteHarvesterPose::Scoop1,
+                    motion::HarvesterPose::Scoop(_) => SpriteHarvesterPose::Scoop2,
+                };
+                (
+                    sprites.harvester_frame(faction, cargo, pose),
+                    sprites.harvester_frame_accent(cargo, pose),
+                )
+            }
         };
         draw_texture_ex(
             sprites.texture(),
@@ -732,62 +746,6 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                     ..Default::default()
                 },
             );
-        }
-        // The cargo eye: a fixed ring that FILLS with carrying/capacity
-        // — load reads as area, not as a pulse (and needs no motion at
-        // all). The scoop cycle above stays the "actually working"
-        // tell; the eye only says how much is aboard.
-        if unit.kind == UnitKind::Harvester
-            && let Some(hstats) = unit.kind.stats().harvest
-            && (unit.carrying > 0 || matches!(unit.order, oxide_sim::Order::Harvest { .. }))
-        {
-            let r = zoom * 0.11;
-            let frac = (unit.carrying as f32 / hstats.capacity as f32).clamp(0.0, 1.0);
-            draw_circle_lines(screen.x, screen.y, r, 1.0, SCRAP_COLOR);
-            if frac > 0.0 {
-                // Area-linear: half a load LOOKS half full.
-                draw_circle(screen.x, screen.y, r * frac.sqrt(), SCRAP_COLOR);
-            }
-        }
-        // Slow guns charge up through the same yellow circle: drawn
-        // only while the shot is still coming back (an idle ready gun
-        // wears nothing), for heavy cooldowns anywhere plus whatever
-        // the player has selected. A spotter gun whose current victim
-        // the team can't see hollows — a filling eye must not promise
-        // a shot the fire gate is blocking.
-        let stats = unit.kind.stats();
-        if let Some(weapon) = stats.weapons.first() {
-            let selected = game
-                .selection
-                .units
-                .iter()
-                .take(DECOR_CAP)
-                .any(|i| *i == unit.id);
-            let remaining = unit.cooldowns[0];
-            if remaining > 0 && (weapon.cooldown_ticks >= CHARGE_EYE_COOLDOWN || selected) {
-                let r = zoom * 0.11;
-                let frac = 1.0 - remaining as f32 / weapon.cooldown_ticks as f32;
-                let gated = unit.player == game.human
-                    && weapon.range.to_num::<f32>() > stats.vision as f32
-                    && match unit.order {
-                        oxide_sim::Order::Attack { target, .. } => {
-                            let tile = match target {
-                                oxide_sim::Target::Unit(id) => {
-                                    game.state.unit(id).map(|u| u.tile())
-                                }
-                                oxide_sim::Target::Building(id) => {
-                                    game.state.building(id).map(|b| b.anchor)
-                                }
-                            };
-                            tile.is_some_and(|t| !game.my_vision().visible(t))
-                        }
-                        _ => false,
-                    };
-                draw_circle_lines(screen.x, screen.y, r, 1.0, SCRAP_COLOR);
-                if !gated && frac > 0.0 {
-                    draw_circle(screen.x, screen.y, r * frac.sqrt(), SCRAP_COLOR);
-                }
-            }
         }
         let max_hp = unit.kind.stats().max_hp;
         if unit.hp < max_hp {
@@ -839,11 +797,6 @@ fn hp_bar(x: f32, y: f32, w: f32, hp: u32, max_hp: u32) {
 /// How many selected units draw their rings and programs — a boxed
 /// army of forty must not paint forty overlapping circles.
 const DECOR_CAP: usize = 12;
-
-/// Primary-weapon cooldown at which the charge eye draws unbidden
-/// (lancer 60, bastion 90, bombard 100 — deliberately above the
-/// Buzzard's 50, which flies in flocks and would wear twelve eyes).
-const CHARGE_EYE_COOLDOWN: u32 = 55;
 
 // --- Minimap ------------------------------------------------------------
 
@@ -925,6 +878,45 @@ pub fn draw_tutorial(t: &crate::tutorial::Tutorial, game: &crate::game::Game) {
 #[cfg(test)]
 mod tests {
     use macroquad::prelude::vec2;
+
+    #[test]
+    fn active_work_faces_its_physical_target() {
+        use crate::presentation_animation::UnitWorkState;
+        use chassis::grid::TilePos;
+
+        let from = TilePos::new(4, 4).center();
+        let east = TilePos::new(5, 4).center();
+        let north = TilePos::new(4, 3).center();
+        let east_angle = super::unit_work_facing(
+            from,
+            UnitWorkState::Harvesting {
+                target: east,
+                cycle: 0.0,
+            },
+        )
+        .expect("different target has a heading");
+        assert!((east_angle - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert_eq!(
+            super::unit_work_facing(
+                from,
+                UnitWorkState::Repairing {
+                    target: north,
+                    cycle: 0.0,
+                }
+            ),
+            Some(0.0)
+        );
+        assert_eq!(
+            super::unit_work_facing(
+                from,
+                UnitWorkState::Salvaging {
+                    target: from,
+                    cycle: 0.0,
+                }
+            ),
+            None
+        );
+    }
 
     #[test]
     fn ui_scale_respects_both_small_window_axes() {

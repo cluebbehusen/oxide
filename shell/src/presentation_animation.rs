@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 
+use chassis::fx::Vec2Fx;
 use oxide_sim::stats::MAX_WEAPONS;
 use oxide_sim::{
     Building, BuildingId, BuildingKind, Event, Order, State, TickReport, Unit, UnitId, UnitKind,
@@ -93,9 +94,17 @@ pub(crate) enum UnitWorkState {
     Idle,
     /// A Harvester is physically extracting an adjacent node or the wreck
     /// under its chassis.
-    Harvesting { cycle: f32 },
+    Harvesting { target: Vec2Fx, cycle: f32 },
     /// A Harvester is adjacent to and actively raising this paid site.
-    Constructing { site: BuildingId, cycle: f32 },
+    Constructing {
+        site: BuildingId,
+        target: Vec2Fx,
+        cycle: f32,
+    },
+    /// A Harvester is actively welding a wounded unit or building.
+    Repairing { target: Vec2Fx, cycle: f32 },
+    /// A Harvester is actively stripping a friendly structure for scrap.
+    Salvaging { target: Vec2Fx, cycle: f32 },
 }
 
 /// The visible fill of a Harvester's internal cargo bay.
@@ -173,17 +182,23 @@ pub(crate) struct UnitAnimationFacts {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UnitWorkFact {
     Idle,
-    Harvesting,
-    Constructing(BuildingId),
+    Harvesting(Vec2Fx),
+    Constructing(BuildingId, Vec2Fx),
+    Repairing(Vec2Fx),
+    Salvaging(Vec2Fx),
 }
 
 impl UnitAnimationFacts {
     /// Reads the unit's visible mechanisms from the post-tick world.
     pub(crate) fn capture(state: &State, unit: &Unit, moved: bool) -> Self {
-        let work = if active_harvesting(state, unit) {
-            UnitWorkFact::Harvesting
-        } else if let Some(site) = active_unit_construction(state, unit) {
-            UnitWorkFact::Constructing(site)
+        let work = if let Some(target) = active_harvesting(state, unit) {
+            UnitWorkFact::Harvesting(target)
+        } else if let Some((site, target)) = active_unit_construction(state, unit) {
+            UnitWorkFact::Constructing(site, target)
+        } else if let Some(target) = active_unit_repair(state, unit) {
+            UnitWorkFact::Repairing(target)
+        } else if let Some(target) = active_unit_salvage(state, unit) {
+            UnitWorkFact::Salvaging(target)
         } else {
             UnitWorkFact::Idle
         };
@@ -383,12 +398,22 @@ impl AnimationController {
         };
         let work = match facts.work {
             UnitWorkFact::Idle => UnitWorkState::Idle,
-            UnitWorkFact::Harvesting => UnitWorkState::Harvesting {
+            UnitWorkFact::Harvesting(target) => UnitWorkState::Harvesting {
+                target,
                 cycle: clock.cycle(facts.id.0, HARVEST_PERIOD, options.reduced_motion),
             },
-            UnitWorkFact::Constructing(site) => UnitWorkState::Constructing {
+            UnitWorkFact::Constructing(site, target) => UnitWorkState::Constructing {
                 site,
+                target,
                 cycle: clock.cycle(facts.id.0, CONSTRUCTION_PERIOD, options.reduced_motion),
+            },
+            UnitWorkFact::Repairing(target) => UnitWorkState::Repairing {
+                target,
+                cycle: clock.cycle(facts.id.0, CONSTRUCTION_PERIOD, options.reduced_motion),
+            },
+            UnitWorkFact::Salvaging(target) => UnitWorkState::Salvaging {
+                target,
+                cycle: clock.cycle(facts.id.0, HARVEST_PERIOD, options.reduced_motion),
             },
         };
         let cargo = facts.kind.stats().harvest.map(|harvest| CargoState {
@@ -634,44 +659,90 @@ fn ratio(value: u32, total: u32) -> f32 {
     }
 }
 
-fn active_harvesting(state: &State, unit: &Unit) -> bool {
-    let Some(harvest) = unit.kind.stats().harvest else {
-        return false;
-    };
+fn active_harvesting(state: &State, unit: &Unit) -> Option<Vec2Fx> {
+    let harvest = unit.kind.stats().harvest?;
     let Order::Harvest {
         node,
         retiring: false,
         ..
     } = unit.order
     else {
-        return false;
+        return None;
     };
     if unit.carrying >= harvest.capacity {
-        return false;
+        return None;
     }
     let tile = unit.tile();
-    if state.map().scrap_at(node) > 0 {
+    let active = if state.map().scrap_at(node) > 0 {
         tile != node && tile.chebyshev(node) <= 1
     } else {
         state.map().wreck_at(node) > 0 && tile == node
-    }
+    };
+    active.then_some(node.center())
 }
 
-fn active_unit_construction(state: &State, unit: &Unit) -> Option<BuildingId> {
+fn active_unit_construction(state: &State, unit: &Unit) -> Option<(BuildingId, Vec2Fx)> {
     let Order::Build { site } = unit.order else {
         return None;
     };
     state.building(site).and_then(|building| {
         (!building.built
+            && building.progress > 0
             && building.player == unit.player
             && unit.kind == UnitKind::Harvester
             && tile_adjacent_to_building(unit.tile(), building))
-        .then_some(site)
+        .then_some((site, building.center()))
+    })
+}
+
+fn active_unit_repair(state: &State, unit: &Unit) -> Option<Vec2Fx> {
+    if unit.kind != UnitKind::Harvester || unit.progress == 0 || unit.path.is_some() {
+        return None;
+    }
+    match unit.order {
+        Order::Repair { building } => state.building(building).and_then(|patient| {
+            (patient.player == unit.player
+                && patient.built
+                && patient.hp > 0
+                && patient.hp < patient.kind.stats().max_hp
+                && tile_adjacent_to_building(unit.tile(), patient))
+            .then_some(patient.center())
+        }),
+        Order::RepairUnit { unit: patient } => state.unit(patient).and_then(|patient| {
+            (patient.id != unit.id
+                && patient.player == unit.player
+                && patient.hp > 0
+                && patient.hp < patient.kind.stats().max_hp
+                && patient.path.is_none()
+                && !matches!(patient.order, Order::Found { .. })
+                && unit.pos.dist_sq(patient.pos)
+                    <= oxide_sim::stats::REPAIR_REACH * oxide_sim::stats::REPAIR_REACH)
+                .then_some(patient.pos)
+        }),
+        _ => None,
+    }
+}
+
+fn active_unit_salvage(state: &State, unit: &Unit) -> Option<Vec2Fx> {
+    if unit.kind != UnitKind::Harvester || unit.progress == 0 || unit.path.is_some() {
+        return None;
+    }
+    let Order::Salvage { building } = unit.order else {
+        return None;
+    };
+    state.building(building).and_then(|target| {
+        (target.player == unit.player
+            && target.built
+            && target.hp > 0
+            && target.kind != BuildingKind::Foundry
+            && tile_adjacent_to_building(unit.tile(), target))
+        .then_some(target.center())
     })
 }
 
 fn active_site_construction(state: &State, building: &Building) -> bool {
     !building.built
+        && building.progress > 0
         && state.units().iter().any(|unit| {
             unit.player == building.player
                 && unit.kind == UnitKind::Harvester
@@ -903,8 +974,9 @@ mod tests {
         };
         unit.pos = node.offset(-1, 0).center();
         unit.carrying = 5;
+        unit.progress = 1;
         let facts = UnitAnimationFacts::capture(&state, &unit, false);
-        assert_eq!(facts.work, UnitWorkFact::Harvesting);
+        assert_eq!(facts.work, UnitWorkFact::Harvesting(node.center()));
         let animation = AnimationController::default().unit_state(
             facts,
             AnimationClock::new(5, 0.0),
@@ -915,6 +987,14 @@ mod tests {
             animation.cargo,
             Some(CargoState { fill, .. }) if (fill - 0.5).abs() < 0.001
         ));
+
+        unit.progress = 0;
+        assert_eq!(
+            UnitAnimationFacts::capture(&state, &unit, false).work,
+            UnitWorkFact::Harvesting(node.center()),
+            "a scoop boundary retains the physical work target and facing"
+        );
+        unit.progress = 1;
 
         unit.order = Order::Harvest {
             node,

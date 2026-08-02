@@ -1,256 +1,537 @@
-//! Pure presentation pose math.
+//! Pure selection of authored sprite frames from presentation state.
 //!
-//! Rendering consumes these values, but the functions know nothing about
-//! macroquad or simulation mutation. Keeping the clock-to-pose mapping here
-//! makes reduced-motion behavior and deterministic offsets cheap to test.
+//! The controller derives semantic activity from deterministic simulation
+//! facts. This module maps those facts onto the approved atlas rows without
+//! consulting wall time or changing gameplay state.
 
-use oxide_sim::BuildingKind;
+use oxide_sim::{BuildingKind, UnitKind};
 
-/// Procedural pose applied to one moving unit.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct UnitPose {
-    /// Sideways offset in fractions of one sprite width.
-    pub lateral: f32,
-    /// Vertical offset in fractions of one sprite height.
-    pub lift: f32,
-    /// Horizontal squash, used as a readable top-down bank.
-    pub width_scale: f32,
-    /// Vertical squash/stretch, used for ground weight.
-    pub height_scale: f32,
-    /// Strength of the air exhaust.
-    pub thruster: f32,
+use crate::presentation_animation::{
+    AttackPhase, BuildingActivity, BuildingAnimationState, CargoState, LocomotionState,
+    PropulsionState, UnitAnimationState, UnitWorkState, WeaponCycle,
+};
+
+/// A Harvester pose within one cargo-specific row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HarvesterPose {
+    /// Resting chassis and scoop.
+    Idle,
+    /// One of the two tread phases.
+    Moving(usize),
+    /// One of the two lowered-scoop phases.
+    Scoop(usize),
 }
 
-impl UnitPose {
-    const REST: Self = Self {
-        lateral: 0.0,
-        lift: 0.0,
-        width_scale: 1.0,
-        height_scale: 1.0,
-        thruster: 0.0,
-    };
+/// The atlas row selected for a unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnitFrame {
+    /// Ordinary resting art.
+    Idle,
+    /// One of the two authored locomotion frames.
+    Moving(usize),
+    /// Zero-based `_actionN` frame.
+    Action(usize),
+    /// Cargo-aware Harvester art.
+    Harvester {
+        /// One of five load levels.
+        cargo: usize,
+        /// Scoop or tread mechanism state.
+        pose: HarvesterPose,
+    },
 }
 
-/// Presentation pose for one unit.
-///
-/// Ground locomotion lives in authored sprite frames, keeping tread, wheel,
-/// leg, and chassis motion inside the machine art. Air units retain a small
-/// bank and exhaust; entity id offsets keep a formation out of lockstep.
-pub(crate) fn unit_pose(
-    time: f32,
-    id: u32,
-    moving: bool,
-    airborne: bool,
-    reduced: bool,
-) -> UnitPose {
-    if !moving {
-        return UnitPose::REST;
+/// The atlas rows selected for a building and its optional rotating mount.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BuildingFrame {
+    /// Main footprint art.
+    pub(crate) body: BuildingBodyFrame,
+    /// Zero-based defense-mount `_actionN`; `None` uses its base row.
+    pub(crate) mount_action: Option<usize>,
+}
+
+/// Main footprint art for a building.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BuildingBodyFrame {
+    /// Completed, inactive base art.
+    Idle,
+    /// Zero-based `_workN` frame.
+    Work(usize),
+    /// Construction stage and machinery phase.
+    Construction { stage: usize, phase: usize },
+    /// Zero-based `_actionN` frame. Bastion uses this for its charge rack.
+    Action(usize),
+}
+
+/// Selects a unit frame with action transients taking precedence over every
+/// concurrent state.
+pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame {
+    if let Some(attack) = state.attack {
+        return UnitFrame::Action(unit_attack_frame(kind, attack));
     }
-    if reduced {
-        return UnitPose {
-            thruster: if airborne { 0.55 } else { 0.0 },
-            ..UnitPose::REST
+
+    if kind == UnitKind::Harvester {
+        let cargo = state.cargo.map_or(0, cargo_bucket);
+        let pose = match state.work {
+            UnitWorkState::Harvesting { cycle, .. }
+            | UnitWorkState::Repairing { cycle, .. }
+            | UnitWorkState::Salvaging { cycle, .. } => harvester_work_frame(cycle),
+            UnitWorkState::Idle | UnitWorkState::Constructing { .. } => match state.locomotion {
+                LocomotionState::Moving { cycle } => HarvesterPose::Moving(cycle_index(cycle, 2)),
+                LocomotionState::Rest => HarvesterPose::Idle,
+            },
+        };
+        return UnitFrame::Harvester { cargo, pose };
+    }
+
+    if let PropulsionState::WispRotors { cycle } = state.propulsion {
+        return UnitFrame::Moving(cycle_index(cycle, 2));
+    }
+    if let LocomotionState::Moving { cycle } = state.locomotion {
+        return UnitFrame::Moving(cycle_index(cycle, 2));
+    }
+    let preparation = preparation_progress(&state.weapons);
+    preparation.map_or(UnitFrame::Idle, |progress| {
+        UnitFrame::Action(unit_preparation_frame(kind, progress))
+    })
+}
+
+/// Selects the complete building frame, keeping Bastion's fixed charge rack
+/// synchronized with its rotating mount.
+pub(crate) fn building_frame(kind: BuildingKind, state: BuildingAnimationState) -> BuildingFrame {
+    if let Some(site) = state.construction {
+        return BuildingFrame {
+            body: BuildingBodyFrame::Construction {
+                stage: cycle_index(site.progress, 3),
+                phase: if site.active {
+                    cycle_index(site.machinery_cycle, 2)
+                } else {
+                    0
+                },
+            },
+            mount_action: None,
         };
     }
-    if !airborne {
-        return UnitPose::REST;
+
+    if kind.stats().weapons.is_empty() {
+        let body = match state.activity {
+            BuildingActivity::Idle => BuildingBodyFrame::Idle,
+            BuildingActivity::Production { cycle, .. } => {
+                BuildingBodyFrame::Work(cycle_index(cycle, 4))
+            }
+            BuildingActivity::ArraySweep { cycle } => {
+                BuildingBodyFrame::Work(cycle_index(cycle, 6))
+            }
+            BuildingActivity::Reclaiming { cycle } => {
+                BuildingBodyFrame::Work(cycle_index(cycle, 3))
+            }
+            BuildingActivity::RepairPulse { progress } => {
+                BuildingBodyFrame::Work(cycle_index(progress, 4))
+            }
+        };
+        return BuildingFrame {
+            body,
+            mount_action: None,
+        };
     }
-    let phase = time * 5.2 + id as f32 * 1.618_034;
-    let wave = phase.sin();
-    let stride = phase.cos();
-    UnitPose {
-        lateral: wave * 0.025,
-        lift: stride * 0.025,
-        width_scale: 1.0 - wave.abs() * 0.065,
-        height_scale: 1.0 + wave.abs() * 0.025,
-        thruster: 0.62 + 0.28 * (stride * 0.5 + 0.5),
+
+    let action = state
+        .attack
+        .map(|attack| defense_attack_frame(kind, attack))
+        .or_else(|| match state.weapon {
+            Some(WeaponCycle::Preparing { progress }) => {
+                Some(defense_preparation_frame(kind, progress))
+            }
+            Some(WeaponCycle::Ready | WeaponCycle::Unavailable) | None => None,
+        });
+    BuildingFrame {
+        body: match (kind, action) {
+            (BuildingKind::Bastion, Some(frame)) => BuildingBodyFrame::Action(frame),
+            _ => BuildingBodyFrame::Idle,
+        },
+        mount_action: action,
     }
 }
 
-/// A stable authored-frame loop with a deterministic per-entity offset.
-/// Reduced motion always holds the base frame.
-pub(crate) fn loop_frame(
-    time: f32,
-    id: u32,
-    frames_per_second: f32,
-    frame_count: usize,
-    reduced: bool,
-) -> usize {
-    assert!(frame_count > 0, "an authored loop needs at least one frame");
-    if reduced || frame_count == 1 {
-        return 0;
+fn cargo_bucket(cargo: CargoState) -> usize {
+    ((cargo.fill.clamp(0.0, 1.0) * 4.0).round() as usize).min(4)
+}
+
+fn harvester_work_frame(cycle: f32) -> HarvesterPose {
+    match cycle_index(cycle, 5) {
+        0 | 4 => HarvesterPose::Idle,
+        1 | 3 => HarvesterPose::Scoop(0),
+        _ => HarvesterPose::Scoop(1),
     }
-    let tick = (time.max(0.0) * frames_per_second.max(0.0)).floor() as u64;
-    ((tick + u64::from(id).wrapping_mul(7)) % frame_count as u64) as usize
 }
 
-/// Selects a construction sprite's progress stage and machinery phase.
-/// Public site progress chooses the stage; presentation decides whether the
-/// machinery is active. Reduced motion and idle sites hold the crane.
-pub(crate) fn construction_frame(
-    progress: u32,
-    total: u32,
-    time: f32,
-    id: u32,
-    held: bool,
-) -> (usize, usize) {
-    let stage = ((u64::from(progress) * 3) / u64::from(total.max(1))).min(2) as usize;
-    let phase = loop_frame(time, id, 3.0, 2, held);
-    (stage, phase)
+fn preparation_progress(weapons: &[WeaponCycle]) -> Option<f32> {
+    weapons
+        .iter()
+        .filter_map(|cycle| match cycle {
+            WeaponCycle::Preparing { progress } => Some(*progress),
+            WeaponCycle::Unavailable | WeaponCycle::Ready => None,
+        })
+        .min_by(f32::total_cmp)
 }
 
-/// Pose for a defense's separately drawn mount.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct MountPose {
-    /// Aim survives reduced motion because it communicates target state.
-    pub angle: f32,
-    /// Backward displacement as a fraction of footprint width.
-    pub recoil: f32,
-    /// Short launch flash.
-    pub flash: f32,
-}
-
-pub(crate) fn mount_pose(
-    kind: BuildingKind,
-    angle: f32,
-    shot_age: f32,
-    reduced: bool,
-) -> MountPose {
-    let (duration, distance, flash_duration) = match kind {
-        BuildingKind::Turret => (0.12, 0.050, 0.10),
-        BuildingKind::FlakTurret => (0.18, 0.035, 0.16),
-        BuildingKind::Bastion => (0.34, 0.060, 0.24),
-        _ => (0.0, 0.0, 0.0),
-    };
-    // A presentation stamp should never sit ahead of the presentation
-    // clock, but clamping the envelope here keeps a seek/reset race from
-    // exaggerating recoil or producing a flash brighter than authored.
-    let shot_age = shot_age.max(0.0);
-    let recoil = if reduced || duration == 0.0 || shot_age >= duration {
-        0.0
-    } else {
-        distance * (1.0 - shot_age / duration)
-    };
-    let flash = if reduced || flash_duration == 0.0 || shot_age >= flash_duration {
-        0.0
-    } else {
-        1.0 - shot_age / flash_duration
-    };
-    MountPose {
-        angle,
-        recoil,
-        flash,
+fn unit_preparation_frame(kind: UnitKind, progress: f32) -> usize {
+    match kind {
+        UnitKind::Lancer | UnitKind::Bombard => cycle_index(progress, 3),
+        UnitKind::Sentinel
+        | UnitKind::Scuttler
+        | UnitKind::Flakhound
+        | UnitKind::Stinger
+        | UnitKind::Buzzard
+        | UnitKind::Darter
+        | UnitKind::Talon
+        | UnitKind::Wisp => 0,
+        UnitKind::Harvester => 0,
     }
+}
+
+fn unit_attack_frame(kind: UnitKind, attack: AttackPhase) -> usize {
+    match attack {
+        AttackPhase::Report { progress, .. } => match kind {
+            UnitKind::Lancer | UnitKind::Bombard => 3,
+            UnitKind::Flakhound => 1 + cycle_index(progress, 2),
+            UnitKind::Sentinel
+            | UnitKind::Scuttler
+            | UnitKind::Stinger
+            | UnitKind::Buzzard
+            | UnitKind::Darter
+            | UnitKind::Talon
+            | UnitKind::Wisp => 1,
+            UnitKind::Harvester => 0,
+        },
+        AttackPhase::Recover { progress, .. } => match kind {
+            UnitKind::Lancer | UnitKind::Bombard => 4 + cycle_index(progress, 2),
+            UnitKind::Flakhound => 3 + cycle_index(progress, 2),
+            UnitKind::Sentinel
+            | UnitKind::Scuttler
+            | UnitKind::Stinger
+            | UnitKind::Buzzard
+            | UnitKind::Darter
+            | UnitKind::Talon
+            | UnitKind::Wisp => 2 + cycle_index(progress, 2),
+            UnitKind::Harvester => 0,
+        },
+    }
+}
+
+fn defense_preparation_frame(kind: BuildingKind, progress: f32) -> usize {
+    match kind {
+        BuildingKind::Turret => 2,
+        BuildingKind::FlakTurret => cycle_index(progress, 4),
+        BuildingKind::Bastion => cycle_index(progress, 5),
+        _ => 0,
+    }
+}
+
+fn defense_attack_frame(kind: BuildingKind, attack: AttackPhase) -> usize {
+    match attack {
+        AttackPhase::Report { progress, .. } => match kind {
+            BuildingKind::Turret => 0,
+            BuildingKind::FlakTurret => 4 + cycle_index(progress, 2),
+            BuildingKind::Bastion => 5,
+            _ => 0,
+        },
+        AttackPhase::Recover { progress, .. } => match kind {
+            BuildingKind::Turret => 1,
+            BuildingKind::FlakTurret => 6,
+            BuildingKind::Bastion => 6 + cycle_index(progress, 2),
+            _ => 0,
+        },
+    }
+}
+
+fn cycle_index(progress: f32, count: usize) -> usize {
+    debug_assert!(count > 0);
+    ((progress.clamp(0.0, 1.0) * count as f32).floor() as usize).min(count - 1)
 }
 
 #[cfg(test)]
 mod tests {
+    use oxide_sim::stats::MAX_WEAPONS;
+
     use super::*;
+    use crate::presentation_animation::{ConstructionState, PropulsionState};
 
-    #[test]
-    fn unit_motion_is_repeatable_and_formation_offsets_do_not_lock_step() {
-        let a = unit_pose(2.25, 7, true, false, false);
-        assert_eq!(a, unit_pose(2.25, 7, true, false, false));
-        assert_eq!(a, unit_pose(2.25, 8, true, false, false));
-        assert_eq!(a, UnitPose::REST);
-        assert_eq!(a.thruster, 0.0);
+    fn unit_state() -> UnitAnimationState {
+        UnitAnimationState {
+            locomotion: LocomotionState::Rest,
+            work: UnitWorkState::Idle,
+            cargo: None,
+            attack: None,
+            weapons: [WeaponCycle::Unavailable; MAX_WEAPONS],
+            propulsion: PropulsionState::None,
+        }
+    }
+
+    fn building_state() -> BuildingAnimationState {
+        BuildingAnimationState {
+            construction: None,
+            activity: BuildingActivity::Idle,
+            attack: None,
+            weapon: None,
+        }
     }
 
     #[test]
-    fn reduced_motion_holds_pose_but_keeps_powered_flyer_state() {
-        let ground = unit_pose(8.0, 3, true, false, true);
-        assert_eq!(ground, UnitPose::REST);
+    fn first_shot_ready_never_invents_a_windup() {
+        let mut state = unit_state();
+        state.weapons[0] = WeaponCycle::Ready;
+        assert_eq!(unit_frame(UnitKind::Lancer, state), UnitFrame::Idle);
 
-        let air = unit_pose(8.0, 3, true, true, true);
-        assert_eq!(air.lateral, 0.0);
-        assert_eq!(air.lift, 0.0);
-        assert_eq!(air.width_scale, 1.0);
-        assert!(air.thruster > 0.0);
+        let mut defense = building_state();
+        defense.weapon = Some(WeaponCycle::Ready);
+        assert_eq!(
+            building_frame(BuildingKind::Bastion, defense),
+            BuildingFrame {
+                body: BuildingBodyFrame::Idle,
+                mount_action: None,
+            }
+        );
     }
 
     #[test]
-    fn air_and_ground_use_distinct_activity_cues() {
-        let ground = unit_pose(0.4, 11, true, false, false);
-        let air = unit_pose(0.4, 11, true, true, false);
-        assert_eq!(ground, UnitPose::REST);
-        assert_eq!(ground.thruster, 0.0);
-        assert!(air.thruster > 0.0);
-        assert_ne!(air.width_scale, ground.width_scale);
-        assert_eq!(unit_pose(0.4, 11, false, true, false), UnitPose::REST);
+    fn attack_overrides_cooldown_and_locomotion() {
+        let mut state = unit_state();
+        state.locomotion = LocomotionState::Moving { cycle: 0.75 };
+        state.weapons[0] = WeaponCycle::Preparing { progress: 0.8 };
+        state.attack = Some(AttackPhase::Report {
+            weapon: 0,
+            progress: 0.0,
+        });
+        assert_eq!(unit_frame(UnitKind::Lancer, state), UnitFrame::Action(3));
     }
 
     #[test]
-    fn pose_envelopes_stay_finite_and_inside_authored_bounds() {
-        for id in [0, 1, 17, u16::MAX as u32] {
-            for step in 0..=240 {
-                let time = step as f32 / 24.0;
-                for airborne in [false, true] {
-                    let pose = unit_pose(time, id, true, airborne, false);
-                    for value in [
-                        pose.lateral,
-                        pose.lift,
-                        pose.width_scale,
-                        pose.height_scale,
-                        pose.thruster,
-                    ] {
-                        assert!(value.is_finite());
-                    }
-                    assert!((0.9..=1.1).contains(&pose.width_scale));
-                    assert!((0.9..=1.1).contains(&pose.height_scale));
-                    assert!((0.0..=1.0).contains(&pose.thruster));
+    fn real_locomotion_keeps_every_reload_from_freezing_its_treads() {
+        let mut state = unit_state();
+        state.locomotion = LocomotionState::Moving { cycle: 0.75 };
+        state.weapons[0] = WeaponCycle::Preparing { progress: 0.8 };
+        for kind in [
+            UnitKind::Sentinel,
+            UnitKind::Lancer,
+            UnitKind::Bombard,
+            UnitKind::Flakhound,
+        ] {
+            assert_eq!(unit_frame(kind, state), UnitFrame::Moving(1));
+        }
+    }
+
+    #[test]
+    fn newest_sentinel_weapon_preparation_is_selected() {
+        let mut state = unit_state();
+        state.weapons = [
+            WeaponCycle::Preparing { progress: 0.8 },
+            WeaponCycle::Preparing { progress: 0.1 },
+        ];
+        assert_eq!(unit_frame(UnitKind::Sentinel, state), UnitFrame::Action(0));
+    }
+
+    #[test]
+    fn cargo_buckets_are_monotonic_and_fill_only_near_capacity() {
+        let buckets = (0..=10)
+            .map(|amount| {
+                cargo_bucket(CargoState {
+                    amount,
+                    capacity: 10,
+                    fill: amount as f32 / 10.0,
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(buckets[0], 0);
+        assert_eq!(buckets[1], 0);
+        assert_eq!(buckets[8], 3);
+        assert_eq!(buckets[9], 4);
+        assert_eq!(buckets[10], 4);
+        assert!(buckets.windows(2).all(|pair| pair[0] <= pair[1]));
+    }
+
+    #[test]
+    fn harvester_work_and_motion_retain_the_cargo_bucket() {
+        let mut state = unit_state();
+        state.cargo = Some(CargoState {
+            amount: 5,
+            capacity: 10,
+            fill: 0.5,
+        });
+        state.work = UnitWorkState::Harvesting {
+            target: chassis::grid::TilePos::new(5, 5).center(),
+            cycle: 0.5,
+        };
+        assert_eq!(
+            unit_frame(UnitKind::Harvester, state),
+            UnitFrame::Harvester {
+                cargo: 2,
+                pose: HarvesterPose::Scoop(1),
+            }
+        );
+        state.work = UnitWorkState::Repairing {
+            target: chassis::grid::TilePos::new(6, 5).center(),
+            cycle: 0.25,
+        };
+        assert!(matches!(
+            unit_frame(UnitKind::Harvester, state),
+            UnitFrame::Harvester {
+                cargo: 2,
+                pose: HarvesterPose::Scoop(_),
+            }
+        ));
+        state.work = UnitWorkState::Idle;
+        state.locomotion = LocomotionState::Moving { cycle: 0.75 };
+        assert_eq!(
+            unit_frame(UnitKind::Harvester, state),
+            UnitFrame::Harvester {
+                cargo: 2,
+                pose: HarvesterPose::Moving(1),
+            }
+        );
+    }
+
+    #[test]
+    fn wisp_rotors_run_at_rest_and_hold_under_reduced_motion() {
+        let mut state = unit_state();
+        state.propulsion = PropulsionState::WispRotors { cycle: 0.75 };
+        assert_eq!(unit_frame(UnitKind::Wisp, state), UnitFrame::Moving(1));
+        state.propulsion = PropulsionState::WispRotors { cycle: 0.0 };
+        assert_eq!(unit_frame(UnitKind::Wisp, state), UnitFrame::Moving(0));
+    }
+
+    #[test]
+    fn every_unit_action_row_stays_inside_its_contract() {
+        let action_counts = [
+            (UnitKind::Sentinel, 4),
+            (UnitKind::Scuttler, 4),
+            (UnitKind::Lancer, 6),
+            (UnitKind::Bombard, 6),
+            (UnitKind::Flakhound, 5),
+            (UnitKind::Stinger, 4),
+            (UnitKind::Buzzard, 4),
+            (UnitKind::Darter, 4),
+            (UnitKind::Talon, 4),
+            (UnitKind::Wisp, 4),
+        ];
+        for (kind, count) in action_counts {
+            for progress in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                for attack in [
+                    AttackPhase::Report {
+                        weapon: 0,
+                        progress,
+                    },
+                    AttackPhase::Recover {
+                        weapon: 0,
+                        progress,
+                    },
+                ] {
+                    let frame = unit_attack_frame(kind, attack);
+                    assert!(frame < count, "{kind:?} selected action {frame}");
                 }
+                assert!(unit_preparation_frame(kind, progress) < count);
             }
         }
     }
 
     #[test]
-    fn authored_loops_are_repeatable_offset_and_reduced_motion_safe() {
-        assert_eq!(loop_frame(1.25, 7, 8.0, 3, false), 2);
-        assert_eq!(loop_frame(1.25, 7, 8.0, 3, false), 2);
-        assert_ne!(
-            loop_frame(1.25, 7, 8.0, 3, false),
-            loop_frame(1.25, 8, 8.0, 3, false)
-        );
-        assert_eq!(loop_frame(99.0, 42, 8.0, 3, true), 0);
-        assert_eq!(loop_frame(-2.0, 0, 8.0, 3, false), 0);
-    }
-
-    #[test]
-    fn construction_frames_advance_by_progress_but_freeze_the_machine_when_needed() {
-        assert_eq!(construction_frame(0, 300, 1.0, 0, false).0, 0);
-        assert_eq!(construction_frame(100, 300, 1.0, 0, false).0, 1);
-        assert_eq!(construction_frame(200, 300, 1.0, 0, false).0, 2);
-        assert_eq!(construction_frame(299, 300, 1.0, 0, false).0, 2);
-        assert_ne!(
-            construction_frame(100, 300, 9.0, 4, false).1,
-            construction_frame(100, 300, 9.4, 4, false).1,
-            "active construction advances its authored machinery"
-        );
+    fn building_activity_uses_only_its_authored_row() {
+        let mut state = building_state();
+        state.activity = BuildingActivity::Production {
+            unit: UnitKind::Sentinel,
+            progress: 0.01,
+            cycle: 0.76,
+        };
         assert_eq!(
-            construction_frame(100, 300, 9.0, 4, true),
-            (1, 0),
-            "an idle or reduced-motion site holds its machinery"
+            building_frame(BuildingKind::Foundry, state).body,
+            BuildingBodyFrame::Work(3)
+        );
+        state.activity = BuildingActivity::ArraySweep { cycle: 0.99 };
+        assert_eq!(
+            building_frame(BuildingKind::Array, state).body,
+            BuildingBodyFrame::Work(5)
+        );
+        state.activity = BuildingActivity::Reclaiming { cycle: 0.99 };
+        assert_eq!(
+            building_frame(BuildingKind::Reclaimer, state).body,
+            BuildingBodyFrame::Work(2)
         );
     }
 
     #[test]
-    fn reduced_mount_keeps_aim_and_shot_envelopes_are_bounded() {
-        let live = mount_pose(BuildingKind::Bastion, 1.25, 0.05, false);
-        assert_eq!(live.angle, 1.25);
-        assert!(live.recoil > 0.0);
-        assert!(live.flash > 0.0);
+    fn idle_producers_and_repair_bays_hold_their_base() {
+        for kind in [
+            BuildingKind::Foundry,
+            BuildingKind::Fabricator,
+            BuildingKind::RepairBay,
+        ] {
+            assert_eq!(
+                building_frame(kind, building_state()).body,
+                BuildingBodyFrame::Idle
+            );
+        }
+    }
 
-        let early = mount_pose(BuildingKind::Bastion, 1.25, -0.05, false);
-        assert_eq!(early.recoil, 0.060);
-        assert_eq!(early.flash, 1.0);
-
-        let held = mount_pose(BuildingKind::Bastion, 1.25, 0.05, true);
-        assert_eq!(held.angle, 1.25);
-        assert_eq!(held.recoil, 0.0);
-        assert_eq!(held.flash, 0.0);
+    #[test]
+    fn construction_progress_and_real_activity_choose_the_site_frame() {
+        let mut state = building_state();
+        state.construction = Some(ConstructionState {
+            progress: 0.7,
+            active: true,
+            machinery_cycle: 0.75,
+        });
         assert_eq!(
-            mount_pose(BuildingKind::Bastion, 1.25, 2.0, false).recoil,
-            0.0
+            building_frame(BuildingKind::Fabricator, state).body,
+            BuildingBodyFrame::Construction { stage: 2, phase: 1 }
         );
+        state.construction.as_mut().expect("site").active = false;
+        assert_eq!(
+            building_frame(BuildingKind::Fabricator, state).body,
+            BuildingBodyFrame::Construction { stage: 2, phase: 0 }
+        );
+    }
+
+    #[test]
+    fn bastion_body_and_mount_actions_never_drift() {
+        for progress in [0.0, 0.2, 0.5, 0.8, 1.0] {
+            let mut state = building_state();
+            state.weapon = Some(WeaponCycle::Preparing { progress });
+            let selected = building_frame(BuildingKind::Bastion, state);
+            assert_eq!(
+                selected.body,
+                BuildingBodyFrame::Action(selected.mount_action.expect("Bastion mount"))
+            );
+        }
+    }
+
+    #[test]
+    fn defense_rows_cover_report_recovery_and_charge_boundaries() {
+        let counts = [
+            (BuildingKind::Turret, 4),
+            (BuildingKind::FlakTurret, 8),
+            (BuildingKind::Bastion, 9),
+        ];
+        for (kind, count) in counts {
+            for progress in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                assert!(defense_preparation_frame(kind, progress) < count);
+                assert!(
+                    defense_attack_frame(
+                        kind,
+                        AttackPhase::Report {
+                            weapon: 0,
+                            progress,
+                        },
+                    ) < count
+                );
+                assert!(
+                    defense_attack_frame(
+                        kind,
+                        AttackPhase::Recover {
+                            weapon: 0,
+                            progress,
+                        },
+                    ) < count
+                );
+            }
+        }
     }
 }

@@ -42,7 +42,7 @@ pub struct Selection {
 /// A transient visual effect (never sim-relevant).
 mod fx;
 
-pub use fx::{BoltStyle, Effect, EffectKind, PingKind, SoundKind};
+pub use fx::{Effect, EffectKind, PingKind, ShotStyle, SoundKind};
 
 /// A transient HUD message (rejected orders, stalled units).
 pub struct Toast {
@@ -86,6 +86,9 @@ pub struct Game {
     pub aim_units: HashMap<u32, (f32, f32)>,
     /// Same for buildings (turret mounts track their last victim).
     pub aim_buildings: HashMap<u32, (f32, f32)>,
+    /// Action-driven authored sprite state. This remembers only transient
+    /// output events; clearing it never changes simulation truth.
+    pub(crate) animations: crate::presentation_animation::AnimationController,
     /// Live effects.
     pub fx: Vec<Effect>,
     /// Clips queued by this frame's ticks; the main loop drains and plays.
@@ -227,6 +230,7 @@ impl Game {
             facing: HashMap::new(),
             aim_units: HashMap::new(),
             aim_buildings: HashMap::new(),
+            animations: crate::presentation_animation::AnimationController::default(),
             fx: Vec::new(),
             sounds_pending: Vec::new(),
             autosave_done: false,
@@ -303,7 +307,7 @@ impl Game {
             "replay duration metadata does not cover its own commands"
         );
         let mut game = Self::new(scenario)?;
-        game.state = state;
+        game.replace_state_after_jump(&state);
         game.bots = bots;
         game.recorder = replay;
         game.live_stats = live_stats;
@@ -415,6 +419,7 @@ impl Game {
         }
 
         if !self.suppress_presentation {
+            self.animations.observe(&report);
             for unit in self.state.units() {
                 let now = world_vec(unit.pos);
                 if let Some(prev) = self.prev_pos.get(&unit.id.0) {
@@ -452,6 +457,7 @@ impl Game {
             .retain(|id, _| state.unit(UnitId(*id)).is_some());
         self.aim_buildings
             .retain(|id, _| state.building(oxide_sim::BuildingId(*id)).is_some());
+        self.animations.retain_live(state);
         self.selection.buildings.retain(|id| {
             self.state.building(*id).is_some_and(|building| {
                 !self.state.hostile(human, building.player)
@@ -472,7 +478,7 @@ impl Game {
 
     /// Absorbs one batch of replayed ticks for presentation: the world
     /// the engine produced plus the events it emitted on the way —
-    /// bolts, deaths, aim, and sound work in playback exactly as live.
+    /// shots, deaths, aim, and sound work in playback exactly as live.
     pub fn playback_present(&mut self, state: &oxide_sim::State, events: &[Event]) {
         self.prev_pos = self
             .state
@@ -493,6 +499,8 @@ impl Game {
                 }
             }
         }
+        self.animations
+            .observe_events(self.state.current_tick(), events);
         self.spawn_fx(events);
         let state = &self.state;
         self.facing
@@ -501,6 +509,7 @@ impl Game {
             .retain(|id, _| state.unit(UnitId(*id)).is_some());
         self.aim_buildings
             .retain(|id, _| state.building(oxide_sim::BuildingId(*id)).is_some());
+        self.animations.retain_live(state);
     }
 
     /// Drops queued transient presentation — what a bulk jump (a seek)
@@ -514,6 +523,22 @@ impl Game {
         // for a shot fired on the timeline we just left.
         self.aim_units.clear();
         self.aim_buildings.clear();
+        self.animations.reset_transients();
+    }
+
+    /// Replaces truth after a seek or replay rebuild and establishes that
+    /// destination as both interpolation endpoints. Timeline-local facing,
+    /// aim, reports, and effects cannot survive across the jump.
+    pub fn replace_state_after_jump(&mut self, state: &State) {
+        self.state = state.clone();
+        self.drop_presentation();
+        self.prev_pos = self
+            .state
+            .units()
+            .iter()
+            .map(|unit| (unit.id.0, world_vec(unit.pos)))
+            .collect();
+        self.facing.clear();
     }
 
     /// The effect clock — what aim holds and recoil age against.
@@ -535,6 +560,13 @@ impl Game {
     /// fuel for anything that must move on sim time, not wall time.
     pub fn tick_fraction(&self) -> f32 {
         (self.accum / TICK_DT).clamp(0.0, 1.0)
+    }
+
+    /// Mirrors an externally owned replay clock into this render vehicle.
+    /// Playback advances through its own engine, so this changes only the
+    /// interpolation and authored-animation fraction, never simulation time.
+    pub(crate) fn sync_external_tick_fraction(&mut self, fraction: f32) {
+        self.accum = fraction.clamp(0.0, 1.0) * TICK_DT;
     }
 
     /// Advances the ordinary live path while optionally stopping on one exact
@@ -577,14 +609,14 @@ impl Game {
         // No cross-jump interpolation after a bulk advance — and whatever
         // presentation slipped in beforehand doesn't survive the jump.
         self.accum = 0.0;
-        self.sounds_pending.clear();
-        self.fx.clear();
+        self.drop_presentation();
         self.prev_pos = self
             .state
             .units()
             .iter()
             .map(|u| (u.id.0, world_vec(u.pos)))
             .collect();
+        self.facing.clear();
     }
 
     /// Advances a small number of ticks while retaining presentation
@@ -909,6 +941,26 @@ mod tests {
         assert!(game.advance_wall_clock(1.0, Some(5)));
         assert_eq!(game.state.current_tick(), 5);
         assert_eq!(game.tick_fraction(), 0.0);
+    }
+
+    #[test]
+    fn bulk_advance_drops_old_timeline_aim_and_facing() {
+        let mut game = Game::with_viewport(
+            Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("skirmish builds");
+        let unit = game.state.units()[0].id.0;
+        let building = game.state.buildings()[0].id.0;
+        game.facing.insert(unit, 1.25);
+        game.aim_units.insert(unit, (2.5, game.fx_time()));
+        game.aim_buildings.insert(building, (0.75, game.fx_time()));
+
+        game.advance_ticks(1);
+
+        assert!(game.facing.is_empty());
+        assert!(game.aim_units.is_empty());
+        assert!(game.aim_buildings.is_empty());
     }
 
     #[test]
