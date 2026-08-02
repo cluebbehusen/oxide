@@ -184,8 +184,8 @@ HARVESTER_ACTIONS = FrameSet(
 BUILDING_WORK: dict[str, FrameSet] = {
     "foundry": FrameSet(
         ("_work1", "_work2", "_work3", "_work4"),
-        ("gantry_lower", "transfer_contact", "gantry_raise", "gantry_home"),
-        (190, 240, 190, 260),
+        ("eye_warm", "eye_peak", "eye_cool", "eye_rest"),
+        (500, 500, 500, 500),
     ),
     "fabricator": FrameSet(
         ("_work1", "_work2", "_work3", "_work4"),
@@ -242,7 +242,7 @@ DEFENSE_ACTIONS: dict[str, FrameSet] = {
             "breech_settle",
             "ready",
         ),
-        (300, 300, 300, 300, 360, 100, 170, 220, 480),
+        (300, 300, 300, 300, 360, 50, 100, 100, 480),
     ),
 }
 
@@ -810,7 +810,7 @@ def _install_defenses(registry: Registry, out: Path, faction: str) -> None:
     # full through the muzzle frame; recovery empties it before the next
     # cooldown advances action1..action5 from one cell back to five.
     charges = (5, 1, 2, 3, 4, 5, 5, 0, 0, 0)
-    recoils = (0, 0, 0, 0, 0, 0, 2, 8, 4, 0)
+    recoils = (0, 0, 0, 0, 0, 0, 10, 4, 1, 0)
     bastion_frames = tuple(
         (
             _bastion_base(base_source, faction, charge),

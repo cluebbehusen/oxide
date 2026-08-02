@@ -25,7 +25,7 @@ def _finish(image: Image.Image, side: int) -> Image.Image:
 
 
 def foundry_frame(faction: str, work: int) -> Image.Image:
-    """Draw one exposed-gantry production pose at the 2x2 native size."""
+    """Draw the Foundry with a fixed gantry and centered production eye."""
     if work not in range(4):
         raise ValueError(f"invalid Foundry work frame: {work}")
     palette = FACTIONS[faction]
@@ -43,11 +43,21 @@ def foundry_frame(faction: str, work: int) -> Image.Image:
                 [s(x - 2), s(y), s(x + 9), s(y + 4)],
                 fill=(*IRON_LIGHT, 255),
             )
-    draw.ellipse([s(35), s(55), s(83), s(103)], fill=(*IRON_DARK, 255))
-    draw.ellipse([s(43), s(63), s(75), s(95)], fill=(*SCRAP_DARK, 255))
-    if work:
-        draw.ellipse([s(50), s(70), s(68), s(88)], fill=(*SCRAP_LIGHT, 255))
-    carriage_y = (26, 42, 63, 42)[work]
+    eye_x, eye_y = 64, 72
+    draw.ellipse([s(40), s(48), s(88), s(96)], fill=(*IRON_DARK, 255))
+    draw.ellipse([s(47), s(55), s(81), s(89)], fill=(9, 9, 12, 255))
+    pulse_radius = (6, 9, 12, 9)[work]
+    pulse_color = (SCRAP_DARK, SCRAP, SCRAP_LIGHT, SCRAP)[work]
+    draw.ellipse(
+        [
+            s(eye_x - pulse_radius),
+            s(eye_y - pulse_radius),
+            s(eye_x + pulse_radius),
+            s(eye_y + pulse_radius),
+        ],
+        fill=(*pulse_color, 255),
+    )
+    carriage_y = 26
     draw.rectangle(
         [s(22), s(carriage_y), s(106), s(carriage_y + 9)],
         fill=(*IRON_DARK, 255),
@@ -61,13 +71,12 @@ def foundry_frame(faction: str, work: int) -> Image.Image:
         radius=s(4),
         fill=(*IRON, 255),
     )
-    hook_y = carriage_y + (22 if work in (1, 3) else 13)
     draw.line(
-        [(s(64), s(carriage_y + 11)), (s(64), s(hook_y))],
+        [(s(64), s(carriage_y + 11)), (s(64), s(45))],
         fill=(*BONE, 255),
         width=s(3),
     )
-    draw.rectangle([s(51), s(105), s(91), s(118)], fill=(*palette["dark"], 255))
+    draw.rectangle([s(44), s(105), s(84), s(118)], fill=(*palette["dark"], 255))
     return _finish(image, 128)
 
 

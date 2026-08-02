@@ -18,7 +18,8 @@ use oxide_sim::{
 const GROUND_MOVE_PERIOD: u64 = 6;
 const HARVEST_PERIOD: u64 = 20;
 const CONSTRUCTION_PERIOD: u64 = 8;
-const PRODUCTION_PERIOD: u64 = 12;
+const FOUNDRY_PRODUCTION_PERIOD: u64 = 40;
+const FABRICATOR_PRODUCTION_PERIOD: u64 = 12;
 const ARRAY_SWEEP_PERIOD: u64 = 32;
 const RECLAIMER_PERIOD: u64 = 12;
 const WISP_ROTOR_PERIOD: u64 = 4;
@@ -471,33 +472,36 @@ impl AnimationController {
                 ),
             }
         });
-        let activity =
-            if !facts.built {
-                BuildingActivity::Idle
-            } else {
-                match facts.kind {
-                    BuildingKind::Foundry | BuildingKind::Fabricator => facts.production.map_or(
-                        BuildingActivity::Idle,
-                        |(unit, progress, total)| BuildingActivity::Production {
-                            unit,
-                            progress: ratio(progress, total),
-                            cycle: clock.cycle(
-                                facts.id.0,
-                                PRODUCTION_PERIOD,
-                                options.reduced_motion,
-                            ),
-                        },
-                    ),
-                    BuildingKind::Array => BuildingActivity::ArraySweep {
-                        cycle: clock.cycle(facts.id.0, ARRAY_SWEEP_PERIOD, options.reduced_motion),
-                    },
-                    BuildingKind::Reclaimer => BuildingActivity::Reclaiming {
-                        cycle: clock.cycle(facts.id.0, RECLAIMER_PERIOD, options.reduced_motion),
-                    },
-                    BuildingKind::RepairBay => self.repair_activity(facts.id, clock),
-                    _ => BuildingActivity::Idle,
+        let activity = if !facts.built {
+            BuildingActivity::Idle
+        } else {
+            match facts.kind {
+                BuildingKind::Foundry | BuildingKind::Fabricator => {
+                    let period = if facts.kind == BuildingKind::Foundry {
+                        FOUNDRY_PRODUCTION_PERIOD
+                    } else {
+                        FABRICATOR_PRODUCTION_PERIOD
+                    };
+                    facts
+                        .production
+                        .map_or(BuildingActivity::Idle, |(unit, progress, total)| {
+                            BuildingActivity::Production {
+                                unit,
+                                progress: ratio(progress, total),
+                                cycle: clock.cycle(facts.id.0, period, options.reduced_motion),
+                            }
+                        })
                 }
-            };
+                BuildingKind::Array => BuildingActivity::ArraySweep {
+                    cycle: clock.cycle(facts.id.0, ARRAY_SWEEP_PERIOD, options.reduced_motion),
+                },
+                BuildingKind::Reclaimer => BuildingActivity::Reclaiming {
+                    cycle: clock.cycle(facts.id.0, RECLAIMER_PERIOD, options.reduced_motion),
+                },
+                BuildingKind::RepairBay => self.repair_activity(facts.id, clock),
+                _ => BuildingActivity::Idle,
+            }
+        };
         let weapon =
             facts.kind.stats().weapons.first().map(|weapon| {
                 weapon_cycle(facts.cooldown, weapon.cooldown_ticks, clock.tick_fraction)
@@ -610,8 +614,8 @@ fn building_attack_timing(kind: BuildingKind) -> AttackTiming {
             recover_ticks: 3.0,
         },
         BuildingKind::Bastion => AttackTiming {
-            report_ticks: 4.0,
-            recover_ticks: 5.0,
+            report_ticks: 1.0,
+            recover_ticks: 3.0,
         },
         _ => AttackTiming {
             report_ticks: 2.0,
@@ -935,6 +939,22 @@ mod tests {
     }
 
     #[test]
+    fn bastion_report_is_a_single_hard_recoil_then_a_short_settle() {
+        let timing = building_attack_timing(BuildingKind::Bastion);
+        assert_eq!(timing.report_ticks, 1.0);
+        assert_eq!(timing.recover_ticks, 3.0);
+        assert!(matches!(
+            attack_phase(0.99, 0, timing),
+            Some(AttackPhase::Report { .. })
+        ));
+        assert!(matches!(
+            attack_phase(1.0, 0, timing),
+            Some(AttackPhase::Recover { progress: 0.0, .. })
+        ));
+        assert_eq!(attack_phase(4.0, 0, timing), None);
+    }
+
+    #[test]
     fn paused_clock_holds_motion_and_wisp_rotors_run_while_idle() {
         let controller = AnimationController::default();
         let clock = AnimationClock::new(77, 0.35);
@@ -1072,6 +1092,38 @@ mod tests {
             AnimationOptions::default(),
         );
         assert_eq!(idle.activity, BuildingActivity::Idle);
+    }
+
+    #[test]
+    fn foundry_eye_pulses_more_slowly_than_fabricator_machinery() {
+        let kind = UnitKind::Sentinel;
+        let controller = AnimationController::default();
+        let production_cycle = |building_kind, tick| {
+            let mut facts = building_facts(building_kind);
+            facts.production = Some((kind, 25, kind.stats().train_ticks));
+            let state = controller.building_state(
+                facts,
+                AnimationClock::new(tick, 0.0),
+                AnimationOptions::default(),
+            );
+            let BuildingActivity::Production { cycle, .. } = state.activity else {
+                panic!("factory with a queue must expose production motion");
+            };
+            cycle
+        };
+
+        assert_eq!(
+            production_cycle(BuildingKind::Foundry, 0),
+            production_cycle(BuildingKind::Foundry, FOUNDRY_PRODUCTION_PERIOD)
+        );
+        assert_eq!(
+            production_cycle(BuildingKind::Fabricator, 0),
+            production_cycle(BuildingKind::Fabricator, FABRICATOR_PRODUCTION_PERIOD)
+        );
+        assert_ne!(
+            production_cycle(BuildingKind::Foundry, FABRICATOR_PRODUCTION_PERIOD),
+            production_cycle(BuildingKind::Foundry, 0)
+        );
     }
 
     #[test]

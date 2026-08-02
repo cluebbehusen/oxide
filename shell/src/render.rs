@@ -213,6 +213,7 @@ pub(crate) const OUTSIDE: Color = color_u8!(20, 20, 25, 255);
 // legibility, and raising them must never thicken the world's weight.
 const BONE: Color = color_u8!(232, 228, 216, 255);
 const BONE_FAINT: Color = color_u8!(232, 228, 216, 90);
+const UNIT_DRAW_SCALE: f32 = 1.05;
 const SCRAP_COLOR: Color = crate::theme::TEXT_ACCENT;
 const HP_BACK: Color = color_u8!(20, 20, 24, 220);
 const DANGER: Color = crate::theme::TEXT_DANGER;
@@ -600,6 +601,12 @@ fn unit_work_facing(
         .then(|| direction.y.atan2(direction.x) + std::f32::consts::FRAC_PI_2)
 }
 
+fn unit_selection_radius(kind: oxide_sim::UnitKind, zoom: f32, padding: f32) -> f32 {
+    let collision_radius = kind.stats().radius.to_num::<f32>();
+    let visual_radius = UNIT_DRAW_SCALE * 0.5;
+    collision_radius.max(visual_radius) * zoom + padding
+}
+
 fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim::stats::Domain) {
     let zoom = game.camera.zoom;
     let airborne = domain == oxide_sim::stats::Domain::Air;
@@ -614,7 +621,7 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         let faction = game.state.player(unit.player).faction;
         let pos = game.draw_pos(unit.id, unit.pos, alpha);
         let mut screen = game.camera.to_screen(pos);
-        let dest = zoom * 1.05;
+        let dest = zoom * UNIT_DRAW_SCALE;
         let current = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
         let moving = game
             .prev_pos
@@ -673,7 +680,7 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                 draw_circle_lines(
                     screen.x,
                     screen.y,
-                    unit.kind.stats().radius.to_num::<f32>() * zoom + 4.0,
+                    unit_selection_radius(unit.kind, zoom, 4.0),
                     2.0,
                     BONE,
                 );
@@ -684,7 +691,7 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                 draw_circle_lines(
                     screen.x,
                     screen.y,
-                    unit.kind.stats().radius.to_num::<f32>() * zoom + 5.5,
+                    unit_selection_radius(unit.kind, zoom, 5.5),
                     1.5,
                     BONE_FAINT,
                 );
@@ -916,6 +923,22 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn harvester_selection_ring_clears_the_rendered_sprite() {
+        let zoom = 32.0;
+        let padding = 4.0;
+        let radius = super::unit_selection_radius(oxide_sim::UnitKind::Harvester, zoom, padding);
+        let visual_radius = super::UNIT_DRAW_SCALE * zoom * 0.5;
+        let collision_radius = oxide_sim::UnitKind::Harvester
+            .stats()
+            .radius
+            .to_num::<f32>()
+            * zoom;
+
+        assert!((radius - (visual_radius + padding)).abs() < 1e-6);
+        assert!(radius > collision_radius + padding);
     }
 
     #[test]

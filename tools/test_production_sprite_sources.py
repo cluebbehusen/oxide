@@ -1,3 +1,4 @@
+import hashlib
 import tempfile
 import unittest
 from itertools import pairwise
@@ -12,6 +13,21 @@ from tools.production_sprite_sources import finalized
 def _changed_pixels(left: Image.Image, right: Image.Image) -> int:
     difference = ImageChops.difference(left.convert("RGBA"), right.convert("RGBA"))
     return sum(pixel != (0, 0, 0, 0) for pixel in difference.get_flattened_data())
+
+
+def _alpha_centroid_y(image: Image.Image, box: tuple[int, int, int, int]) -> float:
+    alpha = image.getchannel("A")
+    x0, y0, x1, y1 = box
+    total = 0
+    weighted = 0
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            value = alpha.getpixel((x, y))
+            total += value
+            weighted += y * value
+    if total == 0:
+        raise AssertionError("centroid region is empty")
+    return weighted / total
 
 
 class ProductionSpriteSourceTests(unittest.TestCase):
@@ -227,6 +243,43 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 with self.subTest(faction=faction, stem=stem):
                     self.assertGreater(max(changed), 12)
 
+    def test_reclaimer_is_the_exact_approved_open_works_sequence(self) -> None:
+        expected = (
+            "d5e1716c973f640419d30bc2291a5c5d4ef4d1e4c58cb29d8f1d408c7d151d81",
+            "0c6c3d5294f510e63be162e9efbcee66166a7984587b0e6c4311805afd256504",
+            "cbec01349a5b78465be3341c51ac472306df19df3738958da29b4df2589a65ce",
+            "6a216a8cf3049dc76848be6e0b18436efe1460b40b0cb46c46ad695dc3a85790",
+        )
+        actual = tuple(
+            hashlib.sha256(
+                self.registry[f"reclaimer_ferrous{suffix}"].convert("RGBA").tobytes()
+            ).hexdigest()
+            for suffix in ("", "_work1", "_work2", "_work3")
+        )
+        self.assertEqual(actual, expected)
+
+    def test_foundry_work_frames_only_pulse_the_centered_eye(self) -> None:
+        frames = [
+            self.registry[f"foundry_ferrous{suffix}"].convert("RGBA")
+            for suffix in ("", "_work1", "_work2", "_work3", "_work4")
+        ]
+        outside_eye = Image.new("L", frames[0].size, 255)
+        outside_eye.paste(0, (36, 44, 93, 101))
+        for frame in frames[1:]:
+            difference = ImageChops.difference(frames[0], frame)
+            outside_difference = Image.new("RGBA", frames[0].size)
+            outside_difference.paste(difference, mask=outside_eye)
+            self.assertIsNone(
+                outside_difference.getbbox(),
+                "the Foundry gantry must remain fixed while its eye pulses",
+            )
+
+        center_values = [sum(frame.getpixel((64, 72))[:3]) for frame in frames]
+        self.assertLess(center_values[0], center_values[1])
+        self.assertLess(center_values[1], center_values[2])
+        self.assertEqual(center_values[1], center_values[3])
+        self.assertEqual(frames[0].tobytes(), frames[4].tobytes())
+
     def test_bastion_ready_and_reload_frames_have_physical_charge_cells(self) -> None:
         centers = [(19, 94 - index * 9) for index in range(5)]
         expected = {
@@ -249,6 +302,27 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 )
                 with self.subTest(faction=faction, suffix=suffix):
                     self.assertEqual(lit, count)
+
+    def test_bastion_recoils_on_report_then_returns_quickly(self) -> None:
+        for faction in gen.FACTIONS:
+            centers = [
+                _alpha_centroid_y(
+                    self.registry[f"bastion_mount_{faction}{suffix}"],
+                    (31, 0, 98, 96),
+                )
+                for suffix in (
+                    "_action5",
+                    "_action6",
+                    "_action7",
+                    "_action8",
+                    "_action9",
+                )
+            ]
+            with self.subTest(faction=faction):
+                self.assertGreater(centers[1] - centers[0], 4.0)
+                self.assertGreater(centers[1], centers[2])
+                self.assertGreater(centers[2], centers[3])
+                self.assertGreater(centers[3], centers[4])
 
     def test_flakhound_ready_and_reload_frames_have_physical_charge_cells(self) -> None:
         centers = [(24 + index * 6, 53) for index in range(4)]
