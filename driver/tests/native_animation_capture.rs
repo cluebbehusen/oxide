@@ -126,22 +126,41 @@ impl NativeCapture {
         }
     }
 
+    fn clear_presentation(&mut self) -> Result<()> {
+        match self.client.call(Request::AdvanceTicks { ticks: 0 })? {
+            Reply::Advanced(view) if view.ticks == 0 => Ok(()),
+            other => bail!("advance_ticks(0) returned {other:?}"),
+        }
+    }
+
     fn capture_stage(
         &mut self,
         label: &str,
         frames: u32,
         ticks_between: u64,
     ) -> Result<Vec<oxide_sim::Event>> {
+        let mut tick_steps = vec![0; frames as usize];
+        tick_steps.iter_mut().skip(1).for_each(|step| {
+            *step = ticks_between;
+        });
+        self.capture_schedule(label, &tick_steps)
+    }
+
+    fn capture_schedule(
+        &mut self,
+        label: &str,
+        tick_steps: &[u64],
+    ) -> Result<Vec<oxide_sim::Event>> {
         let dir = self.output.join(label);
         std::fs::create_dir_all(&dir)?;
-        let mut paths = Vec::with_capacity(frames as usize);
-        let mut records = Vec::with_capacity(frames as usize);
+        let mut paths = Vec::with_capacity(tick_steps.len());
+        let mut records = Vec::with_capacity(tick_steps.len());
         let mut seen_events = Vec::new();
-        for frame in 0..frames {
-            let events = if frame == 0 {
+        for (frame, ticks) in tick_steps.iter().copied().enumerate() {
+            let events = if ticks == 0 {
                 Vec::new()
             } else {
-                self.present(ticks_between)?
+                self.present(ticks)?
             };
             let state = self.state()?;
             let name = format!("frame-{frame:03}-tick-{:05}.png", state.tick);
@@ -156,6 +175,7 @@ impl NativeCapture {
                 "frame": frame,
                 "file": name,
                 "tick": state.tick,
+                "ticks_since_previous": ticks,
                 "events": events,
             }));
             seen_events.extend(events);
@@ -166,8 +186,8 @@ impl NativeCapture {
             dir.join("manifest.json"),
             serde_json::to_vec_pretty(&json!({
                 "stage": label,
-                "frames": frames,
-                "ticks_between": ticks_between,
+                "frames": tick_steps.len(),
+                "tick_steps": tick_steps,
                 "captures": records,
             }))?,
         )?;
@@ -188,6 +208,28 @@ impl Drop for NativeCapture {
             );
         }
     }
+}
+
+fn combat_capture_schedule(cooldown: u32) -> Vec<u64> {
+    const REPORT_TICKS: u32 = 8;
+    const RELOAD_SAMPLES: u32 = 8;
+    let immediate = cooldown.min(REPORT_TICKS);
+    let mut steps = Vec::with_capacity((1 + immediate + RELOAD_SAMPLES) as usize);
+    steps.push(0);
+    steps.extend(std::iter::repeat_n(1, immediate as usize));
+    let remaining = cooldown.saturating_sub(immediate);
+    if remaining == 0 {
+        return steps;
+    }
+    let base = remaining / RELOAD_SAMPLES;
+    let extra = remaining % RELOAD_SAMPLES;
+    for sample in 0..RELOAD_SAMPLES {
+        let ticks = base + u32::from(sample < extra);
+        if ticks > 0 {
+            steps.push(u64::from(ticks));
+        }
+    }
+    steps
 }
 
 #[test]
@@ -237,7 +279,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
             queue: false,
         },
     )?;
-    harness.capture_stage("02-harvester-work-and-capacity", 24, 2)?;
+    harness.capture_stage("02-harvester-work-and-capacity", 52, 2)?;
     assert!(
         harness
             .state()?
@@ -246,8 +288,12 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
             .find(|unit| unit.id == harvester.0)
             .context("working Harvester disappeared")?
             .carrying
-            > 0,
-        "harvest capture never reached extraction"
+            >= UnitKind::Harvester
+                .stats()
+                .harvest
+                .expect("Harvester harvest stats")
+                .capacity,
+        "harvest capture never reached a full cargo bay"
     );
 
     let overview = harness.load(overview_scenario())?;
@@ -328,12 +374,9 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
                 queue: false,
             },
         )?;
-        let cooldown = kind.stats().weapons[0].cooldown_ticks;
-        let interval = u64::from(cooldown.div_ceil(10).max(1));
-        let events = harness.capture_stage(
+        let events = harness.capture_schedule(
             &format!("07-unit-fire-reload/{}", kind.name()),
-            12,
-            interval,
+            &combat_capture_schedule(kind.stats().weapons[0].cooldown_ticks),
         )?;
         assert!(
             events.iter().any(|event| match event {
@@ -349,6 +392,31 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
             "{kind:?} capture never observed its shot"
         );
     }
+
+    let view = harness.load(sentinel_sidearm_scenario())?;
+    let sentinel = unit_kind(&view, 0, UnitKind::Sentinel)?;
+    let target = unit_kind(&view, 1, UnitKind::Talon)?;
+    harness.command(1, Command::Surrender)?;
+    harness.command(
+        0,
+        Command::Attack {
+            units: vec![sentinel],
+            target: Target::Unit(target),
+            queue: false,
+        },
+    )?;
+    let events = harness.capture_schedule(
+        "07-unit-fire-reload/sentinel-aa-sidearm",
+        &combat_capture_schedule(UnitKind::Sentinel.stats().weapons[1].cooldown_ticks),
+    )?;
+    assert!(events.iter().any(|event| matches!(
+        event,
+        oxide_sim::Event::AttackHit {
+            attacker,
+            weapon: 1,
+            ..
+        } if *attacker == sentinel
+    )));
 
     for kind in [
         BuildingKind::Turret,
@@ -371,12 +439,9 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
                 target: Target::Unit(target),
             },
         )?;
-        let cooldown = kind.stats().weapons[0].cooldown_ticks;
-        let interval = u64::from(cooldown.div_ceil(10).max(1));
-        let events = harness.capture_stage(
+        let events = harness.capture_schedule(
             &format!("08-defense-fire-reload/{}", kind.name().replace(' ', "-")),
-            12,
-            interval,
+            &combat_capture_schedule(kind.stats().weapons[0].cooldown_ticks),
         )?;
         assert!(
             events.iter().any(|event| match event {
@@ -434,6 +499,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         repair.units.iter().all(|unit| unit.id != attacker.0),
         "the damage source must be gone before repair capture"
     );
+    harness.clear_presentation()?;
     let welder = unit_kind(&repair, 0, UnitKind::Harvester)?;
     harness.command(
         0,
@@ -513,6 +579,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         repair_bay.units.iter().all(|unit| unit.id != attacker.0),
         "the damage source must be gone before Repair Bay capture"
     );
+    harness.clear_presentation()?;
     let events = harness.capture_stage("10-repair-bay-pulses", 24, 1)?;
     assert!(events.iter().any(|event| matches!(
         event,
@@ -550,6 +617,7 @@ fn generated_animation_capture_scenarios_are_valid() -> Result<()> {
     ];
     scenarios.extend(ALL_UNIT_KINDS.map(movement_scenario));
     scenarios.extend(combat_kinds().map(unit_duel_scenario));
+    scenarios.push(sentinel_sidearm_scenario());
     scenarios.extend(
         [
             BuildingKind::Turret,
@@ -563,6 +631,17 @@ fn generated_animation_capture_scenarios_are_valid() -> Result<()> {
         parsed.build()?;
     }
     Ok(())
+}
+
+#[test]
+fn combat_capture_keeps_report_ticks_and_spans_one_reload() {
+    let steps = combat_capture_schedule(100);
+    assert_eq!(steps[0], 0);
+    assert!(steps[1..=8].iter().all(|step| *step == 1));
+    assert_eq!(steps.iter().sum::<u64>(), 100);
+
+    let short = combat_capture_schedule(4);
+    assert_eq!(short, vec![0, 1, 1, 1, 1]);
 }
 
 fn expect_ok(reply: Reply) -> Result<()> {
@@ -785,10 +864,40 @@ fn unit_duel_scenario(attacker: UnitKind) -> Value {
     } else {
         UnitKind::Darter
     };
+    let distance = match attacker {
+        UnitKind::Scuttler => 1,
+        UnitKind::Sentinel | UnitKind::Darter => 2,
+        UnitKind::Buzzard | UnitKind::Talon | UnitKind::Wisp => 3,
+        UnitKind::Flakhound | UnitKind::Stinger => 4,
+        UnitKind::Lancer => 5,
+        UnitKind::Bombard => 9,
+        UnitKind::Harvester => unreachable!("the combat roster excludes Harvesters"),
+    };
+    let units = vec![
+        unit(0, attacker, 15, 10),
+        unit(1, target, 15 + distance, 10),
+    ];
+    let buildings = if attacker == UnitKind::Bombard {
+        vec![structure(0, BuildingKind::Array, 21, 12)]
+    } else {
+        Vec::new()
+    };
     scenario(
         &format!("Native {:?} Fire", attacker),
         &[],
-        vec![unit(0, attacker, 15, 10), unit(1, target, 16, 10)],
+        units,
+        buildings,
+    )
+}
+
+fn sentinel_sidearm_scenario() -> Value {
+    scenario(
+        "Native Sentinel AA Sidearm",
+        &[],
+        vec![
+            unit(0, UnitKind::Sentinel, 15, 10),
+            unit(1, UnitKind::Talon, 17, 10),
+        ],
         Vec::new(),
     )
 }
@@ -799,11 +908,20 @@ fn defense_duel_scenario(defense: BuildingKind) -> Value {
     } else {
         UnitKind::Harvester
     };
+    let target_x = if defense == BuildingKind::Bastion {
+        23
+    } else {
+        19
+    };
+    let mut buildings = vec![structure(0, defense, 14, 10)];
+    if defense == BuildingKind::Bastion {
+        buildings.push(structure(0, BuildingKind::Array, 21, 12));
+    }
     scenario(
         &format!("Native {:?} Fire", defense),
         &[],
-        vec![unit(1, target, 19, 10)],
-        vec![structure(0, defense, 14, 10)],
+        vec![unit(1, target, target_x, 10)],
+        buildings,
     )
 }
 
