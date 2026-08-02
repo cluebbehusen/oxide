@@ -722,9 +722,9 @@ mod tests {
         // This pairing exposes a deterministic orientation/player-order
         // effect. A single leg declared opposite winners depending only
         // on which physical side the logical army occupied.
-        let sentinels = parse_army("sentinel:5").unwrap();
+        let lancers = parse_army("lancer:3").unwrap();
         let bombards = parse_army("bombard:2").unwrap();
-        let out = duel(&sentinels, &bombards, &Arena::default()).unwrap();
+        let out = duel(&lancers, &bombards, &Arena::default()).unwrap();
 
         // These two assertions pin a MEASURED orientation effect under the
         // current balance numbers. A stats or movement bless can

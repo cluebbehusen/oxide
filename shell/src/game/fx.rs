@@ -101,10 +101,10 @@ impl ShotStyle {
     pub fn life(self) -> f32 {
         match self {
             ShotStyle::Contact => 0.12,
-            ShotStyle::Tracer => 0.14,
+            ShotStyle::Tracer => 0.20,
             ShotStyle::Rail => 0.24,
             ShotStyle::FlakBurst => 0.18,
-            ShotStyle::HeavyRound => 0.18,
+            ShotStyle::HeavyRound => 0.22,
         }
     }
 }
@@ -375,6 +375,7 @@ impl Game {
                     target,
                     ..
                 } => {
+                    self.aim_building_targets.insert(turret.0, *target);
                     let d = world_vec(*target_pos) - world_vec(*turret_pos);
                     if d.length_squared() > 1e-6 {
                         self.aim_buildings.insert(
@@ -538,6 +539,7 @@ impl Game {
                 }
                 Event::ShellLaunched {
                     shooter,
+                    target,
                     player,
                     from,
                     to,
@@ -553,6 +555,7 @@ impl Game {
                                 self.aim_units.insert(uid.0, (angle, self.fx_clock));
                             }
                             oxide_sim::Target::Building(bid) => {
+                                self.aim_building_targets.insert(bid.0, *target);
                                 self.aim_buildings.insert(bid.0, (angle, self.fx_clock));
                             }
                         }
@@ -669,6 +672,57 @@ impl Game {
                 _ => {}
             }
         }
+        self.refresh_defense_aim();
+    }
+
+    fn refresh_defense_aim(&mut self) {
+        let updates: Vec<_> = self
+            .aim_building_targets
+            .iter()
+            .filter_map(|(&building_id, &target)| {
+                if self
+                    .aim_buildings
+                    .get(&building_id)
+                    .is_some_and(|(_, fired_at)| *fired_at == self.fx_clock)
+                {
+                    return None;
+                }
+                let building = self.state.building(oxide_sim::BuildingId(building_id))?;
+                if building.cooldown == 0 {
+                    return None;
+                }
+                let target_pos = match target {
+                    oxide_sim::Target::Unit(id) => {
+                        let unit = self.state.unit(id)?;
+                        let visible = self.all_seeing()
+                            || !self.state.hostile(self.human, unit.player)
+                            || self.my_vision().visible(unit.tile());
+                        visible.then(|| world_vec(unit.pos))?
+                    }
+                    oxide_sim::Target::Building(id) => {
+                        let target = self.state.building(id)?;
+                        let visible = self.all_seeing()
+                            || !self.state.hostile(self.human, target.player)
+                            || target.tiles().any(|tile| self.my_vision().visible(tile));
+                        visible.then(|| world_vec(target.center()))?
+                    }
+                };
+                let from = world_vec(building.center());
+                let delta = target_pos - from;
+                (delta.length_squared() > 1e-6).then(|| {
+                    (
+                        building_id,
+                        delta.y.atan2(delta.x) + std::f32::consts::FRAC_PI_2,
+                    )
+                })
+            })
+            .collect();
+        for (building_id, angle) in updates {
+            self.aim_buildings
+                .entry(building_id)
+                .and_modify(|aim| aim.0 = angle)
+                .or_insert((angle, self.fx_clock));
+        }
     }
 }
 
@@ -676,6 +730,40 @@ impl Game {
 mod tests {
     use super::*;
     use oxide_sim::{BuildingId, BuildingKind, Target, UnitId, UnitKind};
+
+    fn defense_tracking_game() -> (crate::game::Game, BuildingId, UnitId) {
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Turret,
+            x: 11,
+            y: 10,
+        });
+        scenario.units.push(oxide_sim::scenario::UnitSpec {
+            player: 1,
+            kind: UnitKind::Harvester,
+            x: 14,
+            y: 10,
+        });
+        let game =
+            crate::game::Game::with_viewport(scenario, macroquad::prelude::vec2(1280.0, 800.0))
+                .expect("tracking scenario builds");
+        let building = game
+            .state
+            .buildings()
+            .iter()
+            .find(|building| building.kind == BuildingKind::Turret)
+            .unwrap()
+            .id;
+        let target = game
+            .state
+            .units()
+            .iter()
+            .find(|unit| unit.tile() == chassis::grid::TilePos::new(14, 10))
+            .unwrap()
+            .id;
+        (game, building, target)
+    }
 
     #[test]
     fn every_weapon_family_uses_its_physical_report() {
@@ -806,6 +894,128 @@ mod tests {
             defense_muzzle_reach(BuildingKind::Bastion)
                 > defense_muzzle_reach(BuildingKind::Turret)
         );
+    }
+
+    #[test]
+    fn defense_mount_tracks_only_a_target_the_viewer_may_see() {
+        let (mut game, building, _) = defense_tracking_game();
+        let report = game.state.tick(&[]);
+        game.spawn_fx(&report.events);
+        assert!(game.state.building(building).unwrap().cooldown > 0);
+        let hostile = game
+            .state
+            .units()
+            .iter()
+            .find(|unit| {
+                game.state.hostile(game.human, unit.player)
+                    && !game.my_vision().visible(unit.tile())
+            })
+            .expect("skirmish has a fogged hostile unit");
+        assert!(!game.my_vision().visible(hostile.tile()));
+        let target = Target::Unit(hostile.id);
+        game.aim_building_targets.insert(building.0, target);
+        game.aim_buildings.insert(building.0, (0.42, 0.0));
+        game.update_fx(crate::game::TICK_DT);
+
+        game.refresh_defense_aim();
+        assert_eq!(game.aim_buildings[&building.0].0, 0.42);
+
+        game.overlay = true;
+        game.refresh_defense_aim();
+        assert_ne!(game.aim_buildings[&building.0].0, 0.42);
+    }
+
+    #[test]
+    fn defense_mount_follows_its_visible_target_during_reload() {
+        let (mut game, building, target) = defense_tracking_game();
+        let report = game.state.tick(&[]);
+        game.spawn_fx(&report.events);
+        let first_angle = game.aim_buildings[&building.0].0;
+        let first_pos = game.state.unit(target).unwrap().pos;
+
+        game.update_fx(crate::game::TICK_DT);
+        let report = game.state.tick(&[oxide_sim::PlayerCommand {
+            player: oxide_sim::PlayerId(1),
+            command: oxide_sim::Command::Move {
+                units: vec![target],
+                goal: chassis::grid::TilePos::new(14, 14),
+                queue: false,
+            },
+        }]);
+        game.spawn_fx(&report.events);
+
+        assert_ne!(game.state.unit(target).unwrap().pos, first_pos);
+        assert_ne!(game.aim_buildings[&building.0].0, first_angle);
+        assert!(game.state.building(building).unwrap().cooldown > 0);
+    }
+
+    #[test]
+    fn shell_report_keeps_predicted_heading_on_the_launch_frame() {
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Bastion,
+            x: 11,
+            y: 10,
+        });
+        scenario.units.push(oxide_sim::scenario::UnitSpec {
+            player: 1,
+            kind: UnitKind::Harvester,
+            x: 16,
+            y: 10,
+        });
+        let mut game =
+            crate::game::Game::with_viewport(scenario, macroquad::prelude::vec2(1280.0, 800.0))
+                .expect("tracking scenario builds");
+        let shooter = game
+            .state
+            .buildings()
+            .iter()
+            .find(|building| building.kind == BuildingKind::Bastion)
+            .unwrap()
+            .id;
+        let target = game
+            .state
+            .units()
+            .iter()
+            .find(|unit| unit.tile() == chassis::grid::TilePos::new(16, 10))
+            .unwrap()
+            .id;
+        let report = game.state.tick(&[oxide_sim::PlayerCommand {
+            player: oxide_sim::PlayerId(1),
+            command: oxide_sim::Command::Move {
+                units: vec![target],
+                goal: chassis::grid::TilePos::new(16, 14),
+                queue: false,
+            },
+        }]);
+        let (from, to) = report
+            .events
+            .iter()
+            .find_map(|event| match event {
+                oxide_sim::Event::ShellLaunched {
+                    shooter: Target::Building(id),
+                    from,
+                    to,
+                    ..
+                } if *id == shooter => Some((*from, *to)),
+                _ => None,
+            })
+            .expect("the Bastion launches while its target begins moving");
+        assert!(game.state.building(shooter).unwrap().cooldown > 0);
+        assert!(
+            game.my_vision()
+                .visible(game.state.unit(target).unwrap().tile())
+        );
+        let expected = world_vec(to) - world_vec(from);
+        let expected_angle = expected.y.atan2(expected.x) + std::f32::consts::FRAC_PI_2;
+        let current = world_vec(game.state.unit(target).unwrap().pos) - world_vec(from);
+        let current_angle = current.y.atan2(current.x) + std::f32::consts::FRAC_PI_2;
+        assert!((expected_angle - current_angle).abs() > 1e-4);
+
+        game.spawn_fx(&report.events);
+        let angle = game.aim_buildings[&shooter.0].0;
+        assert!((angle - expected_angle).abs() < 1e-6);
     }
 
     #[test]

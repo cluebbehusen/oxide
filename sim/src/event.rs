@@ -127,6 +127,8 @@ pub enum Event {
         /// The gun itself — a unit's mount or a building's emplacement;
         /// presentation turns it toward the work.
         shooter: crate::ids::Target,
+        /// The unit or building the gun led at launch time.
+        target: Target,
         /// The firing seat.
         player: PlayerId,
         /// Muzzle position.

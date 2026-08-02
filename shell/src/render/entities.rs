@@ -779,17 +779,25 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                 Color::new(0.95, 0.65, 0.32, 0.72),
             );
         }
+        let travel = (shell_at - tail).normalize_or_zero();
         draw_circle(
             shell_at.x,
             shell_at.y,
-            radius,
-            Color::new(0.12, 0.12, 0.14, 1.0),
+            radius * 1.7,
+            Color::new(0.96, 0.42, 0.12, 0.20),
         );
         draw_circle(
             shell_at.x,
             shell_at.y,
-            radius * 0.42,
-            Color::new(0.92, 0.86, 0.72, 1.0),
+            radius,
+            Color::new(0.10, 0.09, 0.09, 1.0),
+        );
+        let nose = shell_at + travel * radius * 0.34;
+        draw_circle(
+            nose.x,
+            nose.y,
+            radius * 0.48,
+            Color::new(1.0, 0.82, 0.48, 1.0),
         );
     }
     for fx in &game.fx {
@@ -859,8 +867,11 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                             end.x,
                             end.y,
                             1.2,
-                            Color::new(0.98, 0.80, 0.52, fade),
+                            Color::new(1.0, 0.66, 0.30, fade),
                         );
+                        draw_circle(end.x, end.y, 4.4, Color::new(1.0, 0.38, 0.10, 0.24 * fade));
+                        draw_circle(end.x, end.y, 2.4, Color::new(0.20, 0.12, 0.08, fade));
+                        draw_circle(end.x, end.y, 1.25, Color::new(1.0, 0.90, 0.68, fade));
                     }
                     ShotStyle::Rail => {
                         draw_line(
@@ -907,6 +918,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                                 1.1,
                                 Color::new(0.90, 0.86, 0.70, fade),
                             );
+                            draw_circle(end.x, end.y, 1.8, Color::new(1.0, 0.76, 0.40, fade));
                         }
                         let seed = (to.x * 31.7 + to.y * 17.3).abs();
                         for i in 0..3 {
@@ -939,7 +951,9 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                             1.7,
                             Color::new(0.94, 0.62, 0.30, 0.8 * fade),
                         );
-                        draw_circle(end.x, end.y, 2.4, Color::new(0.13, 0.12, 0.12, fade));
+                        draw_circle(end.x, end.y, 5.2, Color::new(1.0, 0.37, 0.08, 0.22 * fade));
+                        draw_circle(end.x, end.y, 2.8, Color::new(0.13, 0.10, 0.08, fade));
+                        draw_circle(end.x, end.y, 1.4, Color::new(1.0, 0.82, 0.50, fade));
                     }
                 }
             }

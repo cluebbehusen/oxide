@@ -109,6 +109,7 @@ pub(super) fn run(
     // unit list itself hold still until resolution — so a snapshot
     // taken here stays exact for the whole decision loop.
     index.rebuild(&state.units);
+    let motion = MotionSnapshot::capture(state);
     let mut hits: Vec<PendingHit> = Vec::new();
     let mut builds: Vec<PendingHpGain> = Vec::new();
     let mut heals: Vec<PendingUnitHeal> = Vec::new();
@@ -155,6 +156,7 @@ pub(super) fn run(
             Order::Attack { target, resume } => attack(
                 state,
                 index,
+                &motion,
                 id,
                 target,
                 resume,
@@ -163,9 +165,16 @@ pub(super) fn run(
                 &mut launches,
             ),
             Order::AttackMove { goal } => attack_move(state, index, id, goal, events),
-            Order::Advance { goal } => {
-                advance(state, index, id, goal, events, &mut hits, &mut launches)
-            }
+            Order::Advance { goal } => advance(
+                state,
+                index,
+                &motion,
+                id,
+                goal,
+                events,
+                &mut hits,
+                &mut launches,
+            ),
             Order::Build { site } => build(state, id, site, events, &mut builds),
             Order::Repair { building } => repair(state, id, building, events, &mut builds),
             Order::Salvage { building } => salvage(state, id, building, events, &mut drains),
@@ -174,7 +183,7 @@ pub(super) fn run(
         }
     }
     commit_unit_welds(state, field_welds, events, &mut heals);
-    turret_fire(state, events, &mut hits, &mut launches);
+    turret_fire(state, &motion, events, &mut hits, &mut launches);
     repair_bay_aura(state, &mut heals);
     // Arrivals join this tick's volley; launches land on later ticks
     // (flight is at least one tick), so ordering here cannot matter.
@@ -189,7 +198,7 @@ mod economy;
 mod locomotion;
 
 use combat::attack;
-use combat::{advance, land_shells, retaliate, target_standing, turret_fire};
+use combat::{MotionSnapshot, advance, land_shells, retaliate, target_standing, turret_fire};
 use economy::{build, commit_unit_welds, found, harvest, repair, repair_unit, salvage};
 use locomotion::{attack_move, idle, walk};
 

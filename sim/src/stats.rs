@@ -142,9 +142,10 @@ pub struct WeaponStats {
     /// Indirect fire arcs over terrain: the line-of-sight trace that lets
     /// rock block direct shots is skipped.
     pub indirect: bool,
-    /// The shot is a real projectile: a Shell entity travels to the
-    /// victim's fire-time position and resolves on arrival — dodgeable
-    /// by movement, never guided. Hitscan when false.
+    /// The shot is a real projectile: a Shell entity travels to a fixed
+    /// fire-time aim point and resolves on arrival. Artillery may lead an
+    /// existing path before launch, but the shell is never guided and a
+    /// later course change can dodge it. Hitscan when false.
     pub projectile: bool,
 }
 
@@ -466,7 +467,7 @@ const BOMBARD: UnitStats = UnitStats {
         indirect: true,
         projectile: true,
     }],
-    aggro_range: Fx::lit("5"),
+    aggro_range: Fx::lit("9.5"), // its whole spotter-enabled firing envelope
     harvest: None,
     vision: 5, // it cannot see as far as it shoots — on purpose
 };
@@ -829,10 +830,9 @@ pub const WRECK_DECAY_TICKS: u64 = 300;
 /// Blips never satisfy targeted-attack visibility.
 pub const RADAR_DETECT_RADIUS: i32 = 16;
 
-/// Shell flight speed in tiles per tick. Tuned so a reacting light
-/// unit walks clear of the splash radius over a full-range lob (a
-/// 9.5-tile shot takes ~32 ticks; a Scuttler covers 4+ tiles in that
-/// window) while anything standing still eats the hit.
+/// Shell flight speed in tiles per tick. A full-range 9.5-tile lob takes
+/// about 32 ticks: path-aware aim catches a straight commitment, while a
+/// reacting Scuttler can change course by 4+ tiles before impact.
 pub const SHELL_SPEED: Fx = Fx::lit("0.30");
 
 /// Ticks per scrap credited by each built Reclaimer. At this rate the

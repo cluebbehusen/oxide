@@ -14,7 +14,7 @@ use oxide_protocol::hash_hex;
 use oxide_sim::bot::{SeatBot, seat_bots};
 use oxide_sim::{
     Building, BuildingId, Command, Event, PlayerCommand, PlayerId, SIM_VERSION, Scenario, State,
-    TICKS_PER_SECOND, UnitId,
+    TICKS_PER_SECOND, Target, UnitId,
 };
 use std::collections::HashMap;
 
@@ -86,6 +86,9 @@ pub struct Game {
     pub aim_units: HashMap<u32, (f32, f32)>,
     /// Same for buildings (turret mounts track their last victim).
     pub aim_buildings: HashMap<u32, (f32, f32)>,
+    /// The live victims defense mounts follow between reports. The last
+    /// legal angle remains in `aim_buildings` after a target disappears.
+    pub(crate) aim_building_targets: HashMap<u32, Target>,
     /// Action-driven authored sprite state. This remembers only transient
     /// output events; clearing it never changes simulation truth.
     pub(crate) animations: crate::presentation_animation::AnimationController,
@@ -230,6 +233,7 @@ impl Game {
             facing: HashMap::new(),
             aim_units: HashMap::new(),
             aim_buildings: HashMap::new(),
+            aim_building_targets: HashMap::new(),
             animations: crate::presentation_animation::AnimationController::default(),
             fx: Vec::new(),
             sounds_pending: Vec::new(),
@@ -457,6 +461,13 @@ impl Game {
             .retain(|id, _| state.unit(UnitId(*id)).is_some());
         self.aim_buildings
             .retain(|id, _| state.building(oxide_sim::BuildingId(*id)).is_some());
+        self.aim_building_targets.retain(|id, target| {
+            state.building(oxide_sim::BuildingId(*id)).is_some()
+                && match target {
+                    Target::Unit(id) => state.unit(*id).is_some(),
+                    Target::Building(id) => state.building(*id).is_some(),
+                }
+        });
         self.animations.retain_live(state);
         self.selection.buildings.retain(|id| {
             self.state.building(*id).is_some_and(|building| {
@@ -509,6 +520,13 @@ impl Game {
             .retain(|id, _| state.unit(UnitId(*id)).is_some());
         self.aim_buildings
             .retain(|id, _| state.building(oxide_sim::BuildingId(*id)).is_some());
+        self.aim_building_targets.retain(|id, target| {
+            state.building(oxide_sim::BuildingId(*id)).is_some()
+                && match target {
+                    Target::Unit(id) => state.unit(*id).is_some(),
+                    Target::Building(id) => state.building(*id).is_some(),
+                }
+        });
         self.animations.retain_live(state);
     }
 
@@ -523,6 +541,7 @@ impl Game {
         // for a shot fired on the timeline we just left.
         self.aim_units.clear();
         self.aim_buildings.clear();
+        self.aim_building_targets.clear();
         self.animations.reset_transients();
     }
 
@@ -955,12 +974,15 @@ mod tests {
         game.facing.insert(unit, 1.25);
         game.aim_units.insert(unit, (2.5, game.fx_time()));
         game.aim_buildings.insert(building, (0.75, game.fx_time()));
+        game.aim_building_targets
+            .insert(building, Target::Unit(UnitId(unit)));
 
         game.advance_ticks(1);
 
         assert!(game.facing.is_empty());
         assert!(game.aim_units.is_empty());
         assert!(game.aim_buildings.is_empty());
+        assert!(game.aim_building_targets.is_empty());
     }
 
     #[test]

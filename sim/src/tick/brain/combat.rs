@@ -9,8 +9,8 @@ use super::locomotion::{approach_rect, walk};
 use crate::event::{Event, StallReason};
 use crate::ids::{PlayerId, Target, UnitId};
 use crate::state::{Order, PathFollow, State};
-use crate::stats::{Domain, WeaponStats};
-use chassis::fx::Vec2Fx;
+use crate::stats::{Domain, UnitKind, WeaponStats};
+use chassis::fx::{Fx, Vec2Fx};
 use chassis::grid::TilePos;
 
 /// The movement domain a target occupies (buildings sit on the ground).
@@ -50,10 +50,130 @@ fn within_weapon_reach(weapon: &WeaponStats, distance_sq: chassis::fx::Fx) -> bo
 /// the aimed victim, and retaliation stays gated on the sufferer seeing
 /// the shooter, so an unseen bystander takes damage silently and nobody
 /// learns anything they could not already see.
-/// Launches a real projectile at the victim's fire-time position:
-/// unguided from this instant, arriving after a distance-proportional
-/// flight, resolving against whatever stands there then. Returns the
-/// flight length for the launch event.
+/// A real projectile flies to one fixed fire-time aim point and resolves
+/// against whatever stands there then. Predictive artillery chooses that
+/// point before launch; this flight remains unguided. Returns the flight
+/// length for the launch event.
+fn shell_flight(from: Vec2Fx, aim: Vec2Fx) -> u64 {
+    (from.dist(aim) / crate::stats::SHELL_SPEED)
+        .ceil()
+        .to_num::<u64>()
+        .max(1)
+}
+
+/// One tick-boundary sample of the motion a visible body is already showing.
+///
+/// The sample is captured before any unit brain runs. That keeps artillery
+/// independent of the alternating brain order, and recording only the current
+/// steering line avoids reading an opponent's later A* turns or destination.
+pub(super) struct MotionSnapshot {
+    velocities: Vec<(UnitId, Vec2Fx)>,
+}
+
+impl MotionSnapshot {
+    pub(super) fn capture(state: &State) -> Self {
+        let velocities = state
+            .units
+            .iter()
+            .filter_map(|unit| {
+                let path = unit.path.as_ref()?;
+                let next = path.waypoints.get(path.next as usize)?.center();
+                let delta = next - unit.pos;
+                let distance = delta.length();
+                (distance > Fx::ZERO)
+                    .then(|| (unit.id, delta * (unit.kind.stats().speed / distance)))
+            })
+            .collect();
+        Self { velocities }
+    }
+
+    fn position_after(&self, target: UnitId, current: Vec2Fx, ticks: u64) -> Option<Vec2Fx> {
+        const MAX_LEAD_TICKS: u64 = 96;
+
+        let slot = self
+            .velocities
+            .binary_search_by_key(&target, |(id, _)| *id)
+            .ok()?;
+        Some(current + self.velocities[slot].1 * Fx::from_num(ticks.min(MAX_LEAD_TICKS)))
+    }
+}
+
+fn predicted_impact_open(state: &State, from: Vec2Fx, aim: Vec2Fx, full: bool) -> bool {
+    let shot_open = |tile: TilePos| {
+        state.map.tile(tile).is_some_and(|tile| {
+            tile.terrain != crate::map::Terrain::Peak
+                && (!full || tile.terrain == crate::map::Terrain::Ground)
+        })
+    };
+    shot_open(TilePos::containing(aim)) && !chassis::path::line_blocked(from, aim, shot_open)
+}
+
+fn position_along_current_motion(
+    motion: &MotionSnapshot,
+    target: UnitId,
+    current: Vec2Fx,
+    ticks: u64,
+) -> Option<Vec2Fx> {
+    motion.position_after(target, current, ticks)
+}
+
+/// Leads a moving unit along its tick-boundary steering line for the shell's
+/// estimated flight. Later path turns remain private, and the target remains
+/// free to change course after launch; shells are still unguided. Buildings
+/// keep their closest-footprint aim unchanged.
+fn projectile_aim(
+    state: &State,
+    motion: &MotionSnapshot,
+    from: Vec2Fx,
+    target: Target,
+    current: Vec2Fx,
+    weapon: &WeaponStats,
+    shooter_domain: Domain,
+) -> Vec2Fx {
+    let Target::Unit(target) = target else {
+        return current;
+    };
+    let mut flight = shell_flight(from, current);
+    let mut aim = current;
+    // Ground artillery can only lead ground units, all slower than a shell.
+    // Eight fixed iterations settle even the fastest current ground body;
+    // the projection itself is bounded in case future balance breaks that
+    // relationship.
+    for _ in 0..8 {
+        let Some(next_aim) = position_along_current_motion(motion, target, current, flight) else {
+            break;
+        };
+        let distance_sq = from.dist_sq(next_aim);
+        if distance_sq < weapon.minimum_range * weapon.minimum_range {
+            // There is no legal predicted impact inside a weapon's dead zone.
+            // Keep the target's current, already-validated aim instead of
+            // inventing a radial boundary point the target never occupies.
+            aim = current;
+            break;
+        }
+        aim = if distance_sq > weapon.range * weapon.range {
+            from.move_toward(next_aim, weapon.range)
+        } else {
+            next_aim
+        };
+        let next_flight = shell_flight(from, aim);
+        if next_flight == flight {
+            break;
+        }
+        flight = next_flight;
+    }
+    let full = traces_terrain(
+        weapon,
+        shooter_domain,
+        target_domain(state, Target::Unit(target)),
+    );
+    if predicted_impact_open(state, from, aim, full) {
+        aim
+    } else {
+        current
+    }
+}
+
 fn launch_shell(
     state: &State,
     launches: &mut Vec<crate::state::Shell>,
@@ -63,11 +183,7 @@ fn launch_shell(
     aim: Vec2Fx,
     weapon: &WeaponStats,
 ) -> u64 {
-    let dist = from.dist(aim);
-    let flight = (dist / crate::stats::SHELL_SPEED)
-        .ceil()
-        .to_num::<u64>()
-        .max(1);
+    let flight = shell_flight(from, aim);
     launches.push(crate::state::Shell {
         shooter: attacker,
         player: attacker_owner,
@@ -183,6 +299,7 @@ fn buffer_shot(
 /// every shot, in building-id order.
 pub(super) fn turret_fire(
     state: &mut State,
+    motion: &MotionSnapshot,
     events: &mut Vec<Event>,
     hits: &mut Vec<PendingHit>,
     launches: &mut Vec<crate::state::Shell>,
@@ -290,12 +407,18 @@ pub(super) fn turret_fire(
         } else {
             continue;
         };
+        let aim = if atk.projectile {
+            projectile_aim(state, motion, center, victim, aim, atk, Domain::Ground)
+        } else {
+            aim
+        };
         let b = state.building_mut(id).expect("just seen");
         b.cooldown = atk.cooldown_ticks;
         if atk.projectile {
             let flight = launch_shell(state, launches, Target::Building(id), me, center, aim, atk);
             events.push(Event::ShellLaunched {
                 shooter: Target::Building(id),
+                target: victim,
                 player: me,
                 from: center,
                 to: aim,
@@ -349,14 +472,15 @@ fn chase_stand_ins(
     out
 }
 
-/// The nearest enemy this unit's weapons can cover, in aggro range —
+/// The nearest enemy this unit's weapons can cover, in its autonomous
+/// acquisition range —
 /// units before buildings, ties to the lowest id. `None` for pacifists,
 /// empty horizons, and everything outside the weapon masks (a flak
 /// crawler never picks a fight with infantry it cannot shoot).
 ///
 /// Unit candidates come from the phase's spatial `index` instead of a
-/// full scan: everything within aggro range of `pos` stands within
-/// `floor(aggro) + 1` tiles Chebyshev of its tile (the extra tile
+/// full scan: everything within that range of `pos` stands within
+/// `floor(range) + 1` tiles Chebyshev of its tile (the extra tile
 /// covers both bodies' sub-tile offsets), so the window is a strict
 /// superset of the old scan's survivors — and the pick is a `min` over
 /// `(dist_sq, id)`, which no scan order can move.
@@ -371,15 +495,20 @@ pub(super) fn acquire_target(
         return None;
     }
     let (pos, me) = (unit.pos, unit.player);
-    let aggro_sq = stats.aggro_range * stats.aggro_range;
+    let acquisition_range = stats.aggro_range;
+    let needs_shared_sight = unit.kind == UnitKind::Bombard;
+    let aggro_sq = acquisition_range * acquisition_range;
 
     let home = unit.tile();
-    let reach = stats.aggro_range.floor().to_num::<i32>() + 1;
+    let reach = acquisition_range.floor().to_num::<i32>() + 1;
     let mut unit_target: Option<(chassis::fx::Fx, UnitId)> = None;
     for dy in -reach..=reach {
         for &(_, slot) in index.row_span(home.y + dy, home.x - reach, home.x + reach) {
             let u = &state.units[slot];
-            if !state.hostile(me, u.player) || u.hp == 0 || !stats.can_target(u.kind.stats().domain)
+            if !state.hostile(me, u.player)
+                || u.hp == 0
+                || !stats.can_target(u.kind.stats().domain)
+                || (needs_shared_sight && !state.can_see(me, u.tile()))
             {
                 continue;
             }
@@ -404,6 +533,7 @@ pub(super) fn acquire_target(
         .buildings
         .iter()
         .filter(|b| state.hostile(me, b.player) && b.hp > 0)
+        .filter(|b| !needs_shared_sight || b.tiles().any(|tile| state.can_see(me, tile)))
         .map(|b| (pos.dist_sq(b.closest_point_to(pos)), b.id))
         .filter(|(d, _)| {
             *d <= aggro_sq
@@ -425,6 +555,7 @@ pub(super) fn acquire_target(
 pub(super) fn advance(
     state: &mut State,
     index: &super::super::spatial::UnitIndex,
+    motion: &MotionSnapshot,
     id: UnitId,
     goal: TilePos,
     events: &mut Vec<Event>,
@@ -513,11 +644,16 @@ pub(super) fn advance(
         return;
     };
 
+    let projectile_aim = weapon
+        .projectile
+        .then(|| projectile_aim(state, motion, pos, target, aim, &weapon, stats.domain));
     state.unit_mut(id).expect("caller checked").cooldowns[0] = weapon.cooldown_ticks;
     if weapon.projectile {
+        let aim = projectile_aim.expect("projectile aim computed");
         let flight = launch_shell(state, launches, Target::Unit(id), me, pos, aim, &weapon);
         events.push(Event::ShellLaunched {
             shooter: Target::Unit(id),
+            target,
             player: me,
             from: pos,
             to: aim,
@@ -544,6 +680,7 @@ pub(super) fn advance(
 pub(super) fn attack(
     state: &mut State,
     index: &super::super::spatial::UnitIndex,
+    motion: &MotionSnapshot,
     id: UnitId,
     target: Target,
     resume: Option<TilePos>,
@@ -669,6 +806,9 @@ pub(super) fn attack(
         && endpoint_open
         && !chassis::path::line_blocked(pos, aim_point, |t| shot_open(t, full))
     {
+        let projectile_aim = weapon
+            .projectile
+            .then(|| projectile_aim(state, motion, pos, target, aim_point, weapon, stats.domain));
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = None;
         // Blood drawn: reaching the firing stance refreshes the warm
@@ -686,6 +826,7 @@ pub(super) fn attack(
         if cooldowns[pi] == 0 {
             unit.cooldowns[pi] = weapon.cooldown_ticks;
             if weapon.projectile {
+                let aim_point = projectile_aim.expect("projectile aim computed");
                 let flight = launch_shell(
                     state,
                     launches,
@@ -697,6 +838,7 @@ pub(super) fn attack(
                 );
                 events.push(Event::ShellLaunched {
                     shooter: Target::Unit(id),
+                    target,
                     player: me,
                     from: pos,
                     to: aim_point,
@@ -1031,15 +1173,32 @@ mod tests {
             return None;
         }
         let (pos, me) = (unit.pos, unit.player);
-        let aggro_sq = stats.aggro_range * stats.aggro_range;
+        let acquisition_range = stats.aggro_range;
+        let needs_shared_sight = unit.kind == UnitKind::Bombard;
+        let aggro_sq = acquisition_range * acquisition_range;
         let unit_target = state
             .units
             .iter()
             .filter(|u| {
-                state.hostile(me, u.player) && u.hp > 0 && stats.can_target(u.kind.stats().domain)
+                state.hostile(me, u.player)
+                    && u.hp > 0
+                    && stats.can_target(u.kind.stats().domain)
+                    && (!needs_shared_sight || state.can_see(me, u.tile()))
             })
             .map(|u| (pos.dist_sq(u.pos), u.id))
-            .filter(|(d, _)| *d <= aggro_sq)
+            .filter(|(d, uid)| {
+                *d <= aggro_sq
+                    && stats.weapons.iter().any(|weapon| {
+                        weapon.targets.covers(
+                            state
+                                .unit(*uid)
+                                .expect("candidate exists")
+                                .kind
+                                .stats()
+                                .domain,
+                        ) && *d >= weapon.minimum_range * weapon.minimum_range
+                    })
+            })
             .min();
         if let Some((_, uid)) = unit_target {
             return Some(Target::Unit(uid));
@@ -1051,8 +1210,15 @@ mod tests {
             .buildings
             .iter()
             .filter(|b| state.hostile(me, b.player) && b.hp > 0)
+            .filter(|b| !needs_shared_sight || b.tiles().any(|tile| state.can_see(me, tile)))
             .map(|b| (pos.dist_sq(b.closest_point_to(pos)), b.id))
-            .filter(|(d, _)| *d <= aggro_sq)
+            .filter(|(d, _)| {
+                *d <= aggro_sq
+                    && stats.weapons.iter().any(|weapon| {
+                        weapon.targets.covers(Domain::Ground)
+                            && *d >= weapon.minimum_range * weapon.minimum_range
+                    })
+            })
             .min()
             .map(|(_, bid)| Target::Building(bid))
     }
@@ -1243,5 +1409,40 @@ mod tests {
             }
         }
         assert!(picks > 100, "the armies never met ({picks} picks)");
+    }
+
+    #[test]
+    fn motion_snapshot_uses_only_the_current_steering_line() {
+        let aim_with_later_turn = |turn: TilePos| {
+            let mut state = boundary_duel();
+            state.units[0].kind = UnitKind::Bombard;
+            state.units[0].pos = TilePos::new(2, 1).center();
+            state.units[1].kind = UnitKind::Scuttler;
+            state.units[1].pos = TilePos::new(7, 1).center();
+            let target = state.units[1].id;
+            state.units[1].path = Some(PathFollow {
+                goal: turn,
+                waypoints: vec![TilePos::new(8, 1), turn],
+                next: 0,
+            });
+            let motion = MotionSnapshot::capture(&state);
+            let shooter = state.units[0].pos;
+            let current = state.units[1].pos;
+            projectile_aim(
+                &state,
+                &motion,
+                shooter,
+                Target::Unit(target),
+                current,
+                &UnitKind::Bombard.stats().weapons[0],
+                Domain::Ground,
+            )
+        };
+
+        assert_eq!(
+            aim_with_later_turn(TilePos::new(8, 6)),
+            aim_with_later_turn(TilePos::new(8, -4)),
+            "future A* turns are private intent, not observable velocity"
+        );
     }
 }

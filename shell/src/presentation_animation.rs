@@ -895,6 +895,7 @@ mod tests {
             events: vec![
                 Event::ShellLaunched {
                     shooter: Target::Unit(UnitId(7)),
+                    target: Target::Unit(UnitId(8)),
                     player: PlayerId(0),
                     from: point(),
                     to: point(),
@@ -902,6 +903,7 @@ mod tests {
                 },
                 Event::ShellLaunched {
                     shooter: Target::Building(BuildingId(9)),
+                    target: Target::Unit(UnitId(8)),
                     player: PlayerId(0),
                     from: point(),
                     to: point(),

@@ -754,9 +754,9 @@ fn idle_sentinel_auto_acquires_intruder() {
 }
 
 #[test]
-fn lancer_outranges_aggro_and_retaliation_answers() {
-    // The lancer opens fire from 5.4 tiles — outside the bombard's aggro
-    // (5), inside rail range (5.5). The bombard is the one chassis that
+fn lancer_fires_from_beyond_bombard_sight_and_retaliation_answers() {
+    // The lancer opens fire from 5.4 tiles — outside the bombard's own
+    // sight (5), inside rail range (5.5). The bombard is the one chassis that
     // survives a rail hit AND can answer ground (the 0.10 rail one-shots
     // the 60-hp sentinel, so the line unit can no longer star here).
     // The first hit turns the victim on its attacker; the rail wins the
@@ -774,8 +774,8 @@ fn lancer_outranges_aggro_and_retaliation_answers() {
         let b = state.unit(lancer).unwrap().pos;
         a.dist_sq(b)
     };
-    let aggro = oxide_sim::stats::UnitKind::Bombard.stats().aggro_range;
-    assert!(d2 > aggro * aggro, "test premise: outside bombard aggro");
+    let vision = chassis::fx::Fx::from_num(UnitKind::Bombard.stats().vision);
+    assert!(d2 > vision * vision, "test premise: outside bombard sight");
 
     state.tick(&[cmd(
         1,

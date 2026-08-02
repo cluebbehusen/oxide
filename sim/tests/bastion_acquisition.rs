@@ -145,6 +145,73 @@ fn an_eligible_visible_unit_keeps_priority_over_a_closer_building() {
 }
 
 #[test]
+fn bastion_does_not_read_a_path_established_later_this_tick() {
+    let mut scenario = open_arena(32, 22, vec![unit(1, UnitKind::Harvester, 13, 7)]);
+    scenario.buildings = vec![
+        building(0, BuildingKind::Bastion, 5, 6),
+        building(0, BuildingKind::Array, 10, 10),
+    ];
+    let mut state = scenario.build().unwrap();
+    let bastion = building_id(&state, PlayerId(0), BuildingKind::Bastion);
+    let target = state.units()[0].id;
+    let current = state.unit(target).unwrap().pos;
+    let before = state.unit(target).unwrap().hp;
+
+    let report = state.tick(&[cmd(
+        1,
+        Command::Move {
+            units: vec![target],
+            goal: TilePos::new(13, 12),
+            queue: false,
+        },
+    )]);
+    let aim = bastion_launch(&report.events, bastion).expect("the visible target is in range");
+    assert_eq!(
+        aim, current,
+        "a new command is not observable motion until the next tick"
+    );
+
+    run_until(&mut state, 100, |_, events| {
+        events
+            .iter()
+            .any(|event| matches!(event, Event::ShellLanded { .. }))
+    });
+    assert_eq!(
+        state.unit(target).unwrap().hp,
+        before,
+        "the same-tick move may dodge the unguided current-position shot"
+    );
+}
+
+#[test]
+fn bastion_keeps_a_legal_aim_when_prediction_enters_its_dead_zone() {
+    let mut scenario = open_arena(32, 22, vec![unit(1, UnitKind::Harvester, 9, 7)]);
+    scenario.buildings = vec![building(0, BuildingKind::Bastion, 5, 6)];
+    let mut state = scenario.build().unwrap();
+    let bastion = building_id(&state, PlayerId(0), BuildingKind::Bastion);
+    let target = state.units()[0].id;
+    let current = state.unit(target).unwrap().pos;
+    let center = state.building(bastion).unwrap().center();
+    let minimum = BuildingKind::Bastion.stats().weapons[0].minimum_range;
+    assert!(center.dist_sq(current) >= minimum * minimum);
+
+    let report = state.tick(&[cmd(
+        1,
+        Command::Move {
+            units: vec![target],
+            goal: TilePos::new(7, 7),
+            queue: false,
+        },
+    )]);
+    let aim = bastion_launch(&report.events, bastion).expect("the legal target is fired upon");
+    assert_eq!(
+        aim, current,
+        "an inward prediction cannot create an impact inside the dead zone"
+    );
+    assert!(center.dist_sq(aim) >= minimum * minimum);
+}
+
+#[test]
 fn building_ghosts_and_radar_contacts_do_not_enable_bastion_fire() {
     let target_anchor = TilePos::new(13, 10);
     let mut scenario = open_arena(

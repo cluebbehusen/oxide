@@ -241,8 +241,13 @@ fn close_pressure_breaches_an_isolated_bastion_dead_zone() {
         let mut state = role_scenario(
             defender,
             &[(BuildingKind::Bastion, TilePos::new(20, 8))],
-            &[(UnitKind::Scuttler, TilePos::new(14, 9))],
-            &[],
+            &[
+                (UnitKind::Scuttler, TilePos::new(14, 3)),
+                (UnitKind::Scuttler, TilePos::new(14, 7)),
+                (UnitKind::Scuttler, TilePos::new(14, 11)),
+                (UnitKind::Scuttler, TilePos::new(14, 15)),
+            ],
+            &[(attacker, UnitKind::Wisp, TilePos::new(17, 9))],
         )
         .build()
         .unwrap();
@@ -252,22 +257,26 @@ fn close_pressure_breaches_an_isolated_bastion_dead_zone() {
             .find(|building| building.kind == BuildingKind::Bastion)
             .unwrap()
             .id;
-        let scuttler = state
+        let scuttlers: Vec<_> = state
             .units()
             .iter()
-            .find(|unit| unit.player == PlayerId(attacker))
-            .unwrap()
-            .id;
-        let events = attack_building(&mut state, attacker, &[scuttler], bastion);
+            .filter(|unit| unit.player == PlayerId(attacker) && unit.kind == UnitKind::Scuttler)
+            .map(|unit| unit.id)
+            .collect();
+        let events = attack_building(&mut state, attacker, &scuttlers, bastion);
 
         assert!(
             state.building(bastion).is_none(),
-            "a fast close-assault unit must breach an isolated Bastion from seat {defender}"
+            "split close pressure must breach an isolated Bastion from seat {defender}; hp={:?}, survivors={:?}",
+            state.building(bastion).map(|building| building.hp),
+            scuttlers
+                .iter()
+                .filter_map(|id| state.unit(*id).map(|unit| (id, unit.hp, unit.pos)))
+                .collect::<Vec<_>>()
         );
-        assert_eq!(
-            state.unit(scuttler).unwrap().hp,
-            UnitKind::Scuttler.stats().max_hp,
-            "the unguided opening shell should miss before the attacker enters the dead zone"
+        assert!(
+            scuttlers.iter().any(|id| state.unit(*id).is_some()),
+            "predictive fire can stop one straight attacker, not both separated approaches"
         );
         let shots: Vec<_> = events
             .iter()
@@ -531,7 +540,7 @@ fn cost_par_defenses_hold_their_target_domain() {
 }
 
 #[test]
-fn a_moving_advance_can_dodge_an_unguided_bastion_shell() {
+fn changing_course_after_launch_can_dodge_an_unguided_bastion_shell() {
     for defender in [0, 1] {
         let attacker = 1 - defender;
         let mut state = role_scenario(
@@ -562,7 +571,7 @@ fn a_moving_advance_can_dodge_an_unguided_bastion_shell() {
             },
         )]);
 
-        let mut launched = first.events.iter().any(|event| {
+        let launched = first.events.iter().any(|event| {
             matches!(
                 event,
                 Event::ShellLaunched {
@@ -571,21 +580,26 @@ fn a_moving_advance_can_dodge_an_unguided_bastion_shell() {
                 }
             )
         });
+        assert!(launched, "the Bastion leads the initial straight path");
+        let dodge = if defender == 0 {
+            TilePos::new(14, 3)
+        } else {
+            mirrored_tile(TilePos::new(14, 3))
+        };
+        state.tick(&[cmd(
+            attacker,
+            Command::Advance {
+                units: vec![scuttler],
+                goal: dodge,
+                queue: false,
+            },
+        )]);
         let mut landed = first
             .events
             .iter()
             .any(|event| matches!(event, Event::ShellLanded { .. }));
         for _ in 0..300u32 {
             let report = state.tick(&[]);
-            launched |= report.events.iter().any(|event| {
-                matches!(
-                    event,
-                    Event::ShellLaunched {
-                        shooter: Target::Building(_),
-                        ..
-                    }
-                )
-            });
             landed |= report
                 .events
                 .iter()
@@ -594,11 +608,11 @@ fn a_moving_advance_can_dodge_an_unguided_bastion_shell() {
                 break;
             }
         }
-        assert!(launched && landed, "the dodge requires a resolved shot");
+        assert!(landed, "the dodge requires a resolved shot");
         assert_eq!(
             state.unit(scuttler).unwrap().hp,
             UnitKind::Scuttler.stats().max_hp,
-            "the projectile keeps its fire-time aim instead of guiding onto the mover"
+            "the projectile leads the known path but does not guide after a course change"
         );
     }
 }

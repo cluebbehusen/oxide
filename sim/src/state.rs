@@ -1800,10 +1800,10 @@ pub enum StateIntegrityError {
     UnsortedSalvageIncidents(PlayerId),
 }
 
-/// A shell in flight: launched at the victim's fire-time position,
-/// unguided from that instant ("a shell in flight chooses nothing" —
-/// literal since 0.9), resolving on its arrival tick against whatever
-/// stands there. Outlives its shooter.
+/// A shell in flight: launched toward a fixed fire-time aim point, unguided
+/// from that instant ("a shell in flight chooses nothing" — literal since
+/// 0.9), resolving on its arrival tick against whatever stands there.
+/// Outlives its shooter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Shell {
     /// Who fired it (may be dead by impact; retaliation copes).
