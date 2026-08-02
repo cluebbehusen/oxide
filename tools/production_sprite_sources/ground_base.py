@@ -225,9 +225,17 @@ def _flakhound_sprite(*, tread_phase: int = 0, state: str = "idle") -> Image.Ima
             )
     draw.rectangle(_box((30, 28, 34, 50)), fill=_rgba(FERROUS["base"]))
     draw.rectangle(_box((27, 43, 37, 49)), fill=_rgba(IRON_DARK))
-    filled = (
-        4 if state in {"ready", "report_left"} else 2 if state == "report_right" else 0
-    )
+    filled = {
+        "idle": 4,
+        "charge_1": 1,
+        "charge_2": 2,
+        "charge_3": 3,
+        "ready": 4,
+        "report_left": 4,
+        "report_right": 2,
+        "recover": 0,
+        "empty": 0,
+    }[state]
     draw.rectangle(_box((20, 50, 44, 57)), fill=_rgba(IRON_DARK))
     for index, x in enumerate((22, 28, 34, 40)):
         color = SCRAP_LIGHT if index < filled else SCRAP_DARK
@@ -338,10 +346,19 @@ def _flakhound_sequence() -> GroundUnitSequence:
             ),
             GroundUnitFrame(_flakhound_sprite(), 240, "settle", "travel_settle"),
             GroundUnitFrame(
-                _flakhound_sprite(state="ready"),
-                180,
-                "anticipation",
-                "charge_bar_ready",
+                _flakhound_sprite(state="empty"), 120, "reload", "charge_0"
+            ),
+            GroundUnitFrame(
+                _flakhound_sprite(state="charge_1"), 120, "reload", "charge_1"
+            ),
+            GroundUnitFrame(
+                _flakhound_sprite(state="charge_2"), 120, "reload", "charge_2"
+            ),
+            GroundUnitFrame(
+                _flakhound_sprite(state="charge_3"), 120, "reload", "charge_3"
+            ),
+            GroundUnitFrame(
+                _flakhound_sprite(state="ready"), 180, "anticipation", "charge_4"
             ),
             GroundUnitFrame(
                 _flakhound_sprite(state="report_left"),
@@ -366,7 +383,9 @@ def _flakhound_sequence() -> GroundUnitSequence:
                 "recovery",
                 "paired_yokes_recover",
             ),
-            GroundUnitFrame(_flakhound_sprite(), 500, "settle", "attack_settle"),
+            GroundUnitFrame(
+                _flakhound_sprite(state="empty"), 500, "settle", "attack_settle"
+            ),
         ),
     )
 

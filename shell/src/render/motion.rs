@@ -177,9 +177,9 @@ fn preparation_progress(weapons: &[WeaponCycle]) -> Option<f32> {
 fn unit_preparation_frame(kind: UnitKind, progress: f32) -> usize {
     match kind {
         UnitKind::Lancer | UnitKind::Bombard => cycle_index(progress, 3),
+        UnitKind::Flakhound => cycle_index(progress, 5),
         UnitKind::Sentinel
         | UnitKind::Scuttler
-        | UnitKind::Flakhound
         | UnitKind::Stinger
         | UnitKind::Buzzard
         | UnitKind::Darter
@@ -193,7 +193,7 @@ fn unit_attack_frame(kind: UnitKind, attack: AttackPhase) -> usize {
     match attack {
         AttackPhase::Report { progress, .. } => match kind {
             UnitKind::Lancer | UnitKind::Bombard => 3,
-            UnitKind::Flakhound => 1 + cycle_index(progress, 2),
+            UnitKind::Flakhound => 5 + cycle_index(progress, 2),
             UnitKind::Sentinel
             | UnitKind::Scuttler
             | UnitKind::Stinger
@@ -205,7 +205,7 @@ fn unit_attack_frame(kind: UnitKind, attack: AttackPhase) -> usize {
         },
         AttackPhase::Recover { progress, .. } => match kind {
             UnitKind::Lancer | UnitKind::Bombard => 4 + cycle_index(progress, 2),
-            UnitKind::Flakhound => 3 + cycle_index(progress, 2),
+            UnitKind::Flakhound => 7 + cycle_index(progress, 2),
             UnitKind::Sentinel
             | UnitKind::Scuttler
             | UnitKind::Stinger
@@ -406,7 +406,7 @@ mod tests {
             (UnitKind::Scuttler, 4),
             (UnitKind::Lancer, 6),
             (UnitKind::Bombard, 6),
-            (UnitKind::Flakhound, 5),
+            (UnitKind::Flakhound, 9),
             (UnitKind::Stinger, 4),
             (UnitKind::Buzzard, 4),
             (UnitKind::Darter, 4),
@@ -431,6 +431,36 @@ mod tests {
                 assert!(unit_preparation_frame(kind, progress) < count);
             }
         }
+    }
+
+    #[test]
+    fn flakhound_cooldown_refills_before_the_paired_report_frames() {
+        for (progress, expected) in [(0.0, 0), (0.2, 1), (0.4, 2), (0.6, 3), (0.8, 4), (1.0, 4)] {
+            assert_eq!(
+                unit_preparation_frame(UnitKind::Flakhound, progress),
+                expected
+            );
+        }
+        assert_eq!(
+            unit_attack_frame(
+                UnitKind::Flakhound,
+                AttackPhase::Report {
+                    weapon: 0,
+                    progress: 0.0,
+                },
+            ),
+            5
+        );
+        assert_eq!(
+            unit_attack_frame(
+                UnitKind::Flakhound,
+                AttackPhase::Recover {
+                    weapon: 0,
+                    progress: 1.0,
+                },
+            ),
+            8
+        );
     }
 
     #[test]

@@ -250,6 +250,27 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 with self.subTest(faction=faction, suffix=suffix):
                     self.assertEqual(lit, count)
 
+    def test_flakhound_ready_and_reload_frames_have_physical_charge_cells(self) -> None:
+        centers = [(24 + index * 6, 53) for index in range(4)]
+        expected = {
+            "": 4,
+            "_action1": 0,
+            "_action2": 1,
+            "_action3": 2,
+            "_action4": 3,
+            "_action5": 4,
+            "_action6": 4,
+            "_action7": 2,
+            "_action8": 0,
+            "_action9": 0,
+        }
+        for faction in gen.FACTIONS:
+            for suffix, count in expected.items():
+                image = self.registry[f"flakhound_{faction}{suffix}"]
+                lit = sum(image.getpixel(center)[0] > 200 for center in centers)
+                with self.subTest(faction=faction, suffix=suffix):
+                    self.assertEqual(lit, count)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -74,7 +74,7 @@ pub struct Sprites {
     bombard_action: [[Rect; 3]; 6],
     flakhound: [Rect; 3],
     flakhound_tread: [[Rect; 3]; 2],
-    flakhound_action: [[Rect; 3]; 5],
+    flakhound_action: [[Rect; 3]; 9],
     stinger: [Rect; 3],
     stinger_move: [[Rect; 3]; 2],
     stinger_action: [[Rect; 3]; 4],
@@ -248,7 +248,6 @@ const SCOOP_SUFFIXES: [&str; 2] = ["_scoop1", "_scoop2"];
 const TREAD_SUFFIXES: [&str; 2] = ["_tread1", "_tread2"];
 const MOVE_SUFFIXES: [&str; 2] = ["_move1", "_move2"];
 const ACTION_SUFFIXES_4: [&str; 4] = ["_action1", "_action2", "_action3", "_action4"];
-const ACTION_SUFFIXES_5: [&str; 5] = ["_action1", "_action2", "_action3", "_action4", "_action5"];
 const ACTION_SUFFIXES_6: [&str; 6] = [
     "_action1", "_action2", "_action3", "_action4", "_action5", "_action6",
 ];
@@ -397,7 +396,7 @@ fn unit_action_suffixes(kind: UnitKind) -> &'static [&'static str] {
         | UnitKind::Talon
         | UnitKind::Wisp => &ACTION_SUFFIXES_4,
         UnitKind::Lancer | UnitKind::Bombard => &ACTION_SUFFIXES_6,
-        UnitKind::Flakhound => &ACTION_SUFFIXES_5,
+        UnitKind::Flakhound => &ACTION_SUFFIXES_9,
     }
 }
 
@@ -677,7 +676,7 @@ impl Sprites {
             flakhound_action: variant_rows(
                 &rects,
                 unit_stem(UnitKind::Flakhound),
-                ACTION_SUFFIXES_5,
+                ACTION_SUFFIXES_9,
             )?,
             stinger: unit(UnitKind::Stinger)?,
             stinger_move: variant_rows(&rects, unit_stem(UnitKind::Stinger), MOVE_SUFFIXES)?,

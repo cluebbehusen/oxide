@@ -109,15 +109,19 @@ UNIT_ACTIONS: dict[str, FrameSet] = {
         (230, 230, 260, 160, 240, 540),
     ),
     "flakhound": FrameSet(
-        tuple(f"_action{i}" for i in range(1, 6)),
+        tuple(f"_action{i}" for i in range(1, 10)),
         (
-            "charge_bar_ready",
+            "charge_0",
+            "charge_1",
+            "charge_2",
+            "charge_3",
+            "charge_4",
             "report_left_yoke",
             "damage+report_right_yoke",
             "paired_yokes_recover",
             "attack_settle",
         ),
-        (180, 100, 110, 180, 500),
+        (120, 120, 120, 120, 180, 100, 110, 180, 500),
     ),
     "stinger": FrameSet(
         tuple(f"_action{i}" for i in range(1, 5)),
