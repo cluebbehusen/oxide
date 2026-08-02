@@ -239,11 +239,17 @@ impl Mixer {
         let now = get_time();
         let min_gap = match kind {
             SoundKind::Laser => 0.09,
-            SoundKind::RailFire => 0.15,
+            SoundKind::SentinelFire => 0.08,
+            SoundKind::LancerFire => 0.15,
+            SoundKind::BombardFire | SoundKind::BastionFire => 0.2,
+            SoundKind::FlakhoundFire | SoundKind::FlakTurretFire => 0.12,
+            SoundKind::StingerFire
+            | SoundKind::BuzzardFire
+            | SoundKind::DarterFire
+            | SoundKind::TalonFire
+            | SoundKind::WispFire => 0.1,
             SoundKind::UnitDeath => 0.12,
-            SoundKind::Flak => 0.12,
             SoundKind::Artillery => 0.2,
-            SoundKind::ArtilleryLaunch => 0.2,
             SoundKind::Ack => 0.15,
             _ => 0.05,
         };
@@ -263,7 +269,6 @@ impl Mixer {
                     0.18,
                 )
             }
-            SoundKind::RailFire => (&sounds.rail_fire, 0.4),
             SoundKind::UnitDeath => (&sounds.unit_death, 0.35),
             SoundKind::BuildingBoom => (&sounds.building_boom, 0.6),
             SoundKind::Deposit => (&sounds.deposit, 0.25),
@@ -272,10 +277,19 @@ impl Mixer {
             SoundKind::Denied => (&sounds.denied, 0.3),
             SoundKind::Victory => (&sounds.victory, 0.6),
             SoundKind::Defeat => (&sounds.defeat, 0.6),
-            SoundKind::Flak => (&sounds.flak, 0.3),
             SoundKind::Artillery => (&sounds.artillery_boom, 0.5),
-            SoundKind::ArtilleryLaunch => (&sounds.artillery_launch, 0.35),
             SoundKind::Ack => (&sounds.ack, 0.18),
+            SoundKind::SentinelFire => (&sounds.attack_sentinel, 0.26),
+            SoundKind::LancerFire => (&sounds.attack_lancer, 0.32),
+            SoundKind::BombardFire => (&sounds.attack_bombard, 0.5),
+            SoundKind::FlakhoundFire => (&sounds.attack_flakhound, 0.3),
+            SoundKind::StingerFire => (&sounds.attack_stinger, 0.25),
+            SoundKind::BuzzardFire => (&sounds.attack_buzzard, 0.35),
+            SoundKind::DarterFire => (&sounds.attack_darter, 0.25),
+            SoundKind::TalonFire => (&sounds.attack_talon, 0.28),
+            SoundKind::WispFire => (&sounds.attack_wisp, 0.23),
+            SoundKind::BastionFire => (&sounds.attack_bastion, 0.55),
+            SoundKind::FlakTurretFire => (&sounds.attack_flak_turret, 0.34),
         };
         let volume = volume * Self::bus(volumes, kind) * attenuation;
         if volume <= 0.0 {
@@ -337,12 +351,20 @@ fn raises_combat_music(kind: SoundKind) -> bool {
     matches!(
         kind,
         SoundKind::Laser
-            | SoundKind::RailFire
             | SoundKind::UnitDeath
             | SoundKind::BuildingBoom
-            | SoundKind::Flak
             | SoundKind::Artillery
-            | SoundKind::ArtilleryLaunch
+            | SoundKind::SentinelFire
+            | SoundKind::LancerFire
+            | SoundKind::BombardFire
+            | SoundKind::FlakhoundFire
+            | SoundKind::StingerFire
+            | SoundKind::BuzzardFire
+            | SoundKind::DarterFire
+            | SoundKind::TalonFire
+            | SoundKind::WispFire
+            | SoundKind::BastionFire
+            | SoundKind::FlakTurretFire
     )
 }
 
@@ -1761,6 +1783,28 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_authored_weapon_report_raises_combat_pressure() {
+        for kind in [
+            SoundKind::SentinelFire,
+            SoundKind::LancerFire,
+            SoundKind::BombardFire,
+            SoundKind::FlakhoundFire,
+            SoundKind::StingerFire,
+            SoundKind::BuzzardFire,
+            SoundKind::DarterFire,
+            SoundKind::TalonFire,
+            SoundKind::WispFire,
+            SoundKind::BastionFire,
+            SoundKind::FlakTurretFire,
+        ] {
+            assert!(
+                raises_combat_music(kind),
+                "{kind:?} must pressure the score"
+            );
+        }
+    }
 
     fn team_draft() -> NewMatchDraft {
         let mut draft = NewMatchDraft::default();

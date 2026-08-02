@@ -507,6 +507,12 @@ def main() -> None:
         bass=(0, -2, -5, 0, -2, -5, 0, -5, -12),
         seed=514,
     )
+    if __package__:
+        from .finalized_sounds import finalized_wavs
+    else:
+        from finalized_sounds import finalized_wavs
+
+    GENERATED.update(finalized_wavs())
     emit(args.check)
     print("done")
 

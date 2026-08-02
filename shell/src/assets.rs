@@ -805,8 +805,6 @@ impl Sprites {
 pub struct Sounds {
     /// An attack landing.
     pub laser: Sound,
-    /// A Lancer's rail shot.
-    pub rail_fire: Sound,
     /// A unit popping.
     pub unit_death: Sound,
     /// A building coming down.
@@ -823,16 +821,34 @@ pub struct Sounds {
     pub victory: Sound,
     /// You didn't.
     pub defeat: Sound,
-    /// Flak bursting against the sky.
-    pub flak: Sound,
     /// An artillery shell landing.
     pub artillery_boom: Sound,
-    /// The gun speaking (the boom belongs to the impact).
-    pub artillery_launch: Sound,
     /// Order acknowledged.
     pub ack: Sound,
     /// The zap's lower sibling, alternated per shot.
     pub laser2: Sound,
+    /// A Sentinel's compact cannon report.
+    pub attack_sentinel: Sound,
+    /// A Lancer's charged rail report.
+    pub attack_lancer: Sound,
+    /// A Bombard's heavy artillery report.
+    pub attack_bombard: Sound,
+    /// A Flakhound's paired anti-air burst.
+    pub attack_flakhound: Sound,
+    /// A Stinger's light anti-air burst.
+    pub attack_stinger: Sound,
+    /// A Buzzard's heavy strike.
+    pub attack_buzzard: Sound,
+    /// A Darter's fast strike.
+    pub attack_darter: Sound,
+    /// A Talon's interceptor burst.
+    pub attack_talon: Sound,
+    /// A Wisp's compact interceptor burst.
+    pub attack_wisp: Sound,
+    /// A Bastion's emplaced artillery report.
+    pub attack_bastion: Sound,
+    /// A Flak Turret's paired-yoke burst.
+    pub attack_flak_turret: Sound,
     /// Front-end industrial ambience.
     pub music_menu: Sound,
     /// The calm match bed.
@@ -859,7 +875,6 @@ impl Sounds {
     pub async fn load() -> Result<Self> {
         Ok(Self {
             laser: clip("laser").await?,
-            rail_fire: clip("rail_fire").await?,
             unit_death: clip("unit_death").await?,
             building_boom: clip("building_boom").await?,
             deposit: clip("deposit").await?,
@@ -868,11 +883,20 @@ impl Sounds {
             denied: clip("denied").await?,
             victory: clip("victory").await?,
             defeat: clip("defeat").await?,
-            flak: clip("flak").await?,
             artillery_boom: clip("artillery_boom").await?,
-            artillery_launch: clip("artillery_launch").await?,
             ack: clip("ack").await?,
             laser2: clip("laser2").await?,
+            attack_sentinel: clip("attack_sentinel").await?,
+            attack_lancer: clip("attack_lancer").await?,
+            attack_bombard: clip("attack_bombard").await?,
+            attack_flakhound: clip("attack_flakhound").await?,
+            attack_stinger: clip("attack_stinger").await?,
+            attack_buzzard: clip("attack_buzzard").await?,
+            attack_darter: clip("attack_darter").await?,
+            attack_talon: clip("attack_talon").await?,
+            attack_wisp: clip("attack_wisp").await?,
+            attack_bastion: clip("attack_bastion").await?,
+            attack_flak_turret: clip("attack_flak_turret").await?,
             music_menu: clip("music_menu").await?,
             music_calm: clip("music_calm").await?,
             music_combat: clip("music_combat").await?,
@@ -895,10 +919,21 @@ impl Sounds {
 mod tests {
     use super::*;
 
-    const SOUND_NAMES: [&str; 21] = [
+    const SOUND_NAMES: [&str; 32] = [
         "ack",
         "artillery_boom",
         "artillery_launch",
+        "attack_bastion",
+        "attack_bombard",
+        "attack_buzzard",
+        "attack_darter",
+        "attack_flak_turret",
+        "attack_flakhound",
+        "attack_lancer",
+        "attack_sentinel",
+        "attack_stinger",
+        "attack_talon",
+        "attack_wisp",
         "building_boom",
         "click",
         "defeat",

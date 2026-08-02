@@ -20,8 +20,6 @@ pub struct Effect {
 pub enum SoundKind {
     /// An attack landed somewhere you can see.
     Laser,
-    /// A Lancer's rail shot landed somewhere you can see.
-    RailFire,
     /// A unit died somewhere you can see.
     UnitDeath,
     /// A building fell (yours are always audible).
@@ -38,14 +36,32 @@ pub enum SoundKind {
     Victory,
     /// It did not.
     Defeat,
-    /// Flak bursting against the sky.
-    Flak,
     /// An artillery shell landing.
     Artillery,
-    /// An artillery gun firing (distinct from the landing boom).
-    ArtilleryLaunch,
     /// An order acknowledged.
     Ack,
+    /// A Sentinel's compact cannon report.
+    SentinelFire,
+    /// A Lancer's charged rail report.
+    LancerFire,
+    /// A Bombard's heavy artillery report.
+    BombardFire,
+    /// A Flakhound's paired anti-air burst.
+    FlakhoundFire,
+    /// A Stinger's light anti-air burst.
+    StingerFire,
+    /// A Buzzard's heavy strike.
+    BuzzardFire,
+    /// A Darter's fast strike.
+    DarterFire,
+    /// A Talon's interceptor burst.
+    TalonFire,
+    /// A Wisp's compact interceptor burst.
+    WispFire,
+    /// A Bastion's emplaced artillery report.
+    BastionFire,
+    /// A Flak Turret's paired-yoke burst.
+    FlakTurretFire,
 }
 
 /// What an order-acknowledgment ping means (decides its color).
@@ -102,6 +118,37 @@ fn unit_bolt_style(kind: oxide_sim::UnitKind, weapon: usize) -> BoltStyle {
             BoltStyle::AirStrike
         }
         _ => BoltStyle::Tracer,
+    }
+}
+
+fn unit_fire_sound(kind: oxide_sim::UnitKind) -> SoundKind {
+    use oxide_sim::UnitKind;
+    match kind {
+        UnitKind::Sentinel => SoundKind::SentinelFire,
+        UnitKind::Lancer => SoundKind::LancerFire,
+        UnitKind::Bombard => SoundKind::BombardFire,
+        UnitKind::Flakhound => SoundKind::FlakhoundFire,
+        UnitKind::Stinger => SoundKind::StingerFire,
+        UnitKind::Buzzard => SoundKind::BuzzardFire,
+        UnitKind::Darter => SoundKind::DarterFire,
+        UnitKind::Talon => SoundKind::TalonFire,
+        UnitKind::Wisp => SoundKind::WispFire,
+        UnitKind::Harvester | UnitKind::Scuttler => SoundKind::Laser,
+    }
+}
+
+fn defense_fire_sound(kind: oxide_sim::BuildingKind) -> SoundKind {
+    match kind {
+        oxide_sim::BuildingKind::Bastion => SoundKind::BastionFire,
+        oxide_sim::BuildingKind::FlakTurret => SoundKind::FlakTurretFire,
+        _ => SoundKind::Laser,
+    }
+}
+
+fn shell_fire_sound(shooter: oxide_sim::Target) -> SoundKind {
+    match shooter {
+        oxide_sim::Target::Unit(_) => SoundKind::BombardFire,
+        oxide_sim::Target::Building(_) => SoundKind::BastionFire,
     }
 }
 
@@ -232,14 +279,7 @@ impl Game {
                     // its report either way. The weapon's character decides
                     // the report and whether the impact blooms.
                     let heard = sees(self, *attacker_pos) || sees(self, *target_pos);
-                    let sound = match attacker_kind {
-                        oxide_sim::UnitKind::Lancer => SoundKind::RailFire,
-                        oxide_sim::UnitKind::Bombard => SoundKind::Artillery,
-                        oxide_sim::UnitKind::Flakhound | oxide_sim::UnitKind::Stinger => {
-                            SoundKind::Flak
-                        }
-                        _ => SoundKind::Laser,
-                    };
+                    let sound = unit_fire_sound(*attacker_kind);
                     // The burst radius comes from the exact weapon that
                     // fired — the event says which slot — so the
                     // telegraphed area never overstates (or hides) the
@@ -251,8 +291,12 @@ impl Game {
                         .and_then(|w| w.splash)
                         .map(|s| s.to_num::<f32>());
                     if heard {
-                        self.sounds_pending
-                            .push((sound, Some(world_vec(*target_pos))));
+                        let at = if sees(self, *attacker_pos) {
+                            *attacker_pos
+                        } else {
+                            *target_pos
+                        };
+                        self.sounds_pending.push((sound, Some(world_vec(at))));
                     }
                     self.fx.push(Effect {
                         kind: EffectKind::Bolt {
@@ -306,11 +350,7 @@ impl Game {
                     // Kind rides in the event: the turret may be rubble by
                     // now (destroyed the tick it fired), and its shot still
                     // deserves the right report and burst.
-                    let sound = match kind {
-                        oxide_sim::BuildingKind::Bastion => SoundKind::Artillery,
-                        oxide_sim::BuildingKind::FlakTurret => SoundKind::Flak,
-                        _ => SoundKind::Laser,
-                    };
+                    let sound = defense_fire_sound(*kind);
                     let splash = kind
                         .stats()
                         .weapons
@@ -318,8 +358,12 @@ impl Game {
                         .find_map(|w| w.splash)
                         .map(|s| s.to_num::<f32>());
                     if sees(self, *turret_pos) || sees(self, *target_pos) {
-                        self.sounds_pending
-                            .push((sound, Some(world_vec(*target_pos))));
+                        let at = if sees(self, *turret_pos) {
+                            *turret_pos
+                        } else {
+                            *target_pos
+                        };
+                        self.sounds_pending.push((sound, Some(world_vec(at))));
                     }
                     self.fx.push(Effect {
                         kind: EffectKind::Bolt {
@@ -484,12 +528,11 @@ impl Game {
                     // it is falling on you, and nothing tracks the gun.
                     let muzzle_seen = sees(self, *from);
                     let impact_seen = sees(self, *to);
+                    let sound = shell_fire_sound(*shooter);
                     if muzzle_seen || *player == self.human {
-                        self.sounds_pending
-                            .push((SoundKind::ArtilleryLaunch, Some(world_vec(*from))));
+                        self.sounds_pending.push((sound, Some(world_vec(*from))));
                     } else if impact_seen {
-                        self.sounds_pending
-                            .push((SoundKind::ArtilleryLaunch, Some(world_vec(*to))));
+                        self.sounds_pending.push((sound, Some(world_vec(*to))));
                     }
                 }
                 Event::ShellLanded {
@@ -591,7 +634,7 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxide_sim::UnitKind;
+    use oxide_sim::{BuildingId, BuildingKind, Target, UnitId, UnitKind};
 
     #[test]
     fn every_weapon_family_fires_its_own_bolt() {
@@ -605,6 +648,39 @@ mod tests {
         assert_eq!(unit_bolt_style(UnitKind::Buzzard, 0), BoltStyle::AirStrike);
         assert_eq!(unit_bolt_style(UnitKind::Wisp, 0), BoltStyle::AirStrike);
         assert_eq!(unit_bolt_style(UnitKind::Scuttler, 0), BoltStyle::Tracer);
+    }
+
+    #[test]
+    fn approved_combatants_use_their_own_reports() {
+        assert_eq!(unit_fire_sound(UnitKind::Sentinel), SoundKind::SentinelFire);
+        assert_eq!(unit_fire_sound(UnitKind::Lancer), SoundKind::LancerFire);
+        assert_eq!(
+            unit_fire_sound(UnitKind::Flakhound),
+            SoundKind::FlakhoundFire
+        );
+        assert_eq!(unit_fire_sound(UnitKind::Stinger), SoundKind::StingerFire);
+        assert_eq!(unit_fire_sound(UnitKind::Buzzard), SoundKind::BuzzardFire);
+        assert_eq!(unit_fire_sound(UnitKind::Darter), SoundKind::DarterFire);
+        assert_eq!(unit_fire_sound(UnitKind::Talon), SoundKind::TalonFire);
+        assert_eq!(unit_fire_sound(UnitKind::Wisp), SoundKind::WispFire);
+        assert_eq!(
+            defense_fire_sound(BuildingKind::FlakTurret),
+            SoundKind::FlakTurretFire
+        );
+        assert_eq!(
+            shell_fire_sound(Target::Unit(UnitId(4))),
+            SoundKind::BombardFire
+        );
+        assert_eq!(
+            shell_fire_sound(Target::Building(BuildingId(7))),
+            SoundKind::BastionFire
+        );
+    }
+
+    #[test]
+    fn unfinished_combat_audio_keeps_the_generic_report() {
+        assert_eq!(unit_fire_sound(UnitKind::Scuttler), SoundKind::Laser);
+        assert_eq!(defense_fire_sound(BuildingKind::Turret), SoundKind::Laser);
     }
 
     #[test]
