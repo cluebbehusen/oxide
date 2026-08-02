@@ -22,8 +22,11 @@ const FOUNDRY_PRODUCTION_PERIOD: u64 = 40;
 const FABRICATOR_PRODUCTION_PERIOD: u64 = 12;
 const ARRAY_SWEEP_PERIOD: u64 = 32;
 const RECLAIMER_PERIOD: u64 = 12;
+const BUZZARD_ROTOR_PERIOD: u64 = 6;
 const WISP_ROTOR_PERIOD: u64 = 4;
 const REPAIR_PULSE_TICKS: f32 = 6.0;
+pub(crate) const FLAKHOUND_REPORT_TICKS: f32 = 2.0;
+pub(crate) const FLAK_TURRET_REPORT_TICKS: f32 = 3.0;
 
 /// A render instant on the simulation timeline.
 ///
@@ -124,9 +127,9 @@ pub(crate) struct CargoState {
 pub(crate) enum PropulsionState {
     /// No continuously animated propulsion mechanism.
     None,
-    /// A Wisp's four lift rotors. This remains present while idle because
-    /// the vehicle is airborne; reduced motion holds a powered rotor frame.
-    WispRotors { cycle: f32 },
+    /// Visible lift rotors. These remain powered while an aircraft is idle;
+    /// reduced motion holds one representative rotor frame.
+    LiftRotors { cycle: f32 },
 }
 
 /// A weapon's readiness after the simulation has resolved a tick.
@@ -436,12 +439,14 @@ impl AnimationController {
                     )
                 })
         });
-        let propulsion = if facts.kind == UnitKind::Wisp {
-            PropulsionState::WispRotors {
+        let propulsion = match facts.kind {
+            UnitKind::Buzzard => PropulsionState::LiftRotors {
+                cycle: clock.cycle(facts.id.0, BUZZARD_ROTOR_PERIOD, options.reduced_motion),
+            },
+            UnitKind::Wisp => PropulsionState::LiftRotors {
                 cycle: clock.cycle(facts.id.0, WISP_ROTOR_PERIOD, options.reduced_motion),
-            }
-        } else {
-            PropulsionState::None
+            },
+            _ => PropulsionState::None,
         };
         UnitAnimationState {
             locomotion,
@@ -585,7 +590,7 @@ fn unit_attack_timing(kind: UnitKind) -> AttackTiming {
             recover_ticks: 5.0,
         },
         UnitKind::Flakhound | UnitKind::Stinger => AttackTiming {
-            report_ticks: 2.0,
+            report_ticks: FLAKHOUND_REPORT_TICKS,
             recover_ticks: 3.0,
         },
         UnitKind::Buzzard => AttackTiming {
@@ -610,7 +615,7 @@ fn unit_attack_timing(kind: UnitKind) -> AttackTiming {
 fn building_attack_timing(kind: BuildingKind) -> AttackTiming {
     match kind {
         BuildingKind::FlakTurret => AttackTiming {
-            report_ticks: 3.0,
+            report_ticks: FLAK_TURRET_REPORT_TICKS,
             recover_ticks: 3.0,
         },
         BuildingKind::Bastion => AttackTiming {
@@ -650,6 +655,7 @@ fn weapon_cycle(remaining: u32, total: u32, tick_fraction: f32) -> WeaponCycle {
 
 fn unit_move_period(kind: UnitKind) -> u64 {
     match kind {
+        UnitKind::Buzzard => BUZZARD_ROTOR_PERIOD,
         UnitKind::Wisp => WISP_ROTOR_PERIOD,
         _ => GROUND_MOVE_PERIOD,
     }
@@ -955,24 +961,32 @@ mod tests {
     }
 
     #[test]
-    fn paused_clock_holds_motion_and_wisp_rotors_run_while_idle() {
+    fn paused_clock_holds_motion_and_lift_rotors_run_while_idle() {
         let controller = AnimationController::default();
         let clock = AnimationClock::new(77, 0.35);
         let options = AnimationOptions::default();
-        let a = controller.unit_state(unit_facts(UnitKind::Wisp), clock, options);
-        let b = controller.unit_state(unit_facts(UnitKind::Wisp), clock, options);
-        assert_eq!(a, b);
-        assert_eq!(a.locomotion, LocomotionState::Rest);
-        assert!(matches!(a.propulsion, PropulsionState::WispRotors { .. }));
+        for kind in [UnitKind::Buzzard, UnitKind::Wisp] {
+            let a = controller.unit_state(unit_facts(kind), clock, options);
+            let b = controller.unit_state(unit_facts(kind), clock, options);
+            assert_eq!(a, b);
+            assert_eq!(a.locomotion, LocomotionState::Rest);
+            assert!(matches!(a.propulsion, PropulsionState::LiftRotors { .. }));
 
-        let held = controller.unit_state(
-            unit_facts(UnitKind::Wisp),
-            AnimationClock::new(200, 0.9),
-            AnimationOptions {
-                reduced_motion: true,
-            },
-        );
-        assert_eq!(held.propulsion, PropulsionState::WispRotors { cycle: 0.0 });
+            let held = controller.unit_state(
+                unit_facts(kind),
+                AnimationClock::new(200, 0.9),
+                AnimationOptions {
+                    reduced_motion: true,
+                },
+            );
+            assert_eq!(held.propulsion, PropulsionState::LiftRotors { cycle: 0.0 });
+        }
+    }
+
+    #[test]
+    fn lift_rotor_cadence_does_not_change_when_an_aircraft_starts_moving() {
+        assert_eq!(unit_move_period(UnitKind::Buzzard), BUZZARD_ROTOR_PERIOD);
+        assert_eq!(unit_move_period(UnitKind::Wisp), WISP_ROTOR_PERIOD);
     }
 
     #[test]

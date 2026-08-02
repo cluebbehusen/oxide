@@ -167,6 +167,15 @@ def _install_finalized_sprite_bank() -> None:
     install_finalized_sprites(REGISTRY, OUT)
 
 
+def _install_finalized_construction_bank() -> None:
+    """Installs the approved full-hull site frames into the live registry."""
+    from tools.production_sprite_sources.construction_final import (
+        install_finalized_construction,
+    )
+
+    install_finalized_construction(REGISTRY, OUT)
+
+
 def accent_masks() -> None:
     """Derives one allegiance-accent mask per faction-varied sprite.
 
@@ -2799,6 +2808,7 @@ def generate(output: Path) -> None:
             for stage in range(3):
                 for phase in range(2):
                     construction_site_frame(stem, faction, stage, phase)
+    _install_finalized_construction_bank()
     accent_masks()
     icon_stop()
     icon_move()

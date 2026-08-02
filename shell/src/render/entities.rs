@@ -37,23 +37,10 @@ pub(crate) fn draw_placement_ghost(game: &Game, sprites: &Sprites, input: &Input
         tint,
         DrawTextureParams {
             dest_size: Some(dest),
-            source: Some(sprites.building(kind, faction)),
+            source: Some(sprites.construction(kind, faction, 0, 0)),
             ..Default::default()
         },
     );
-    if let Some(source) = sprites.defense_mount(kind, faction) {
-        draw_texture_ex(
-            sprites.texture(),
-            screen.x,
-            screen.y,
-            tint,
-            DrawTextureParams {
-                dest_size: Some(dest),
-                source: Some(source),
-                ..Default::default()
-            },
-        );
-    }
 }
 
 /// Every deferred claim the human's crews are walking out to, drawn as
@@ -83,23 +70,10 @@ pub(crate) fn draw_pending_founds(game: &Game, sprites: &Sprites) {
                 Color::new(1.0, 0.85, 0.45, 0.3),
                 DrawTextureParams {
                     dest_size: Some(vec2(w as f32 * zoom, h as f32 * zoom)),
-                    source: Some(sprites.building(*kind, faction)),
+                    source: Some(sprites.construction(*kind, faction, 0, 0)),
                     ..Default::default()
                 },
             );
-            if let Some(source) = sprites.defense_mount(*kind, faction) {
-                draw_texture_ex(
-                    sprites.texture(),
-                    screen.x,
-                    screen.y,
-                    Color::new(1.0, 0.85, 0.45, 0.3),
-                    DrawTextureParams {
-                        dest_size: Some(vec2(w as f32 * zoom, h as f32 * zoom)),
-                        source: Some(source),
-                        ..Default::default()
-                    },
-                );
-            }
         }
     }
 }
@@ -429,9 +403,19 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
             let accent_tint =
                 seat_identity_tint(game, ghost.owner).map(|c| Color::new(c.r, c.g, c.b, tint.a));
             let dest = vec2(w as f32 * zoom, h as f32 * zoom);
-            let mut layers = vec![(sprites.building(ghost.kind, faction), tint)];
+            let body = if ghost.built {
+                sprites.building(ghost.kind, faction)
+            } else {
+                sprites.construction(ghost.kind, faction, 0, 0)
+            };
+            let body_accent = if ghost.built {
+                sprites.building_accent(ghost.kind)
+            } else {
+                sprites.construction_accent(ghost.kind, 0, 0)
+            };
+            let mut layers = vec![(body, tint)];
             if let Some(accent) = accent_tint {
-                layers.push((sprites.building_accent(ghost.kind), accent));
+                layers.push((body_accent, accent));
             }
             if ghost.built
                 && let Some(mount) = sprites.defense_mount(ghost.kind, faction)
@@ -669,16 +653,40 @@ fn shell_tail_start(progress: f32, world_distance: f32) -> f32 {
     if world_distance <= f32::EPSILON {
         return progress;
     }
-    (progress - 0.34 / world_distance).max(0.0)
+    (progress - 0.14 / world_distance).max(0.0)
 }
 
-fn terminal_segment(from: Vec2, to: Vec2, length: f32) -> (Vec2, Vec2) {
-    let path = to - from;
-    let distance = path.length();
-    if distance <= f32::EPSILON {
-        return (to, to);
+const FLAK_ROUND_TRAVEL: f32 = 0.10;
+const FORGE_SPOT_TRAVEL_FRACTION: f32 = 0.60;
+
+fn flak_round_progress(age: f32, yoke_delay: crate::game::FlakYokeDelay) -> [Option<f32>; 2] {
+    let round = |delay: f32| {
+        let local = age - delay;
+        (0.0..=FLAK_ROUND_TRAVEL)
+            .contains(&local)
+            .then(|| (local / FLAK_ROUND_TRAVEL).clamp(0.0, 1.0))
+    };
+    [round(0.0), round(yoke_delay.seconds())]
+}
+
+fn forge_spot_phases(progress: f32) -> (f32, f32) {
+    let progress = progress.clamp(0.0, 1.0);
+    let travel = (progress / FORGE_SPOT_TRAVEL_FRACTION).clamp(0.0, 1.0);
+    let impact = ((progress - FORGE_SPOT_TRAVEL_FRACTION) / (1.0 - FORGE_SPOT_TRAVEL_FRACTION))
+        .clamp(0.0, 1.0);
+    (travel, impact)
+}
+
+fn shot_impact_progress(style: crate::game::ShotStyle, age: f32) -> f32 {
+    use crate::game::ShotStyle;
+    match style {
+        ShotStyle::Contact | ShotStyle::Rail => (age / style.life()).clamp(0.0, 1.0),
+        ShotStyle::ForgeSpot => forge_spot_phases(age / style.life()).1,
+        ShotStyle::FlakBurst { yoke_delay } => {
+            let arrival = yoke_delay.seconds() + FLAK_ROUND_TRAVEL;
+            ((age - arrival) / (style.life() - arrival)).clamp(0.0, 1.0)
+        }
     }
-    (to - path / distance * length.min(distance), to)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -700,6 +708,22 @@ fn shot_visibility(
     } else {
         ShotVisibility::Full
     }
+}
+
+fn draw_splash_bloom(sprites: &Sprites, center: Vec2, zoom: f32, radius: f32, progress: f32) {
+    let progress = progress.clamp(0.0, 1.0);
+    let size = zoom * radius * 2.0 * (0.4 + 0.6 * progress);
+    draw_texture_ex(
+        sprites.texture(),
+        center.x - size * 0.5,
+        center.y - size * 0.5,
+        Color::new(1.0, 1.0, 1.0, 1.0 - progress),
+        DrawTextureParams {
+            dest_size: Some(vec2(size, size)),
+            source: Some(sprites.burst()),
+            ..Default::default()
+        },
+    );
 }
 
 pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
@@ -761,42 +785,65 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
             Color::new(0.03, 0.03, 0.04, 0.35),
         );
         if game.all_seeing() || mine || flat_seen(tail_t) {
+            let before = at((t - 0.01).max(0.0));
+            let after = at((t + 0.01).min(1.0));
+            let travel = (after - before).normalize_or_zero();
+            let travel = if travel.length_squared() <= f32::EPSILON {
+                (b - a).normalize_or_zero()
+            } else {
+                travel
+            };
+            let normal = vec2(-travel.y, travel.x);
+            let offset = normal * radius * 0.34;
+            let tail_end = shell_at - travel * radius * 0.78 + offset;
+            let tail_start = tail + offset;
+            let warm_start = tail_start.lerp(tail_end, 0.50);
             draw_line(
-                tail.x,
-                tail.y,
-                shell_at.x,
-                shell_at.y,
-                radius * 1.15,
-                Color::new(0.18, 0.16, 0.15, 0.95),
+                tail_start.x,
+                tail_start.y,
+                tail_end.x,
+                tail_end.y,
+                radius * 0.56,
+                Color::new(0.52, 0.18, 0.09, 0.92),
             );
-            let hot_tail = tail.lerp(shell_at, 0.55);
             draw_line(
-                hot_tail.x,
-                hot_tail.y,
-                shell_at.x,
-                shell_at.y,
-                radius * 0.42,
-                Color::new(0.95, 0.65, 0.32, 0.72),
+                warm_start.x,
+                warm_start.y,
+                tail_end.x,
+                tail_end.y,
+                radius * 0.28,
+                Color::new(0.98, 0.53, 0.18, 0.88),
             );
         }
-        let travel = (shell_at - tail).normalize_or_zero();
+        let before = at((t - 0.01).max(0.0));
+        let after = at((t + 0.01).min(1.0));
+        let travel = (after - before).normalize_or_zero();
+        let travel = if travel.length_squared() <= f32::EPSILON {
+            (b - a).normalize_or_zero()
+        } else {
+            travel
+        };
         draw_circle(
             shell_at.x,
             shell_at.y,
-            radius * 1.7,
-            Color::new(0.96, 0.42, 0.12, 0.20),
+            radius * 1.35,
+            Color::new(0.96, 0.42, 0.12, 0.16),
         );
-        draw_circle(
-            shell_at.x,
-            shell_at.y,
-            radius,
+        let body_start = shell_at - travel * radius * 0.80;
+        let body_end = shell_at + travel * radius * 0.36;
+        draw_line(
+            body_start.x,
+            body_start.y,
+            body_end.x,
+            body_end.y,
+            radius * 1.28,
             Color::new(0.10, 0.09, 0.09, 1.0),
         );
-        let nose = shell_at + travel * radius * 0.34;
+        let nose = body_end;
         draw_circle(
             nose.x,
             nose.y,
-            radius * 0.48,
+            radius * 0.54,
             Color::new(1.0, 0.82, 0.48, 1.0),
         );
     }
@@ -805,9 +852,9 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
         // Directional geometry still requires a visible source and must
         // not pinpoint a fogged shooter.
         let in_sight = match fx.kind {
-            EffectKind::DirectShot { style, from, to } => {
-                shot_visibility(style, sees(from), sees(to)) != ShotVisibility::Hidden
-            }
+            EffectKind::DirectShot {
+                style, from, to, ..
+            } => shot_visibility(style, sees(from), sees(to)) != ShotVisibility::Hidden,
             EffectKind::Puff { at } => sees(at),
             EffectKind::Falling { at, .. } => sees(at),
             EffectKind::Burst { at, .. } => sees(at),
@@ -820,22 +867,35 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
             continue;
         }
         match fx.kind {
-            EffectKind::DirectShot { style, from, to } => {
+            EffectKind::DirectShot {
+                style,
+                from,
+                to,
+                splash,
+                ..
+            } => {
                 use crate::game::ShotStyle;
                 let a = game.camera.to_screen(from);
                 let b = game.camera.to_screen(to);
-                let progress = (fx.age / style.life()).clamp(0.0, 1.0);
+                let age = fx.age_at(game.state.current_tick(), game.tick_fraction());
+                let progress = (age / style.life()).clamp(0.0, 1.0);
                 let fade = 1.0 - progress;
+                let impact = shot_impact_progress(style, age);
                 let visibility = shot_visibility(
                     style,
                     game.all_seeing() || sees(from),
                     game.all_seeing() || sees(to),
                 );
                 if visibility == ShotVisibility::ImpactOnly {
+                    if let Some(radius) = splash
+                        && impact > 0.0
+                    {
+                        draw_splash_bloom(sprites, b, game.camera.zoom, radius, impact);
+                    }
                     let seed = (to.x * 31.7 + to.y * 17.3).abs();
                     for i in 0..3 {
                         let angle = seed + i as f32 * 2.1;
-                        let reach = game.camera.zoom * (0.08 + progress * 0.12);
+                        let reach = game.camera.zoom * (0.08 + impact * 0.12);
                         let tip = b + vec2(angle.cos(), angle.sin()) * reach;
                         draw_line(
                             b.x,
@@ -843,35 +903,53 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                             tip.x,
                             tip.y,
                             1.5,
-                            Color::new(0.95, 0.67, 0.34, fade),
+                            Color::new(0.95, 0.67, 0.34, 1.0 - impact),
                         );
                     }
                     continue;
                 }
+                if let Some(radius) = splash
+                    && impact > 0.0
+                {
+                    // The area bloom is part of the round-arrival phase,
+                    // behind the projectiles, rather than an explosion the
+                    // rounds visibly fly into.
+                    draw_splash_bloom(sprites, b, game.camera.zoom, radius, impact);
+                }
                 match style {
                     ShotStyle::Contact => {}
-                    ShotStyle::Tracer => {
-                        let length = game.camera.zoom * 0.34 * (0.75 + fade * 0.25);
-                        let (start, end) = terminal_segment(a, b, length);
-                        draw_line(
-                            start.x,
-                            start.y,
-                            end.x,
-                            end.y,
-                            3.2,
-                            Color::new(0.12, 0.11, 0.11, 0.85 * fade),
+                    ShotStyle::ForgeSpot => {
+                        let (travel, impact) = forge_spot_phases(progress);
+                        let round = a.lerp(b, travel);
+                        let round_alpha = 1.0 - impact;
+                        draw_circle(
+                            round.x,
+                            round.y,
+                            3.8,
+                            Color::new(1.0, 0.38, 0.10, 0.20 * round_alpha),
                         );
-                        draw_line(
-                            start.x,
-                            start.y,
-                            end.x,
-                            end.y,
-                            1.2,
-                            Color::new(1.0, 0.66, 0.30, fade),
+                        draw_circle(
+                            round.x,
+                            round.y,
+                            2.3,
+                            Color::new(0.42, 0.19, 0.09, round_alpha),
                         );
-                        draw_circle(end.x, end.y, 4.4, Color::new(1.0, 0.38, 0.10, 0.24 * fade));
-                        draw_circle(end.x, end.y, 2.4, Color::new(0.20, 0.12, 0.08, fade));
-                        draw_circle(end.x, end.y, 1.25, Color::new(1.0, 0.90, 0.68, fade));
+                        draw_circle(
+                            round.x,
+                            round.y,
+                            1.35,
+                            Color::new(1.0, 0.85, 0.52, round_alpha),
+                        );
+                        if impact > 0.0 {
+                            let radius = game.camera.zoom * (0.05 + impact * 0.18);
+                            draw_circle_lines(
+                                b.x,
+                                b.y,
+                                radius,
+                                1.5,
+                                Color::new(1.0, 0.62, 0.22, 1.0 - impact),
+                            );
+                        }
                     }
                     ShotStyle::Rail => {
                         draw_line(
@@ -891,69 +969,31 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                             Color::new(0.92, 0.96, 1.0, fade),
                         );
                     }
-                    ShotStyle::FlakBurst => {
+                    ShotStyle::FlakBurst { yoke_delay } => {
                         let direction = (b - a).normalize_or_zero();
                         let normal = vec2(-direction.y, direction.x);
-                        for (side, stagger) in [(-1.0, 0.12), (1.0, 0.0)] {
-                            let end = b + normal * side * game.camera.zoom * 0.055
-                                - direction * game.camera.zoom * stagger;
-                            let (start, end) = terminal_segment(
-                                a + normal * side * game.camera.zoom * 0.055,
-                                end,
-                                game.camera.zoom * 0.32,
-                            );
-                            draw_line(
-                                start.x,
-                                start.y,
-                                end.x,
-                                end.y,
-                                3.0,
-                                Color::new(0.10, 0.10, 0.10, 0.82 * fade),
-                            );
-                            draw_line(
-                                start.x,
-                                start.y,
-                                end.x,
-                                end.y,
-                                1.1,
-                                Color::new(0.90, 0.86, 0.70, fade),
-                            );
-                            draw_circle(end.x, end.y, 1.8, Color::new(1.0, 0.76, 0.40, fade));
+                        let rounds = flak_round_progress(age, yoke_delay);
+                        for (side, round) in [(-1.0, rounds[0]), (1.0, rounds[1])] {
+                            let Some(round) = round else { continue };
+                            let offset = normal * side * game.camera.zoom * 0.075;
+                            let end = b + offset;
+                            let at = (a + offset).lerp(end, round);
+                            draw_circle(at.x, at.y, 3.4, Color::new(0.98, 0.43, 0.12, 0.18));
+                            draw_circle(at.x, at.y, 2.0, Color::new(0.33, 0.24, 0.13, 1.0));
+                            draw_circle(at.x, at.y, 1.2, Color::new(1.0, 0.84, 0.48, 1.0));
                         }
                         let seed = (to.x * 31.7 + to.y * 17.3).abs();
                         for i in 0..3 {
                             let angle = seed + i as f32 * 2.1;
-                            let reach = progress * game.camera.zoom * 0.28;
+                            let reach = impact * game.camera.zoom * 0.28;
                             let puff = b + vec2(angle.cos(), angle.sin()) * reach;
                             draw_circle(
                                 puff.x,
                                 puff.y,
                                 game.camera.zoom * 0.07 * (1.0 - progress * 0.45),
-                                Color::new(0.66, 0.65, 0.58, 0.42 * fade),
+                                Color::new(0.66, 0.65, 0.58, 0.42 * impact * fade),
                             );
                         }
-                    }
-                    ShotStyle::HeavyRound => {
-                        let (start, end) = terminal_segment(a, b, game.camera.zoom * 0.48);
-                        draw_line(
-                            start.x,
-                            start.y,
-                            end.x,
-                            end.y,
-                            5.0,
-                            Color::new(0.10, 0.09, 0.09, 0.9 * fade),
-                        );
-                        draw_line(
-                            start.lerp(end, 0.52).x,
-                            start.lerp(end, 0.52).y,
-                            end.x,
-                            end.y,
-                            1.7,
-                            Color::new(0.94, 0.62, 0.30, 0.8 * fade),
-                        );
-                        draw_circle(end.x, end.y, 5.2, Color::new(1.0, 0.37, 0.08, 0.22 * fade));
-                        draw_circle(end.x, end.y, 2.8, Color::new(0.13, 0.10, 0.08, fade));
-                        draw_circle(end.x, end.y, 1.4, Color::new(1.0, 0.82, 0.50, fade));
                     }
                 }
             }
@@ -989,19 +1029,7 @@ pub(crate) fn draw_fx(game: &Game, sprites: &Sprites) {
                 // the player reads exactly the area that just got hit.
                 let center = game.camera.to_screen(at);
                 let progress = (fx.age / 0.35).clamp(0.0, 1.0);
-                let size = game.camera.zoom * radius * 2.0 * (0.4 + 0.6 * progress);
-                let alpha = 1.0 - progress;
-                draw_texture_ex(
-                    sprites.texture(),
-                    center.x - size * 0.5,
-                    center.y - size * 0.5,
-                    Color::new(1.0, 1.0, 1.0, alpha),
-                    DrawTextureParams {
-                        dest_size: Some(vec2(size, size)),
-                        source: Some(sprites.burst()),
-                        ..Default::default()
-                    },
-                );
+                draw_splash_bloom(sprites, center, game.camera.zoom, radius, progress);
             }
             EffectKind::Debris { at, seed } => {
                 // Three shards on seed-derived arcs: radial fling that
@@ -1783,18 +1811,40 @@ mod tests {
         assert_eq!(shell_arc_lift(1_000.0, zoom, bastion), zoom * 0.40);
 
         let tail = shell_tail_start(0.5, 10.0);
-        assert!((tail - 0.466).abs() < 1.0e-4);
-        assert!((0.5 - tail) * 10.0 <= 0.340_001);
+        assert!((tail - 0.486).abs() < 1.0e-4);
+        assert!((0.5 - tail) * 10.0 <= 0.140_001);
     }
 
     #[test]
-    fn physical_direct_shots_use_short_terminal_segments() {
-        let (start, end) = terminal_segment(vec2(0.0, 0.0), vec2(100.0, 0.0), 12.0);
-        assert_eq!(start, vec2(88.0, 0.0));
-        assert_eq!(end, vec2(100.0, 0.0));
+    fn separate_flak_yokes_report_at_their_authored_delays() {
+        use crate::game::FlakYokeDelay;
 
-        let (start, end) = terminal_segment(vec2(4.0, 8.0), vec2(4.0, 8.0), 12.0);
-        assert_eq!(start, end);
+        let unit_delay = FlakYokeDelay::OneTick;
+        assert_eq!(flak_round_progress(0.0, unit_delay), [Some(0.0), None]);
+
+        let both = flak_round_progress(unit_delay.seconds(), unit_delay);
+        assert!(both[0].is_some());
+        assert_eq!(both[1], Some(0.0));
+
+        let after_first = flak_round_progress(FLAK_ROUND_TRAVEL + 1.0e-4, unit_delay);
+        assert!(after_first[0].is_none());
+        assert!(after_first[1].is_some());
+
+        let turret_delay = FlakYokeDelay::OneAndHalfTicks.seconds();
+        assert_eq!(turret_delay, 1.5 * crate::game::TICK_DT);
+        assert_eq!(
+            flak_round_progress(0.0, FlakYokeDelay::None),
+            [Some(0.0), Some(0.0)]
+        );
+    }
+
+    #[test]
+    fn forge_spot_reaches_its_target_before_the_effect_expires() {
+        assert_eq!(forge_spot_phases(0.0), (0.0, 0.0));
+        assert_eq!(forge_spot_phases(FORGE_SPOT_TRAVEL_FRACTION), (1.0, 0.0));
+        let (travel, impact) = forge_spot_phases(0.99);
+        assert_eq!(travel, 1.0);
+        assert!(impact > 0.9);
     }
 
     #[test]
@@ -1806,7 +1856,7 @@ mod tests {
             ShotVisibility::Full
         );
         assert_eq!(
-            shot_visibility(ShotStyle::Tracer, false, true),
+            shot_visibility(ShotStyle::ForgeSpot, false, true),
             ShotVisibility::ImpactOnly
         );
         assert_eq!(
@@ -1814,7 +1864,7 @@ mod tests {
             ShotVisibility::ImpactOnly
         );
         assert_eq!(
-            shot_visibility(ShotStyle::HeavyRound, true, false),
+            shot_visibility(ShotStyle::ForgeSpot, true, false),
             ShotVisibility::Hidden
         );
     }

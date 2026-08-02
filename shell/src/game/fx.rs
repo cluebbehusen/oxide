@@ -11,8 +11,24 @@ use oxide_sim::Event;
 pub struct Effect {
     /// What to draw.
     pub kind: EffectKind,
-    /// Seconds alive.
+    /// Wall seconds alive for effects that do not ride the simulation clock.
     pub age: f32,
+}
+
+impl Effect {
+    /// Age at one simulation-timeline instant. Direct-fire reports follow
+    /// sim time so their rounds stay attached to authored muzzle frames at
+    /// every game and replay speed. Their wall-age field is only allowed to
+    /// drain a terminal battlefield after simulation time has stopped.
+    pub(crate) fn age_at(&self, completed_ticks: u64, tick_fraction: f32) -> f32 {
+        match self.kind {
+            EffectKind::DirectShot { completed_tick, .. } => {
+                let whole = completed_ticks.saturating_sub(completed_tick) as f32;
+                (whole + tick_fraction.clamp(0.0, 1.0)) * super::TICK_DT + self.age
+            }
+            _ => self.age,
+        }
+    }
 }
 
 /// A clip the shell should play (queued by sim events, drained per frame).
@@ -79,6 +95,33 @@ pub enum PingKind {
     Spawn,
 }
 
+/// Delay between the two visible rounds of one logical flak hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlakYokeDelay {
+    /// Both barrels fire together.
+    None,
+    /// The second yoke fires one simulation tick after the first.
+    OneTick,
+    /// The second yoke fires halfway through a three-tick report.
+    OneAndHalfTicks,
+}
+
+impl FlakYokeDelay {
+    /// Authored delay in simulation ticks.
+    pub(crate) fn ticks(self) -> f32 {
+        match self {
+            Self::None => 0.0,
+            Self::OneTick => 1.0,
+            Self::OneAndHalfTicks => 1.5,
+        }
+    }
+
+    /// Authored delay in seconds on the simulation timeline.
+    pub(crate) fn seconds(self) -> f32 {
+        self.ticks() * super::TICK_DT
+    }
+}
+
 /// The visual family of a direct-fire shot — mapped from the exact
 /// (shooter kind, weapon slot) the hit event names, so every weapon
 /// reads as itself.
@@ -86,14 +129,15 @@ pub enum PingKind {
 pub enum ShotStyle {
     /// A contact tool: target sparks, never a ranged projectile.
     Contact,
-    /// A short physical bullet tracer at the impact end of its path.
-    Tracer,
+    /// The approved compact forge-bright orb with no persistent tracer.
+    ForgeSpot,
     /// The Lancer's rail: heavy, bright, lingering.
     Rail,
-    /// One logical anti-air attack shown as a paired ballistic burst.
-    FlakBurst,
-    /// A large direct-fire round, dark-bodied with a warm short tail.
-    HeavyRound,
+    /// One logical anti-air attack shown as two physical rounds.
+    FlakBurst {
+        /// When the second visible yoke reports.
+        yoke_delay: FlakYokeDelay,
+    },
 }
 
 impl ShotStyle {
@@ -101,10 +145,12 @@ impl ShotStyle {
     pub fn life(self) -> f32 {
         match self {
             ShotStyle::Contact => 0.12,
-            ShotStyle::Tracer => 0.20,
+            ShotStyle::ForgeSpot => 0.20,
             ShotStyle::Rail => 0.24,
-            ShotStyle::FlakBurst => 0.18,
-            ShotStyle::HeavyRound => 0.22,
+            ShotStyle::FlakBurst {
+                yoke_delay: FlakYokeDelay::None,
+            } => 0.24,
+            ShotStyle::FlakBurst { .. } => 0.30,
         }
     }
 }
@@ -115,9 +161,13 @@ fn unit_shot_style(kind: oxide_sim::UnitKind, weapon: usize) -> ShotStyle {
     match (kind, weapon) {
         (UnitKind::Scuttler, _) => ShotStyle::Contact,
         (UnitKind::Lancer, _) => ShotStyle::Rail,
-        (UnitKind::Flakhound | UnitKind::Stinger, _) => ShotStyle::FlakBurst,
-        (UnitKind::Buzzard, _) => ShotStyle::HeavyRound,
-        _ => ShotStyle::Tracer,
+        (UnitKind::Flakhound, _) => ShotStyle::FlakBurst {
+            yoke_delay: FlakYokeDelay::OneTick,
+        },
+        (UnitKind::Stinger, _) => ShotStyle::FlakBurst {
+            yoke_delay: FlakYokeDelay::None,
+        },
+        _ => ShotStyle::ForgeSpot,
     }
 }
 
@@ -127,9 +177,10 @@ fn defense_shot_style(kind: oxide_sim::BuildingKind) -> ShotStyle {
         "real shell weapons must arrive through ShellLaunched"
     );
     match kind {
-        oxide_sim::BuildingKind::FlakTurret => ShotStyle::FlakBurst,
-        oxide_sim::BuildingKind::Bastion => ShotStyle::HeavyRound,
-        _ => ShotStyle::Tracer,
+        oxide_sim::BuildingKind::FlakTurret => ShotStyle::FlakBurst {
+            yoke_delay: FlakYokeDelay::OneAndHalfTicks,
+        },
+        _ => ShotStyle::ForgeSpot,
     }
 }
 
@@ -143,9 +194,11 @@ fn visual_shot_origin(from: Vec2, to: Vec2, reach: f32) -> Vec2 {
 }
 
 fn unit_muzzle_reach(kind: oxide_sim::UnitKind) -> f32 {
-    match kind.stats().domain {
-        oxide_sim::stats::Domain::Ground => 0.38,
-        oxide_sim::stats::Domain::Air => 0.32,
+    match kind {
+        // The Quad-Fan's forward gun extends well beyond its central hull.
+        oxide_sim::UnitKind::Buzzard => 0.44,
+        _ if kind.stats().domain == oxide_sim::stats::Domain::Ground => 0.38,
+        _ => 0.32,
     }
 }
 
@@ -192,12 +245,16 @@ fn shell_fire_sound(shooter: oxide_sim::Target) -> SoundKind {
 pub enum EffectKind {
     /// A direct-fire shot, styled by the weapon family that spoke.
     DirectShot {
-        /// Visual family (contact, tracer, rail, flak, heavy round).
+        /// Visual family (contact, kinetic, rail, or flak).
         style: ShotStyle,
         /// Muzzle, world coords.
         from: Vec2,
         /// Impact, world coords.
         to: Vec2,
+        /// Splash radius, if this logical hit has one.
+        splash: Option<f32>,
+        /// Simulation tick immediately after the hit was reported.
+        completed_tick: u64,
     },
     /// A downed flyer: the sprite drops, spins, and shrinks out.
     Falling {
@@ -243,17 +300,16 @@ fn push_direct_report(
     from: Vec2,
     to: Vec2,
     splash: Option<f32>,
+    completed_tick: u64,
 ) {
-    // The area bloom stays behind the weapon report. In particular, an
-    // opaque flak burst must not paint over the paired terminal tracers.
-    if let Some(radius) = splash {
-        effects.push(Effect {
-            kind: EffectKind::Burst { at: to, radius },
-            age: 0.0,
-        });
-    }
     effects.push(Effect {
-        kind: EffectKind::DirectShot { style, from, to },
+        kind: EffectKind::DirectShot {
+            style,
+            from,
+            to,
+            splash,
+            completed_tick,
+        },
         age: 0.0,
     });
 }
@@ -265,11 +321,18 @@ impl Game {
             *age += dt;
         }
         self.alerts.retain(|(_, age)| *age < 6.0);
+        let terminal = self.state.result().is_some();
         for fx in &mut self.fx {
-            fx.age += dt;
+            match fx.kind {
+                EffectKind::DirectShot { .. } if terminal => fx.age += dt,
+                EffectKind::DirectShot { .. } => {}
+                _ => fx.age += dt,
+            }
         }
+        let completed_ticks = self.state.current_tick();
+        let tick_fraction = self.tick_fraction();
         self.fx.retain(|fx| {
-            fx.age
+            fx.age_at(completed_ticks, tick_fraction)
                 < match fx.kind {
                     EffectKind::DirectShot { style, .. } => style.life(),
                     EffectKind::Puff { .. } => 0.4,
@@ -365,6 +428,7 @@ impl Game {
                         ),
                         world_vec(*target_pos),
                         splash,
+                        self.state.current_tick(),
                     );
                 }
                 Event::TurretFired {
@@ -427,6 +491,7 @@ impl Game {
                         ),
                         world_vec(*target_pos),
                         splash,
+                        self.state.current_tick(),
                     );
                 }
                 Event::BuildingCompleted { player, kind, .. } if *player == self.human => {
@@ -771,43 +836,116 @@ mod tests {
         assert_eq!(unit_shot_style(UnitKind::Lancer, 0), ShotStyle::Rail);
         assert_eq!(
             unit_shot_style(UnitKind::Flakhound, 0),
-            ShotStyle::FlakBurst
+            ShotStyle::FlakBurst {
+                yoke_delay: FlakYokeDelay::OneTick,
+            }
         );
-        assert_eq!(unit_shot_style(UnitKind::Stinger, 0), ShotStyle::FlakBurst);
+        assert_eq!(
+            unit_shot_style(UnitKind::Stinger, 0),
+            ShotStyle::FlakBurst {
+                yoke_delay: FlakYokeDelay::None,
+            }
+        );
         // Both Sentinel slots speak through its one physical barrel;
         // the second is a weaker skyward poke, not a paired flak gun.
-        assert_eq!(unit_shot_style(UnitKind::Sentinel, 0), ShotStyle::Tracer);
-        assert_eq!(unit_shot_style(UnitKind::Sentinel, 1), ShotStyle::Tracer);
-        assert_eq!(unit_shot_style(UnitKind::Buzzard, 0), ShotStyle::HeavyRound);
-        assert_eq!(unit_shot_style(UnitKind::Darter, 0), ShotStyle::Tracer);
-        assert_eq!(unit_shot_style(UnitKind::Talon, 0), ShotStyle::Tracer);
-        assert_eq!(unit_shot_style(UnitKind::Wisp, 0), ShotStyle::Tracer);
+        assert_eq!(unit_shot_style(UnitKind::Sentinel, 0), ShotStyle::ForgeSpot);
+        assert_eq!(unit_shot_style(UnitKind::Sentinel, 1), ShotStyle::ForgeSpot);
+        assert_eq!(unit_shot_style(UnitKind::Buzzard, 0), ShotStyle::ForgeSpot);
+        assert_eq!(unit_shot_style(UnitKind::Darter, 0), ShotStyle::ForgeSpot);
+        assert_eq!(unit_shot_style(UnitKind::Talon, 0), ShotStyle::ForgeSpot);
+        assert_eq!(unit_shot_style(UnitKind::Wisp, 0), ShotStyle::ForgeSpot);
         assert_eq!(
             defense_shot_style(BuildingKind::FlakTurret),
-            ShotStyle::FlakBurst
+            ShotStyle::FlakBurst {
+                yoke_delay: FlakYokeDelay::OneAndHalfTicks,
+            }
         );
-        assert_eq!(defense_shot_style(BuildingKind::Turret), ShotStyle::Tracer);
+        assert_eq!(
+            defense_shot_style(BuildingKind::Turret),
+            ShotStyle::ForgeSpot
+        );
     }
 
     #[test]
-    fn splash_bloom_draws_behind_the_direct_report() {
+    fn flak_yoke_rounds_switch_with_the_second_muzzle_frame() {
+        assert_eq!(
+            crate::presentation_animation::FLAKHOUND_REPORT_TICKS / 2.0,
+            FlakYokeDelay::OneTick.ticks()
+        );
+        assert_eq!(
+            crate::presentation_animation::FLAK_TURRET_REPORT_TICKS / 2.0,
+            FlakYokeDelay::OneAndHalfTicks.ticks()
+        );
+    }
+
+    #[test]
+    fn splash_bloom_stays_with_the_one_direct_report_until_arrival() {
         let mut effects = Vec::new();
         push_direct_report(
             &mut effects,
-            ShotStyle::FlakBurst,
+            ShotStyle::FlakBurst {
+                yoke_delay: FlakYokeDelay::OneTick,
+            },
             Vec2::ZERO,
             Vec2::ONE,
             Some(1.25),
+            42,
         );
 
-        assert!(matches!(effects[0].kind, EffectKind::Burst { .. }));
+        assert_eq!(effects.len(), 1, "one hit creates one flak report");
         assert!(matches!(
-            effects[1].kind,
+            effects[0].kind,
             EffectKind::DirectShot {
-                style: ShotStyle::FlakBurst,
+                style: ShotStyle::FlakBurst {
+                    yoke_delay: FlakYokeDelay::OneTick,
+                },
+                splash: Some(1.25),
+                completed_tick: 42,
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn direct_reports_age_on_sim_time_instead_of_wall_time() {
+        let shot = Effect {
+            kind: EffectKind::DirectShot {
+                style: ShotStyle::ForgeSpot,
+                from: Vec2::ZERO,
+                to: Vec2::ONE,
+                splash: None,
+                completed_tick: 100,
+            },
+            age: 0.0,
+        };
+        assert_eq!(shot.age_at(100, 0.0), 0.0);
+        assert!((shot.age_at(102, 0.5) - 2.5 * crate::game::TICK_DT).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn final_volley_drains_after_the_simulation_stops() {
+        let mut game = crate::game::Game::with_viewport(
+            oxide_sim::Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("skirmish builds");
+        game.issue(oxide_sim::Command::Surrender);
+        game.do_tick();
+        assert!(game.state.result().is_some());
+
+        let completed_tick = game.state.current_tick();
+        game.fx.push(Effect {
+            kind: EffectKind::DirectShot {
+                style: ShotStyle::ForgeSpot,
+                from: Vec2::ZERO,
+                to: Vec2::ONE,
+                splash: None,
+                completed_tick,
+            },
+            age: 0.0,
+        });
+        game.update_fx(ShotStyle::ForgeSpot.life() + 0.01);
+        assert!(game.fx.is_empty());
     }
 
     #[test]
@@ -890,6 +1028,8 @@ mod tests {
             macroquad::prelude::vec2(2.38, 3.0)
         );
         assert_eq!(visual_shot_origin(from, from, 0.38), from);
+        assert_eq!(unit_muzzle_reach(UnitKind::Buzzard), 0.44);
+        assert_eq!(unit_muzzle_reach(UnitKind::Darter), 0.32);
         assert!(
             defense_muzzle_reach(BuildingKind::Bastion)
                 > defense_muzzle_reach(BuildingKind::Turret)

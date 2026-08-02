@@ -220,7 +220,7 @@ pub fn unit_flavor(kind: UnitKind) -> &'static str {
         UnitKind::Lancer => "Long-range ground sniper; vulnerable at close range.",
         UnitKind::Bombard => "Long-range artillery that needs allied vision to fire.",
         UnitKind::Flakhound => "Tracked anti-air unit.",
-        UnitKind::Buzzard => "Heavy aircraft that attacks ground targets.",
+        UnitKind::Buzzard => "Heavy hovering gunship that attacks ground targets.",
         UnitKind::Talon => "Heavy air-superiority fighter.",
         UnitKind::Stinger => "Low-cost ground anti-air unit.",
         UnitKind::Darter => "Fast aircraft that attacks ground targets.",

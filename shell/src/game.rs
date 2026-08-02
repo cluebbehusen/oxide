@@ -42,7 +42,7 @@ pub struct Selection {
 /// A transient visual effect (never sim-relevant).
 mod fx;
 
-pub use fx::{Effect, EffectKind, PingKind, ShotStyle, SoundKind};
+pub use fx::{Effect, EffectKind, FlakYokeDelay, PingKind, ShotStyle, SoundKind};
 
 /// A transient HUD message (rejected orders, stalled units).
 pub struct Toast {

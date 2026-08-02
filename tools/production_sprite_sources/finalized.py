@@ -55,8 +55,8 @@ UNIT_MOVEMENT: dict[str, FrameSet] = {
     ),
     "buzzard": FrameSet(
         ("_move1", "_move2"),
-        ("internal_propulsion_a", "internal_propulsion_b"),
-        (150, 150),
+        ("rotor_phase_a", "rotor_phase_b"),
+        (160, 160),
     ),
     "darter": FrameSet(
         ("_move1", "_move2"),
@@ -136,12 +136,12 @@ UNIT_ACTIONS: dict[str, FrameSet] = {
     "buzzard": FrameSet(
         tuple(f"_action{i}" for i in range(1, 5)),
         (
-            "belly_hopper_opens",
-            "damage+payload_ram_drop",
-            "belly_hopper_closes",
+            "forward_gun_charges",
+            "damage+forward_gun_report",
+            "forward_gun_recovers",
             "attack_settle",
         ),
-        (170, 100, 170, 480),
+        (170, 90, 150, 520),
     ),
     "darter": FrameSet(
         tuple(f"_action{i}" for i in range(1, 5)),

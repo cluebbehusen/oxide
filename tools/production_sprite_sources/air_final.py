@@ -11,6 +11,7 @@ from tools.gen_sprites import (
     IRON,
     IRON_DARK,
     IRON_LIGHT,
+    SCRAP,
     SCRAP_DARK,
     SCRAP_LIGHT,
     rim_light,
@@ -93,6 +94,80 @@ def _rail(
         )
 
 
+def _line(
+    draw: ImageDraw.ImageDraw,
+    points: tuple[tuple[int, int], ...],
+    color: tuple[int, int, int],
+    width: int,
+) -> None:
+    draw.line(_points(points), fill=_rgba(color), width=_s(width), joint="curve")
+
+
+def _fan(
+    draw: ImageDraw.ImageDraw,
+    center: tuple[int, int],
+    radius: int,
+    phase: int,
+) -> None:
+    cx, cy = center
+    draw.ellipse(
+        _box((cx - radius, cy - radius, cx + radius, cy + radius)),
+        fill=_rgba(IRON_DARK),
+    )
+    draw.ellipse(
+        _box((cx - radius + 2, cy - radius + 2, cx + radius - 2, cy + radius - 2)),
+        fill=_rgba((25, 25, 31)),
+    )
+    blades = (
+        ((-radius + 3, 0), (radius - 3, 0)),
+        ((-radius + 4, -radius + 4), (radius - 4, radius - 4)),
+        ((0, -radius + 3), (0, radius - 3)),
+    )
+    (x0, y0), (x1, y1) = blades[phase % len(blades)]
+    _line(draw, ((cx + x0, cy + y0), (cx + x1, cy + y1)), FERROUS["light"], 2)
+    draw.ellipse(_box((cx - 2, cy - 2, cx + 2, cy + 2)), fill=_rgba(IRON_LIGHT))
+
+
+def _forward_gun(
+    draw: ImageDraw.ImageDraw,
+    *,
+    state: str,
+    x: int = 32,
+    breech_y: int = 38,
+    muzzle_y: int = 5,
+    width: int = 5,
+) -> None:
+    recoil, heat = {
+        "idle": (0, IRON_LIGHT),
+        "ready": (1, SCRAP_DARK),
+        "attack": (5, SCRAP_LIGHT),
+        "recover": (2, SCRAP),
+    }[state]
+    y0 = muzzle_y + recoil
+    _line(draw, ((x, breech_y), (x, y0)), IRON_DARK, width + 2)
+    _line(draw, ((x, breech_y - 1), (x, y0)), IRON_LIGHT, width)
+    draw.rectangle(
+        _box((x - width // 2 - 1, y0, x + width // 2 + 1, y0 + 3)),
+        fill=_rgba(heat),
+    )
+    if state == "attack":
+        draw.polygon(
+            _points(((x - 4, y0 - 1), (x, y0 - 6), (x + 4, y0 - 1))),
+            fill=(*SCRAP_LIGHT, 230),
+        )
+
+
+def _buzzard_quad_fan_carriage(phase: int, state: str) -> Image.Image:
+    image, draw = _canvas()
+    for center in ((13, 22), (51, 22), (13, 48), (51, 48)):
+        _line(draw, ((32, 35), center), FERROUS["dark"], 4)
+        _fan(draw, center, 8, phase + center[1])
+    _plate(draw, (23, 16, 41, 55), fill=FERROUS["base"], radius=4)
+    draw.rectangle(_box((26, 33, 38, 52)), fill=_rgba(IRON_DARK))
+    _forward_gun(draw, state=state)
+    return _finish(image)
+
+
 def _engine_pod(
     draw: ImageDraw.ImageDraw, box: Box, palette: Palette, phase: int
 ) -> None:
@@ -167,47 +242,6 @@ def _state_color(state: str, palette: Palette) -> tuple[int, int, int]:
         "attack": SCRAP_LIGHT,
         "recover": palette["light"],
     }[state]
-
-
-def _buzzard_compact_bomber(phase: int, state: str) -> Image.Image:
-    image, draw = _canvas()
-    draw.polygon(
-        _points(
-            (
-                (19, 13),
-                (27, 7),
-                (37, 7),
-                (45, 13),
-                (53, 28),
-                (49, 52),
-                (15, 52),
-                (11, 28),
-            )
-        ),
-        fill=_rgba(IRON_DARK),
-    )
-    _engine_pod(draw, (7, 20, 19, 51), FERROUS, phase)
-    _engine_pod(draw, (45, 20, 57, 51), FERROUS, phase + 1)
-    _plate(draw, (18, 8, 46, 54), fill=FERROUS["base"], radius=6)
-    draw.polygon(
-        _points(((22, 12), (32, 5), (42, 12), (39, 22), (25, 22))), fill=_rgba(IRON)
-    )
-    draw.rectangle(_box((22, 24, 42, 48)), fill=_rgba(IRON_DARK))
-    gap = {"idle": 1, "ready": 3, "attack": 6, "recover": 3}[state]
-    draw.rounded_rectangle(
-        _box((24, 26, 32 - gap, 46)), radius=_s(2), fill=_rgba(FERROUS["dark"])
-    )
-    draw.rounded_rectangle(
-        _box((32 + gap, 26, 40, 46)), radius=_s(2), fill=_rgba(FERROUS["dark"])
-    )
-    payload_y = {"idle": 37, "ready": 33, "attack": 27, "recover": 32}[state]
-    _plate(
-        draw,
-        (29, payload_y, 35, payload_y + 8),
-        fill=_state_color(state, FERROUS),
-        radius=2,
-    )
-    return _finish(image)
 
 
 def _talon_compact_interceptor(phase: int, state: str) -> Image.Image:
@@ -335,16 +369,61 @@ def _sequence(
 
 
 def buzzard_sequence() -> GroundUnitSequence:
-    return _sequence(
-        stem="buzzard_compact_bomber",
-        title="Buzzard / Compact Ore-Drop Bomber",
-        mechanism="armored belly hopper opening around one heavy payload ram",
-        mechanism_box=(18, 21, 46, 49),
-        anticipation_event="belly_hopper_opens",
-        attack_event="damage+payload_ram_drop",
-        recovery_event="belly_hopper_closes",
-        recoil_px=6,
-        drawer=_buzzard_compact_bomber,
+    return GroundUnitSequence(
+        stem="buzzard_quad_fan_carriage",
+        title="Buzzard / Quad-Fan Carriage",
+        mechanism="four indexed lift fans carrying one recoiling forward gun",
+        mechanism_box=(5, 5, 59, 58),
+        attack_contract="one physical gun report and one logical damage event",
+        frames=(
+            GroundUnitFrame(_buzzard_quad_fan_carriage(0, "idle"), 520, "idle", "idle"),
+            GroundUnitFrame(
+                _buzzard_quad_fan_carriage(1, "idle"),
+                160,
+                "locomotion",
+                "rotor_phase_a",
+            ),
+            GroundUnitFrame(
+                _buzzard_quad_fan_carriage(2, "idle"),
+                160,
+                "locomotion",
+                "rotor_phase_b",
+            ),
+            GroundUnitFrame(
+                _buzzard_quad_fan_carriage(0, "idle"),
+                300,
+                "settle",
+                "hover_settle",
+            ),
+            GroundUnitFrame(
+                _buzzard_quad_fan_carriage(0, "ready"),
+                170,
+                "anticipation",
+                "forward_gun_charges",
+            ),
+            GroundUnitFrame(
+                _buzzard_quad_fan_carriage(1, "attack"),
+                90,
+                "attack",
+                "damage+forward_gun_report",
+                logical_damage=True,
+                report_count=1,
+                recoil_px=5,
+            ),
+            GroundUnitFrame(
+                _buzzard_quad_fan_carriage(2, "recover"),
+                150,
+                "recovery",
+                "forward_gun_recovers",
+                recoil_px=2,
+            ),
+            GroundUnitFrame(
+                _buzzard_quad_fan_carriage(0, "idle"),
+                520,
+                "settle",
+                "attack_settle",
+            ),
+        ),
     )
 
 

@@ -11,6 +11,8 @@ use crate::presentation_animation::{
     PropulsionState, UnitAnimationState, UnitWorkState, WeaponCycle,
 };
 
+const BUZZARD_CHARGE_THRESHOLD: f32 = 0.94;
+
 /// A Harvester pose within one cargo-specific row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HarvesterPose {
@@ -73,9 +75,10 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
         let cargo = state.cargo.map_or(0, cargo_bucket);
         let pose = match state.work {
             UnitWorkState::Harvesting { cycle, .. }
+            | UnitWorkState::Constructing { cycle, .. }
             | UnitWorkState::Repairing { cycle, .. }
             | UnitWorkState::Salvaging { cycle, .. } => harvester_work_frame(cycle),
-            UnitWorkState::Idle | UnitWorkState::Constructing { .. } => match state.locomotion {
+            UnitWorkState::Idle => match state.locomotion {
                 LocomotionState::Moving { cycle } => HarvesterPose::Moving(cycle_index(cycle, 2)),
                 LocomotionState::Rest => HarvesterPose::Idle,
             },
@@ -83,16 +86,35 @@ pub(crate) fn unit_frame(kind: UnitKind, state: UnitAnimationState) -> UnitFrame
         return UnitFrame::Harvester { cargo, pose };
     }
 
-    if let PropulsionState::WispRotors { cycle } = state.propulsion {
-        return UnitFrame::Moving(cycle_index(cycle, 2));
-    }
     if let LocomotionState::Moving { cycle } = state.locomotion {
-        return UnitFrame::Moving(cycle_index(cycle, 2));
+        return match state.propulsion {
+            PropulsionState::LiftRotors { cycle } => lift_rotor_frame(kind, cycle),
+            PropulsionState::None => UnitFrame::Moving(cycle_index(cycle, 2)),
+        };
     }
     let preparation = preparation_progress(&state.weapons);
+    if kind == UnitKind::Buzzard
+        && preparation.is_some_and(|progress| progress >= BUZZARD_CHARGE_THRESHOLD)
+    {
+        return UnitFrame::Action(0);
+    }
+    if let PropulsionState::LiftRotors { cycle } = state.propulsion {
+        return lift_rotor_frame(kind, cycle);
+    }
     preparation.map_or(UnitFrame::Idle, |progress| {
         UnitFrame::Action(unit_preparation_frame(kind, progress))
     })
+}
+
+fn lift_rotor_frame(kind: UnitKind, cycle: f32) -> UnitFrame {
+    if kind == UnitKind::Buzzard {
+        match cycle_index(cycle, 3) {
+            0 => UnitFrame::Idle,
+            phase => UnitFrame::Moving(phase - 1),
+        }
+    } else {
+        UnitFrame::Moving(cycle_index(cycle, 2))
+    }
 }
 
 /// Selects the complete building frame, keeping Bastion's fixed charge rack
@@ -379,6 +401,18 @@ mod tests {
                 pose: HarvesterPose::Scoop(_),
             }
         ));
+        state.work = UnitWorkState::Constructing {
+            site: oxide_sim::BuildingId(7),
+            target: chassis::grid::TilePos::new(7, 5).center(),
+            cycle: 0.5,
+        };
+        assert_eq!(
+            unit_frame(UnitKind::Harvester, state),
+            UnitFrame::Harvester {
+                cargo: 2,
+                pose: HarvesterPose::Scoop(1),
+            }
+        );
         state.work = UnitWorkState::Idle;
         state.locomotion = LocomotionState::Moving { cycle: 0.75 };
         assert_eq!(
@@ -391,12 +425,50 @@ mod tests {
     }
 
     #[test]
-    fn wisp_rotors_run_at_rest_and_hold_under_reduced_motion() {
+    fn lift_rotors_run_at_rest_and_attacks_override_them() {
         let mut state = unit_state();
-        state.propulsion = PropulsionState::WispRotors { cycle: 0.75 };
-        assert_eq!(unit_frame(UnitKind::Wisp, state), UnitFrame::Moving(1));
-        state.propulsion = PropulsionState::WispRotors { cycle: 0.0 };
+        state.propulsion = PropulsionState::LiftRotors { cycle: 0.75 };
+        for kind in [UnitKind::Buzzard, UnitKind::Wisp] {
+            assert_eq!(unit_frame(kind, state), UnitFrame::Moving(1));
+        }
+
+        state.attack = Some(AttackPhase::Report {
+            weapon: 0,
+            progress: 0.0,
+        });
+        assert_eq!(unit_frame(UnitKind::Buzzard, state), UnitFrame::Action(1));
+
+        state.attack = None;
+        state.propulsion = PropulsionState::LiftRotors { cycle: 0.0 };
+        assert_eq!(unit_frame(UnitKind::Buzzard, state), UnitFrame::Idle);
         assert_eq!(unit_frame(UnitKind::Wisp, state), UnitFrame::Moving(0));
+    }
+
+    #[test]
+    fn buzzard_rotors_use_the_approved_three_phase_loop_at_rest_and_in_motion() {
+        let mut state = unit_state();
+        for (cycle, expected) in [
+            (0.0, UnitFrame::Idle),
+            (0.34, UnitFrame::Moving(0)),
+            (0.67, UnitFrame::Moving(1)),
+        ] {
+            state.propulsion = PropulsionState::LiftRotors { cycle };
+            assert_eq!(unit_frame(UnitKind::Buzzard, state), expected);
+            state.locomotion = LocomotionState::Moving { cycle: 0.99 };
+            assert_eq!(unit_frame(UnitKind::Buzzard, state), expected);
+            state.locomotion = LocomotionState::Rest;
+        }
+    }
+
+    #[test]
+    fn buzzard_only_holds_its_gun_ready_near_the_end_of_cooldown() {
+        let mut state = unit_state();
+        state.propulsion = PropulsionState::LiftRotors { cycle: 0.75 };
+        state.weapons[0] = WeaponCycle::Preparing { progress: 0.93 };
+        assert_eq!(unit_frame(UnitKind::Buzzard, state), UnitFrame::Moving(1));
+
+        state.weapons[0] = WeaponCycle::Preparing { progress: 0.94 };
+        assert_eq!(unit_frame(UnitKind::Buzzard, state), UnitFrame::Action(0));
     }
 
     #[test]
