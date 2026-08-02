@@ -731,8 +731,8 @@ mod tests {
         // legitimately flip a leg; if one fails after such a change,
         // re-measure and update the pinned winners rather than suspecting
         // the pairing machinery.
-        assert_eq!(out.a_as_player_0.verdict(), Some(DuelVerdict::A), "{out:?}");
-        assert_eq!(out.a_as_player_1.verdict(), Some(DuelVerdict::B), "{out:?}");
+        assert_eq!(out.a_as_player_0.verdict(), Some(DuelVerdict::B), "{out:?}");
+        assert_eq!(out.a_as_player_1.verdict(), Some(DuelVerdict::A), "{out:?}");
         assert_eq!(
             out.verdict_flips_on_swap(),
             Some(true),

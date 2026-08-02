@@ -430,6 +430,108 @@ fn a_straight_mover_is_led_hit_and_replayed_bit_exactly() {
 }
 
 #[test]
+fn a_visible_cluster_keeps_the_shell_on_its_current_footprint() {
+    let mut state = range(vec![
+        unit(0, UnitKind::Bombard, 3, 5),
+        unit(0, UnitKind::Sentinel, 5, 5),
+        unit(1, UnitKind::Scuttler, 11, 5),
+        unit(1, UnitKind::Scuttler, 11, 6),
+    ])
+    .build()
+    .unwrap();
+    let bombard = state.units()[0].id;
+    let target = state.units()[2].id;
+    let neighbor = state.units()[3].id;
+    establish_straight_motion(&mut state, target, bombard, TilePos::new(11, 10));
+    assert!(state.can_see(PlayerId(0), state.unit(target).unwrap().tile()));
+    assert!(state.can_see(PlayerId(0), state.unit(neighbor).unwrap().tile()));
+    let current = state.unit(target).unwrap().pos;
+
+    let report = state.tick(&[cmd(
+        0,
+        Command::Attack {
+            units: vec![bombard],
+            target: Target::Unit(target),
+            queue: false,
+        },
+    )]);
+    let (_, aim, _) = unit_launch(&report.events, bombard).expect("the clustered shot launches");
+
+    assert_eq!(
+        aim, current,
+        "a second visible hostile inside the current blast rewards the known cluster"
+    );
+}
+
+#[test]
+fn an_unseen_neighbor_cannot_suppress_predictive_aim() {
+    let mut state = range(vec![
+        unit(0, UnitKind::Bombard, 3, 5),
+        unit(0, UnitKind::Sentinel, 5, 5),
+        unit(1, UnitKind::Scuttler, 12, 5),
+        unit(1, UnitKind::Scuttler, 13, 5),
+    ])
+    .build()
+    .unwrap();
+    let bombard = state.units()[0].id;
+    let target = state.units()[2].id;
+    let neighbor = state.units()[3].id;
+    establish_straight_motion(&mut state, target, bombard, TilePos::new(12, 10));
+    assert!(state.can_see(PlayerId(0), state.unit(target).unwrap().tile()));
+    assert!(!state.can_see(PlayerId(0), state.unit(neighbor).unwrap().tile()));
+    let current = state.unit(target).unwrap().pos;
+
+    let report = state.tick(&[cmd(
+        0,
+        Command::Attack {
+            units: vec![bombard],
+            target: Target::Unit(target),
+            queue: false,
+        },
+    )]);
+    let (_, aim, _) = unit_launch(&report.events, bombard).expect("the isolated shot launches");
+
+    assert!(
+        aim.y > current.y,
+        "fog-private neighbors cannot turn an isolated visible mover into a cluster"
+    );
+}
+
+#[test]
+fn an_ineligible_air_neighbor_cannot_suppress_predictive_aim() {
+    let mut state = range(vec![
+        unit(0, UnitKind::Bombard, 3, 5),
+        unit(0, UnitKind::Sentinel, 5, 5),
+        unit(1, UnitKind::Scuttler, 11, 5),
+        unit(1, UnitKind::Buzzard, 11, 6),
+    ])
+    .build()
+    .unwrap();
+    let bombard = state.units()[0].id;
+    let target = state.units()[2].id;
+    let neighbor = state.units()[3].id;
+    establish_straight_motion(&mut state, target, bombard, TilePos::new(11, 10));
+    assert!(state.can_see(PlayerId(0), state.unit(target).unwrap().tile()));
+    assert!(state.can_see(PlayerId(0), state.unit(neighbor).unwrap().tile()));
+    let current = state.unit(target).unwrap().pos;
+
+    let report = state.tick(&[cmd(
+        0,
+        Command::Attack {
+            units: vec![bombard],
+            target: Target::Unit(target),
+            queue: false,
+        },
+    )]);
+    let (_, aim, _) = unit_launch(&report.events, bombard).expect("the isolated shot launches");
+
+    assert!(
+        aim.y > current.y,
+        "a nearby air body outside the weapon domain cannot suppress the lead"
+    );
+}
+
+#[test]
 fn advance_fire_leads_the_same_moving_path_without_becoming_an_attack() {
     let mut state = moving_target_range().build().unwrap();
     let (target, bombard) = moving_ids(&state);

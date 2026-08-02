@@ -414,12 +414,31 @@ fn a_hidden_artillery_hit_diverts_autonomous_work_without_revealing_the_gun() {
                 anchor: Some(work_anchor),
                 retiring: false,
             } if node == exposed && work_anchor == anchor
-        ) && state.can_see(PlayerId(1), state.unit(worker).unwrap().tile())
+        ) && state.unit(worker).unwrap().path.is_none()
+            && state.can_see(PlayerId(1), state.unit(worker).unwrap().tile())
     });
     assert!(
         state.can_see(PlayerId(1), state.unit(worker).unwrap().tile()),
         "the spotter sees the worker without making the gun visible in return"
     );
+    // The spotter may have triggered a lead while the worker approached.
+    // Stage one stationary shot so this test isolates anonymous danger memory.
+    let bombard_slot = state
+        .units()
+        .iter()
+        .position(|unit| unit.id == bombard)
+        .expect("bombard exists");
+    let worker_slot = state
+        .units()
+        .iter()
+        .position(|unit| unit.id == worker)
+        .expect("worker exists");
+    let mut doc = serde_json::to_value(&state).unwrap();
+    doc["shells"] = json!([]);
+    doc["units"][bombard_slot]["cooldowns"][0] = json!(0);
+    doc["units"][worker_slot]["carrying"] = json!(0);
+    doc["units"][worker_slot]["progress"] = json!(0);
+    state = serde_json::from_value(doc).unwrap();
     let before = state.unit(worker).unwrap().hp;
     state.tick(&[cmd(
         1,

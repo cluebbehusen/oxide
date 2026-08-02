@@ -117,40 +117,93 @@ fn position_along_current_motion(
     motion.position_after(target, current, ticks)
 }
 
+fn aim_at_near_splash_edge(current: Vec2Fx, predicted: Vec2Fx, radius: Fx) -> Vec2Fx {
+    predicted.move_toward(current, radius)
+}
+
+fn visible_hostile_cluster_at(
+    state: &State,
+    owner: PlayerId,
+    current: Vec2Fx,
+    weapon: &WeaponStats,
+) -> bool {
+    let Some(radius) = weapon.splash else {
+        return false;
+    };
+    let radius_sq = radius * radius;
+    state
+        .units
+        .iter()
+        .filter(|unit| {
+            unit.hp > 0
+                && state.hostile(owner, unit.player)
+                && weapon.targets.covers(unit.kind.stats().domain)
+                && state.can_see(owner, unit.tile())
+                && unit.pos.dist_sq(current) <= radius_sq
+        })
+        .take(2)
+        .count()
+        >= 2
+}
+
+#[derive(Clone, Copy)]
+struct ProjectileShooter {
+    owner: PlayerId,
+    domain: Domain,
+}
+
 /// Leads a moving unit along its tick-boundary steering line for the shell's
-/// estimated flight. Later path turns remain private, and the target remains
-/// free to change course after launch; shells are still unguided. Buildings
-/// keep their closest-footprint aim unchanged.
+/// estimated flight. For splash shells, the aim backs toward the current
+/// position by one blast radius: a straight commitment remains just inside
+/// the footprint, while stopping or turning gets a principled margin for
+/// error. If the current footprint already contains a second visible eligible
+/// hostile, the gun keeps that known cluster instead of leading away from it.
+/// Later path turns remain private, and the target remains free to change
+/// course after launch; shells are still unguided. Buildings keep their
+/// closest-footprint aim unchanged.
 fn projectile_aim(
     state: &State,
     motion: &MotionSnapshot,
+    shooter: ProjectileShooter,
     from: Vec2Fx,
     target: Target,
     current: Vec2Fx,
     weapon: &WeaponStats,
-    shooter_domain: Domain,
 ) -> Vec2Fx {
     let Target::Unit(target) = target else {
         return current;
     };
+    if visible_hostile_cluster_at(state, shooter.owner, current, weapon) {
+        return current;
+    }
     let mut flight = shell_flight(from, current);
     let mut aim = current;
+    let mut unhedged_aim = current;
     // Ground artillery can only lead ground units, all slower than a shell.
     // Eight fixed iterations settle even the fastest current ground body;
     // the projection itself is bounded in case future balance breaks that
     // relationship.
     for _ in 0..8 {
-        let Some(next_aim) = position_along_current_motion(motion, target, current, flight) else {
+        let Some(predicted) = position_along_current_motion(motion, target, current, flight) else {
             break;
         };
+        let next_aim = weapon.splash.map_or(predicted, |radius| {
+            aim_at_near_splash_edge(current, predicted, radius)
+        });
         let distance_sq = from.dist_sq(next_aim);
         if distance_sq < weapon.minimum_range * weapon.minimum_range {
             // There is no legal predicted impact inside a weapon's dead zone.
             // Keep the target's current, already-validated aim instead of
             // inventing a radial boundary point the target never occupies.
             aim = current;
+            unhedged_aim = current;
             break;
         }
+        unhedged_aim = if from.dist_sq(predicted) > weapon.range * weapon.range {
+            from.move_toward(predicted, weapon.range)
+        } else {
+            predicted
+        };
         aim = if distance_sq > weapon.range * weapon.range {
             from.move_toward(next_aim, weapon.range)
         } else {
@@ -164,10 +217,12 @@ fn projectile_aim(
     }
     let full = traces_terrain(
         weapon,
-        shooter_domain,
+        shooter.domain,
         target_domain(state, Target::Unit(target)),
     );
-    if predicted_impact_open(state, from, aim, full) {
+    if predicted_impact_open(state, from, unhedged_aim, full)
+        && predicted_impact_open(state, from, aim, full)
+    {
         aim
     } else {
         current
@@ -408,7 +463,18 @@ pub(super) fn turret_fire(
             continue;
         };
         let aim = if atk.projectile {
-            projectile_aim(state, motion, center, victim, aim, atk, Domain::Ground)
+            projectile_aim(
+                state,
+                motion,
+                ProjectileShooter {
+                    owner: me,
+                    domain: Domain::Ground,
+                },
+                center,
+                victim,
+                aim,
+                atk,
+            )
         } else {
             aim
         };
@@ -644,9 +710,20 @@ pub(super) fn advance(
         return;
     };
 
-    let projectile_aim = weapon
-        .projectile
-        .then(|| projectile_aim(state, motion, pos, target, aim, &weapon, stats.domain));
+    let projectile_aim = weapon.projectile.then(|| {
+        projectile_aim(
+            state,
+            motion,
+            ProjectileShooter {
+                owner: me,
+                domain: stats.domain,
+            },
+            pos,
+            target,
+            aim,
+            &weapon,
+        )
+    });
     state.unit_mut(id).expect("caller checked").cooldowns[0] = weapon.cooldown_ticks;
     if weapon.projectile {
         let aim = projectile_aim.expect("projectile aim computed");
@@ -806,9 +883,20 @@ pub(super) fn attack(
         && endpoint_open
         && !chassis::path::line_blocked(pos, aim_point, |t| shot_open(t, full))
     {
-        let projectile_aim = weapon
-            .projectile
-            .then(|| projectile_aim(state, motion, pos, target, aim_point, weapon, stats.domain));
+        let projectile_aim = weapon.projectile.then(|| {
+            projectile_aim(
+                state,
+                motion,
+                ProjectileShooter {
+                    owner: me,
+                    domain: stats.domain,
+                },
+                pos,
+                target,
+                aim_point,
+                weapon,
+            )
+        });
         let unit = state.unit_mut(id).expect("caller checked");
         unit.path = None;
         // Blood drawn: reaching the firing stance refreshes the warm
@@ -1431,11 +1519,14 @@ mod tests {
             projectile_aim(
                 &state,
                 &motion,
+                ProjectileShooter {
+                    owner: PlayerId(0),
+                    domain: Domain::Ground,
+                },
                 shooter,
                 Target::Unit(target),
                 current,
                 &UnitKind::Bombard.stats().weapons[0],
-                Domain::Ground,
             )
         };
 
@@ -1443,6 +1534,29 @@ mod tests {
             aim_with_later_turn(TilePos::new(8, 6)),
             aim_with_later_turn(TilePos::new(8, -4)),
             "future A* turns are private intent, not observable velocity"
+        );
+    }
+
+    #[test]
+    fn predictive_splash_aim_uses_the_near_edge_of_the_footprint() {
+        let current = Vec2Fx::new(Fx::from_num(4), Fx::from_num(3));
+        let predicted = Vec2Fx::new(Fx::from_num(9), Fx::from_num(3));
+        let radius = Fx::lit("1.4");
+
+        let aim = aim_at_near_splash_edge(current, predicted, radius);
+
+        let expected = Vec2Fx::new(Fx::lit("7.6"), Fx::from_num(3));
+        let tolerance = Fx::DELTA * Fx::from_num(8);
+        assert!(
+            aim.dist(expected) <= tolerance,
+            "fixed-point direction scaling stays within eight ulps of the near edge"
+        );
+        assert!(
+            aim.dist(predicted) <= radius && aim.dist(predicted) >= radius - tolerance,
+            "a straight mover sits exactly on the predicted blast edge: distance={}, radius={}, tolerance={}",
+            aim.dist(predicted),
+            radius,
+            tolerance
         );
     }
 }
