@@ -242,11 +242,16 @@ DEFENSE_ACTIONS: dict[str, FrameSet] = {
     ),
 }
 
+DEFENSE_BASE_ACTIONS: dict[str, FrameSet] = {
+    "bastion": DEFENSE_ACTIONS["bastion_mount"],
+}
+
 ACTION_COUNTS = {
     **{stem: len(frames.suffixes) for stem, frames in UNIT_ACTIONS.items()},
     "harvester": len(HARVESTER_ACTIONS.suffixes),
     **{stem: len(frames.suffixes) for stem, frames in BUILDING_WORK.items()},
     **{stem: len(frames.suffixes) for stem, frames in DEFENSE_ACTIONS.items()},
+    **{stem: len(frames.suffixes) for stem, frames in DEFENSE_BASE_ACTIONS.items()},
 }
 
 WISP_CONTINUOUS_IDLE_SUFFIXES = ("_move1", "_move2")
@@ -721,24 +726,34 @@ def _bastion_base(source: Image.Image, faction: str, charge: int) -> Image.Image
 
 
 def _shifted_mount(source: Image.Image, recoil: int, muzzle: bool) -> Image.Image:
-    image = Image.new("RGBA", source.size, (0, 0, 0, 0))
-    image.alpha_composite(source, (0, recoil))
+    moving_mask = Image.new("L", source.size, 0)
+    moving_draw = ImageDraw.Draw(moving_mask)
+    moving_draw.rectangle((48, 0, 80, 72), fill=255)
+    moving_draw.rectangle((31, 53, 97, 85), fill=255)
+
+    moving = Image.new("RGBA", source.size, (0, 0, 0, 0))
+    moving.paste(source, (0, 0), moving_mask)
+    fixed = source.copy()
+    fixed.paste((0, 0, 0, 0), (0, 0, source.width, source.height), moving_mask)
+
+    image = fixed
+    image.alpha_composite(moving, (0, recoil))
     if muzzle:
         draw = ImageDraw.Draw(image)
         draw.polygon(
             (
-                (64, 2),
-                (69, 7),
-                (76, 10),
-                (69, 13),
-                (64, 20),
-                (59, 13),
-                (52, 10),
-                (59, 7),
+                (64, 2 + recoil),
+                (69, 7 + recoil),
+                (76, 10 + recoil),
+                (69, 13 + recoil),
+                (64, 20 + recoil),
+                (59, 13 + recoil),
+                (52, 10 + recoil),
+                (59, 7 + recoil),
             ),
             fill=(*gen.SCRAP_LIGHT, 255),
         )
-        draw.rectangle((61, 7, 67, 13), fill=(*gen.BONE, 255))
+        draw.rectangle((61, 7 + recoil, 67, 13 + recoil), fill=(*gen.BONE, 255))
     return image
 
 

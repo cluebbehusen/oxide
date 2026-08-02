@@ -74,6 +74,12 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 for suffix in frame_set.suffixes:
                     self.assertIn(f"{stem}_{faction}{suffix}", self.registry)
 
+        for stem, frame_set in finalized.DEFENSE_BASE_ACTIONS.items():
+            self.assertEqual(finalized.ACTION_COUNTS[stem], len(frame_set.suffixes))
+            for faction in gen.FACTIONS:
+                for suffix in frame_set.suffixes:
+                    self.assertIn(f"{stem}_{faction}{suffix}", self.registry)
+
         for frame_sets in (finalized.UNIT_ACTIONS, finalized.DEFENSE_ACTIONS):
             for stem, frame_set in frame_sets.items():
                 with self.subTest(stem=stem, contract="damage-event"):
@@ -92,6 +98,28 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                     frame = self.registry[f"{stem}_{faction}{suffix}"]
                     self.assertEqual(frame.size, base.size)
                     self.assertGreater(_changed_pixels(base, frame), 2)
+
+    def test_unit_metadata_matches_source_sequences(self) -> None:
+        for stem, builder in finalized._unit_sequences().items():
+            sequence = builder()
+            movement = finalized.UNIT_MOVEMENT[stem]
+            actions = finalized.UNIT_ACTIONS[stem]
+            self.assertEqual(
+                tuple(frame.event for frame in sequence.frames[1:3]),
+                movement.events,
+            )
+            self.assertEqual(
+                tuple(frame.duration_ms for frame in sequence.frames[1:3]),
+                movement.durations_ms,
+            )
+            self.assertEqual(
+                tuple(frame.event for frame in sequence.frames[4:]),
+                actions.events,
+            )
+            self.assertEqual(
+                tuple(frame.duration_ms for frame in sequence.frames[4:]),
+                actions.durations_ms,
+            )
 
     def test_factions_share_dimensions_but_not_accent_pixels(self) -> None:
         stems = (
@@ -173,6 +201,12 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 for suffix in finalized.DEFENSE_ACTIONS[mount_stem].suffixes:
                     action = self.registry[f"{mount_stem}_{faction}{suffix}"]
                     self.assertEqual(action.size, (side, side))
+                    if mount_stem == "bastion_mount":
+                        self.assertLess(
+                            action.getchannel("A").getbbox()[3],
+                            side,
+                            f"{mount_stem}{suffix} must not clip at the canvas edge",
+                        )
 
     def test_action_rows_contain_real_frame_changes(self) -> None:
         for faction in gen.FACTIONS:

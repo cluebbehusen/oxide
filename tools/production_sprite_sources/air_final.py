@@ -294,6 +294,10 @@ def _sequence(
     recovery_event: str,
     recoil_px: int,
     drawer: Drawer,
+    movement_events: tuple[str, str] = (
+        "internal_propulsion_a",
+        "internal_propulsion_b",
+    ),
 ) -> GroundUnitSequence:
     return GroundUnitSequence(
         stem=stem,
@@ -303,12 +307,8 @@ def _sequence(
         attack_contract=f"one physical attack and one logical damage event: {attack_event}",
         frames=(
             GroundUnitFrame(drawer(0, "idle"), 420, "idle", "idle"),
-            GroundUnitFrame(
-                drawer(1, "idle"), 150, "locomotion", "internal_propulsion_a"
-            ),
-            GroundUnitFrame(
-                drawer(2, "idle"), 150, "locomotion", "internal_propulsion_b"
-            ),
+            GroundUnitFrame(drawer(1, "idle"), 150, "locomotion", movement_events[0]),
+            GroundUnitFrame(drawer(2, "idle"), 150, "locomotion", movement_events[1]),
             GroundUnitFrame(drawer(0, "idle"), 220, "settle", "motion_settle"),
             GroundUnitFrame(
                 drawer(0, "ready"), 170, "anticipation", anticipation_event
@@ -377,4 +377,5 @@ def wisp_sequence() -> GroundUnitSequence:
         recovery_event="relay_striker_returns",
         recoil_px=2,
         drawer=_wisp_quadcopter,
+        movement_events=("rotor_phase_a", "rotor_phase_b"),
     )
