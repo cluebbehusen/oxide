@@ -227,6 +227,29 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 with self.subTest(faction=faction, stem=stem):
                     self.assertGreater(max(changed), 12)
 
+    def test_bastion_ready_and_reload_frames_have_physical_charge_cells(self) -> None:
+        centers = [(19, 94 - index * 9) for index in range(5)]
+        expected = {
+            "": 5,
+            "_action1": 1,
+            "_action2": 2,
+            "_action3": 3,
+            "_action4": 4,
+            "_action5": 5,
+            "_action6": 5,
+            "_action7": 0,
+            "_action8": 0,
+            "_action9": 0,
+        }
+        for faction in gen.FACTIONS:
+            for suffix, count in expected.items():
+                image = self.registry[f"bastion_{faction}{suffix}"]
+                lit = sum(
+                    image.getpixel(center)[:3] == gen.SCRAP_LIGHT for center in centers
+                )
+                with self.subTest(faction=faction, suffix=suffix):
+                    self.assertEqual(lit, count)
+
 
 if __name__ == "__main__":
     unittest.main()

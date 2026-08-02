@@ -802,7 +802,10 @@ def _install_defenses(registry: Registry, out: Path, faction: str) -> None:
 
     base_source = heavy_structures.bastion_base(faction)
     mount_source = heavy_structures.bastion_mount(faction)
-    charges = (0, 1, 2, 3, 4, 5, 5, 0, 0, 0)
+    # The base frame is a ready weapon, so its rack is full. Report holds
+    # full through the muzzle frame; recovery empties it before the next
+    # cooldown advances action1..action5 from one cell back to five.
+    charges = (5, 1, 2, 3, 4, 5, 5, 0, 0, 0)
     recoils = (0, 0, 0, 0, 0, 0, 2, 8, 4, 0)
     bastion_frames = tuple(
         (
