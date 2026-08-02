@@ -108,6 +108,9 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
             Command::FocusFire { buildings, target } => {
                 apply_focus_fire(state, pc.player, &canonical_buildings(buildings), *target)
             }
+            Command::CancelFound { kind, anchor } => {
+                apply_cancel_found(state, pc.player, *kind, *anchor)
+            }
         };
         if let Err(reason) = outcome {
             events.push(Event::CommandRejected {
@@ -209,6 +212,19 @@ fn accepted_units(state: &State, player: PlayerId, ids: &[UnitId]) -> Vec<UnitId
 fn end_station_keeping(unit: &mut crate::state::Unit) {
     unit.leash = None;
     unit.settled = 0;
+}
+
+/// Drops the active leg without rotating it into a looping program. This is
+/// the edit operation for one explicitly cancelled order, not ordinary order
+/// completion.
+fn remove_active_order(unit: &mut crate::state::Unit) {
+    end_station_keeping(unit);
+    unit.order = unit.queue.pop_front().unwrap_or(Order::Idle);
+    if matches!(unit.order, Order::Idle) {
+        unit.looping = false;
+    }
+    unit.path = None;
+    unit.progress = 0;
 }
 
 /// Hands a unit its next order: replacing wipes any queued program;
@@ -778,21 +794,30 @@ fn apply_cancel(
     building: crate::ids::BuildingId,
     events: &mut Vec<Event>,
 ) -> Result<(), RejectReason> {
-    let b = state
-        .building(building)
-        .ok_or(RejectReason::NotYourBuilding)?;
-    if b.player != player {
-        return Err(RejectReason::NotYourBuilding);
-    }
-    if b.built {
-        return Err(RejectReason::BadSite);
-    }
-    let stats = b.kind.stats();
-    let cost = stats.construction.expect("sites are buildable kinds").cost;
-    let refund = cost * b.hp / stats.max_hp;
+    let refund = {
+        let b = state
+            .building(building)
+            .ok_or(RejectReason::NotYourBuilding)?;
+        if b.player != player {
+            return Err(RejectReason::NotYourBuilding);
+        }
+        if b.built {
+            return Err(RejectReason::BadSite);
+        }
+        let stats = b.kind.stats();
+        let cost = stats.construction.expect("sites are buildable kinds").cost;
+        cost * b.hp / stats.max_hp
+    };
     let bank = &mut state.player_mut(player).scrap;
     *bank = bank.saturating_add(refund);
     state.buildings.retain(|b| b.id != building);
+    for unit in state.units.iter_mut().filter(|unit| unit.player == player) {
+        unit.queue
+            .retain(|order| !matches!(order, Order::Build { site } if *site == building));
+        if matches!(unit.order, Order::Build { site } if site == building) {
+            remove_active_order(unit);
+        }
+    }
     events.push(Event::BuildCancelled {
         building,
         player,
@@ -981,6 +1006,29 @@ fn apply_cancel_train(
     let bank = &mut state.player_mut(player).scrap;
     *bank = bank.saturating_add(kind.stats().cost);
     Ok(())
+}
+
+fn apply_cancel_found(
+    state: &mut State,
+    player: PlayerId,
+    kind: crate::stats::BuildingKind,
+    anchor: TilePos,
+) -> Result<(), RejectReason> {
+    let matches_site = |order: &Order| {
+        matches!(order, Order::Found { kind: found_kind, anchor: found_anchor }
+            if *found_kind == kind && *found_anchor == anchor)
+    };
+    let mut removed = false;
+    for worker in state.units.iter_mut().filter(|unit| unit.player == player) {
+        let before = worker.queue.len();
+        worker.queue.retain(|order| !matches_site(order));
+        removed |= worker.queue.len() != before;
+        if matches_site(&worker.order) {
+            remove_active_order(worker);
+            removed = true;
+        }
+    }
+    removed.then_some(()).ok_or(RejectReason::InvalidTarget)
 }
 
 fn apply_train(

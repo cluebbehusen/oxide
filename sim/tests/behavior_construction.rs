@@ -1764,6 +1764,422 @@ fn a_deferred_build_founds_on_arrival() {
     assert!(!events.is_empty(), "the deferred site completes normally");
 }
 
+fn deferred_founder_fixture() -> (State, UnitId, TilePos) {
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 12, 2)])
+        .build()
+        .unwrap();
+    let builder = state.units()[0].id;
+    let spot = TilePos::new(12, 1);
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![builder],
+            goal: TilePos::new(2, 6),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 400, |state, _| {
+        !state.can_see(PlayerId(0), spot)
+    });
+    assert!(state.vision(PlayerId(0)).explored(spot));
+    (state, builder, spot)
+}
+
+#[test]
+fn cancelling_a_queued_deferred_site_preserves_the_surrounding_program() {
+    use oxide_sim::stats::BuildingKind;
+
+    let (mut state, builder, spot) = deferred_founder_fixture();
+    let later = Order::Move {
+        goal: TilePos::new(3, 5),
+    };
+    let scrap_before = state.player(PlayerId(0)).scrap;
+    state.tick(&[
+        cmd(
+            0,
+            Command::Build {
+                units: vec![builder],
+                kind: BuildingKind::Turret,
+                anchor: spot,
+                queue: true,
+                defer: true,
+            },
+        ),
+        cmd(
+            0,
+            Command::Move {
+                units: vec![builder],
+                goal: TilePos::new(3, 5),
+                queue: true,
+            },
+        ),
+    ]);
+    let active_before = state.unit(builder).unwrap().order;
+    assert_eq!(
+        state
+            .unit(builder)
+            .unwrap()
+            .queue
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![
+            Order::Found {
+                kind: BuildingKind::Turret,
+                anchor: spot,
+            },
+            later,
+        ]
+    );
+
+    let report = state.tick(&[cmd(
+        0,
+        Command::CancelFound {
+            kind: BuildingKind::Turret,
+            anchor: spot,
+        },
+    )]);
+    assert!(
+        !report
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::CommandRejected { .. }))
+    );
+    let worker = state.unit(builder).unwrap();
+    assert_eq!(worker.order, active_before, "the active leg keeps running");
+    assert_eq!(
+        worker.queue.iter().copied().collect::<Vec<_>>(),
+        vec![later],
+        "only the addressed promise leaves the queue"
+    );
+    assert_eq!(state.player(PlayerId(0)).scrap, scrap_before);
+    assert!(
+        state
+            .buildings()
+            .iter()
+            .all(|building| building.anchor != spot)
+    );
+
+    let mut baseline = state.clone();
+    let rejected = state.tick(&[cmd(
+        0,
+        Command::CancelFound {
+            kind: BuildingKind::Turret,
+            anchor: spot,
+        },
+    )]);
+    baseline.tick(&[]);
+    assert!(rejected.events.iter().any(|event| matches!(
+        event,
+        Event::CommandRejected {
+            reason: RejectReason::InvalidTarget,
+            ..
+        }
+    )));
+    assert_eq!(
+        state.hash(),
+        baseline.hash(),
+        "a stale logical site cannot edit the next leg"
+    );
+}
+
+#[test]
+fn cancelling_an_active_deferred_site_promotes_the_next_leg() {
+    use oxide_sim::stats::BuildingKind;
+
+    let (mut state, builder, spot) = deferred_founder_fixture();
+    let later = Order::Move {
+        goal: TilePos::new(3, 5),
+    };
+    let scrap_before = state.player(PlayerId(0)).scrap;
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor: spot,
+            queue: false,
+            defer: true,
+        },
+    )]);
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![builder],
+            goal: TilePos::new(3, 5),
+            queue: true,
+        },
+    )]);
+
+    state.tick(&[cmd(
+        0,
+        Command::CancelFound {
+            kind: BuildingKind::Turret,
+            anchor: spot,
+        },
+    )]);
+    let worker = state.unit(builder).unwrap();
+    assert_eq!(worker.order, later);
+    assert!(worker.queue.is_empty());
+    assert_eq!(state.player(PlayerId(0)).scrap, scrap_before);
+    assert!(
+        state
+            .buildings()
+            .iter()
+            .all(|building| building.anchor != spot)
+    );
+}
+
+#[test]
+fn cancelling_a_deferred_site_drops_the_whole_builder_crew() {
+    use oxide_sim::stats::BuildingKind;
+
+    let mut state = arena(vec![
+        unit(0, UnitKind::Harvester, 4, 5),
+        unit(0, UnitKind::Harvester, 4, 6),
+    ])
+    .build()
+    .unwrap();
+    let crew: Vec<_> = state.units().iter().map(|unit| unit.id).collect();
+    let anchor = TilePos::new(9, 5);
+    let scrap_before = state.player(PlayerId(0)).scrap;
+
+    let placed = state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: crew.clone(),
+            kind: BuildingKind::Turret,
+            anchor,
+            queue: false,
+            defer: true,
+        },
+    )]);
+    assert!(
+        !placed
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::CommandRejected { .. }))
+    );
+    assert!(crew.iter().all(|id| matches!(
+        state.unit(*id).unwrap().order,
+        Order::Found {
+            kind: BuildingKind::Turret,
+            anchor: found_anchor,
+        } if found_anchor == anchor
+    )));
+
+    let cancelled = state.tick(&[cmd(
+        0,
+        Command::CancelFound {
+            kind: BuildingKind::Turret,
+            anchor,
+        },
+    )]);
+    assert!(
+        !cancelled
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::CommandRejected { .. }))
+    );
+    assert!(crew.iter().all(|id| {
+        let worker = state.unit(*id).unwrap();
+        matches!(worker.order, Order::Idle) && worker.queue.is_empty()
+    }));
+    assert_eq!(state.player(PlayerId(0)).scrap, scrap_before);
+
+    for _ in 0..100 {
+        state.tick(&[]);
+    }
+    assert!(
+        state
+            .buildings()
+            .iter()
+            .all(|building| building.anchor != anchor),
+        "a crewmate cannot resurrect the cancelled logical site"
+    );
+}
+
+#[test]
+fn repeated_pending_cancellation_cannot_retarget_the_next_site() {
+    use oxide_sim::stats::BuildingKind;
+
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 4, 6)])
+        .build()
+        .unwrap();
+    let builder = state.units()[0].id;
+    let first = TilePos::new(9, 5);
+    let second = TilePos::new(9, 7);
+    state.tick(&[
+        cmd(
+            0,
+            Command::Move {
+                units: vec![builder],
+                goal: TilePos::new(3, 2),
+                queue: false,
+            },
+        ),
+        cmd(
+            0,
+            Command::Build {
+                units: vec![builder],
+                kind: BuildingKind::Turret,
+                anchor: first,
+                queue: true,
+                defer: true,
+            },
+        ),
+        cmd(
+            0,
+            Command::Build {
+                units: vec![builder],
+                kind: BuildingKind::Turret,
+                anchor: second,
+                queue: true,
+                defer: true,
+            },
+        ),
+    ]);
+    assert_eq!(
+        state
+            .unit(builder)
+            .unwrap()
+            .queue
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![
+            Order::Found {
+                kind: BuildingKind::Turret,
+                anchor: first,
+            },
+            Order::Found {
+                kind: BuildingKind::Turret,
+                anchor: second,
+            },
+        ]
+    );
+
+    let report = state.tick(&[
+        cmd(
+            0,
+            Command::CancelFound {
+                kind: BuildingKind::Turret,
+                anchor: first,
+            },
+        ),
+        cmd(
+            0,
+            Command::CancelFound {
+                kind: BuildingKind::Turret,
+                anchor: first,
+            },
+        ),
+    ]);
+    assert_eq!(
+        report
+            .events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                Event::CommandRejected {
+                    reason: RejectReason::InvalidTarget,
+                    ..
+                }
+            ))
+            .count(),
+        1,
+        "the repeated click becomes stale instead of hitting another site"
+    );
+    assert_eq!(
+        state
+            .unit(builder)
+            .unwrap()
+            .queue
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![Order::Found {
+            kind: BuildingKind::Turret,
+            anchor: second,
+        }]
+    );
+}
+
+#[test]
+fn cancelling_a_paid_queued_site_removes_only_its_build_leg() {
+    use oxide_sim::stats::BuildingKind;
+
+    let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 4, 6)]);
+    scenario.players[0].scrap = 1000;
+    let mut state = scenario.build().unwrap();
+    let builder = state.units()[0].id;
+    let first_anchor = TilePos::new(5, 6);
+    let second_anchor = TilePos::new(8, 6);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor: first_anchor,
+            queue: false,
+            defer: false,
+        },
+    )]);
+    let first = state
+        .buildings()
+        .iter()
+        .find(|building| building.anchor == first_anchor)
+        .unwrap()
+        .id;
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Turret,
+            anchor: second_anchor,
+            queue: true,
+            defer: false,
+        },
+    )]);
+    let second = state
+        .buildings()
+        .iter()
+        .find(|building| building.anchor == second_anchor)
+        .unwrap()
+        .id;
+    let later = Order::Move {
+        goal: TilePos::new(3, 2),
+    };
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![builder],
+            goal: TilePos::new(3, 2),
+            queue: true,
+        },
+    )]);
+    let second_site = state.building(second).unwrap();
+    let stats = second_site.kind.stats();
+    let expected_refund = stats.construction.unwrap().cost * second_site.hp / stats.max_hp;
+    let scrap_before = state.player(PlayerId(0)).scrap;
+
+    state.tick(&[cmd(0, Command::Cancel { building: second })]);
+
+    let worker = state.unit(builder).unwrap();
+    assert_eq!(worker.order, Order::Build { site: first });
+    assert_eq!(
+        worker.queue.iter().copied().collect::<Vec<_>>(),
+        vec![later],
+        "the later leg survives the cancelled paid site"
+    );
+    assert!(state.building(first).is_some());
+    assert!(state.building(second).is_none());
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        scrap_before + expected_refund
+    );
+}
+
 /// Reissuing a deferred claim with replacement semantics must be accepted:
 /// the selected founder's old claim is the program being replaced, not a
 /// competing reservation.

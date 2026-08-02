@@ -36,10 +36,11 @@ fn command_tag(command: &Command) -> usize {
         Command::RepairUnit { .. } => 14,
         Command::Advance { .. } => 15,
         Command::FocusFire { .. } => 16,
+        Command::CancelFound { .. } => 17,
     }
 }
 
-const COMMAND_VARIANTS: usize = 17;
+const COMMAND_VARIANTS: usize = 18;
 
 /// The verbs that carry a unit list — every one of them owes this file a
 /// duplicate-id row.
@@ -50,6 +51,9 @@ const BUILDING_ONLY_TAGS: [usize; 4] = [6, 10, 11, 12];
 
 /// The one verb whose building operand is a canonicalized set.
 const BUILDING_BEARING_TAGS: [usize; 1] = [16];
+
+/// The one verb that addresses a logical site, with no entity list to canonicalize.
+const SITE_ONLY_TAGS: [usize; 1] = [17];
 
 /// The verbs that name no entity at all — nothing to canonicalize.
 const OPERANDLESS_TAGS: [usize; 1] = [13];
@@ -316,13 +320,14 @@ fn every_verb_is_sorted_into_a_tag_list() {
         .into_iter()
         .chain(BUILDING_ONLY_TAGS)
         .chain(BUILDING_BEARING_TAGS)
+        .chain(SITE_ONLY_TAGS)
         .chain(OPERANDLESS_TAGS)
         .collect();
     all.sort_unstable();
     assert_eq!(
         all,
         (0..COMMAND_VARIANTS).collect::<Vec<_>>(),
-        "every command is unit-bearing, building-bearing, building-only, or operandless"
+        "every command is unit-bearing, site-only, building-bearing, building-only, or operandless"
     );
 }
 

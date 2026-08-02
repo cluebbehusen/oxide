@@ -201,13 +201,24 @@ pub enum Command {
     /// The preference persists while the target remains valid and in true
     /// sight. A focused defense still fires at an ordinary target when its
     /// preference is currently out of reach or behind blocking terrain.
-    /// (Last variant by appending discipline: earlier discriminants keep
-    /// their serialized bytes.)
     FocusFire {
         /// The defenses to retask. The sim reads this as a sorted set.
         buildings: Vec<BuildingId>,
         /// The visible hostile unit or building to prefer.
         target: Target,
+    },
+    /// Cancel one logical deferred construction site. Every own Harvester
+    /// carrying that exact [`crate::state::Order::Found`] promise drops it,
+    /// because a multi-builder command gives the whole crew one copy of the
+    /// same unpaid intent. Paid sites use [`Command::Cancel`] and its refund
+    /// rules instead.
+    /// (Last variant by appending discipline: earlier discriminants keep
+    /// their serialized bytes.)
+    CancelFound {
+        /// The promised structure.
+        kind: crate::stats::BuildingKind,
+        /// The promised top-left footprint tile.
+        anchor: TilePos,
     },
 }
 

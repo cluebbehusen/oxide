@@ -62,13 +62,14 @@ enum CommandTag {
     RepairUnit,
     Advance,
     FocusFire,
+    CancelFound,
 }
 
 /// The draw pool. Paired with the exhaustive matches below, the array and
 /// the variant list cannot drift apart — the old `next_below(10)` bound
 /// against nine arms is exactly how `Repair`, `Salvage`, and
 /// `CancelTrain` went unfuzzed.
-const COMMAND_TAGS: [CommandTag; 17] = [
+const COMMAND_TAGS: [CommandTag; 18] = [
     CommandTag::Move,
     CommandTag::Attack,
     CommandTag::AttackMove,
@@ -86,6 +87,7 @@ const COMMAND_TAGS: [CommandTag; 17] = [
     CommandTag::RepairUnit,
     CommandTag::Advance,
     CommandTag::FocusFire,
+    CommandTag::CancelFound,
 ];
 
 /// How rarely a drawn [`CommandTag::Surrender`] is kept: one landed
@@ -119,6 +121,7 @@ fn tag_index(tag: CommandTag) -> usize {
         CommandTag::RepairUnit => 14,
         CommandTag::Advance => 15,
         CommandTag::FocusFire => 16,
+        CommandTag::CancelFound => 17,
     }
 }
 
@@ -142,6 +145,7 @@ fn tag_of(command: &Command) -> CommandTag {
         Command::RepairUnit { .. } => CommandTag::RepairUnit,
         Command::Advance { .. } => CommandTag::Advance,
         Command::FocusFire { .. } => CommandTag::FocusFire,
+        Command::CancelFound { .. } => CommandTag::CancelFound,
     }
 }
 
@@ -412,6 +416,10 @@ fn generate(tag: CommandTag, rng: &mut Pcg32, state: &State) -> Command {
             buildings: buildings(rng, state),
             target: target(rng, state),
         },
+        CommandTag::CancelFound => Command::CancelFound {
+            kind: BUILDING_KINDS[rng.next_below(BUILDING_KINDS.len() as u32) as usize],
+            anchor: anchor(rng, state),
+        },
     }
 }
 
@@ -435,6 +443,7 @@ struct Reach {
     completed: u64,
     salvaged: u64,
     cancelled: u64,
+    cancelled_found: u64,
 }
 
 impl Reach {
@@ -450,6 +459,7 @@ impl Reach {
         self.completed += other.completed;
         self.salvaged += other.salvaged;
         self.cancelled += other.cancelled;
+        self.cancelled_found += other.cancelled_found;
     }
 }
 
@@ -488,13 +498,78 @@ fn arena() -> State {
     scenario.build().expect("the fuzz arena builds")
 }
 
+fn found_claims(state: &State, player: PlayerId, kind: BuildingKind, anchor: TilePos) -> usize {
+    let matches = |order: &oxide_sim::Order| {
+        matches!(order, oxide_sim::Order::Found { kind: found_kind, anchor: found_anchor }
+            if *found_kind == kind && *found_anchor == anchor)
+    };
+    state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == player)
+        .map(|unit| {
+            usize::from(matches(&unit.order))
+                + unit.queue.iter().filter(|order| matches(order)).count()
+        })
+        .sum()
+}
+
+fn exercise_cancel_found_reach(state: &mut State) {
+    let player = PlayerId(0);
+    let builder = state
+        .units()
+        .iter()
+        .find(|unit| unit.player == player && unit.kind == UnitKind::Harvester)
+        .expect("fuzz arena has a Ferrous Harvester")
+        .id;
+    let kind = BuildingKind::Turret;
+    let anchor = TilePos::new(12, 5);
+    let build = state.tick(&[PlayerCommand {
+        player,
+        command: Command::Build {
+            units: vec![builder],
+            kind,
+            anchor,
+            queue: false,
+            defer: true,
+        },
+    }]);
+    assert!(
+        !build
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::CommandRejected { .. })),
+        "the fuzz reach fixture must establish a deferred claim"
+    );
+    assert_eq!(found_claims(state, player, kind, anchor), 1);
+
+    let cancel = state.tick(&[PlayerCommand {
+        player,
+        command: Command::CancelFound { kind, anchor },
+    }]);
+    assert!(
+        !cancel
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::CommandRejected { .. })),
+        "the fuzz reach fixture must land CancelFound"
+    );
+    assert_eq!(found_claims(state, player, kind, anchor), 0);
+}
+
 fn fuzz_run(seed: u64) -> Run {
     let mut state = arena();
+    exercise_cancel_found_reach(&mut state);
     let mut rng = Pcg32::new(seed, 0xF022);
-    let mut reach = Reach::default();
+    let mut reach = Reach {
+        cancelled_found: 1,
+        ..Reach::default()
+    };
     let mut decided: Option<GameResult> = None;
+    let first_tick = state.current_tick();
 
-    for tick in 0..TICKS {
+    for offset in 0..TICKS {
+        let tick = first_tick + offset;
         assert_eq!(
             state.current_tick(),
             tick,
@@ -661,6 +736,10 @@ fn seeded_garbage_never_panics_and_reproduces() {
     // nobody re-commands for a hundred ticks, which is the behavior
     // suites' job, not garbage's.
     assert!(reach.cancelled > 0, "the sweep must cancel a site");
+    assert!(
+        reach.cancelled_found > 0,
+        "the sweep must accept a deferred-site cancellation"
+    );
     assert!(reach.salvaged > 0, "the sweep must strip a building");
 }
 

@@ -73,6 +73,13 @@ fn selectable(game: &Game, unit: &oxide_sim::Unit) -> bool {
         || game.my_vision().visible(unit.tile())
 }
 
+/// Whether the human may select this building without learning through fog.
+fn selectable_building(game: &Game, building: &oxide_sim::Building) -> bool {
+    building.player == game.human
+        || game.all_seeing()
+        || building.tiles().any(|tile| game.my_vision().visible(tile))
+}
+
 pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f32) {
     let world = game.camera.to_world(screen);
     if !additive {
@@ -122,9 +129,7 @@ pub(super) fn click_select(game: &mut Game, screen: Vec2, additive: bool, ui: f3
     // through fog would leak its live kind and hp through the panel.
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     if let Some(building) = game.state.building_at(tile)
-        && (building.player == game.human
-            || game.all_seeing()
-            || building.tiles().any(|t| game.my_vision().visible(t)))
+        && selectable_building(game, building)
     {
         game.selection.units.clear();
         let current_owner = game
@@ -162,61 +167,146 @@ pub(super) fn box_select(game: &mut Game, a_screen: Vec2, b_screen: Vec2, additi
     let a = game.camera.to_world(a_screen);
     let b = game.camera.to_world(b_screen);
     let (lo, hi) = (a.min(b), a.max(b));
-    game.selection.buildings.clear();
-    let inside = |u: &&oxide_sim::Unit| {
+    let unit_inside = |u: &&oxide_sim::Unit| {
         let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
         p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y
     };
-    // Own units in the box always win; a box holding none falls to a
-    // single foreign owner (lowest seat first) for inspection — never
-    // a mixed bag.
+    // Commandable subjects win before foreign inspection: own units,
+    // then own buildings. Within one allegiance, units retain marquee
+    // priority so the selection never mixes mobile and static subjects.
     let mut boxed: Vec<UnitId> = game
         .state
         .units()
         .iter()
         .filter(|u| u.player == game.human)
-        .filter(inside)
+        .filter(unit_inside)
         .map(|u| u.id)
         .collect();
-    if boxed.is_empty() {
-        let foreign_owner = game
+    if !boxed.is_empty() {
+        if additive {
+            boxed.extend(
+                game.selection
+                    .units
+                    .iter()
+                    .copied()
+                    .filter(|id| game.state.unit(*id).is_some_and(|u| u.player == game.human)),
+            );
+            boxed.sort_unstable();
+            boxed.dedup();
+        }
+        game.selection.units = boxed;
+        game.selection.buildings.clear();
+        return;
+    }
+
+    // Building centers are the pick points, matching units and avoiding
+    // edge-only grabs of a large footprint.
+    let building_inside = |building: &&oxide_sim::Building| {
+        let center = building.center();
+        let p = vec2(center.x.to_num::<f32>(), center.y.to_num::<f32>());
+        p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y
+    };
+    let mut buildings: Vec<_> = game
+        .state
+        .buildings()
+        .iter()
+        .filter(|building| building.player == game.human)
+        .filter(building_inside)
+        .map(|building| building.id)
+        .collect();
+    if !buildings.is_empty() {
+        if additive {
+            buildings.extend(game.selection.buildings.iter().copied().filter(|id| {
+                game.state
+                    .building(*id)
+                    .is_some_and(|building| building.player == game.human)
+            }));
+            buildings.sort_unstable();
+            buildings.dedup();
+        }
+        game.selection.units.clear();
+        game.selection.buildings = buildings;
+        return;
+    }
+
+    // With nothing commandable inside, inspect one visible foreign owner
+    // at a time. Units still outrank buildings within that owner-neutral
+    // inspection fallback.
+    let foreign_unit_owner = game
+        .state
+        .units()
+        .iter()
+        .filter(|unit| unit.player != game.human && selectable(game, unit))
+        .filter(unit_inside)
+        .map(|unit| unit.player)
+        .min();
+    if let Some(owner) = foreign_unit_owner {
+        let mut units: Vec<_> = game
             .state
             .units()
             .iter()
-            .filter(|u| selectable(game, u))
-            .filter(inside)
-            .map(|u| u.player)
-            .min();
-        if let Some(owner) = foreign_owner {
-            // Re-apply visibility: the box may span a fog boundary,
-            // and this owner's HIDDEN units inside it are exactly what
-            // the fog is for — one visible scout must not drag its
-            // unseen army into an inspectable selection.
-            game.selection.units = game
-                .state
-                .units()
-                .iter()
-                .filter(|u| u.player == owner && selectable(game, u))
-                .filter(inside)
-                .map(|u| u.id)
-                .collect();
-            return;
-        }
-    }
-    if additive {
-        // Merging keeps one allegiance: a foreign remainder in the
-        // selection is dropped the moment own units join.
-        boxed.extend(
-            game.selection
+            .filter(|unit| unit.player == owner && selectable(game, unit))
+            .filter(unit_inside)
+            .map(|unit| unit.id)
+            .collect();
+        if additive {
+            let current_owner = game
+                .selection
                 .units
-                .iter()
-                .copied()
-                .filter(|id| game.state.unit(*id).is_some_and(|u| u.player == game.human)),
-        );
-        boxed.sort_unstable();
-        boxed.dedup();
+                .first()
+                .and_then(|id| game.state.unit(*id))
+                .map(|unit| unit.player);
+            if current_owner == Some(owner) {
+                units.extend(game.selection.units.iter().copied());
+                units.sort_unstable();
+                units.dedup();
+            }
+        }
+        game.selection.units = units;
+        game.selection.buildings.clear();
+        return;
     }
-    game.selection.units = boxed;
+
+    let foreign_building_owner = game
+        .state
+        .buildings()
+        .iter()
+        .filter(|building| building.player != game.human)
+        .filter(|building| selectable_building(game, building))
+        .filter(building_inside)
+        .map(|building| building.player)
+        .min();
+    if let Some(owner) = foreign_building_owner {
+        buildings = game
+            .state
+            .buildings()
+            .iter()
+            .filter(|building| building.player == owner && selectable_building(game, building))
+            .filter(building_inside)
+            .map(|building| building.id)
+            .collect();
+        if additive {
+            let current_owner = game
+                .selection
+                .buildings
+                .first()
+                .and_then(|id| game.state.building(*id))
+                .map(|building| building.player);
+            if current_owner == Some(owner) {
+                buildings.extend(game.selection.buildings.iter().copied());
+                buildings.sort_unstable();
+                buildings.dedup();
+            }
+        }
+        game.selection.units.clear();
+        game.selection.buildings = buildings;
+        return;
+    }
+
+    if !additive {
+        game.selection.units.clear();
+        game.selection.buildings.clear();
+    }
 }
 
 /// Double-click: everyone of the clicked unit's kind currently on screen.

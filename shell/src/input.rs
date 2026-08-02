@@ -1510,6 +1510,12 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
         crate::panel::CardAction::CancelQueue(building, index) => {
             game.issue(Command::CancelTrain { building, index });
         }
+        crate::panel::CardAction::CancelSite(building) => {
+            game.issue(Command::Cancel { building });
+        }
+        crate::panel::CardAction::CancelFound(kind, anchor) => {
+            game.issue(Command::CancelFound { kind, anchor });
+        }
         crate::panel::CardAction::ClearRally => {
             for building in orders::selected_producers(game) {
                 game.issue(Command::SetRally {

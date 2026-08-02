@@ -390,6 +390,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::RepairUnit { .. } => "repair_unit",
         Command::Advance { .. } => "advance",
         Command::FocusFire { .. } => "focus_fire",
+        Command::CancelFound { .. } => "cancel_found",
     }
 }
 

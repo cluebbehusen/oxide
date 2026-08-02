@@ -20,6 +20,36 @@ fn multi_producer_game() -> Game {
     Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("multi-producer fixture builds")
 }
 
+fn empty_multi_producer_game() -> Game {
+    let mut scenario = oxide_sim::Scenario::skirmish();
+    scenario.units.clear();
+    scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+        player: 0,
+        kind: oxide_sim::BuildingKind::Fabricator,
+        x: 9,
+        y: 3,
+    });
+    Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("empty building fixture builds")
+}
+
+fn contested_producer_game() -> Game {
+    let mut scenario = oxide_sim::Scenario::skirmish();
+    scenario.units.clear();
+    scenario.units.push(oxide_sim::scenario::UnitSpec {
+        player: 1,
+        kind: UnitKind::Scuttler,
+        x: 11,
+        y: 3,
+    });
+    scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+        player: 0,
+        kind: oxide_sim::BuildingKind::Fabricator,
+        x: 9,
+        y: 3,
+    });
+    Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("contested fixture builds")
+}
+
 fn click(x: f32, y: f32) -> [RawEvent; 2] {
     [
         RawEvent::MouseDown {
@@ -101,6 +131,103 @@ fn shift_click_selects_and_toggles_same_owner_buildings() {
         ],
     );
     assert_eq!(game.selection.buildings, vec![own[1]]);
+}
+
+#[test]
+fn box_select_falls_back_to_same_owner_buildings_and_shift_adds() {
+    let mut game = empty_multi_producer_game();
+    let mut own: Vec<_> = game
+        .state
+        .buildings()
+        .iter()
+        .filter(|building| building.player == game.human)
+        .map(|building| building.id)
+        .collect();
+    own.sort_unstable();
+    assert_eq!(own.len(), 2);
+    let center = |game: &Game, id| {
+        let building = game.state.building(id).unwrap();
+        let center = building.center();
+        game.camera
+            .to_screen(vec2(center.x.to_num::<f32>(), center.y.to_num::<f32>()))
+    };
+
+    let first = center(&game, own[0]);
+    box_select(
+        &mut game,
+        first - vec2(8.0, 8.0),
+        first + vec2(8.0, 8.0),
+        false,
+    );
+    assert_eq!(game.selection.buildings, vec![own[0]]);
+    assert!(game.selection.units.is_empty());
+
+    let second = center(&game, own[1]);
+    box_select(
+        &mut game,
+        second - vec2(8.0, 8.0),
+        second + vec2(8.0, 8.0),
+        true,
+    );
+    assert_eq!(game.selection.buildings, own);
+    assert!(game.selection.units.is_empty());
+}
+
+#[test]
+fn box_select_keeps_own_units_ahead_of_buildings() {
+    let mut game = multi_producer_game();
+    let own_units: Vec<_> = game
+        .state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == game.human)
+        .map(|unit| unit.id)
+        .collect();
+    assert!(!own_units.is_empty());
+
+    let top_left = game.camera.to_screen(vec2(-1.0, -1.0));
+    let bottom_right = game.camera.to_screen(vec2(30.0, 20.0));
+    box_select(&mut game, top_left, bottom_right, false);
+
+    assert_eq!(game.selection.units, own_units);
+    assert!(
+        game.selection.buildings.is_empty(),
+        "units retain marquee priority"
+    );
+}
+
+#[test]
+fn box_select_keeps_own_buildings_ahead_of_foreign_units() {
+    let mut game = contested_producer_game();
+    let fabricator = game
+        .state
+        .buildings()
+        .iter()
+        .find(|building| {
+            building.player == game.human && building.kind == oxide_sim::BuildingKind::Fabricator
+        })
+        .expect("own Fabricator")
+        .id;
+    let enemy = game
+        .state
+        .units()
+        .iter()
+        .find(|unit| unit.player != game.human)
+        .expect("foreign unit");
+    assert!(
+        game.my_vision().visible(enemy.tile()),
+        "the foreign inspection candidate is visible"
+    );
+
+    let top_left = game.camera.to_screen(vec2(8.5, 2.5));
+    let bottom_right = game.camera.to_screen(vec2(12.0, 5.0));
+    box_select(&mut game, top_left, bottom_right, false);
+
+    assert_eq!(game.selection.buildings, vec![fabricator]);
+    assert!(
+        game.selection.units.is_empty(),
+        "a visible raider cannot hijack an own-building marquee"
+    );
 }
 
 #[test]
@@ -3029,6 +3156,41 @@ fn the_roster_strip_cuts_a_mixed_selection_both_ways() {
                 .all(|id| game.state.unit(*id).unwrap().kind == UnitKind::Sentinel),
         "a plain click narrows to the kind"
     );
+}
+
+#[test]
+fn construction_order_cards_stage_their_targeted_cancel_commands() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+
+    activate_card(
+        &mut game,
+        &mut input,
+        crate::panel::CardAction::CancelSite(oxide_sim::BuildingId(91)),
+    );
+    activate_card(
+        &mut game,
+        &mut input,
+        crate::panel::CardAction::CancelFound(
+            oxide_sim::BuildingKind::Bastion,
+            TilePos::new(11, 7),
+        ),
+    );
+
+    assert_eq!(game.pending.len(), 2);
+    assert!(matches!(
+        game.pending[0].command,
+        Command::Cancel {
+            building: oxide_sim::BuildingId(91)
+        }
+    ));
+    assert!(matches!(
+        game.pending[1].command,
+        Command::CancelFound {
+            kind: oxide_sim::BuildingKind::Bastion,
+            anchor,
+        } if anchor == TilePos::new(11, 7)
+    ));
 }
 
 #[test]

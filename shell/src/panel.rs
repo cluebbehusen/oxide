@@ -87,6 +87,10 @@ pub enum CardAction {
     ArmRally,
     /// Remove a queued unit from a producer (full refund).
     CancelQueue(BuildingId, u8),
+    /// Cancel an unfinished site shown by a Harvester's Build order.
+    CancelSite(BuildingId),
+    /// Cancel one unpaid logical site across its assigned Harvester crew.
+    CancelFound(BuildingKind, chassis::grid::TilePos),
     /// Clear the selected producers' rally points.
     ClearRally,
     /// Narrow the selection to one kind (Ctrl-click removes it
@@ -629,6 +633,28 @@ fn order_card(game: &Game, order: &Order, active: bool, own: bool) -> Card {
     }
 }
 
+fn own_order_card(game: &Game, order: &Order, active: bool) -> Card {
+    let mut card = order_card(game, order, active, true);
+    match order {
+        Order::Build { site }
+            if game
+                .state
+                .building(*site)
+                .is_some_and(|building| !building.built) =>
+        {
+            card.action = CardAction::CancelSite(*site);
+            card.desc
+                .push("Click to cancel the site and recover its remaining value.".into());
+        }
+        Order::Found { kind, anchor } => {
+            card.action = CardAction::CancelFound(*kind, *anchor);
+            card.desc.push("Click to cancel this planned site.".into());
+        }
+        _ => {}
+    }
+    card
+}
+
 /// The concrete second tooltip line for a subject-bearing order: how
 /// far the job has come, in the units the verb is actually measured in.
 fn subject_detail(game: &Game, order: &Order, progress: Option<f32>) -> Option<String> {
@@ -1108,9 +1134,9 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
     // An idle unit with nothing queued contributes no chips, so the
     // orders dock vanishes instead of showing a lone "Idle" cell.
     if !matches!(first.order, Order::Idle) || !first.queue.is_empty() {
-        panel.queue.push(order_card(game, &first.order, true, true));
+        panel.queue.push(own_order_card(game, &first.order, true));
         for order in first.queue.iter().take(7) {
-            panel.queue.push(order_card(game, order, false, true));
+            panel.queue.push(own_order_card(game, order, false));
         }
     }
     Some(panel)
@@ -1489,8 +1515,8 @@ mod tests {
     #[test]
     fn build_chips_wear_the_works_they_are_raising() {
         let (mut game, harvester) = builder_game();
-        place(&mut game, harvester, BuildingKind::Turret, false);
-        place(&mut game, harvester, BuildingKind::Array, true);
+        let turret = place(&mut game, harvester, BuildingKind::Turret, false);
+        let array = place(&mut game, harvester, BuildingKind::Array, true);
         game.selection.units = vec![harvester];
         let panel = build(&game, &BindingMap::classic()).expect("panel");
         assert_eq!(panel.queue.len(), 2, "two legs of one program");
@@ -1530,9 +1556,31 @@ mod tests {
         );
         assert_eq!(
             panel.queue[0].action,
-            CardAction::None,
-            "an enriched chip is still display-only"
+            CardAction::CancelSite(turret),
+            "the active site can be abandoned from its order chip"
         );
+        assert_eq!(
+            panel.queue[1].action,
+            CardAction::CancelSite(array),
+            "a queued paid site targets its own works"
+        );
+    }
+
+    #[test]
+    fn deferred_build_chips_cancel_their_logical_sites() {
+        use chassis::grid::TilePos;
+
+        let (game, _) = builder_game();
+        let order = Order::Found {
+            kind: BuildingKind::Bastion,
+            anchor: TilePos::new(11, 7),
+        };
+        let card = own_order_card(&game, &order, false);
+        assert_eq!(
+            card.action,
+            CardAction::CancelFound(BuildingKind::Bastion, TilePos::new(11, 7))
+        );
+        assert!(card.desc.iter().any(|line| line.contains("planned site")));
     }
 
     #[test]
