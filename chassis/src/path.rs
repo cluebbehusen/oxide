@@ -122,15 +122,23 @@ const DIAGONAL_COST: u32 = 14;
 
 /// Reusable allocation storage for repeated A* queries on one thread.
 ///
-/// A full query clears the heap and resets the active grid cells. A query that
-/// exhausts its reachable component leaves that proof available until the next
-/// call; cheap invalid/trivial/blocked-goal exits hide any prior proof without
-/// paying to clear the retained capacity. Reusing allocations keeps
+/// Grid cells are validity-stamped with a per-query generation counter, so a
+/// new query costs only the cells it actually touches — there is no
+/// whole-grid clear between queries. A query that exhausts its reachable
+/// component leaves that proof available until the next call; cheap
+/// invalid/trivial/blocked-goal exits hide any prior proof without paying to
+/// clear the retained capacity. Reusing allocations keeps
 /// [`astar_with_scratch`] behavior identical to [`astar`].
 #[derive(Default)]
 pub struct AstarScratch {
     best_g: Vec<u32>,
     came_from: Vec<usize>,
+    /// Cell validity stamps: a cell's `best_g`/`came_from` are meaningful only
+    /// while its stamp equals `generation`. Stale cells read as untouched.
+    stamp: Vec<u32>,
+    /// Current query's generation. Bumped per grid search; on wrap-around the
+    /// stamp grid is cleared once so stale stamps can never alias.
+    generation: u32,
     open: BinaryHeap<Reverse<(u32, u32, usize)>>,
     last_width: i32,
     last_height: i32,
@@ -159,8 +167,36 @@ impl AstarScratch {
             return false;
         }
         let index = (tile.y as usize) * (self.last_width as usize) + tile.x as usize;
-        self.best_g.get(index).is_some_and(|cost| *cost != u32::MAX)
+        self.stamp
+            .get(index)
+            .is_some_and(|stamp| *stamp == self.generation)
     }
+
+    /// Advances to a fresh generation whose stamps cannot collide with any
+    /// stale cell, clearing the stamp grid only on counter wrap-around.
+    fn advance_generation(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            self.stamp.fill(0);
+            self.generation = 1;
+        }
+    }
+
+    /// Test-only: fast-forwards the generation counter to exercise the
+    /// wrap-around clearing path without four billion queries.
+    #[cfg(test)]
+    fn force_generation(&mut self, generation: u32) {
+        self.generation = generation;
+    }
+}
+
+thread_local! {
+    /// Per-thread scratch behind [`astar`], so every plain call reuses
+    /// allocations. Safe for determinism: scratch reuse is behavior-identical
+    /// to fresh storage (a differential test pins it), so results never depend
+    /// on which thread ran the query or what it searched before.
+    static SHARED_SCRATCH: std::cell::RefCell<AstarScratch> =
+        std::cell::RefCell::new(AstarScratch::default());
 }
 
 /// Octile distance times 10 — exact (not just admissible) for 8-directional
@@ -188,15 +224,17 @@ pub fn astar(
     passable: impl FnMut(TilePos) -> bool,
     max_expansions: u32,
 ) -> Option<Vec<TilePos>> {
-    astar_with_scratch(
-        width,
-        height,
-        start,
-        goal,
-        passable,
-        max_expansions,
-        &mut AstarScratch::default(),
-    )
+    SHARED_SCRATCH.with(|scratch| {
+        astar_with_scratch(
+            width,
+            height,
+            start,
+            goal,
+            passable,
+            max_expansions,
+            &mut scratch.borrow_mut(),
+        )
+    })
 }
 
 /// Finds the same shortest path as [`astar`] while reusing caller-owned
@@ -226,19 +264,27 @@ pub fn astar_with_scratch(
         return None;
     }
     let cell_count = (width as usize).checked_mul(height as usize)?;
-    scratch.best_g.resize(cell_count, u32::MAX);
-    scratch.best_g.fill(u32::MAX);
-    scratch.came_from.resize(cell_count, usize::MAX);
-    scratch.came_from.fill(usize::MAX);
-    scratch.best_g[index(start)] = 0;
+    // Cells are generation-stamped rather than cleared: only tiles this query
+    // actually touches cost anything, so a short path on a huge map stays
+    // cheap. Resize never initializes meaningfully — stale cells are dead by
+    // stamp mismatch, including retained cells after a dimension change.
+    scratch.best_g.resize(cell_count, 0);
+    scratch.came_from.resize(cell_count, 0);
+    scratch.stamp.resize(cell_count, 0);
+    scratch.advance_generation();
 
     let AstarScratch {
         best_g,
         came_from,
+        stamp,
+        generation,
         open,
         last_exhausted,
         ..
     } = scratch;
+    let generation = *generation;
+    best_g[index(start)] = 0;
+    stamp[index(start)] = generation;
 
     open.push(Reverse((
         heuristic(start, goal),
@@ -278,8 +324,14 @@ pub fn astar_with_scratch(
         let mut visit = |next: TilePos, step_cost: u32, open: &mut BinaryHeap<_>| {
             let next_idx = index(next);
             let tentative = g + step_cost;
-            if tentative < best_g[next_idx] {
+            let known = if stamp[next_idx] == generation {
+                best_g[next_idx]
+            } else {
+                u32::MAX
+            };
+            if tentative < known {
                 best_g[next_idx] = tentative;
+                stamp[next_idx] = generation;
                 came_from[next_idx] = current_idx;
                 let h = heuristic(next, goal);
                 open.push(Reverse((tentative + h, h, next_idx)));
@@ -622,6 +674,81 @@ mod tests {
         )
         .unwrap();
         assert_eq!(again, first);
+    }
+
+    #[test]
+    fn generation_wraparound_cannot_alias_stale_cells() {
+        // Stamp a bunch of cells at generation u32::MAX, then force the next
+        // query to wrap. The wrap must clear the stamp grid so cells touched
+        // by the old query cannot masquerade as reachable in the new one.
+        let mut scratch = AstarScratch::default();
+        scratch.force_generation(u32::MAX - 1);
+        let (grid, width, height) = arena(&["..#..", "..#..", "..#.."]);
+        let walled = |tile: TilePos| *grid.get(tile).unwrap();
+        assert_eq!(
+            astar_with_scratch(
+                width,
+                height,
+                TilePos::new(0, 1),
+                TilePos::new(4, 1),
+                walled,
+                10_000,
+                &mut scratch,
+            ),
+            None
+        );
+        assert!(scratch.last_search_exhausted());
+        assert!(scratch.last_search_reached(TilePos::new(1, 2)));
+
+        // This query wraps the counter. Only the right half is reachable now.
+        let (mirror, ..) = arena(&["..#..", "..#..", "..#.."]);
+        let east = |tile: TilePos| *mirror.get(tile).unwrap();
+        assert_eq!(
+            astar_with_scratch(
+                width,
+                height,
+                TilePos::new(4, 1),
+                TilePos::new(0, 1),
+                east,
+                10_000,
+                &mut scratch,
+            ),
+            None
+        );
+        assert!(scratch.last_search_exhausted());
+        assert!(scratch.last_search_reached(TilePos::new(3, 2)));
+        assert!(
+            !scratch.last_search_reached(TilePos::new(1, 2)),
+            "west-side cell from the pre-wrap query must read stale"
+        );
+    }
+
+    #[test]
+    fn reachability_reflects_only_the_latest_exhausted_query() {
+        // Two exhausted queries on same-sized maps with disjoint reachable
+        // components: the second query's answers must not inherit cells the
+        // first one touched.
+        let mut scratch = AstarScratch::default();
+        prime_exhausted_scratch(&mut scratch); // reaches the WEST of the wall
+        let (grid, width, height) = arena(&["..#..", "..#..", "..#.."]);
+        assert_eq!(
+            astar_with_scratch(
+                width,
+                height,
+                TilePos::new(4, 1),
+                TilePos::new(0, 1),
+                |tile| *grid.get(tile).unwrap(),
+                10_000,
+                &mut scratch,
+            ),
+            None
+        );
+        assert!(scratch.last_search_exhausted());
+        assert!(scratch.last_search_reached(TilePos::new(4, 0)));
+        assert!(
+            !scratch.last_search_reached(TilePos::new(0, 0)),
+            "cells reached only by the prior query must not leak through"
+        );
     }
 
     #[test]
