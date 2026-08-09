@@ -1,0 +1,4 @@
+interface:
+  display_name: "Oxide Live QA"
+  short_description: "Drive and verify the live Oxide game"
+  default_prompt: "Use $oxide-live-qa to inspect and verify Oxide through the appropriate live, replay, headless, or profiling harness."
