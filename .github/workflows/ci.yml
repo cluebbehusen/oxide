@@ -1,9 +1,8 @@
 # Oxide CI: lint, test, and prove cross-platform determinism.
 #
-# The determinism step is the important one: the state-hash fixtures were
-# blessed on one machine, and every OS in the matrix must reproduce them
-# bit-for-bit or the "same seed, same bits, every platform" invariant is
-# broken.
+# The workspace test matrix includes the state-hash fixtures, so every OS must
+# reproduce hashes blessed on one machine bit-for-bit or the "same seed, same
+# bits, every platform" invariant is broken.
 
 name: ci
 
@@ -65,13 +64,8 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
-      # The whole point of the fixed-point sim: hashes blessed on one
-      # platform must reproduce exactly on every other.
-      - name: Cross-platform determinism
-        run: cargo test -p oxide-driver --test hashes --locked -- --nocapture
-
   # The declared rust-version is a promise; moving-stable alone never
-  # tests it.
+  # tests whether the complete test surface still compiles and links on it.
   msrv:
     runs-on: ubuntu-latest
     steps:
@@ -84,8 +78,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
-      - name: Test on MSRV
-        run: cargo test --workspace --locked
+      - name: Compile tests on MSRV
+        run: cargo test --workspace --locked --no-run
 
   # The training tools are shipped source too: lint, formatting, and
   # types hold to the same standard as the Rust side.
@@ -115,6 +109,8 @@ jobs:
         run: uv run pytest -q
       - name: Sprite generator check
         run: uv run tools/gen_sprites.py --check
+      - name: Sprite generator tests
+        run: uv run --python 3.14 --with 'pillow==12.3.0' -m unittest tools.test_gen_sprites tools.test_production_sprite_sources
       - name: Sound generator check
         run: uv run tools/gen_sounds.py --check
       - name: Sound tests

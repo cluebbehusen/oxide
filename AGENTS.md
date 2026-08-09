@@ -128,6 +128,8 @@ When assets or their generators change, also run:
 
 ```sh
 uv run tools/gen_sprites.py --check
+uv run --python 3.14 --with 'pillow==12.3.0' \
+  -m unittest tools.test_gen_sprites tools.test_production_sprite_sources
 uv run tools/gen_sounds.py --check
 uv run --with 'numpy==2.5.1' --with 'scipy==1.18.0' \
   -m unittest tools.test_gen_sounds

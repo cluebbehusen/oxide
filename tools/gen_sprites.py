@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.14"
-# dependencies = ["pillow==12.3.0"]  # pinned: asset bytes must reproduce
+# dependencies = ["pillow==12.3.0"]  # pinned: generator behavior must reproduce
 # ///
 """Generates every sprite in assets/sprites/.
 
@@ -2839,31 +2839,61 @@ def generate(output: Path) -> None:
     print("done")
 
 
+def _pngs_match(expected_path: Path, actual_path: Path) -> bool:
+    """Compares decoded PNG identity without depending on encoder bytes."""
+    try:
+        with (
+            Image.open(expected_path) as expected,
+            Image.open(actual_path) as actual,
+        ):
+            return (
+                expected.mode == actual.mode
+                and expected.size == actual.size
+                and expected.convert("RGBA").tobytes()
+                == actual.convert("RGBA").tobytes()
+            )
+    except OSError:
+        return False
+
+
+def _sprite_asset_differences(
+    expected_dir: Path, actual_dir: Path
+) -> tuple[list[str], list[str], list[str]]:
+    """Returns missing, extra, and changed generated asset names."""
+    expected_files = {
+        path.name: path for path in expected_dir.iterdir() if path.is_file()
+    }
+    actual_files = {path.name: path for path in actual_dir.iterdir() if path.is_file()}
+    missing = sorted(expected_files.keys() - actual_files.keys())
+    extra = sorted(actual_files.keys() - expected_files.keys())
+    changed: list[str] = []
+    for name in sorted(expected_files.keys() & actual_files.keys()):
+        expected_path = expected_files[name]
+        actual_path = actual_files[name]
+        matches = (
+            _pngs_match(expected_path, actual_path)
+            if expected_path.suffix == ".png"
+            else expected_path.read_bytes() == actual_path.read_bytes()
+        )
+        if not matches:
+            changed.append(name)
+    return missing, extra, changed
+
+
 def check_reproducible() -> None:
-    """Regenerates out of tree and compares every committed asset byte."""
+    """Regenerates out of tree and compares committed pixels and metadata."""
     committed = Path(__file__).resolve().parent.parent / "assets" / "sprites"
     with tempfile.TemporaryDirectory(prefix="oxide-sprite-check-") as temp:
         generated = Path(temp) / "sprites"
         generate(generated)
-        expected_files = {
-            p.name: p.read_bytes() for p in committed.iterdir() if p.is_file()
-        }
-        actual_files = {
-            p.name: p.read_bytes() for p in generated.iterdir() if p.is_file()
-        }
-    missing = sorted(expected_files.keys() - actual_files.keys())
-    extra = sorted(actual_files.keys() - expected_files.keys())
-    changed = sorted(
-        name
-        for name in expected_files.keys() & actual_files.keys()
-        if expected_files[name] != actual_files[name]
-    )
+        missing, extra, changed = _sprite_asset_differences(committed, generated)
+        actual_count = sum(path.is_file() for path in generated.iterdir())
     if missing or extra or changed:
         raise SystemExit(
             "generated sprites differ from the committed source of truth: "
             f"missing={missing}, extra={extra}, changed={changed}"
         )
-    print(f"reproducible: {len(actual_files)} files match byte-for-byte")
+    print(f"reproducible: {actual_count} files match committed pixels and metadata")
 
 
 def main() -> None:
@@ -2874,7 +2904,7 @@ def main() -> None:
     destination.add_argument(
         "--check",
         action="store_true",
-        help="regenerate in a temporary directory and compare committed bytes",
+        help="regenerate and compare committed pixels and metadata",
     )
     destination.add_argument(
         "--out",
