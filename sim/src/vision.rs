@@ -210,7 +210,7 @@ impl Vision {
         self.explored.get(pos).copied().unwrap_or(false)
     }
 
-    fn stamp_disc(&mut self, center: TilePos, radius: i32) {
+    fn stamp_disc(&mut self, center: TilePos, radius: i32, coverage: &mut RowCoverage) {
         let spans = disc_spans(radius);
         for dy in -radius..=radius {
             let span = spans[dy.unsigned_abs() as usize];
@@ -219,6 +219,7 @@ impl Vision {
                 .fill_row_span(y, center.x - span, center.x + span, true);
             self.explored
                 .fill_row_span(y, center.x - span, center.x + span, true);
+            coverage.cover(y, center.x - span, center.x + span);
         }
     }
 
@@ -226,7 +227,14 @@ impl Vision {
     /// footprint — the rectangle's Minkowski sum with the sight disc,
     /// written row by row. Cell-identical to stamping each footprint
     /// tile separately, without visiting the overlap four times.
-    fn stamp_rect(&mut self, anchor: TilePos, w: i32, h: i32, radius: i32) {
+    fn stamp_rect(
+        &mut self,
+        anchor: TilePos,
+        w: i32,
+        h: i32,
+        radius: i32,
+        coverage: &mut RowCoverage,
+    ) {
         let spans = disc_spans(radius);
         for dy in -radius..(h + radius) {
             let vdist = (-dy).max(dy - (h - 1)).max(0);
@@ -236,7 +244,46 @@ impl Vision {
                 .fill_row_span(y, anchor.x - span, anchor.x + (w - 1) + span, true);
             self.explored
                 .fill_row_span(y, anchor.x - span, anchor.x + (w - 1) + span, true);
+            coverage.cover(y, anchor.x - span, anchor.x + (w - 1) + span);
         }
+    }
+}
+
+/// Per-refresh record of which cells this team's sight stamps could have
+/// touched: one bounding x-span per row. The memory-reconciliation walk
+/// visits only these spans instead of the whole map. A bounding span may
+/// include cells between two disjoint discs that are not actually visible —
+/// the walk re-checks `visible` per cell, so coverage only ever bounds the
+/// scan, never widens what counts as seen.
+struct RowCoverage {
+    /// `(min_x, max_x)` per row, clamped to the grid; `min > max` = untouched.
+    bounds: Vec<(i32, i32)>,
+    width: i32,
+}
+
+impl RowCoverage {
+    fn new(width: i32, height: i32) -> Self {
+        Self {
+            bounds: vec![(i32::MAX, i32::MIN); height.max(0) as usize],
+            width,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.bounds.fill((i32::MAX, i32::MIN));
+    }
+
+    fn cover(&mut self, y: i32, x0: i32, x1: i32) {
+        let Some(entry) = usize::try_from(y).ok().and_then(|y| self.bounds.get_mut(y)) else {
+            return;
+        };
+        let x0 = x0.max(0);
+        let x1 = x1.min(self.width - 1);
+        if x0 > x1 {
+            return;
+        }
+        entry.0 = entry.0.min(x0);
+        entry.1 = entry.1.max(x1);
     }
 }
 
@@ -606,6 +653,7 @@ fn disc_spans(radius: i32) -> &'static [i32] {
 /// reconciles their building memory against what is now in sight.
 pub(crate) fn refresh(state: &mut State) {
     let mut vision = std::mem::take(&mut state.vision);
+    let mut coverage = RowCoverage::new(state.map.width(), state.map.height());
     for index in 0..vision.len() {
         // Team sight is seat-symmetric by construction: every teammate
         // stamps the same discs, reconciles the same memories, hears
@@ -621,9 +669,10 @@ pub(crate) fn refresh(state: &mut State) {
         let my_team = state.players[index].team;
         let allied = |p: PlayerId| state.players[p.0 as usize].team == my_team;
         view.visible.fill(false);
+        coverage.reset();
         // Team sight: every teammate's eyes stamp into this view.
         for unit in state.units.iter().filter(|u| allied(u.player)) {
-            view.stamp_disc(unit.tile(), unit.kind.stats().vision);
+            view.stamp_disc(unit.tile(), unit.kind.stats().vision, &mut coverage);
         }
         // Sites don't see: a pile of parts has no sensors.
         for building in state
@@ -632,7 +681,13 @@ pub(crate) fn refresh(state: &mut State) {
             .filter(|b| allied(b.player) && b.built)
         {
             let (w, h) = building.kind.stats().size;
-            view.stamp_rect(building.anchor, w, h, building.kind.stats().vision);
+            view.stamp_rect(
+                building.anchor,
+                w,
+                h,
+                building.kind.stats().vision,
+                &mut coverage,
+            );
         }
 
         // Memory reconciliation. Wherever we have sight, live state is the
@@ -658,14 +713,21 @@ pub(crate) fn refresh(state: &mut State) {
 
         // Freeze-frame the economy the same way: wherever there is sight,
         // remember the salvage; everywhere else the old numbers stand.
-        // Row slices, not per-cell lookups, and both memories in one
-        // walk — this scan runs over the whole map for every team every
-        // tick, so it gets to run exactly once.
+        // Row slices, not per-cell lookups, both memories in one walk —
+        // and only inside the x-spans this team's stamps could have
+        // touched, since nothing outside them became visible this tick.
+        // The per-cell `seen` check still decides; the coverage bounds
+        // only shrink the walk.
         for y in 0..state.map.height() {
-            let visible = view.visible.row(y).expect("row in range");
-            let tiles = state.map.grid().row(y).expect("row in range");
-            let scrap = view.remembered_scrap.row_mut(y).expect("row in range");
-            let wreck = view.remembered_wreck.row_mut(y).expect("row in range");
+            let (x0, x1) = coverage.bounds[y as usize];
+            if x0 > x1 {
+                continue;
+            }
+            let (x0, x1) = (x0 as usize, x1 as usize);
+            let visible = &view.visible.row(y).expect("row in range")[x0..=x1];
+            let tiles = &state.map.grid().row(y).expect("row in range")[x0..=x1];
+            let scrap = &mut view.remembered_scrap.row_mut(y).expect("row in range")[x0..=x1];
+            let wreck = &mut view.remembered_wreck.row_mut(y).expect("row in range")[x0..=x1];
             for (x, (&seen, tile)) in visible.iter().zip(tiles).enumerate() {
                 if seen {
                     scrap[x] = tile.scrap;
