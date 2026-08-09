@@ -613,6 +613,10 @@ fn unit_selection_radius(kind: oxide_sim::UnitKind, zoom: f32, padding: f32) -> 
 fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim::stats::Domain) {
     let zoom = game.camera.zoom;
     let airborne = domain == oxide_sim::stats::Domain::Air;
+    // Frustum cull with a margin covering the sprite, its shadow, rings,
+    // and bars — off-camera machines cost nothing on grand maps.
+    let (view_lo, view_hi) = game.camera.world_rect();
+    const CULL_MARGIN: f32 = 2.5;
     for unit in game.state.units() {
         if unit.kind.stats().domain != domain {
             continue;
@@ -623,6 +627,13 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         }
         let faction = game.state.player(unit.player).faction;
         let pos = game.draw_pos(unit.id, unit.pos, alpha);
+        if pos.x < view_lo.x - CULL_MARGIN
+            || pos.y < view_lo.y - CULL_MARGIN
+            || pos.x > view_hi.x + CULL_MARGIN
+            || pos.y > view_hi.y + CULL_MARGIN
+        {
+            continue;
+        }
         let mut screen = game.camera.to_screen(pos);
         let dest = zoom * UNIT_DRAW_SCALE;
         let current = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());

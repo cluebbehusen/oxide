@@ -89,6 +89,32 @@ pub fn minimap_world_in(rect: Rect, map_w: i32, screen: Vec2) -> Option<Vec2> {
     ))
 }
 
+/// The minimap's terrain-and-fog layer: one pixel per tile, uploaded to
+/// a texture and drawn as a single scaled quad. The per-tile color walk
+/// is unchanged from the per-rectangle path it replaced — what this
+/// removes is one immediate-mode quad submission per map tile per frame
+/// (65,536 of them on the largest legal map). Created lazily inside the
+/// draw so headless sessions never touch the GPU.
+pub(crate) struct MinimapLayer {
+    image: Image,
+    texture: Texture2D,
+}
+
+impl MinimapLayer {
+    fn ensure(slot: &mut Option<Self>, w: i32, h: i32) -> &mut Self {
+        let (w, h) = (w.max(1) as u16, h.max(1) as u16);
+        if slot
+            .as_ref()
+            .is_none_or(|layer| layer.image.width != w || layer.image.height != h)
+        {
+            let image = Image::gen_image_color(w, h, MINI_VOID);
+            let texture = Texture2D::from_image(&image);
+            *slot = Some(Self { image, texture });
+        }
+        slot.as_mut().expect("just ensured")
+    }
+}
+
 /// The whole war at a glance, under the same fog rules as the world view
 /// (and, like everything else, omniscient while the F1 overlay is up).
 pub(crate) fn draw_minimap(game: &Game) {
@@ -107,7 +133,12 @@ pub(crate) fn draw_minimap(game: &Game) {
         PANEL,
     );
 
-    let cell = scale.ceil();
+    let mut layer_slot = game.minimap_layer.borrow_mut();
+    let layer = MinimapLayer::ensure(
+        &mut layer_slot,
+        game.state.map().width(),
+        game.state.map().height(),
+    );
     for (pos, tile) in game.state.map().iter() {
         let (explored, visible) = if omniscient {
             (true, true)
@@ -154,14 +185,27 @@ pub(crate) fn draw_minimap(game: &Game) {
                 dim(base)
             }
         };
-        draw_rectangle(
-            rect.x + pos.x as f32 * scale,
-            rect.y + pos.y as f32 * scale,
-            cell,
-            cell,
-            color,
-        );
+        layer.image.set_pixel(pos.x as u32, pos.y as u32, color);
     }
+    layer.texture.update(&layer.image);
+    // Downscaled tiles (sub-pixel on grand maps) blend; upscaled tiles
+    // stay crisp blocks, matching the old per-tile rectangles.
+    layer.texture.set_filter(if scale < 1.0 {
+        FilterMode::Linear
+    } else {
+        FilterMode::Nearest
+    });
+    draw_texture_ex(
+        &layer.texture,
+        rect.x,
+        rect.y,
+        WHITE,
+        DrawTextureParams {
+            dest_size: Some(vec2(rect.w, rect.h)),
+            ..Default::default()
+        },
+    );
+    drop(layer_slot);
 
     if !omniscient {
         for ghost in vision.ghosts() {

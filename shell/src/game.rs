@@ -118,6 +118,10 @@ pub struct Game {
     /// last actually seen, on the fx clock — presentation state behind
     /// the staleness ramp. A `RefCell` because drawing holds `&Game`.
     pub last_seen: std::cell::RefCell<HashMap<(i32, i32), f32>>,
+    /// The minimap's cached terrain-and-fog texture layer. Presentation
+    /// only, lazily created by the first minimap draw (headless sessions
+    /// never touch the GPU). A `RefCell` because drawing holds `&Game`.
+    pub minimap_layer: std::cell::RefCell<Option<crate::render::MinimapLayer>>,
     /// The chrome geometry the renderer computed last frame — the one
     /// model hit-testing reads, so drawn and clickable can never
     /// disagree. A `Cell` because drawing holds `&Game`.
@@ -239,6 +243,7 @@ impl Game {
             sounds_pending: Vec::new(),
             autosave_done: false,
             last_seen: std::cell::RefCell::new(HashMap::new()),
+            minimap_layer: std::cell::RefCell::new(None),
             toasts: Vec::new(),
             scorches: Vec::new(),
             alerts: Vec::new(),

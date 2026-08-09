@@ -447,6 +447,10 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
             }
         }
     }
+    // Frustum cull by anchor with a margin covering the widest footprint
+    // plus bars and site dressing — off-camera works cost nothing.
+    let (view_lo, view_hi) = game.camera.world_rect();
+    const BUILDING_CULL_MARGIN: f32 = 4.5;
     for building in game.state.buildings() {
         if building.player != game.human
             && !game.all_seeing()
@@ -454,10 +458,16 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
         {
             continue;
         }
+        let anchor = vec2(building.anchor.x as f32, building.anchor.y as f32);
+        if anchor.x < view_lo.x - BUILDING_CULL_MARGIN
+            || anchor.y < view_lo.y - BUILDING_CULL_MARGIN
+            || anchor.x > view_hi.x + BUILDING_CULL_MARGIN
+            || anchor.y > view_hi.y + BUILDING_CULL_MARGIN
+        {
+            continue;
+        }
         let faction = game.state.player(building.player).faction;
-        let screen = game
-            .camera
-            .to_screen(vec2(building.anchor.x as f32, building.anchor.y as f32));
+        let screen = game.camera.to_screen(anchor);
         let (w, h) = building.kind.stats().size;
         let dest = vec2(w as f32 * zoom, h as f32 * zoom);
         let animation = game.animations.building_state(
