@@ -511,6 +511,32 @@ fn parse_named_style(style: &str) -> Result<oxide_sim::scenario::NamedStyle> {
     })
 }
 
+/// Per-tick latency digest for bench output: mean, median, tail, and the
+/// worst tick with its index — the spike a throughput mean cannot see.
+fn latency_summary(samples_ns: &[u64]) -> String {
+    if samples_ns.is_empty() {
+        return "no samples".to_string();
+    }
+    let mut sorted = samples_ns.to_vec();
+    sorted.sort_unstable();
+    let ms = |ns: u64| ns as f64 / 1_000_000.0;
+    let at = |q: f64| sorted[((sorted.len() - 1) as f64 * q) as usize];
+    let mean = samples_ns.iter().sum::<u64>() / samples_ns.len() as u64;
+    let (worst_tick, worst) = samples_ns
+        .iter()
+        .enumerate()
+        .max_by_key(|(index, ns)| (**ns, std::cmp::Reverse(*index)))
+        .expect("nonempty samples");
+    format!(
+        "mean {:.3}ms p50 {:.3} p99 {:.3} max {:.2} @tick {}",
+        ms(mean),
+        ms(at(0.5)),
+        ms(at(0.99)),
+        ms(*worst),
+        worst_tick,
+    )
+}
+
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Run {
@@ -776,15 +802,21 @@ fn main() -> Result<()> {
                 // inflated ticks/s (the once-recorded 25k+ figures).
                 let start = std::time::Instant::now();
                 let mut ran: u64 = 0;
+                let mut tick_ns: Vec<u64> = Vec::with_capacity(ticks as usize);
+                let mut bot_ns: Vec<u64> = Vec::with_capacity(ticks as usize);
                 for _ in 0..ticks {
                     if state.result().is_some() {
                         break;
                     }
+                    let tick_start = std::time::Instant::now();
                     let mut commands = Vec::new();
                     for bot in &mut bots {
                         commands.extend(bot.act(&state));
                     }
+                    let bots_done = std::time::Instant::now();
                     state.tick(&commands);
+                    bot_ns.push((bots_done - tick_start).as_nanos() as u64);
+                    tick_ns.push(tick_start.elapsed().as_nanos() as u64);
                     ran += 1;
                 }
                 let secs = start.elapsed().as_secs_f64();
@@ -801,6 +833,11 @@ fn main() -> Result<()> {
                     (ran as f64) / secs,
                     state.hash()
                 );
+                println!(
+                    "bench-latency: whole tick {} | bot phase {}",
+                    latency_summary(&tick_ns),
+                    latency_summary(&bot_ns),
+                );
                 return Ok(());
             }
             let scenario = oxide_kit::bench::mass_battle(units, 9);
@@ -808,11 +845,14 @@ fn main() -> Result<()> {
             oxide_kit::bench::engage(&mut state);
             let start = std::time::Instant::now();
             let mut ran: u64 = 0;
+            let mut tick_ns: Vec<u64> = Vec::with_capacity(ticks as usize);
             for _ in 0..ticks {
                 if state.result().is_some() {
                     break;
                 }
+                let tick_start = std::time::Instant::now();
                 state.tick(&[]);
+                tick_ns.push(tick_start.elapsed().as_nanos() as u64);
                 ran += 1;
             }
             let secs = start.elapsed().as_secs_f64();
@@ -828,6 +868,7 @@ fn main() -> Result<()> {
                 (ran as f64) / secs,
                 state.hash(),
             );
+            println!("bench-latency: whole tick {}", latency_summary(&tick_ns));
         }
         Cmd::Matchup {
             a,

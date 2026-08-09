@@ -946,11 +946,11 @@ pub(super) fn attack(
                 });
             }
         }
-        fire_sidearms(state, id, pi, hits, events);
+        fire_sidearms(state, index, id, pi, hits, events);
         return;
     }
     // Opportunist guns don't wait for the march to end.
-    fire_sidearms(state, id, pi, hits, events);
+    fire_sidearms(state, index, id, pi, hits, events);
 
     // The tether binds here — the chase, not the trigger and not the
     // firing stand above. It measures the GUARD's own distance from
@@ -1085,11 +1085,69 @@ pub(super) fn attack(
     }
 }
 
+/// The sidearm's opportunist victim: the nearest hostile unit the weapon
+/// can cover, in range, seen by the owner, and clear — chosen through the
+/// spatial index's reach window. Selection is keyed `(distance, id)`, so
+/// window visit order cannot change the answer; a differential test pins
+/// this against the plain full-scan chain it replaced.
+fn sidearm_victim(
+    state: &State,
+    index: &super::super::spatial::UnitIndex,
+    shooter_pos: Vec2Fx,
+    me: crate::ids::PlayerId,
+    shooter_domain: Domain,
+    weapon: &WeaponStats,
+) -> Option<(chassis::fx::Fx, UnitId, Vec2Fx, Domain)> {
+    let shot_open = |t: TilePos, full: bool| {
+        let Some(tile) = state.map.tile(t) else {
+            return false;
+        };
+        if tile.terrain == crate::map::Terrain::Peak {
+            return false;
+        }
+        !full || tile.terrain == crate::map::Terrain::Ground
+    };
+    // |Δpos| <= range on either axis puts the victim's tile within
+    // floor(range) + 1 of the shooter's — the acquire_target bound.
+    let home = TilePos::containing(shooter_pos);
+    let reach = weapon.range.floor().to_num::<i32>() + 1;
+    let mut victim: Option<(chassis::fx::Fx, UnitId, Vec2Fx, Domain)> = None;
+    for dy in -reach..=reach {
+        for &(_, slot) in index.row_span(home.y + dy, home.x - reach, home.x + reach) {
+            let u = &state.units[slot];
+            let domain = u.kind.stats().domain;
+            if !state.hostile(me, u.player)
+                || u.hp == 0
+                || !weapon.targets.covers(domain)
+                || !state.can_see(me, u.tile())
+            {
+                continue;
+            }
+            let d = shooter_pos.dist_sq(u.pos);
+            if !within_weapon_reach(weapon, d) {
+                continue;
+            }
+            // Pay for the line trace only when the candidate would win;
+            // a blocked better candidate never shadows a clear worse one.
+            if victim.is_some_and(|(best_d, best_id, ..)| (best_d, best_id) <= (d, u.id)) {
+                continue;
+            }
+            let full = traces_terrain(weapon, shooter_domain, domain);
+            if chassis::path::line_blocked(shooter_pos, u.pos, |t| shot_open(t, full)) {
+                continue;
+            }
+            victim = Some((d, u.id, u.pos, domain));
+        }
+    }
+    victim
+}
+
 /// Weapons other than the one engaging the ordered target pick their own
 /// fights: the nearest hostile unit each can cover, in range, seen by the
 /// owner, and clear — opportunist fire that never steers the chassis.
 fn fire_sidearms(
     state: &mut State,
+    index: &super::super::spatial::UnitIndex,
     id: UnitId,
     primary: usize,
     hits: &mut Vec<PendingHit>,
@@ -1105,31 +1163,7 @@ fn fire_sidearms(
         if wi == primary || cooldowns[wi] > 0 {
             continue;
         }
-        let shot_open = |t: TilePos, full: bool| {
-            let Some(tile) = state.map.tile(t) else {
-                return false;
-            };
-            if tile.terrain == crate::map::Terrain::Peak {
-                return false;
-            }
-            !full || tile.terrain == crate::map::Terrain::Ground
-        };
-        let victim = state
-            .units
-            .iter()
-            .filter(|u| {
-                state.hostile(me, u.player)
-                    && u.hp > 0
-                    && weapon.targets.covers(u.kind.stats().domain)
-            })
-            .filter(|u| state.can_see(me, u.tile()))
-            .map(|u| (pos.dist_sq(u.pos), u.id, u.pos, u.kind.stats().domain))
-            .filter(|(d, _, _, _)| within_weapon_reach(weapon, *d))
-            .filter(|(_, _, upos, dom)| {
-                let full = traces_terrain(weapon, stats.domain, *dom);
-                !chassis::path::line_blocked(pos, *upos, |t| shot_open(t, full))
-            })
-            .min_by_key(|&(d, uid, _, _)| (d, uid));
+        let victim = sidearm_victim(state, index, pos, me, stats.domain, weapon);
         let Some((_, uid, upos, _)) = victim else {
             continue;
         };
@@ -1499,6 +1533,160 @@ mod tests {
             }
         }
         assert!(picks > 100, "the armies never met ({picks} picks)");
+    }
+
+    /// The linear chain `sidearm_victim`'s window replaced, kept verbatim
+    /// as the reference the differential below compares against.
+    fn linear_sidearm_victim(
+        state: &State,
+        shooter_pos: Vec2Fx,
+        me: PlayerId,
+        shooter_domain: Domain,
+        weapon: &WeaponStats,
+    ) -> Option<(Fx, UnitId, Vec2Fx, Domain)> {
+        let shot_open = |t: TilePos, full: bool| {
+            let Some(tile) = state.map.tile(t) else {
+                return false;
+            };
+            if tile.terrain == crate::map::Terrain::Peak {
+                return false;
+            }
+            !full || tile.terrain == crate::map::Terrain::Ground
+        };
+        state
+            .units
+            .iter()
+            .filter(|u| {
+                state.hostile(me, u.player)
+                    && u.hp > 0
+                    && weapon.targets.covers(u.kind.stats().domain)
+            })
+            .filter(|u| state.can_see(me, u.tile()))
+            .map(|u| {
+                (
+                    shooter_pos.dist_sq(u.pos),
+                    u.id,
+                    u.pos,
+                    u.kind.stats().domain,
+                )
+            })
+            .filter(|(d, ..)| within_weapon_reach(weapon, *d))
+            .filter(|(_, _, upos, dom)| {
+                let full = traces_terrain(weapon, shooter_domain, *dom);
+                !chassis::path::line_blocked(shooter_pos, *upos, |t| shot_open(t, full))
+            })
+            .min_by_key(|&(d, uid, _, _)| (d, uid))
+    }
+
+    /// The same mixed-armies churn as the acquisition differential, but
+    /// comparing every multi-weapon unit's sidearm pick — window edges,
+    /// fog, air-vs-ground weapon masks, and dying candidates included.
+    #[test]
+    fn windowed_sidearm_victim_matches_the_linear_scan() {
+        let width = 31usize;
+        let height = 19usize;
+        let mut rows = vec![vec!['#'; width]; height];
+        for row in rows.iter_mut().take(height - 1).skip(1) {
+            for cell in row.iter_mut().take(width - 1).skip(1) {
+                *cell = '.';
+            }
+        }
+        rows[1][1] = '1';
+        rows[height - 3][width - 3] = '2';
+        let west: &[UnitKind] = &[
+            UnitKind::Sentinel,
+            UnitKind::Sentinel,
+            UnitKind::Sentinel,
+            UnitKind::Buzzard,
+            UnitKind::Talon,
+            UnitKind::Flakhound,
+        ];
+        let east: &[UnitKind] = &[
+            UnitKind::Sentinel,
+            UnitKind::Sentinel,
+            UnitKind::Wisp,
+            UnitKind::Wisp,
+            UnitKind::Darter,
+            UnitKind::Scuttler,
+        ];
+        let mut units = Vec::new();
+        for (i, &kind) in west.iter().enumerate() {
+            let (dx, dy) = ((i as i32) % 3, (i as i32) / 3);
+            units.push(UnitSpec {
+                player: 0,
+                kind,
+                x: 3 + dx * 2,
+                y: 4 + dy * 2,
+            });
+        }
+        for (i, &kind) in east.iter().enumerate() {
+            let (dx, dy) = ((i as i32) % 3, (i as i32) / 3);
+            units.push(UnitSpec {
+                player: 1,
+                kind,
+                x: 27 - dx * 2,
+                y: 14 - dy * 2,
+            });
+        }
+        let scenario = Scenario {
+            name: "sidearm-differential".into(),
+            seed: 11,
+            map: rows.into_iter().map(|r| r.into_iter().collect()).collect(),
+            players: vec![
+                seat("West", Faction::Ferrous),
+                seat("East", Faction::Cupric),
+            ],
+            units,
+            buildings: Vec::new(),
+            meta: None,
+        };
+        let mut state = scenario.build().expect("arena builds");
+        let march = |state: &State, player: u8, goal: TilePos| -> PlayerCommand {
+            PlayerCommand {
+                player: PlayerId(player),
+                command: Command::AttackMove {
+                    units: state
+                        .units
+                        .iter()
+                        .filter(|u| u.player == PlayerId(player))
+                        .map(|u| u.id)
+                        .collect(),
+                    goal,
+                    queue: false,
+                },
+            }
+        };
+        let opening = [
+            march(&state, 0, TilePos::new(27, 15)),
+            march(&state, 1, TilePos::new(3, 3)),
+        ];
+        state.tick(&opening);
+
+        let mut index = UnitIndex::new();
+        let mut picks = 0usize;
+        for _ in 0..400 {
+            state.tick(&[]);
+            index.rebuild(&state.units);
+            for unit in &state.units {
+                let stats = unit.kind.stats();
+                if unit.hp == 0 || stats.weapons.len() < 2 {
+                    continue;
+                }
+                for weapon in stats.weapons {
+                    let windowed =
+                        sidearm_victim(&state, &index, unit.pos, unit.player, stats.domain, weapon);
+                    assert_eq!(
+                        windowed,
+                        linear_sidearm_victim(&state, unit.pos, unit.player, stats.domain, weapon),
+                        "unit {:?} at tick {}",
+                        unit.id,
+                        state.tick
+                    );
+                    picks += usize::from(windowed.is_some());
+                }
+            }
+        }
+        assert!(picks > 50, "no sidearm ever found a victim ({picks} picks)");
     }
 
     #[test]
