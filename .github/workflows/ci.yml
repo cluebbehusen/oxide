@@ -118,7 +118,7 @@ jobs:
       - name: Sound generator check
         run: uv run tools/gen_sounds.py --check
       - name: Sound tests
-        run: uv run -m unittest tools.test_gen_sounds
+        run: uv run --with 'numpy==2.5.1' --with 'scipy==1.18.0' -m unittest tools.test_gen_sounds
       # The gym contract only verifies when a worker actually launches;
       # without this, Rust/Python column order can drift while both
       # suites stay green. oxide-driver has no macroquad dependency, so

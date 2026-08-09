@@ -303,17 +303,29 @@ and test fixtures inside crate `tests/` directories.
 - **Idiomatic Rust.** rustfmt defaults, clippy clean, `missing_docs` warns
   in the library crates. Comments state constraints, not narration.
 - **Assets are generated.** Sprites: `tools/gen_sprites.py` (palette at
-  the top); sounds: `tools/gen_sounds.py` (stdlib-only synthesis). Run
-  with `uv run`, commit script + output together. The sprite script also
+  the top); sounds: `tools/gen_sounds.py` (deterministic synthesis with
+  exact PEP 723 dependency pins). Run
+  with `uv run`, commit script + output together. Both accept `--out DIR`
+  for an alternate review bank without touching the checked-in assets;
+  `--out` and the reproducibility-only `--check` are mutually exclusive.
+  The sprite script also
   shelf-packs everything into `atlas.png` + `atlas.json`; the shell draws
   exclusively from that one texture (source rects, 1px edge extrusion
   against bleed) so the whole world batches into a handful of draw calls —
   never load per-sprite textures in the shell. The palette constants also
   appear in `kit/src/render.rs` and `shell/src/render.rs` — keep them
   in sync.
+- **Asset workflows are skills.** Read `.agents/skills/visual-assets/SKILL.md`
+  before generating, modifying, reviewing, or promoting visual assets, and
+  `.agents/skills/sound-design/SKILL.md` before doing the same for audio.
+  `.claude/skills/` carries relative symlinks to those canonical skills so both
+  agent environments read one contract. The skills define the approval
+  boundary: production commits contain finalized assets, while audition banks
+  and rejected attempts remain uncommitted until a separate cleanup is
+  requested.
 - **Scenarios** are JSON with ASCII maps: `.` ground, `,` rubble (cosmetic
   ground; the byte is hashed but nothing else changes), `#` rock, `^` peak
-  (blocks ground, air, and fire — see the design bullet), `s` scrap
+  (a connected uncut-quarry mesa that blocks ground, air, and fire), `s` scrap
   node, `S` rich node (double salvage), `1`-`8` Foundry anchors (top-left
   of 2x2). (`w` appears in *rendered* ASCII for wreck tiles but is never
   authorable.) `PlayerSpec.team` groups seats; omitted means a team of
@@ -349,6 +361,62 @@ and test fixtures inside crate `tests/` directories.
 - **Balance numbers** all live in `sim/src/stats.rs`; expect hash churn
   when touching them.
 - Keep this file and README.md current when commands or behavior change.
+
+## Art direction
+
+Oxide is a lo-fi, top-down salvage RTS fought on the floors of exhausted
+open-pit quarries that once drove a vibrant futuristic gold rush. The quarry's
+terraced cuts and unmined shelves rise away from each battlefield into
+darkness. The corporations have left, but their autonomous fleets remain,
+dismantling the abandoned operation and each other for the last recoverable
+value. Its tone is industrial, lonely, and faintly eerie rather than horrific
+or relentlessly bleak: faded evidence of former prosperity surrounds
+purposeful machines that remain intensely busy. The pixel art embraces bold
+silhouettes, restrained detail, and highly readable mechanical gestures instead
+of attempting realism at a scale that cannot support it.
+
+### Sprite design
+
+- Prioritize silhouette and role recognition at normal gameplay zoom; every
+  unit or building needs one unmistakable mechanical feature.
+- Suggest mining ancestry through drills, crushers, hoppers, tracks, hydraulic
+  arms, reinforced plates, and modular field construction.
+- Use large shapes and selective highlights instead of fragile micro-detail. A
+  single readable piston is better than six tiny mechanisms.
+- Contrast small, practical robot-built structures with enormous, faded,
+  multi-tile remnants of the original mining operation.
+- Keep the charcoal, rust, and patina foundation, with faded corporate paint
+  and restrained hazard markings rather than cheerful saturation or generic
+  science-fiction glow.
+
+### Audio design
+
+- Combine frontier melancholy with spacious industrial ambience: metallic
+  plucks, distant machinery, degraded signals, restrained drones, and
+  occasional warmth.
+- Favor long-form evolution and negative space over short, conspicuous loops or
+  continuous low notes.
+- Make effects communicate materials and mechanisms: hydraulic pressure,
+  grinding metal, track movement, welding, heavy impacts, and structural
+  collapse.
+- Avoid cartoon bleeps, arcade rhythms, excessive brightness, clipping, and
+  repetitive mechanical sounds that become exhausting.
+- Increase combat pressure through denser layers and stronger percussion
+  without turning the soundtrack upbeat or frantic.
+
+### Animation design
+
+- Animate actions, not decoration: grab, grind, pull, press, weld, feed, recoil,
+  reload, and settle.
+- Build motion into the sprite itself. Avoid floating overlays or generic
+  effects that appear disconnected from the mechanism.
+- Use two to four strongly differentiated poses with exaggerated movement of
+  one readable component; lo-fi scale rewards clarity more than frame count.
+- Give machinery weight through anticipation, a decisive action, slower
+  recovery, and occasional pauses rather than constant evenly timed loops.
+- Use sparks, dust, heat, and debris as brief punctuation. Cranes and
+  articulated machinery are welcome when their movement remains legible at
+  actual battlefield scale.
 
 ## The bots and the training loop
 
@@ -1144,9 +1212,14 @@ comparisons don't survive GPU churn, so CI never runs it.
 - **Sound follows sight.** Positional clips require the event's tile to be
   visible to the human; own losses and milestones are always audible. The
   queue is dropped after `advance_ticks` bulk jumps, and a per-kind rate
-  limiter keeps battles from clipping into noise. Since 0.9 sounds carry
-  a world position and attenuate with camera distance (volume only —
-  macroquad has no pan). One deliberate bend: a hostile artillery launch
+  limiter keeps battles from clipping into noise. Sounds carry a world
+  position and attenuate with camera distance (volume only — macroquad has no
+  pan). The camera mix preserves nearby machinery at close zoom, coalesces
+  duplicate reports, and admits fewer minor voices as the view widens while
+  keeping heavy fire prominent. The under-attack cue bypasses spatial, zoom,
+  and voice-budget suppression after the ordinary alert-region gate admits it;
+  it still honors the effects and master volume controls. One deliberate bend:
+  a hostile artillery launch
   whose muzzle is fogged still plays, anchored at its IMPACT point — the
   warning survives, loudest when shells fall on you, and nothing about
   the sound tracks the hidden gun. That is the same information boundary

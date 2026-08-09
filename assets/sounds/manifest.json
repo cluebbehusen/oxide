@@ -1,0 +1,230 @@
+{
+  "format": 1,
+  "sample_rate": 44100,
+  "sounds": [
+    {
+      "category": "interface",
+      "filename": "click.wav",
+      "min_gap": 0.05,
+      "mixer_volume": 0.25,
+      "name": "click",
+      "paired_animation": null
+    },
+    {
+      "category": "interface",
+      "filename": "ack.wav",
+      "min_gap": 0.15,
+      "mixer_volume": 0.18,
+      "name": "ack",
+      "paired_animation": null
+    },
+    {
+      "category": "interface",
+      "filename": "denied.wav",
+      "min_gap": 0.05,
+      "mixer_volume": 0.3,
+      "name": "denied",
+      "paired_animation": null
+    },
+    {
+      "category": "interface",
+      "filename": "alert.wav",
+      "min_gap": 1.5,
+      "mixer_volume": 0.4,
+      "name": "alert",
+      "paired_animation": null
+    },
+    {
+      "category": "economy",
+      "filename": "deposit.wav",
+      "min_gap": 0.15,
+      "mixer_volume": 0.25,
+      "name": "deposit",
+      "paired_animation": "02-harvester-bite-cargo.gif"
+    },
+    {
+      "category": "economy",
+      "filename": "train_done.wav",
+      "min_gap": 0.05,
+      "mixer_volume": 0.3,
+      "name": "train_done",
+      "paired_animation": "26-foundry-dark-gantry-animated.gif"
+    },
+    {
+      "category": "generic-weapon",
+      "filename": "laser.wav",
+      "min_gap": 0.09,
+      "mixer_volume": 0.18,
+      "name": "laser",
+      "paired_animation": "67-projectile-forge-spot-animated.gif"
+    },
+    {
+      "category": "generic-weapon",
+      "filename": "laser2.wav",
+      "min_gap": 0.09,
+      "mixer_volume": 0.18,
+      "name": "laser2",
+      "paired_animation": "28-turret-open-ring-animated.gif"
+    },
+    {
+      "category": "generic-weapon",
+      "filename": "attack_sentinel.wav",
+      "min_gap": 0.08,
+      "mixer_volume": 0.26,
+      "name": "attack_sentinel",
+      "paired_animation": "18-sentinel-low-casemate-animated.gif"
+    },
+    {
+      "category": "generic-weapon",
+      "filename": "attack_stinger.wav",
+      "min_gap": 0.1,
+      "mixer_volume": 0.25,
+      "name": "attack_stinger",
+      "paired_animation": "24-stinger-inspection-trike-animated.gif"
+    },
+    {
+      "category": "generic-weapon",
+      "filename": "attack_talon.wav",
+      "min_gap": 0.1,
+      "mixer_volume": 0.28,
+      "name": "attack_talon",
+      "paired_animation": "42-talon-compact-interceptor-animated.gif"
+    },
+    {
+      "category": "generic-weapon",
+      "filename": "attack_wisp.wav",
+      "min_gap": 0.1,
+      "mixer_volume": 0.23,
+      "name": "attack_wisp",
+      "paired_animation": "44-wisp-quadcopter-animated.gif"
+    },
+    {
+      "category": "generic-weapon",
+      "filename": "attack_darter.wav",
+      "min_gap": 0.1,
+      "mixer_volume": 0.25,
+      "name": "attack_darter",
+      "paired_animation": "40-darter-shear-wing-animated.gif"
+    },
+    {
+      "category": "generic-weapon",
+      "filename": "attack_buzzard.wav",
+      "min_gap": 0.1,
+      "mixer_volume": 0.35,
+      "name": "attack_buzzard",
+      "paired_animation": "38-buzzard-quad-fan-carriage-animated.gif"
+    },
+    {
+      "category": "generic-weapon",
+      "filename": "rail_fire.wav",
+      "min_gap": 0.15,
+      "mixer_volume": 0.32,
+      "name": "rail_fire",
+      "paired_animation": "36-lancer-dark-channel-animated.gif"
+    },
+    {
+      "category": "signature-weapon",
+      "filename": "attack_lancer.wav",
+      "min_gap": 0.15,
+      "mixer_volume": 0.32,
+      "name": "attack_lancer",
+      "paired_animation": "36-lancer-dark-channel-animated.gif"
+    },
+    {
+      "category": "signature-weapon",
+      "filename": "attack_scuttler.wav",
+      "min_gap": 0.09,
+      "mixer_volume": 0.2,
+      "name": "attack_scuttler",
+      "paired_animation": "20-scuttler-centipede-shear-animated.gif"
+    },
+    {
+      "category": "signature-weapon",
+      "filename": "attack_flakhound.wav",
+      "min_gap": 0.12,
+      "mixer_volume": 0.3,
+      "name": "attack_flakhound",
+      "paired_animation": "04-flakhound-paired-yoke-carrier.gif"
+    },
+    {
+      "category": "signature-weapon",
+      "filename": "attack_flak_turret.wav",
+      "min_gap": 0.12,
+      "mixer_volume": 0.34,
+      "name": "attack_flak_turret",
+      "paired_animation": "01-flak-turret-paired-yokes.gif"
+    },
+    {
+      "category": "signature-weapon",
+      "filename": "flak.wav",
+      "min_gap": 0.12,
+      "mixer_volume": 0.3,
+      "name": "flak",
+      "paired_animation": "01-flak-turret-paired-yokes.gif"
+    },
+    {
+      "category": "signature-weapon",
+      "filename": "attack_bombard.wav",
+      "min_gap": 0.2,
+      "mixer_volume": 0.5,
+      "name": "attack_bombard",
+      "paired_animation": "22-bombard-recoil-spade-animated.gif"
+    },
+    {
+      "category": "signature-weapon",
+      "filename": "attack_bastion.wav",
+      "min_gap": 0.2,
+      "mixer_volume": 0.55,
+      "name": "attack_bastion",
+      "paired_animation": "32-bastion-buttressed-turntable-animated.gif"
+    },
+    {
+      "category": "signature-weapon",
+      "filename": "artillery_launch.wav",
+      "min_gap": 0.2,
+      "mixer_volume": 0.4,
+      "name": "artillery_launch",
+      "paired_animation": "69-projectile-heated-nose-shell-animated.gif"
+    },
+    {
+      "category": "signature-weapon",
+      "filename": "artillery_boom.wav",
+      "min_gap": 0.2,
+      "mixer_volume": 0.5,
+      "name": "artillery_boom",
+      "paired_animation": "69-projectile-heated-nose-shell-animated.gif"
+    },
+    {
+      "category": "destruction",
+      "filename": "unit_death.wav",
+      "min_gap": 0.12,
+      "mixer_volume": 0.35,
+      "name": "unit_death",
+      "paired_animation": null
+    },
+    {
+      "category": "destruction",
+      "filename": "building_boom.wav",
+      "min_gap": 0.05,
+      "mixer_volume": 0.6,
+      "name": "building_boom",
+      "paired_animation": null
+    },
+    {
+      "category": "result",
+      "filename": "victory.wav",
+      "min_gap": 0.05,
+      "mixer_volume": 0.6,
+      "name": "victory",
+      "paired_animation": null
+    },
+    {
+      "category": "result",
+      "filename": "defeat.wav",
+      "min_gap": 0.05,
+      "mixer_volume": 0.6,
+      "name": "defeat",
+      "paired_animation": null
+    }
+  ]
+}

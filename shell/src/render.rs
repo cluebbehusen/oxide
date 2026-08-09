@@ -187,6 +187,7 @@ pub fn staleness_fade(age: f32) -> f32 {
 
 mod chrome;
 pub(crate) mod entities;
+mod environment;
 mod minimap;
 mod motion;
 mod panel_draw;
@@ -518,8 +519,10 @@ fn view_height() -> f32 {
 /// Draws one frame.
 pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     clear_background(OUTSIDE);
+    environment::draw_backdrop(game);
     let alpha = game.render_alpha();
     draw_tiles(game, sprites);
+    environment::draw_boundary(game);
     draw_scorches(game, sprites);
     draw_buildings(game, sprites);
     draw_units(game, sprites, alpha);

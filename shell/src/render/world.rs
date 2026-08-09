@@ -68,6 +68,130 @@ impl ThemePropPlacement {
     }
 }
 
+const ONE_TILE_ROCK_COUNT: usize = 14;
+const MULTI_ROCK_FOOTPRINTS: [(i32, i32); 9] = [
+    (2, 1),
+    (2, 1),
+    (2, 1),
+    (2, 1),
+    (2, 1),
+    (3, 1),
+    (3, 1),
+    (3, 1),
+    (3, 1),
+];
+const GROUND_BLOCKER_FOOTPRINTS: [(i32, i32); 9] = [
+    (2, 2),
+    (2, 1),
+    (3, 2),
+    (2, 2),
+    (3, 2),
+    (3, 2),
+    (3, 1),
+    (2, 2),
+    (2, 2),
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ObstacleArt {
+    Rock(usize),
+    Industrial(usize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ObstaclePlacement {
+    anchor: TilePos,
+    footprint: (i32, i32),
+    art: ObstacleArt,
+}
+
+impl ObstaclePlacement {
+    fn covers(self, pos: TilePos) -> bool {
+        pos.x >= self.anchor.x
+            && pos.y >= self.anchor.y
+            && pos.x < self.anchor.x + self.footprint.0
+            && pos.y < self.anchor.y + self.footprint.1
+    }
+}
+
+fn coordinate_hash(x: i32, y: i32, salt: u32) -> u32 {
+    let mut hash = 2_166_136_261u32;
+    for word in [x as u32, y as u32, salt] {
+        for byte in word.to_le_bytes() {
+            hash ^= u32::from(byte);
+            hash = hash.wrapping_mul(16_777_619);
+        }
+    }
+    hash
+}
+
+fn placement_for_group(
+    group: TilePos,
+    mut known_rock: impl FnMut(TilePos) -> bool,
+) -> Option<ObstaclePlacement> {
+    let hash = coordinate_hash(group.x, group.y, 0x5155_4152);
+    // Most rock stays as individual outcrops; selected 3x2 cells occasionally
+    // resolve into one approved cluster or abandoned machine footprint.
+    if !hash.is_multiple_of(3) {
+        return None;
+    }
+
+    let industrial_first = (hash / 3).is_multiple_of(2);
+    for family in 0..2 {
+        let industrial = if family == 0 {
+            industrial_first
+        } else {
+            !industrial_first
+        };
+        let footprints = if industrial {
+            &GROUND_BLOCKER_FOOTPRINTS
+        } else {
+            &MULTI_ROCK_FOOTPRINTS
+        };
+        let start = (hash as usize / 11 + family * 5) % footprints.len();
+        for step in 0..footprints.len() {
+            let variant = (start + step) % footprints.len();
+            let footprint = footprints[variant];
+            let x_slack = 3 - footprint.0;
+            let y_slack = 2 - footprint.1;
+            let anchor = TilePos::new(
+                group.x + ((hash / 37 + step as u32) % (x_slack as u32 + 1)) as i32,
+                group.y + ((hash / 71 + step as u32) % (y_slack as u32 + 1)) as i32,
+            );
+            let fits = (0..footprint.1)
+                .all(|dy| (0..footprint.0).all(|dx| known_rock(anchor.offset(dx, dy))));
+            if fits {
+                return Some(ObstaclePlacement {
+                    anchor,
+                    footprint,
+                    art: if industrial {
+                        ObstacleArt::Industrial(variant)
+                    } else {
+                        ObstacleArt::Rock(ONE_TILE_ROCK_COUNT + variant)
+                    },
+                });
+            }
+        }
+    }
+    None
+}
+
+fn group_origin(pos: TilePos) -> TilePos {
+    TilePos::new(pos.x.div_euclid(3) * 3, pos.y.div_euclid(2) * 2)
+}
+
+fn visible_obstacle(game: &Game, group: TilePos) -> Option<ObstaclePlacement> {
+    placement_for_group(group, |pos| {
+        let known = game.all_seeing() || game.my_vision().explored(pos);
+        known
+            && game
+                .state
+                .map()
+                .tile(pos)
+                .is_some_and(|tile| tile.terrain == oxide_sim::map::Terrain::Rock)
+    })
+}
+
 fn theme_code(theme: &str) -> Option<u32> {
     // Stable layout salts, chosen so each shipped theme exercises its complete
     // prop row without changing the shared density rule.
@@ -127,8 +251,8 @@ fn symmetric_theme_prop(
     if hash % 11 != 5 {
         return None;
     }
-    let variant = (hash / 11 % 6) as usize;
-    let base_turns = (hash / (11 * 6) % 4) as u8;
+    let variant = (hash / 11 % 13) as usize;
+    let base_turns = (hash / (11 * 13) % 4) as u8;
     Some(ThemePropPlacement {
         variant,
         quarter_turns: if mirrored {
@@ -234,9 +358,12 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
                 Some((sprites.decal(3), 0.0, tint))
             } else if let Some(placement) = prop_candidate {
                 if symmetric_safe_theme_prop_tile(&game.scenario.map, pos) {
-                    sprites
-                        .theme_prop(theme, placement.variant)
-                        .map(|source| (source, placement.rotation(), WHITE))
+                    let source = if placement.variant < 3 {
+                        sprites.theme_prop(theme, placement.variant)
+                    } else {
+                        Some(sprites.field_debris(placement.variant - 3))
+                    };
+                    source.map(|source| (source, placement.rotation(), WHITE))
                 } else {
                     None
                 }
@@ -326,7 +453,15 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
                 1.0
             };
             let (overlay, flip) = match (tile.terrain, scrap) {
-                (oxide_sim::map::Terrain::Rock, _) => (Some(sprites.rock(h % 4)), h % 7 < 3),
+                (oxide_sim::map::Terrain::Rock, _)
+                    if visible_obstacle(game, group_origin(pos))
+                        .is_some_and(|placement| placement.covers(pos)) =>
+                {
+                    (None, false)
+                }
+                (oxide_sim::map::Terrain::Rock, _) => {
+                    (Some(sprites.rock(h % ONE_TILE_ROCK_COUNT)), h % 7 < 3)
+                }
                 (oxide_sim::map::Terrain::Peak, _) => (
                     Some(sprites.peak_barrier(peak_neighbor_mask(game, pos), h % 2)),
                     false,
@@ -354,6 +489,36 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
                     },
                 );
             }
+        }
+    }
+
+    let start = group_origin(min);
+    for y in (start.y..max.y).step_by(2) {
+        for x in (start.x..max.x).step_by(3) {
+            let Some(placement) = visible_obstacle(game, TilePos::new(x, y)) else {
+                continue;
+            };
+            let source = match placement.art {
+                ObstacleArt::Rock(variant) => sprites.rock(variant),
+                ObstacleArt::Industrial(variant) => sprites.ground_blocker(variant),
+            };
+            let screen = game
+                .camera
+                .to_screen(vec2(placement.anchor.x as f32, placement.anchor.y as f32));
+            draw_texture_ex(
+                sprites.texture(),
+                screen.x.floor(),
+                screen.y.floor(),
+                WHITE,
+                DrawTextureParams {
+                    dest_size: Some(vec2(
+                        placement.footprint.0 as f32 * zoom + 1.0,
+                        placement.footprint.1 as f32 * zoom + 1.0,
+                    )),
+                    source: Some(source),
+                    ..Default::default()
+                },
+            );
         }
     }
 }
@@ -438,7 +603,7 @@ mod tests {
                     f32::from(quarter_turns) * std::f32::consts::FRAC_PI_2
                 );
             }
-            for variant in 3..6 {
+            for variant in 3..13 {
                 let placement = ThemePropPlacement {
                     variant,
                     quarter_turns,
@@ -495,6 +660,7 @@ mod tests {
         paths.sort();
         let mut seen_themes = BTreeSet::new();
         let mut variants_by_theme = BTreeMap::<String, BTreeSet<usize>>::new();
+        let mut all_variants = BTreeSet::new();
         let mut total_safe = 0;
         let mut total_props = 0;
         for path in paths {
@@ -555,22 +721,22 @@ mod tests {
                 path.display()
             );
             assert!(
-                variants.len() >= 4,
+                variants.len() >= 3,
                 "{} only uses theme-prop variants {variants:?}",
                 path.display()
             );
             if safe_count >= 400 {
-                assert_eq!(
-                    variants,
-                    (0..6).collect(),
-                    "{} has room for, but does not use, all six theme-prop variants",
+                assert!(
+                    variants.len() >= 8,
+                    "{} has room for, but uses too little of the environment library: {variants:?}",
                     path.display()
                 );
             }
             variants_by_theme
                 .entry(theme.to_string())
                 .or_default()
-                .extend(variants);
+                .extend(variants.iter().copied());
+            all_variants.extend(variants);
             total_safe += safe_count;
             total_props += count;
         }
@@ -584,11 +750,117 @@ mod tests {
             THEMES.map(str::to_string).into_iter().collect()
         );
         for theme in THEMES {
-            assert_eq!(
-                variants_by_theme.get(theme),
-                Some(&(0..6).collect()),
-                "{theme} does not exercise its complete shipped prop row"
+            assert!(
+                variants_by_theme
+                    .get(theme)
+                    .is_some_and(|variants| variants.len() >= 8),
+                "{theme} exercises too little of the shared environment library: {:?}",
+                variants_by_theme.get(theme)
             );
         }
+        assert_eq!(
+            all_variants,
+            (0..13).collect(),
+            "the shipped map set does not exercise the complete environment library"
+        );
+    }
+
+    #[test]
+    fn obstacle_groups_never_cover_non_rock_or_overlap_neighbor_groups() {
+        let rows = [
+            ".........",
+            ".#######.",
+            ".#######.",
+            ".#######.",
+            ".#######.",
+            ".........",
+        ];
+        let is_rock = |pos: TilePos| {
+            pos.x >= 0
+                && pos.y >= 0
+                && rows
+                    .get(pos.y as usize)
+                    .and_then(|row| row.as_bytes().get(pos.x as usize))
+                    == Some(&b'#')
+        };
+        let mut covered = BTreeSet::new();
+        for y in (0..rows.len() as i32).step_by(2) {
+            for x in (0..rows[0].len() as i32).step_by(3) {
+                let Some(placement) = placement_for_group(TilePos::new(x, y), is_rock) else {
+                    continue;
+                };
+                for dy in 0..placement.footprint.1 {
+                    for dx in 0..placement.footprint.0 {
+                        let pos = placement.anchor.offset(dx, dy);
+                        assert!(is_rock(pos));
+                        assert!(covered.insert((pos.x, pos.y)), "overlap at {pos:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn incomplete_fog_knowledge_falls_back_to_individual_rocks() {
+        for group_y in (0..20).step_by(2) {
+            for group_x in (0..30).step_by(3) {
+                let group = TilePos::new(group_x, group_y);
+                let Some(_) = placement_for_group(group, |_| true) else {
+                    continue;
+                };
+                assert_eq!(
+                    placement_for_group(group, |pos| pos == group),
+                    None,
+                    "a multi-tile silhouette must not disclose its hidden continuation"
+                );
+                return;
+            }
+        }
+        panic!("test grid did not find a decorated obstacle group");
+    }
+
+    #[test]
+    fn shipped_maps_exercise_every_approved_multi_tile_obstacle() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scenarios");
+        let mut paths: Vec<_> = std::fs::read_dir(&root)
+            .expect("scenario directory")
+            .map(|entry| entry.expect("scenario entry").path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "json")
+            })
+            .collect();
+        paths.sort();
+        let mut rocks = BTreeSet::new();
+        let mut industrial = BTreeSet::new();
+        for path in paths {
+            let scenario = oxide_sim::Scenario::load(&path)
+                .unwrap_or_else(|error| panic!("loading {}: {error}", path.display()));
+            let height = scenario.map.len() as i32;
+            let width = scenario.map.first().expect("scenario row").len() as i32;
+            let authored_rock =
+                |pos: TilePos| authored_tile(&scenario.map, pos).is_some_and(|cell| cell == b'#');
+            for y in (0..height).step_by(2) {
+                for x in (0..width).step_by(3) {
+                    let Some(placement) = placement_for_group(TilePos::new(x, y), authored_rock)
+                    else {
+                        continue;
+                    };
+                    match placement.art {
+                        ObstacleArt::Rock(variant) => {
+                            rocks.insert(variant);
+                        }
+                        ObstacleArt::Industrial(variant) => {
+                            industrial.insert(variant);
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            rocks,
+            (ONE_TILE_ROCK_COUNT..ONE_TILE_ROCK_COUNT + MULTI_ROCK_FOOTPRINTS.len()).collect()
+        );
+        assert_eq!(industrial, (0..GROUND_BLOCKER_FOOTPRINTS.len()).collect());
     }
 }

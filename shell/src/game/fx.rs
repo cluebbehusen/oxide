@@ -48,16 +48,22 @@ pub enum SoundKind {
     Click,
     /// An order was rejected.
     Denied,
+    /// High-priority warning that the local player is under attack.
+    Alert,
     /// The match ended in your favor.
     Victory,
     /// It did not.
     Defeat,
     /// An artillery shell landing.
     Artillery,
+    /// A hostile artillery launch heard from a visible impact warning.
+    ArtilleryLaunch,
     /// An order acknowledged.
     Ack,
     /// A Sentinel's compact cannon report.
     SentinelFire,
+    /// A Scuttler's paired mechanical shear.
+    ScuttlerFire,
     /// A Lancer's charged rail report.
     LancerFire,
     /// A Bombard's heavy artillery report.
@@ -214,6 +220,7 @@ fn unit_fire_sound(kind: oxide_sim::UnitKind) -> SoundKind {
     use oxide_sim::UnitKind;
     match kind {
         UnitKind::Sentinel => SoundKind::SentinelFire,
+        UnitKind::Scuttler => SoundKind::ScuttlerFire,
         UnitKind::Lancer => SoundKind::LancerFire,
         UnitKind::Bombard => SoundKind::BombardFire,
         UnitKind::Flakhound => SoundKind::FlakhoundFire,
@@ -222,7 +229,7 @@ fn unit_fire_sound(kind: oxide_sim::UnitKind) -> SoundKind {
         UnitKind::Darter => SoundKind::DarterFire,
         UnitKind::Talon => SoundKind::TalonFire,
         UnitKind::Wisp => SoundKind::WispFire,
-        UnitKind::Harvester | UnitKind::Scuttler => SoundKind::Laser,
+        UnitKind::Harvester => SoundKind::Laser,
     }
 }
 
@@ -238,6 +245,28 @@ fn shell_fire_sound(shooter: oxide_sim::Target) -> SoundKind {
     match shooter {
         oxide_sim::Target::Unit(_) => SoundKind::BombardFire,
         oxide_sim::Target::Building(_) => SoundKind::BastionFire,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellSoundAnchor {
+    Muzzle,
+    Impact,
+}
+
+fn shell_launch_audio(
+    shooter: oxide_sim::Target,
+    own: bool,
+    hostile: bool,
+    muzzle_seen: bool,
+    impact_seen: bool,
+) -> Option<(SoundKind, ShellSoundAnchor)> {
+    if muzzle_seen || own {
+        Some((shell_fire_sound(shooter), ShellSoundAnchor::Muzzle))
+    } else if hostile && impact_seen {
+        Some((SoundKind::ArtilleryLaunch, ShellSoundAnchor::Impact))
+    } else {
+        None
     }
 }
 
@@ -635,13 +664,20 @@ impl Game {
                     // the same information the sim's incoming-shell
                     // sense grants (impact tile visible), loudest when
                     // it is falling on you, and nothing tracks the gun.
-                    let muzzle_seen = sees(self, *from);
-                    let impact_seen = sees(self, *to);
-                    let sound = shell_fire_sound(*shooter);
-                    if muzzle_seen || *player == self.human {
-                        self.sounds_pending.push((sound, Some(world_vec(*from))));
-                    } else if impact_seen {
-                        self.sounds_pending.push((sound, Some(world_vec(*to))));
+                    let own = *player == self.human;
+                    let hostile = self.state.hostile(self.human, *player);
+                    if let Some((sound, anchor)) = shell_launch_audio(
+                        *shooter,
+                        own,
+                        hostile,
+                        sees(self, *from),
+                        sees(self, *to),
+                    ) {
+                        let at = match anchor {
+                            ShellSoundAnchor::Muzzle => *from,
+                            ShellSoundAnchor::Impact => *to,
+                        };
+                        self.sounds_pending.push((sound, Some(world_vec(at))));
                     }
                 }
                 Event::ShellLanded {
@@ -989,6 +1025,7 @@ mod tests {
     #[test]
     fn approved_combatants_use_their_own_reports() {
         assert_eq!(unit_fire_sound(UnitKind::Sentinel), SoundKind::SentinelFire);
+        assert_eq!(unit_fire_sound(UnitKind::Scuttler), SoundKind::ScuttlerFire);
         assert_eq!(unit_fire_sound(UnitKind::Lancer), SoundKind::LancerFire);
         assert_eq!(
             unit_fire_sound(UnitKind::Flakhound),
@@ -1014,9 +1051,33 @@ mod tests {
     }
 
     #[test]
-    fn unfinished_combat_audio_keeps_the_generic_report() {
-        assert_eq!(unit_fire_sound(UnitKind::Scuttler), SoundKind::Laser);
+    fn generic_combatants_keep_the_generic_report() {
+        assert_eq!(unit_fire_sound(UnitKind::Harvester), SoundKind::Laser);
         assert_eq!(defense_fire_sound(BuildingKind::Turret), SoundKind::Laser);
+    }
+
+    #[test]
+    fn artillery_launch_audio_respects_sight_and_allegiance() {
+        let bombard = Target::Unit(UnitId(4));
+        assert_eq!(
+            shell_launch_audio(bombard, false, true, true, true),
+            Some((SoundKind::BombardFire, ShellSoundAnchor::Muzzle))
+        );
+        assert_eq!(
+            shell_launch_audio(bombard, false, true, false, true),
+            Some((SoundKind::ArtilleryLaunch, ShellSoundAnchor::Impact))
+        );
+        assert_eq!(shell_launch_audio(bombard, false, true, false, false), None);
+        assert_eq!(
+            shell_launch_audio(bombard, false, false, false, true),
+            None,
+            "a fogged allied shell must not sound like an incoming threat"
+        );
+        assert_eq!(
+            shell_launch_audio(bombard, true, false, false, false),
+            Some((SoundKind::BombardFire, ShellSoundAnchor::Muzzle)),
+            "the local gun remains audible without revealing another seat"
+        );
     }
 
     #[test]

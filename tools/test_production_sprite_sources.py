@@ -7,7 +7,11 @@ from pathlib import Path
 from PIL import Image, ImageChops
 
 from tools import gen_sprites as gen
-from tools.production_sprite_sources import construction_final, finalized
+from tools.production_sprite_sources import (
+    construction_final,
+    environment_final,
+    finalized,
+)
 
 
 def _changed_pixels(left: Image.Image, right: Image.Image) -> int:
@@ -47,6 +51,7 @@ class ProductionSpriteSourceTests(unittest.TestCase):
                 gen.harvester(faction, dig=2)
             finalized.install_finalized_sprites(cls.registry, cls.out)
             construction_final.install_finalized_construction(cls.registry, cls.out)
+            environment_final.install_finalized_environment(cls.registry, cls.out)
         finally:
             gen.OUT = old_out
             gen.REGISTRY = old_registry
@@ -65,6 +70,52 @@ class ProductionSpriteSourceTests(unittest.TestCase):
         self.assertNotIn("from tools import batch", production_sources)
         self.assertNotIn("gen._review", production_sources)
         self.assertNotIn("gen.REVIEW_ROUTE", production_sources)
+
+    def test_finalized_environment_bank_is_complete_and_pixel_stable(self) -> None:
+        self.assertEqual(len(environment_final.FIELD_DEBRIS_KEYS), 10)
+        self.assertEqual(len(environment_final.GROUND_BLOCKER_KEYS), 9)
+        self.assertEqual(len(environment_final.ROCK_KEYS), 23)
+        self.assertEqual(len(environment_final.ROCK_FOOTPRINTS), 23)
+
+        digest = hashlib.sha256()
+        for key in environment_final.FIELD_DEBRIS_KEYS:
+            image = self.registry[key]
+            self.assertIn(image.size, ((32, 32), (64, 64)))
+            digest.update(key.encode())
+            digest.update(image.tobytes())
+        for key, footprint in zip(
+            environment_final.GROUND_BLOCKER_KEYS,
+            environment_final.GROUND_BLOCKER_FOOTPRINTS,
+            strict=True,
+        ):
+            image = self.registry[key]
+            self.assertEqual(image.size, tuple(side * 64 for side in footprint))
+            digest.update(key.encode())
+            digest.update(image.tobytes())
+        for key, footprint in zip(
+            environment_final.ROCK_KEYS[4:],
+            environment_final.ROCK_FOOTPRINTS[4:],
+            strict=True,
+        ):
+            image = self.registry[key]
+            self.assertEqual(image.size, tuple(side * 64 for side in footprint))
+            digest.update(key.encode())
+            digest.update(image.tobytes())
+        self.assertEqual(
+            digest.hexdigest(),
+            "a80200d8332879e8fc53a81c5469861d1512a03b13de9835925276c3ad0920ee",
+        )
+
+    def test_peak_bank_covers_every_fog_honest_connectivity_mask(self) -> None:
+        images = []
+        for mask in range(16):
+            for variant in range(2):
+                key = f"peak_barrier_{mask:02x}_{variant}"
+                image = self.registry[key]
+                self.assertEqual(image.size, (64, 64))
+                self.assertEqual(image.getchannel("A").getbbox(), (0, 0, 64, 64))
+                images.append(image.tobytes())
+        self.assertEqual(len(set(images)), 32)
 
     def test_metadata_counts_match_every_generated_action_row(self) -> None:
         for stem, frame_set in finalized.UNIT_ACTIONS.items():

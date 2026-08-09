@@ -2,11 +2,14 @@
 
 A small 2D real-time strategy game about machines eating a dead world.
 
-Two robot swarms — **Ferrous**, bleeding rust orange, and **Cupric**, crusted
-in teal patina — wake up in the wreckage of some forgotten industry. Scrap is
-food. Harvesters haul it home, Foundries smelt it into more machines, and
-Sentinels make sure the other swarm doesn't get to. It ends when one side's
-Foundry is a smoking crater.
+The battles unfold at the bottom of exhausted open-pit quarries, where terraced
+cuts climb out of sight and the remnants of a futuristic mining rush litter the
+floor. The corporations moved on when the valuable ore ran dry, leaving
+autonomous cleanup fleets to recover whatever scrap remained. Two such swarms —
+**Ferrous**, bleeding rust orange, and **Cupric**, crusted in teal patina — now
+dismantle the abandoned operation and each other. Harvesters haul scrap home,
+Foundries smelt it into more machines, and Sentinels make sure the other swarm
+doesn't get to. It ends when one side's Foundry is a smoking crater.
 
 Oxide is also an experiment: it was built almost entirely by an AI agent, and
 the architecture is shaped by that. The entire game is a pure, deterministic
@@ -55,9 +58,12 @@ you what the machine is and exactly how it fights. A six-step
 tutorial (Home → Tutorial) teaches by watching you actually do each
 thing; guns aim at what they shoot, turrets track, downed flyers
 fall, and battle sound sits in space — launches thump at the gun,
-booms land at the impact, and distance dims both. Treads cycle while
+booms land at the impact, and the camera mix keeps nearby machinery distinct
+up close while coalescing the battlefield at wide zoom. A protected attack
+cue remains audible when your forces come under fire. Treads cycle while
 machines move, building machinery works inside the sprite, construction rises
-through visible stages, themed debris dresses each map, and an adaptive score
+through visible stages, quarry terraces fall away into darkness, abandoned
+equipment and rock fields dress each map, and an adaptive score
 moves from the menus through calm industry into combat. When a match ends, a
 full report separates units and buildings built and lost, peak army,
 scrap collected, and every player's army curve, with actions to rematch,
@@ -69,10 +75,10 @@ cargo run -p oxide-shell
 
 A menu lists the shipped maps — the classic duels, the quick 2v2s
 Twin Forges and Open Quarry, the big fields: Basalt Spine
-(a plated barrier splits the map; two ground passes, one air-only door),
+(an uncut quarry divide splits the map; two ground passes, one air-only door),
 Ferric Reach (three lanes, long logistics), Parallel Works and
 Paired Claims (large 2v2s), Continental Divide (a vast
-plated barrier where the doors decide it), and the team-war fields —
+quarry divide where the doors decide it), and the team-war fields —
 Trident Plateau and Causeway Verdict (3v3), Compass Grand and
 Gatework Array (4v4), lane wars where the
 ridge doors carry the fight sideways — then opens one setup screen
@@ -103,8 +109,9 @@ in the radius. The factions split on the sky: Ferrous flies the heavy
 **Buzzard**, hunts with the **Talon**, and guards with the tanky
 **Flakhound**; Cupric answers with the darting **Darter**, the swarm
 **Wisp**, and the cheap **Stinger**. Air ignores terrain almost
-entirely — only **peaks** (`^` on the map, plated exclusion barriers on screen) wall
-the sky, block every shot across them, and break artillery arcs; only
+entirely — only **peaks** (`^` on the map, tall connected remnants of uncut
+quarry on screen) wall the sky, block every shot across them, and break
+artillery arcs; only
 anti-air weapons can touch a flyer. Bombard and Bastion shells are
 real projectiles now: they fly, they can be dodged, and they land
 where the target _was_.

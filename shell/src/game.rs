@@ -754,6 +754,7 @@ impl Game {
         self.alerts.push((world, 0.0));
         self.last_alert = Some(world);
         self.toast("under attack");
+        self.sounds_pending.push((SoundKind::Alert, None));
     }
 
     /// Interpolated draw position for a unit.
@@ -813,6 +814,25 @@ impl oxide_protocol::DebugSession for Game {
 mod tests {
     use super::*;
     use oxide_sim::{Command, Scenario, UnitKind};
+
+    #[test]
+    fn admitted_attack_alert_queues_one_protected_audio_cue() {
+        let mut game = Game::with_viewport(
+            Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("skirmish builds");
+        game.sounds_pending.clear();
+
+        game.raise_alert(macroquad::prelude::vec2(10.0, 10.0));
+        game.raise_alert(macroquad::prelude::vec2(11.0, 11.0));
+
+        assert_eq!(
+            game.sounds_pending,
+            vec![(SoundKind::Alert, None)],
+            "the region gate must admit one alert cue rather than one per hit"
+        );
+    }
 
     #[test]
     fn demo_flags_read_only_the_humans_commands() {

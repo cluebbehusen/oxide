@@ -26,7 +26,8 @@ fn rgb(hex: u32) -> Color {
 const GROUND: u32 = 0x232329;
 const ROCK: u32 = 0x52525E;
 const PEAK: u32 = 0x22212A;
-const PEAK_HAZARD: u32 = 0xC79B3B;
+const PEAK_FACE: u32 = 0x34333D;
+const PEAK_LIP: u32 = 0x57545F;
 const SCRAP_FULL: u32 = 0xD9A441;
 const SCRAP_LOW: u32 = 0x8C6A2F;
 const HP_BACK: u32 = 0x141418;
@@ -88,22 +89,13 @@ pub fn render_state(state: &State) -> Pixmap {
         let (x, y) = (pos.x as f32 * TILE_PX, pos.y as f32 * TILE_PX);
         match (tile.terrain, tile.scrap) {
             (Terrain::Rock, _) => fill_rect(&mut pixmap, x, y, TILE_PX, TILE_PX, ROCK),
-            // Peaks are plated exclusion barriers: a dark full-tile mass
-            // with a blocky hazard X, distinct from the organic rock fill.
+            // Peaks are uncut quarry mesas: a dark full-tile mass with a
+            // south-facing cut and cap, distinct from the loose rock fill.
             (Terrain::Peak, _) => {
                 fill_rect(&mut pixmap, x, y, TILE_PX, TILE_PX, PEAK);
-                for step in 0..4 {
-                    let offset = 2.0 + step as f32 * 2.0;
-                    fill_rect(&mut pixmap, x + offset, y + offset, 2.0, 2.0, PEAK_HAZARD);
-                    fill_rect(
-                        &mut pixmap,
-                        x + TILE_PX - offset - 2.0,
-                        y + offset,
-                        2.0,
-                        2.0,
-                        PEAK_HAZARD,
-                    );
-                }
+                fill_rect(&mut pixmap, x, y + 8.0, TILE_PX, 4.0, PEAK_FACE);
+                fill_rect(&mut pixmap, x, y + 7.0, TILE_PX, 1.0, PEAK_LIP);
+                fill_rect(&mut pixmap, x + 2.0, y + 3.0, 5.0, 1.0, PEAK_FACE);
             }
             // Rubble: a faint lightening so the goldens register it.
             // Wreck salvage: a small dim-amber square, unmistakably not a

@@ -9,6 +9,9 @@ This script is the source of truth for the game's art: edit here, run
 Output is deterministic (fixed seeds, no timestamps in the pixels) so a
 regenerated sprite only differs when the code does.
 
+Pass --out DIRECTORY to write a complete alternate bank for review without
+touching the checked-in assets.
+
 Style: flat top-down geometry, supersampled 4x for clean edges. Factions
 share silhouettes and differ only in accent color — Ferrous rusts orange,
 Cupric corrodes teal. Units face up; the shell rotates them toward their
@@ -165,6 +168,15 @@ def _install_finalized_sprite_bank() -> None:
     from tools.production_sprite_sources.finalized import install_finalized_sprites
 
     install_finalized_sprites(REGISTRY, OUT)
+
+
+def _install_finalized_environment_bank() -> None:
+    """Installs the approved quarry environment into the live registry."""
+    from tools.production_sprite_sources.environment_final import (
+        install_finalized_environment,
+    )
+
+    install_finalized_environment(REGISTRY, OUT)
 
 
 def _install_finalized_construction_bank() -> None:
@@ -2803,6 +2815,7 @@ def generate(output: Path) -> None:
         for work in range(1, 4):
             repair_bay(faction, work)
     _install_finalized_sprite_bank()
+    _install_finalized_environment_bank()
     for faction in FACTIONS:
         for stem in BUILDING_STEMS:
             for stage in range(3):
@@ -2857,16 +2870,27 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
+    destination = parser.add_mutually_exclusive_group()
+    destination.add_argument(
         "--check",
         action="store_true",
         help="regenerate in a temporary directory and compare committed bytes",
+    )
+    destination.add_argument(
+        "--out",
+        type=Path,
+        metavar="DIRECTORY",
+        help="write the complete sprite bank to DIRECTORY instead of assets/sprites",
     )
     args = parser.parse_args()
     if args.check:
         check_reproducible()
     else:
-        generate(Path(__file__).resolve().parent.parent / "assets" / "sprites")
+        generate(
+            args.out
+            if args.out is not None
+            else Path(__file__).resolve().parent.parent / "assets" / "sprites"
+        )
 
 
 if __name__ == "__main__":

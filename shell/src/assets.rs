@@ -17,7 +17,7 @@ pub struct Sprites {
     /// [`crate::panel::VerbIcon`].
     verb_icons: [Rect; 12],
     ground: [Rect; 6],
-    rock: [Rect; 4],
+    rock: [Rect; 23],
     /// Full-tile exclusion barriers, indexed `neighbor_mask * 2 + variant`.
     peak_barriers: [Rect; 32],
     turret_barrel: [Rect; 3],
@@ -30,6 +30,10 @@ pub struct Sprites {
     decals: [Rect; 4],
     /// Six flat ground-dressing variants for each shipped theme.
     theme_props: [Rect; 36],
+    /// Approved passable remnants scattered over safe ground.
+    field_debris: [Rect; 10],
+    /// Approved multi-tile industrial obstacles drawn over Rock terrain.
+    ground_blockers: [Rect; 9],
     scrap_full: Rect,
     scrap_mid: Rect,
     scrap_low: Rect,
@@ -140,7 +144,56 @@ const GROUND_KEYS: [&str; 6] = [
     "ground_0", "ground_1", "ground_2", "ground_3", "ground_4", "ground_5",
 ];
 
-const ROCK_KEYS: [&str; 4] = ["rock_0", "rock_1", "rock_2", "rock_3"];
+const ROCK_KEYS: [&str; 23] = [
+    "rock_0",
+    "rock_1",
+    "rock_2",
+    "rock_3",
+    "rock_jagged_crown",
+    "rock_split_anvil",
+    "rock_broken_tooth",
+    "rock_hooked_shelf",
+    "rock_three_spall",
+    "rock_quarry_bite",
+    "rock_fallen_fang",
+    "rock_split_face",
+    "rock_low_scree",
+    "rock_hollow_crook",
+    "rock_broken_rampart",
+    "rock_twin_outcrop",
+    "rock_quarry_fall",
+    "rock_shattered_crown",
+    "rock_split_gully",
+    "rock_collapsed_cut",
+    "rock_jagged_field",
+    "rock_broken_bench",
+    "rock_quarry_scatter",
+];
+
+const FIELD_DEBRIS_KEYS: [&str; 10] = [
+    "field_debris_severed_cable",
+    "field_debris_bent_service_rail",
+    "field_debris_abandoned_canisters",
+    "field_debris_braided_cable",
+    "field_debris_fastener_spill",
+    "field_debris_canister_cluster",
+    "field_debris_sunken_cooling_fan",
+    "field_debris_inspection_hatch",
+    "field_debris_cable_tray",
+    "field_debris_motor_casing",
+];
+
+const GROUND_BLOCKER_KEYS: [&str; 9] = [
+    "ground_blocker_cooling_fan",
+    "ground_blocker_compressor_skid",
+    "ground_blocker_transformer_bank",
+    "ground_blocker_exposed_gearbox",
+    "ground_blocker_conveyor_drive",
+    "ground_blocker_crusher_motor",
+    "ground_blocker_track_assembly",
+    "ground_blocker_vent_blower",
+    "ground_blocker_generator_pallet",
+];
 
 /// Full-tile barriers, ordered `neighbor_mask * 2 + variant`. The mask is
 /// north/east/south/west in bits 0 through 3.
@@ -478,6 +531,8 @@ fn atlas_keys() -> Vec<String> {
         .chain(PEAK_BARRIER_KEYS.iter())
         .chain(DECAL_KEYS.iter())
         .chain(THEME_PROP_KEYS.iter())
+        .chain(FIELD_DEBRIS_KEYS.iter())
+        .chain(GROUND_BLOCKER_KEYS.iter())
         .chain(SCAFFOLD_KEYS.iter())
         .chain(DEBRIS_KEYS.iter())
         .map(|key| (*key).to_string())
@@ -621,6 +676,8 @@ impl Sprites {
             rock_skirt,
             decals: pick(&rects, DECAL_KEYS)?,
             theme_props: pick(&rects, THEME_PROP_KEYS)?,
+            field_debris: pick(&rects, FIELD_DEBRIS_KEYS)?,
+            ground_blockers: pick(&rects, GROUND_BLOCKER_KEYS)?,
             scrap_full,
             scrap_mid,
             scrap_low,
@@ -714,6 +771,16 @@ impl Sprites {
     /// A rock variant's atlas region.
     pub fn rock(&self, variant: usize) -> Rect {
         self.rock[variant % self.rock.len()]
+    }
+
+    /// A passable, flat remnant's atlas region.
+    pub fn field_debris(&self, variant: usize) -> Rect {
+        self.field_debris[variant % self.field_debris.len()]
+    }
+
+    /// A raised industrial obstacle's atlas region.
+    pub fn ground_blocker(&self, variant: usize) -> Rect {
+        self.ground_blockers[variant % self.ground_blockers.len()]
     }
 
     /// A defense's directional mount, if its base art ships bare.
@@ -1080,18 +1147,24 @@ pub struct Sounds {
     pub click: Sound,
     /// An order was refused.
     pub denied: Sound,
+    /// High-priority warning that the local player is under attack.
+    pub alert: Sound,
     /// You won.
     pub victory: Sound,
     /// You didn't.
     pub defeat: Sound,
     /// An artillery shell landing.
     pub artillery_boom: Sound,
+    /// A fogged hostile artillery launch warning.
+    pub artillery_launch: Sound,
     /// Order acknowledged.
     pub ack: Sound,
     /// The zap's lower sibling, alternated per shot.
     pub laser2: Sound,
     /// A Sentinel's compact cannon report.
     pub attack_sentinel: Sound,
+    /// A Scuttler's paired mechanical shear.
+    pub attack_scuttler: Sound,
     /// A Lancer's charged rail report.
     pub attack_lancer: Sound,
     /// A Bombard's heavy artillery report.
@@ -1144,12 +1217,15 @@ impl Sounds {
             train_done: clip("train_done").await?,
             click: clip("click").await?,
             denied: clip("denied").await?,
+            alert: clip("alert").await?,
             victory: clip("victory").await?,
             defeat: clip("defeat").await?,
             artillery_boom: clip("artillery_boom").await?,
+            artillery_launch: clip("artillery_launch").await?,
             ack: clip("ack").await?,
             laser2: clip("laser2").await?,
             attack_sentinel: clip("attack_sentinel").await?,
+            attack_scuttler: clip("attack_scuttler").await?,
             attack_lancer: clip("attack_lancer").await?,
             attack_bombard: clip("attack_bombard").await?,
             attack_flakhound: clip("attack_flakhound").await?,
@@ -1182,8 +1258,9 @@ impl Sounds {
 mod tests {
     use super::*;
 
-    const SOUND_NAMES: [&str; 32] = [
+    const SOUND_NAMES: [&str; 34] = [
         "ack",
+        "alert",
         "artillery_boom",
         "artillery_launch",
         "attack_bastion",
@@ -1193,6 +1270,7 @@ mod tests {
         "attack_flak_turret",
         "attack_flakhound",
         "attack_lancer",
+        "attack_scuttler",
         "attack_sentinel",
         "attack_stinger",
         "attack_talon",
@@ -1261,9 +1339,14 @@ mod tests {
                 "{} must stay mono",
                 path.display()
             );
+            let expected_rate = if name.starts_with("music_") {
+                22_050
+            } else {
+                44_100
+            };
             assert_eq!(
                 u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]),
-                22_050,
+                expected_rate,
                 "{} changed sample rate",
                 path.display()
             );
@@ -1668,6 +1751,41 @@ mod tests {
             }
         }
         assert_eq!(theme_prop_row("unknown"), None);
+    }
+
+    #[test]
+    fn finalized_environment_regions_keep_their_authored_footprints() {
+        let atlas = manifest();
+        for key in FIELD_DEBRIS_KEYS {
+            let [_, _, width, height] = atlas[key];
+            assert!(matches!((width, height), (32.0, 32.0) | (64.0, 64.0)));
+        }
+        for (key, footprint) in GROUND_BLOCKER_KEYS.into_iter().zip([
+            (2, 2),
+            (2, 1),
+            (3, 2),
+            (2, 2),
+            (3, 2),
+            (3, 2),
+            (3, 1),
+            (2, 2),
+            (2, 2),
+        ]) {
+            assert_eq!(
+                atlas[key][2..],
+                [footprint.0 as f32 * 64.0, footprint.1 as f32 * 64.0]
+            );
+        }
+        for (key, footprint) in ROCK_KEYS.into_iter().zip(
+            std::iter::repeat_n((1, 1), 14)
+                .chain(std::iter::repeat_n((2, 1), 5))
+                .chain(std::iter::repeat_n((3, 1), 4)),
+        ) {
+            assert_eq!(
+                atlas[key][2..],
+                [footprint.0 as f32 * 64.0, footprint.1 as f32 * 64.0]
+            );
+        }
     }
 
     #[test]

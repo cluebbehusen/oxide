@@ -12,6 +12,7 @@
 mod action;
 mod app;
 mod assets;
+mod audio_mix;
 mod autosave;
 mod camera;
 mod config;

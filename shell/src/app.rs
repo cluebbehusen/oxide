@@ -30,7 +30,7 @@ use crate::screens::shelf::Shelf;
 use crate::screens::wizard::{NewMatchDraft, Out as WizardOut, Step as WizardStep, Wizard};
 use crate::{Args, assets, autosave, config, input, render, screens, theme, tutorial};
 use anyhow::{Context, Result};
-use macroquad::audio::{PlaySoundParams, play_sound};
+use macroquad::audio::{PlaySoundParams, Sound, play_sound};
 use macroquad::prelude::*;
 use oxide_protocol::{
     CameraView, Key, MouseButton, OverlayView, RawEvent, Reply, Request, ResponseEnvelope,
@@ -229,6 +229,94 @@ impl Mixer {
         volumes.master * bus
     }
 
+    fn min_gap(kind: SoundKind) -> f64 {
+        match kind {
+            SoundKind::Laser | SoundKind::ScuttlerFire => 0.09,
+            SoundKind::SentinelFire => 0.08,
+            SoundKind::LancerFire | SoundKind::Ack => 0.15,
+            SoundKind::BombardFire
+            | SoundKind::BastionFire
+            | SoundKind::Artillery
+            | SoundKind::ArtilleryLaunch => 0.2,
+            SoundKind::FlakhoundFire | SoundKind::FlakTurretFire => 0.12,
+            SoundKind::StingerFire
+            | SoundKind::BuzzardFire
+            | SoundKind::DarterFire
+            | SoundKind::TalonFire
+            | SoundKind::WispFire => 0.1,
+            SoundKind::UnitDeath => 0.12,
+            SoundKind::Deposit => 0.15,
+            SoundKind::Alert => 1.5,
+            _ => 0.05,
+        }
+    }
+
+    fn base_volume(kind: SoundKind) -> f32 {
+        match kind {
+            SoundKind::Laser => 0.18,
+            SoundKind::UnitDeath => 0.35,
+            SoundKind::BuildingBoom => 0.6,
+            SoundKind::Deposit => 0.25,
+            SoundKind::TrainDone => 0.3,
+            SoundKind::Click => 0.25,
+            SoundKind::Denied => 0.3,
+            SoundKind::Alert => 0.4,
+            SoundKind::Victory | SoundKind::Defeat => 0.6,
+            SoundKind::Artillery => 0.5,
+            SoundKind::ArtilleryLaunch => 0.4,
+            SoundKind::Ack => 0.18,
+            SoundKind::SentinelFire => 0.26,
+            SoundKind::ScuttlerFire => 0.2,
+            SoundKind::LancerFire => 0.32,
+            SoundKind::BombardFire => 0.5,
+            SoundKind::FlakhoundFire => 0.3,
+            SoundKind::StingerFire => 0.25,
+            SoundKind::BuzzardFire => 0.35,
+            SoundKind::DarterFire => 0.25,
+            SoundKind::TalonFire => 0.28,
+            SoundKind::WispFire => 0.23,
+            SoundKind::BastionFire => 0.55,
+            SoundKind::FlakTurretFire => 0.34,
+        }
+    }
+
+    fn clip<'a>(&mut self, sounds: &'a assets::Sounds, kind: SoundKind) -> &'a Sound {
+        match kind {
+            SoundKind::Laser => {
+                self.laser_flip = !self.laser_flip;
+                if self.laser_flip {
+                    &sounds.laser
+                } else {
+                    &sounds.laser2
+                }
+            }
+            SoundKind::UnitDeath => &sounds.unit_death,
+            SoundKind::BuildingBoom => &sounds.building_boom,
+            SoundKind::Deposit => &sounds.deposit,
+            SoundKind::TrainDone => &sounds.train_done,
+            SoundKind::Click => &sounds.click,
+            SoundKind::Denied => &sounds.denied,
+            SoundKind::Alert => &sounds.alert,
+            SoundKind::Victory => &sounds.victory,
+            SoundKind::Defeat => &sounds.defeat,
+            SoundKind::Artillery => &sounds.artillery_boom,
+            SoundKind::ArtilleryLaunch => &sounds.artillery_launch,
+            SoundKind::Ack => &sounds.ack,
+            SoundKind::SentinelFire => &sounds.attack_sentinel,
+            SoundKind::ScuttlerFire => &sounds.attack_scuttler,
+            SoundKind::LancerFire => &sounds.attack_lancer,
+            SoundKind::BombardFire => &sounds.attack_bombard,
+            SoundKind::FlakhoundFire => &sounds.attack_flakhound,
+            SoundKind::StingerFire => &sounds.attack_stinger,
+            SoundKind::BuzzardFire => &sounds.attack_buzzard,
+            SoundKind::DarterFire => &sounds.attack_darter,
+            SoundKind::TalonFire => &sounds.attack_talon,
+            SoundKind::WispFire => &sounds.attack_wisp,
+            SoundKind::BastionFire => &sounds.attack_bastion,
+            SoundKind::FlakTurretFire => &sounds.attack_flak_turret,
+        }
+    }
+
     fn play(
         &mut self,
         sounds: &assets::Sounds,
@@ -237,64 +325,16 @@ impl Mixer {
         attenuation: f32,
     ) {
         let now = get_time();
-        let min_gap = match kind {
-            SoundKind::Laser => 0.09,
-            SoundKind::SentinelFire => 0.08,
-            SoundKind::LancerFire => 0.15,
-            SoundKind::BombardFire | SoundKind::BastionFire => 0.2,
-            SoundKind::FlakhoundFire | SoundKind::FlakTurretFire => 0.12,
-            SoundKind::StingerFire
-            | SoundKind::BuzzardFire
-            | SoundKind::DarterFire
-            | SoundKind::TalonFire
-            | SoundKind::WispFire => 0.1,
-            SoundKind::UnitDeath => 0.12,
-            SoundKind::Artillery => 0.2,
-            SoundKind::Ack => 0.15,
-            _ => 0.05,
-        };
+        let min_gap = Self::min_gap(kind);
         if now - self.last_played.get(&kind).copied().unwrap_or(f64::MIN) < min_gap {
             return;
         }
         self.last_played.insert(kind, now);
-        let (sound, volume) = match kind {
-            SoundKind::Laser => {
-                self.laser_flip = !self.laser_flip;
-                (
-                    if self.laser_flip {
-                        &sounds.laser
-                    } else {
-                        &sounds.laser2
-                    },
-                    0.18,
-                )
-            }
-            SoundKind::UnitDeath => (&sounds.unit_death, 0.35),
-            SoundKind::BuildingBoom => (&sounds.building_boom, 0.6),
-            SoundKind::Deposit => (&sounds.deposit, 0.25),
-            SoundKind::TrainDone => (&sounds.train_done, 0.3),
-            SoundKind::Click => (&sounds.click, 0.25),
-            SoundKind::Denied => (&sounds.denied, 0.3),
-            SoundKind::Victory => (&sounds.victory, 0.6),
-            SoundKind::Defeat => (&sounds.defeat, 0.6),
-            SoundKind::Artillery => (&sounds.artillery_boom, 0.5),
-            SoundKind::Ack => (&sounds.ack, 0.18),
-            SoundKind::SentinelFire => (&sounds.attack_sentinel, 0.26),
-            SoundKind::LancerFire => (&sounds.attack_lancer, 0.32),
-            SoundKind::BombardFire => (&sounds.attack_bombard, 0.5),
-            SoundKind::FlakhoundFire => (&sounds.attack_flakhound, 0.3),
-            SoundKind::StingerFire => (&sounds.attack_stinger, 0.25),
-            SoundKind::BuzzardFire => (&sounds.attack_buzzard, 0.35),
-            SoundKind::DarterFire => (&sounds.attack_darter, 0.25),
-            SoundKind::TalonFire => (&sounds.attack_talon, 0.28),
-            SoundKind::WispFire => (&sounds.attack_wisp, 0.23),
-            SoundKind::BastionFire => (&sounds.attack_bastion, 0.55),
-            SoundKind::FlakTurretFire => (&sounds.attack_flak_turret, 0.34),
-        };
-        let volume = volume * Self::bus(volumes, kind) * attenuation;
+        let volume = Self::base_volume(kind) * Self::bus(volumes, kind) * attenuation;
         if volume <= 0.0 {
             return;
         }
+        let sound = self.clip(sounds, kind);
         play_sound(
             sound,
             PlaySoundParams {
@@ -350,11 +390,14 @@ fn soundtrack_scene(screen: &Screen, game: &Game) -> crate::soundtrack::Scene {
 fn raises_combat_music(kind: SoundKind) -> bool {
     matches!(
         kind,
-        SoundKind::Laser
+        SoundKind::Alert
+            | SoundKind::Laser
             | SoundKind::UnitDeath
             | SoundKind::BuildingBoom
             | SoundKind::Artillery
+            | SoundKind::ArtilleryLaunch
             | SoundKind::SentinelFire
+            | SoundKind::ScuttlerFire
             | SoundKind::LancerFire
             | SoundKind::BombardFire
             | SoundKind::FlakhoundFire
@@ -1179,36 +1222,29 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         // The mixer serves whichever session is on screen: a playback
         // viewer queues its own sounds on its own game, and draining the
         // hidden match instead left replays silent while its queue grew.
-        let (queued, cam_center, cam_half_w): (Vec<(SoundKind, Option<Vec2>)>, Vec2, f32) =
-            match &mut screen {
-                Screen::Playback(pb) => (
-                    pb.game.sounds_pending.drain(..).collect(),
-                    pb.game.camera.center,
-                    pb.game.camera.viewport().x / pb.game.camera.zoom * 0.5,
-                ),
-                _ => (
-                    app.game.sounds_pending.drain(..).collect(),
-                    app.game.camera.center,
-                    app.game.camera.viewport().x / app.game.camera.zoom * 0.5,
-                ),
-            };
+        let (queued, cam_center, cam_half_extents, cam_zoom): (
+            Vec<(SoundKind, Option<Vec2>)>,
+            Vec2,
+            Vec2,
+            f32,
+        ) = match &mut screen {
+            Screen::Playback(pb) => (
+                pb.game.sounds_pending.drain(..).collect(),
+                pb.game.camera.center,
+                pb.game.camera.viewport() / pb.game.camera.zoom * 0.5,
+                pb.game.camera.zoom,
+            ),
+            _ => (
+                app.game.sounds_pending.drain(..).collect(),
+                app.game.camera.center,
+                app.game.camera.viewport() / app.game.camera.zoom * 0.5,
+                app.game.camera.zoom,
+            ),
+        };
         let combat_impulse = queued.iter().any(|(kind, _)| raises_combat_music(*kind));
-        for (kind, world) in queued {
-            // Distance dims the battlefield: full volume on screen,
-            // fading to a quarter around 1.5 viewports out. Unpositioned
-            // sounds (UI, own milestones) play flat.
-            let attenuation = world.map_or(1.0, |p| {
-                let center = cam_center;
-                let half_w = cam_half_w;
-                let d = (p - center).length();
-                if d <= half_w {
-                    1.0
-                } else {
-                    (1.0 - (d - half_w) / (2.0 * half_w)).clamp(0.25, 1.0)
-                }
-            });
+        for event in crate::audio_mix::frame_mix(queued, cam_center, cam_half_extents, cam_zoom) {
             app.mixer
-                .play(&app.sounds, kind, &app.config.volumes, attenuation);
+                .play(&app.sounds, event.kind, &app.config.volumes, event.gain);
         }
         if let Some(soundtrack) = &mut app.soundtrack {
             soundtrack.update(
@@ -1787,7 +1823,9 @@ mod tests {
     #[test]
     fn every_authored_weapon_report_raises_combat_pressure() {
         for kind in [
+            SoundKind::Alert,
             SoundKind::SentinelFire,
+            SoundKind::ScuttlerFire,
             SoundKind::LancerFire,
             SoundKind::BombardFire,
             SoundKind::FlakhoundFire,
@@ -1798,12 +1836,25 @@ mod tests {
             SoundKind::WispFire,
             SoundKind::BastionFire,
             SoundKind::FlakTurretFire,
+            SoundKind::ArtilleryLaunch,
         ] {
             assert!(
                 raises_combat_music(kind),
                 "{kind:?} must pressure the score"
             );
         }
+    }
+
+    #[test]
+    fn mixer_specs_match_the_finalized_manifest_contract() {
+        assert_eq!(Mixer::base_volume(SoundKind::ScuttlerFire), 0.20);
+        assert_eq!(Mixer::min_gap(SoundKind::ScuttlerFire), 0.09);
+        assert_eq!(Mixer::base_volume(SoundKind::Alert), 0.40);
+        assert_eq!(Mixer::min_gap(SoundKind::Alert), 1.50);
+        assert_eq!(Mixer::base_volume(SoundKind::ArtilleryLaunch), 0.40);
+        assert_eq!(Mixer::min_gap(SoundKind::ArtilleryLaunch), 0.20);
+        assert_eq!(Mixer::base_volume(SoundKind::Deposit), 0.25);
+        assert_eq!(Mixer::min_gap(SoundKind::Deposit), 0.15);
     }
 
     fn team_draft() -> NewMatchDraft {

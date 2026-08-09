@@ -6,4 +6,6 @@
 /replays/
 dist/
 /shots/
-.claude/
+.claude/*
+!.claude/skills/
+!.claude/skills/**
