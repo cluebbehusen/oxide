@@ -10,7 +10,7 @@
 
 use crate::action::{Action, BindingMap};
 use crate::game::Game;
-use oxide_sim::stats::{BuildingKind, UnitKind};
+use oxide_sim::stats::{BuildingKind, UnitKind, WeaponStats};
 use oxide_sim::{BuildingId, Order};
 
 /// What a card wears.
@@ -24,7 +24,8 @@ pub enum CardIcon {
     Verb(VerbIcon),
     /// An order chip that knows what it acts on: the subject's own
     /// sprite under a corner verb badge. Orders with no subject
-    /// (Idle, Move, Attack-move, Harvest) stay plain [`CardIcon::Verb`].
+    /// (Idle, Move, Advance, Attack-move, Harvest) stay plain
+    /// [`CardIcon::Verb`].
     Order {
         /// The machine or works the verb acts on.
         subject: OrderSubject,
@@ -82,10 +83,16 @@ pub enum CardAction {
     Dispatch(Action),
     /// Arm building placement (what the palette digit does).
     ArmBuild(BuildingKind),
+    /// Arm the next world/minimap click as the selected producers' rally.
+    ArmRally,
     /// Remove a queued unit from a producer (full refund).
     CancelQueue(BuildingId, u8),
-    /// Clear a producer's rally point.
-    ClearRally(BuildingId),
+    /// Cancel an unfinished site shown by a Harvester's Build order.
+    CancelSite(BuildingId),
+    /// Cancel one unpaid logical site across its assigned Harvester crew.
+    CancelFound(BuildingKind, chassis::grid::TilePos),
+    /// Clear the selected producers' rally points.
+    ClearRally,
     /// Narrow the selection to one kind (Ctrl-click removes it
     /// instead) — the mixed-army type strip.
     FilterKind(UnitKind),
@@ -118,6 +125,32 @@ pub struct Card {
     pub progress: Option<f32>,
 }
 
+/// Compact semantic mark paired with an always-visible combat fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CombatIcon {
+    /// Weapon reach and damage against ground targets.
+    Weapon,
+    /// Weapon reach and damage against air targets.
+    AirWeapon,
+    /// Ground too close for the weapon to fire.
+    DeadZone,
+    /// Direct line of sight.
+    Vision,
+    /// Radar contact reach.
+    Radar,
+    /// Automatic repair reach.
+    Repair,
+}
+
+/// One compact capability row in the selection panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CombatFact {
+    /// Symbol shared with the corresponding battlefield ring.
+    pub icon: CombatIcon,
+    /// Numeric capability details, without explaining the ring style.
+    pub text: String,
+}
+
 /// The panel for the current selection.
 pub struct Panel {
     /// Header line: name (and count for multi-selections).
@@ -130,11 +163,15 @@ pub struct Panel {
     /// entity's owner, not the viewer (an inspected Cupric ally must
     /// not draw in Ferrous rust).
     pub faction: oxide_sim::Faction,
-    /// Static weapon facts for a singly selected unit. These are drawn
-    /// without a hover and deliberately contain no order, target, or
-    /// cooldown state, so inspecting a visible enemy reveals capability
-    /// without revealing intent.
-    pub combat: Vec<String>,
+    /// Static capability facts for a singly selected entity. These
+    /// are drawn without a hover and deliberately contain no order,
+    /// target, or cooldown state, so inspecting a visible enemy reveals
+    /// capability without revealing intent.
+    pub combat: Vec<CombatFact>,
+    /// A mixed selection's unit-kind filters. Kept separate from
+    /// command cards so choosing a roster slice can never crowd out a
+    /// verb or make the verb row look like more selected units.
+    pub roster: Vec<Card>,
     /// Command cards.
     pub cards: Vec<Card>,
     /// Queue thumbnails (production or orders).
@@ -183,7 +220,7 @@ pub fn unit_flavor(kind: UnitKind) -> &'static str {
         UnitKind::Lancer => "Long-range ground sniper; vulnerable at close range.",
         UnitKind::Bombard => "Long-range artillery that needs allied vision to fire.",
         UnitKind::Flakhound => "Tracked anti-air unit.",
-        UnitKind::Buzzard => "Heavy aircraft that attacks ground targets.",
+        UnitKind::Buzzard => "Heavy hovering gunship that attacks ground targets.",
         UnitKind::Talon => "Heavy air-superiority fighter.",
         UnitKind::Stinger => "Low-cost ground anti-air unit.",
         UnitKind::Darter => "Fast aircraft that attacks ground targets.",
@@ -200,7 +237,9 @@ pub fn building_flavor(kind: BuildingKind) -> &'static str {
         BuildingKind::Fabricator => "Unlocks advanced ground units and aircraft.",
         BuildingKind::Turret => "Static defense that attacks ground units.",
         BuildingKind::FlakTurret => "Static defense that attacks aircraft.",
-        BuildingKind::Bastion => "Long-range artillery emplacement that needs allied vision.",
+        BuildingKind::Bastion => {
+            "Long-range artillery emplacement; needs allied vision and cannot fire point-blank."
+        }
         BuildingKind::Array => {
             "Reveals terrain within 9 tiles and detects hostile units within 16."
         }
@@ -211,46 +250,201 @@ pub fn building_flavor(kind: BuildingKind) -> &'static str {
     }
 }
 
+fn weapon_line(weapon: &WeaponStats) -> String {
+    let targets = match (
+        weapon.targets.covers(oxide_sim::stats::Domain::Ground),
+        weapon.targets.covers(oxide_sim::stats::Domain::Air),
+    ) {
+        (true, true) => "ground and air",
+        (true, false) => "ground",
+        (false, true) => "air",
+        (false, false) => "nothing",
+    };
+    let flavor = if weapon.projectile {
+        " | projectile"
+    } else if weapon.indirect {
+        " | indirect"
+    } else {
+        ""
+    };
+    let splash = if weapon.splash.is_some() {
+        " | splash"
+    } else {
+        ""
+    };
+    let range = if weapon.minimum_range > chassis::fx::Fx::ZERO {
+        format!(
+            "{:.1}-{:.1} tiles",
+            weapon.minimum_range.to_num::<f32>(),
+            weapon.range.to_num::<f32>()
+        )
+    } else {
+        format!("{:.1} tiles", weapon.range.to_num::<f32>())
+    };
+    format!(
+        "{} dmg | {range} | {targets}{flavor}{splash}",
+        weapon.damage
+    )
+}
+
+/// The compact mark shared by a weapon fact and its battlefield range.
+/// Air-only weapons need a different silhouette, not just a quieter copy
+/// of the ground ring, because the Sentinel exposes both at once.
+pub(crate) fn weapon_combat_icon(weapon: &WeaponStats) -> CombatIcon {
+    if weapon.targets.covers(oxide_sim::stats::Domain::Air)
+        && !weapon.targets.covers(oxide_sim::stats::Domain::Ground)
+    {
+        CombatIcon::AirWeapon
+    } else {
+        CombatIcon::Weapon
+    }
+}
+
 /// Human lines for a kind's weapons, from the stats table.
 pub fn weapon_lines(kind: UnitKind) -> Vec<String> {
+    kind.stats().weapons.iter().map(weapon_line).collect()
+}
+
+fn building_combat_lines(kind: BuildingKind) -> Vec<CombatFact> {
     let stats = kind.stats();
-    stats
+    let mut lines: Vec<CombatFact> = stats
         .weapons
         .iter()
-        .map(|w| {
-            let targets = match (
-                w.targets.covers(oxide_sim::stats::Domain::Ground),
-                w.targets.covers(oxide_sim::stats::Domain::Air),
-            ) {
-                (true, true) => "ground and air",
-                (true, false) => "ground",
-                (false, true) => "air",
-                (false, false) => "nothing",
-            };
-            let flavor = if w.projectile {
-                " · projectile"
-            } else if w.indirect {
-                " · indirect"
-            } else {
-                ""
-            };
-            let splash = if w.splash.is_some() { " · splash" } else { "" };
-            format!(
-                "{} damage · {:.1} range · targets {targets}{flavor}{splash}",
-                w.damage,
-                w.range.to_num::<f32>(),
-            )
+        .map(|weapon| CombatFact {
+            icon: weapon_combat_icon(weapon),
+            text: weapon_line(weapon),
         })
-        .collect()
+        .collect();
+    if let Some(minimum) = stats
+        .weapons
+        .iter()
+        .map(|weapon| weapon.minimum_range)
+        .find(|minimum| *minimum > chassis::fx::Fx::ZERO)
+    {
+        lines.push(CombatFact {
+            icon: CombatIcon::DeadZone,
+            text: format!("{:.1} tiles", minimum.to_num::<f32>()),
+        });
+    }
+    if stats
+        .weapons
+        .iter()
+        .any(|weapon| weapon.range.to_num::<f32>() > stats.vision as f32)
+        || kind == BuildingKind::Array
+    {
+        lines.push(CombatFact {
+            icon: CombatIcon::Vision,
+            text: format!("{} tiles", stats.vision),
+        });
+    }
+    if kind == BuildingKind::Array {
+        lines.push(CombatFact {
+            icon: CombatIcon::Radar,
+            text: format!("{} tiles", oxide_sim::stats::RADAR_DETECT_RADIUS),
+        });
+    }
+    if kind == BuildingKind::RepairBay {
+        lines.push(CombatFact {
+            icon: CombatIcon::Repair,
+            text: format!(
+                "{:.1} tiles",
+                oxide_sim::stats::REPAIR_BAY_RADIUS.to_num::<f32>()
+            ),
+        });
+    }
+    lines
 }
 
 /// Always-visible combat facts for a selected unit.
-pub fn combat_lines(kind: UnitKind) -> Vec<String> {
-    let lines = weapon_lines(kind);
-    if lines.is_empty() {
-        vec!["unarmed".to_string()]
+pub fn combat_lines(kind: UnitKind) -> Vec<CombatFact> {
+    let stats = kind.stats();
+    let mut lines: Vec<_> = stats
+        .weapons
+        .iter()
+        .map(|weapon| CombatFact {
+            icon: weapon_combat_icon(weapon),
+            text: weapon_line(weapon),
+        })
+        .collect();
+    if stats
+        .weapons
+        .iter()
+        .any(|weapon| weapon.range.to_num::<f32>() > stats.vision as f32)
+    {
+        lines.push(CombatFact {
+            icon: CombatIcon::Vision,
+            text: format!("{} tiles", stats.vision),
+        });
+    }
+    lines
+}
+
+fn tick_time_label(ticks: u32) -> String {
+    let per_second = oxide_sim::TICKS_PER_SECOND;
+    let tenths = ticks.saturating_mul(10).div_ceil(per_second);
+    let whole = tenths / 10;
+    if tenths.is_multiple_of(10) {
+        format!("{whole}s")
     } else {
-        lines
+        format!("{whole}.{}s", tenths % 10)
+    }
+}
+
+/// Compact build-time mark shown directly on a unit's training card.
+pub fn unit_train_time_label(kind: UnitKind) -> String {
+    tick_time_label(kind.stats().train_ticks)
+}
+
+fn unit_speed_label(kind: UnitKind) -> String {
+    format!(
+        "{:.1} tiles/sec",
+        kind.stats().speed.to_num::<f32>() * oxide_sim::TICKS_PER_SECOND as f32
+    )
+}
+
+fn production_queue_label(
+    queue: &std::collections::VecDeque<UnitKind>,
+    progress: u32,
+) -> Option<String> {
+    let head = queue.front()?;
+    let head_ticks = head.stats().train_ticks;
+    let ready = progress >= head_ticks;
+    let later_ticks = queue
+        .iter()
+        .skip(1)
+        .map(|kind| kind.stats().train_ticks)
+        .sum::<u32>();
+    if ready {
+        return Some(if later_ticks == 0 {
+            "queue ready".to_string()
+        } else {
+            format!("queue ready + {}", tick_time_label(later_ticks))
+        });
+    }
+    let remaining = head_ticks - progress + later_ticks;
+    Some(format!("queue {}", tick_time_label(remaining)))
+}
+
+fn bot_level_label(game: &Game, player: oxide_sim::PlayerId) -> Option<&'static str> {
+    let spec = game.scenario.players.get(usize::from(player.0))?;
+    if !spec.bot {
+        return None;
+    }
+    Some(match spec.bot_config.map(|config| config.level) {
+        Some(oxide_sim::bot::Level::Easy) => "Easy",
+        Some(oxide_sim::bot::Level::Medium) => "Medium",
+        Some(oxide_sim::bot::Level::Hard) => "Hard",
+        Some(oxide_sim::bot::Level::Expert) => "Expert",
+        None => "Classic",
+    })
+}
+
+fn foreign_sub(game: &Game, owner: oxide_sim::PlayerId, hostile: bool, detail: &str) -> String {
+    let relation = if hostile { "hostile" } else { "ally" };
+    if let Some(level) = bot_level_label(game, owner) {
+        format!("{relation} | {level} | {detail}")
+    } else {
+        format!("{relation} | {detail}")
     }
 }
 
@@ -333,7 +527,11 @@ fn order_subject(game: &Game, order: &Order) -> Option<(OrderSubject, String, bo
             true,
             None,
         )),
-        Order::Idle | Order::Move { .. } | Order::Harvest { .. } | Order::AttackMove { .. } => None,
+        Order::Idle
+        | Order::Move { .. }
+        | Order::Harvest { .. }
+        | Order::AttackMove { .. }
+        | Order::Advance { .. } => None,
     }
 }
 
@@ -344,7 +542,11 @@ fn order_card(game: &Game, order: &Order, active: bool, own: bool) -> Card {
             "Idle",
             "Idle; armed units attack nearby enemies automatically.",
         ),
-        Order::Move { .. } => (VerbIcon::Move, "Move", "Moving without engaging enemies."),
+        Order::Move { .. } => (
+            VerbIcon::Move,
+            "Run",
+            "Running without firing or engaging enemies.",
+        ),
         Order::Harvest { .. } => (
             VerbIcon::Harvest,
             "Harvest",
@@ -369,6 +571,11 @@ fn order_card(game: &Game, order: &Order, active: bool, own: bool) -> Card {
             VerbIcon::AttackMove,
             "Attack-move",
             "Moving while engaging enemies along the route.",
+        ),
+        Order::Advance { .. } => (
+            VerbIcon::AttackMove,
+            "Advance",
+            "Moving while the primary weapon fires at targets already in range; never chasing.",
         ),
         Order::Salvage { .. } => (
             VerbIcon::Salvage,
@@ -426,6 +633,28 @@ fn order_card(game: &Game, order: &Order, active: bool, own: bool) -> Card {
     }
 }
 
+fn own_order_card(game: &Game, order: &Order, active: bool) -> Card {
+    let mut card = order_card(game, order, active, true);
+    match order {
+        Order::Build { site }
+            if game
+                .state
+                .building(*site)
+                .is_some_and(|building| !building.built) =>
+        {
+            card.action = CardAction::CancelSite(*site);
+            card.desc
+                .push("Click to cancel the site and recover its remaining value.".into());
+        }
+        Order::Found { kind, anchor } => {
+            card.action = CardAction::CancelFound(*kind, *anchor);
+            card.desc.push("Click to cancel this planned site.".into());
+        }
+        _ => {}
+    }
+    card
+}
+
 /// The concrete second tooltip line for a subject-bearing order: how
 /// far the job has come, in the units the verb is actually measured in.
 fn subject_detail(game: &Game, order: &Order, progress: Option<f32>) -> Option<String> {
@@ -443,7 +672,7 @@ fn subject_detail(game: &Game, order: &Order, progress: Option<f32>) -> Option<S
                 * u64::from(b.hp)
                 / u64::from(b.kind.stats().max_hp.max(1));
             Some(format!(
-                "{}/{} hp · ~{left} scrap left",
+                "{}/{} hp | ~{left} scrap left",
                 b.hp,
                 b.kind.stats().max_hp
             ))
@@ -467,7 +696,85 @@ fn chord(bindings: &BindingMap, action: Action) -> String {
 /// warrants one. Pure: reads game + bindings, owns no state.
 pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
     let faction = game.state.player(game.human).faction;
-    if let Some(id) = game.selection.building {
+    let selected_buildings: Vec<_> = game
+        .selection
+        .buildings
+        .iter()
+        .filter_map(|id| game.state.building(*id))
+        .collect();
+    if selected_buildings.len() > 1 {
+        let first = selected_buildings[0];
+        let owner = first.player;
+        let mut panel = Panel {
+            title: format!("{} BUILDINGS", selected_buildings.len()),
+            sub: {
+                let mut kinds: Vec<BuildingKind> = selected_buildings
+                    .iter()
+                    .map(|building| building.kind)
+                    .collect();
+                kinds.sort_by_key(|kind| kind.name());
+                kinds.dedup();
+                format!("{} types", kinds.len())
+            },
+            portrait: CardIcon::Building(first.kind),
+            faction: game.state.player(owner).faction,
+            combat: Vec::new(),
+            roster: Vec::new(),
+            cards: Vec::new(),
+            queue: Vec::new(),
+            queue_label: "queue".to_string(),
+        };
+        if owner != game.human {
+            let hostile = game.state.hostile(game.human, owner);
+            panel.sub = foreign_sub(game, owner, hostile, &panel.sub);
+            return Some(panel);
+        }
+        let producers: Vec<BuildingId> = selected_buildings
+            .iter()
+            .filter(|building| building.built && !building.kind.stats().produces.is_empty())
+            .map(|building| building.id)
+            .collect();
+        if !producers.is_empty() {
+            let any_rally = producers.iter().any(|id| {
+                game.state
+                    .building(*id)
+                    .is_some_and(|building| building.rally.is_some())
+            });
+            panel.cards.push(Card {
+                icon: CardIcon::Verb(VerbIcon::Rally),
+                title: if any_rally {
+                    "Reset rallies".into()
+                } else {
+                    "Set rallies".into()
+                },
+                cost: None,
+                hotkey: String::new(),
+                action: CardAction::ArmRally,
+                enabled: true,
+                why: None,
+                desc: vec![format!(
+                    "Set one destination for {} producers.",
+                    producers.len()
+                )],
+                progress: None,
+            });
+            if any_rally {
+                panel.cards.push(Card {
+                    icon: CardIcon::Verb(VerbIcon::Rally),
+                    title: "Clear rallies".into(),
+                    cost: None,
+                    hotkey: String::new(),
+                    action: CardAction::ClearRally,
+                    enabled: true,
+                    why: None,
+                    desc: vec!["Return new units to their producer doors.".into()],
+                    progress: None,
+                });
+            }
+        }
+        return Some(panel);
+    }
+    if let Some(id) = game.selection.buildings.first().copied() {
         let building = game.state.building(id)?;
         let stats = building.kind.stats();
         let owner = building.player;
@@ -476,10 +783,12 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             sub: format!("{}/{} hp", building.hp, stats.max_hp),
             portrait: CardIcon::Building(building.kind),
             faction: game.state.player(owner).faction,
-            combat: Vec::new(),
+            combat: building_combat_lines(building.kind),
+            roster: Vec::new(),
             cards: Vec::new(),
             queue: Vec::new(),
-            queue_label: "queue".to_string(),
+            queue_label: production_queue_label(&building.queue, building.progress)
+                .unwrap_or_else(|| "queue".to_string()),
         };
         if owner != game.human {
             // Foreign buildings inspect read-only: an allied building says
@@ -487,11 +796,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             // more — no queue chips, no cards, no rally, no reach
             // into anyone's production.
             let hostile = game.state.hostile(game.human, owner);
-            panel.sub = format!(
-                "{} · {}",
-                if hostile { "hostile" } else { "ally" },
-                panel.sub
-            );
+            panel.sub = foreign_sub(game, owner, hostile, &panel.sub);
             if !hostile {
                 panel.cards.push(Card {
                     icon: CardIcon::Verb(VerbIcon::Idle),
@@ -508,7 +813,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             return Some(panel);
         }
         if !building.built {
-            panel.sub = format!("under construction · {}", panel.sub);
+            panel.sub = format!("under construction | {}", panel.sub);
             panel.cards.push(Card {
                 icon: CardIcon::Verb(VerbIcon::Cancel),
                 title: "Scrap site".into(),
@@ -524,6 +829,39 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         }
         let scrap = game.state.player(game.human).scrap;
         let queue_full = building.queue.len() >= oxide_sim::stats::QUEUE_CAP;
+        if !stats.produces.is_empty() {
+            panel.cards.push(Card {
+                icon: CardIcon::Verb(VerbIcon::Rally),
+                title: if building.rally.is_some() {
+                    "Reset rally".into()
+                } else {
+                    "Set rally".into()
+                },
+                cost: None,
+                hotkey: String::new(),
+                action: CardAction::ArmRally,
+                enabled: true,
+                why: None,
+                desc: vec![
+                    "Choose where newly trained units report.".into(),
+                    "A scrap rally sends new Harvesters straight to work.".into(),
+                ],
+                progress: None,
+            });
+            if building.rally.is_some() {
+                panel.cards.push(Card {
+                    icon: CardIcon::Verb(VerbIcon::Rally),
+                    title: "Clear rally".into(),
+                    cost: None,
+                    hotkey: String::new(),
+                    action: CardAction::ClearRally,
+                    enabled: true,
+                    why: None,
+                    desc: vec!["New units will remain near the producer.".into()],
+                    progress: None,
+                });
+            }
+        }
         for (i, &kind) in stats
             .produces
             .iter()
@@ -549,19 +887,6 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
                 enabled,
                 why,
                 desc,
-                progress: None,
-            });
-        }
-        if building.rally.is_some() {
-            panel.cards.push(Card {
-                icon: CardIcon::Verb(VerbIcon::Rally),
-                title: "Clear rally".into(),
-                cost: None,
-                hotkey: String::new(),
-                action: CardAction::ClearRally(building.id),
-                enabled: true,
-                why: None,
-                desc: vec!["New units will remain near the producer.".into()],
                 progress: None,
             });
         }
@@ -605,7 +930,12 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             format!("{} UNITS", units.len())
         },
         sub: if units.len() == 1 {
-            format!("{}/{} hp", first.hp, first.kind.stats().max_hp)
+            format!(
+                "{}/{} hp | speed {}",
+                first.hp,
+                first.kind.stats().max_hp,
+                unit_speed_label(first.kind)
+            )
         } else {
             let (kinds, extra) = {
                 let mut ks: Vec<UnitKind> = units.iter().map(|u| u.kind).collect();
@@ -630,6 +960,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         } else {
             Vec::new()
         },
+        roster: Vec::new(),
         cards: Vec::new(),
         queue: Vec::new(),
         queue_label: if units.len() == 1 {
@@ -644,11 +975,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         // for any visible unit. An ally also shows its orders, while a
         // hostile's order state remains hidden because it reveals intent.
         let hostile = game.state.hostile(game.human, owner);
-        panel.sub = format!(
-            "{} · {}",
-            if hostile { "hostile" } else { "ally" },
-            panel.sub
-        );
+        panel.sub = foreign_sub(game, owner, hostile, &panel.sub);
         if !hostile && units.len() == 1 {
             panel
                 .queue
@@ -659,10 +986,10 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         }
         return Some(panel);
     }
-    // The type strip: a mixed army offers one card per kind, counted.
+    // The roster strip: a mixed army offers one chip per kind, counted.
     // Click keeps only that kind; Ctrl-click drops it — the two cuts
-    // every RTS hand knows. Capped at six cards so the band's card
-    // budget holds; the sub line's "+N more" names the fold.
+    // every RTS hand knows. It has its own eight-chip budget, so every
+    // roster role stays reachable without consuming command verbs.
     if units.len() > 1 {
         let mut counts: Vec<(UnitKind, usize)> = Vec::new();
         for u in &units {
@@ -672,9 +999,13 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             }
         }
         if counts.len() > 1 {
+            // The counted portrait tiles below already name every kind.
+            // Repeating the same list here makes long mixed selections run
+            // into those tiles and gives the eye two competing summaries.
+            panel.sub.clear();
             counts.sort_by_key(|(k, _)| k.name());
-            for (kind, n) in counts.into_iter().take(6) {
-                panel.cards.push(Card {
+            for (kind, n) in counts.into_iter().take(8) {
+                panel.roster.push(Card {
                     icon: CardIcon::Unit(kind),
                     title: format!("{} x{n}", kind.name()),
                     cost: None,
@@ -713,6 +1044,20 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         desc: vec![
             "Move to the selected ground without attacking".into(),
             "or acquiring targets.".into(),
+        ],
+        progress: None,
+    });
+    panel.cards.push(Card {
+        icon: CardIcon::Verb(VerbIcon::AttackMove),
+        title: "Attack-move".into(),
+        cost: None,
+        hotkey: chord(bindings, Action::AttackMove),
+        action: CardAction::Dispatch(Action::AttackMove),
+        enabled: true,
+        why: None,
+        desc: vec![
+            "Move to the selected ground while engaging enemies.".into(),
+            "Machines stop and chase targets along the route.".into(),
         ],
         progress: None,
     });
@@ -789,9 +1134,9 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
     // An idle unit with nothing queued contributes no chips, so the
     // orders dock vanishes instead of showing a lone "Idle" cell.
     if !matches!(first.order, Order::Idle) || !first.queue.is_empty() {
-        panel.queue.push(order_card(game, &first.order, true, true));
+        panel.queue.push(own_order_card(game, &first.order, true));
         for order in first.queue.iter().take(7) {
-            panel.queue.push(order_card(game, order, false, true));
+            panel.queue.push(own_order_card(game, order, false));
         }
     }
     Some(panel)
@@ -851,6 +1196,13 @@ mod tests {
             .expect("patrol card");
         assert_eq!(patrol.icon, CardIcon::Verb(VerbIcon::Patrol));
         assert_eq!(patrol.hotkey, "R", "the tooltip chord stays live");
+        let attack_move = panel
+            .cards
+            .iter()
+            .find(|c| c.title == "Attack-move")
+            .expect("attack-move card");
+        assert_eq!(attack_move.action, CardAction::Dispatch(Action::AttackMove));
+        assert_eq!(attack_move.hotkey, "F");
         let chip = &panel.queue[0];
         assert!(chip.title.starts_with("Attack-move"), "{}", chip.title);
         assert_eq!(
@@ -863,23 +1215,131 @@ mod tests {
     #[test]
     fn the_foundry_panel_speaks_its_roster() {
         let mut game = game();
-        game.selection.building = Some(human_foundry(&game));
+        let foundry = human_foundry(&game);
+        game.selection.buildings = vec![foundry];
         let panel = build(&game, &BindingMap::classic()).expect("panel");
         assert_eq!(panel.title, "FOUNDRY");
-        assert_eq!(panel.cards.len(), 2, "harvester and sentinel");
-        assert_eq!(panel.cards[0].hotkey, "1");
-        assert_eq!(panel.cards[0].cost, Some(50));
-        assert!(panel.cards[0].enabled, "150 scrap affords a harvester");
+        assert_eq!(panel.cards.len(), 3, "two units plus the rally affordance");
+        assert_eq!(panel.cards[0].title, "Set rally");
+        assert_eq!(panel.cards[0].action, CardAction::ArmRally);
+        assert_eq!(panel.cards[1].hotkey, "1");
+        assert_eq!(panel.cards[1].cost, Some(50));
+        assert_eq!(unit_train_time_label(UnitKind::Harvester), "5s");
+        assert_eq!(unit_train_time_label(UnitKind::Sentinel), "7.5s");
+        assert!(panel.cards[1].enabled, "150 scrap affords a harvester");
         assert_eq!(
-            panel.cards[0].action,
+            panel.cards[1].action,
             CardAction::Dispatch(Action::TrainSlot(0)),
             "the card IS its hotkey"
         );
         assert!(panel.queue.is_empty(), "nothing queued yet");
-        // The harvester is unarmed — its card carries no weapon line;
-        // the sentinel's carries both of its guns.
-        assert!(!panel.cards[0].desc.iter().any(|l| l.contains("damage")));
-        assert!(panel.cards[1].desc.iter().any(|l| l.contains("damage")));
+        // The harvester's card carries no weapon line; the sentinel's
+        // carries both of its guns.
+        assert!(!panel.cards[1].desc.iter().any(|l| l.contains("dmg")));
+        assert!(panel.cards[2].desc.iter().any(|l| l.contains("dmg")));
+
+        game.state.tick(&[PlayerCommand {
+            player: game.human,
+            command: Command::Train {
+                building: foundry,
+                kind: UnitKind::Harvester,
+            },
+        }]);
+        let panel = build(&game, &BindingMap::classic()).expect("queued panel");
+        assert_eq!(panel.queue_label, "queue 5s");
+        game.state.tick(&[]);
+        let panel = build(&game, &BindingMap::classic()).expect("progressing panel");
+        assert_eq!(panel.queue_label, "queue 4.9s");
+    }
+
+    #[test]
+    fn a_producer_always_exposes_set_reset_and_clear_rally_actions() {
+        let mut game = game();
+        let foundry = human_foundry(&game);
+        game.selection.buildings = vec![foundry];
+        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        assert!(
+            panel
+                .cards
+                .iter()
+                .any(|card| { card.title == "Set rally" && card.action == CardAction::ArmRally })
+        );
+        assert!(!panel.cards.iter().any(|card| card.title == "Clear rally"));
+
+        game.state.tick(&[PlayerCommand {
+            player: game.human,
+            command: Command::SetRally {
+                building: foundry,
+                rally: Some(chassis::grid::TilePos::new(12, 8)),
+            },
+        }]);
+        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        assert!(
+            panel
+                .cards
+                .iter()
+                .any(|card| { card.title == "Reset rally" && card.action == CardAction::ArmRally })
+        );
+        assert!(
+            panel.cards.iter().any(|card| {
+                card.title == "Clear rally" && card.action == CardAction::ClearRally
+            })
+        );
+    }
+
+    #[test]
+    fn a_multi_producer_panel_puts_shared_rally_before_production() {
+        let mut scenario = Scenario::skirmish();
+        scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Fabricator,
+            x: 9,
+            y: 3,
+        });
+        let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("fixture builds");
+        game.selection.buildings = game
+            .state
+            .buildings()
+            .iter()
+            .filter(|building| building.player == game.human)
+            .map(|building| building.id)
+            .collect();
+
+        let panel = build(&game, &BindingMap::classic()).expect("multi-building panel");
+        assert_eq!(panel.title, "2 BUILDINGS");
+        assert_eq!(panel.cards.len(), 1);
+        assert_eq!(panel.cards[0].title, "Set rallies");
+        assert_eq!(panel.cards[0].action, CardAction::ArmRally);
+    }
+
+    #[test]
+    fn a_non_producer_never_offers_a_rally_action() {
+        let mut scenario = Scenario::skirmish();
+        scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Turret,
+            x: 9,
+            y: 3,
+        });
+        let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("fixture builds");
+        let turret = game
+            .state
+            .buildings()
+            .iter()
+            .find(|building| building.kind == BuildingKind::Turret)
+            .unwrap()
+            .id;
+        game.selection.buildings = vec![turret];
+
+        let panel = build(&game, &BindingMap::classic()).expect("Turret panel");
+        assert!(panel.cards.is_empty(), "the turret has no command row");
+        assert!(
+            panel
+                .cards
+                .iter()
+                .all(|card| !matches!(card.action, CardAction::ArmRally | CardAction::ClearRally)),
+            "a defense cannot rally units it never produces"
+        );
     }
 
     #[test]
@@ -889,7 +1349,7 @@ mod tests {
         scenario.players[0].scrap = 500;
         let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("skirmish builds");
         let foundry = human_foundry(&game);
-        game.selection.building = Some(foundry);
+        game.selection.buildings = vec![foundry];
         // Queue harvesters until 50 scrap remains: the sentinel card
         // (75) must dim with the price named.
         for _ in 0..3 {
@@ -919,12 +1379,24 @@ mod tests {
         let queued = game.state.building(foundry).unwrap().queue.len();
         assert_eq!(queued, oxide_sim::stats::QUEUE_CAP, "the sim capped it");
         let panel = build(&game, &BindingMap::classic()).expect("panel");
-        assert!(panel.cards.iter().all(|c| !c.enabled));
+        assert_eq!(
+            panel.queue.len(),
+            oxide_sim::stats::QUEUE_CAP,
+            "every paid queue slot remains inspectable and cancelable"
+        );
         assert!(
             panel
                 .cards
                 .iter()
-                .all(|c| c.why.as_deref() == Some("queue is full")),
+                .filter(|card| card.cost.is_some())
+                .all(|card| !card.enabled)
+        );
+        assert!(
+            panel
+                .cards
+                .iter()
+                .filter(|card| card.cost.is_some())
+                .all(|card| card.why.as_deref() == Some("queue is full")),
             "the reason names the cap, not the bank"
         );
     }
@@ -944,12 +1416,13 @@ mod tests {
         assert_eq!(panel.title, "HARVESTER");
         assert_eq!(panel.cards[0].title, "Stop");
         assert_eq!(panel.cards[1].title, "Run");
-        assert_eq!(panel.cards[2].title, "Patrol");
-        assert_eq!(
-            panel.combat,
-            vec!["unarmed"],
-            "an unarmed unit still gives an explicit combat answer"
+        assert_eq!(panel.cards[2].title, "Attack-move");
+        assert_eq!(panel.cards[3].title, "Patrol");
+        assert!(
+            panel.combat.is_empty(),
+            "an unarmed unit needs no capability band"
         );
+        assert_eq!(panel.sub, "60/60 hp | speed 2.5 tiles/sec");
         let builds: Vec<_> = panel
             .cards
             .iter()
@@ -1042,8 +1515,8 @@ mod tests {
     #[test]
     fn build_chips_wear_the_works_they_are_raising() {
         let (mut game, harvester) = builder_game();
-        place(&mut game, harvester, BuildingKind::Turret, false);
-        place(&mut game, harvester, BuildingKind::Array, true);
+        let turret = place(&mut game, harvester, BuildingKind::Turret, false);
+        let array = place(&mut game, harvester, BuildingKind::Array, true);
         game.selection.units = vec![harvester];
         let panel = build(&game, &BindingMap::classic()).expect("panel");
         assert_eq!(panel.queue.len(), 2, "two legs of one program");
@@ -1083,9 +1556,31 @@ mod tests {
         );
         assert_eq!(
             panel.queue[0].action,
-            CardAction::None,
-            "an enriched chip is still display-only"
+            CardAction::CancelSite(turret),
+            "the active site can be abandoned from its order chip"
         );
+        assert_eq!(
+            panel.queue[1].action,
+            CardAction::CancelSite(array),
+            "a queued paid site targets its own works"
+        );
+    }
+
+    #[test]
+    fn deferred_build_chips_cancel_their_logical_sites() {
+        use chassis::grid::TilePos;
+
+        let (game, _) = builder_game();
+        let order = Order::Found {
+            kind: BuildingKind::Bastion,
+            anchor: TilePos::new(11, 7),
+        };
+        let card = own_order_card(&game, &order, false);
+        assert_eq!(
+            card.action,
+            CardAction::CancelFound(BuildingKind::Bastion, TilePos::new(11, 7))
+        );
+        assert!(card.desc.iter().any(|line| line.contains("planned site")));
     }
 
     #[test]
@@ -1124,13 +1619,166 @@ mod tests {
     fn weapon_lines_read_from_the_stats_table() {
         let sentinel = weapon_lines(oxide_sim::UnitKind::Sentinel);
         assert_eq!(sentinel.len(), 2, "main gun and the anti-air poke");
-        assert!(sentinel[0].contains("damage"));
-        assert!(sentinel[0].contains("range"));
-        assert!(sentinel[0].contains("targets ground"));
-        assert!(sentinel[1].contains("targets air"));
+        assert!(sentinel[0].contains("dmg"));
+        assert!(sentinel[0].contains("tiles"));
+        assert!(sentinel[0].contains("ground"));
+        assert!(sentinel[1].contains("air"));
         let bombard = weapon_lines(oxide_sim::UnitKind::Bombard);
         assert!(bombard[0].contains("projectile"));
         assert!(bombard[0].contains("splash"));
+    }
+
+    #[test]
+    fn panel_copy_uses_only_supported_font_glyphs() {
+        let units = [
+            UnitKind::Harvester,
+            UnitKind::Sentinel,
+            UnitKind::Scuttler,
+            UnitKind::Lancer,
+            UnitKind::Bombard,
+            UnitKind::Flakhound,
+            UnitKind::Buzzard,
+            UnitKind::Talon,
+            UnitKind::Stinger,
+            UnitKind::Darter,
+            UnitKind::Wisp,
+        ];
+        let buildings = [
+            BuildingKind::Foundry,
+            BuildingKind::Fabricator,
+            BuildingKind::Turret,
+            BuildingKind::FlakTurret,
+            BuildingKind::Bastion,
+            BuildingKind::Array,
+            BuildingKind::Reclaimer,
+            BuildingKind::RepairBay,
+        ];
+        let supported = |text: &str| text.is_ascii();
+        let assert_card = |card: &Card| {
+            assert!(supported(&card.title), "card title: {}", card.title);
+            assert!(supported(&card.hotkey), "card hotkey: {}", card.hotkey);
+            if let Some(why) = &card.why {
+                assert!(supported(why), "card refusal: {why}");
+            }
+            for line in &card.desc {
+                assert!(supported(line), "card description: {line}");
+            }
+        };
+        let assert_panel = |panel: &Panel| {
+            assert!(supported(&panel.title), "panel title: {}", panel.title);
+            assert!(supported(&panel.sub), "panel subtitle: {}", panel.sub);
+            assert!(
+                supported(&panel.queue_label),
+                "panel queue label: {}",
+                panel.queue_label
+            );
+            for fact in &panel.combat {
+                assert!(supported(&fact.text), "panel capability: {}", fact.text);
+            }
+            for card in panel.roster.iter().chain(&panel.cards).chain(&panel.queue) {
+                assert_card(card);
+            }
+        };
+        for kind in units {
+            assert!(supported(unit_flavor(kind)), "{} flavor", kind.name());
+            for line in weapon_lines(kind) {
+                assert!(supported(&line), "{} weapon: {line}", kind.name());
+            }
+            for fact in combat_lines(kind) {
+                assert!(
+                    supported(&fact.text),
+                    "{} combat: {}",
+                    kind.name(),
+                    fact.text
+                );
+            }
+        }
+        for kind in buildings {
+            assert!(supported(building_flavor(kind)), "{} flavor", kind.name());
+            for fact in building_combat_lines(kind) {
+                assert!(
+                    supported(&fact.text),
+                    "{} combat: {}",
+                    kind.name(),
+                    fact.text
+                );
+            }
+        }
+
+        let mut foundry_game = game();
+        foundry_game.selection.buildings = vec![human_foundry(&foundry_game)];
+        assert_panel(&build(&foundry_game, &BindingMap::classic()).expect("Foundry panel"));
+
+        let (mut builder_game, harvester) = builder_game();
+        let site = place(&mut builder_game, harvester, BuildingKind::Array, false);
+        builder_game.selection.units = vec![harvester];
+        assert_panel(&build(&builder_game, &BindingMap::classic()).expect("Harvester panel"));
+        builder_game.selection.units.clear();
+        builder_game.selection.buildings = vec![site];
+        assert_panel(&build(&builder_game, &BindingMap::classic()).expect("site panel"));
+    }
+
+    #[test]
+    fn combat_facts_use_semantic_icons_instead_of_explaining_line_styles() {
+        let bastion = building_combat_lines(BuildingKind::Bastion);
+        assert!(
+            bastion.iter().any(|fact| {
+                fact.icon == CombatIcon::Weapon && fact.text.contains("2.5-9.5 tiles")
+            }),
+            "{bastion:?}"
+        );
+        assert!(
+            bastion
+                .iter()
+                .any(|fact| { fact.icon == CombatIcon::DeadZone && fact.text == "2.5 tiles" }),
+            "{bastion:?}"
+        );
+        assert!(
+            bastion
+                .iter()
+                .any(|fact| fact.icon == CombatIcon::Vision && fact.text == "6 tiles"),
+            "{bastion:?}"
+        );
+        assert!(bastion.iter().all(|fact| {
+            !fact.text.contains("dash")
+                && !fact.text.contains("solid")
+                && !fact.text.contains("amber")
+                && !fact.text.contains("blue")
+        }));
+
+        let bombard = combat_lines(UnitKind::Bombard);
+        assert!(
+            bombard
+                .iter()
+                .any(|fact| fact.icon == CombatIcon::Vision && fact.text == "5 tiles"),
+            "{bombard:?}"
+        );
+    }
+
+    #[test]
+    fn a_selected_bastion_keeps_the_dead_zone_symbol_visible() {
+        let (mut game, harvester) = builder_game();
+        let bastion = place(&mut game, harvester, BuildingKind::Bastion, false);
+        game.selection.units.clear();
+        game.selection.buildings = vec![bastion];
+
+        let panel = build(&game, &BindingMap::classic()).expect("Bastion panel");
+        assert_eq!(panel.title, "BASTION");
+        assert!(
+            panel.combat.iter().any(|fact| {
+                fact.icon == CombatIcon::Weapon && fact.text.contains("2.5-9.5 tiles")
+            }),
+            "{:?}",
+            panel.combat
+        );
+        assert!(
+            panel
+                .combat
+                .iter()
+                .any(|fact| { fact.icon == CombatIcon::DeadZone && fact.text == "2.5 tiles" }),
+            "{:?}",
+            panel.combat
+        );
     }
 
     #[test]
@@ -1145,16 +1793,35 @@ mod tests {
             .id;
         game.selection.units = vec![sentinel];
         let panel = build(&game, &BindingMap::classic()).expect("panel");
-        assert_eq!(panel.combat.len(), 2, "one line per weapon");
-        assert!(panel.combat.iter().all(|line| line.contains("damage")));
-        assert!(panel.combat.iter().all(|line| line.contains("range")));
+        assert_eq!(
+            panel.combat.len(),
+            2,
+            "the two weapons stay in the combat band"
+        );
         assert!(
             panel
                 .combat
                 .iter()
-                .any(|line| line.contains("targets ground"))
+                .any(|fact| fact.icon == CombatIcon::Weapon && fact.text.contains("ground"))
         );
-        assert!(panel.combat.iter().any(|line| line.contains("targets air")));
+        assert!(
+            panel
+                .combat
+                .iter()
+                .any(|fact| fact.icon == CombatIcon::AirWeapon && fact.text.contains("air")),
+            "the anti-air range uses a targeted-aircraft mark"
+        );
+        assert!(panel.sub.ends_with("speed 2.2 tiles/sec"));
+        assert!(
+            panel
+                .combat
+                .iter()
+                .filter(|fact| { matches!(fact.icon, CombatIcon::Weapon | CombatIcon::AirWeapon) })
+                .all(|fact| fact.text.contains("dmg"))
+        );
+        assert!(panel.combat.iter().all(|fact| fact.text.contains("tiles")));
+        assert!(panel.combat.iter().any(|fact| fact.text.contains("ground")));
+        assert!(panel.combat.iter().any(|fact| fact.text.contains("air")));
 
         let harvester = game
             .state
@@ -1167,7 +1834,46 @@ mod tests {
         let panel = build(&game, &BindingMap::classic()).expect("panel");
         assert!(
             panel.combat.is_empty(),
-            "mixed selections keep their compact type summary"
+            "mixed selections keep combat detail out of the command band"
         );
+        assert_eq!(
+            panel.roster.len(),
+            2,
+            "each selected kind gets one roster chip"
+        );
+        assert!(
+            panel.sub.is_empty(),
+            "the counted roster tiles replace the redundant kind list"
+        );
+        assert!(
+            panel
+                .cards
+                .iter()
+                .all(|card| !matches!(card.action, CardAction::FilterKind(_))),
+            "roster filters cannot consume command-card capacity"
+        );
+    }
+
+    #[test]
+    fn production_queue_time_counts_partial_head_and_marks_a_blocked_spawn_ready() {
+        let queue = std::collections::VecDeque::from([UnitKind::Harvester, UnitKind::Sentinel]);
+        assert_eq!(
+            production_queue_label(&queue, 25).as_deref(),
+            Some("queue 11.3s"),
+            "75 head ticks plus 150 queued ticks"
+        );
+        assert_eq!(
+            production_queue_label(&queue, UnitKind::Harvester.stats().train_ticks).as_deref(),
+            Some("queue ready + 7.5s")
+        );
+        assert_eq!(
+            production_queue_label(
+                &std::collections::VecDeque::from([UnitKind::Harvester]),
+                UnitKind::Harvester.stats().train_ticks,
+            )
+            .as_deref(),
+            Some("queue ready")
+        );
+        assert!(production_queue_label(&std::collections::VecDeque::new(), 0).is_none());
     }
 }

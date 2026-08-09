@@ -455,6 +455,18 @@ fn a_dead_attacker_draws_no_answer() {
     let (victim, a, k1, k2) = (ids[0], ids[1], ids[2], ids[3]);
 
     let report = state.tick(&[
+        // Spend this brain turn completing a no-distance move. Otherwise
+        // the Bombard now legitimately acquires the visible rail at its
+        // full weapon range before resolution, which would not exercise
+        // the corpse-retaliation branch this test owns.
+        cmd(
+            0,
+            Command::Move {
+                units: vec![victim],
+                goal: TilePos::new(10, 10),
+                queue: false,
+            },
+        ),
         cmd(
             1,
             Command::Attack {

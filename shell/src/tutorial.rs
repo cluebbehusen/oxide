@@ -20,8 +20,8 @@ pub struct Demo {
     pub deposited: bool,
     /// Placed a construction site.
     pub built: bool,
-    /// Issued an attack-move.
-    pub attack_moved: bool,
+    /// Issued a default advance.
+    pub advanced: bool,
     /// Opened the pause menu.
     pub paused_menu: bool,
 }
@@ -69,10 +69,11 @@ pub const STEPS: [Step; 6] = [
         ],
     },
     Step {
-        title: "Use attack-move",
+        title: "Advance under fire",
         body: &[
-            "Right-click ground with a combat unit selected to attack-move.",
-            "Units move toward the destination and engage enemies they encounter.",
+            "Right-click ground with a combat unit selected.",
+            "Units keep moving and fire at enemies already in range.",
+            "Press F for attack-move when you want them to stop and chase.",
         ],
     },
     Step {
@@ -97,6 +98,9 @@ pub fn tutorial_scenario() -> oxide_sim::Scenario {
         p.bot_config = Some(oxide_sim::scenario::BotConfig {
             level: oxide_sim::bot::Level::Easy,
             aggression: Some(0),
+            style: None,
+            variant: None,
+            team_role: None,
         });
     }
     scenario
@@ -141,7 +145,7 @@ impl Tutorial {
                 1 => demo.deposited,
                 2 => demo.built,
                 3 => demo.trained_fighter,
-                4 => demo.attack_moved,
+                4 => demo.advanced,
                 5 => demo.paused_menu,
                 _ => return false,
             };
@@ -198,7 +202,7 @@ impl Tutorial {
             ));
         }
         Some(CoachLine::Status(format!(
-            "next: {cost} scrap · you have {bank} · {hauling} hauling"
+            "next: {cost} scrap | you have {bank} | {hauling} hauling"
         )))
     }
 }
@@ -234,7 +238,7 @@ mod tests {
             harvested: true,
             deposited: true,
             built: true,
-            attack_moved: true,
+            advanced: true,
             paused_menu: true,
         };
         assert!(!t.advance(&demo), "nothing left to teach");
@@ -274,14 +278,11 @@ mod tests {
     }
 
     #[test]
-    fn every_card_string_is_ascii_or_middle_dot() {
-        // The menu font is Latin-1: an em dash renders as tofu.
+    fn every_card_string_is_ascii() {
+        // The bundled font cannot be trusted to cover typographic punctuation.
         for step in &STEPS {
             for line in std::iter::once(&step.title).chain(step.body) {
-                assert!(
-                    line.chars().all(|c| c.is_ascii() || c == '·'),
-                    "non-ASCII in card text: {line}"
-                );
+                assert!(line.is_ascii(), "non-ASCII in card text: {line}");
             }
         }
     }

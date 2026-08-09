@@ -1,10 +1,11 @@
 """The Rust/Python gym contract, exercised for real: spawn the driver,
 shake hands, reset one episode, take one legal masked action, step.
 
-``Worker.__init__`` is the contract assertion — gym version, feature
-count, action count, and the complete feature-name list all verify at
-hello, so a column drift dies here instead of in a silently mistrained
-run. The rest of the test proves the loop actually turns.
+``Worker.__init__`` is the contract assertion — gym version, tensor
+shapes, ordered feature and condition names, and the Rust-authored
+profile catalog all verify at hello, so a column drift dies here instead
+of in a silently mistrained run. The rest of the test proves the loop
+actually turns.
 
 Skipped unless ``OXIDE_DRIVER_BIN`` points at a built ``oxide-driver``:
 a local ``uv run pytest`` must not require a Rust build. CI builds the
@@ -19,6 +20,7 @@ import pytest
 from oxide_gym import (
     ACTION_HEADS,
     ACTIONS,
+    CONDITION_DIMS,
     FEATURES,
     Worker,
     condition_from_profile,
@@ -35,7 +37,18 @@ def test_the_handshake_and_one_masked_step() -> None:
     worker = Worker(os.environ["OXIDE_DRIVER_BIN"])
     try:
         assert worker.supports_effect_telemetry
-        frame = worker.reset(seed=11, max_ticks=200)
+        assert len(worker.profile_catalog.profiles) == 9
+        profile = worker.profile_catalog.profiles[0]
+        named = worker.named_condition(
+            profile.style,
+            profile.variant,
+            worker.profile_catalog.default_role,
+            "ferrous",
+        )
+        assert len(named) == CONDITION_DIMS
+        assert named[1] == profile.aggression
+        assert named[2] == 0
+        frame = worker.reset(seed=11, max_ticks=200, conditions={0: named})
         assert not frame.done
         assert frame.tick == 0
         (seat,) = worker.control
@@ -44,6 +57,7 @@ def test_the_handshake_and_one_masked_step() -> None:
         assert frame.effects[seat].buildings_completed == ()
         view = frame.seats[seat]
         assert len(view.raw) == FEATURES
+        assert len(view.obs) == FEATURES + CONDITION_DIMS
         assert view.mask.shape == (ACTIONS,)
         assert view.mask.any(), "at least one action must be legal at tick 0"
 

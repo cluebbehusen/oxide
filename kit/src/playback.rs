@@ -63,7 +63,7 @@ impl Playback {
         const MAX_INTERACTIVE_TICKS: u64 = 2_000_000;
         anyhow::ensure!(
             total <= MAX_INTERACTIVE_TICKS,
-            "replay spans {total} ticks — beyond the {MAX_INTERACTIVE_TICKS}-tick interactive limit"
+            "replay spans {total} ticks, beyond the {MAX_INTERACTIVE_TICKS}-tick interactive limit"
         );
         let cadence = checkpoint_cadence(total);
         Ok(Self {

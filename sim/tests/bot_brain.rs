@@ -108,6 +108,31 @@ fn unseen_enemy_activity_cannot_touch_a_fog_honest_observation() {
 }
 
 #[test]
+fn observation_distinguishes_explored_peaks_from_flyable_rock() {
+    let mut scenario = open_arena(vec![unit(0, UnitKind::Harvester, 4, 2)]);
+    let mut row = scenario.map[2].as_bytes().to_vec();
+    row[6] = b'^';
+    row[7] = b'#';
+    scenario.map[2] = String::from_utf8(row).unwrap();
+    let state = scenario.build().unwrap();
+    let peak = TilePos::new(6, 2);
+    let rock = TilePos::new(7, 2);
+
+    let fog = Observation::fog_honest(&state, PlayerId(0));
+    assert!(fog.explored(peak));
+    assert!(!fog.explored(TilePos::new(20, 10)));
+    assert!(fog.known_rock.contains(&peak));
+    assert!(fog.known_rock.contains(&rock));
+    assert_eq!(fog.known_peaks, vec![peak]);
+
+    let omniscient = Observation::omniscient(&state, PlayerId(0));
+    assert!(omniscient.explored(TilePos::new(20, 10)));
+    assert!(omniscient.known_rock.contains(&rock));
+    assert!(omniscient.known_peaks.contains(&peak));
+    assert!(!omniscient.known_peaks.contains(&rock));
+}
+
+#[test]
 fn fog_honest_shows_ghosts_not_live_enemies() {
     // A scout sees the enemy foundry, walks home, and the fog-honest
     // observation keeps a ghost (seen: false) while hiding the enemy
@@ -263,8 +288,10 @@ fn wounded_members_rejoin_after_full_repair() {
         ally_buildings: Vec::new(),
         enemy_units: Vec::new(),
         enemy_buildings: Vec::new(),
+        explored: vec![true; 24 * 13],
         known_scrap: Vec::new(),
         known_rock: Vec::new(),
+        known_peaks: Vec::new(),
         known_wrecks: Vec::new(),
         blips: Vec::new(),
         faction: oxide_sim::Faction::Ferrous,

@@ -42,14 +42,26 @@ pub struct SpawnOptions {
 /// Cargo's exact executable path. The separation matters: an isolated HOME
 /// belongs on the game process, not the rustup shim that launches Cargo.
 pub(crate) fn build_shell_executable() -> Result<PathBuf> {
+    build_shell_executable_for(false)
+}
+
+/// Builds either the ordinary development shell or the optimized shell used
+/// for native frame profiling. Profiling a debug build mostly measures
+/// assertions and optimizer omissions, so callers must opt into that shape.
+pub(crate) fn build_shell_executable_for(release: bool) -> Result<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let output = std::process::Command::new("cargo")
-        .args([
-            "build",
-            "-p",
-            "oxide-shell",
-            "--message-format=json-render-diagnostics",
-        ])
+    let mut command = std::process::Command::new("cargo");
+    command.args([
+        "build",
+        "-p",
+        "oxide-shell",
+        "--locked",
+        "--message-format=json-render-diagnostics",
+    ]);
+    if release {
+        command.arg("--release");
+    }
+    let output = command
         .current_dir(&root)
         .output()
         .context("building oxide-shell via cargo")?;

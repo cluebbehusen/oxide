@@ -39,10 +39,12 @@ from league import (
     ProfileCurriculum,
     add_entropy_arguments,
     add_initialization_arguments,
+    add_reclaimer_bonus_argument,
     allocate_role_counts,
     anchor_coefficient_at,
     assign_roles,
     bounded_entropy_coefficient,
+    bounded_reclaimer_bonus,
     bounded_structure_bonus,
     bounded_style_coefficient,
     claim_fresh_run_directory,
@@ -62,6 +64,7 @@ from league import (
     phase_interval_due,
     policy_skill_for_aggression,
     probe_canary,
+    profile_column_parameters,
     q12_initialization_provenance,
     realized_learner_row_mix,
     resolve_aggression_distribution,
@@ -69,6 +72,8 @@ from league import (
     resolve_map_mix,
     resolve_training_aggression_distribution,
     resolved_value_warmup,
+    reward_anneal_index,
+    reward_lineage_hyperparameters,
     rollout,
     sample_aggression,
     sample_condition,
@@ -79,28 +84,78 @@ from league import (
     tech_bonus_at,
     training_world_inputs,
     unit_interval,
+    validate_profile_column_mode,
     value_warmup_active,
     warm_generated_maps,
 )
-from models import checkpoint_critic_ready, make_policy, save_policy
+from models import (
+    checkpoint_critic_ready,
+    factorized_greedy,
+    factorized_joint_log_prob,
+    make_policy,
+    save_policy,
+)
 from oxide_gym import (
     ACTION_HEADS,
     ACTIONS,
+    CONDITION_NAMES,
     FEATURE_NAMES,
     FEATURES,
     GYM_VERSION,
     NET_FEATURES,
     ActionPlan,
+    CanonicalProfile,
+    FactionName,
     Frame,
+    ProfileCatalog,
     SeatEffects,
     SeatView,
     condition_from_profile,
 )
+from ppo import ppo_update
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from oxide_gym import Worker
+
+
+def profile_catalog() -> ProfileCatalog:
+    """Small complete Rust-contract-shaped catalog for curriculum tests."""
+    roles = ("generalist", "vanguard", "industry", "support", "siege")
+    profiles = (
+        CanonicalProfile("turtle", 0, "fortress", 100, roles),
+        CanonicalProfile("balanced", 1, "air-combined", 550, roles),
+        CanonicalProfile("aggressive", 2, "siege-breaker", 940, roles),
+    )
+    values: dict[tuple[str, int, str, FactionName], tuple[int, ...]] = {}
+    for profile_index, profile in enumerate(profiles):
+        for role_index, role in enumerate(roles):
+            facets = [
+                100 + profile_index * 100,
+                200 + profile_index * 100,
+                300 + role_index * 50,
+                400 + role_index * 50,
+                500 + profile_index * 100,
+            ]
+            for faction_name, faction in (("ferrous", 0), ("cupric", 1000)):
+                condition = list(
+                    condition_from_profile(
+                        policy_skill_for_aggression(profile.aggression),
+                        profile.aggression,
+                        faction,
+                    )
+                )
+                condition[-5:] = facets
+                values[
+                    (
+                        profile.style,
+                        profile.variant,
+                        role,
+                        faction_name,
+                    )
+                ] = tuple(condition)
+    return ProfileCatalog(profiles, values, "generalist")
 
 
 class _ScriptedWorker:
@@ -117,6 +172,7 @@ class _ScriptedWorker:
         self._pending = False
         self.name = name
         self.log = log if log is not None else []
+        self.profile_catalog = profile_catalog()
 
     def step(self, actions: dict[int, ActionPlan]) -> Frame:
         self.send_step(actions)
@@ -243,8 +299,9 @@ class TestSampleCondition:
     def test_the_condition_includes_the_matching_strategy_one_hot(self) -> None:
         cond = sample_condition(np.random.default_rng(0), 0)
         assert isinstance(cond, tuple)
-        assert len(cond) == 7
-        assert cond[3:] == oxide_gym.strategy_one_hot(cond[1])
+        assert len(cond) == 12
+        assert cond[3:7] == oxide_gym.strategy_one_hot(cond[1])
+        assert cond[7:] == (0, 0, 0, 0, 0)
 
     def test_rejects_a_condition_that_lies_about_the_roster(self) -> None:
         with pytest.raises(ValueError, match="0 or 1000"):
@@ -321,46 +378,116 @@ class TestAggressionMix:
 class TestProfileCurriculum:
     @staticmethod
     def _default_draws(seed: int) -> list[EpisodeDials]:
+        catalog = profile_catalog()
         curriculum = ProfileCurriculum(
             np.random.default_rng(seed),
             SHIPPED_AGGRESSION_DISTRIBUTION,
+            catalog,
         )
-        return [curriculum.sample({0: 0})[0] for _ in range(20)]
+        return [
+            curriculum.sample({0: 0})[0]
+            for _ in range(len(catalog.profiles) * len(SHIPPED_EXECUTION_PROFILES))
+        ]
 
     def test_default_block_is_the_exact_shipped_factorial(self) -> None:
         draws = self._default_draws(71)
-        cells = Counter((draw.policy_skill, draw.execution.name) for draw in draws)
-
+        cells = Counter(
+            (draw.style, draw.variant, draw.execution.name) for draw in draws
+        )
         assert cells == Counter(
-            {(620, profile.name): 3 for profile in SHIPPED_EXECUTION_PROFILES}
-            | {(1000, profile.name): 2 for profile in SHIPPED_EXECUTION_PROFILES}
+            (profile.style, profile.variant, execution.name)
+            for profile in profile_catalog().profiles
+            for execution in SHIPPED_EXECUTION_PROFILES
         )
-        assert all(
-            (
-                (draw.policy_skill == 620 and 250 <= draw.aggression <= 399)
-                or (draw.policy_skill == 1000 and 500 <= draw.aggression <= 600)
-            )
-            for draw in draws
-        )
+        assert all(draw.role == "generalist" for draw in draws)
 
     def test_default_factorial_is_deterministic_but_seeded(self) -> None:
         assert self._default_draws(71) == self._default_draws(71)
         assert self._default_draws(71) != self._default_draws(72)
 
+    def test_default_curriculum_requires_the_rust_catalog(self) -> None:
+        curriculum = ProfileCurriculum(
+            np.random.default_rng(9),
+            SHIPPED_AGGRESSION_DISTRIBUTION,
+        )
+
+        with pytest.raises(RuntimeError, match="requires a Rust profile catalog"):
+            curriculum.sample({0: 0})
+
     def test_custom_aggression_keeps_an_independent_execution_cycle(self) -> None:
         distribution = resolve_aggression_distribution((750, 751), None)
-        curriculum = ProfileCurriculum(np.random.default_rng(9), distribution)
+        curriculum = ProfileCurriculum(
+            np.random.default_rng(9),
+            distribution,
+            profile_catalog(),
+        )
         draws = [curriculum.sample({0: 0})[0] for _ in range(4)]
 
         assert {draw.aggression for draw in draws} == {750, 751}
         assert {draw.policy_skill for draw in draws} == {1000}
         assert {draw.execution for draw in draws} == set(SHIPPED_EXECUTION_PROFILES)
+        assert all(draw.style is None and draw.role is None for draw in draws)
+
+    def test_team_profiles_consume_distinct_rust_authored_role_vectors(self) -> None:
+        catalog = profile_catalog()
+        curriculum = ProfileCurriculum(
+            np.random.default_rng(9),
+            SHIPPED_AGGRESSION_DISTRIBUTION,
+            catalog,
+        )
+        draws = curriculum.sample({0: 0, 2: 0}, specialize_roles=True)
+        assert draws[0].role != draws[2].role
+        assert draws[0].role != catalog.default_role
+        assert draws[2].role != catalog.default_role
+        style = draws[0].style
+        variant = draws[0].variant
+        role = draws[0].role
+        assert style is not None
+        assert variant is not None
+        assert role is not None
+        assert draws[0].condition(0, catalog) == catalog.condition(
+            style,
+            variant,
+            role,
+            "ferrous",
+        )
+
+    def test_team_profiles_require_a_rust_authored_specialist_role(self) -> None:
+        profile = CanonicalProfile(
+            "balanced",
+            0,
+            "generalist-only",
+            500,
+            ("generalist",),
+        )
+        conditions: dict[tuple[str, int, str, FactionName], tuple[int, ...]] = {}
+        for faction in cast("tuple[FactionName, ...]", ("ferrous", "cupric")):
+            conditions[("balanced", 0, "generalist", faction)] = condition_from_profile(
+                1000,
+                500,
+                1000 if faction == "cupric" else 0,
+            )
+        catalog = ProfileCatalog((profile,), conditions, "generalist")
+        curriculum = ProfileCurriculum(
+            np.random.default_rng(9),
+            SHIPPED_AGGRESSION_DISTRIBUTION,
+            catalog,
+        )
+
+        with pytest.raises(RuntimeError, match="no specialist team roles"):
+            curriculum.sample({0: 0, 2: 0}, specialize_roles=True)
+
+    def test_named_dials_reject_a_noncanonical_faction_knob(self) -> None:
+        dials = self._default_draws(71)[0]
+
+        with pytest.raises(ValueError, match="faction must be 0 or 1000"):
+            dials.condition(7, profile_catalog())
 
     def test_named_execution_values_match_deployment(self) -> None:
         assert [
             (profile.hesitation_permille, profile.cadence)
             for profile in SHIPPED_EXECUTION_PROFILES
-        ] == [(350, 56), (190, 36), (5, 28), (0, 28)]
+        ] == [(350, 56), (190, 36), (5, 34), (0, 37)]
 
 
 class TestMaybeBlunder:
@@ -634,11 +761,102 @@ class _ResetRecorder:
     def __init__(self) -> None:
         self.scenarios: list[str | None] = []
         self.resets: list[dict[str, object]] = []
+        self.profile_catalog = profile_catalog()
 
     def reset(self, *_args: object, **kwargs: object) -> Frame:
         self.scenarios.append(cast("str | None", kwargs.get("scenario")))
         self.resets.append(dict(kwargs))
         return Frame(False, 0, seats={0: _view(0.1), 1: _view(0.2)})
+
+
+@pytest.mark.parametrize("kind", ["past", "incumbent"])
+def test_frozen_learned_opponents_share_the_learners_named_profile(
+    kind: str,
+    tmp_path: pathlib.Path,
+) -> None:
+    worker = _ResetRecorder()
+    incumbent = make_policy("mlp") if kind == "incumbent" else None
+    job = Job(
+        cast("Worker", worker),
+        kind,
+        0,
+        tmp_path,
+        np.random.default_rng(23),
+        "cpu",
+        incumbent=incumbent,
+        faction_mix={"fc": 1.0},
+    )
+
+    job.reset(50_000)
+
+    conditions = cast(
+        "dict[int, tuple[int, ...]]",
+        worker.resets[-1]["conditions"],
+    )
+    learner_dials = job.episode_dials[0]
+    assert conditions[1] == learner_dials.condition(1000, worker.profile_catalog)
+    assert conditions[1][7:] == conditions[0][7:]
+    assert any(conditions[1][7:])
+    assert conditions[1] != condition_from_profile(1000, 500, 1000)
+
+
+class _EvaluationWorker:
+    def __init__(self) -> None:
+        self.profile_catalog = profile_catalog()
+        self.resets: list[dict[str, object]] = []
+        self._seat = 0
+        self._pending = False
+
+    def reset(self, _seed: int, **kwargs: object) -> Frame:
+        self.resets.append(dict(kwargs))
+        control = cast("tuple[int, ...]", kwargs["control"])
+        self._seat = control[0]
+        return Frame(False, 0, seats={self._seat: _view(0.5)})
+
+    def send_step(self, _actions: dict[int, ActionPlan]) -> None:
+        assert not self._pending
+        self._pending = True
+
+    def recv(self) -> Frame:
+        assert self._pending
+        self._pending = False
+        return Frame(True, 1, winner=self._seat)
+
+
+def test_default_evaluation_rotates_through_rust_canonical_profiles() -> None:
+    worker = _EvaluationWorker()
+    policy = make_policy("mlp")
+    policy.eval()
+    profiles = worker.profile_catalog.profiles
+
+    win_rate = league.evaluate(
+        policy,
+        [cast("Worker", worker)],
+        "cpu",
+        "prime",
+        seeds=range(60_000, 60_000 + len(profiles)),
+    )
+
+    assert win_rate == 1.0
+    assert len(worker.resets) == len(profiles) * 2
+    for profile_index, profile in enumerate(profiles):
+        for seat in (0, 1):
+            reset = worker.resets[profile_index * 2 + seat]
+            assert reset["control"] == (seat,)
+            conditions = cast(
+                "dict[int, tuple[int, ...]]",
+                reset["conditions"],
+            )
+            for conditioned_seat, faction in ((0, "ferrous"), (1, "cupric")):
+                assert conditions[conditioned_seat] == (
+                    worker.profile_catalog.condition(
+                        profile.style,
+                        profile.variant,
+                        worker.profile_catalog.default_role,
+                        faction,
+                    )
+                )
+                assert any(conditions[conditioned_seat][7:])
 
 
 class TestPerEpisodeAggressionSampling:
@@ -1165,6 +1383,197 @@ class TestIncumbentOpponent:
         assert not q12_initialization_provenance({})
         assert not q12_initialization_provenance(None)
 
+    def test_profile_column_continuation_cannot_move_the_parent_actor(self) -> None:
+        policy = make_policy("mlp")
+        first_layer = policy.trunk[0]
+        assert isinstance(first_layer, torch.nn.Linear)
+        before = {
+            name: parameter.detach().clone()
+            for name, parameter in policy.state_dict().items()
+        }
+        trainable = profile_column_parameters(policy)
+        assert len(trainable) == 3
+        assert trainable[0] is first_layer.weight
+        assert trainable[1] is policy.v.weight
+        assert trainable[2] is policy.v.bias
+        optimizer = torch.optim.Adam(trainable, lr=1e-3)
+        optimizer.zero_grad()
+        first_layer.weight.sum().backward()
+        optimizer.step()
+
+        profile_columns = len(CONDITION_NAMES) - CONDITION_NAMES.index(
+            "profile_economy"
+        )
+        first = first_layer.weight.detach()
+        assert torch.equal(
+            first[:, :-profile_columns],
+            before["trunk.0.weight"][:, :-profile_columns],
+        )
+        assert not torch.equal(
+            first[:, -profile_columns:],
+            before["trunk.0.weight"][:, -profile_columns:],
+        )
+        for name, parameter in policy.state_dict().items():
+            if name != "trunk.0.weight":
+                assert torch.equal(parameter, before[name]), name
+
+    def test_profile_column_selector_moves_only_the_named_facet(self) -> None:
+        policy = make_policy("mlp")
+        first_layer = policy.trunk[0]
+        assert isinstance(first_layer, torch.nn.Linear)
+        before = {
+            name: parameter.detach().clone()
+            for name, parameter in policy.state_dict().items()
+        }
+        trainable = profile_column_parameters(policy, ("profile_siege",))
+        optimizer = torch.optim.Adam(trainable, lr=1e-3)
+        optimizer.zero_grad()
+        first_layer.weight.sum().backward()
+        optimizer.step()
+
+        profile_columns = len(CONDITION_NAMES) - CONDITION_NAMES.index(
+            "profile_economy"
+        )
+        siege_offset = CONDITION_NAMES[
+            CONDITION_NAMES.index("profile_economy") :
+        ].index("profile_siege")
+        first_profile_column = first_layer.in_features - profile_columns
+        changed_column = first_profile_column + siege_offset
+        first = first_layer.weight.detach()
+        assert not torch.equal(
+            first[:, changed_column],
+            before["trunk.0.weight"][:, changed_column],
+        )
+        for column in range(first.shape[1]):
+            if column != changed_column:
+                assert torch.equal(
+                    first[:, column],
+                    before["trunk.0.weight"][:, column],
+                ), column
+        for name, parameter in policy.state_dict().items():
+            if name != "trunk.0.weight":
+                assert torch.equal(parameter, before[name]), name
+
+    @staticmethod
+    def _ppo_batch(policy: torch.nn.Module) -> tuple[np.ndarray, ...]:
+        rng = np.random.default_rng(91)
+        rows = 128
+        obs = rng.normal(size=(rows, NET_FEATURES)).astype(np.float32)
+        mask = np.ones((rows, ACTIONS), dtype=bool)
+        with torch.no_grad():
+            logits, values = policy(
+                torch.as_tensor(obs),
+                torch.as_tensor(mask),
+            )
+            actions = factorized_greedy(logits)
+            old_logp = factorized_joint_log_prob(logits, actions)
+        advantages = np.linspace(-1.0, 1.0, rows, dtype=np.float32)
+        returns = values.numpy() + np.linspace(0.5, 1.5, rows, dtype=np.float32)
+        return (
+            obs,
+            mask,
+            actions.numpy(),
+            old_logp.numpy(),
+            advantages,
+            returns,
+        )
+
+    def test_profile_scope_warmup_changes_only_the_critic(self) -> None:
+        torch.manual_seed(91)
+        policy = make_policy("mlp")
+        before = {
+            name: parameter.detach().clone()
+            for name, parameter in policy.named_parameters()
+        }
+        optimizer = torch.optim.Adam(
+            profile_column_parameters(
+                policy,
+                ("profile_economy", "profile_air"),
+            ),
+            lr=1e-3,
+        )
+
+        ppo_update(
+            policy,
+            optimizer,
+            self._ppo_batch(policy),
+            "cpu",
+            epochs=2,
+            minibatch=128,
+            value_only=True,
+        )
+
+        for name, parameter in policy.named_parameters():
+            if not name.startswith("v."):
+                assert torch.equal(parameter, before[name]), name
+        assert any(
+            not torch.equal(policy.state_dict()[name], before[name])
+            for name in ("v.weight", "v.bias")
+        ), "critic warm-up must optimize the included value head"
+
+    def test_profile_scope_normal_update_moves_only_selected_columns_and_critic(
+        self,
+    ) -> None:
+        torch.manual_seed(92)
+        policy = make_policy("mlp")
+        before = {
+            name: parameter.detach().clone()
+            for name, parameter in policy.named_parameters()
+        }
+        optimizer = torch.optim.Adam(
+            profile_column_parameters(
+                policy,
+                ("profile_economy", "profile_air"),
+            ),
+            lr=1e-3,
+        )
+
+        ppo_update(
+            policy,
+            optimizer,
+            self._ppo_batch(policy),
+            "cpu",
+            epochs=2,
+            minibatch=128,
+            ent_coef=0.0,
+            kl_stop=0.0,
+        )
+
+        first = policy.trunk[0]
+        assert isinstance(first, torch.nn.Linear)
+        first_profile_column = first.in_features - len(league.PROFILE_CONDITION_NAMES)
+        selected_columns = {
+            first_profile_column + league.PROFILE_CONDITION_NAMES.index(name)
+            for name in ("profile_economy", "profile_air")
+        }
+        for column in range(first.in_features):
+            changed = not torch.equal(
+                first.weight[:, column],
+                before["trunk.0.weight"][:, column],
+            )
+            assert changed == (column in selected_columns), column
+        for name, parameter in policy.named_parameters():
+            if name == "trunk.0.weight" or name.startswith("v."):
+                continue
+            assert torch.equal(parameter, before[name]), name
+        assert any(
+            not torch.equal(policy.state_dict()[name], before[name])
+            for name in ("v.weight", "v.bias")
+        )
+
+    def test_profile_column_selector_requires_the_frozen_mode(self) -> None:
+        with pytest.raises(
+            ValueError,
+            match="--profile-column requires --profile-columns-only",
+        ):
+            validate_profile_column_mode(
+                False,
+                True,
+                MAX_STYLE_BONUS,
+                True,
+                ["profile_siege"],
+            )
+
 
 class TestRolloutPipelining:
     def test_every_send_lands_before_any_recv_within_a_step(self) -> None:
@@ -1220,6 +1629,14 @@ class TestTechBonusSchedule:
     def test_disabled_base_or_span_pays_nothing(self) -> None:
         assert tech_bonus_at(0.0, 0, 1000) == 0.0
         assert tech_bonus_at(0.08, 0, 0) == 0.0
+
+    def test_critic_warmup_does_not_consume_the_actor_reward_anneal(self) -> None:
+        assert reward_anneal_index(211, 210, 15) == 0
+        assert reward_anneal_index(225, 210, 15) == 0
+        assert reward_anneal_index(226, 210, 15) == 0
+        assert reward_anneal_index(245, 210, 15) == 19
+        with pytest.raises(ValueError, match="after phase start"):
+            reward_anneal_index(210, 210, 15)
 
 
 class TestValueWarmupSchedule:
@@ -1433,6 +1850,15 @@ class TestPhaseIntervals:
 
 
 class TestBoundedStyleBonus:
+    @staticmethod
+    def named_condition(facet: str, value: int) -> tuple[int, ...]:
+        condition = list(condition_from_profile(1000, 500, 0))
+        for name in CONDITION_NAMES:
+            if name.startswith("profile_"):
+                condition[CONDITION_NAMES.index(name)] = 500
+        condition[CONDITION_NAMES.index(facet)] = value
+        return tuple(condition)
+
     def test_alignment_matches_the_requested_posture(self) -> None:
         pushing = [0] * FEATURES
         pushing[F["army_state"]] = 2
@@ -1443,6 +1869,56 @@ class TestBoundedStyleBonus:
         assert style_alignment(defending, 0) == 1.0
         assert style_alignment(pushing, 0) == -1.0
         assert style_alignment(defending, 1000) == -1.0
+
+    def test_zero_facet_condition_keeps_raw_aggression_semantics(self) -> None:
+        pushing = [0] * FEATURES
+        pushing[F["army_state"]] = 2
+        raw = condition_from_profile(1000, 1000, 0)
+
+        assert style_alignment(pushing, raw) == 1.0
+
+    @pytest.mark.parametrize(
+        ("facet", "feature_values"),
+        [
+            ("profile_economy", {"my_harvesters": 8}),
+            ("profile_air", {"my_airground": 4, "my_sentinels": 4}),
+            ("profile_siege", {"my_lancers": 4, "my_sentinels": 4}),
+            (
+                "profile_support",
+                {
+                    "my_turrets_built": 1,
+                    "my_flak_built": 1,
+                    "my_arrays_built": 1,
+                    "my_repair_bays_built": 1,
+                },
+            ),
+            ("profile_commitment", {"army_state": 2}),
+        ],
+    )
+    def test_named_facets_reward_their_own_state_posture(
+        self,
+        facet: str,
+        feature_values: dict[str, int],
+    ) -> None:
+        aligned = [0] * FEATURES
+        for name, value in feature_values.items():
+            aligned[F[name]] = value
+        condition = self.named_condition(facet, 1000)
+
+        assert style_alignment(aligned, condition) == 1.0
+        assert style_alignment([0] * FEATURES, condition) == -1.0
+
+    def test_named_alignment_reads_no_enemy_feature(self) -> None:
+        own = [0] * FEATURES
+        own[F["my_airground"]] = 4
+        own[F["my_sentinels"]] = 4
+        with_enemy = own.copy()
+        for name in FEATURE_NAMES:
+            if name.startswith("enemy_"):
+                with_enemy[F[name]] = 999
+        condition = self.named_condition("profile_air", 1000)
+
+        assert style_alignment(own, condition) == style_alignment(with_enemy, condition)
 
     def test_episode_length_cannot_increase_the_bonus(self) -> None:
         assert style_bonus(1.0, 1, MAX_STYLE_BONUS) == MAX_STYLE_BONUS
@@ -2267,6 +2743,83 @@ class TestStructureBonus:
         for value in ("-0.001", "0.0201", "nan", "inf"):
             with pytest.raises(argparse.ArgumentTypeError):
                 bounded_structure_bonus(value)
+
+
+class TestReclaimerBonus:
+    def test_a_completed_reclaimer_pays_once_per_episode(self) -> None:
+        initial = Frame(False, 0, seats={0: _forced_view(0), 1: _forced_view(0)})
+        frames = [
+            Frame(
+                False,
+                16,
+                seats={0: _forced_view(0), 1: _forced_view(0)},
+                effects={0: SeatEffects(buildings_completed=("reclaimer",))},
+            ),
+            Frame(
+                True,
+                32,
+                winners=[0],
+                effects={
+                    0: SeatEffects(
+                        buildings_completed=("reclaimer", "turret", "reclaimer")
+                    ),
+                    1: SeatEffects(buildings_completed=("turret",)),
+                },
+            ),
+        ]
+        fresh = Frame(False, 99, seats={0: _forced_view(0), 1: _forced_view(0)})
+        worker = cast("Worker", _ResettingWorker(frames, fresh))
+        job = Job(worker, "self", 0, pathlib.Path("."), np.random.default_rng(0), "cpu")
+        job.frame = initial
+        job.conditions = {
+            0: condition_from_profile(1000, 500, 0),
+            1: condition_from_profile(1000, 500, 1000),
+        }
+        policy = make_policy("mlp")
+        policy.eval()
+        TEL.clear()
+
+        batch, _last_val, finals = rollout(
+            policy,
+            [job],
+            itertools.repeat(0),
+            2,
+            "cpu",
+            reclaimer_bonus=0.02,
+        )
+        rewards = batch[5]
+        assert rewards[1][0] == pytest.approx(1.02)
+        assert rewards[1][1] == pytest.approx(-1.0)
+        assert sorted(finals) == [-1.0, 1.0], "telemetry finals stay pure"
+        assert TEL["ep_build_reclaimer"] == 1
+
+    def test_cli_and_lineage_keep_the_bonus_explicit_and_bounded(self) -> None:
+        parser = argparse.ArgumentParser()
+        add_reclaimer_bonus_argument(parser)
+        args = parser.parse_args(["--reclaimer-bonus", "0.02"])
+        assert args.reclaimer_bonus == 0.02
+        assert "completes a Reclaimer" in " ".join(parser.format_help().split())
+        assert bounded_reclaimer_bonus("0") == 0.0
+        for value in ("-0.001", "0.0201", "nan", "inf"):
+            with pytest.raises(argparse.ArgumentTypeError):
+                bounded_reclaimer_bonus(value)
+
+        rewards = argparse.Namespace(
+            mix_bonus=0.05,
+            reclaimer_bonus=args.reclaimer_bonus,
+            repair_bonus=0.0,
+            salvage_bonus=0.0,
+            structure_bonus=0.0,
+            tech_bonus=0.0,
+        )
+        assert reward_lineage_hyperparameters(rewards) == {
+            "mix_bonus": 0.05,
+            "reclaimer_bonus": 0.02,
+            "repair_bonus": 0.0,
+            "salvage_bonus": 0.0,
+            "structure_bonus": 0.0,
+            "tech_bonus": 0.0,
+        }
 
 
 _ACTIVE_CAP = {

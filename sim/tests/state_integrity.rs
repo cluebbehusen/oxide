@@ -15,7 +15,7 @@
 
 use oxide_sim::bot::{Brain, Difficulty, Level, NeuralBot};
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
-use oxide_sim::stats::BuildingKind;
+use oxide_sim::stats::{BuildingKind, QUEUE_CAP};
 use oxide_sim::{
     BuildingId, Command, Faction, PlayerCommand, PlayerId, Scenario, State, StateIntegrityError,
     UnitId, UnitKind,
@@ -85,12 +85,20 @@ fn arena() -> Scenario {
                 y: 4,
             },
         ],
-        buildings: vec![BuildingSpec {
-            player: 0,
-            kind: BuildingKind::Fabricator,
-            x: 4,
-            y: 7,
-        }],
+        buildings: vec![
+            BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Fabricator,
+                x: 4,
+                y: 7,
+            },
+            BuildingSpec {
+                player: 0,
+                kind: BuildingKind::Turret,
+                x: 8,
+                y: 7,
+            },
+        ],
         meta: None,
     }
 }
@@ -166,6 +174,11 @@ fn ghost(owner: u32, x: i32, y: i32) -> Value {
     json!({"kind": "turret", "owner": owner, "anchor": {"x": x, "y": y}, "hp": 350})
 }
 
+/// A well-formed recent allied impact record.
+fn incident(x: i32, y: i32, expires_at: u64) -> Value {
+    json!({"tile": {"x": x, "y": y}, "expires_at": expires_at})
+}
+
 #[test]
 fn the_base_snapshot_is_accepted() {
     // Every forgery below is a single poke on this document; if the
@@ -181,6 +194,7 @@ fn well_formed_additions_are_accepted() {
     // mutate must themselves be legal — otherwise a fixture could be
     // passing for the wrong reason.
     let mut base = snapshot();
+    base["tick"] = json!(100);
     base["shells"].as_array_mut().unwrap().push(shell(
         json!({"kind": "unit", "id": 1}),
         0,
@@ -191,7 +205,18 @@ fn well_formed_additions_are_accepted() {
         .unwrap()
         .push(ghost(1, 12, 5));
     base["vision"][0]["contacts"] = json!([{"x": 3, "y": 3}, {"x": 1, "y": 4}]);
+    base["vision"][0]["salvage_incidents"] = json!([incident(4, 3, 100), incident(2, 4, 100)]);
     serde_json::from_value::<State>(base).expect("legal additions stay legal");
+}
+
+#[test]
+fn a_decided_state_may_age_past_an_incident_expiry() {
+    let mut base = snapshot();
+    base["tick"] = json!(100);
+    base["result"] = json!({"outcome": "victory", "team": 0});
+    base["vision"][0]["salvage_incidents"] = json!([incident(3, 3, 99)]);
+    serde_json::from_value::<State>(base)
+        .expect("decided worlds stop refreshing vision while their clock may still advance");
 }
 
 /// Contiguous index per checklist row, in declaration order. The
@@ -205,47 +230,56 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::NoPlayers => 0,
         E::TooManyPlayers => 1,
         E::ForeignTeam(_) => 2,
-        E::UnknownVictoryTeam(_) => 3,
-        E::MalformedMapGrid => 4,
-        E::MapTooLarge { .. } => 5,
-        E::VisionTableMismatch => 6,
-        E::MalformedVisionGrid => 7,
-        E::UnsortedUnits => 8,
-        E::UnsortedBuildings => 9,
-        E::StaleUnitCounter => 10,
-        E::StaleBuildingCounter => 11,
-        E::TickBeyondEnvelope => 12,
-        E::IdCounterBeyondEnvelope => 13,
-        E::ForeignUnitOwner(_) => 14,
-        E::UnitHpOutOfRange(_) => 15,
-        E::UnitProgressOutOfRange(_) => 16,
-        E::UnitCooldownOutOfRange(_) => 17,
-        E::OverlongUnitQueue(_) => 18,
-        E::UnitOutsideEnvelope(_) => 19,
-        E::UnmintedOrderTarget(_) => 20,
-        E::ForeignBuildingOwner(_) => 21,
-        E::UnconstructibleSite(_) => 22,
-        E::BuildingHpOutOfRange(_) => 23,
-        E::BuildingProgressOutOfRange(_) => 24,
-        E::BuildingCooldownOutOfRange(_) => 25,
-        E::OverlongBuildingQueue(_) => 26,
-        E::UnproducibleQueueEntry(_) => 27,
-        E::BuildingOutsideEnvelope(_) => 28,
-        E::IncoherentSalvageLedger(_) => 29,
-        E::LiveBuildingMarkedSalvaged(_) => 30,
-        E::ForeignShellOwner(_) => 31,
-        E::ShellOutsideEnvelope(_) => 32,
-        E::UnmintedShellShooter(_) => 33,
-        E::ForeignGhostOwner(_) => 34,
-        E::FriendlyGhost(_) => 35,
-        E::GhostOutsideEnvelope(_) => 36,
-        E::UnsortedGhosts(_) => 37,
-        E::ContactOutsideEnvelope(_) => 38,
-        E::UnsortedContacts(_) => 39,
+        E::InvalidRecoveryLedger(_) => 3,
+        E::UnknownVictoryTeam(_) => 4,
+        E::MalformedMapGrid => 5,
+        E::MapTooLarge { .. } => 6,
+        E::VisionTableMismatch => 7,
+        E::MalformedVisionGrid => 8,
+        E::UnsortedUnits => 9,
+        E::UnsortedBuildings => 10,
+        E::StaleUnitCounter => 11,
+        E::StaleBuildingCounter => 12,
+        E::TickBeyondEnvelope => 13,
+        E::IdCounterBeyondEnvelope => 14,
+        E::ForeignUnitOwner(_) => 15,
+        E::UnitHpOutOfRange(_) => 16,
+        E::UnitProgressOutOfRange(_) => 17,
+        E::UnitCooldownOutOfRange(_) => 18,
+        E::OverlongUnitQueue(_) => 19,
+        E::UnitOutsideEnvelope(_) => 20,
+        E::HarvestSourceOutsideZone(_) => 21,
+        E::UnmintedOrderTarget(_) => 22,
+        E::ForeignBuildingOwner(_) => 23,
+        E::UnconstructibleSite(_) => 24,
+        E::BuildingHpOutOfRange(_) => 25,
+        E::BuildingProgressOutOfRange(_) => 26,
+        E::BuildingCooldownOutOfRange(_) => 27,
+        E::UnmintedBuildingFocus(_) => 28,
+        E::InvalidBuildingFocus(_) => 29,
+        E::OverlongBuildingQueue(_) => 30,
+        E::UnproducibleQueueEntry(_) => 31,
+        E::BuildingOutsideEnvelope(_) => 32,
+        E::IncoherentSalvageLedger(_) => 33,
+        E::LiveBuildingMarkedSalvaged(_) => 34,
+        E::ForeignShellOwner(_) => 35,
+        E::ShellOutsideEnvelope(_) => 36,
+        E::UnmintedShellShooter(_) => 37,
+        E::ForeignGhostOwner(_) => 38,
+        E::FriendlyGhost(_) => 39,
+        E::GhostOutsideEnvelope(_) => 40,
+        E::UnsortedGhosts(_) => 41,
+        E::ContactOutsideEnvelope(_) => 42,
+        E::UnsortedContacts(_) => 43,
+        E::OverlongSalvageIncidentMemory(_) => 44,
+        E::SalvageIncidentOutsideEnvelope(_) => 45,
+        E::ExpiredSalvageIncident(_) => 46,
+        E::SalvageIncidentExpiryBeyondHorizon(_) => 47,
+        E::UnsortedSalvageIncidents(_) => 48,
     }
 }
 
-const ROWS: usize = 40;
+const ROWS: usize = 49;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -258,6 +292,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::NoPlayers,
         E::TooManyPlayers,
         E::ForeignTeam(PlayerId(0)),
+        E::InvalidRecoveryLedger(PlayerId(0)),
         E::UnknownVictoryTeam(0),
         E::MalformedMapGrid,
         E::MapTooLarge {
@@ -278,12 +313,15 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::UnitCooldownOutOfRange(UnitId(0)),
         E::OverlongUnitQueue(UnitId(0)),
         E::UnitOutsideEnvelope(UnitId(0)),
+        E::HarvestSourceOutsideZone(UnitId(0)),
         E::UnmintedOrderTarget(UnitId(0)),
         E::ForeignBuildingOwner(BuildingId(0)),
         E::UnconstructibleSite(BuildingId(0)),
         E::BuildingHpOutOfRange(BuildingId(0)),
         E::BuildingProgressOutOfRange(BuildingId(0)),
         E::BuildingCooldownOutOfRange(BuildingId(0)),
+        E::UnmintedBuildingFocus(BuildingId(0)),
+        E::InvalidBuildingFocus(BuildingId(0)),
         E::OverlongBuildingQueue(BuildingId(0)),
         E::UnproducibleQueueEntry(BuildingId(0)),
         E::BuildingOutsideEnvelope(BuildingId(0)),
@@ -298,6 +336,11 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::UnsortedGhosts(PlayerId(0)),
         E::ContactOutsideEnvelope(PlayerId(0)),
         E::UnsortedContacts(PlayerId(0)),
+        E::OverlongSalvageIncidentMemory(PlayerId(0)),
+        E::SalvageIncidentOutsideEnvelope(PlayerId(0)),
+        E::ExpiredSalvageIncident(PlayerId(0)),
+        E::SalvageIncidentExpiryBeyondHorizon(PlayerId(0)),
+        E::UnsortedSalvageIncidents(PlayerId(0)),
     ]
 }
 
@@ -328,6 +371,15 @@ fn every_checklist_row_refuses_its_forgery() {
             "a team index no seat carries",
             |d| d["players"][0]["team"] = json!(9),
             "player p0 sits on a team outside the table",
+        ),
+        (
+            "an emergency entitlement larger than its captured target",
+            |d| {
+                d["players"][0]["recovery_ready"] = json!(false);
+                d["players"][0]["recovery_target"] = json!(50);
+                d["players"][0]["recovery_allowance"] = json!(51);
+            },
+            "player p0 carries an invalid recovery ledger",
         ),
         (
             "a victory for a team no seat carries",
@@ -439,6 +491,20 @@ fn every_checklist_row_refuses_its_forgery() {
             "unit u0 names a coordinate outside the envelope",
         ),
         (
+            "a harvest work-zone anchor at the far end of the coordinate space",
+            |d| {
+                d["units"][0]["order"]["anchor"] = json!({"x": i32::MAX, "y": 0});
+            },
+            "unit u0 names a coordinate outside the envelope",
+        ),
+        (
+            "a harvest source outside its anchored work zone",
+            |d| {
+                d["units"][0]["order"]["node"] = json!({"x": 15, "y": 8});
+            },
+            "unit u0 names a harvest source outside its work zone",
+        ),
+        (
             "an order against an id the run never minted",
             |d| {
                 d["units"][0]["order"] =
@@ -472,8 +538,22 @@ fn every_checklist_row_refuses_its_forgery() {
             "building b0 carries a cooldown its weapon never sets",
         ),
         (
+            "a defense focus against an id this run never minted",
+            |d| {
+                d["buildings"][3]["focus"] = json!({"kind": "unit", "id": 9_999});
+            },
+            "building b3 focuses an id the run never minted",
+        ),
+        (
+            "a civilian building carrying a defense focus",
+            |d| {
+                d["buildings"][2]["focus"] = json!({"kind": "unit", "id": 2});
+            },
+            "building b2 carries an invalid defense focus",
+        ),
+        (
             "a production queue past the cap",
-            |d| d["buildings"][0]["queue"] = json!(vec!["harvester"; 6]),
+            |d| d["buildings"][0]["queue"] = json!(vec!["harvester"; QUEUE_CAP + 1]),
             "building b0 queues more units than the cap allows",
         ),
         (
@@ -568,6 +648,52 @@ fn every_checklist_row_refuses_its_forgery() {
             "radar blips out of canonical order",
             |d| d["vision"][0]["contacts"] = json!([{"x": 1, "y": 4}, {"x": 3, "y": 3}]),
             "player p0 holds radar contacts out of canonical order",
+        ),
+        (
+            "more recent impact sites than the bounded memory permits",
+            |d| {
+                d["vision"][0]["salvage_incidents"] = json!(
+                    (0..=oxide_sim::stats::HARVEST_INCIDENT_CAP)
+                        .map(|x| incident(x as i32, 3, 100))
+                        .collect::<Vec<_>>()
+                );
+            },
+            "player p0 holds more salvage incidents than the cap allows",
+        ),
+        (
+            "a recent impact site at the far end of the coordinate space",
+            |d| {
+                d["vision"][0]["salvage_incidents"] = json!([incident(i32::MAX, 3, 100)]);
+            },
+            "player p0 remembers a salvage incident outside the envelope",
+        ),
+        (
+            "an impact site that expired before the current tick",
+            |d| {
+                d["tick"] = json!(100);
+                d["vision"][0]["salvage_incidents"] = json!([incident(3, 3, 99)]);
+            },
+            "player p0 carries an expired salvage incident in an active match",
+        ),
+        (
+            "a recent impact expiry beyond the state's memory horizon",
+            |d| {
+                d["tick"] = json!(100);
+                d["vision"][0]["salvage_incidents"] = json!([incident(
+                    3,
+                    3,
+                    101 + oxide_sim::stats::HARVEST_INCIDENT_MEMORY_TICKS
+                )]);
+            },
+            "player p0 carries a salvage incident expiry beyond its memory horizon",
+        ),
+        (
+            "recent impact sites out of canonical order",
+            |d| {
+                d["vision"][0]["salvage_incidents"] =
+                    json!([incident(2, 4, 100), incident(4, 3, 100)]);
+            },
+            "player p0 holds salvage incidents out of canonical order",
         ),
     ];
 

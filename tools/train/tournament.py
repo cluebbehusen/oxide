@@ -23,10 +23,23 @@ import numpy as np
 import torch
 from torch import nn
 
-from league import TIERS, faction_knob, maybe_blunder, rusher
+from league import (
+    TIERS,
+    faction_knob,
+    maybe_blunder,
+    policy_skill_for_aggression,
+    rusher,
+)
 from mapgen import cache_dir, generate
 from models import factorized_greedy, load_policy
-from oxide_gym import ActionPlan, FactionName, Frame, Worker, condition_from_profile
+from oxide_gym import (
+    ActionPlan,
+    FactionName,
+    Frame,
+    ProfileCatalog,
+    Worker,
+    condition_from_profile,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -34,6 +47,8 @@ if TYPE_CHECKING:
 
 class TournamentWorker(Protocol):
     """The gym surface one tournament match needs."""
+
+    profile_catalog: ProfileCatalog
 
     def reset(
         self,
@@ -67,7 +82,9 @@ def play(
     seed: int,
     seat: int,
     scenario: str | None = None,
-    condition: tuple[int, int] = (1000, 550),
+    condition: tuple[int, int] | None = None,
+    profile_index: int = 0,
+    role: str | None = None,
     hesitation_permille: int = 0,
     cadence: int = 28,
     seats: int = 2,
@@ -75,18 +92,35 @@ def play(
     """One greedy match; returns (won, ticks). `won` is None only for a
     true draw (tick cap with the learner standing) — elimination in a
     multiplayer game is a loss even while others fight on. The faction
-    knob is appended per seat, honestly (even = ferrous). Policy
-    conditioning and execution handicap are independent, matching the
-    named runtime wrapper."""
+    knob is appended per seat, honestly (even = ferrous). By default the
+    actor consumes one complete Rust-authored named profile; ``condition``
+    selects the explicit zero-facet research path. Policy conditioning
+    and execution handicap remain independent."""
     if not 0 <= hesitation_permille <= 1000:
         raise ValueError(
             f"hesitation must be in 0..1000 permille, got {hesitation_permille}"
         )
     if cadence <= 0:
         raise ValueError(f"cadence must be positive, got {cadence}")
-    conds: dict[int, tuple[int, ...]] = {
-        s: condition_from_profile(*condition, faction_knob(s)) for s in range(8)
-    }
+    if condition is None:
+        catalog = worker.profile_catalog
+        if not catalog.profiles:
+            raise RuntimeError("tournament requires Rust canonical profiles")
+        profile = catalog.profiles[profile_index % len(catalog.profiles)]
+        default_role = catalog.default_role
+        conds = {
+            s: catalog.condition(
+                profile.style,
+                profile.variant,
+                role if s == seat and role is not None else default_role,
+                "cupric" if faction_knob(s) == 1000 else "ferrous",
+            )
+            for s in range(8)
+        }
+    else:
+        conds = {
+            s: condition_from_profile(*condition, faction_knob(s)) for s in range(8)
+        }
     rusher_seat = None
     if opponent == "rusher":
         # The rusher is driven locally, so its seat must be controlled
@@ -165,8 +199,18 @@ def main() -> None:
     ap.add_argument(
         "--scenario", default=None, help="map (default: the built-in skirmish)"
     )
-    ap.add_argument("--skill", type=int, default=1000)
-    ap.add_argument("--aggression", type=int, default=550)
+    ap.add_argument(
+        "--skill",
+        type=int,
+        default=None,
+        help="raw skill override; omission uses the Rust canonical profile slate",
+    )
+    ap.add_argument(
+        "--aggression",
+        type=int,
+        default=None,
+        help="raw aggression override; omission uses the Rust canonical profile slate",
+    )
     ap.add_argument(
         "--hesitation",
         type=int,
@@ -200,6 +244,21 @@ def main() -> None:
     )
     args = ap.parse_args()
 
+    if args.skill is not None and not 0 <= args.skill <= 1000:
+        ap.error("--skill must be in 0..1000")
+    if args.aggression is not None and not 0 <= args.aggression <= 1000:
+        ap.error("--aggression must be in 0..1000")
+    raw_condition = None
+    if args.skill is not None or args.aggression is not None:
+        aggression = 550 if args.aggression is None else args.aggression
+        raw_condition = (
+            (
+                policy_skill_for_aggression(aggression)
+                if args.skill is None
+                else args.skill
+            ),
+            aggression,
+        )
     policy, blob = load_policy(args.ckpt)
     policy.eval()
     worker = Worker(args.driver)
@@ -242,14 +301,29 @@ def main() -> None:
                 continue
             wins = draws = games = 0
             ticks = []
-            for seed, scenario in jobs:
+            for job_index, (seed, scenario) in enumerate(jobs):
                 if team:
                     seats: tuple[int, ...] = (0, 2)  # both west chairs
                 elif ffa:
                     seats = (seed % 4,)
                 else:
                     seats = (0, 1)
-                for seat in seats:
+                specialist_roles = [
+                    role
+                    for role in worker.profile_catalog.team_roles
+                    if role != worker.profile_catalog.default_role
+                ]
+                for seat_index, seat in enumerate(seats):
+                    role = None
+                    if team and raw_condition is None:
+                        if not specialist_roles:
+                            raise RuntimeError(
+                                "Rust profile catalog has no specialist team roles"
+                            )
+                        role = specialist_roles[
+                            (job_index * len(seats) + seat_index)
+                            % len(specialist_roles)
+                        ]
                     won, t = play(
                         policy,
                         worker,
@@ -257,7 +331,9 @@ def main() -> None:
                         seed,
                         seat,
                         scenario,
-                        (args.skill, args.aggression),
+                        raw_condition,
+                        profile_index=job_index,
+                        role=role,
                         hesitation_permille=args.hesitation,
                         cadence=args.cadence,
                         seats=4 if (ffa or team) else 2,
@@ -281,6 +357,9 @@ def main() -> None:
                         "median_ticks": int(np.median(ticks)),
                         "skill": args.skill,
                         "aggression": args.aggression,
+                        "profile_curriculum": (
+                            "rust-canonical-slate" if raw_condition is None else "raw"
+                        ),
                         "hesitation_permille": args.hesitation,
                         "cadence": args.cadence,
                     }

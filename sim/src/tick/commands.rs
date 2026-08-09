@@ -10,7 +10,7 @@
 use super::domain_goal;
 use crate::command::{Command, PlayerCommand, RejectReason};
 use crate::event::Event;
-use crate::ids::{PlayerId, Target, UnitId};
+use crate::ids::{BuildingId, PlayerId, Target, UnitId};
 use crate::state::{Order, State};
 use crate::stats::{Domain, GOAL_SNAP_RADIUS, ORDER_QUEUE_CAP, QUEUE_CAP};
 use chassis::grid::TilePos;
@@ -102,6 +102,15 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
                 target,
                 queue,
             } => apply_repair_unit(state, pc.player, &canonical_units(units), *target, *queue),
+            Command::Advance { units, goal, queue } => {
+                apply_advance(state, pc.player, &canonical_units(units), *goal, *queue)
+            }
+            Command::FocusFire { buildings, target } => {
+                apply_focus_fire(state, pc.player, &canonical_buildings(buildings), *target)
+            }
+            Command::CancelFound { kind, anchor } => {
+                apply_cancel_found(state, pc.player, *kind, *anchor)
+            }
         };
         if let Err(reason) = outcome {
             events.push(Event::CommandRejected {
@@ -122,6 +131,16 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
 /// The recorded command keeps the client's bytes; this is how the sim
 /// *interprets* a list, not a rewrite of it.
 fn canonical_units(ids: &[UnitId]) -> Vec<UnitId> {
+    let mut ids = ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// A command's building list read as the set it means. Validation remains
+/// all-or-nothing: canonicalization only removes ordering and duplication,
+/// never a bad member.
+fn canonical_buildings(ids: &[BuildingId]) -> Vec<BuildingId> {
     let mut ids = ids.to_vec();
     ids.sort_unstable();
     ids.dedup();
@@ -193,6 +212,19 @@ fn accepted_units(state: &State, player: PlayerId, ids: &[UnitId]) -> Vec<UnitId
 fn end_station_keeping(unit: &mut crate::state::Unit) {
     unit.leash = None;
     unit.settled = 0;
+}
+
+/// Drops the active leg without rotating it into a looping program. This is
+/// the edit operation for one explicitly cancelled order, not ordinary order
+/// completion.
+fn remove_active_order(unit: &mut crate::state::Unit) {
+    end_station_keeping(unit);
+    unit.order = unit.queue.pop_front().unwrap_or(Order::Idle);
+    if matches!(unit.order, Order::Idle) {
+        unit.looping = false;
+    }
+    unit.path = None;
+    unit.progress = 0;
 }
 
 /// Hands a unit its next order: replacing wipes any queued program;
@@ -427,6 +459,49 @@ fn apply_attack_move(
     (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
 }
 
+fn apply_advance(
+    state: &mut State,
+    player: PlayerId,
+    units: &[UnitId],
+    goal: TilePos,
+    queue: bool,
+) -> Result<(), RejectReason> {
+    if !in_envelope(state, goal) {
+        return Err(RejectReason::OutOfBounds);
+    }
+    let accepted = accepted_units(state, player, units);
+    if accepted.is_empty() {
+        return Err(RejectReason::NoValidUnits);
+    }
+    let mut landed = 0;
+    let mut routed = false;
+    for (ids, domain) in split_domains(state, accepted) {
+        if ids.is_empty() {
+            continue;
+        }
+        let Some(snapped) = domain_goal(state, goal, domain) else {
+            continue;
+        };
+        routed = true;
+        let goals = spread_goals(state, snapped, ids.len(), domain);
+        for (id, goal) in ids.into_iter().zip(goals) {
+            let unit = state.unit_mut(id).expect("filtered above");
+            let order = if unit.kind.stats().can_fight() {
+                Order::Advance { goal }
+            } else {
+                Order::Move { goal }
+            };
+            if assign(unit, order, queue) {
+                landed += 1;
+            }
+        }
+    }
+    if !routed {
+        return Err(RejectReason::UnreachableGoal);
+    }
+    (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
+}
+
 fn apply_harvest(
     state: &mut State,
     player: PlayerId,
@@ -437,19 +512,30 @@ fn apply_harvest(
     if !in_envelope(state, node) {
         return Err(RejectReason::OutOfBounds);
     }
-    // A source counts if it exists *or* the issuer remembers it existing —
+    // A source counts if it is visible now or the issuer remembers it —
     // ordering harvesters onto stale memory is legitimate play (they walk
-    // over, discover the truth, and retarget), and rejecting it would leak
-    // that an unseen node or wreck has been emptied.
-    let live = state.map.scrap_at(node) > 0 || state.map.wreck_at(node) > 0;
-    let remembered = state.vision(player).remembered_scrap(node) > 0
-        || state.vision(player).remembered_wreck(node) > 0;
-    if !live && !remembered {
+    // over, discover the truth, and retarget), while never-seen live
+    // salvage must not become a command-success oracle through fog.
+    let vision = state.vision(player);
+    let known = if vision.visible(node) {
+        state.map.scrap_at(node) > 0 || state.map.wreck_at(node) > 0
+    } else {
+        vision.remembered_scrap(node) > 0 || vision.remembered_wreck(node) > 0
+    };
+    if !known {
         return Err(RejectReason::NotANode);
     }
     let mut landed = 0;
     let applied = for_owned_workers(state, player, units, |unit| {
-        if assign(unit, Order::Harvest { node }, queue) {
+        if assign(
+            unit,
+            Order::Harvest {
+                node,
+                anchor: Some(node),
+                retiring: false,
+            },
+            queue,
+        ) {
             landed += 1;
         }
     });
@@ -708,21 +794,30 @@ fn apply_cancel(
     building: crate::ids::BuildingId,
     events: &mut Vec<Event>,
 ) -> Result<(), RejectReason> {
-    let b = state
-        .building(building)
-        .ok_or(RejectReason::NotYourBuilding)?;
-    if b.player != player {
-        return Err(RejectReason::NotYourBuilding);
-    }
-    if b.built {
-        return Err(RejectReason::BadSite);
-    }
-    let stats = b.kind.stats();
-    let cost = stats.construction.expect("sites are buildable kinds").cost;
-    let refund = cost * b.hp / stats.max_hp;
+    let refund = {
+        let b = state
+            .building(building)
+            .ok_or(RejectReason::NotYourBuilding)?;
+        if b.player != player {
+            return Err(RejectReason::NotYourBuilding);
+        }
+        if b.built {
+            return Err(RejectReason::BadSite);
+        }
+        let stats = b.kind.stats();
+        let cost = stats.construction.expect("sites are buildable kinds").cost;
+        cost * b.hp / stats.max_hp
+    };
     let bank = &mut state.player_mut(player).scrap;
     *bank = bank.saturating_add(refund);
     state.buildings.retain(|b| b.id != building);
+    for unit in state.units.iter_mut().filter(|unit| unit.player == player) {
+        unit.queue
+            .retain(|order| !matches!(order, Order::Build { site } if *site == building));
+        if matches!(unit.order, Order::Build { site } if site == building) {
+            remove_active_order(unit);
+        }
+    }
     events.push(Event::BuildCancelled {
         building,
         player,
@@ -913,6 +1008,29 @@ fn apply_cancel_train(
     Ok(())
 }
 
+fn apply_cancel_found(
+    state: &mut State,
+    player: PlayerId,
+    kind: crate::stats::BuildingKind,
+    anchor: TilePos,
+) -> Result<(), RejectReason> {
+    let matches_site = |order: &Order| {
+        matches!(order, Order::Found { kind: found_kind, anchor: found_anchor }
+            if *found_kind == kind && *found_anchor == anchor)
+    };
+    let mut removed = false;
+    for worker in state.units.iter_mut().filter(|unit| unit.player == player) {
+        let before = worker.queue.len();
+        worker.queue.retain(|order| !matches_site(order));
+        removed |= worker.queue.len() != before;
+        if matches_site(&worker.order) {
+            remove_active_order(worker);
+            removed = true;
+        }
+    }
+    removed.then_some(()).ok_or(RejectReason::InvalidTarget)
+}
+
 fn apply_train(
     state: &mut State,
     player: PlayerId,
@@ -985,8 +1103,56 @@ fn apply_set_rally(
     if b.player != player {
         return Err(RejectReason::NotYourBuilding);
     }
+    if !b.built || b.kind.stats().produces.is_empty() {
+        return Err(RejectReason::InvalidTarget);
+    }
     // Any tile is a legal rally — spawns snap to walkable ground later, and
     // a scrap-node rally is exactly how auto-harvest is asked for.
     b.rally = rally;
+    Ok(())
+}
+
+fn apply_focus_fire(
+    state: &mut State,
+    player: PlayerId,
+    buildings: &[BuildingId],
+    target: Target,
+) -> Result<(), RejectReason> {
+    if buildings.is_empty() {
+        return Err(RejectReason::NotYourBuilding);
+    }
+
+    // Check every defense before writing any preference. A mixed selection
+    // containing a stale, foreign, unfinished, or incompatible building is
+    // one rejected command, never a partially retasked line.
+    let mut weapons = Vec::with_capacity(buildings.len());
+    for &id in buildings {
+        let building = state.building(id).ok_or(RejectReason::NotYourBuilding)?;
+        if building.player != player {
+            return Err(RejectReason::NotYourBuilding);
+        }
+        if !building.built {
+            return Err(RejectReason::InvalidTarget);
+        }
+        let weapon = building
+            .kind
+            .stats()
+            .weapons
+            .first()
+            .copied()
+            .ok_or(RejectReason::InvalidTarget)?;
+        weapons.push(weapon);
+    }
+
+    let domain = state
+        .visible_hostile_target_domain(player, target)
+        .ok_or(RejectReason::InvalidTarget)?;
+    if weapons.iter().any(|weapon| !weapon.targets.covers(domain)) {
+        return Err(RejectReason::InvalidTarget);
+    }
+
+    for &id in buildings {
+        state.building_mut(id).expect("validated above").focus = Some(target);
+    }
     Ok(())
 }

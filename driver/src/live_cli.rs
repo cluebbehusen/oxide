@@ -31,6 +31,12 @@ pub(crate) enum LiveCmd {
     Camera,
     /// Shell mode and active menu state.
     Ui,
+    /// Native GPU-shell frame timing collected under --profile-frames.
+    Performance {
+        /// Clear the completed timing window after taking the snapshot.
+        #[arg(long)]
+        reset: bool,
+    },
     /// Canonical state fingerprint.
     Hash,
     /// Fast-forward N ticks (works while paused — that's the point).
@@ -81,6 +87,21 @@ pub(crate) enum LiveCmd {
     },
     /// Move units to a tile.
     Move {
+        /// Acting player index.
+        player: u8,
+        /// Unit ids, comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        units: Vec<u32>,
+        /// Goal as "x,y".
+        #[arg(long)]
+        to: String,
+        /// Append behind current orders instead of replacing them.
+        #[arg(long)]
+        queue: bool,
+    },
+    /// Advance units to a tile, firing in-range primary weapons without
+    /// stopping or chasing.
+    AdvanceUnits {
         /// Acting player index.
         player: u8,
         /// Unit ids, comma-separated.
@@ -391,6 +412,7 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
         },
         LiveCmd::Camera => Request::QueryCamera,
         LiveCmd::Ui => Request::QueryUi,
+        LiveCmd::Performance { reset } => Request::QueryPerformance { reset },
         LiveCmd::Hash => Request::StateHash,
         LiveCmd::Advance { ticks } => Request::AdvanceTicks { ticks },
         LiveCmd::Step { ticks } => Request::PresentTicks { ticks },
@@ -409,6 +431,19 @@ pub(crate) fn live_requests(cmd: LiveCmd) -> Result<Vec<Request>> {
         } => Request::SendCommand {
             player: PlayerId(player),
             command: Command::Move {
+                units: units(ids),
+                goal: parse_tile(&to)?,
+                queue,
+            },
+        },
+        LiveCmd::AdvanceUnits {
+            player,
+            units: ids,
+            to,
+            queue,
+        } => Request::SendCommand {
+            player: PlayerId(player),
+            command: Command::Advance {
                 units: units(ids),
                 goal: parse_tile(&to)?,
                 queue,
@@ -795,6 +830,27 @@ mod tests {
         assert_eq!(
             live_requests(LiveCmd::Step { ticks: 7 }).unwrap(),
             vec![Request::PresentTicks { ticks: 7 }]
+        );
+    }
+
+    #[test]
+    fn advance_units_speaks_the_zero_chase_sim_verb() {
+        assert_eq!(
+            live_requests(LiveCmd::AdvanceUnits {
+                player: 1,
+                units: vec![7, 3],
+                to: "12,9".to_string(),
+                queue: true,
+            })
+            .unwrap(),
+            vec![Request::SendCommand {
+                player: PlayerId(1),
+                command: Command::Advance {
+                    units: vec![UnitId(7), UnitId(3)],
+                    goal: chassis::grid::TilePos::new(12, 9),
+                    queue: true,
+                },
+            }]
         );
     }
 

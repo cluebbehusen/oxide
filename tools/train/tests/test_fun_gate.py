@@ -41,6 +41,16 @@ GOOD_SHARES = {
     "buzzard": 0.05,
 }
 
+AIR_GOOD_SHARES = {
+    "sentinel": 0.25,
+    "scuttler": 0.20,
+    "lancer": 0.15,
+    "bombard": 0.15,
+    "flakhound": 0.10,
+    "buzzard": 0.075,
+    "darter": 0.075,
+}
+
 
 def mix_entropy(shares: dict[str, float]) -> float:
     return -sum(p * math.log2(p) for p in shares.values() if p > 0)
@@ -255,15 +265,19 @@ def catastrophic_match(
 def good_payload(
     *,
     seeds: int = 3,
+    style: str | None = None,
+    variant: int | None = None,
     aggression: int | None = None,
     fixed_profile: bool = False,
     scenario_suffix: str = "",
 ) -> dict:
+    shares = AIR_GOOD_SHARES if style == "balanced" and variant == 1 else GOOD_SHARES
     matches = [
         raw_match(
             capped=fixed_profile or index == 9,
             scenario=f"map-{index % 2}{scenario_suffix}",
             seed=7_000 + index,
+            combat_shares=shares,
         )
         for index in range(10)
     ]
@@ -274,7 +288,7 @@ def good_payload(
         "seats": 20,
         "combat_seats": 20,
         **cohort(
-            GOOD_SHARES,
+            shares,
             diagnostic_shares={"sentinel": 0.55, "harvester": 0.45},
         ),
     }
@@ -283,15 +297,29 @@ def good_payload(
             "fabricator": 0.0,
             "turret": 0.0,
             "array": 0.0,
-            "reclaimer": 0.0,
+            "reclaimer": 0.30 if style == "turtle" and variant == 1 else 0.0,
         }
     return {
-        "schema": 6,
+        "schema": 7,
         "seeds": seeds,
-        "dials": {"aggression": aggression},
+        "dials": {
+            "style": style,
+            "variant": variant,
+            "aggression": aggression,
+        },
         "overall": overall,
         "matches": matches,
     }
+
+
+def requested_profile(argv: list[str]) -> fun_gate.ProbeProfile:
+    style = argv[argv.index("--style") + 1] if "--style" in argv else None
+    variant = int(argv[argv.index("--variant") + 1]) if "--variant" in argv else None
+    return next(
+        profile
+        for profile in fun_gate.PROFILES
+        if profile.style == style and profile.variant == variant
+    )
 
 
 def test_sentinel_spam_fails_every_way() -> None:
@@ -437,6 +465,44 @@ def test_structure_reach_boundaries_are_inclusive_and_repair_bay_is_not_gated() 
     assert verdict_for(data) == []
 
 
+def test_industrial_profile_requires_reclaimer_reach() -> None:
+    profile = fun_gate.PROFILES[1]
+    data = cohort(GOOD_SHARES)
+    data["competitive_seats_with_building"]["reclaimer"] = 0.25
+    assert fun_gate.judge_profile_identity(profile, data, 0.25, 0.13) == []
+
+    data["competitive_seats_with_building"]["reclaimer"] = 0.249
+    failures = fun_gate.judge_profile_identity(profile, data, 0.25, 0.13)
+    assert len(failures) == 1
+    assert "industrial profile did not establish its economy" in failures[0]
+
+
+def test_air_profile_requires_meaningful_air_wing() -> None:
+    profile = fun_gate.PROFILES[2]
+    data = cohort(
+        {
+            "sentinel": 0.45,
+            "scuttler": 0.20,
+            "lancer": 0.15,
+            "bombard": 0.07,
+            "buzzard": 0.065,
+            "wisp": 0.065,
+        }
+    )
+    assert fun_gate.judge_profile_identity(profile, data, 0.25, 0.13) == []
+
+    data["mean_combat_share"]["wisp"] = 0.064
+    failures = fun_gate.judge_profile_identity(profile, data, 0.25, 0.13)
+    assert len(failures) == 1
+    assert "air profile did not field a meaningful air wing" in failures[0]
+
+
+def test_dealt_profile_has_no_specialist_identity_floor() -> None:
+    data = cohort({"sentinel": 1.0})
+    data["competitive_seats_with_building"]["reclaimer"] = 0.0
+    assert fun_gate.judge_profile_identity(fun_gate.PROFILES[0], data, 1.0, 1.0) == []
+
+
 def test_body_count_catches_scuttlers_hidden_by_value_mix() -> None:
     bodies = {
         "sentinel": 0.0475,
@@ -522,7 +588,7 @@ def test_late_foundry_baseline_prevents_a_false_exhaustion_cause() -> None:
     )
 
 
-def test_main_runs_dealt_and_two_fixed_composition_profiles(
+def test_main_runs_dealt_and_two_named_composition_profiles(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -533,17 +599,15 @@ def test_main_runs_dealt_and_two_fixed_composition_profiles(
         **_kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
         calls.append(argv)
-        aggression = (
-            int(argv[argv.index("--aggression") + 1])
-            if "--aggression" in argv
-            else None
-        )
+        profile = requested_profile(argv)
         out = pathlib.Path(argv[argv.index("--out") + 1])
         out.write_text(
             json.dumps(
                 good_payload(
-                    aggression=aggression,
-                    fixed_profile=aggression is not None,
+                    style=profile.style,
+                    variant=profile.variant,
+                    aggression=None,
+                    fixed_profile=not profile.full_gate,
                 )
             )
         )
@@ -554,16 +618,19 @@ def test_main_runs_dealt_and_two_fixed_composition_profiles(
 
     assert fun_gate.main() == 0
     assert len(calls) == 3
-    assert ["--aggression" in call for call in calls] == [False, True, True]
     assert [
-        int(call[call.index("--aggression") + 1])
+        (
+            call[call.index("--style") + 1],
+            int(call[call.index("--variant") + 1]),
+        )
         for call in calls
-        if "--aggression" in call
-    ] == [300, 550]
+        if "--style" in call
+    ] == [("turtle", 1), ("balanced", 1)]
+    assert all("--aggression" not in call for call in calls)
     output = capsys.readouterr().out
     assert "dealt profile" in output
-    assert "industry-300 profile" in output
-    assert "combined-550 profile" in output
+    assert "industrial-attrition profile" in output
+    assert "air-combined profile" in output
     assert output.count("composition-only") == 2
     assert "inactive 1" in output
     assert "fun gate: open" in output
@@ -621,18 +688,16 @@ def test_underpowered_seed_override_is_marked_diagnostic_only(
     ) -> subprocess.CompletedProcess[str]:
         nonlocal calls
         calls += 1
-        aggression = (
-            int(argv[argv.index("--aggression") + 1])
-            if "--aggression" in argv
-            else None
-        )
+        profile = requested_profile(argv)
         out = pathlib.Path(argv[argv.index("--out") + 1])
         out.write_text(
             json.dumps(
                 good_payload(
                     seeds=2,
-                    aggression=aggression,
-                    fixed_profile=aggression is not None,
+                    style=profile.style,
+                    variant=profile.variant,
+                    aggression=None,
+                    fixed_profile=not profile.full_gate,
                 )
             )
         )
@@ -735,13 +800,17 @@ def test_main_runs_a_same_profile_and_seed_baseline_envelope(
         **_kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
         calls.append(argv)
-        aggression = (
-            int(argv[argv.index("--aggression") + 1])
-            if "--aggression" in argv
-            else None
-        )
+        profile = requested_profile(argv)
         out = pathlib.Path(argv[argv.index("--out") + 1])
-        out.write_text(json.dumps(good_payload(aggression=aggression)))
+        out.write_text(
+            json.dumps(
+                good_payload(
+                    style=profile.style,
+                    variant=profile.variant,
+                    aggression=None,
+                )
+            )
+        )
         return subprocess.CompletedProcess(argv, 0)
 
     monkeypatch.setattr(fun_gate.subprocess, "run", fake_run)
@@ -760,14 +829,18 @@ def test_main_runs_a_same_profile_and_seed_baseline_envelope(
     assert fun_gate.main() == 0
     assert len(calls) == 6
     assert [
-        (call[call.index("--weights") + 1], call[call.index("--aggression") + 1])
+        (
+            call[call.index("--weights") + 1],
+            call[call.index("--style") + 1],
+            call[call.index("--variant") + 1],
+        )
         for call in calls
-        if "--aggression" in call
+        if "--style" in call
     ] == [
-        ("candidate.json", "300"),
-        ("candidate.json", "550"),
-        ("baseline.json", "300"),
-        ("baseline.json", "550"),
+        ("candidate.json", "turtle", "1"),
+        ("candidate.json", "balanced", "1"),
+        ("baseline.json", "turtle", "1"),
+        ("baseline.json", "balanced", "1"),
     ]
     assert "fun gate: open" in capsys.readouterr().out
 
@@ -781,17 +854,15 @@ def test_main_rejects_a_baseline_with_a_different_seed_slate(
         **_kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
         weights = argv[argv.index("--weights") + 1]
-        aggression = (
-            int(argv[argv.index("--aggression") + 1])
-            if "--aggression" in argv
-            else None
-        )
+        profile = requested_profile(argv)
         suffix = "-different" if weights == "baseline.json" else ""
         out = pathlib.Path(argv[argv.index("--out") + 1])
         out.write_text(
             json.dumps(
                 good_payload(
-                    aggression=aggression,
+                    style=profile.style,
+                    variant=profile.variant,
+                    aggression=None,
                     scenario_suffix=suffix,
                 )
             )

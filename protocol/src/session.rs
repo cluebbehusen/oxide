@@ -14,9 +14,9 @@
 //!   request-to-reply plumbing. A session without a wall clock refuses
 //!   the pause family from inside its clock methods.
 //! * **Window-shaped** — camera, UI, input injection, screenshots, the
-//!   overlay. [`dispatch_shared`] returns `None`; the shell answers them
-//!   against the screen the window shows, the headless session refuses
-//!   them in words.
+//!   overlay, and native-frame profiling. [`dispatch_shared`] returns
+//!   `None`; the shell answers them against the screen the window shows,
+//!   the headless session refuses them in words.
 //! * **Mutating** — commands and scenario/replay swaps. Also `None`
 //!   here: live and headless sessions implement them, the replay viewer
 //!   refuses them wholesale.
@@ -204,6 +204,11 @@ mod tests {
         let unshared = [
             Request::QueryCamera,
             Request::QueryUi,
+            Request::QueryPerformance { reset: false },
+            Request::BeginPerformanceWindow {
+                from_tick: 10,
+                to_tick: 20,
+            },
             Request::InjectEvent {
                 event: crate::RawEvent::KeyDown {
                     key: crate::Key::Space,

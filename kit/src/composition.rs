@@ -1012,7 +1012,7 @@ mod tests {
                     Event::TurretFired {
                         turret: BuildingId(3),
                         kind: BuildingKind::Turret,
-                        target: oxide_sim::UnitId(4),
+                        target: oxide_sim::Target::Unit(oxide_sim::UnitId(4)),
                         turret_pos: chassis::fx::Vec2Fx::ZERO,
                         target_pos: chassis::fx::Vec2Fx::ZERO,
                     },

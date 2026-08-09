@@ -9,6 +9,82 @@ use chassis::grid::TilePos;
 use macroquad::prelude::{Vec2, vec2};
 use oxide_sim::{Command, Target, UnitId, UnitKind};
 
+pub(super) fn selected_producers(game: &Game) -> Vec<oxide_sim::BuildingId> {
+    game.selection
+        .buildings
+        .iter()
+        .copied()
+        .filter(|id| {
+            game.state.building(*id).is_some_and(|building| {
+                building.player == game.human
+                    && building.built
+                    && !building.kind.stats().produces.is_empty()
+            })
+        })
+        .collect()
+}
+
+pub(super) fn rally_selected_producers(game: &mut Game, rally: TilePos, at: Vec2) {
+    let producers = selected_producers(game);
+    if producers.is_empty() {
+        return;
+    }
+    for building in producers {
+        game.issue(Command::SetRally {
+            building,
+            rally: Some(rally),
+        });
+    }
+    game.ping(at, PingKind::Rally);
+}
+
+fn visible_hostile_target_at(
+    game: &Game,
+    world: Vec2,
+    tile: TilePos,
+) -> Option<(Target, Vec2, oxide_sim::stats::Domain)> {
+    let unit = game
+        .state
+        .units()
+        .iter()
+        .filter(|unit| {
+            game.state.hostile(game.human, unit.player) && game.my_vision().visible(unit.tile())
+        })
+        .map(|unit| {
+            let position = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
+            (
+                position.distance(world),
+                unit.id,
+                position,
+                unit.kind.stats().domain,
+            )
+        })
+        .filter(|(distance, ..)| *distance <= PICK_RADIUS)
+        .min_by(|left, right| {
+            left.0
+                .total_cmp(&right.0)
+                .then_with(|| left.1.cmp(&right.1))
+        });
+    if let Some((_, id, position, domain)) = unit {
+        return Some((Target::Unit(id), position, domain));
+    }
+    game.state
+        .building_at(tile)
+        .filter(|building| {
+            game.state.hostile(game.human, building.player)
+                && building
+                    .tiles()
+                    .any(|footprint| game.my_vision().visible(footprint))
+        })
+        .map(|building| {
+            (
+                Target::Building(building.id),
+                world,
+                oxide_sim::stats::Domain::Ground,
+            )
+        })
+}
+
 /// Digits are contextual: an open build palette spends them on
 /// structures, a selected own factory spends them on production, and
 /// otherwise the first five are control groups.
@@ -27,11 +103,7 @@ pub(super) fn digit_action(game: &mut Game, input: &mut InputState, slot: usize)
         }
         return;
     }
-    let producing = game.selection.building.is_some_and(|id| {
-        game.state.building(id).is_some_and(|b| {
-            b.player == game.human && b.built && !b.kind.stats().produces.is_empty()
-        })
-    });
+    let producing = !selected_producers(game).is_empty();
     if producing {
         train(game, slot);
         return;
@@ -56,7 +128,7 @@ fn group_action(game: &mut Game, input: &mut InputState, slot: usize) {
         return;
     }
     game.selection.units = alive.clone();
-    game.selection.building = None;
+    game.selection.buildings.clear();
     let now = input.now;
     if input
         .last_recall
@@ -74,25 +146,43 @@ fn group_action(game: &mut Game, input: &mut InputState, slot: usize) {
 }
 
 /// Right-click: order the selection by what's under the cursor — enemy →
-/// attack, scrap → harvest, ground → move. The sim re-validates everything;
+/// attack, scrap → harvest, ground → advance. The sim re-validates everything;
 /// this is only intent.
 pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     let world = game.camera.to_world(screen);
     let tile = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
     if game.selection.units.is_empty() {
-        // A selected own building takes right-clicks as its rally point.
-        if let Some(building) = game.selection.building
-            && game
-                .state
-                .building(building)
-                .is_some_and(|b| b.player == game.human)
-        {
-            game.issue(Command::SetRally {
-                building,
-                rally: Some(tile),
-            });
-            game.ping(world, PingKind::Rally);
+        if let Some((target, at, domain)) = visible_hostile_target_at(game, world, tile) {
+            let defenses: Vec<_> = game
+                .selection
+                .buildings
+                .iter()
+                .copied()
+                .filter(|id| {
+                    game.state.building(*id).is_some_and(|building| {
+                        building.player == game.human
+                            && building.built
+                            && building
+                                .kind
+                                .stats()
+                                .weapons
+                                .first()
+                                .is_some_and(|weapon| weapon.targets.covers(domain))
+                    })
+                })
+                .collect();
+            if !defenses.is_empty() {
+                game.issue(Command::FocusFire {
+                    buildings: defenses,
+                    target,
+                });
+                game.ping(at, PingKind::Attack);
+                return;
+            }
         }
+        // Selected producers share one rally destination. Non-producers
+        // ignore a ground right-click.
+        rally_selected_producers(game, tile, world);
         return;
     }
     if !game.selection_commandable() {
@@ -144,42 +234,13 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
 
     // Fog rules what right-click may target: unseen enemies aren't there
     // as far as the player is concerned (the sim enforces this too).
-    let enemy_unit = game
-        .state
-        .units()
-        .iter()
-        .filter(|u| game.state.hostile(game.human, u.player) && game.my_vision().visible(u.tile()))
-        .map(|u| {
-            let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
-            (p.distance(world), u.id)
-        })
-        .filter(|(d, _)| *d <= PICK_RADIUS)
-        .min_by(|a, b| a.0.total_cmp(&b.0));
-    if let Some((_, target)) = enemy_unit {
-        let at = game
-            .state
-            .unit(target)
-            .map(|u| vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>()))
-            .unwrap_or(world);
-        game.issue(Command::Attack {
-            units,
-            target: Target::Unit(target),
-            queue,
-        });
-        game.ping(at, PingKind::Attack);
-        return;
-    }
-    if let Some(building) = game.state.building_at(tile)
-        && game.state.hostile(game.human, building.player)
-        && building.tiles().any(|t| game.my_vision().visible(t))
-    {
-        let target = Target::Building(building.id);
+    if let Some((target, at, _)) = visible_hostile_target_at(game, world, tile) {
         game.issue(Command::Attack {
             units,
             target,
             queue,
         });
-        game.ping(world, PingKind::Attack);
+        game.ping(at, PingKind::Attack);
         return;
     }
     // A wounded own GROUND unit under the cursor takes the weld, the
@@ -230,10 +291,10 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         game.ping(world, PingKind::Harvest);
         return;
     }
-    // Fire at will: ground orders engage whatever shows up on the way.
-    // Combat units attack-move; the sim degrades harvesters to a plain
-    // walk. There is no hold-fire stance (yet — nothing to hide from).
-    game.issue(Command::AttackMove {
+    // Default ground movement keeps formation intent: weapons take
+    // already-available shots, but machines never stop or chase.
+    // Explicit attack-move is the F verb.
+    game.issue(Command::Advance {
         units,
         goal: tile,
         queue,
@@ -241,31 +302,35 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     game.ping(world, PingKind::Move);
 }
 
-/// Train the selected factory's Nth product (the seat's own roster —
-/// the other faction's variants are skipped). `H`/`S` alias the first
-/// two slots; no factory selected falls back to the home Foundry.
+/// Train the Nth product from the first compatible selected producer (the
+/// seat's own roster — the other faction's variants are skipped). `H`/`S`
+/// alias the first two slots; no producer selected falls back to the home
+/// Foundry.
 pub(super) fn train(game: &mut Game, slot: usize) {
-    let building = game
-        .selection
-        .building
-        .filter(|id| {
-            game.state
-                .building(*id)
-                .is_some_and(|b| b.player == game.human)
-        })
-        .or_else(|| game.home_foundry().map(|b| b.id));
-    if let Some(building) = building {
-        let faction = game.state.player(game.human).faction;
-        let Some(&kind) = game.state.building(building).and_then(|b| {
-            b.kind
+    let faction = game.state.player(game.human).faction;
+    let product = |building| {
+        game.state.building(building).and_then(|building| {
+            building
+                .kind
                 .stats()
                 .produces
                 .iter()
                 .filter(|k| k.faction().is_none_or(|f| f == faction))
                 .nth(slot)
-        }) else {
-            return;
-        };
+                .copied()
+        })
+    };
+    let selected = selected_producers(game);
+    let selected_choice = selected
+        .iter()
+        .find_map(|building| product(*building).map(|kind| (*building, kind)));
+    let choice = if selected.is_empty() {
+        game.home_foundry()
+            .and_then(|building| product(building.id).map(|kind| (building.id, kind)))
+    } else {
+        selected_choice
+    };
+    if let Some((building, kind)) = choice {
         game.issue(Command::Train { building, kind });
     }
 }

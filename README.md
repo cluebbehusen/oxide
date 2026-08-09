@@ -2,11 +2,14 @@
 
 A small 2D real-time strategy game about machines eating a dead world.
 
-Two robot swarms — **Ferrous**, bleeding rust orange, and **Cupric**, crusted
-in teal patina — wake up in the wreckage of some forgotten industry. Scrap is
-food. Harvesters haul it home, Foundries smelt it into more machines, and
-Sentinels make sure the other swarm doesn't get to. It ends when one side's
-Foundry is a smoking crater.
+The battles unfold at the bottom of exhausted open-pit quarries, where terraced
+cuts climb out of sight and the remnants of a futuristic mining rush litter the
+floor. The corporations moved on when the valuable ore ran dry, leaving
+autonomous cleanup fleets to recover whatever scrap remained. Two such swarms —
+**Ferrous**, bleeding rust orange, and **Cupric**, crusted in teal patina — now
+dismantle the abandoned operation and each other. Harvesters haul scrap home,
+Foundries smelt it into more machines, and Sentinels make sure the other swarm
+doesn't get to. It ends when one side's Foundry is a smoking crater.
 
 Oxide is also an experiment: it was built almost entirely by an AI agent, and
 the architecture is shaped by that. The entire game is a pure, deterministic
@@ -55,9 +58,16 @@ you what the machine is and exactly how it fights. A six-step
 tutorial (Home → Tutorial) teaches by watching you actually do each
 thing; guns aim at what they shoot, turrets track, downed flyers
 fall, and battle sound sits in space — launches thump at the gun,
-booms land at the impact, and distance dims both. When a match ends, the banner carries
-the numbers: losses, peak army, closing scrap, and each side's army
-curve over the whole fight.
+booms land at the impact, and the camera mix keeps nearby machinery distinct
+up close while coalescing the battlefield at wide zoom. A protected attack
+cue remains audible when your forces come under fire. Treads cycle while
+machines move, building machinery works inside the sprite, construction rises
+through visible stages, quarry terraces fall away into darkness, abandoned
+equipment and rock fields dress each map, and an adaptive score
+moves from the menus through calm industry into combat. When a match ends, a
+full report separates units and buildings built and lost, peak army,
+scrap collected, and every player's army curve, with actions to rematch,
+watch the replay, or go home.
 
 ```sh
 cargo run -p oxide-shell
@@ -65,10 +75,10 @@ cargo run -p oxide-shell
 
 A menu lists the shipped maps — the classic duels, the quick 2v2s
 Twin Forges and Open Quarry, the big fields: Basalt Spine
-(a peak ridge splits the map; two ground passes, one air-only door),
+(an uncut quarry divide splits the map; two ground passes, one air-only door),
 Ferric Reach (three lanes, long logistics), Parallel Works and
 Paired Claims (large 2v2s), Continental Divide (a vast
-mountain wall where the doors decide it), and the team-war fields —
+quarry divide where the doors decide it), and the team-war fields —
 Trident Plateau and Causeway Verdict (3v3), Compass Grand and
 Gatework Array (4v4), lane wars where the
 ridge doors carry the fight sideways — then opens one setup screen
@@ -81,7 +91,9 @@ preselected, so Enter-Enter from the map grid still launches the
 classic matchup — and the chips can now arrange what the old quick
 questions never could: a mirror match, or your seat on the other
 side of the map. Every
-opponent is the same trained neural commander with different dials: it
+opponent is the same trained neural commander with different dials. Each
+named personality has several seeded strategic variants, and teammates take
+complementary jobs instead of following the same build in lockstep. The commander
 sees only what its units see, plays by exactly your rules, and its
 mistakes at lower settings are misjudgments, not lobotomies. On the
 2v2 maps your teammate is that same mind, fighting beside you with
@@ -97,8 +109,9 @@ in the radius. The factions split on the sky: Ferrous flies the heavy
 **Buzzard**, hunts with the **Talon**, and guards with the tanky
 **Flakhound**; Cupric answers with the darting **Darter**, the swarm
 **Wisp**, and the cheap **Stinger**. Air ignores terrain almost
-entirely — only **peaks** (`^` on the map, mountains on screen) wall
-the sky, block every shot across them, and break artillery arcs; only
+entirely — only **peaks** (`^` on the map, tall connected remnants of uncut
+quarry on screen) wall the sky, block every shot across them, and break
+artillery arcs; only
 anti-air weapons can touch a flyer. Bombard and Bastion shells are
 real projectiles now: they fly, they can be dodged, and they land
 where the target _was_.
@@ -116,25 +129,32 @@ harvester's torch charges. After a very long war, every surviving
 Foundry also smelts a slow baseline trickle so an exhausted map cannot
 lock the game forever; a Reclaimer starts earlier and works two and a
 half times faster. If your last Harvester is destroyed, the Foundry
-switches to a much faster emergency flow until one replacement is
-affordable; automatic Repair Bays leave that reserve untouched.
+switches to a much faster emergency flow for one recovery package: a
+replacement plus a cheap guard when no ground-fighting screen survives. The
+reserve resets only after a Harvester brings salvage home; automatic Repair Bays
+leave it untouched.
 Deaths leave wreck salvage where
 machines fall — winning a fight and holding the ground pays twice,
-and throwing an army away literally funds the enemy. Construction
+and throwing an army away literally funds the enemy. A Harvest order
+anchors a local work zone: the named source stays authoritative, its route
+avoids known danger when possible, and the crew autonomously clears only
+safe remembered nodes and wrecks nearby. It returns to the same zone after
+each delivery and retires beside its Foundry instead of drifting across the map. Construction
 sites are attackable from the first tick, and cancelling one refunds
 only what's still standing — damage burns salvage.
 
 | Input                              | Action                                                                                                                                                                       |
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Left click / drag                  | Select your units (click a Foundry to select it)                                                                                                                             |
+| Left click / drag                  | Select units or buildings                                                                                                                                                    |
 | Shift + click / drag               | Add to (or remove from) the selection                                                                                                                                        |
 | Double-click a unit                | Select all visible units of that kind                                                                                                                                        |
 | Ctrl + `1`-`5`                     | Assign the selection to a control group                                                                                                                                      |
 | `1`-`5`                            | Recall the group — tap again to center the camera on it                                                                                                                      |
 | Left click on minimap              | Jump the camera there                                                                                                                                                        |
-| Right click                        | Contextual order: enemy → attack, scrap → harvest, ground → **move engaging everything on the way** (fire at will is the only stance; combat units always defend themselves) |
+| Right click                        | Contextual order: enemy → attack, scrap → harvest, ground → **advance** (keep moving while the primary weapon fires at in-range targets; never chase)                       |
 | Shift + right click                | Queue the order behind the current one                                                                                                                                       |
-| `M`                                | Units selected: arm run — click ground to move **without** engaging, the recall that works while standing next to an enemy (Esc cancels)                                     |
+| `M`                                | Units selected: arm run — click ground to move without firing or engaging, the strict disengage order (Esc cancels)                                                         |
+| `F`                                | Units selected: arm attack-move — click ground to engage and chase enemies along the route (Esc cancels; Shift chains)                                                       |
 | `R`                                | Arm a patrol: right-click waypoints, `R` again to start the loop — patrollers engage everything met and never settle                                                         |
 | `B`                                | With harvesters selected: open the build palette — digits pick the structure, the ghost shows validity on ground you have seen (green claims now, amber on remembered ground sends the crew to found on arrival), click commits the whole selected crew, Esc cancels |
 | Right click a damaged own building | With harvesters selected: weld it (billed per hp — pricier than building, cheaper than losing it)                                                                            |
@@ -143,12 +163,14 @@ only what's still standing — damage burns salvage.
 | Right click an own unfinished site | With harvesters selected: resume construction — several builders stack                                                                                                       |
 | `V`                                | With harvesters selected: arm salvage — click an own built building to strip it for a partial refund (Foundries refuse; Shift chains teardowns)                              |
 | `X`                                | Units selected: stop in place. Construction site selected: scrap it for a partial refund                                                                                     |
-| Right click on minimap             | Send the selection there, fighting through                                                                                                                                   |
-| Right click (Foundry selected)     | Set the rally point — rally a scrap node and fresh harvesters mine it; fresh Sentinels attack-move to it                                                                     |
+| Right click on minimap             | Advance the selection there without stopping to chase                                                                                                                        |
+| Touch                              | Tap selects, drag pans, pinch zooms, two fingers box-select, and a still long-press performs the same contextual order as right click                                        |
+| Right click (producers selected)   | Set the same rally for every selected producer; a scrap rally sends fresh Harvesters straight to work                                                                       |
+| Right click enemy (defenses selected) | Focus every compatible selected Turret, Flak Turret, or Bastion on that visible target                                                                                  |
 | Mouse wheel                        | Zoom (toward the cursor)                                                                                                                                                     |
 | Arrow keys                         | Pan                                                                                                                                                                          |
-| `H` / `S`                          | Train the selected factory's first / second unit                                                                                                                             |
-| `1`-`9` (factory selected)         | Train by slot — the panel lists your faction's roster with prices                                                                                                            |
+| `H` / `S`                          | Train the first / second unit from the first selected producer that offers it                                                                                                |
+| `1`-`9` (producers selected)       | Train by slot — the first compatible selected producer takes the order                                                                                                      |
 | `Space`                            | Jump to your Foundry                                                                                                                                                         |
 | `P`                                | Quick pause                                                                                                                                                                  |
 | `Esc`                              | Deselect, then the pause menu (destructive choices ask first)                                                                                                                |
@@ -175,8 +197,9 @@ ground again — a ghost is a belief, and beliefs go stale. The minimap
 (bottom-right) follows the same rules. Units are solid — a chokepoint held
 by a wall of Sentinels is actually held. Sound follows sight: you hear
 fights you can see, and your own losses always. Scout early, set a rally,
-keep the Foundry queue warm, and attack-move (never plain move) into
-territory you don't control.
+keep the Foundry queue warm, advance through light resistance, and use
+attack-move (`F`) when you need the army to clear territory instead of
+holding its route.
 
 ## How it's put together
 
@@ -216,6 +239,7 @@ cargo run -p oxide-driver -- matchup --a sentinel:8 --b bombard:2,sentinel:4
 cargo run -p oxide-driver -- bench                  # 500-unit ticks/s
 cargo run -p oxide-driver -- live status
 cargo run -p oxide-driver -- live harvest 0 --units 0,1,2 --node 7,2
+cargo run -p oxide-driver -- live advance-units 0 --units 3 --to 34,18
 cargo run -p oxide-driver -- live attack-move 0 --units 3 --to 34,18
 cargo run -p oxide-driver -- live step 1              # effects + sim events
 cargo run -p oxide-driver -- live advance 300         # exactly 300 ticks
@@ -224,12 +248,26 @@ cargo run -p oxide-driver -- live capture-sequence --present --out screenshots/m
 cargo run -p oxide-driver -- live inject-wheel 2      # real input funnel
 cargo run -p oxide-driver -- live save-replay replays/session.json
 cargo run -p oxide-driver -- replay replays/session.json   # → same hash
+cargo run -p oxide-driver -- replay-inspect replays/session.json --tick 0,1200 --fog-seat 1 --map
 cargo run -p oxide-driver -- live load-replay replays/session.json  # resume
+cargo run -p oxide-driver -- profile-shell replays/session.json --from 4500 --to 5750 --speed 8
 ```
 
 `live --help` lists the rest (state queries with ASCII maps, fog-honest
 per-seat views, key/click injection, camera, overlay, scenario loading).
 `smoke --spawn` runs the whole sequence as an automated check.
+`replay-inspect` emits versioned JSON with replay metadata, final outcome,
+per-seat command activity and longest silence, plus exact snapshots. A snapshot
+at tick `N` is the state immediately before commands stamped `N` execute;
+repeat `--tick` or pass a comma-separated list, and omit it for the final state.
+`profile-shell` builds an optimized native shell, reconstructs the record through
+`--from`, then resumes it as a real live Playing match with the normal HUD, fog,
+and bots. The record's later commands are not replayed: this is an honest live
+continuation from that save point. The shell records every active Playing frame
+while the ticks span the exact requested window, auto-pauses at `--to`, and returns
+bounded work-time percentiles plus achieved simulation throughput. The window
+must end before the live continuation's match result so terminal-screen work is
+never mixed into a gameplay profile.
 
 No window at all: `cargo run -p oxide-driver -- session` serves the same
 protocol windowless (no GPU, sim time moves only on request), and every
@@ -299,7 +337,7 @@ palette from turrets to radar to Reclaimers, wreck salvage and repair
 welding (buildings and ground machines alike), team games from 2v2 to
 4v4 with shared sight, order queues
 and patrols, solid
-units that crowd without gridlocking, attack-move with line-of-sight
+units that crowd without gridlocking, zero-chase advances and attack-move with line-of-sight
 fire, damage retaliation, rally points, control groups, shift-select,
 order feedback, a fog-aware minimap, sound, twenty-five maps in a
 thumbnail-grid browser sectioned by format (sixteen duels, five 2v2s,
@@ -308,8 +346,8 @@ team maps (team-grouped seat cards with inline difficulty,
 personality, and faction dials beside a who-is-where map — every
 seat's faction is free, yours included), building salvage as harvester labor, ally
 inspection with visible orders and team-color accents on the machines
-themselves (allies wear blue, every enemy wears crimson, your own
-keep pure faction paint), touch gestures (pan, tap, long-press,
+themselves (allied seats use distinct cool accents, hostile seats use distinct
+warm accents, and your own keep pure faction paint), touch gestures (pan, tap, long-press,
 pinch, two-finger box), menus, a trained neural opponent with four
 difficulty levels and selectable personalities, save/resume via
 replays, and the agent tooling described above.

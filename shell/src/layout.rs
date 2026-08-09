@@ -30,6 +30,15 @@ pub struct LayoutModel {
     /// The idle-worker badge in the top bar; zero-sized when nobody
     /// idles. Clicking it cycles idle harvesters.
     pub idle_badge: Rect,
+    /// Persistent armed-command ribbon. It is chrome even away from
+    /// the command band, so a tap on its label never leaks to the map.
+    pub mode_ribbon: Rect,
+    /// Touchable cancel action inside the armed-command ribbon.
+    pub mode_cancel: Rect,
+    /// Mixed-selection roster filters, separate from command cards.
+    pub roster_slots: [(Rect, CardAction); 8],
+    /// How many roster filters are live this frame.
+    pub roster_count: usize,
     /// Command cards: rect plus the action a click performs — the
     /// renderer lays them out, hit-testing replays them verbatim.
     pub cards: [(Rect, CardAction); 16],
@@ -50,6 +59,10 @@ impl Default for LayoutModel {
             orders: Rect::new(0.0, 0.0, 0.0, 0.0),
             minimap: Rect::new(0.0, 0.0, 0.0, 0.0),
             idle_badge: Rect::new(0.0, 0.0, 0.0, 0.0),
+            mode_ribbon: Rect::new(0.0, 0.0, 0.0, 0.0),
+            mode_cancel: Rect::new(0.0, 0.0, 0.0, 0.0),
+            roster_slots: [(Rect::new(0.0, 0.0, 0.0, 0.0), CardAction::None); 8],
+            roster_count: 0,
             cards: [(Rect::new(0.0, 0.0, 0.0, 0.0), CardAction::None); 16],
             card_count: 0,
             queue_slots: [(Rect::new(0.0, 0.0, 0.0, 0.0), CardAction::None); 8],
@@ -136,6 +149,10 @@ impl LayoutModel {
         orders: Rect,
         minimap: Rect,
         idle_badge: Rect,
+        mode_ribbon: Rect,
+        mode_cancel: Rect,
+        roster_slots: [(Rect, CardAction); 8],
+        roster_count: usize,
         cards: [(Rect, CardAction); 16],
         card_count: usize,
         queue_slots: [(Rect, CardAction); 8],
@@ -148,6 +165,10 @@ impl LayoutModel {
             orders,
             minimap,
             idle_badge,
+            mode_ribbon,
+            mode_cancel,
+            roster_slots,
+            roster_count,
             cards,
             card_count,
             queue_slots,
@@ -162,6 +183,7 @@ impl LayoutModel {
         p.y <= self.top_bar_h
             || (p.y >= self.panel_top && p.x <= self.panel_right)
             || (self.orders.w > 0.0 && self.orders.contains(p))
+            || (self.mode_ribbon.w > 0.0 && self.mode_ribbon.contains(p))
     }
 }
 
@@ -180,6 +202,10 @@ mod tests {
             zero,
             zero,
             zero,
+            zero,
+            zero,
+            [(zero, CardAction::None); 8],
+            0,
             [(zero, CardAction::None); 16],
             0,
             [(zero, CardAction::None); 8],
@@ -223,6 +249,18 @@ mod tests {
         let m = compute_at(f32::INFINITY, 2.0);
         assert!(!m.chrome_owns(vec2(600.0, 799.0)));
         assert!(m.chrome_owns(vec2(600.0, 30.0)), "the top bar always owns");
+    }
+
+    #[test]
+    fn an_armed_mode_ribbon_owns_its_world_pixels() {
+        let mut m = compute_at(f32::INFINITY, 1.0);
+        m.mode_ribbon = Rect::new(220.0, 640.0, 280.0, MIN_TOUCH_TARGET);
+        m.mode_cancel = Rect::new(456.0, 640.0, MIN_TOUCH_TARGET, MIN_TOUCH_TARGET);
+        assert!(m.chrome_owns(m.mode_ribbon.center()));
+        assert!(
+            !m.chrome_owns(vec2(219.0, 660.0)),
+            "beside the ribbon remains battlefield"
+        );
     }
 
     const VIEW: Vec2 = Vec2::new(1280.0, 800.0);

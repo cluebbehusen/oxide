@@ -6,6 +6,7 @@
 
 use chassis::grid::TilePos;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+use oxide_sim::stats::FOUNDRY_RECOVERY_RESERVE;
 use oxide_sim::{
     BuildingKind, Command, Event, Faction, PlayerCommand, PlayerId, Scenario, State, UnitId,
     UnitKind,
@@ -152,7 +153,13 @@ fn wounded_ring_patient(kind: UnitKind, hp: u32, scrap: u32, overlap: bool) -> S
         RING
     };
     let mut scenario = arena(
-        vec![unit(0, kind, pos.x, pos.y)],
+        vec![
+            unit(0, kind, pos.x, pos.y),
+            // Make the captured package genuinely worker-sized. Artillery
+            // cannot escort a replacement Harvester, so the wounded Bombard
+            // alone must not count as the recovery screen.
+            unit(0, UnitKind::Sentinel, 10, 9),
+        ],
         [Faction::Ferrous, Faction::Cupric],
         scrap,
         true,
@@ -318,22 +325,22 @@ fn a_broke_owner_gets_no_healing() {
 }
 
 #[test]
-fn the_aura_cannot_spend_the_emergency_harvester_reserve() {
-    // Put a wounded non-Harvester directly in the ring through the
-    // validated state boundary. On tick zero the Foundry supplies the
-    // 50th scrap before the aura runs; the automatic repair must leave
-    // that coin and the patient alone.
+fn the_aura_cannot_spend_the_emergency_recovery_reserve() {
+    // An anti-air crawler cannot escort a ground worker. Put one wounded
+    // in the ring through the validated state boundary: on tick zero the
+    // Foundry supplies the final package scrap before the aura runs, and
+    // the automatic repair must leave that coin and the patient alone.
     let scenario = arena(
-        vec![unit(0, UnitKind::Sentinel, RING.x, RING.y)],
+        vec![unit(0, UnitKind::Flakhound, RING.x, RING.y)],
         [Faction::Ferrous, Faction::Cupric],
-        UnitKind::Harvester.stats().cost - 1,
+        FOUNDRY_RECOVERY_RESERVE - 1,
         true,
     );
     let state = scenario.build().unwrap();
-    let max = UnitKind::Sentinel.stats().max_hp;
+    let max = UnitKind::Flakhound.stats().max_hp;
     let hurt = (1..max)
-        .find(|hp| aura_bill(UnitKind::Sentinel, *hp, *hp + 1) == 1)
-        .expect("some Sentinel hp step costs one scrap");
+        .find(|hp| aura_bill(UnitKind::Flakhound, *hp, *hp + 1) == 1)
+        .expect("some Flakhound hp step costs one scrap");
     let mut json = serde_json::to_value(state).unwrap();
     json["units"][0]["hp"] = serde_json::json!(hurt);
     let mut state: State = serde_json::from_value(json).unwrap();
@@ -341,8 +348,8 @@ fn the_aura_cannot_spend_the_emergency_harvester_reserve() {
     state.tick(&[]);
     assert_eq!(
         state.player(PlayerId(0)).scrap,
-        UnitKind::Harvester.stats().cost,
-        "the 50th recovery scrap must survive the same tick's aura"
+        FOUNDRY_RECOVERY_RESERVE,
+        "the final recovery scrap must survive the same tick's aura"
     );
     assert_eq!(
         state.units()[0].hp,
@@ -352,7 +359,7 @@ fn the_aura_cannot_spend_the_emergency_harvester_reserve() {
 }
 
 #[test]
-fn multi_scrap_pulses_preserve_the_whole_harvester_reserve() {
+fn multi_scrap_pulses_preserve_the_captured_worker_reserve() {
     let reserve = UnitKind::Harvester.stats().cost;
     // Bombard hp steps cost either two or three scrap. One scrap less
     // than the required surplus must block the whole pulse; exactly the
@@ -388,7 +395,7 @@ fn overlapping_bays_recheck_the_reserve_after_each_charge() {
     assert_eq!(aura_bill(UnitKind::Bombard, hp + 1, hp + 2), 2);
 
     // The first bay may spend two of the three surplus scrap. The second
-    // must price from that post-charge bank and leave the remaining 51
+    // must price from that post-charge bank and leave the remaining surplus
     // untouched instead of taking it below the replacement price.
     let mut state = wounded_ring_patient(UnitKind::Bombard, hp, reserve + 3, true);
     state.tick(&[]);

@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Oxide audio review</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --background: #17191b;
+      --panel: #202327;
+      --edge: #393d43;
+      --text: #d8d4cb;
+      --muted: #929088;
+      --rust: #c26738;
+      --patina: #54a38d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 28px 24px 72px;
+      background: var(--background);
+      color: var(--text);
+      font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    h1 { margin: 0 0 4px; color: var(--rust); font-size: 22px; }
+    .intro { max-width: 76ch; margin: 0 0 18px; color: var(--muted); }
+    .controls {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      padding: 12px 0;
+      background: var(--background);
+      border-bottom: 1px solid var(--edge);
+    }
+    button, .picker {
+      padding: 7px 12px;
+      border: 1px solid var(--edge);
+      border-radius: 3px;
+      background: var(--panel);
+      color: var(--text);
+      font: inherit;
+      cursor: pointer;
+    }
+    button:hover, .picker:hover { border-color: var(--rust); }
+    .picker input { display: none; }
+    label.toggle { display: flex; gap: 7px; align-items: center; color: var(--muted); }
+    #status { color: var(--patina); }
+    h2 {
+      margin: 30px 0 10px;
+      color: var(--patina);
+      font-size: 13px;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+      gap: 12px;
+    }
+    .card {
+      display: grid;
+      gap: 9px;
+      padding: 12px;
+      border: 1px solid var(--edge);
+      border-radius: 4px;
+      background: var(--panel);
+    }
+    .card.playing { border-color: var(--rust); }
+    .heading { display: flex; gap: 8px; align-items: baseline; }
+    .number { color: var(--rust); }
+    .name { color: #fff; font-weight: 700; }
+    .meta { margin-left: auto; color: var(--muted); font-size: 12px; }
+    .animation {
+      display: grid;
+      place-items: center;
+      min-height: 112px;
+      padding: 8px;
+      background: #111315;
+      image-rendering: pixelated;
+    }
+    .animation img { max-width: 100%; max-height: 180px; image-rendering: pixelated; }
+    .missing { color: var(--muted); font-size: 12px; text-align: center; }
+    .actions { display: flex; gap: 8px; }
+    .actions button { flex: 1; }
+  </style>
+</head>
+<body>
+  <h1>Oxide audio review</h1>
+  <p class="intro">
+    Choose a directory containing a generated <code>manifest.json</code> and
+    its WAV files. Animation pairing is best-effort: choose a common parent
+    directory if the referenced GIFs live elsewhere in the tree.
+  </p>
+  <div class="controls">
+    <label class="picker">
+      Choose directory
+      <input id="directory" type="file" webkitdirectory multiple>
+    </label>
+    <button id="stop" type="button">stop all</button>
+    <label class="toggle">
+      <input id="mix" type="checkbox" checked>
+      in-game mix levels
+    </label>
+    <span id="status">waiting for a directory</span>
+  </div>
+  <main id="content"></main>
+
+  <script>
+    const directory = document.getElementById('directory');
+    const content = document.getElementById('content');
+    const status = document.getElementById('status');
+    const mix = document.getElementById('mix');
+    const active = new Set();
+    const timers = new Set();
+    let filesByName = new Map();
+    let urls = [];
+
+    function stopAll() {
+      for (const timer of timers) clearTimeout(timer);
+      timers.clear();
+      for (const audio of active) {
+        audio.pause();
+        audio.currentTime = 0;
+      }
+      active.clear();
+      document.querySelectorAll('.card.playing').forEach(card => card.classList.remove('playing'));
+    }
+
+    function objectUrl(file) {
+      const url = URL.createObjectURL(file);
+      urls.push(url);
+      return url;
+    }
+
+    function matchingFile(name) {
+      const matches = filesByName.get(name) || [];
+      return matches[0] || null;
+    }
+
+    function restartAnimation(entry) {
+      if (!entry.paired_animation) return;
+      const image = document.querySelector(`[data-animation="${CSS.escape(entry.name)}"]`);
+      const file = matchingFile(entry.paired_animation);
+      if (!image || !file) return;
+      const url = objectUrl(file);
+      image.removeAttribute('src');
+      requestAnimationFrame(() => { image.src = url; });
+    }
+
+    function play(entry) {
+      const file = matchingFile(entry.filename);
+      if (!file) return;
+      const audio = new Audio(objectUrl(file));
+      audio.volume = mix.checked ? entry.mixer_volume : 1;
+      const card = document.querySelector(`[data-card="${CSS.escape(entry.name)}"]`);
+      active.add(audio);
+      if (card) card.classList.add('playing');
+      restartAnimation(entry);
+      audio.addEventListener('ended', () => {
+        active.delete(audio);
+        if (card) card.classList.remove('playing');
+      }, { once: true });
+      audio.play();
+    }
+
+    function retrigger(entry) {
+      for (let index = 0; index < 5; index += 1) {
+        const timer = setTimeout(() => {
+          timers.delete(timer);
+          play(entry);
+        }, index * entry.min_gap * 1000);
+        timers.add(timer);
+      }
+    }
+
+    function element(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function card(entry, number) {
+      const cardNode = element('article', 'card');
+      cardNode.dataset.card = entry.name;
+      const heading = element('div', 'heading');
+      heading.append(element('span', 'number', String(number).padStart(2, '0')));
+      heading.append(element('span', 'name', entry.name));
+      heading.append(element(
+        'span',
+        'meta',
+        `mix ${entry.mixer_volume.toFixed(2)} · gap ${entry.min_gap.toFixed(2)}s`,
+      ));
+      cardNode.append(heading);
+
+      const animation = element('div', 'animation');
+      const animationFile = entry.paired_animation && matchingFile(entry.paired_animation);
+      if (animationFile) {
+        const image = document.createElement('img');
+        image.dataset.animation = entry.name;
+        image.alt = entry.paired_animation;
+        image.src = objectUrl(animationFile);
+        animation.append(image);
+      } else {
+        animation.append(element(
+          'span',
+          'missing',
+          entry.paired_animation ? `animation not selected: ${entry.paired_animation}` : 'no paired animation',
+        ));
+      }
+      cardNode.append(animation);
+
+      const actions = element('div', 'actions');
+      const playButton = element('button', '', 'play');
+      playButton.type = 'button';
+      playButton.addEventListener('click', () => play(entry));
+      const retriggerButton = element('button', '', 'retrigger ×5');
+      retriggerButton.type = 'button';
+      retriggerButton.addEventListener('click', () => retrigger(entry));
+      actions.append(playButton, retriggerButton);
+      cardNode.append(actions);
+      return cardNode;
+    }
+
+    function render(manifest) {
+      content.replaceChildren();
+      let number = 1;
+      const categories = [...new Set(manifest.sounds.map(sound => sound.category))];
+      for (const category of categories) {
+        content.append(element('h2', '', category.replaceAll('-', ' ')));
+        const grid = element('section', 'grid');
+        for (const entry of manifest.sounds.filter(sound => sound.category === category)) {
+          grid.append(card(entry, number));
+          number += 1;
+        }
+        content.append(grid);
+      }
+      status.textContent = `${manifest.sounds.length} sounds loaded`;
+    }
+
+    directory.addEventListener('change', async () => {
+      stopAll();
+      for (const url of urls) URL.revokeObjectURL(url);
+      urls = [];
+      filesByName = new Map();
+      for (const file of directory.files) {
+        if (!filesByName.has(file.name)) filesByName.set(file.name, []);
+        filesByName.get(file.name).push(file);
+      }
+      try {
+        const candidates = [];
+        for (const file of filesByName.get('manifest.json') || []) {
+          try {
+            const manifest = JSON.parse(await file.text());
+            if (manifest.format === 1 && Array.isArray(manifest.sounds)) {
+              candidates.push(manifest);
+            }
+          } catch (_) {
+            // Other tools keep unrelated manifests in the same repository.
+          }
+        }
+        if (candidates.length !== 1) {
+          status.textContent = candidates.length
+            ? 'choose a tree with one Oxide audio manifest'
+            : 'Oxide audio manifest not found';
+          content.replaceChildren();
+          return;
+        }
+        render(candidates[0]);
+      } catch (error) {
+        status.textContent = `could not read manifest: ${error.message}`;
+        content.replaceChildren();
+      }
+    });
+    document.getElementById('stop').addEventListener('click', stopAll);
+  </script>
+</body>
+</html>

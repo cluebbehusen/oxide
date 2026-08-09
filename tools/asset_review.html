@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Oxide Asset Review</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+      background: #16171c;
+      color: #e8e4d8;
+    }
+
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; }
+    body.lightbox-open { overflow: hidden; }
+    header, main { width: min(1440px, calc(100% - 32px)); margin: 0 auto; }
+    header { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; padding: 24px 0; }
+    h1 { margin: 0; font: 700 24px/1 system-ui, sans-serif; }
+    .picker { width: auto; margin-left: auto; padding: 9px 12px; border: 1px solid #66636a; background: #292b35; color: inherit; font: inherit; cursor: pointer; }
+    .picker:hover { border-color: #e8896b; }
+    #status { width: 100%; margin: 0; color: #aaa8a1; }
+    #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; padding-bottom: 48px; }
+    .card { min-width: 0; overflow: hidden; border: 1px solid #3b3d49; background: #202129; }
+    .head { display: flex; gap: 10px; align-items: center; padding: 10px; border-bottom: 1px solid #3b3d49; }
+    .number { flex: none; color: #e8896b; font-weight: 700; }
+    .name { overflow: hidden; color: #c7c3b9; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .preview { display: grid; min-height: 220px; place-items: center; padding: 12px; background-color: #191a20; background-image: linear-gradient(45deg, #22232a 25%, transparent 25%), linear-gradient(-45deg, #22232a 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #22232a 75%), linear-gradient(-45deg, transparent 75%, #22232a 75%); background-position: 0 0, 0 8px, 8px -8px, -8px 0; background-size: 16px 16px; }
+    .preview img, .preview canvas { display: block; width: auto; max-width: 100%; max-height: 420px; object-fit: contain; image-rendering: pixelated; }
+    .zoomable { cursor: zoom-in; }
+    .audio-label { color: #aaa8a1; font-size: 13px; text-transform: uppercase; }
+    .controls { padding: 10px; border-top: 1px solid #3b3d49; }
+    button { width: 100%; padding: 8px; border: 1px solid #66636a; background: #292b35; color: inherit; font: inherit; cursor: pointer; }
+    button:hover { border-color: #e8896b; }
+    .empty { grid-column: 1 / -1; padding: 48px; border: 1px dashed #3b3d49; color: #aaa8a1; text-align: center; }
+    #lightbox { position: fixed; inset: 0; z-index: 1000; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 12px; padding: 16px; background: rgba(8, 9, 12, 0.96); }
+    #lightbox-close { width: auto; justify-self: end; }
+    #lightbox-media { display: grid; min-height: 0; place-items: center; overflow: hidden; }
+    #lightbox-media img { display: block; width: 94vw; height: calc(100vh - 112px); object-fit: contain; image-rendering: pixelated; cursor: zoom-out; }
+    #lightbox-name { min-width: 0; margin: 0; overflow: hidden; color: #c7c3b9; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Oxide Asset Review</h1>
+    <button id="choose-directory" class="picker" type="button">Choose asset directory</button>
+    <input id="directory" type="file" webkitdirectory directory multiple hidden>
+    <p id="status">Choose a directory containing images, GIFs, or audio files.</p>
+  </header>
+  <main id="grid"><div class="empty">No directory selected.</div></main>
+  <div id="lightbox" role="dialog" aria-modal="true" aria-labelledby="lightbox-name" hidden>
+    <button id="lightbox-close" type="button">Close (Esc)</button>
+    <div id="lightbox-media"></div>
+    <p id="lightbox-name"></p>
+  </div>
+
+  <script>
+    const chooseDirectory = document.querySelector("#choose-directory");
+    const directory = document.querySelector("#directory");
+    const grid = document.querySelector("#grid");
+    const status = document.querySelector("#status");
+    const lightbox = document.querySelector("#lightbox");
+    const lightboxClose = document.querySelector("#lightbox-close");
+    const lightboxMedia = document.querySelector("#lightbox-media");
+    const lightboxName = document.querySelector("#lightbox-name");
+    const objectUrls = new Set();
+    const relativePaths = new WeakMap();
+    const imageExtensions = new Set(["png", "jpg", "jpeg", "webp", "bmp", "avif", "svg"]);
+    const audioExtensions = new Set(["wav", "mp3", "ogg", "m4a", "aac", "flac"]);
+    let useCompatibilityPicker = false;
+    let lightboxUrl = null;
+    let lightboxReturnFocus = null;
+
+    function extension(file) {
+      return file.name.split(".").pop().toLowerCase();
+    }
+
+    function relativePath(file) {
+      return relativePaths.get(file) || file.webkitRelativePath || file.name;
+    }
+
+    function objectUrl(file) {
+      const url = URL.createObjectURL(file);
+      objectUrls.add(url);
+      return url;
+    }
+
+    function release(url, defer = false) {
+      if (!url) return;
+      objectUrls.delete(url);
+      const revoke = () => URL.revokeObjectURL(url);
+      if (defer) {
+        setTimeout(revoke, 0);
+      } else {
+        revoke();
+      }
+    }
+
+    function clearUrls(defer = false) {
+      const urls = [...objectUrls];
+      objectUrls.clear();
+      const revoke = () => urls.forEach(url => URL.revokeObjectURL(url));
+      if (defer) {
+        setTimeout(revoke, 0);
+      } else {
+        revoke();
+      }
+    }
+
+    function disposeCards() {
+      closeLightbox(false);
+      grid.querySelectorAll("img").forEach(image => {
+        image.onload = null;
+        image.removeAttribute("src");
+      });
+      grid.querySelectorAll("audio").forEach(audio => {
+        audio.pause();
+        audio.removeAttribute("src");
+        audio.load();
+      });
+      grid.querySelectorAll("a").forEach(link => link.removeAttribute("href"));
+      grid.replaceChildren();
+    }
+
+    function openLightbox(file, trigger) {
+      closeLightbox(false);
+      lightboxReturnFocus = trigger || document.activeElement;
+      lightboxUrl = objectUrl(file);
+      const image = document.createElement("img");
+      image.src = lightboxUrl;
+      image.alt = file.name;
+      lightboxMedia.replaceChildren(image);
+      lightboxName.textContent = relativePath(file);
+      lightbox.hidden = false;
+      document.body.classList.add("lightbox-open");
+      lightboxClose.focus();
+    }
+
+    function closeLightbox(restoreFocus = true) {
+      if (lightbox.hidden) return;
+      const image = lightboxMedia.querySelector("img");
+      if (image) image.removeAttribute("src");
+      lightboxMedia.replaceChildren();
+      release(lightboxUrl, true);
+      lightboxUrl = null;
+      lightbox.hidden = true;
+      lightboxName.textContent = "";
+      document.body.classList.remove("lightbox-open");
+      if (restoreFocus && lightboxReturnFocus?.isConnected) {
+        lightboxReturnFocus.focus();
+      }
+      lightboxReturnFocus = null;
+    }
+
+    function enableZoom(element, file) {
+      element.classList.add("zoomable");
+      element.title = "Enlarge";
+      if (element.tagName !== "A") {
+        element.tabIndex = 0;
+        element.setAttribute("role", "button");
+        element.setAttribute("aria-label", `Enlarge ${file.name}`);
+        element.addEventListener("keydown", event => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openLightbox(file, element);
+          }
+        });
+      }
+      element.addEventListener("click", event => {
+        event.preventDefault();
+        openLightbox(file, element);
+      });
+    }
+
+    function makeCard(file, index) {
+      const ext = extension(file);
+      const card = document.createElement("article");
+      card.className = "card";
+
+      const head = document.createElement("div");
+      head.className = "head";
+      const number = document.createElement("span");
+      number.className = "number";
+      number.textContent = String(index + 1).padStart(2, "0");
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = relativePath(file);
+      name.title = name.textContent;
+      head.append(number, name);
+
+      const preview = document.createElement("div");
+      preview.className = "preview";
+      card.append(head, preview);
+
+      if (ext === "gif") {
+        addGif(file, card, preview);
+      } else if (imageExtensions.has(ext)) {
+        const link = document.createElement("a");
+        link.href = objectUrl(file);
+        enableZoom(link, file);
+        const image = document.createElement("img");
+        image.src = link.href;
+        image.alt = file.name;
+        link.append(image);
+        preview.append(link);
+      } else {
+        addAudio(file, card, preview);
+      }
+      return card;
+    }
+
+    function addGif(file, card, preview) {
+      const image = document.createElement("img");
+      image.alt = file.name;
+      const canvas = document.createElement("canvas");
+      const controls = document.createElement("div");
+      controls.className = "controls";
+      const button = document.createElement("button");
+      button.textContent = "Start GIF";
+      controls.append(button);
+      card.append(controls);
+      preview.append(image, canvas);
+      enableZoom(image, file);
+      enableZoom(canvas, file);
+
+      let playing = false;
+      let url = null;
+
+      function freeze() {
+        if (!image.naturalWidth) return;
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        canvas.getContext("2d").drawImage(image, 0, 0);
+        canvas.hidden = false;
+        image.hidden = true;
+      }
+
+      function load(play) {
+        release(url);
+        url = objectUrl(file);
+        playing = play;
+        image.hidden = false;
+        canvas.hidden = true;
+        image.onload = () => { if (!playing) freeze(); };
+        image.src = url;
+      }
+
+      button.addEventListener("click", () => {
+        if (playing) {
+          freeze();
+          playing = false;
+          button.textContent = "Start GIF";
+          image.removeAttribute("src");
+          release(url);
+          url = null;
+        } else {
+          load(true);
+          button.textContent = "Stop GIF";
+        }
+      });
+      load(false);
+    }
+
+    function addAudio(file, card, preview) {
+      const isLoop = file.name.toLowerCase().includes("-loop");
+      const startText = isLoop ? "Start loop" : "Start audio";
+      const stopText = isLoop ? "Stop loop" : "Stop audio";
+      const label = document.createElement("div");
+      label.className = "audio-label";
+      label.textContent = isLoop ? "Audio loop" : "Audio";
+      const audio = document.createElement("audio");
+      audio.preload = "metadata";
+      audio.loop = isLoop;
+      audio.src = objectUrl(file);
+      const controls = document.createElement("div");
+      controls.className = "controls";
+      const button = document.createElement("button");
+      button.textContent = startText;
+      button.addEventListener("click", async () => {
+        if (audio.paused) {
+          document.querySelectorAll("audio").forEach(other => {
+            if (other === audio) return;
+            other.pause();
+            other.currentTime = 0;
+            const otherButton = other.closest(".card")?.querySelector("button");
+            if (otherButton) {
+              otherButton.textContent = other.loop ? "Start loop" : "Start audio";
+            }
+          });
+          audio.currentTime = 0;
+          try {
+            await audio.play();
+            button.textContent = stopText;
+          } catch {
+            button.textContent = "Could not play audio";
+          }
+        } else {
+          audio.pause();
+          audio.currentTime = 0;
+          button.textContent = startText;
+        }
+      });
+      audio.addEventListener("ended", () => { button.textContent = startText; });
+      controls.append(button);
+      preview.append(label, audio);
+      card.append(controls);
+    }
+
+    function showFiles(candidateFiles) {
+      disposeCards();
+      clearUrls(true);
+      const files = [...candidateFiles]
+        .filter(file => extension(file) === "gif" || imageExtensions.has(extension(file)) || audioExtensions.has(extension(file)))
+        .sort((a, b) => relativePath(a).localeCompare(relativePath(b), undefined, { numeric: true }));
+      if (!files.length) {
+        grid.innerHTML = '<div class="empty">No supported images, GIFs, or audio files found.</div>';
+      } else {
+        files.forEach((file, index) => grid.append(makeCard(file, index)));
+      }
+      status.textContent = `${files.length} supported asset${files.length === 1 ? "" : "s"}.`;
+    }
+
+    async function collectFiles(handle, path, files) {
+      for await (const [name, entry] of handle.entries()) {
+        const entryPath = `${path}/${name}`;
+        if (entry.kind === "directory") {
+          await collectFiles(entry, entryPath, files);
+        } else if (entry.kind === "file") {
+          const file = await entry.getFile();
+          relativePaths.set(file, entryPath);
+          files.push(file);
+        }
+      }
+    }
+
+    function openCompatibilityPicker() {
+      directory.value = "";
+      directory.click();
+    }
+
+    chooseDirectory.addEventListener("click", async () => {
+      if (useCompatibilityPicker || typeof window.showDirectoryPicker !== "function") {
+        openCompatibilityPicker();
+        return;
+      }
+
+      try {
+        const handle = await window.showDirectoryPicker({ mode: "read" });
+        const files = [];
+        await collectFiles(handle, handle.name, files);
+        showFiles(files);
+      } catch (error) {
+        if (error.name !== "AbortError") {
+          useCompatibilityPicker = true;
+          chooseDirectory.textContent = "Choose asset directory (compatibility mode)";
+          status.textContent = "The native directory picker was unavailable. Click again to use the compatibility directory picker.";
+        }
+      }
+    });
+
+    directory.addEventListener("change", () => {
+      const files = [...directory.files];
+      if (!files.length) return;
+      if (files.some(file => !file.webkitRelativePath)) {
+        status.textContent = "That was a file, not a directory. Select the folder itself; if this browser still offers only files, open this page in Chrome or Edge.";
+        return;
+      }
+      showFiles(files);
+    });
+
+    lightboxClose.addEventListener("click", () => closeLightbox());
+    lightbox.addEventListener("click", event => {
+      if (event.target === lightbox || event.target === lightboxMedia || event.target.matches("#lightbox-media img")) {
+        closeLightbox();
+      }
+    });
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape" && !lightbox.hidden) {
+        event.preventDefault();
+        closeLightbox();
+      }
+    });
+
+    window.addEventListener("beforeunload", () => {
+      closeLightbox(false);
+      clearUrls();
+    });
+  </script>
+</body>
+</html>

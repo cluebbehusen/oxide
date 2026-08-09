@@ -1,8 +1,8 @@
 //! The factorial fairness probe: every advantage the shipped game binds
 //! to the seat index, permuted one lever at a time and all together.
 //!
-//! `sweep` exchanges exactly one factor — the personality knob — so a
-//! lean that survives it is "the map or the engine" and the instrument
+//! `sweep` exchanges exactly one factor — the complete resolved profile — so
+//! a lean that survives it is "the map or the engine" and the instrument
 //! stops there. This probe unbundles the rest: which roster a seat
 //! plays, which end of the map it starts from, which id range its
 //! starting units claim, where its commands land in the tick's command
@@ -19,12 +19,12 @@
 //!
 //! Nothing in the probe changes the sim: every cell is a transform of
 //! the scenario or of how the harness assembles the tick, and the
-//! all-baseline cell reproduces the shipped bot path bit for bit (a
-//! test pins that against `runner::step` + `seat_bots`).
+//! all-baseline cell reproduces the shipped resolved-profile path bit for
+//! bit (a test pins that against `runner::step` + `seat_bots`).
 
-use crate::sweep::SweepOutcome;
+use crate::sweep::{SweepOutcome, configure_named_pair, orient_profiles, resolve_named_pair};
 use anyhow::{Context, Result};
-use oxide_sim::bot::{DECISION_STREAM_BASE, Level, NeuralBot, QuantNet, deal_aggression};
+use oxide_sim::bot::{DECISION_STREAM_BASE, Level, NeuralBot, QuantNet};
 use oxide_sim::scenario::Scenario;
 use oxide_sim::{BuildingKind, Faction, GameResult, PlayerId, State};
 use serde::Serialize;
@@ -37,7 +37,7 @@ pub const FACTOR_COUNT: usize = 6;
 /// is an edge the chair carries, not the player sitting in it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Factor {
-    /// The dealt personality pair, kept or exchanged between the seats.
+    /// The complete dealt profile pair, kept or exchanged between the seats.
     Personality,
     /// Which roster each seat plays, all four combinations.
     Faction,
@@ -141,7 +141,7 @@ pub struct FactorialMatch {
     pub levels: Vec<String>,
     /// The roster each seat actually played.
     pub factions: [String; 2],
-    /// The personality each seat actually played.
+    /// The legacy aggression component of each complete profile.
     pub aggression: [u32; 2],
     /// Final tick: the decision tick, or the cap.
     pub ticks: u64,
@@ -617,8 +617,8 @@ fn wilson(wins: u32, n: u32) -> [f64; 2] {
 }
 
 /// Plays one cell on one seed. The all-baseline cell is the shipped
-/// game: the scenario as authored, personalities as dealt, seat-derived
-/// streams, seat-order commands.
+/// game: the scenario as authored, named profiles as resolved,
+/// seat-derived streams, and seat-order commands.
 fn play(
     base: &Scenario,
     level: Level,
@@ -638,25 +638,20 @@ fn play(
     }
     permute_spawn_order(&mut sc, cell[Factor::Spawn.index()]);
 
-    // The shipped dealing itself, then the exchange — same definition
-    // the game deals from, no replicated stream.
-    let dealt = [0u8, 1u8].map(|seat| deal_aggression(seed, PlayerId(seat)));
-    let aggression = if cell[Factor::Personality.index()] == 1 {
-        [dealt[1], dealt[0]]
-    } else {
-        dealt
-    };
+    configure_named_pair(&mut sc, [level; 2]);
+    let dealt = resolve_named_pair(&sc)?;
+    let profiles = orient_profiles(dealt, cell[Factor::Personality.index()] == 1);
+    let aggression = profiles.map(|profile| profile.aggression);
     let crossed = cell[Factor::Stream.index()] == 1;
 
     let mut state: State = sc.build().context("building scenario")?;
     let mut bots: Vec<NeuralBot> = (0u8..2)
         .map(|seat| {
             let stream_seat = if crossed { 1 - seat } else { seat };
-            NeuralBot::ladder_with_net_at_stream(
+            NeuralBot::ladder_resolved_with_net_at_stream(
                 PlayerId(seat),
                 seed,
-                level,
-                Some(aggression[usize::from(seat)]),
+                profiles[usize::from(seat)],
                 sc.players[usize::from(seat)].faction,
                 QuantNet::ladder().clone(),
                 DECISION_STREAM_BASE + u64::from(stream_seat),
@@ -813,7 +808,7 @@ pub fn factorial_report(
 mod tests {
     use super::*;
     use oxide_sim::bot::seat_bots;
-    use oxide_sim::scenario::BotConfig;
+    use oxide_sim::scenario::{BotConfig, NamedStyle};
 
     /// Rotating twice is the identity — the transform that would
     /// silently hand the seats different worlds is exactly the one a
@@ -882,41 +877,38 @@ mod tests {
         }
     }
 
-    /// The all-baseline cell must BE the shipped game for both named
-    /// strategy conditions. Medium's historical raw skill happens to
-    /// equal the industry condition, so a single industry-only seed
-    /// would not catch a diagnostic that bypassed the named wrapper.
+    /// The all-baseline cell must be the shipped game across distinct
+    /// deterministic named-profile slates. Comparing the complete
+    /// resolved records keeps this proof aligned with style, variant,
+    /// role facets, and any later named-profile fields.
     #[test]
     fn the_baseline_cell_reproduces_the_shipped_bot_path() {
         let base = crate::runner::load_scenario("skirmish").unwrap();
-        let industry_seed = (0..10_000)
-            .find(|&seed| {
-                [0u8, 1]
-                    .map(|seat| deal_aggression(seed, PlayerId(seat)))
-                    .into_iter()
-                    .all(|aggression| (250..=399).contains(&aggression))
-            })
-            .expect("the deterministic deal reaches an all-industry pair");
-        let combined_seed = (0..10_000)
-            .find(|&seed| {
-                [0u8, 1]
-                    .map(|seat| deal_aggression(seed, PlayerId(seat)))
-                    .into_iter()
-                    .all(|aggression| (500..=600).contains(&aggression))
-            })
-            .expect("the deterministic deal reaches an all-combined pair");
+        let mut slates = Vec::new();
+        for seed in 0..10_000 {
+            let mut sc = base.clone();
+            sc.seed = seed;
+            configure_named_pair(&mut sc, [Level::Medium; 2]);
+            let profiles = resolve_named_pair(&sc).unwrap();
+            if slates.iter().all(|(_, previous)| previous != &profiles) {
+                slates.push((seed, profiles));
+            }
+            if slates.len() == 3 {
+                break;
+            }
+        }
+        assert_eq!(
+            slates.len(),
+            3,
+            "the deterministic deal spans profile slates"
+        );
 
         for level in Level::LADDER {
-            for seed in [industry_seed, combined_seed] {
+            for &(seed, _) in &slates {
                 let mut sc = base.clone();
                 sc.seed = seed;
-                for player in &mut sc.players {
-                    player.bot = true;
-                    player.bot_config = Some(BotConfig {
-                        level,
-                        aggression: None,
-                    });
-                }
+                configure_named_pair(&mut sc, [level; 2]);
+                let profiles = resolve_named_pair(&sc).unwrap();
                 let mut state = sc.build().unwrap();
                 let mut bots = seat_bots(&sc);
                 for _ in 0..200 {
@@ -926,12 +918,37 @@ mod tests {
                 assert_eq!(
                     probed.hash,
                     state.hash(),
-                    "{level:?} at dealt personalities {:?}",
-                    probed.aggression
+                    "{level:?} at resolved profiles {profiles:?}"
                 );
                 assert_eq!(probed.ticks, state.current_tick());
             }
         }
+    }
+
+    #[test]
+    fn personality_factor_exchanges_the_complete_resolved_profiles() {
+        let mut scenario = crate::runner::load_scenario("skirmish").unwrap();
+        scenario.players[0].bot_config = Some(BotConfig {
+            level: Level::Medium,
+            aggression: None,
+            style: Some(NamedStyle::Turtle),
+            variant: Some(1),
+            team_role: None,
+        });
+        scenario.players[1].bot_config = Some(BotConfig {
+            level: Level::Medium,
+            aggression: None,
+            style: Some(NamedStyle::Balanced),
+            variant: Some(2),
+            team_role: None,
+        });
+        configure_named_pair(&mut scenario, [Level::Hard; 2]);
+        let dealt = resolve_named_pair(&scenario).unwrap();
+        assert_ne!(dealt[0].style, dealt[1].style);
+        assert_ne!(dealt[0].facets, dealt[1].facets);
+
+        assert_eq!(orient_profiles(dealt, false), dealt);
+        assert_eq!(orient_profiles(dealt, true), [dealt[1], dealt[0]]);
     }
 
     /// Every cell is played on every seed, every match lands in exactly

@@ -7,6 +7,11 @@ scripted tier, or `(0, 1)` for self-play/league — each frame then
 carries features and a mask per controlled seat. Features arrive as
 raw integers (the Rust side is the source of truth for their meaning);
 `normalize` scales them to roughly [-1, 1] for the network.
+
+Named-profile resets send the five Rust-authored condition facets back to
+the server so action masks and lowering use the same bounded doctrine as the
+shipped bot. ``PROFILED_DOCTRINE_VERSION`` pins that rollout behavior without
+changing the v8 tensor shape.
 """
 
 import contextlib
@@ -46,7 +51,11 @@ BUILDING_NAMES = frozenset(
 
 FEATURES = 81
 ACTIONS = 26
-GYM_VERSION = 7
+GYM_VERSION = 8
+# Wire capability for applying named-profile facets to the Rust executive.
+# It is versioned independently because it changes rollout semantics without
+# changing the actor tensor shape described by ``GYM_VERSION``.
+PROFILED_DOCTRINE_VERSION = 1
 # Each decision is one independent choice from each action head. The
 # indices remain global flat-head rows so checkpoints and exported
 # artifacts still carry one 26-row affine policy head.
@@ -59,10 +68,31 @@ type ActionPlan = tuple[int, int, int]
 # Conditioning dims appended to the gym features as network input:
 # skill (0-1000; 1000 = full strength), aggression (0-1000; 500 =
 # balanced), faction (0 = ferrous, 1000 = cupric), and a four-way
-# strategy one-hot derived from aggression. The world features come
-# from Rust; the knobs are the bot's own configuration, so the wrapper
-# appends them.
-CONDITION_DIMS = 7
+# strategy one-hot derived from aggression, followed by the five
+# Rust-authored named-profile facets. Raw-aggression tools append zero
+# facets; named training consumes complete vectors from the gym hello.
+CONDITION_NAMES = (
+    "skill",
+    "aggression",
+    "faction",
+    "strategy_fortify",
+    "strategy_industry",
+    "strategy_combined",
+    "strategy_pressure",
+    "profile_economy",
+    "profile_air",
+    "profile_siege",
+    "profile_support",
+    "profile_commitment",
+)
+CONDITION_DIMS = len(CONDITION_NAMES)
+BASE_CONDITION_DIMS = 7
+PROFILE_CONDITION_NAMES = tuple(
+    name for name in CONDITION_NAMES if name.startswith("profile_")
+)
+PROFILE_CONDITION_INDICES = tuple(
+    CONDITION_NAMES.index(name) for name in PROFILE_CONDITION_NAMES
+)
 NET_FEATURES = FEATURES + CONDITION_DIMS
 
 DRAW_REWARD = -0.3
@@ -259,13 +289,19 @@ def condition_from_profile(
     skill: int,
     aggression: int,
     faction: int,
-) -> tuple[int, int, int, int, int, int, int]:
-    """Builds the complete v7 network condition for one bot profile."""
+) -> tuple[int, ...]:
+    """Builds a raw-aggression v8 condition with no named profile lean."""
     if skill < 0 or skill > 1000:
         raise ValueError(f"skill must be in 0..1000, got {skill}")
     if faction not in (0, 1000):
         raise ValueError(f"faction must be 0 or 1000, got {faction}")
-    return (skill, aggression, faction, *strategy_one_hot(aggression))
+    return (
+        skill,
+        aggression,
+        faction,
+        *strategy_one_hot(aggression),
+        *(0 for _ in range(CONDITION_DIMS - BASE_CONDITION_DIMS)),
+    )
 
 
 def policy_skill_for_aggression(aggression: int) -> int:
@@ -282,20 +318,187 @@ def honest_condition(
     with the faction Rust observed after scenario retinting."""
     if len(condition) != CONDITION_DIMS:
         raise ValueError(f"expected {CONDITION_DIMS} knobs, got {condition}")
-    return (
-        condition[0],
-        condition[1],
-        faction_knob_from_features(features),
-        *condition[3:],
-    )
+    corrected = list(condition)
+    corrected[CONDITION_NAMES.index("faction")] = faction_knob_from_features(features)
+    return tuple(corrected)
 
 
 def with_condition(obs: np.ndarray, condition: tuple[int, ...]) -> np.ndarray:
-    """Appends the normalized seven-knob strategy condition."""
+    """Appends the normalized v8 policy condition."""
     if len(condition) != CONDITION_DIMS:
         raise ValueError(f"expected {CONDITION_DIMS} knobs, got {condition}")
     knobs = np.asarray(condition, dtype=np.float32) / 1000.0
     return np.concatenate([obs, knobs])
+
+
+def doctrine_facets(condition: tuple[int, ...]) -> tuple[int, ...]:
+    """Extracts Rust-authored profile facets from one policy condition.
+
+    Named-profile values originate in the gym hello catalog. Raw-aggression
+    conditions carry zeroes here, which selects the historical gym doctrine.
+    """
+    if len(condition) != CONDITION_DIMS:
+        raise ValueError(f"expected {CONDITION_DIMS} knobs, got {condition}")
+    facets = tuple(condition[index] for index in PROFILE_CONDITION_INDICES)
+    if any(not isinstance(value, int) or not 0 <= value <= 1000 for value in facets):
+        raise ValueError(f"profile facets must be integers in 0..1000, got {facets}")
+    return facets
+
+
+@dataclass(frozen=True)
+class CanonicalProfile:
+    """One Rust-authored named style variant from the gym handshake."""
+
+    style: str
+    variant: int
+    name: str
+    aggression: int
+    roles: tuple[str, ...]
+
+
+class ProfileCatalog:
+    """Validated named-profile vectors published by the Rust gym server."""
+
+    def __init__(
+        self,
+        profiles: tuple[CanonicalProfile, ...],
+        values: dict[tuple[str, int, str, FactionName], tuple[int, ...]],
+        default_role: str,
+    ) -> None:
+        self.profiles = profiles
+        self._values = values
+        self.default_role = default_role
+        role_sets = {profile.roles for profile in profiles}
+        if len(role_sets) != 1:
+            raise RuntimeError(
+                "Rust canonical profiles disagree on their team-role set"
+            )
+        (self.team_roles,) = role_sets
+        if default_role not in self.team_roles:
+            raise RuntimeError(
+                f"Rust default team role {default_role!r} is absent from its "
+                "profile catalog"
+            )
+
+    @classmethod
+    def from_hello(cls, hello: dict) -> ProfileCatalog:
+        """Parses the canonical contract instead of rebuilding it in Python."""
+        names = hello.get("condition_names")
+        if names != list(CONDITION_NAMES):
+            raise RuntimeError(
+                "condition-name mismatch between Rust and Python — "
+                f"rust: {names} vs python: {list(CONDITION_NAMES)}"
+            )
+        if hello.get("conditioning") != CONDITION_DIMS:
+            raise RuntimeError(
+                "conditioning-width mismatch between Rust and Python — "
+                f"rust: {hello.get('conditioning')} vs python: {CONDITION_DIMS}"
+            )
+        default_role = hello.get("default_team_role")
+        if not isinstance(default_role, str) or not default_role:
+            raise RuntimeError("Rust gym hello lacks a default_team_role")
+        raw_profiles = hello.get("canonical_profiles")
+        if not isinstance(raw_profiles, list) or not raw_profiles:
+            raise RuntimeError("Rust gym hello lacks canonical named profiles")
+
+        aggression_index = CONDITION_NAMES.index("aggression")
+        faction_index = CONDITION_NAMES.index("faction")
+        profiles: list[CanonicalProfile] = []
+        values: dict[tuple[str, int, str, FactionName], tuple[int, ...]] = {}
+        profile_keys: set[tuple[str, int]] = set()
+        profile_names: set[str] = set()
+        for raw_profile in raw_profiles:
+            if not isinstance(raw_profile, dict):
+                raise TypeError("canonical profile rows must be objects")
+            style = raw_profile.get("style")
+            variant = raw_profile.get("variant")
+            name = raw_profile.get("name")
+            aggression = raw_profile.get("aggression")
+            if (
+                not isinstance(style, str)
+                or not style
+                or not isinstance(variant, int)
+                or variant < 0
+                or not isinstance(name, str)
+                or not name
+                or not isinstance(aggression, int)
+                or not 0 <= aggression <= 1000
+            ):
+                raise RuntimeError(f"invalid canonical profile metadata: {raw_profile}")
+            profile_key = (style, variant)
+            if profile_key in profile_keys or name in profile_names:
+                raise RuntimeError(
+                    f"duplicate canonical profile {style}/{variant}/{name}"
+                )
+            profile_keys.add(profile_key)
+            profile_names.add(name)
+
+            raw_roles = raw_profile.get("roles")
+            if not isinstance(raw_roles, list) or not raw_roles:
+                raise RuntimeError(f"canonical profile {name!r} has no team roles")
+            roles: list[str] = []
+            for raw_role in raw_roles:
+                if not isinstance(raw_role, dict):
+                    raise TypeError(f"canonical profile {name!r} has a non-object role")
+                role = raw_role.get("role")
+                if not isinstance(role, str) or not role or role in roles:
+                    raise RuntimeError(
+                        f"canonical profile {name!r} has invalid role {role!r}"
+                    )
+                roles.append(role)
+                raw_conditions = raw_role.get("conditions")
+                if not isinstance(raw_conditions, dict) or set(raw_conditions) != {
+                    "ferrous",
+                    "cupric",
+                }:
+                    raise RuntimeError(
+                        f"canonical profile {name!r}/{role} must publish both factions"
+                    )
+                for faction_name in ("ferrous", "cupric"):
+                    raw_values = raw_conditions[faction_name]
+                    if (
+                        not isinstance(raw_values, list)
+                        or len(raw_values) != CONDITION_DIMS
+                        or any(
+                            not isinstance(value, int) or not 0 <= value <= 1000
+                            for value in raw_values
+                        )
+                    ):
+                        raise RuntimeError(
+                            f"invalid canonical condition for "
+                            f"{name!r}/{role}/{faction_name}"
+                        )
+                    expected_faction = 1000 if faction_name == "cupric" else 0
+                    if (
+                        raw_values[aggression_index] != aggression
+                        or raw_values[faction_index] != expected_faction
+                    ):
+                        raise RuntimeError(
+                            f"canonical condition metadata disagrees for "
+                            f"{name!r}/{role}/{faction_name}"
+                        )
+                    key = (style, variant, role, faction_name)
+                    if key in values:
+                        raise RuntimeError(f"duplicate canonical condition {key}")
+                    values[key] = tuple(raw_values)
+            profiles.append(
+                CanonicalProfile(style, variant, name, aggression, tuple(roles))
+            )
+        return cls(tuple(profiles), values, default_role)
+
+    def condition(
+        self,
+        style: str,
+        variant: int,
+        role: str,
+        faction: FactionName,
+    ) -> tuple[int, ...]:
+        """Returns one complete Rust-authored named condition."""
+        key = (style, variant, role, faction)
+        try:
+            return self._values[key]
+        except KeyError as err:
+            raise ValueError(f"unknown canonical profile condition {key}") from err
 
 
 def validate_action_plan(plan: tuple[int, ...] | list[int]) -> ActionPlan:
@@ -440,8 +643,25 @@ class Worker:
                 "feature-name mismatch between Rust and Python — "
                 f"rust: {hello.get('names')} vs python: {FEATURE_NAMES}"
             )
+        if hello.get("profiled_doctrine") != PROFILED_DOCTRINE_VERSION:
+            raise RuntimeError(
+                "profiled-doctrine mismatch between Rust and Python — "
+                f"rust: {hello.get('profiled_doctrine')} vs "
+                f"python: {PROFILED_DOCTRINE_VERSION}"
+            )
+        self.profile_catalog = ProfileCatalog.from_hello(hello)
         self._supports_reset_factions = hello.get("reset_factions") is True
         self._supports_effect_telemetry = hello.get("effect_telemetry") is True
+
+    def named_condition(
+        self,
+        style: str,
+        variant: int,
+        role: str,
+        faction: FactionName,
+    ) -> tuple[int, ...]:
+        """Returns a complete condition from the connected Rust contract."""
+        return self.profile_catalog.condition(style, variant, role, faction)
 
     @property
     def supports_effect_telemetry(self) -> bool:
@@ -543,7 +763,14 @@ class Worker:
         """Starts an episode. ``factions`` optionally names every
         scenario seat in order, either as a compact code such as ``fc``
         or as full names. The returned Rust observation is authoritative
-        for the condition's faction knob."""
+        for the condition's faction knob. Profile facets are extracted by
+        their advertised condition names and sent to the Rust executive;
+        raw zero-facet conditions retain its historical doctrine."""
+        if conditions is not None and set(conditions) != set(control):
+            raise ValueError(
+                "conditions must name exactly the controlled seats: "
+                f"control={list(control)}, conditions={sorted(conditions)}"
+            )
         self.control = control
         self.conditions = dict(conditions or {})
         self.factions = None
@@ -558,6 +785,10 @@ class Worker:
         }
         if scenario:
             req["scenario"] = scenario
+        if conditions is not None:
+            req["profile_facets"] = [
+                list(doctrine_facets(self.conditions[seat])) for seat in control
+            ]
         if factions is not None:
             if not self._supports_reset_factions:
                 raise RuntimeError(

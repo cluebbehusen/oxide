@@ -43,6 +43,10 @@ def _bridge_artifact(
 
 
 class TestExactRecovery:
+    def test_v7_artifact_rejection_names_the_json_migration(self) -> None:
+        with pytest.raises(ValueError, match=r"widen\.py --src OLD\.json"):
+            dequantize.recover_actor({"gym_version": 7})
+
     def test_the_recovered_actor_round_trips_exactly_and_the_critic_is_zero(
         self, tmp_path: pathlib.Path
     ) -> None:
@@ -73,7 +77,7 @@ class TestExactRecovery:
         _policy, blob = load_policy(str(out))
         assert blob["lineage"] == source["lineage"]
 
-    def test_a_deep_v7_artifact_is_recoverable(self, tmp_path: pathlib.Path) -> None:
+    def test_a_deep_v8_artifact_is_recoverable(self, tmp_path: pathlib.Path) -> None:
         torch.manual_seed(12)
         source = make_policy("deep")
         ckpt = tmp_path / "deep.pt"

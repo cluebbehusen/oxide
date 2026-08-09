@@ -480,9 +480,13 @@ mod tests {
         game.advance_ticks(1);
         let tick = game.state.current_tick();
         let seed = game.scenario.seed;
-        let mut blockers = Vec::new();
-        for _ in 0..1000 {
-            blockers.push(free_path(&dir, "save", tick, seed).expect("reserve collision"));
+        for n in 0..1000 {
+            let path = if n == 0 {
+                dir.join(format!("save-{tick:010}.json"))
+            } else {
+                dir.join(format!("save-{tick:010}-{seed}-{n}.json"))
+            };
+            std::fs::write(path, b"occupied").expect("create known collision");
         }
 
         let first = write_named(&game, "first beyond the cutoff", &dir, 1)
@@ -507,7 +511,6 @@ mod tests {
             Some("second beyond the cutoff")
         );
 
-        drop(blockers);
         std::fs::remove_dir_all(&dir).ok();
     }
 

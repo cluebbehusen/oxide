@@ -1,0 +1,4 @@
+interface:
+  display_name: "Oxide Sound Design"
+  short_description: "Generate and promote coherent Oxide game audio"
+  default_prompt: "Use $sound-design to generate and audition Oxide sound assets, then productionize only the option I explicitly approve."

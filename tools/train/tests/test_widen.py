@@ -1,18 +1,17 @@
-"""Tests for the v6 -> v7 factorized-policy bridge."""
+"""Tests for the behavior-identical v7 -> v8 profile bridge."""
 
 import json
 from typing import TYPE_CHECKING
 
+import pytest
 import torch
 
 import widen
 from lineage import content_digest, validate_lineage
-from models import make_policy, save_policy
+from models import load_policy, make_policy, save_policy
 
 if TYPE_CHECKING:
     import pathlib
-
-    import pytest
 
 
 def _fake_artifact(tmp_path: pathlib.Path) -> pathlib.Path:
@@ -45,7 +44,7 @@ def _fake_artifact(tmp_path: pathlib.Path) -> pathlib.Path:
 
 
 class TestArtifactBridge:
-    def test_new_columns_are_zero_and_new_heads_copy_idle(
+    def test_new_profile_columns_are_zero_and_every_old_byte_is_preserved(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         src = _fake_artifact(tmp_path)
@@ -57,7 +56,7 @@ class TestArtifactBridge:
         widen.main()
         art = json.loads(out.read_text())
         lineage = validate_lineage(art["lineage"])
-        assert lineage["phase"] == "contract-widen-v6-v7"
+        assert lineage["phase"] == "contract-widen-v7-v8"
         assert lineage["inputs"] == {
             "source": {"content_sha256": content_digest(src)},
             "transformer_code": {
@@ -68,42 +67,24 @@ class TestArtifactBridge:
         assert art["features"] == widen.DST_FEATURES
         assert art["actions"] == widen.DST_ACTIONS
         assert art["conditioning"] == widen.DST_CONDITIONING
-        # The inserted feature column reads zero in every first-layer row.
+        assert art["features"] == source["features"]
+        assert art["actions"] == source["actions"]
+        assert art["head"] == source["head"]
+        assert art["tanh_lut"] == source["tanh_lut"]
+        # Only five zero profile columns are appended to the first layer.
         for row in art["layers"][0]["w"]:
             assert len(row) == widen.DST_FEATURES + widen.DST_CONDITIONING
-            for idx in widen.NEW_FEATURE_SCALES:
-                assert row[idx] == 0
-            assert row[-4:] == [0, 0, 0, 0]
+            assert row[-5:] == [0, 0, 0, 0, 0]
         for source_row, widened_row in zip(
             source["layers"][0]["w"],
             art["layers"][0]["w"],
             strict=True,
         ):
-            assert widened_row[: widen.SRC_FEATURES] == source_row[: widen.SRC_FEATURES]
-            assert (
-                widened_row[
-                    widen.DST_FEATURES : widen.DST_FEATURES + widen.SRC_CONDITIONING
-                ]
-                == source_row[widen.SRC_FEATURES :]
-            )
-        # Each appended row is a head-specific no-op initialized from
-        # the actor's old Idle row.
-        assert len(art["head"]["w"]) == widen.DST_ACTIONS
-        for row in art["head"]["w"][widen.SRC_ACTIONS :]:
-            assert row == art["head"]["w"][0]
-        for bias in art["head"]["b"][widen.SRC_ACTIONS :]:
-            assert bias == art["head"]["b"][0]
+            assert widened_row[: len(source_row)] == source_row
         # Recips grew in step with the inputs.
         assert len(art["recips"]) == widen.DST_FEATURES + widen.DST_CONDITIONING
-        for idx, scale in widen.NEW_FEATURE_SCALES.items():
-            assert art["recips"][idx] == round((1 << 24) / scale)
-        assert (
-            art["recips"][
-                widen.DST_FEATURES : widen.DST_FEATURES + widen.SRC_CONDITIONING
-            ]
-            == source["recips"][widen.SRC_FEATURES :]
-        )
-        assert art["recips"][-4:] == [round((1 << 24) / 1_000)] * 4
+        assert art["recips"][: len(source["recips"])] == source["recips"]
+        assert art["recips"][-5:] == [round((1 << 24) / 1_000)] * 5
 
     def test_a_wrong_version_refuses_instead_of_stacking(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -139,10 +120,19 @@ class TestArtifactBridge:
 
 
 class TestCheckpointBridge:
-    def test_the_float_resume_gets_head_specific_noops(
+    def test_v7_checkpoint_rejection_names_the_ckpt_migration(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        src = tmp_path / "old.pt"
+        torch.save({"arch": "mlp", "gym_version": 7, "state": {}}, src)
+
+        with pytest.raises(RuntimeError, match=r"widen\.py --ckpt --src OLD\.pt"):
+            load_policy(str(src))
+
+    def test_the_float_resume_gets_only_zero_profile_columns(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # A v6-shaped policy checkpoint, stamped v6.
+        # A v7-shaped policy checkpoint, stamped v7.
         monkeypatch.setattr("oxide_gym.FEATURES", widen.SRC_FEATURES)
         monkeypatch.setattr("oxide_gym.ACTIONS", widen.SRC_ACTIONS)
         monkeypatch.setattr(
@@ -155,16 +145,17 @@ class TestCheckpointBridge:
             "models.NET_FEATURES", widen.SRC_FEATURES + widen.SRC_CONDITIONING
         )
         policy = make_policy("mlp")
-        source_first = policy.state_dict()["trunk.0.weight"].clone()
-        source_pi_weight = policy.state_dict()["pi.weight"].clone()
-        source_pi_bias = policy.state_dict()["pi.bias"].clone()
+        source_state = {
+            name: tensor.clone() for name, tensor in policy.state_dict().items()
+        }
+        source_first = source_state["trunk.0.weight"]
         src = tmp_path / "src.pt"
         save_policy(policy, "mlp", src, {"gym_version": widen.SRC_VERSION, "update": 9})
         out = tmp_path / "out.pt"
         widen.widen_ckpt(str(src), str(out))
         blob = torch.load(out, weights_only=True)
         lineage = validate_lineage(blob["lineage"])
-        assert lineage["phase"] == "contract-widen-v6-v7"
+        assert lineage["phase"] == "contract-widen-v7-v8"
         assert lineage["inputs"] == {
             "source": {"content_sha256": content_digest(src)},
             "transformer_code": {
@@ -178,24 +169,25 @@ class TestCheckpointBridge:
             == widen.DST_FEATURES + widen.DST_CONDITIONING
         )
         assert state["pi.weight"].shape[0] == widen.DST_ACTIONS
-        for idx in widen.NEW_FEATURE_SCALES:
-            assert torch.all(state["trunk.0.weight"][:, idx] == 0)
-        assert torch.all(state["trunk.0.weight"][:, -4:] == 0)
-        assert torch.equal(
-            state["trunk.0.weight"][:, : widen.SRC_FEATURES],
-            source_first[:, : widen.SRC_FEATURES],
+        assert state.keys() == source_state.keys()
+        torch.testing.assert_close(
+            state["trunk.0.weight"][:, : source_first.shape[1]],
+            source_first,
+            rtol=0,
+            atol=0,
         )
-        assert torch.equal(
-            state["trunk.0.weight"][
-                :, widen.DST_FEATURES : widen.DST_FEATURES + widen.SRC_CONDITIONING
-            ],
-            source_first[:, widen.SRC_FEATURES :],
+        profile_columns = state["trunk.0.weight"][:, source_first.shape[1] :]
+        assert profile_columns.shape == (
+            source_first.shape[0],
+            widen.DST_CONDITIONING - widen.SRC_CONDITIONING,
         )
-        assert torch.equal(
-            state["pi.weight"][: widen.SRC_ACTIONS],
-            source_pi_weight,
+        torch.testing.assert_close(
+            profile_columns,
+            torch.zeros_like(profile_columns),
+            rtol=0,
+            atol=0,
         )
-        assert torch.equal(state["pi.bias"][: widen.SRC_ACTIONS], source_pi_bias)
-        for action in range(widen.SRC_ACTIONS, widen.DST_ACTIONS):
-            assert torch.equal(state["pi.bias"][action], state["pi.bias"][0])
-            assert torch.equal(state["pi.weight"][action], state["pi.weight"][0])
+        for name, source_tensor in source_state.items():
+            if name == "trunk.0.weight":
+                continue
+            torch.testing.assert_close(state[name], source_tensor, rtol=0, atol=0)

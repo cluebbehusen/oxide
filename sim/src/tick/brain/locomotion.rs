@@ -1,5 +1,5 @@
-//! Getting there: idle auto-acquire, attack-move, plain walking,
-//! contact-propagated arrival, and doorstep approach.
+//! Getting there: idle auto-acquire, advance and attack-move routing,
+//! plain walking, contact-propagated arrival, and doorstep approach.
 
 use super::super::{rect_adjacent_tiles, route_for, tile_adjacent_to_rect};
 use super::combat::acquire_target;

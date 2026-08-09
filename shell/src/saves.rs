@@ -67,8 +67,8 @@ fn civil_date(secs: u64) -> String {
 /// mid-multibyte-character and took the whole shelf down with it.
 fn elide(stem: &str) -> String {
     if stem.chars().count() > 26 {
-        let head: String = stem.chars().take(25).collect();
-        format!("{head}…")
+        let head: String = stem.chars().take(23).collect();
+        format!("{head}...")
     } else {
         stem.to_string()
     }
@@ -129,14 +129,14 @@ fn scan(dir: &std::path::Path, out: &mut Vec<(std::time::SystemTime, ReplayEntry
         // its map and keeps the file stem for identification.
         let label = match replay.meta.description.as_deref() {
             Some(name) => format!(
-                "{} · {} · t{} · {}",
+                "{} | {} | t{} | {}",
                 elide(name),
                 replay.setup.name,
                 ticks,
                 date
             ),
             None => format!(
-                "{} · t{} · {} · {}",
+                "{} | t{} | {} | {}",
                 replay.setup.name,
                 ticks,
                 date,
@@ -158,10 +158,10 @@ fn scan(dir: &std::path::Path, out: &mut Vec<(std::time::SystemTime, ReplayEntry
                 RecordKind::Save => "a saved game",
                 _ => "a live session",
             };
-            format!("{what} · Enter loads · X twice deletes")
+            format!("{what} | Enter loads | X twice deletes")
         } else {
             format!(
-                "{} seats · sim v{} · Enter watches · X twice deletes",
+                "{} seats | sim v{} | Enter watches | X twice deletes",
                 replay.setup.players.len(),
                 replay.meta.sim_version
             )
@@ -293,10 +293,10 @@ mod tests {
     fn long_stems_elide_at_char_boundaries() {
         assert_eq!(elide("short"), "short");
         let long_ascii = "a".repeat(30);
-        assert_eq!(elide(&long_ascii), format!("{}…", "a".repeat(25)));
-        // 27 chars, with byte offset 25 landing inside the first é —
+        assert_eq!(elide(&long_ascii), format!("{}...", "a".repeat(23)));
+        // 27 chars, with byte offset 23 landing inside the first é —
         // the byte-sliced version panicked exactly here.
-        let multibyte = format!("{}ééé", "a".repeat(24));
-        assert_eq!(elide(&multibyte), format!("{}é…", "a".repeat(24)));
+        let multibyte = format!("{}ééééé", "a".repeat(22));
+        assert_eq!(elide(&multibyte), format!("{}é...", "a".repeat(22)));
     }
 }

@@ -57,6 +57,22 @@ enum Cmd {
         #[arg(long)]
         allow_long: bool,
     },
+    /// Inspect a replay as stable JSON: metadata, command activity, outcome,
+    /// and exact snapshots at selected simulation ticks.
+    ReplayInspect {
+        /// Replay or save JSON path.
+        path: PathBuf,
+        /// State ticks to capture, repeatable or comma-separated. Tick N is
+        /// before commands stamped N execute. Defaults to the final tick.
+        #[arg(long = "tick", value_delimiter = ',')]
+        ticks: Vec<u64>,
+        /// Also capture the fog-honest view belonging to this seat.
+        #[arg(long)]
+        fog_seat: Option<u8>,
+        /// Include the omniscient ASCII map in every state snapshot.
+        #[arg(long)]
+        map: bool,
+    },
     /// Render a scenario state to a PNG (software rasterizer, no window).
     Render {
         /// Scenario path, or "skirmish".
@@ -86,14 +102,29 @@ enum Cmd {
         #[arg(long)]
         scripted_tier: Option<String>,
         /// Raw skill-conditioning override 0-1000 (candidate --weights
-        /// probes only). Omission uses the ladder's measured condition
-        /// for the selected personality strategy.
+        /// probes only). Omission keeps the resolved named profile.
         #[arg(long)]
         skill: Option<u32>,
-        /// Personality override 0-1000. Omission uses the same
-        /// seed-derived deal as a shipped match.
+        /// Raw aggression override 0-1000. Omission uses the same
+        /// named style, variant, and team role as a shipped match.
         #[arg(long, value_parser = clap::value_parser!(u32).range(0..=1000))]
         aggression: Option<u32>,
+        /// Fix the named style ("turtle", "balanced", or "aggressive").
+        /// Omission keeps the deterministic scenario-seed deal.
+        #[arg(
+            long,
+            value_parser = ["turtle", "balanced", "aggressive"],
+            conflicts_with_all = ["scripted_tier", "skill", "aggression", "blunder"]
+        )]
+        style: Option<String>,
+        /// Fix the curated variant within --style (0, 1, or 2).
+        /// Omission keeps the deterministic named-variant deal.
+        #[arg(
+            long,
+            requires = "style",
+            value_parser = clap::value_parser!(u8).range(0..=2)
+        )]
+        variant: Option<u8>,
         /// Exact hesitation rate per mille (candidate probes only).
         /// Supplying zero explicitly means no hesitation; omission uses
         /// the named level's handicap.
@@ -118,9 +149,8 @@ enum Cmd {
         out: Option<String>,
     },
     /// Decisiveness seed sweep: N seeds of bot-vs-bot on one 1v1 map,
-    /// each seed played in both personality orientations — do games
-    /// END, and does a seat lean survive the exchange? The 0.12 bot
-    /// phases gate on this.
+    /// each seed played with the complete resolved profiles in both
+    /// orientations. Measures endings and seat lean.
     Sweep {
         /// Scenario path, or "skirmish".
         #[arg(long, default_value = "skirmish")]
@@ -128,7 +158,7 @@ enum Cmd {
         /// Ladder level to sweep ("easy".."expert").
         #[arg(long, default_value = "medium")]
         level: String,
-        /// Seeds (each played twice: dealt and personality-swapped).
+        /// Seeds (each played twice: dealt and complete-profile-swapped).
         #[arg(long, default_value_t = 24, value_parser = clap::value_parser!(u64).range(1..))]
         seeds: u64,
         /// Tick cap per match (the 0.11 probes read at 40k).
@@ -152,7 +182,7 @@ enum Cmd {
         /// Ladder level both seats play ("easy".."expert").
         #[arg(long, default_value = "medium")]
         level: String,
-        /// Seeds per map (each played in both personality orientations).
+        /// Seeds per map (each played in both complete-profile orientations).
         #[arg(long, default_value_t = 12, value_parser = clap::value_parser!(u64).range(1..))]
         seeds: u64,
         /// Tick cap per match; every map's slowest tail must fit under
@@ -168,7 +198,7 @@ enum Cmd {
     },
     /// Factorial fairness probe: every advantage the game binds to the
     /// seat index — roster, geometry, id range, command order, rng
-    /// stream, personality — permuted as a full cross product on one
+    /// stream, complete resolved profile — permuted as a full cross product on one
     /// seed set. Reports per-factor marginals with Wilson intervals and
     /// the whole cell table, because the interactions are the finding.
     SweepFactorial {
@@ -195,14 +225,13 @@ enum Cmd {
         #[arg(long)]
         out: Option<String>,
     },
-    /// Head-to-head duel between two ladder profiles (optionally with
-    /// candidate skill/cadence dial overrides), each seed fought from
-    /// both seats — the re-metering experiments' measuring stick.
+    /// Head-to-head duel between two resolved ladder profiles. An explicit
+    /// skill dial opts that side into the legacy raw zero-facet profile.
     Duel {
         /// Side A level ("easy".."expert").
         #[arg(long)]
         a: String,
-        /// Side A skill-knob override (candidate dials).
+        /// Side A raw skill-knob override (drops named profile facets).
         #[arg(long)]
         a_skill: Option<u32>,
         /// Side A cadence override.
@@ -211,7 +240,7 @@ enum Cmd {
         /// Side B level ("easy".."expert").
         #[arg(long)]
         b: String,
-        /// Side B skill-knob override.
+        /// Side B raw skill-knob override (drops named profile facets).
         #[arg(long)]
         b_skill: Option<u32>,
         /// Side B cadence override.
@@ -233,15 +262,13 @@ enum Cmd {
         #[arg(long)]
         out: Option<String>,
     },
-    /// Widened scripted-yardstick measurement for one ladder profile
-    /// (optionally with candidate dials): the profile vs all four
-    /// scripted tiers over N seeds per tier, both seats — the
-    /// doctrinal strength instrument for re-metering.
+    /// Legacy raw zero-facet yardstick at aggression 500: one profile
+    /// versus all four scripted tiers over N seeds per tier, both seats.
     Yardstick {
         /// Profile level ("easy".."expert").
         #[arg(long, default_value = "medium")]
         level: String,
-        /// Skill-knob override (candidate dials).
+        /// Raw skill-knob override.
         #[arg(long)]
         skill: Option<u32>,
         /// Cadence override.
@@ -331,6 +358,27 @@ enum Cmd {
         #[command(subcommand)]
         cmd: LiveCmd,
     },
+    /// Resume a record prefix and profile a live Playing interval in a
+    /// temporary real GPU-backed shell.
+    ProfileShell {
+        /// Replay or save JSON whose prefix becomes the live match.
+        replay: PathBuf,
+        /// First tick included in the measured window.
+        #[arg(long, default_value_t = 0)]
+        from: u64,
+        /// Tick at which the harness pauses and reports.
+        #[arg(long)]
+        to: u64,
+        /// Live wall-clock speed multiplier.
+        #[arg(long, default_value_t = 8.0)]
+        speed: f64,
+        /// Debug-server port for the temporary shell.
+        #[arg(long, default_value_t = 4198)]
+        port: u16,
+        /// Profile an unoptimized development shell instead of release.
+        #[arg(long)]
+        dev: bool,
+    },
     /// Serve the debug protocol windowless: a persistent headless match
     /// (no GPU, no wall clock — always driven mode) that every
     /// `driver live` verb can drive. Screenshots are CPU schematic
@@ -376,10 +424,10 @@ enum Cmd {
         /// profile; omission uses the measured strategy condition.
         #[arg(long, value_parser = clap::value_parser!(u32).range(0..=1000))]
         skill: Option<u32>,
-        /// Aggression conditioning input. The default is the center of
-        /// the shipped combined-arms band.
-        #[arg(long, default_value_t = 550)]
-        aggression: u32,
+        /// Raw aggression conditioning input. Omission exercises the
+        /// deterministic canonical named-profile slate.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(0..=1000))]
+        aggression: Option<u32>,
         /// Override both duel rosters in west/east order (ff|fc|cf|cc).
         /// Omission preserves the scenario's authored factions.
         #[arg(long)]
@@ -454,6 +502,15 @@ fn parse_difficulty(tier: &str) -> Result<oxide_sim::bot::Difficulty> {
     })
 }
 
+fn parse_named_style(style: &str) -> Result<oxide_sim::scenario::NamedStyle> {
+    Ok(match style {
+        "turtle" => oxide_sim::scenario::NamedStyle::Turtle,
+        "balanced" => oxide_sim::scenario::NamedStyle::Balanced,
+        "aggressive" => oxide_sim::scenario::NamedStyle::Aggressive,
+        other => anyhow::bail!("unknown named style '{other}'"),
+    })
+}
+
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Run {
@@ -505,6 +562,22 @@ fn main() -> Result<()> {
             {
                 bail!("hash mismatch: expected {expected}, got {hash}");
             }
+        }
+        Cmd::ReplayInspect {
+            path,
+            ticks,
+            fog_seat,
+            map,
+        } => {
+            let replay =
+                GameReplay::load(&path).with_context(|| format!("loading {}", path.display()))?;
+            let inspection = oxide_driver::replay_inspect::inspect(
+                &replay,
+                &ticks,
+                fog_seat.map(oxide_sim::PlayerId),
+                map,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&inspection)?);
         }
         Cmd::Render {
             scenario,
@@ -653,6 +726,8 @@ fn main() -> Result<()> {
             scripted_tier,
             skill,
             aggression,
+            style,
+            variant,
             blunder,
             cadence,
             seeds,
@@ -668,6 +743,8 @@ fn main() -> Result<()> {
                     scripted: scripted_tier.as_deref().map(parse_difficulty).transpose()?,
                     skill,
                     aggression,
+                    style: style.as_deref().map(parse_named_style).transpose()?,
+                    variant,
                     blunder,
                     cadence,
                 },
@@ -865,6 +942,24 @@ fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&reply)?);
             }
         }
+        Cmd::ProfileShell {
+            replay,
+            from,
+            to,
+            speed,
+            port,
+            dev,
+        } => {
+            let report = oxide_driver::profile::run(&oxide_driver::profile::ProfileOptions {
+                replay: &replay,
+                from,
+                to,
+                speed,
+                port,
+                dev,
+            })?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         Cmd::Session {
             port,
             scenario,
@@ -912,4 +1007,88 @@ fn main() -> Result<()> {
         } => oxide_driver::shots::run(port, bless, &dir, threshold)?,
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn balance_probe_accepts_an_exact_named_style_variant() {
+        let cli = Cli::try_parse_from([
+            "oxide-driver",
+            "balance-probe",
+            "--style",
+            "turtle",
+            "--variant",
+            "1",
+        ])
+        .unwrap();
+        let Cmd::BalanceProbe { style, variant, .. } = cli.cmd else {
+            panic!("balance-probe parsed as another command")
+        };
+        assert_eq!(style.as_deref(), Some("turtle"));
+        assert_eq!(variant, Some(1));
+    }
+
+    #[test]
+    fn balance_probe_named_style_refuses_raw_profile_controls() {
+        for raw in ["--skill", "--aggression", "--blunder"] {
+            let error = Cli::try_parse_from([
+                "oxide-driver",
+                "balance-probe",
+                "--style",
+                "balanced",
+                "--variant",
+                "1",
+                raw,
+                "550",
+            ])
+            .err()
+            .expect("named and raw profile selectors conflict");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+    }
+
+    #[test]
+    fn balance_probe_variant_requires_a_named_style() {
+        let error = Cli::try_parse_from(["oxide-driver", "balance-probe", "--variant", "1"])
+            .err()
+            .expect("variant without style is rejected");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn profile_shell_parses_an_exact_replay_window() {
+        let cli = Cli::try_parse_from([
+            "oxide-driver",
+            "profile-shell",
+            "match.json",
+            "--from",
+            "4500",
+            "--to",
+            "5750",
+            "--speed",
+            "8",
+        ])
+        .expect("profile command parses");
+        let Cmd::ProfileShell {
+            replay,
+            from,
+            to,
+            speed,
+            dev,
+            ..
+        } = cli.cmd
+        else {
+            panic!("profile-shell parsed as another command")
+        };
+        assert_eq!(replay, PathBuf::from("match.json"));
+        assert_eq!((from, to), (4500, 5750));
+        assert_eq!(speed, 8.0);
+        assert!(!dev);
+    }
 }

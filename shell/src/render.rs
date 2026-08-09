@@ -7,7 +7,7 @@
 //! previous and current tick so 20 sim ticks per second still looks like
 //! 60fps motion.
 
-use crate::assets::Sprites;
+use crate::assets::{HarvesterPose as SpriteHarvesterPose, Sprites};
 static COLORBLIND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Colorblind accents: swap allegiance-critical indicator colors for a
@@ -68,15 +68,10 @@ pub(crate) fn allegiance_cue(
     AllegianceCue::Hostile
 }
 
-/// The hue an entity's accent regions wear for this viewer — the RTS
-/// team-color convention, semantic flavor: your machines keep pure
-/// faction art (`None`), allies tint blue, every hostile tints
-/// crimson. Blue and crimson are the two hues Oxide's palette leaves
-/// unclaimed (rust, teal, scrap gold, bone are all spoken for).
-/// Colorblind mode swaps the ally to bone — its blue would shadow the
-/// colorblind Cupric accent — leaving a luminance-split pair (bright
-/// friend, dark foe) that reads under every kind of color vision;
-/// crimson already sits dark on the protan/deutan axis.
+/// The base allegiance hue beneath per-seat identity: your machines keep
+/// pure faction art (`None`), allies occupy a cool family, and hostiles a
+/// warm family. Colorblind mode swaps the allied base to bone, preserving a
+/// luminance split between friend and foe before seat variation is applied.
 pub(crate) fn allegiance_tint(cue: AllegianceCue) -> Option<Color> {
     match (cue, colorblind()) {
         (AllegianceCue::Mine, _) => None,
@@ -86,6 +81,100 @@ pub(crate) fn allegiance_tint(cue: AllegianceCue) -> Option<Color> {
             Some(color_u8!(228, 44, 58, 255))
         }
     }
+}
+
+/// A stable seat accent inside the stronger allegiance vocabulary.
+///
+/// Allies stay in a cool family and hostiles stay in a warm family,
+/// but seats within either family receive distinct accents in seat order.
+/// The underlying silhouette, allegiance ring, and friend/foe family still
+/// carry meaning when hue cannot; the per-seat tint is an identity aid, not
+/// the only allegiance signal.
+pub(crate) fn seat_identity_color(game: &crate::game::Game, owner: oxide_sim::PlayerId) -> Color {
+    let cue = allegiance_cue(game, owner);
+    if cue == AllegianceCue::Mine {
+        return faction_accent(game.state.player(owner).faction);
+    }
+    let semantic = allegiance_tint(cue).expect("non-own allegiance has a semantic tint");
+    let rank = game
+        .state
+        .players()
+        .iter()
+        .enumerate()
+        .map(|(seat, _)| oxide_sim::PlayerId(seat as u8))
+        .filter(|seat| {
+            let other = allegiance_cue(game, *seat);
+            matches!(
+                (cue, other),
+                (AllegianceCue::Ally, AllegianceCue::Ally)
+                    | (
+                        AllegianceCue::Hostile | AllegianceCue::HostileTwin,
+                        AllegianceCue::Hostile | AllegianceCue::HostileTwin
+                    )
+            )
+        })
+        .position(|seat| seat == owner)
+        .unwrap_or(0);
+    let allies = if colorblind() {
+        [
+            semantic,
+            color_u8!(112, 184, 238, 255),
+            color_u8!(181, 158, 232, 255),
+            color_u8!(145, 207, 190, 255),
+            color_u8!(107, 148, 224, 255),
+            color_u8!(137, 207, 229, 255),
+            color_u8!(200, 181, 239, 255),
+            color_u8!(111, 188, 174, 255),
+        ]
+    } else {
+        [
+            semantic,
+            color_u8!(68, 190, 205, 255),
+            color_u8!(165, 139, 235, 255),
+            color_u8!(132, 201, 170, 255),
+            color_u8!(64, 119, 221, 255),
+            color_u8!(113, 203, 239, 255),
+            color_u8!(196, 162, 242, 255),
+            color_u8!(72, 174, 157, 255),
+        ]
+    };
+    let hostiles = if colorblind() {
+        [
+            color_u8!(211, 65, 60, 255),
+            color_u8!(232, 128, 35, 255),
+            color_u8!(173, 72, 125, 255),
+            color_u8!(151, 87, 61, 255),
+            color_u8!(242, 84, 31, 255),
+            color_u8!(207, 99, 104, 255),
+            color_u8!(190, 136, 43, 255),
+            color_u8!(139, 49, 82, 255),
+        ]
+    } else {
+        [
+            semantic,
+            color_u8!(232, 105, 42, 255),
+            color_u8!(199, 66, 132, 255),
+            color_u8!(172, 83, 57, 255),
+            color_u8!(246, 73, 24, 255),
+            color_u8!(210, 85, 111, 255),
+            color_u8!(196, 124, 37, 255),
+            color_u8!(154, 50, 85, 255),
+        ]
+    };
+    match cue {
+        AllegianceCue::Ally => allies[rank],
+        AllegianceCue::Hostile | AllegianceCue::HostileTwin => hostiles[rank],
+        AllegianceCue::Mine => unreachable!("mine returned above"),
+    }
+}
+
+/// The seat-aware sprite/minimap accent. Own machines keep their faction
+/// art; every other seat receives its stable ally- or enemy-family tint.
+pub(crate) fn seat_identity_tint(
+    game: &crate::game::Game,
+    owner: oxide_sim::PlayerId,
+) -> Option<Color> {
+    (owner != game.human).then(|| seat_identity_color(game, owner))
 }
 
 /// How faded a memory draws after `age` seconds unseen: 0 fresh,
@@ -98,7 +187,9 @@ pub fn staleness_fade(age: f32) -> f32 {
 
 mod chrome;
 pub(crate) mod entities;
+mod environment;
 mod minimap;
+mod motion;
 mod panel_draw;
 mod world;
 use chrome::*;
@@ -112,22 +203,203 @@ use crate::input::InputState;
 use chassis::grid::TilePos;
 use macroquad::prelude::*;
 use oxide_sim::stats::SCRAP_NODE_AMOUNT;
-use oxide_sim::{GameResult, UnitKind};
 
 pub(crate) use crate::theme::{
     SURFACE_CARD, TEXT_BODY, TEXT_DISABLED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
 
-const OUTSIDE: Color = color_u8!(20, 20, 25, 255);
+pub(crate) const OUTSIDE: Color = color_u8!(20, 20, 25, 255);
 // World decoration (selection rings, rally poles, breadcrumbs) keeps
 // its own bone pair: the text tiers in crate::theme answer for
 // legibility, and raising them must never thicken the world's weight.
 const BONE: Color = color_u8!(232, 228, 216, 255);
 const BONE_FAINT: Color = color_u8!(232, 228, 216, 90);
+const UNIT_DRAW_SCALE: f32 = 1.05;
 const SCRAP_COLOR: Color = crate::theme::TEXT_ACCENT;
 const HP_BACK: Color = color_u8!(20, 20, 24, 220);
 const DANGER: Color = crate::theme::TEXT_DANGER;
 const PANEL: Color = crate::theme::SURFACE_PANEL;
+
+fn combat_icon_color(icon: crate::panel::CombatIcon) -> Color {
+    use crate::panel::CombatIcon;
+    match icon {
+        CombatIcon::Weapon => Color::new(0.85, 0.32, 0.29, 0.86),
+        CombatIcon::AirWeapon => Color::new(0.38, 0.70, 0.95, 0.90),
+        CombatIcon::DeadZone => Color::new(1.0, 0.68, 0.18, 0.92),
+        CombatIcon::Vision => Color::new(0.63, 0.77, 0.94, 0.86),
+        CombatIcon::Radar => Color::new(0.22, 0.76, 0.72, 0.90),
+        CombatIcon::Repair => Color::new(0.38, 0.82, 0.45, 0.90),
+    }
+}
+
+fn draw_combat_icon(
+    center: Vec2,
+    radius: f32,
+    icon: crate::panel::CombatIcon,
+    color: Color,
+    plate: bool,
+) {
+    use crate::panel::CombatIcon;
+    let radius = radius.max(2.0);
+    let stroke = (radius * 0.18).clamp(1.0, 2.0);
+    if plate {
+        draw_circle(
+            center.x,
+            center.y,
+            radius * 1.34,
+            Color::new(0.045, 0.045, 0.060, 0.88),
+        );
+    }
+    match icon {
+        CombatIcon::Weapon | CombatIcon::DeadZone => {
+            draw_circle_lines(center.x, center.y, radius * 0.58, stroke, color);
+            draw_line(
+                center.x - radius,
+                center.y,
+                center.x - radius * 0.38,
+                center.y,
+                stroke,
+                color,
+            );
+            draw_line(
+                center.x + radius * 0.38,
+                center.y,
+                center.x + radius,
+                center.y,
+                stroke,
+                color,
+            );
+            draw_line(
+                center.x,
+                center.y - radius,
+                center.x,
+                center.y - radius * 0.38,
+                stroke,
+                color,
+            );
+            draw_line(
+                center.x,
+                center.y + radius * 0.38,
+                center.x,
+                center.y + radius,
+                stroke,
+                color,
+            );
+            if icon == CombatIcon::DeadZone {
+                draw_line(
+                    center.x - radius * 0.78,
+                    center.y + radius * 0.78,
+                    center.x + radius * 0.78,
+                    center.y - radius * 0.78,
+                    stroke * 1.2,
+                    color,
+                );
+            }
+        }
+        CombatIcon::AirWeapon => {
+            // A top-down aircraft inside four targeting brackets. The
+            // aircraft names the domain; the brackets make this an attack
+            // reach mark rather than a place the selected unit can fly.
+            let corner = radius * 0.34;
+            for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                let x = center.x + sx * radius;
+                let y = center.y + sy * radius;
+                draw_line(x, y, x - sx * corner, y, stroke, color);
+                draw_line(x, y, x, y - sy * corner, stroke, color);
+            }
+            let aircraft = radius * 0.66;
+            draw_line(
+                center.x,
+                center.y - aircraft,
+                center.x,
+                center.y + aircraft * 0.82,
+                stroke,
+                color,
+            );
+            draw_line(
+                center.x,
+                center.y - aircraft * 0.18,
+                center.x - aircraft,
+                center.y + aircraft * 0.34,
+                stroke,
+                color,
+            );
+            draw_line(
+                center.x,
+                center.y - aircraft * 0.18,
+                center.x + aircraft,
+                center.y + aircraft * 0.34,
+                stroke,
+                color,
+            );
+            draw_line(
+                center.x,
+                center.y + aircraft * 0.48,
+                center.x - aircraft * 0.48,
+                center.y + aircraft * 0.82,
+                stroke,
+                color,
+            );
+            draw_line(
+                center.x,
+                center.y + aircraft * 0.48,
+                center.x + aircraft * 0.48,
+                center.y + aircraft * 0.82,
+                stroke,
+                color,
+            );
+        }
+        CombatIcon::Vision => {
+            let left = vec2(center.x - radius, center.y);
+            let right = vec2(center.x + radius, center.y);
+            let upper = vec2(center.x, center.y - radius * 0.62);
+            let lower = vec2(center.x, center.y + radius * 0.62);
+            for (a, b) in [(left, upper), (upper, right), (right, lower), (lower, left)] {
+                draw_line(a.x, a.y, b.x, b.y, stroke, color);
+            }
+            draw_circle(center.x, center.y, radius * 0.28, color);
+        }
+        CombatIcon::Radar => {
+            let origin = center + vec2(-radius * 0.58, radius * 0.58);
+            draw_circle(origin.x, origin.y, radius * 0.18, color);
+            for ring in [0.62, 1.0] {
+                let segments = 7;
+                for segment in 0..segments {
+                    let a = -std::f32::consts::FRAC_PI_2
+                        + std::f32::consts::FRAC_PI_2 * segment as f32 / segments as f32;
+                    let b = -std::f32::consts::FRAC_PI_2
+                        + std::f32::consts::FRAC_PI_2 * (segment + 1) as f32 / segments as f32;
+                    draw_line(
+                        origin.x + a.cos() * radius * ring,
+                        origin.y + a.sin() * radius * ring,
+                        origin.x + b.cos() * radius * ring,
+                        origin.y + b.sin() * radius * ring,
+                        stroke,
+                        color,
+                    );
+                }
+            }
+        }
+        CombatIcon::Repair => {
+            draw_line(
+                center.x - radius,
+                center.y,
+                center.x + radius,
+                center.y,
+                stroke * 1.25,
+                color,
+            );
+            draw_line(
+                center.x,
+                center.y - radius,
+                center.x,
+                center.y + radius,
+                stroke * 1.25,
+                color,
+            );
+        }
+    }
+}
 
 /// The user's UI scale preference — atomic f32 bits so the settings
 /// screen can retune it live while every draw and hit-test path reads
@@ -166,13 +438,17 @@ pub fn reduced_motion() -> bool {
 /// 2560-pixel display). The user preference is the only factor.
 pub fn ui_scale() -> f32 {
     let user = f32::from_bits(USER_SCALE.load(std::sync::atomic::Ordering::Relaxed));
-    // A narrow window can't seat 150% chrome: panel packing would run
-    // under the minimap and its click rects would shadow camera clicks.
-    // Cap by width so 640px tops out at 1x, 960px at 1.5x, and roomy
-    // windows keep whatever the user asked for. The width is injected
-    // per frame, never queried — headless tests get the default window.
-    let cap = (view_width() / 640.0).max(1.0);
-    user.min(cap)
+    effective_ui_scale(user, viewport())
+}
+
+fn effective_ui_scale(user: f32, viewport: Vec2) -> f32 {
+    // A narrow OR short window can't seat enlarged chrome. Width guards
+    // horizontal packing; height keeps a 960x400 window from accepting
+    // 150% cards that physically cannot fit even after the minimap yields.
+    // The viewport is injected per frame, never queried from the window.
+    let width_cap = (viewport.x / 640.0).max(1.0);
+    let height_cap = (viewport.y / 400.0).max(1.0);
+    user.min(width_cap).min(height_cap)
 }
 
 #[cfg(not(test))]
@@ -243,14 +519,13 @@ fn view_height() -> f32 {
 /// Draws one frame.
 pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     clear_background(OUTSIDE);
+    environment::draw_backdrop(game);
     let alpha = game.render_alpha();
     draw_tiles(game, sprites);
+    environment::draw_boundary(game);
     draw_scorches(game, sprites);
     draw_buildings(game, sprites);
     draw_units(game, sprites, alpha);
-    // The skyline pass: peak crowns overhang the tile above and
-    // occlude whatever stands behind the ridge.
-    draw_peak_crowns(game, sprites);
     draw_fx(game, sprites);
     // The debug overlay is deliberately omniscient; the spectator
     // stance (playback) skips the fog too but never the debug chrome.
@@ -310,6 +585,31 @@ pub fn theme_tint(theme: &str) -> Color {
 
 const GHOST_TINT: Color = color_u8!(150, 150, 165, 210);
 
+fn unit_work_facing(
+    from: chassis::fx::Vec2Fx,
+    work: crate::presentation_animation::UnitWorkState,
+) -> Option<f32> {
+    use crate::presentation_animation::UnitWorkState;
+    let target = match work {
+        UnitWorkState::Harvesting { target, .. }
+        | UnitWorkState::Constructing { target, .. }
+        | UnitWorkState::Repairing { target, .. }
+        | UnitWorkState::Salvaging { target, .. } => target,
+        UnitWorkState::Idle => return None,
+    };
+    let to_screen_space =
+        |point: chassis::fx::Vec2Fx| vec2(point.x.to_num::<f32>(), point.y.to_num::<f32>());
+    let direction = to_screen_space(target) - to_screen_space(from);
+    (direction.length_squared() > 1e-6)
+        .then(|| direction.y.atan2(direction.x) + std::f32::consts::FRAC_PI_2)
+}
+
+fn unit_selection_radius(kind: oxide_sim::UnitKind, zoom: f32, padding: f32) -> f32 {
+    let collision_radius = kind.stats().radius.to_num::<f32>();
+    let visual_radius = UNIT_DRAW_SCALE * 0.5;
+    collision_radius.max(visual_radius) * zoom + padding
+}
+
 fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim::stats::Domain) {
     let zoom = game.camera.zoom;
     let airborne = domain == oxide_sim::stats::Domain::Air;
@@ -324,7 +624,43 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         let faction = game.state.player(unit.player).faction;
         let pos = game.draw_pos(unit.id, unit.pos, alpha);
         let mut screen = game.camera.to_screen(pos);
-        let dest = zoom * 1.05;
+        let dest = zoom * UNIT_DRAW_SCALE;
+        let current = vec2(unit.pos.x.to_num::<f32>(), unit.pos.y.to_num::<f32>());
+        let moving = game
+            .prev_pos
+            .get(&unit.id.0)
+            .is_some_and(|previous| (*previous - current).length_squared() > 1e-6);
+        let animation = game.animations.unit_state(
+            crate::presentation_animation::UnitAnimationFacts::capture(&game.state, unit, moving),
+            crate::presentation_animation::AnimationClock::from_state(
+                &game.state,
+                game.tick_fraction(),
+            ),
+            crate::presentation_animation::AnimationOptions {
+                reduced_motion: reduced_motion(),
+            },
+        );
+        let frame = motion::unit_frame(unit.kind, animation);
+        let preparing = animation.weapons.iter().any(|cycle| {
+            matches!(
+                cycle,
+                crate::presentation_animation::WeaponCycle::Preparing { .. }
+            )
+        });
+        // Report/recovery owns the heading. A stationary heavy weapon
+        // then keeps that aim throughout its physical reload; real
+        // locomotion resumes movement facing instead of sliding sideways.
+        let aim = game.aim_units.get(&unit.id.0).copied();
+        let work_facing = unit_work_facing(unit.pos, animation.work);
+        let rotation = match aim {
+            Some((angle, at))
+                if animation.attack.is_some()
+                    || !moving && (preparing || game.fx_time() - at < 1.2) =>
+            {
+                angle
+            }
+            _ => work_facing.unwrap_or_else(|| game.facing.get(&unit.id.0).copied().unwrap_or(0.0)),
+        };
         if airborne {
             let shadow = zoom * 0.9;
             draw_texture_ex(
@@ -341,12 +677,13 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
             // The body rides visibly above its shadow.
             screen.y -= zoom * 0.18;
         }
+        let body = screen;
         if game.selection.units.contains(&unit.id) {
             if unit.player == game.human {
                 draw_circle_lines(
                     screen.x,
                     screen.y,
-                    unit.kind.stats().radius.to_num::<f32>() * zoom + 4.0,
+                    unit_selection_radius(unit.kind, zoom, 4.0),
                     2.0,
                     BONE,
                 );
@@ -357,56 +694,47 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
                 draw_circle_lines(
                     screen.x,
                     screen.y,
-                    unit.kind.stats().radius.to_num::<f32>() * zoom + 5.5,
+                    unit_selection_radius(unit.kind, zoom, 5.5),
                     1.5,
                     BONE_FAINT,
                 );
             }
         }
-        // A recent shot owns the heading: the mount tracks its victim
-        // for a beat, with a recoil nudge fading over the first tenth
-        // of a second, then movement facing resumes.
-        let aim = game.aim_units.get(&unit.id.0).copied();
-        let rotation = match aim {
-            Some((angle, at)) if game.fx_time() - at < 1.2 => angle,
-            _ => game.facing.get(&unit.id.0).copied().unwrap_or(0.0),
-        };
-        let mut body = screen;
-        if !reduced_motion()
-            && let Some((angle, at)) = aim
-        {
-            let age = game.fx_time() - at;
-            if age < 0.12 {
-                let dir = vec2(angle.sin(), -angle.cos());
-                body -= dir * zoom * 0.07 * (1.0 - age / 0.12);
-            }
-        }
-        // A working harvester runs its scoop cycle — dig frames while it
-        // stands at its source, the travel pose everywhere else. Under
-        // reduced motion the cycle freezes on the travel pose.
-        let (source, accent) = if unit.kind == UnitKind::Harvester
-            && !reduced_motion()
-            && matches!(unit.order, oxide_sim::Order::Harvest { node }
-                if unit.tile().chebyshev(node) <= 1)
-        {
-            let frame = [0usize, 1, 2, 1][((game.fx_time() * 4.0) as usize) % 4];
-            (
-                sprites.harvester_working(faction, frame),
-                sprites.harvester_working_accent(frame),
-            )
-        } else {
-            (
+        let body_size = vec2(dest, dest);
+        let (source, accent) = match frame {
+            motion::UnitFrame::Idle => (
                 sprites.unit(unit.kind, faction),
                 sprites.unit_accent(unit.kind),
-            )
+            ),
+            motion::UnitFrame::Moving(phase) => (
+                sprites.unit_moving(unit.kind, faction, phase + 1),
+                sprites.unit_moving_accent(unit.kind, phase + 1),
+            ),
+            motion::UnitFrame::Action(action) => (
+                sprites.unit_action(unit.kind, faction, action),
+                sprites.unit_action_accent(unit.kind, action),
+            ),
+            motion::UnitFrame::Harvester { cargo, pose } => {
+                let pose = match pose {
+                    motion::HarvesterPose::Idle => SpriteHarvesterPose::Idle,
+                    motion::HarvesterPose::Moving(0) => SpriteHarvesterPose::Tread1,
+                    motion::HarvesterPose::Moving(_) => SpriteHarvesterPose::Tread2,
+                    motion::HarvesterPose::Scoop(0) => SpriteHarvesterPose::Scoop1,
+                    motion::HarvesterPose::Scoop(_) => SpriteHarvesterPose::Scoop2,
+                };
+                (
+                    sprites.harvester_frame(faction, cargo, pose),
+                    sprites.harvester_frame_accent(cargo, pose),
+                )
+            }
         };
         draw_texture_ex(
             sprites.texture(),
-            body.x - dest * 0.5,
-            body.y - dest * 0.5,
+            body.x - body_size.x * 0.5,
+            body.y - body_size.y * 0.5,
             WHITE,
             DrawTextureParams {
-                dest_size: Some(vec2(dest, dest)),
+                dest_size: Some(body_size),
                 source: Some(source),
                 rotation,
                 ..Default::default()
@@ -415,75 +743,19 @@ fn draw_unit_pass(game: &Game, sprites: &Sprites, alpha: f32, domain: oxide_sim:
         // The allegiance accent rides the body draw exactly — same
         // pose, same frame — and draws UNCONDITIONALLY for non-own
         // machines: selection must never repaint a foe as a friend.
-        if let Some(tint) = allegiance_tint(allegiance_cue(game, unit.player)) {
+        if let Some(tint) = seat_identity_tint(game, unit.player) {
             draw_texture_ex(
                 sprites.texture(),
-                body.x - dest * 0.5,
-                body.y - dest * 0.5,
+                body.x - body_size.x * 0.5,
+                body.y - body_size.y * 0.5,
                 tint,
                 DrawTextureParams {
-                    dest_size: Some(vec2(dest, dest)),
+                    dest_size: Some(body_size),
                     source: Some(accent),
                     rotation,
                     ..Default::default()
                 },
             );
-        }
-        // The cargo eye: a fixed ring that FILLS with carrying/capacity
-        // — load reads as area, not as a pulse (and needs no motion at
-        // all). The scoop cycle above stays the "actually working"
-        // tell; the eye only says how much is aboard.
-        if unit.kind == UnitKind::Harvester
-            && let Some(hstats) = unit.kind.stats().harvest
-            && (unit.carrying > 0 || matches!(unit.order, oxide_sim::Order::Harvest { .. }))
-        {
-            let r = zoom * 0.11;
-            let frac = (unit.carrying as f32 / hstats.capacity as f32).clamp(0.0, 1.0);
-            draw_circle_lines(screen.x, screen.y, r, 1.0, SCRAP_COLOR);
-            if frac > 0.0 {
-                // Area-linear: half a load LOOKS half full.
-                draw_circle(screen.x, screen.y, r * frac.sqrt(), SCRAP_COLOR);
-            }
-        }
-        // Slow guns charge up through the same yellow circle: drawn
-        // only while the shot is still coming back (an idle ready gun
-        // wears nothing), for heavy cooldowns anywhere plus whatever
-        // the player has selected. A spotter gun whose current victim
-        // the team can't see hollows — a filling eye must not promise
-        // a shot the fire gate is blocking.
-        let stats = unit.kind.stats();
-        if let Some(weapon) = stats.weapons.first() {
-            let selected = game
-                .selection
-                .units
-                .iter()
-                .take(DECOR_CAP)
-                .any(|i| *i == unit.id);
-            let remaining = unit.cooldowns[0];
-            if remaining > 0 && (weapon.cooldown_ticks >= CHARGE_EYE_COOLDOWN || selected) {
-                let r = zoom * 0.11;
-                let frac = 1.0 - remaining as f32 / weapon.cooldown_ticks as f32;
-                let gated = unit.player == game.human
-                    && weapon.range.to_num::<f32>() > stats.vision as f32
-                    && match unit.order {
-                        oxide_sim::Order::Attack { target, .. } => {
-                            let tile = match target {
-                                oxide_sim::Target::Unit(id) => {
-                                    game.state.unit(id).map(|u| u.tile())
-                                }
-                                oxide_sim::Target::Building(id) => {
-                                    game.state.building(id).map(|b| b.anchor)
-                                }
-                            };
-                            tile.is_some_and(|t| !game.my_vision().visible(t))
-                        }
-                        _ => false,
-                    };
-                draw_circle_lines(screen.x, screen.y, r, 1.0, SCRAP_COLOR);
-                if !gated && frac > 0.0 {
-                    draw_circle(screen.x, screen.y, r * frac.sqrt(), SCRAP_COLOR);
-                }
-            }
         }
         let max_hp = unit.kind.stats().max_hp;
         if unit.hp < max_hp {
@@ -536,11 +808,6 @@ fn hp_bar(x: f32, y: f32, w: f32, hp: u32, max_hp: u32) {
 /// army of forty must not paint forty overlapping circles.
 const DECOR_CAP: usize = 12;
 
-/// Primary-weapon cooldown at which the charge eye draws unbidden
-/// (lancer 60, bastion 90, bombard 100 — deliberately above the
-/// Buzzard's 50, which flies in flocks and would wear twelve eyes).
-const CHARGE_EYE_COOLDOWN: u32 = 55;
-
 // --- Minimap ------------------------------------------------------------
 
 /// The tutorial card's full rectangle — pure geometry shared by
@@ -581,7 +848,7 @@ pub fn draw_tutorial(t: &crate::tutorial::Tutorial, game: &crate::game::Game) {
     draw_rectangle_lines(x, y, w, h, 1.5 * s, Color::new(0.85, 0.65, 0.35, 0.9));
     draw_text(
         format!(
-            "TUTORIAL {}/{}  ·  {}",
+            "TUTORIAL {}/{}  |  {}",
             t.step + 1,
             crate::tutorial::STEPS.len(),
             step.title
@@ -620,6 +887,81 @@ pub fn draw_tutorial(t: &crate::tutorial::Tutorial, game: &crate::game::Game) {
 
 #[cfg(test)]
 mod tests {
+    use macroquad::prelude::vec2;
+
+    #[test]
+    fn active_work_faces_its_physical_target() {
+        use crate::presentation_animation::UnitWorkState;
+        use chassis::grid::TilePos;
+
+        let from = TilePos::new(4, 4).center();
+        let east = TilePos::new(5, 4).center();
+        let north = TilePos::new(4, 3).center();
+        let east_angle = super::unit_work_facing(
+            from,
+            UnitWorkState::Harvesting {
+                target: east,
+                cycle: 0.0,
+            },
+        )
+        .expect("different target has a heading");
+        assert!((east_angle - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert_eq!(
+            super::unit_work_facing(
+                from,
+                UnitWorkState::Repairing {
+                    target: north,
+                    cycle: 0.0,
+                }
+            ),
+            Some(0.0)
+        );
+        assert_eq!(
+            super::unit_work_facing(
+                from,
+                UnitWorkState::Salvaging {
+                    target: from,
+                    cycle: 0.0,
+                }
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn harvester_selection_ring_clears_the_rendered_sprite() {
+        let zoom = 32.0;
+        let padding = 4.0;
+        let radius = super::unit_selection_radius(oxide_sim::UnitKind::Harvester, zoom, padding);
+        let visual_radius = super::UNIT_DRAW_SCALE * zoom * 0.5;
+        let collision_radius = oxide_sim::UnitKind::Harvester
+            .stats()
+            .radius
+            .to_num::<f32>()
+            * zoom;
+
+        assert!((radius - (visual_radius + padding)).abs() < 1e-6);
+        assert!(radius > collision_radius + padding);
+    }
+
+    #[test]
+    fn ui_scale_respects_both_small_window_axes() {
+        assert_eq!(super::effective_ui_scale(1.5, vec2(640.0, 800.0)), 1.0);
+        assert_eq!(super::effective_ui_scale(1.5, vec2(960.0, 400.0)), 1.0);
+        assert_eq!(super::effective_ui_scale(1.5, vec2(960.0, 600.0)), 1.5);
+        assert_eq!(super::effective_ui_scale(0.75, vec2(640.0, 400.0)), 0.75);
+    }
+
+    #[test]
+    fn ground_and_air_weapon_marks_do_not_depend_on_one_hue() {
+        let ground = super::combat_icon_color(crate::panel::CombatIcon::Weapon);
+        let air = super::combat_icon_color(crate::panel::CombatIcon::AirWeapon);
+
+        assert!(ground.r > ground.b, "ground range stays warm");
+        assert!(air.b > air.r, "air range stays cool");
+        assert_ne!(ground, air);
+    }
+
     #[test]
     fn the_staleness_ramp_is_fresh_then_caps() {
         assert_eq!(super::staleness_fade(0.0), 0.0);
@@ -664,7 +1006,7 @@ mod tests {
         assert_eq!(
             super::allegiance_tint(HostileTwin),
             Some(foe),
-            "every hostile wears one hue — twins get no separate look"
+            "every hostile wears one hue; twins get no separate look"
         );
         assert!(ally.b > ally.r, "ally reads blue");
         assert!(foe.r > foe.b, "hostile reads crimson");
@@ -678,5 +1020,73 @@ mod tests {
             "colorblind mode splits friend from foe by luminance, not hue"
         );
         super::set_colorblind(false);
+    }
+
+    #[test]
+    fn every_team_seat_gets_a_stable_identity_inside_its_allegiance_family() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../scenarios/compass-grand.json");
+        let scenario = oxide_sim::Scenario::load(&path).expect("shipped map loads");
+        let game =
+            crate::game::Game::with_viewport(scenario, macroquad::prelude::vec2(1280.0, 800.0))
+                .expect("compass grand builds");
+        super::set_colorblind(false);
+        let key = |seat: u8| {
+            let color = super::seat_identity_color(&game, oxide_sim::PlayerId(seat));
+            (
+                (color.r * 255.0).round() as u8,
+                (color.g * 255.0).round() as u8,
+                (color.b * 255.0).round() as u8,
+            )
+        };
+        let allies = [1, 2, 3].map(key);
+        let hostiles = [4, 5, 6, 7].map(key);
+        for colors in [allies.as_slice(), hostiles.as_slice()] {
+            for (index, color) in colors.iter().enumerate() {
+                assert!(
+                    !colors[..index].contains(color),
+                    "each seat in one allegiance family needs a distinct accent"
+                );
+            }
+        }
+        assert!(
+            allies.iter().all(|(r, _, b)| b > r),
+            "allies stay in the cool family"
+        );
+        assert!(
+            hostiles.iter().all(|(r, _, b)| r > b),
+            "hostiles stay in the warm family"
+        );
+    }
+
+    #[test]
+    fn every_ffa_opponent_gets_a_distinct_hostile_identity() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../scenarios/compass-grand.json");
+        let mut scenario = oxide_sim::Scenario::load(&path).expect("shipped map loads");
+        for player in &mut scenario.players {
+            player.team = None;
+        }
+        let game =
+            crate::game::Game::with_viewport(scenario, macroquad::prelude::vec2(1280.0, 800.0))
+                .expect("eight-seat FFA builds");
+        super::set_colorblind(false);
+        let colors: Vec<_> = (1..8)
+            .map(|seat| {
+                let color = super::seat_identity_color(&game, oxide_sim::PlayerId(seat));
+                (
+                    (color.r * 255.0).round() as u8,
+                    (color.g * 255.0).round() as u8,
+                    (color.b * 255.0).round() as u8,
+                )
+            })
+            .collect();
+        for (index, color) in colors.iter().enumerate() {
+            assert!(
+                !colors[..index].contains(color),
+                "hostile seat {} aliases an earlier FFA opponent",
+                index + 1
+            );
+        }
     }
 }

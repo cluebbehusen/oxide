@@ -97,7 +97,7 @@
  "meta": {
   "hook": "Terrain herds the war along the slag line.",
   "pace": "standard",
-  "duration": "5-8 min",
+  "duration": "6-12 min",
   "mode": "1v1",
   "richness": "standard",
   "theme": "slag"

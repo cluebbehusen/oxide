@@ -14,7 +14,7 @@ use oxide_protocol::hash_hex;
 use oxide_sim::bot::{SeatBot, seat_bots};
 use oxide_sim::{
     Building, BuildingId, Command, Event, PlayerCommand, PlayerId, SIM_VERSION, Scenario, State,
-    TICKS_PER_SECOND, UnitId,
+    TICKS_PER_SECOND, Target, UnitId,
 };
 use std::collections::HashMap;
 
@@ -33,15 +33,16 @@ pub struct Selection {
     /// Selected units — single-allegiance by construction (own for
     /// command, ally/enemy for read-only inspection).
     pub units: Vec<UnitId>,
-    /// Selected building of any owner (mutually exclusive with units
-    /// in practice); commands validate ownership at their own gates.
-    pub building: Option<BuildingId>,
+    /// Selected buildings of one owner (mutually exclusive with units
+    /// in practice), kept in id order. Commands validate ownership at
+    /// their own gates.
+    pub buildings: Vec<BuildingId>,
 }
 
 /// A transient visual effect (never sim-relevant).
 mod fx;
 
-pub use fx::{BoltStyle, Effect, EffectKind, PingKind, SoundKind};
+pub use fx::{Effect, EffectKind, FlakYokeDelay, PingKind, ShotStyle, SoundKind};
 
 /// A transient HUD message (rejected orders, stalled units).
 pub struct Toast {
@@ -85,6 +86,12 @@ pub struct Game {
     pub aim_units: HashMap<u32, (f32, f32)>,
     /// Same for buildings (turret mounts track their last victim).
     pub aim_buildings: HashMap<u32, (f32, f32)>,
+    /// The live victims defense mounts follow between reports. The last
+    /// legal angle remains in `aim_buildings` after a target disappears.
+    pub(crate) aim_building_targets: HashMap<u32, Target>,
+    /// Action-driven authored sprite state. This remembers only transient
+    /// output events; clearing it never changes simulation truth.
+    pub(crate) animations: crate::presentation_animation::AnimationController,
     /// Live effects.
     pub fx: Vec<Effect>,
     /// Clips queued by this frame's ticks; the main loop drains and plays.
@@ -119,8 +126,11 @@ pub struct Game {
     /// the tooltip pass — building it twice per frame was pure waste.
     pub panel_model: std::cell::RefCell<Option<crate::panel::Panel>>,
     /// End-of-match statistics, computed once from the recorder when
-    /// the result lands (the record IS the match — a re-execution).
+    /// the result lands from the bounded live tracker.
     pub end_stats: Option<oxide_kit::stats::MatchStats>,
+    /// Tick-event totals and adaptively thinned graph samples. This is
+    /// presentation bookkeeping and never feeds back into the sim.
+    live_stats: oxide_kit::stats::LiveMatchStats,
     /// The match in numbers at the moment the human conceded an
     /// UNDECIDED team match — the exit offer's stats. Decided matches
     /// (a 1v1 surrender included) go through `end_stats` instead.
@@ -192,6 +202,7 @@ impl Game {
 
     fn assemble(scenario: Scenario, viewport: Vec2, human: PlayerId) -> Result<Self> {
         let state = scenario.build()?;
+        let live_stats = oxide_kit::stats::LiveMatchStats::new(&state);
         let bots = seat_bots(&scenario);
         let recorder = Replay::new(SIM_VERSION, scenario.clone());
         let focus = state
@@ -222,6 +233,8 @@ impl Game {
             facing: HashMap::new(),
             aim_units: HashMap::new(),
             aim_buildings: HashMap::new(),
+            aim_building_targets: HashMap::new(),
+            animations: crate::presentation_animation::AnimationController::default(),
             fx: Vec::new(),
             sounds_pending: Vec::new(),
             autosave_done: false,
@@ -235,6 +248,7 @@ impl Game {
             layout: std::cell::Cell::new(crate::layout::LayoutModel::default()),
             panel_model: std::cell::RefCell::new(None),
             end_stats: None,
+            live_stats,
             concede_stats: None,
             conceded_banner: false,
             demo: crate::tutorial::Demo::default(),
@@ -279,6 +293,7 @@ impl Game {
         // session then continues exactly as the unsaved one would have.
         let mut bots = seat_bots(&scenario);
         let mut cursor = replay.cursor();
+        let mut live_stats = oxide_kit::stats::LiveMatchStats::new(&state);
         for _ in 0..total {
             for bot in &mut bots {
                 let _ = bot.act(&state);
@@ -288,16 +303,21 @@ impl Game {
                 .iter()
                 .map(|t| t.command.clone())
                 .collect();
-            state.tick(&commands);
+            let report = state.tick(&commands);
+            live_stats.observe(&state, &report.events);
         }
         anyhow::ensure!(
             cursor.is_finished(),
             "replay duration metadata does not cover its own commands"
         );
         let mut game = Self::new(scenario)?;
-        game.state = state;
+        game.replace_state_after_jump(&state);
         game.bots = bots;
         game.recorder = replay;
+        game.live_stats = live_stats;
+        if game.state.result().is_some() {
+            game.end_stats = Some(game.live_stats.snapshot(&game.state));
+        }
         if let Some(focus) = game
             .state
             .buildings()
@@ -342,6 +362,10 @@ impl Game {
                 .record(self.state.current_tick(), command.clone());
         }
         let report = self.state.tick(&commands);
+        self.live_stats.observe(&self.state, &report.events);
+        if self.state.result().is_some() && self.end_stats.is_none() {
+            self.end_stats = Some(self.live_stats.snapshot(&self.state));
+        }
 
         // Income is evidence too: the mining lesson graduates on a
         // load actually landing, not on the accepted order — so it
@@ -367,10 +391,7 @@ impl Game {
                 .iter()
                 .any(|e| matches!(e, Event::PlayerResigned { player } if *player == self.human))
         {
-            let mut replay = self.recorder.clone();
-            let total = self.state.current_tick();
-            replay.meta.ticks = Some(total);
-            self.concede_stats = oxide_kit::stats::compute(&replay, (total / 48).max(1)).ok();
+            self.concede_stats = Some(self.live_stats.snapshot(&self.state));
             self.conceded_banner = true;
         }
 
@@ -393,15 +414,16 @@ impl Game {
                     }
                     Command::Harvest { .. } => self.demo.harvested = true,
                     Command::Build { .. } => self.demo.built = true,
-                    // The march lesson teaches attack-move specifically;
-                    // a targeted attack is a different verb.
-                    Command::AttackMove { .. } => self.demo.attack_moved = true,
+                    // The march lesson teaches the default zero-chase advance;
+                    // explicit attack-move is a different stance.
+                    Command::Advance { .. } => self.demo.advanced = true,
                     _ => {}
                 }
             }
         }
 
         if !self.suppress_presentation {
+            self.animations.observe(&report);
             for unit in self.state.units() {
                 let now = world_vec(unit.pos);
                 if let Some(prev) = self.prev_pos.get(&unit.id.0) {
@@ -439,15 +461,23 @@ impl Game {
             .retain(|id, _| state.unit(UnitId(*id)).is_some());
         self.aim_buildings
             .retain(|id, _| state.building(oxide_sim::BuildingId(*id)).is_some());
-        if let Some(b) = self.selection.building
-            && !self.state.building(b).is_some_and(|b| {
-                !self.state.hostile(human, b.player)
+        self.aim_building_targets.retain(|id, target| {
+            state.building(oxide_sim::BuildingId(*id)).is_some()
+                && match target {
+                    Target::Unit(id) => state.unit(*id).is_some(),
+                    Target::Building(id) => state.building(*id).is_some(),
+                }
+        });
+        self.animations.retain_live(state);
+        self.selection.buildings.retain(|id| {
+            self.state.building(*id).is_some_and(|building| {
+                !self.state.hostile(human, building.player)
                     || all_seeing
-                    || b.tiles().any(|t| self.state.vision(human).visible(t))
+                    || building
+                        .tiles()
+                        .any(|tile| self.state.vision(human).visible(tile))
             })
-        {
-            self.selection.building = None;
-        }
+        });
         report
     }
 
@@ -459,7 +489,7 @@ impl Game {
 
     /// Absorbs one batch of replayed ticks for presentation: the world
     /// the engine produced plus the events it emitted on the way —
-    /// bolts, deaths, aim, and sound work in playback exactly as live.
+    /// shots, deaths, aim, and sound work in playback exactly as live.
     pub fn playback_present(&mut self, state: &oxide_sim::State, events: &[Event]) {
         self.prev_pos = self
             .state
@@ -480,6 +510,8 @@ impl Game {
                 }
             }
         }
+        self.animations
+            .observe_events(self.state.current_tick(), events);
         self.spawn_fx(events);
         let state = &self.state;
         self.facing
@@ -488,6 +520,14 @@ impl Game {
             .retain(|id, _| state.unit(UnitId(*id)).is_some());
         self.aim_buildings
             .retain(|id, _| state.building(oxide_sim::BuildingId(*id)).is_some());
+        self.aim_building_targets.retain(|id, target| {
+            state.building(oxide_sim::BuildingId(*id)).is_some()
+                && match target {
+                    Target::Unit(id) => state.unit(*id).is_some(),
+                    Target::Building(id) => state.building(*id).is_some(),
+                }
+        });
+        self.animations.retain_live(state);
     }
 
     /// Drops queued transient presentation — what a bulk jump (a seek)
@@ -501,6 +541,23 @@ impl Game {
         // for a shot fired on the timeline we just left.
         self.aim_units.clear();
         self.aim_buildings.clear();
+        self.aim_building_targets.clear();
+        self.animations.reset_transients();
+    }
+
+    /// Replaces truth after a seek or replay rebuild and establishes that
+    /// destination as both interpolation endpoints. Timeline-local facing,
+    /// aim, reports, and effects cannot survive across the jump.
+    pub fn replace_state_after_jump(&mut self, state: &State) {
+        self.state = state.clone();
+        self.drop_presentation();
+        self.prev_pos = self
+            .state
+            .units()
+            .iter()
+            .map(|unit| (unit.id.0, world_vec(unit.pos)))
+            .collect();
+        self.facing.clear();
     }
 
     /// The effect clock — what aim holds and recoil age against.
@@ -524,23 +581,40 @@ impl Game {
         (self.accum / TICK_DT).clamp(0.0, 1.0)
     }
 
-    /// Advances the sim from wall time (the normal play path).
-    pub fn advance_wall_clock(&mut self, dt: f32) {
+    /// Mirrors an externally owned replay clock into this render vehicle.
+    /// Playback advances through its own engine, so this changes only the
+    /// interpolation and authored-animation fraction, never simulation time.
+    pub(crate) fn sync_external_tick_fraction(&mut self, fraction: f32) {
+        self.accum = fraction.clamp(0.0, 1.0) * TICK_DT;
+    }
+
+    /// Advances the ordinary live path while optionally stopping on one exact
+    /// tick. Native profiling supplies the bound so a multi-tick frame cannot
+    /// overshoot its requested sample window; ordinary play passes `None`.
+    pub fn advance_wall_clock(&mut self, dt: f32, stop_tick: Option<u64>) -> bool {
         if self.paused {
-            return;
+            return false;
         }
         self.accum += dt * self.speed as f32;
         let mut ran = 0;
-        while self.accum >= TICK_DT && ran < MAX_TICKS_PER_FRAME {
+        while self.accum >= TICK_DT
+            && ran < MAX_TICKS_PER_FRAME
+            && stop_tick.is_none_or(|tick| self.state.current_tick() < tick)
+        {
             self.accum -= TICK_DT;
             self.do_tick();
             ran += 1;
+        }
+        if stop_tick.is_some_and(|tick| self.state.current_tick() >= tick) {
+            self.accum = 0.0;
+            return true;
         }
         // Behind by more than a frame's worth of ticks? Drop the debt
         // rather than spiraling.
         if ran == MAX_TICKS_PER_FRAME {
             self.accum = self.accum.min(TICK_DT);
         }
+        false
     }
 
     /// Fast-forwards `n` ticks immediately, pause state notwithstanding
@@ -554,14 +628,14 @@ impl Game {
         // No cross-jump interpolation after a bulk advance — and whatever
         // presentation slipped in beforehand doesn't survive the jump.
         self.accum = 0.0;
-        self.sounds_pending.clear();
-        self.fx.clear();
+        self.drop_presentation();
         self.prev_pos = self
             .state
             .units()
             .iter()
             .map(|u| (u.id.0, world_vec(u.pos)))
             .collect();
+        self.facing.clear();
     }
 
     /// Advances a small number of ticks while retaining presentation
@@ -680,6 +754,7 @@ impl Game {
         self.alerts.push((world, 0.0));
         self.last_alert = Some(world);
         self.toast("under attack");
+        self.sounds_pending.push((SoundKind::Alert, None));
     }
 
     /// Interpolated draw position for a unit.
@@ -741,6 +816,25 @@ mod tests {
     use oxide_sim::{Command, Scenario, UnitKind};
 
     #[test]
+    fn admitted_attack_alert_queues_one_protected_audio_cue() {
+        let mut game = Game::with_viewport(
+            Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("skirmish builds");
+        game.sounds_pending.clear();
+
+        game.raise_alert(macroquad::prelude::vec2(10.0, 10.0));
+        game.raise_alert(macroquad::prelude::vec2(11.0, 11.0));
+
+        assert_eq!(
+            game.sounds_pending,
+            vec![(SoundKind::Alert, None)],
+            "the region gate must admit one alert cue rather than one per hit"
+        );
+    }
+
+    #[test]
     fn demo_flags_read_only_the_humans_commands() {
         let mut game = Game::with_viewport(
             Scenario::skirmish(),
@@ -775,7 +869,7 @@ mod tests {
         for _ in 0..20 {
             game.do_tick();
         }
-        assert!(!game.demo.attack_moved);
+        assert!(!game.demo.advanced);
         assert!(!game.demo.built);
     }
 
@@ -875,6 +969,43 @@ mod tests {
     }
 
     #[test]
+    fn wall_clock_profile_bound_cannot_overshoot_inside_a_multi_tick_frame() {
+        let mut game = Game::with_viewport(
+            Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("skirmish builds");
+        game.speed = 8.0;
+
+        assert!(game.advance_wall_clock(1.0, Some(5)));
+        assert_eq!(game.state.current_tick(), 5);
+        assert_eq!(game.tick_fraction(), 0.0);
+    }
+
+    #[test]
+    fn bulk_advance_drops_old_timeline_aim_and_facing() {
+        let mut game = Game::with_viewport(
+            Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("skirmish builds");
+        let unit = game.state.units()[0].id.0;
+        let building = game.state.buildings()[0].id.0;
+        game.facing.insert(unit, 1.25);
+        game.aim_units.insert(unit, (2.5, game.fx_time()));
+        game.aim_buildings.insert(building, (0.75, game.fx_time()));
+        game.aim_building_targets
+            .insert(building, Target::Unit(UnitId(unit)));
+
+        game.advance_ticks(1);
+
+        assert!(game.facing.is_empty());
+        assert!(game.aim_units.is_empty());
+        assert!(game.aim_buildings.is_empty());
+        assert!(game.aim_building_targets.is_empty());
+    }
+
+    #[test]
     fn a_decisive_concession_uses_the_result_flow_not_the_overlay() {
         // 1v1: the surrender decides the match on its own tick, so the
         // normal end-of-match banner takes over.
@@ -889,6 +1020,11 @@ mod tests {
         assert!(game.state.result().is_some(), "a 1v1 concession decides");
         assert!(!game.conceded_banner, "no concede overlay over a result");
         assert!(game.concede_stats.is_none());
+        assert_eq!(
+            game.end_stats.as_ref().map(|stats| stats.final_tick),
+            Some(1),
+            "the deciding tick leaves its report ready without replaying"
+        );
     }
 
     #[test]
@@ -905,6 +1041,9 @@ mod tests {
             bot_config: bot.then_some(oxide_sim::scenario::BotConfig {
                 level: oxide_sim::bot::Level::Easy,
                 aggression: Some(500),
+                style: None,
+                variant: None,
+                team_role: None,
             }),
         };
         let scenario = Scenario {
@@ -946,6 +1085,10 @@ mod tests {
         assert!(
             game.concede_stats.is_some(),
             "the exit offer carries the match-so-far numbers"
+        );
+        assert_eq!(
+            game.concede_stats.as_ref().map(|stats| stats.final_tick),
+            Some(1)
         );
         // The banner is a one-shot moment: later ticks never re-raise
         // a dismissed overlay.

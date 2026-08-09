@@ -4,13 +4,18 @@ mod common;
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
-use oxide_sim::{Command, Event, Order, PlayerId, Scenario, UnitKind};
+use oxide_sim::scenario::BuildingSpec;
+use oxide_sim::stats::FOUNDRY_RECOVERY_RESERVE;
+use oxide_sim::{BuildingKind, Command, Event, Order, PlayerId, Scenario, UnitKind};
+use serde_json::json;
 
 use common::*;
 
 #[test]
 fn harvester_gathers_and_deposits() {
-    let mut state = arena(vec![unit(0, UnitKind::Harvester, 3, 2)])
+    // Start with the node in sight: Harvest commands intentionally use
+    // live truth only on visible ground and memory everywhere else.
+    let mut state = arena(vec![unit(0, UnitKind::Harvester, 6, 2)])
         .build()
         .unwrap();
     let worker = state.units()[0].id;
@@ -22,7 +27,7 @@ fn harvester_gathers_and_deposits() {
             queue: false,
         },
     )]);
-    // Walk there (~10 tiles), extract 10 scrap (100 ticks), walk home, drop.
+    // Walk there, extract 10 scrap (100 ticks), walk home, drop.
     let events = run_until(&mut state, 600, |_, events| {
         events.iter().any(|event| {
             matches!(
@@ -106,7 +111,7 @@ fn train_costs_scrap_and_spawns_after_build_time() {
 }
 
 #[test]
-fn a_stranded_foundry_trickles_only_the_replacement_harvesters_price() {
+fn a_stranded_foundry_trickles_only_the_public_recovery_package() {
     let mut scenario = arena(Vec::new());
     scenario.players[0].scrap = 0;
     let mut state = scenario.build().unwrap();
@@ -126,21 +131,254 @@ fn a_stranded_foundry_trickles_only_the_replacement_harvesters_price() {
     assert_eq!(state.player(PlayerId(0)).scrap, 2);
 
     let mut scenario = arena(Vec::new());
-    scenario.players[0].scrap = UnitKind::Harvester.stats().cost - 1;
+    scenario.players[0].scrap = FOUNDRY_RECOVERY_RESERVE - 1;
     let mut capped = scenario.build().unwrap();
     capped.tick(&[]);
-    assert_eq!(
-        capped.player(PlayerId(0)).scrap,
-        UnitKind::Harvester.stats().cost
-    );
+    assert_eq!(capped.player(PlayerId(0)).scrap, FOUNDRY_RECOVERY_RESERVE);
     for _ in 0..100 {
         capped.tick(&[]);
     }
     assert_eq!(
         capped.player(PlayerId(0)).scrap,
-        UnitKind::Harvester.stats().cost,
+        FOUNDRY_RECOVERY_RESERVE,
         "the fast recovery stops; baseline income starts only in the late game"
     );
+}
+
+#[test]
+fn spending_the_recovery_package_does_not_refill_the_entitlement() {
+    let mut scenario = arena(Vec::new());
+    scenario.players[0].scrap = 0;
+    let mut state = scenario.build().unwrap();
+    while state.player(PlayerId(0)).scrap < FOUNDRY_RECOVERY_RESERVE {
+        state.tick(&[]);
+    }
+    assert_eq!(state.player(PlayerId(0)).recovery_allowance, 0);
+
+    let foundry = state
+        .buildings()
+        .iter()
+        .find(|building| building.player == PlayerId(0))
+        .unwrap()
+        .id;
+    state.tick(&[cmd(
+        0,
+        Command::Train {
+            building: foundry,
+            kind: UnitKind::Sentinel,
+        },
+    )]);
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        UnitKind::Harvester.stats().cost
+    );
+    for _ in 0..500 {
+        state.tick(&[]);
+    }
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        UnitKind::Harvester.stats().cost,
+        "spending the credited screen cannot wake the finite allowance back up"
+    );
+    assert!(
+        !state.recovery_income_active(PlayerId(0)),
+        "the public recovery diagnostic must not promise exhausted income"
+    );
+}
+
+#[test]
+fn first_tick_spending_cannot_expand_a_recovery_entitlement() {
+    let mut scenario = arena(Vec::new());
+    scenario.players[0].scrap = FOUNDRY_RECOVERY_RESERVE;
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Fabricator,
+        x: 4,
+        y: 1,
+    });
+    let mut state = scenario.build().unwrap();
+    let fabricator = state
+        .buildings()
+        .iter()
+        .find(|building| {
+            building.player == PlayerId(0) && building.kind == BuildingKind::Fabricator
+        })
+        .unwrap()
+        .id;
+
+    state.tick(&[
+        cmd(
+            0,
+            Command::Train {
+                building: fabricator,
+                kind: UnitKind::Scuttler,
+            },
+        ),
+        cmd(
+            0,
+            Command::Train {
+                building: fabricator,
+                kind: UnitKind::Scuttler,
+            },
+        ),
+    ]);
+
+    let seat = state.player(PlayerId(0));
+    assert_eq!(
+        seat.scrap,
+        FOUNDRY_RECOVERY_RESERVE - 2 * UnitKind::Scuttler.stats().cost
+    );
+    assert_eq!(u32::from(seat.recovery_target), FOUNDRY_RECOVERY_RESERVE);
+    assert_eq!(
+        seat.recovery_allowance, 0,
+        "the pre-command bank closed the entitlement before the paid queue reshaped it"
+    );
+}
+
+#[test]
+fn a_paid_ground_screen_reduces_the_captured_package_to_one_worker() {
+    let mut scenario = arena(vec![unit(0, UnitKind::Sentinel, 6, 2)]);
+    scenario.players[0].scrap = 0;
+    let mut state = scenario.build().unwrap();
+    state.tick(&[]);
+    let seat = state.player(PlayerId(0));
+    assert_eq!(
+        u32::from(seat.recovery_target),
+        UnitKind::Harvester.stats().cost
+    );
+    assert_eq!(
+        u32::from(seat.recovery_allowance),
+        UnitKind::Harvester.stats().cost - 1
+    );
+}
+
+#[test]
+fn artillery_anti_air_and_flyers_do_not_count_as_recovery_screens() {
+    for kind in [
+        UnitKind::Bombard,
+        UnitKind::Flakhound,
+        UnitKind::Buzzard,
+        UnitKind::Talon,
+    ] {
+        let mut scenario = arena(vec![unit(0, kind, 6, 2)]);
+        scenario.players[0].scrap = 0;
+        let mut state = scenario.build().unwrap();
+        state.tick(&[]);
+        let seat = state.player(PlayerId(0));
+        assert_eq!(
+            u32::from(seat.recovery_target),
+            FOUNDRY_RECOVERY_RESERVE,
+            "{kind:?} cannot directly screen a ground worker"
+        );
+        assert_eq!(
+            u32::from(seat.recovery_allowance),
+            FOUNDRY_RECOVERY_RESERVE - 1
+        );
+    }
+}
+
+#[test]
+fn a_prepaid_worker_death_preserves_only_the_unspent_recovery_remainder() {
+    let mut scenario = arena(Vec::new());
+    scenario.players[0].scrap = 0;
+    let mut state = scenario.build().unwrap();
+    while state.player(PlayerId(0)).scrap < UnitKind::Harvester.stats().cost {
+        state.tick(&[]);
+    }
+    let foundry = state
+        .buildings()
+        .iter()
+        .find(|building| building.player == PlayerId(0))
+        .unwrap()
+        .id;
+    state.tick(&[cmd(
+        0,
+        Command::Train {
+            building: foundry,
+            kind: UnitKind::Harvester,
+        },
+    )]);
+    let remainder = FOUNDRY_RECOVERY_RESERVE - UnitKind::Harvester.stats().cost;
+    assert_eq!(
+        u32::from(state.player(PlayerId(0)).recovery_allowance),
+        remainder
+    );
+    run_until(&mut state, 200, |state, _| {
+        state
+            .units()
+            .iter()
+            .any(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Harvester)
+    });
+
+    // Model the exposed replacement dying before its first delivery. A
+    // deserialized state is still forced through the public trust boundary;
+    // removing a live id is legal because ids are never reused.
+    let mut value = serde_json::to_value(&state).unwrap();
+    value["units"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|unit| unit["player"] != json!(0));
+    let mut state: oxide_sim::State = serde_json::from_value(value).unwrap();
+    while state.player(PlayerId(0)).scrap < remainder {
+        state.tick(&[]);
+    }
+    for _ in 0..200 {
+        state.tick(&[]);
+    }
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        remainder,
+        "a dead prepaid worker resumes the old remainder, not a fresh package"
+    );
+}
+
+#[test]
+fn a_real_harvester_deposit_rearms_one_future_recovery_cycle() {
+    let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 6, 2)]);
+    scenario.players[0].scrap = 0;
+    let mut state = scenario.build().unwrap();
+    let worker = state.units()[0].id;
+    state.tick(&[cmd(
+        0,
+        Command::Harvest {
+            units: vec![worker],
+            node: TilePos::new(11, 4),
+            queue: false,
+        },
+    )]);
+    run_until(&mut state, 600, |_, events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                Event::ScrapDeposited {
+                    player: PlayerId(0),
+                    amount
+                } if *amount > 0
+            )
+        })
+    });
+    let bank = state.player(PlayerId(0)).scrap;
+    assert!(state.player(PlayerId(0)).recovery_ready);
+
+    let mut value = serde_json::to_value(&state).unwrap();
+    value["units"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|unit| unit["player"] != json!(0));
+    let mut state: oxide_sim::State = serde_json::from_value(value).unwrap();
+    state.tick(&[]);
+    assert!(!state.player(PlayerId(0)).recovery_ready);
+    assert_eq!(
+        u32::from(state.player(PlayerId(0)).recovery_target),
+        FOUNDRY_RECOVERY_RESERVE
+    );
+    assert_eq!(
+        u32::from(state.player(PlayerId(0)).recovery_allowance),
+        FOUNDRY_RECOVERY_RESERVE - bank
+    );
+    run_until(&mut state, 20, |state, _| {
+        state.player(PlayerId(0)).scrap > bank
+    });
 }
 
 #[test]
@@ -293,6 +531,57 @@ fn rally_on_foreign_building_is_rejected() {
         reason: RejectReason::NotYourBuilding,
     }));
     assert_eq!(state.building(theirs).unwrap().rally, None);
+}
+
+#[test]
+fn rally_rejects_non_producers_and_unfinished_producers() {
+    let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 4, 5)]);
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Turret,
+        x: 8,
+        y: 2,
+    });
+    let mut state = scenario.build().unwrap();
+    let worker = state.units()[0].id;
+    let turret = state
+        .buildings()
+        .iter()
+        .find(|building| building.kind == BuildingKind::Turret)
+        .unwrap()
+        .id;
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![worker],
+            kind: BuildingKind::Fabricator,
+            anchor: TilePos::new(4, 6),
+            queue: false,
+            defer: false,
+        },
+    )]);
+    let site = state
+        .buildings()
+        .iter()
+        .find(|building| building.kind == BuildingKind::Fabricator)
+        .expect("the legal site was placed");
+    assert!(!site.built);
+    let site = site.id;
+
+    for building in [turret, site] {
+        let report = state.tick(&[cmd(
+            0,
+            Command::SetRally {
+                building,
+                rally: Some(TilePos::new(10, 5)),
+            },
+        )]);
+        assert!(report.events.contains(&Event::CommandRejected {
+            player: PlayerId(0),
+            reason: RejectReason::InvalidTarget,
+        }));
+        assert_eq!(state.building(building).unwrap().rally, None);
+    }
 }
 
 #[test]

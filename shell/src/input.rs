@@ -75,6 +75,41 @@ pub(crate) struct TouchPoint {
     pub fired: bool,
 }
 
+/// The one persistent world-targeting mode currently armed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ArmedMode {
+    /// Place this structure.
+    Build(oxide_sim::BuildingKind),
+    /// Set a producer's rally point.
+    Rally,
+    /// Strip an own structure.
+    Salvage,
+    /// Weld a damaged own ground unit.
+    Weld,
+    /// Move without engaging.
+    Run,
+    /// Fight and pursue along a route.
+    AttackMove,
+    /// Collect this many patrol waypoints.
+    Patrol(usize),
+}
+
+impl ArmedMode {
+    /// Compact persistent label; detailed coaching remains in the toast.
+    pub(crate) fn label(self) -> String {
+        match self {
+            Self::Build(kind) => format!("BUILD {}", kind.name().to_uppercase()),
+            Self::Rally => "SET RALLY".to_string(),
+            Self::Salvage => "SALVAGE".to_string(),
+            Self::Weld => "WELD UNIT".to_string(),
+            Self::Run => "RUN".to_string(),
+            Self::AttackMove => "ATTACK-MOVE".to_string(),
+            Self::Patrol(0) => "PATROL | ADD WAYPOINTS".to_string(),
+            Self::Patrol(count) => format!("PATROL | {count} WAYPOINTS"),
+        }
+    }
+}
+
 /// Cross-frame input state (cursor, held keys, drag origin).
 pub struct InputState {
     /// Last known cursor position, window pixels.
@@ -111,6 +146,11 @@ pub struct InputState {
     /// Armed run: the next ground click sends the selection walking
     /// obliviously — no engaging, no auto-acquire en route.
     pub(crate) running: bool,
+    /// Armed attack-move: the next ground click sends the selection on
+    /// a fighting march that chases enemies along its route.
+    pub(crate) attacking: bool,
+    /// Producers whose rally point the next world/minimap click sets.
+    pub(crate) rallying: Vec<oxide_sim::BuildingId>,
     /// Whether the build palette is open (`B`; digits pick a structure).
     pub(crate) build_menu: bool,
     /// This frame's chrome scale (dpi x user), injected by the frame
@@ -312,6 +352,8 @@ impl InputState {
             salvaging: false,
             repairing: false,
             running: false,
+            attacking: false,
+            rallying: Vec::new(),
             build_menu: false,
             ui: 1.0,
             now: 0.0,
@@ -338,16 +380,44 @@ impl InputState {
     /// held-state otherwise pans the camera forever (or fires a phantom
     /// box-select) after resuming.
     /// One armed left-click verb at a time: arming placement, salvage,
-    /// or run stands the others down. `armed_click` resolves modes in
-    /// a fixed priority order, so two live at once would make the next
-    /// click do something other than what the toast promised — press M
-    /// while placing and the click would still stamp a building.
+    /// repair, run, attack-move, or rally stands the others down. `armed_click`
+    /// resolves modes in a fixed priority order, so two live at once
+    /// would make the next click do something other than what the toast
+    /// promised — press M while placing and the click would still stamp
+    /// a building.
     pub(crate) fn disarm_click_verbs(&mut self) {
         self.placing = None;
         self.placing_stroke = None;
         self.salvaging = false;
         self.repairing = false;
         self.running = false;
+        self.attacking = false;
+        self.rallying.clear();
+    }
+
+    /// Current persistent mode, in the same priority order the world
+    /// click resolver uses.
+    pub(crate) fn armed_mode(&self) -> Option<ArmedMode> {
+        (!self.rallying.is_empty())
+            .then_some(ArmedMode::Rally)
+            .or_else(|| self.placing.map(ArmedMode::Build))
+            .or_else(|| self.salvaging.then_some(ArmedMode::Salvage))
+            .or_else(|| self.repairing.then_some(ArmedMode::Weld))
+            .or_else(|| self.running.then_some(ArmedMode::Run))
+            .or_else(|| self.attacking.then_some(ArmedMode::AttackMove))
+            .or_else(|| {
+                self.patrol_route
+                    .as_ref()
+                    .map(|route| ArmedMode::Patrol(route.len()))
+            })
+    }
+
+    /// Cancels whichever persistent targeting mode is armed.
+    pub(crate) fn cancel_armed_mode(&mut self) -> bool {
+        let armed = self.armed_mode().is_some();
+        self.disarm_click_verbs();
+        self.patrol_route = None;
+        armed
     }
 
     pub fn reset_transient(&mut self) {
@@ -361,6 +431,8 @@ impl InputState {
         self.salvaging = false;
         self.repairing = false;
         self.running = false;
+        self.attacking = false;
+        self.rallying.clear();
         self.build_menu = false;
         self.touches.clear();
         self.last_tap = None;
@@ -464,14 +536,16 @@ fn touch_event(phase: mq::TouchPhase, id: u64, x: f32, y: f32) -> Option<RawEven
 /// injected (never queried) so the whole adapter runs headless.
 pub(crate) struct PointerStream {
     dpi: f32,
+    accept_backspace_repeat: bool,
     /// Translated events, in arrival order.
     pub(crate) events: Vec<RawEvent>,
 }
 
 impl PointerStream {
-    pub(crate) fn new(dpi: f32) -> Self {
+    pub(crate) fn new(dpi: f32, accept_backspace_repeat: bool) -> Self {
         Self {
             dpi: if dpi > 0.0 { dpi } else { 1.0 },
+            accept_backspace_repeat,
             events: Vec::new(),
         }
     }
@@ -523,6 +597,25 @@ impl macroquad::miniquad::EventHandler for PointerStream {
     fn touch_event(&mut self, _phase: macroquad::miniquad::TouchPhase, _id: u64, _x: f32, _y: f32) {
     }
 
+    /// The polled keyboard surface exposes the initial edge but drops OS
+    /// repeat. Preserve repeated Backspace presses only while the save-name
+    /// field owns input; every gameplay binding keeps edge-only semantics.
+    fn key_down_event(
+        &mut self,
+        keycode: macroquad::miniquad::KeyCode,
+        _keymods: macroquad::miniquad::KeyMods,
+        repeat: bool,
+    ) {
+        if self.accept_backspace_repeat
+            && repeat
+            && keycode == macroquad::miniquad::KeyCode::Backspace
+        {
+            self.events.push(RawEvent::KeyDown {
+                key: Key::Backspace,
+            });
+        }
+    }
+
     /// Typed characters, layout- and shift-resolved by the OS — a
     /// Key-to-character table would get every non-US layout wrong.
     /// Printable ASCII only, filtered AT INGEST: the menu font is
@@ -563,7 +656,7 @@ pub fn arm_hardware() {
     POINTER_SUB.get_or_init(mq::utils::register_input_subscriber);
 }
 
-pub fn poll_events() -> Vec<RawEvent> {
+pub fn poll_events(accept_backspace_repeat: bool) -> Vec<RawEvent> {
     TOUCH_SETUP.call_once(|| mq::simulate_mouse_with_touch(false));
     let mut events = Vec::new();
     for touch in mq::touches() {
@@ -584,7 +677,10 @@ pub fn poll_events() -> Vec<RawEvent> {
         let (x, y) = mq::mouse_position();
         events.push(RawEvent::MouseMove { x, y });
     });
-    let mut stream = PointerStream::new(macroquad::miniquad::window::dpi_scale());
+    let mut stream = PointerStream::new(
+        macroquad::miniquad::window::dpi_scale(),
+        accept_backspace_repeat,
+    );
     mq::utils::repeat_all_miniquad_input(&mut stream, sub);
     events.append(&mut stream.events);
     // macroquad's mouse_leave_event marks held buttons released in the
@@ -672,7 +768,7 @@ mod select;
 mod tests;
 
 use dispatch::dispatch_action;
-use orders::context_order;
+use orders::{context_order, rally_selected_producers};
 pub use select::idle_harvesters;
 use select::{
     box_select, click_on_hud, click_select, cycle_idle_worker, select_all_of_kind_on_screen,
@@ -688,6 +784,8 @@ pub fn desired_cursor(game: &Game, input: &InputState) -> macroquad::miniquad::C
         || input.salvaging
         || input.repairing
         || input.running
+        || input.attacking
+        || !input.rallying.is_empty()
     {
         return CursorIcon::Crosshair;
     }
@@ -798,8 +896,9 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 // Panel cards are buttons: each carries the exact action
                 // its click performs — the same action its hotkey routes.
                 let layout = game.layout.get();
-                let card_hit = layout.cards[..layout.card_count]
+                let card_hit = layout.roster_slots[..layout.roster_count]
                     .iter()
+                    .chain(layout.cards[..layout.card_count].iter())
                     .chain(layout.queue_slots[..layout.queue_count].iter())
                     .find(|(r, _)| r.w > 0.0 && r.contains(vec2(x, y)))
                     .map(|(_, a)| *a);
@@ -863,6 +962,19 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 y,
             } => {
                 input.mouse = vec2(x, y);
+                // A contextual order is a new intent, so it also exits
+                // any one-shot mode left armed by a prior build/salvage/
+                // weld/run/attack-move gesture. In particular, a move
+                // away from a deferred Found order must not leave a
+                // placement ghost stuck to the cursor. Patrol is the
+                // exception: its right-clicks are collecting the route.
+                if input.patrol_route.is_none() {
+                    let cancelled_placement = input.placing.is_some();
+                    input.disarm_click_verbs();
+                    if cancelled_placement {
+                        game.toast("placement cancelled; issuing new order");
+                    }
+                }
                 // A right-click on the minimap orders to that world tile
                 // (ground semantics — entities can't be picked at that
                 // scale); anywhere else, full context ordering. HUD chrome
@@ -883,12 +995,14 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                         // applies: an inspected ally or enemy takes no
                         // orders from the minimap either.
                         if !units.is_empty() && game.selection_commandable() {
-                            game.issue(Command::AttackMove {
+                            game.issue(Command::Advance {
                                 units,
                                 goal: tile,
                                 queue,
                             });
                             game.ping(vec2(world.x, world.y), PingKind::Move);
+                        } else if units.is_empty() {
+                            rally_selected_producers(game, tile, world);
                         }
                     }
                 } else if !click_on_hud(game, vec2(x, y)) {
@@ -1080,8 +1194,9 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                             // fingertip needs 44 logical px even where
                             // the drawn card is smaller.
                             let layout = game.layout.get();
-                            let card = layout.cards[..layout.card_count]
+                            let card = layout.roster_slots[..layout.roster_count]
                                 .iter()
+                                .chain(layout.cards[..layout.card_count].iter())
                                 .chain(layout.queue_slots[..layout.queue_count].iter())
                                 .find(|(r, _)| {
                                     r.w > 0.0 && crate::layout::touch_pad(*r, input.ui).contains(p)
@@ -1116,12 +1231,38 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
     }
 }
 
-/// One armed world click or tap — placement or salvage — at screen
-/// point `p`. Returns whether an armed mode consumed the event
+/// One armed world click or tap at screen point `p`. Returns whether
+/// an armed mode consumed the event
 /// (whatever the outcome: issued, denied, or a minimap camera jump).
 /// Mouse and touch route here identically: a fingertip that armed a
 /// Build card completes the build with its next tap.
 fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
+    let cancel = game.layout.get().mode_cancel;
+    if cancel.w > 0.0 && crate::layout::touch_pad(cancel, input.ui).contains(p) {
+        if input.cancel_armed_mode() {
+            game.toast("command mode cancelled");
+            game.sounds_pending
+                .push((crate::game::SoundKind::Click, None));
+        }
+        return true;
+    }
+    if !input.rallying.is_empty() {
+        let world = crate::render::minimap_world_at(game, p)
+            .or_else(|| (!click_on_hud(game, p)).then(|| game.camera.to_world(p)));
+        if let Some(world) = world {
+            let rally = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+            for building in input.rallying.iter().copied() {
+                game.issue(Command::SetRally {
+                    building,
+                    rally: Some(rally),
+                });
+            }
+            game.ping(world, PingKind::Rally);
+            input.rallying.clear();
+            game.toast("rally point set");
+        }
+        return true;
+    }
     if let Some(kind) = input.placing {
         // The minimap keeps its meaning while placing: jump the
         // camera, never misread the click as world ground (that would
@@ -1315,6 +1456,28 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
         }
         return true;
     }
+    if input.attacking {
+        // Explicit fighting march: minimap jumps the camera, HUD
+        // swallows, and Shift chains legs while keeping the verb armed.
+        if let Some(world) = crate::render::minimap_world_at(game, p) {
+            game.camera.center = world;
+            game.camera.pan(Vec2::ZERO); // re-clamp
+        } else if !click_on_hud(game, p) {
+            let world = game.camera.to_world(p);
+            let goal = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+            let units = game.selection.units.clone();
+            game.issue(Command::AttackMove {
+                units,
+                goal,
+                queue: input.resolver.shift_held(),
+            });
+            game.ping(world, PingKind::Attack);
+            if !input.resolver.shift_held() {
+                input.attacking = false;
+            }
+        }
+        return true;
+    }
     false
 }
 
@@ -1337,14 +1500,31 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
                 cost
             ));
         }
+        crate::panel::CardAction::ArmRally => {
+            let buildings = orders::selected_producers(game);
+            if buildings.is_empty() {
+                return;
+            }
+            input.disarm_click_verbs();
+            input.rallying = buildings;
+            game.toast("set rally: click the battlefield or minimap, Esc to cancel");
+        }
         crate::panel::CardAction::CancelQueue(building, index) => {
             game.issue(Command::CancelTrain { building, index });
         }
-        crate::panel::CardAction::ClearRally(building) => {
-            game.issue(Command::SetRally {
-                building,
-                rally: None,
-            });
+        crate::panel::CardAction::CancelSite(building) => {
+            game.issue(Command::Cancel { building });
+        }
+        crate::panel::CardAction::CancelFound(kind, anchor) => {
+            game.issue(Command::CancelFound { kind, anchor });
+        }
+        crate::panel::CardAction::ClearRally => {
+            for building in orders::selected_producers(game) {
+                game.issue(Command::SetRally {
+                    building,
+                    rally: None,
+                });
+            }
         }
         crate::panel::CardAction::FilterKind(kind) => {
             // The cut is shell-side only: selections are presentation,

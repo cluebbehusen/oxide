@@ -141,6 +141,11 @@ pub struct BuildingView {
     /// Rally tile `[x, y]`, if set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rally: Option<[i32; 2]>,
+    /// Player-designated defense target. Honest views expose this only for
+    /// allied buildings; hostile targeting intent is redacted with rally
+    /// and production state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus: Option<oxide_sim::Target>,
     /// Whether construction has finished.
     #[serde(
         default = "default_true",
@@ -479,6 +484,7 @@ fn building_view(b: &Building) -> BuildingView {
             .front()
             .map(|kind| kind.stats().train_ticks.saturating_sub(b.progress)),
         rally: b.rally.map(|r| [r.x, r.y]),
+        focus: b.focus,
         built: b.built,
         progress: b.progress,
     }
@@ -491,6 +497,7 @@ fn building_view_redacted(b: &Building) -> BuildingView {
         queue: None,
         ticks_remaining: None,
         rally: None,
+        focus: None,
         // A scaffold's stage is drawn on every screen; a BUILT
         // producer's meter is training progress no enemy panel shows.
         progress: if b.built { 0 } else { b.progress },
@@ -681,6 +688,7 @@ mod tests {
                     assert_eq!(b.queue, None);
                     assert_eq!(b.ticks_remaining, None);
                     assert_eq!(b.rally, None);
+                    assert_eq!(b.focus, None);
                     if b.built {
                         assert_eq!(b.progress, 0, "training progress is fog's to hide");
                     }
@@ -729,6 +737,30 @@ mod tests {
         assert_eq!(b.queue.as_deref(), Some([UnitKind::Harvester].as_slice()));
         let remaining = b.ticks_remaining.unwrap();
         assert!(remaining > 0 && remaining <= UnitKind::Harvester.stats().train_ticks);
+    }
+
+    #[test]
+    fn building_view_exposes_allied_focus_and_redacts_hostile_focus() {
+        let target = oxide_sim::Target::Unit(oxide_sim::UnitId(7));
+        let building = oxide_sim::Building {
+            id: oxide_sim::BuildingId(3),
+            player: oxide_sim::PlayerId(0),
+            kind: oxide_sim::BuildingKind::Turret,
+            anchor: chassis::grid::TilePos::new(4, 5),
+            hp: oxide_sim::BuildingKind::Turret.stats().max_hp,
+            queue: std::collections::VecDeque::new(),
+            progress: 0,
+            rally: None,
+            focus: Some(target),
+            built: true,
+            cooldown: 0,
+            salvage_drained: 0,
+            salvage_credited: 0,
+            salvaged: false,
+        };
+
+        assert_eq!(building_view(&building).focus, Some(target));
+        assert_eq!(building_view_redacted(&building).focus, None);
     }
 
     #[test]

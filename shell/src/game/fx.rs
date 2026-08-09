@@ -1,4 +1,4 @@
-//! Presentation effects: the visual vocabulary (bolts, arcs, bursts,
+//! Presentation effects: the visual vocabulary (shots, shells, bursts,
 //! pings), the sound kinds, and the event-to-effect mapping that turns
 //! sim reports into transient visuals and positional audio. Nothing
 //! here is sim-relevant; dropping it all is always safe.
@@ -11,8 +11,24 @@ use oxide_sim::Event;
 pub struct Effect {
     /// What to draw.
     pub kind: EffectKind,
-    /// Seconds alive.
+    /// Wall seconds alive for effects that do not ride the simulation clock.
     pub age: f32,
+}
+
+impl Effect {
+    /// Age at one simulation-timeline instant. Direct-fire reports follow
+    /// sim time so their rounds stay attached to authored muzzle frames at
+    /// every game and replay speed. Their wall-age field is only allowed to
+    /// drain a terminal battlefield after simulation time has stopped.
+    pub(crate) fn age_at(&self, completed_ticks: u64, tick_fraction: f32) -> f32 {
+        match self.kind {
+            EffectKind::DirectShot { completed_tick, .. } => {
+                let whole = completed_ticks.saturating_sub(completed_tick) as f32;
+                (whole + tick_fraction.clamp(0.0, 1.0)) * super::TICK_DT + self.age
+            }
+            _ => self.age,
+        }
+    }
 }
 
 /// A clip the shell should play (queued by sim events, drained per frame).
@@ -20,8 +36,6 @@ pub struct Effect {
 pub enum SoundKind {
     /// An attack landed somewhere you can see.
     Laser,
-    /// A Lancer's rail shot landed somewhere you can see.
-    RailFire,
     /// A unit died somewhere you can see.
     UnitDeath,
     /// A building fell (yours are always audible).
@@ -34,24 +48,48 @@ pub enum SoundKind {
     Click,
     /// An order was rejected.
     Denied,
+    /// High-priority warning that the local player is under attack.
+    Alert,
     /// The match ended in your favor.
     Victory,
     /// It did not.
     Defeat,
-    /// Flak bursting against the sky.
-    Flak,
     /// An artillery shell landing.
     Artillery,
-    /// An artillery gun firing (distinct from the landing boom).
+    /// A hostile artillery launch heard from a visible impact warning.
     ArtilleryLaunch,
     /// An order acknowledged.
     Ack,
+    /// A Sentinel's compact cannon report.
+    SentinelFire,
+    /// A Scuttler's paired mechanical shear.
+    ScuttlerFire,
+    /// A Lancer's charged rail report.
+    LancerFire,
+    /// A Bombard's heavy artillery report.
+    BombardFire,
+    /// A Flakhound's paired anti-air burst.
+    FlakhoundFire,
+    /// A Stinger's light anti-air burst.
+    StingerFire,
+    /// A Buzzard's heavy strike.
+    BuzzardFire,
+    /// A Darter's fast strike.
+    DarterFire,
+    /// A Talon's interceptor burst.
+    TalonFire,
+    /// A Wisp's compact interceptor burst.
+    WispFire,
+    /// A Bastion's emplaced artillery report.
+    BastionFire,
+    /// A Flak Turret's paired-yoke burst.
+    FlakTurretFire,
 }
 
 /// What an order-acknowledgment ping means (decides its color).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PingKind {
-    /// Move / attack-move destination.
+    /// Move / advance / attack-move destination.
     Move,
     /// Attack target.
     Attack,
@@ -63,58 +101,189 @@ pub enum PingKind {
     Spawn,
 }
 
+/// Delay between the two visible rounds of one logical flak hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlakYokeDelay {
+    /// Both barrels fire together.
+    None,
+    /// The second yoke fires one simulation tick after the first.
+    OneTick,
+    /// The second yoke fires halfway through a three-tick report.
+    OneAndHalfTicks,
+}
+
+impl FlakYokeDelay {
+    /// Authored delay in simulation ticks.
+    pub(crate) fn ticks(self) -> f32 {
+        match self {
+            Self::None => 0.0,
+            Self::OneTick => 1.0,
+            Self::OneAndHalfTicks => 1.5,
+        }
+    }
+
+    /// Authored delay in seconds on the simulation timeline.
+    pub(crate) fn seconds(self) -> f32 {
+        self.ticks() * super::TICK_DT
+    }
+}
+
 /// The visual family of a direct-fire shot — mapped from the exact
 /// (shooter kind, weapon slot) the hit event names, so every weapon
 /// reads as itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BoltStyle {
-    /// The line infantry's thin fast tracer.
-    Tracer,
+pub enum ShotStyle {
+    /// A contact tool: target sparks, never a ranged projectile.
+    Contact,
+    /// The approved compact forge-bright orb with no persistent tracer.
+    ForgeSpot,
     /// The Lancer's rail: heavy, bright, lingering.
     Rail,
-    /// Anti-air flak: a faint line and puffs bursting at the target.
-    Flak,
-    /// Air-to-ground ordnance: a cooler, steeper bolt.
-    AirStrike,
+    /// One logical anti-air attack shown as two physical rounds.
+    FlakBurst {
+        /// When the second visible yoke reports.
+        yoke_delay: FlakYokeDelay,
+    },
 }
 
-impl BoltStyle {
-    /// Seconds the bolt stays on screen.
+impl ShotStyle {
+    /// Seconds the report stays on screen.
     pub fn life(self) -> f32 {
         match self {
-            BoltStyle::Tracer => 0.15,
-            BoltStyle::Rail => 0.28,
-            BoltStyle::Flak => 0.20,
-            BoltStyle::AirStrike => 0.18,
+            ShotStyle::Contact => 0.12,
+            ShotStyle::ForgeSpot => 0.20,
+            ShotStyle::Rail => 0.24,
+            ShotStyle::FlakBurst {
+                yoke_delay: FlakYokeDelay::None,
+            } => 0.24,
+            ShotStyle::FlakBurst { .. } => 0.30,
         }
     }
 }
 
-/// Which bolt family a unit's weapon slot fires.
-fn unit_bolt_style(kind: oxide_sim::UnitKind, weapon: usize) -> BoltStyle {
+/// Which report family a unit's weapon slot fires.
+fn unit_shot_style(kind: oxide_sim::UnitKind, weapon: usize) -> ShotStyle {
     use oxide_sim::UnitKind;
     match (kind, weapon) {
-        (UnitKind::Lancer, _) => BoltStyle::Rail,
-        (UnitKind::Flakhound | UnitKind::Stinger, _) => BoltStyle::Flak,
-        // The Sentinel's sidearm is its anti-air poke.
-        (UnitKind::Sentinel, 1) => BoltStyle::Flak,
-        (UnitKind::Buzzard | UnitKind::Darter | UnitKind::Talon | UnitKind::Wisp, _) => {
-            BoltStyle::AirStrike
-        }
-        _ => BoltStyle::Tracer,
+        (UnitKind::Scuttler, _) => ShotStyle::Contact,
+        (UnitKind::Lancer, _) => ShotStyle::Rail,
+        (UnitKind::Flakhound, _) => ShotStyle::FlakBurst {
+            yoke_delay: FlakYokeDelay::OneTick,
+        },
+        (UnitKind::Stinger, _) => ShotStyle::FlakBurst {
+            yoke_delay: FlakYokeDelay::None,
+        },
+        _ => ShotStyle::ForgeSpot,
+    }
+}
+
+fn defense_shot_style(kind: oxide_sim::BuildingKind) -> ShotStyle {
+    debug_assert!(
+        kind.stats().weapons.iter().all(|weapon| !weapon.projectile),
+        "real shell weapons must arrive through ShellLaunched"
+    );
+    match kind {
+        oxide_sim::BuildingKind::FlakTurret => ShotStyle::FlakBurst {
+            yoke_delay: FlakYokeDelay::OneAndHalfTicks,
+        },
+        _ => ShotStyle::ForgeSpot,
+    }
+}
+
+fn visual_shot_origin(from: Vec2, to: Vec2, reach: f32) -> Vec2 {
+    let direction = to - from;
+    if direction.length_squared() <= f32::EPSILON {
+        from
+    } else {
+        from + direction.normalize() * reach
+    }
+}
+
+fn unit_muzzle_reach(kind: oxide_sim::UnitKind) -> f32 {
+    match kind {
+        // The Quad-Fan's forward gun extends well beyond its central hull.
+        oxide_sim::UnitKind::Buzzard => 0.44,
+        _ if kind.stats().domain == oxide_sim::stats::Domain::Ground => 0.38,
+        _ => 0.32,
+    }
+}
+
+fn defense_muzzle_reach(kind: oxide_sim::BuildingKind) -> f32 {
+    match kind {
+        oxide_sim::BuildingKind::Bastion => kind.stats().size.0 as f32 * 0.49,
+        oxide_sim::BuildingKind::FlakTurret => 0.47,
+        _ => 0.44,
+    }
+}
+
+fn unit_fire_sound(kind: oxide_sim::UnitKind) -> SoundKind {
+    use oxide_sim::UnitKind;
+    match kind {
+        UnitKind::Sentinel => SoundKind::SentinelFire,
+        UnitKind::Scuttler => SoundKind::ScuttlerFire,
+        UnitKind::Lancer => SoundKind::LancerFire,
+        UnitKind::Bombard => SoundKind::BombardFire,
+        UnitKind::Flakhound => SoundKind::FlakhoundFire,
+        UnitKind::Stinger => SoundKind::StingerFire,
+        UnitKind::Buzzard => SoundKind::BuzzardFire,
+        UnitKind::Darter => SoundKind::DarterFire,
+        UnitKind::Talon => SoundKind::TalonFire,
+        UnitKind::Wisp => SoundKind::WispFire,
+        UnitKind::Harvester => SoundKind::Laser,
+    }
+}
+
+fn defense_fire_sound(kind: oxide_sim::BuildingKind) -> SoundKind {
+    match kind {
+        oxide_sim::BuildingKind::Bastion => SoundKind::BastionFire,
+        oxide_sim::BuildingKind::FlakTurret => SoundKind::FlakTurretFire,
+        _ => SoundKind::Laser,
+    }
+}
+
+fn shell_fire_sound(shooter: oxide_sim::Target) -> SoundKind {
+    match shooter {
+        oxide_sim::Target::Unit(_) => SoundKind::BombardFire,
+        oxide_sim::Target::Building(_) => SoundKind::BastionFire,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellSoundAnchor {
+    Muzzle,
+    Impact,
+}
+
+fn shell_launch_audio(
+    shooter: oxide_sim::Target,
+    own: bool,
+    hostile: bool,
+    muzzle_seen: bool,
+    impact_seen: bool,
+) -> Option<(SoundKind, ShellSoundAnchor)> {
+    if muzzle_seen || own {
+        Some((shell_fire_sound(shooter), ShellSoundAnchor::Muzzle))
+    } else if hostile && impact_seen {
+        Some((SoundKind::ArtilleryLaunch, ShellSoundAnchor::Impact))
+    } else {
+        None
     }
 }
 
 /// Effect shapes.
 pub enum EffectKind {
     /// A direct-fire shot, styled by the weapon family that spoke.
-    Bolt {
-        /// Visual family (tracer, rail, flak, air strike).
-        style: BoltStyle,
+    DirectShot {
+        /// Visual family (contact, kinetic, rail, or flak).
+        style: ShotStyle,
         /// Muzzle, world coords.
         from: Vec2,
         /// Impact, world coords.
         to: Vec2,
+        /// Splash radius, if this logical hit has one.
+        splash: Option<f32>,
+        /// Simulation tick immediately after the hit was reported.
+        completed_tick: u64,
     },
     /// A downed flyer: the sprite drops, spins, and shrinks out.
     Falling {
@@ -154,6 +323,26 @@ pub enum EffectKind {
     },
 }
 
+fn push_direct_report(
+    effects: &mut Vec<Effect>,
+    style: ShotStyle,
+    from: Vec2,
+    to: Vec2,
+    splash: Option<f32>,
+    completed_tick: u64,
+) {
+    effects.push(Effect {
+        kind: EffectKind::DirectShot {
+            style,
+            from,
+            to,
+            splash,
+            completed_tick,
+        },
+        age: 0.0,
+    });
+}
+
 impl Game {
     pub fn update_fx(&mut self, dt: f32) {
         self.fx_clock += dt;
@@ -161,13 +350,20 @@ impl Game {
             *age += dt;
         }
         self.alerts.retain(|(_, age)| *age < 6.0);
+        let terminal = self.state.result().is_some();
         for fx in &mut self.fx {
-            fx.age += dt;
+            match fx.kind {
+                EffectKind::DirectShot { .. } if terminal => fx.age += dt,
+                EffectKind::DirectShot { .. } => {}
+                _ => fx.age += dt,
+            }
         }
+        let completed_ticks = self.state.current_tick();
+        let tick_fraction = self.tick_fraction();
         self.fx.retain(|fx| {
-            fx.age
+            fx.age_at(completed_ticks, tick_fraction)
                 < match fx.kind {
-                    EffectKind::Bolt { style, .. } => style.life(),
+                    EffectKind::DirectShot { style, .. } => style.life(),
                     EffectKind::Puff { .. } => 0.4,
                     EffectKind::Falling { .. } => 0.7,
                     EffectKind::Ping { .. } => 0.5,
@@ -232,14 +428,7 @@ impl Game {
                     // its report either way. The weapon's character decides
                     // the report and whether the impact blooms.
                     let heard = sees(self, *attacker_pos) || sees(self, *target_pos);
-                    let sound = match attacker_kind {
-                        oxide_sim::UnitKind::Lancer => SoundKind::RailFire,
-                        oxide_sim::UnitKind::Bombard => SoundKind::Artillery,
-                        oxide_sim::UnitKind::Flakhound | oxide_sim::UnitKind::Stinger => {
-                            SoundKind::Flak
-                        }
-                        _ => SoundKind::Laser,
-                    };
+                    let sound = unit_fire_sound(*attacker_kind);
                     // The burst radius comes from the exact weapon that
                     // fired — the event says which slot — so the
                     // telegraphed area never overstates (or hides) the
@@ -251,26 +440,25 @@ impl Game {
                         .and_then(|w| w.splash)
                         .map(|s| s.to_num::<f32>());
                     if heard {
-                        self.sounds_pending
-                            .push((sound, Some(world_vec(*target_pos))));
+                        let at = if sees(self, *attacker_pos) {
+                            *attacker_pos
+                        } else {
+                            *target_pos
+                        };
+                        self.sounds_pending.push((sound, Some(world_vec(at))));
                     }
-                    self.fx.push(Effect {
-                        kind: EffectKind::Bolt {
-                            style: unit_bolt_style(*attacker_kind, *weapon),
-                            from: world_vec(*attacker_pos),
-                            to: world_vec(*target_pos),
-                        },
-                        age: 0.0,
-                    });
-                    if let Some(radius) = splash {
-                        self.fx.push(Effect {
-                            kind: EffectKind::Burst {
-                                at: world_vec(*target_pos),
-                                radius,
-                            },
-                            age: 0.0,
-                        });
-                    }
+                    push_direct_report(
+                        &mut self.fx,
+                        unit_shot_style(*attacker_kind, *weapon),
+                        visual_shot_origin(
+                            world_vec(*attacker_pos),
+                            world_vec(*target_pos),
+                            unit_muzzle_reach(*attacker_kind),
+                        ),
+                        world_vec(*target_pos),
+                        splash,
+                        self.state.current_tick(),
+                    );
                 }
                 Event::TurretFired {
                     kind,
@@ -280,6 +468,7 @@ impl Game {
                     target,
                     ..
                 } => {
+                    self.aim_building_targets.insert(turret.0, *target);
                     let d = world_vec(*target_pos) - world_vec(*turret_pos);
                     if d.length_squared() > 1e-6 {
                         self.aim_buildings.insert(
@@ -287,23 +476,26 @@ impl Game {
                             (d.y.atan2(d.x) + std::f32::consts::FRAC_PI_2, self.fx_clock),
                         );
                     }
-                    // A turret chewing on our unit is an attack like any
-                    // other; the death case is UnitDied's alert.
-                    if self
-                        .state
-                        .unit(*target)
-                        .is_some_and(|u| u.player == self.human)
-                    {
+                    // A defense chewing on one of our entities is an
+                    // attack like any other; the death event raises its
+                    // own alert too.
+                    let own_target = match target {
+                        oxide_sim::Target::Unit(id) => self
+                            .state
+                            .unit(*id)
+                            .is_some_and(|unit| unit.player == self.human),
+                        oxide_sim::Target::Building(id) => self
+                            .state
+                            .building(*id)
+                            .is_some_and(|building| building.player == self.human),
+                    };
+                    if own_target {
                         self.raise_alert(world_vec(*target_pos));
                     }
                     // Kind rides in the event: the turret may be rubble by
                     // now (destroyed the tick it fired), and its shot still
                     // deserves the right report and burst.
-                    let sound = match kind {
-                        oxide_sim::BuildingKind::Bastion => SoundKind::Artillery,
-                        oxide_sim::BuildingKind::FlakTurret => SoundKind::Flak,
-                        _ => SoundKind::Laser,
-                    };
+                    let sound = defense_fire_sound(*kind);
                     let splash = kind
                         .stats()
                         .weapons
@@ -311,30 +503,25 @@ impl Game {
                         .find_map(|w| w.splash)
                         .map(|s| s.to_num::<f32>());
                     if sees(self, *turret_pos) || sees(self, *target_pos) {
-                        self.sounds_pending
-                            .push((sound, Some(world_vec(*target_pos))));
+                        let at = if sees(self, *turret_pos) {
+                            *turret_pos
+                        } else {
+                            *target_pos
+                        };
+                        self.sounds_pending.push((sound, Some(world_vec(at))));
                     }
-                    self.fx.push(Effect {
-                        kind: EffectKind::Bolt {
-                            style: match kind {
-                                oxide_sim::BuildingKind::FlakTurret => BoltStyle::Flak,
-                                oxide_sim::BuildingKind::Bastion => BoltStyle::Rail,
-                                _ => BoltStyle::Tracer,
-                            },
-                            from: world_vec(*turret_pos),
-                            to: world_vec(*target_pos),
-                        },
-                        age: 0.0,
-                    });
-                    if let Some(radius) = splash {
-                        self.fx.push(Effect {
-                            kind: EffectKind::Burst {
-                                at: world_vec(*target_pos),
-                                radius,
-                            },
-                            age: 0.0,
-                        });
-                    }
+                    push_direct_report(
+                        &mut self.fx,
+                        defense_shot_style(*kind),
+                        visual_shot_origin(
+                            world_vec(*turret_pos),
+                            world_vec(*target_pos),
+                            defense_muzzle_reach(*kind),
+                        ),
+                        world_vec(*target_pos),
+                        splash,
+                        self.state.current_tick(),
+                    );
                 }
                 Event::BuildingCompleted { player, kind, .. } if *player == self.human => {
                     self.sounds_pending.push((SoundKind::TrainDone, None));
@@ -446,6 +633,7 @@ impl Game {
                 }
                 Event::ShellLaunched {
                     shooter,
+                    target,
                     player,
                     from,
                     to,
@@ -461,6 +649,7 @@ impl Game {
                                 self.aim_units.insert(uid.0, (angle, self.fx_clock));
                             }
                             oxide_sim::Target::Building(bid) => {
+                                self.aim_building_targets.insert(bid.0, *target);
                                 self.aim_buildings.insert(bid.0, (angle, self.fx_clock));
                             }
                         }
@@ -475,14 +664,20 @@ impl Game {
                     // the same information the sim's incoming-shell
                     // sense grants (impact tile visible), loudest when
                     // it is falling on you, and nothing tracks the gun.
-                    let muzzle_seen = sees(self, *from);
-                    let impact_seen = sees(self, *to);
-                    if muzzle_seen || *player == self.human {
-                        self.sounds_pending
-                            .push((SoundKind::ArtilleryLaunch, Some(world_vec(*from))));
-                    } else if impact_seen {
-                        self.sounds_pending
-                            .push((SoundKind::ArtilleryLaunch, Some(world_vec(*to))));
+                    let own = *player == self.human;
+                    let hostile = self.state.hostile(self.human, *player);
+                    if let Some((sound, anchor)) = shell_launch_audio(
+                        *shooter,
+                        own,
+                        hostile,
+                        sees(self, *from),
+                        sees(self, *to),
+                    ) {
+                        let at = match anchor {
+                            ShellSoundAnchor::Muzzle => *from,
+                            ShellSoundAnchor::Impact => *to,
+                        };
+                        self.sounds_pending.push((sound, Some(world_vec(at))));
                     }
                 }
                 Event::ShellLanded {
@@ -578,26 +773,450 @@ impl Game {
                 _ => {}
             }
         }
+        self.refresh_defense_aim();
+    }
+
+    fn refresh_defense_aim(&mut self) {
+        let updates: Vec<_> = self
+            .aim_building_targets
+            .iter()
+            .filter_map(|(&building_id, &target)| {
+                if self
+                    .aim_buildings
+                    .get(&building_id)
+                    .is_some_and(|(_, fired_at)| *fired_at == self.fx_clock)
+                {
+                    return None;
+                }
+                let building = self.state.building(oxide_sim::BuildingId(building_id))?;
+                if building.cooldown == 0 {
+                    return None;
+                }
+                let target_pos = match target {
+                    oxide_sim::Target::Unit(id) => {
+                        let unit = self.state.unit(id)?;
+                        let visible = self.all_seeing()
+                            || !self.state.hostile(self.human, unit.player)
+                            || self.my_vision().visible(unit.tile());
+                        visible.then(|| world_vec(unit.pos))?
+                    }
+                    oxide_sim::Target::Building(id) => {
+                        let target = self.state.building(id)?;
+                        let visible = self.all_seeing()
+                            || !self.state.hostile(self.human, target.player)
+                            || target.tiles().any(|tile| self.my_vision().visible(tile));
+                        visible.then(|| world_vec(target.center()))?
+                    }
+                };
+                let from = world_vec(building.center());
+                let delta = target_pos - from;
+                (delta.length_squared() > 1e-6).then(|| {
+                    (
+                        building_id,
+                        delta.y.atan2(delta.x) + std::f32::consts::FRAC_PI_2,
+                    )
+                })
+            })
+            .collect();
+        for (building_id, angle) in updates {
+            self.aim_buildings
+                .entry(building_id)
+                .and_modify(|aim| aim.0 = angle)
+                .or_insert((angle, self.fx_clock));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxide_sim::UnitKind;
+    use oxide_sim::{BuildingId, BuildingKind, Target, UnitId, UnitKind};
+
+    fn defense_tracking_game() -> (crate::game::Game, BuildingId, UnitId) {
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Turret,
+            x: 11,
+            y: 10,
+        });
+        scenario.units.push(oxide_sim::scenario::UnitSpec {
+            player: 1,
+            kind: UnitKind::Harvester,
+            x: 14,
+            y: 10,
+        });
+        let game =
+            crate::game::Game::with_viewport(scenario, macroquad::prelude::vec2(1280.0, 800.0))
+                .expect("tracking scenario builds");
+        let building = game
+            .state
+            .buildings()
+            .iter()
+            .find(|building| building.kind == BuildingKind::Turret)
+            .unwrap()
+            .id;
+        let target = game
+            .state
+            .units()
+            .iter()
+            .find(|unit| unit.tile() == chassis::grid::TilePos::new(14, 10))
+            .unwrap()
+            .id;
+        (game, building, target)
+    }
 
     #[test]
-    fn every_weapon_family_fires_its_own_bolt() {
-        assert_eq!(unit_bolt_style(UnitKind::Lancer, 0), BoltStyle::Rail);
-        assert_eq!(unit_bolt_style(UnitKind::Flakhound, 0), BoltStyle::Flak);
-        assert_eq!(unit_bolt_style(UnitKind::Stinger, 0), BoltStyle::Flak);
-        // The Sentinel's main gun is a tracer; its sidearm slot is the
-        // anti-air poke.
-        assert_eq!(unit_bolt_style(UnitKind::Sentinel, 0), BoltStyle::Tracer);
-        assert_eq!(unit_bolt_style(UnitKind::Sentinel, 1), BoltStyle::Flak);
-        assert_eq!(unit_bolt_style(UnitKind::Buzzard, 0), BoltStyle::AirStrike);
-        assert_eq!(unit_bolt_style(UnitKind::Wisp, 0), BoltStyle::AirStrike);
-        assert_eq!(unit_bolt_style(UnitKind::Scuttler, 0), BoltStyle::Tracer);
+    fn every_weapon_family_uses_its_physical_report() {
+        assert_eq!(unit_shot_style(UnitKind::Scuttler, 0), ShotStyle::Contact);
+        assert_eq!(unit_shot_style(UnitKind::Lancer, 0), ShotStyle::Rail);
+        assert_eq!(
+            unit_shot_style(UnitKind::Flakhound, 0),
+            ShotStyle::FlakBurst {
+                yoke_delay: FlakYokeDelay::OneTick,
+            }
+        );
+        assert_eq!(
+            unit_shot_style(UnitKind::Stinger, 0),
+            ShotStyle::FlakBurst {
+                yoke_delay: FlakYokeDelay::None,
+            }
+        );
+        // Both Sentinel slots speak through its one physical barrel;
+        // the second is a weaker skyward poke, not a paired flak gun.
+        assert_eq!(unit_shot_style(UnitKind::Sentinel, 0), ShotStyle::ForgeSpot);
+        assert_eq!(unit_shot_style(UnitKind::Sentinel, 1), ShotStyle::ForgeSpot);
+        assert_eq!(unit_shot_style(UnitKind::Buzzard, 0), ShotStyle::ForgeSpot);
+        assert_eq!(unit_shot_style(UnitKind::Darter, 0), ShotStyle::ForgeSpot);
+        assert_eq!(unit_shot_style(UnitKind::Talon, 0), ShotStyle::ForgeSpot);
+        assert_eq!(unit_shot_style(UnitKind::Wisp, 0), ShotStyle::ForgeSpot);
+        assert_eq!(
+            defense_shot_style(BuildingKind::FlakTurret),
+            ShotStyle::FlakBurst {
+                yoke_delay: FlakYokeDelay::OneAndHalfTicks,
+            }
+        );
+        assert_eq!(
+            defense_shot_style(BuildingKind::Turret),
+            ShotStyle::ForgeSpot
+        );
+    }
+
+    #[test]
+    fn flak_yoke_rounds_switch_with_the_second_muzzle_frame() {
+        assert_eq!(
+            crate::presentation_animation::FLAKHOUND_REPORT_TICKS / 2.0,
+            FlakYokeDelay::OneTick.ticks()
+        );
+        assert_eq!(
+            crate::presentation_animation::FLAK_TURRET_REPORT_TICKS / 2.0,
+            FlakYokeDelay::OneAndHalfTicks.ticks()
+        );
+    }
+
+    #[test]
+    fn splash_bloom_stays_with_the_one_direct_report_until_arrival() {
+        let mut effects = Vec::new();
+        push_direct_report(
+            &mut effects,
+            ShotStyle::FlakBurst {
+                yoke_delay: FlakYokeDelay::OneTick,
+            },
+            Vec2::ZERO,
+            Vec2::ONE,
+            Some(1.25),
+            42,
+        );
+
+        assert_eq!(effects.len(), 1, "one hit creates one flak report");
+        assert!(matches!(
+            effects[0].kind,
+            EffectKind::DirectShot {
+                style: ShotStyle::FlakBurst {
+                    yoke_delay: FlakYokeDelay::OneTick,
+                },
+                splash: Some(1.25),
+                completed_tick: 42,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn direct_reports_age_on_sim_time_instead_of_wall_time() {
+        let shot = Effect {
+            kind: EffectKind::DirectShot {
+                style: ShotStyle::ForgeSpot,
+                from: Vec2::ZERO,
+                to: Vec2::ONE,
+                splash: None,
+                completed_tick: 100,
+            },
+            age: 0.0,
+        };
+        assert_eq!(shot.age_at(100, 0.0), 0.0);
+        assert!((shot.age_at(102, 0.5) - 2.5 * crate::game::TICK_DT).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn final_volley_drains_after_the_simulation_stops() {
+        let mut game = crate::game::Game::with_viewport(
+            oxide_sim::Scenario::skirmish(),
+            macroquad::prelude::vec2(1280.0, 800.0),
+        )
+        .expect("skirmish builds");
+        game.issue(oxide_sim::Command::Surrender);
+        game.do_tick();
+        assert!(game.state.result().is_some());
+
+        let completed_tick = game.state.current_tick();
+        game.fx.push(Effect {
+            kind: EffectKind::DirectShot {
+                style: ShotStyle::ForgeSpot,
+                from: Vec2::ZERO,
+                to: Vec2::ONE,
+                splash: None,
+                completed_tick,
+            },
+            age: 0.0,
+        });
+        game.update_fx(ShotStyle::ForgeSpot.life() + 0.01);
+        assert!(game.fx.is_empty());
+    }
+
+    #[test]
+    fn only_bombard_and_bastion_use_real_shell_entities() {
+        let units = [
+            UnitKind::Harvester,
+            UnitKind::Sentinel,
+            UnitKind::Scuttler,
+            UnitKind::Lancer,
+            UnitKind::Bombard,
+            UnitKind::Flakhound,
+            UnitKind::Stinger,
+            UnitKind::Buzzard,
+            UnitKind::Darter,
+            UnitKind::Talon,
+            UnitKind::Wisp,
+        ];
+        let unit_shells: Vec<_> = units
+            .into_iter()
+            .filter(|kind| kind.stats().weapons.iter().any(|weapon| weapon.projectile))
+            .collect();
+        assert_eq!(unit_shells, vec![UnitKind::Bombard]);
+
+        let buildings = [
+            BuildingKind::Foundry,
+            BuildingKind::Turret,
+            BuildingKind::Fabricator,
+            BuildingKind::FlakTurret,
+            BuildingKind::Bastion,
+            BuildingKind::Array,
+            BuildingKind::Reclaimer,
+            BuildingKind::RepairBay,
+        ];
+        let building_shells: Vec<_> = buildings
+            .into_iter()
+            .filter(|kind| kind.stats().weapons.iter().any(|weapon| weapon.projectile))
+            .collect();
+        assert_eq!(building_shells, vec![BuildingKind::Bastion]);
+    }
+
+    #[test]
+    fn approved_combatants_use_their_own_reports() {
+        assert_eq!(unit_fire_sound(UnitKind::Sentinel), SoundKind::SentinelFire);
+        assert_eq!(unit_fire_sound(UnitKind::Scuttler), SoundKind::ScuttlerFire);
+        assert_eq!(unit_fire_sound(UnitKind::Lancer), SoundKind::LancerFire);
+        assert_eq!(
+            unit_fire_sound(UnitKind::Flakhound),
+            SoundKind::FlakhoundFire
+        );
+        assert_eq!(unit_fire_sound(UnitKind::Stinger), SoundKind::StingerFire);
+        assert_eq!(unit_fire_sound(UnitKind::Buzzard), SoundKind::BuzzardFire);
+        assert_eq!(unit_fire_sound(UnitKind::Darter), SoundKind::DarterFire);
+        assert_eq!(unit_fire_sound(UnitKind::Talon), SoundKind::TalonFire);
+        assert_eq!(unit_fire_sound(UnitKind::Wisp), SoundKind::WispFire);
+        assert_eq!(
+            defense_fire_sound(BuildingKind::FlakTurret),
+            SoundKind::FlakTurretFire
+        );
+        assert_eq!(
+            shell_fire_sound(Target::Unit(UnitId(4))),
+            SoundKind::BombardFire
+        );
+        assert_eq!(
+            shell_fire_sound(Target::Building(BuildingId(7))),
+            SoundKind::BastionFire
+        );
+    }
+
+    #[test]
+    fn generic_combatants_keep_the_generic_report() {
+        assert_eq!(unit_fire_sound(UnitKind::Harvester), SoundKind::Laser);
+        assert_eq!(defense_fire_sound(BuildingKind::Turret), SoundKind::Laser);
+    }
+
+    #[test]
+    fn artillery_launch_audio_respects_sight_and_allegiance() {
+        let bombard = Target::Unit(UnitId(4));
+        assert_eq!(
+            shell_launch_audio(bombard, false, true, true, true),
+            Some((SoundKind::BombardFire, ShellSoundAnchor::Muzzle))
+        );
+        assert_eq!(
+            shell_launch_audio(bombard, false, true, false, true),
+            Some((SoundKind::ArtilleryLaunch, ShellSoundAnchor::Impact))
+        );
+        assert_eq!(shell_launch_audio(bombard, false, true, false, false), None);
+        assert_eq!(
+            shell_launch_audio(bombard, false, false, false, true),
+            None,
+            "a fogged allied shell must not sound like an incoming threat"
+        );
+        assert_eq!(
+            shell_launch_audio(bombard, true, false, false, false),
+            Some((SoundKind::BombardFire, ShellSoundAnchor::Muzzle)),
+            "the local gun remains audible without revealing another seat"
+        );
+    }
+
+    #[test]
+    fn shot_visuals_begin_at_the_authored_muzzle_not_chassis_center() {
+        let from = macroquad::prelude::vec2(2.0, 3.0);
+        let to = macroquad::prelude::vec2(12.0, 3.0);
+        assert_eq!(
+            visual_shot_origin(from, to, 0.38),
+            macroquad::prelude::vec2(2.38, 3.0)
+        );
+        assert_eq!(visual_shot_origin(from, from, 0.38), from);
+        assert_eq!(unit_muzzle_reach(UnitKind::Buzzard), 0.44);
+        assert_eq!(unit_muzzle_reach(UnitKind::Darter), 0.32);
+        assert!(
+            defense_muzzle_reach(BuildingKind::Bastion)
+                > defense_muzzle_reach(BuildingKind::Turret)
+        );
+    }
+
+    #[test]
+    fn defense_mount_tracks_only_a_target_the_viewer_may_see() {
+        let (mut game, building, _) = defense_tracking_game();
+        let report = game.state.tick(&[]);
+        game.spawn_fx(&report.events);
+        assert!(game.state.building(building).unwrap().cooldown > 0);
+        let hostile = game
+            .state
+            .units()
+            .iter()
+            .find(|unit| {
+                game.state.hostile(game.human, unit.player)
+                    && !game.my_vision().visible(unit.tile())
+            })
+            .expect("skirmish has a fogged hostile unit");
+        assert!(!game.my_vision().visible(hostile.tile()));
+        let target = Target::Unit(hostile.id);
+        game.aim_building_targets.insert(building.0, target);
+        game.aim_buildings.insert(building.0, (0.42, 0.0));
+        game.update_fx(crate::game::TICK_DT);
+
+        game.refresh_defense_aim();
+        assert_eq!(game.aim_buildings[&building.0].0, 0.42);
+
+        game.overlay = true;
+        game.refresh_defense_aim();
+        assert_ne!(game.aim_buildings[&building.0].0, 0.42);
+    }
+
+    #[test]
+    fn defense_mount_follows_its_visible_target_during_reload() {
+        let (mut game, building, target) = defense_tracking_game();
+        let report = game.state.tick(&[]);
+        game.spawn_fx(&report.events);
+        let first_angle = game.aim_buildings[&building.0].0;
+        let first_pos = game.state.unit(target).unwrap().pos;
+
+        game.update_fx(crate::game::TICK_DT);
+        let report = game.state.tick(&[oxide_sim::PlayerCommand {
+            player: oxide_sim::PlayerId(1),
+            command: oxide_sim::Command::Move {
+                units: vec![target],
+                goal: chassis::grid::TilePos::new(14, 14),
+                queue: false,
+            },
+        }]);
+        game.spawn_fx(&report.events);
+
+        assert_ne!(game.state.unit(target).unwrap().pos, first_pos);
+        assert_ne!(game.aim_buildings[&building.0].0, first_angle);
+        assert!(game.state.building(building).unwrap().cooldown > 0);
+    }
+
+    #[test]
+    fn shell_report_keeps_predicted_heading_on_the_launch_frame() {
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Bastion,
+            x: 11,
+            y: 10,
+        });
+        scenario.units.push(oxide_sim::scenario::UnitSpec {
+            player: 1,
+            kind: UnitKind::Harvester,
+            x: 16,
+            y: 10,
+        });
+        let mut game =
+            crate::game::Game::with_viewport(scenario, macroquad::prelude::vec2(1280.0, 800.0))
+                .expect("tracking scenario builds");
+        let shooter = game
+            .state
+            .buildings()
+            .iter()
+            .find(|building| building.kind == BuildingKind::Bastion)
+            .unwrap()
+            .id;
+        let target = game
+            .state
+            .units()
+            .iter()
+            .find(|unit| unit.tile() == chassis::grid::TilePos::new(16, 10))
+            .unwrap()
+            .id;
+        let report = game.state.tick(&[oxide_sim::PlayerCommand {
+            player: oxide_sim::PlayerId(1),
+            command: oxide_sim::Command::Move {
+                units: vec![target],
+                goal: chassis::grid::TilePos::new(16, 14),
+                queue: false,
+            },
+        }]);
+        let (from, to) = report
+            .events
+            .iter()
+            .find_map(|event| match event {
+                oxide_sim::Event::ShellLaunched {
+                    shooter: Target::Building(id),
+                    from,
+                    to,
+                    ..
+                } if *id == shooter => Some((*from, *to)),
+                _ => None,
+            })
+            .expect("the Bastion launches while its target begins moving");
+        assert!(game.state.building(shooter).unwrap().cooldown > 0);
+        assert!(
+            game.my_vision()
+                .visible(game.state.unit(target).unwrap().tile())
+        );
+        let expected = world_vec(to) - world_vec(from);
+        let expected_angle = expected.y.atan2(expected.x) + std::f32::consts::FRAC_PI_2;
+        let current = world_vec(game.state.unit(target).unwrap().pos) - world_vec(from);
+        let current_angle = current.y.atan2(current.x) + std::f32::consts::FRAC_PI_2;
+        assert!((expected_angle - current_angle).abs() > 1e-4);
+
+        game.spawn_fx(&report.events);
+        let angle = game.aim_buildings[&shooter.0].0;
+        assert!((angle - expected_angle).abs() < 1e-6);
     }
 
     #[test]

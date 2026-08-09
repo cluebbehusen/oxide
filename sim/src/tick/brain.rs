@@ -109,6 +109,7 @@ pub(super) fn run(
     // unit list itself hold still until resolution — so a snapshot
     // taken here stays exact for the whole decision loop.
     index.rebuild(&state.units);
+    let motion = MotionSnapshot::capture(state);
     let mut hits: Vec<PendingHit> = Vec::new();
     let mut builds: Vec<PendingHpGain> = Vec::new();
     let mut heals: Vec<PendingUnitHeal> = Vec::new();
@@ -116,6 +117,8 @@ pub(super) fn run(
     let mut drains: Vec<PendingHpDrain> = Vec::new();
     let mut founds: Vec<PendingFounding> = Vec::new();
     let mut launches: Vec<crate::state::Shell> = Vec::new();
+    let mut harvest_danger_by_team: Vec<Option<crate::vision::GroundSalvageDanger>> =
+        (0..state.players.len()).map(|_| None).collect();
     // Alternate direction by tick parity: sequential phases must not hand
     // one seat a standing first-mover edge (with damage buffered, the
     // remaining coupling is small — shared scrap, own-side order state —
@@ -138,10 +141,22 @@ pub(super) fn run(
         match order {
             Order::Idle => idle(state, index, id),
             Order::Move { goal } => walk(state, id, goal, events),
-            Order::Harvest { node } => harvest(state, id, node, events),
+            Order::Harvest {
+                node,
+                anchor,
+                retiring,
+            } => {
+                let player = state.unit(id).expect("just seen").player;
+                let team = state.player(player).team as usize;
+                let danger = harvest_danger_by_team[team].get_or_insert_with(|| {
+                    crate::vision::GroundSalvageDanger::capture(state, player)
+                });
+                harvest(state, danger, id, node, anchor, retiring, events);
+            }
             Order::Attack { target, resume } => attack(
                 state,
                 index,
+                &motion,
                 id,
                 target,
                 resume,
@@ -150,6 +165,16 @@ pub(super) fn run(
                 &mut launches,
             ),
             Order::AttackMove { goal } => attack_move(state, index, id, goal, events),
+            Order::Advance { goal } => advance(
+                state,
+                index,
+                &motion,
+                id,
+                goal,
+                events,
+                &mut hits,
+                &mut launches,
+            ),
             Order::Build { site } => build(state, id, site, events, &mut builds),
             Order::Repair { building } => repair(state, id, building, events, &mut builds),
             Order::Salvage { building } => salvage(state, id, building, events, &mut drains),
@@ -158,7 +183,7 @@ pub(super) fn run(
         }
     }
     commit_unit_welds(state, field_welds, events, &mut heals);
-    turret_fire(state, events, &mut hits, &mut launches);
+    turret_fire(state, &motion, events, &mut hits, &mut launches);
     repair_bay_aura(state, &mut heals);
     // Arrivals join this tick's volley; launches land on later ticks
     // (flight is at least one tick), so ordering here cannot matter.
@@ -173,7 +198,7 @@ mod economy;
 mod locomotion;
 
 use combat::attack;
-use combat::{land_shells, retaliate, target_standing, turret_fire};
+use combat::{MotionSnapshot, advance, land_shells, retaliate, target_standing, turret_fire};
 use economy::{build, commit_unit_welds, found, harvest, repair, repair_unit, salvage};
 use locomotion::{attack_move, idle, walk};
 
@@ -191,19 +216,34 @@ fn resolve_hits(
     drains: Vec<PendingHpDrain>,
     events: &mut Vec<Event>,
 ) {
+    let mut incidents = Vec::new();
     for hit in &hits {
         match hit.victim {
             Target::Unit(uid) => {
                 if let Some(v) = state.unit_mut(uid) {
+                    let relevant_hit = v.kind == crate::stats::UnitKind::Harvester;
+                    let relevant_loss =
+                        hit.damage >= v.hp && v.kind.stats().domain == crate::stats::Domain::Ground;
+                    if v.hp > 0 && hit.damage > 0 && (relevant_hit || relevant_loss) {
+                        incidents.push((v.player, v.tile()));
+                    }
                     v.hp = v.hp.saturating_sub(hit.damage);
                 }
             }
             Target::Building(bid) => {
                 if let Some(b) = state.building_mut(bid) {
+                    let relevant_hit = b.kind == crate::stats::BuildingKind::Reclaimer;
+                    let relevant_loss = hit.damage >= b.hp;
+                    if b.hp > 0 && hit.damage > 0 && (relevant_hit || relevant_loss) {
+                        incidents.push((b.player, chassis::grid::TilePos::containing(b.center())));
+                    }
                     b.hp = b.hp.saturating_sub(hit.damage);
                 }
             }
         }
+    }
+    for (victim, tile) in incidents {
+        state.record_salvage_incident(victim, tile);
     }
     // Stacked welders each prepaid their own meter against the same
     // start-of-tick hp reading, but the ceiling accepts hp in decision
@@ -442,9 +482,19 @@ fn repair_bay_aura(state: &mut State, heals: &mut Vec<PendingUnitHeal>) {
         };
         let owner = b.player;
         // The aura is automatic, so unlike a voluntary purchase it must
-        // not eat the only 50 scrap a stranded seat can use to restart
-        // harvesting. Sustain may spend any surplus above the reserve.
-        let preserve_harvester_reserve = super::harvester_recovery_needed(state, owner);
+        // not eat the captured recovery package. A surviving paid screen
+        // makes that package worker-sized; reserving the universal maximum
+        // would strand exactly the army the Repair Bay exists to sustain.
+        let recovery_reserve = if super::harvester_recovery_needed(state, owner) {
+            let seat = state.player(owner);
+            if seat.recovery_ready {
+                state.recovery_package_target(owner)
+            } else {
+                u32::from(seat.recovery_target)
+            }
+        } else {
+            0
+        };
         let patients: Vec<UnitId> = state
             .units
             .iter()
@@ -475,8 +525,8 @@ fn repair_bay_aura(state: &mut State, heals: &mut Vec<PendingUnitHeal>) {
                 continue; // broke for this patient; cheaper coins may still land
             }
             if due > 0
-                && preserve_harvester_reserve
-                && u64::from(bank) - due < u64::from(crate::stats::UnitKind::Harvester.stats().cost)
+                && recovery_reserve > 0
+                && u64::from(bank) - due < u64::from(recovery_reserve)
             {
                 continue;
             }
@@ -560,14 +610,33 @@ fn resolve_founds(state: &mut State, mut founds: Vec<PendingFounding>, events: &
             f.kind,
             f.anchor,
             |state, site| {
-                // The founder's own active order becomes the build; its
-                // queued program survives untouched — deferral changes
-                // when the claim lands, never what comes after.
-                let unit = state.unit_mut(f.unit).expect("checked above");
-                unit.order = Order::Build { site };
-                unit.path = None;
-                unit.progress = 0;
-                true
+                // Every promise for this logical site must follow the paid
+                // entity. Otherwise a delayed crewmate can retain Found,
+                // outlive a cancellation that clears Build orders by id,
+                // and claim the same ground (and price) again.
+                let matches_claim = |order: &Order| {
+                    matches!(order, Order::Found { kind, anchor }
+                        if *kind == f.kind && *anchor == f.anchor)
+                };
+                let mut founder_committed = false;
+                for unit in state
+                    .units
+                    .iter_mut()
+                    .filter(|unit| unit.player == f.player)
+                {
+                    if matches_claim(&unit.order) {
+                        founder_committed |= unit.id == f.unit;
+                        unit.order = Order::Build { site };
+                        unit.path = None;
+                        unit.progress = 0;
+                    }
+                    for order in &mut unit.queue {
+                        if matches_claim(order) {
+                            *order = Order::Build { site };
+                        }
+                    }
+                }
+                founder_committed
             },
         );
         match claimed {

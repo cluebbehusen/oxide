@@ -17,19 +17,27 @@ pub struct Sprites {
     /// [`crate::panel::VerbIcon`].
     verb_icons: [Rect; 12],
     ground: [Rect; 6],
-    rock: [Rect; 4],
-    /// Skyline row of a range, indexed `w_conn * 4 + e_conn * 2 + variant`.
-    peak_sky: [Rect; 8],
-    peak_lone: [Rect; 2],
-    peak_body: [Rect; 2],
+    rock: [Rect; 23],
+    /// Full-tile exclusion barriers, indexed `neighbor_mask * 2 + variant`.
+    peak_barriers: [Rect; 32],
     turret_barrel: [Rect; 3],
+    flak_mount: [Rect; 3],
+    bastion_mount: [Rect; 3],
+    turret_barrel_action: [[Rect; 3]; 4],
+    flak_mount_action: [[Rect; 3]; 8],
+    bastion_mount_action: [[Rect; 3]; 9],
     rock_skirt: Rect,
     decals: [Rect; 4],
+    /// Six flat ground-dressing variants for each shipped theme.
+    theme_props: [Rect; 36],
+    /// Approved passable remnants scattered over safe ground.
+    field_debris: [Rect; 10],
+    /// Approved multi-tile industrial obstacles drawn over Rock terrain.
+    ground_blockers: [Rect; 9],
     scrap_full: Rect,
     scrap_mid: Rect,
     scrap_low: Rect,
     scrap_rich: Rect,
-    muzzle_flash: Rect,
     scorch: Rect,
     wreck_pile: Rect,
     air_shadow: Rect,
@@ -42,20 +50,50 @@ pub struct Sprites {
     array: [Rect; 3],
     reclaimer: [Rect; 3],
     repair_bay: [Rect; 3],
+    bastion_action: [[Rect; 3]; 9],
+    foundry_work: [[Rect; 3]; 4],
+    fabricator_work: [[Rect; 3]; 4],
+    array_work: [[Rect; 3]; 6],
+    reclaimer_work: [[Rect; 3]; 3],
+    repair_bay_work: [[Rect; 3]; 4],
+    construction: [[Rect; 3]; SITE_FRAME_COUNT * BUILDING_KIND_COUNT],
     harvester: [Rect; 3],
-    harvester_scoop: [[Rect; 3]; 2],
+    harvester_tread: [[Rect; 3]; 2],
+    harvester_cargo: [[Rect; 3]; 5],
+    harvester_cargo_scoop: [[[Rect; 3]; 2]; 5],
+    harvester_cargo_tread: [[[Rect; 3]; 2]; 5],
     scaffold: [Rect; 2],
     debris: [Rect; 3],
     scuttler: [Rect; 3],
+    scuttler_move: [[Rect; 3]; 2],
+    scuttler_action: [[Rect; 3]; 4],
     lancer: [Rect; 3],
+    lancer_move: [[Rect; 3]; 2],
+    lancer_action: [[Rect; 3]; 6],
     sentinel: [Rect; 3],
+    sentinel_move: [[Rect; 3]; 2],
+    sentinel_action: [[Rect; 3]; 4],
     bombard: [Rect; 3],
+    bombard_move: [[Rect; 3]; 2],
+    bombard_action: [[Rect; 3]; 6],
     flakhound: [Rect; 3],
+    flakhound_tread: [[Rect; 3]; 2],
+    flakhound_action: [[Rect; 3]; 9],
     stinger: [Rect; 3],
+    stinger_move: [[Rect; 3]; 2],
+    stinger_action: [[Rect; 3]; 4],
     buzzard: [Rect; 3],
+    buzzard_move: [[Rect; 3]; 2],
+    buzzard_action: [[Rect; 3]; 4],
     darter: [Rect; 3],
+    darter_move: [[Rect; 3]; 2],
+    darter_action: [[Rect; 3]; 4],
     talon: [Rect; 3],
+    talon_move: [[Rect; 3]; 2],
+    talon_action: [[Rect; 3]; 4],
     wisp: [Rect; 3],
+    wisp_move: [[Rect; 3]; 2],
+    wisp_action: [[Rect; 3]; 4],
 }
 
 fn faction_index(faction: Faction) -> usize {
@@ -106,25 +144,148 @@ const GROUND_KEYS: [&str; 6] = [
     "ground_0", "ground_1", "ground_2", "ground_3", "ground_4", "ground_5",
 ];
 
-const ROCK_KEYS: [&str; 4] = ["rock_0", "rock_1", "rock_2", "rock_3"];
-
-/// Skyline rows, ordered `w_conn * 4 + e_conn * 2 + variant`.
-const PEAK_SKY_KEYS: [&str; 8] = [
-    "peak_sky_00_0",
-    "peak_sky_00_1",
-    "peak_sky_01_0",
-    "peak_sky_01_1",
-    "peak_sky_10_0",
-    "peak_sky_10_1",
-    "peak_sky_11_0",
-    "peak_sky_11_1",
+const ROCK_KEYS: [&str; 23] = [
+    "rock_0",
+    "rock_1",
+    "rock_2",
+    "rock_3",
+    "rock_jagged_crown",
+    "rock_split_anvil",
+    "rock_broken_tooth",
+    "rock_hooked_shelf",
+    "rock_three_spall",
+    "rock_quarry_bite",
+    "rock_fallen_fang",
+    "rock_split_face",
+    "rock_low_scree",
+    "rock_hollow_crook",
+    "rock_broken_rampart",
+    "rock_twin_outcrop",
+    "rock_quarry_fall",
+    "rock_shattered_crown",
+    "rock_split_gully",
+    "rock_collapsed_cut",
+    "rock_jagged_field",
+    "rock_broken_bench",
+    "rock_quarry_scatter",
 ];
 
-const PEAK_LONE_KEYS: [&str; 2] = ["peak_lone_0", "peak_lone_1"];
+const FIELD_DEBRIS_KEYS: [&str; 10] = [
+    "field_debris_severed_cable",
+    "field_debris_bent_service_rail",
+    "field_debris_abandoned_canisters",
+    "field_debris_braided_cable",
+    "field_debris_fastener_spill",
+    "field_debris_canister_cluster",
+    "field_debris_sunken_cooling_fan",
+    "field_debris_inspection_hatch",
+    "field_debris_cable_tray",
+    "field_debris_motor_casing",
+];
 
-const PEAK_BODY_KEYS: [&str; 2] = ["peak_body_0", "peak_body_1"];
+const GROUND_BLOCKER_KEYS: [&str; 9] = [
+    "ground_blocker_cooling_fan",
+    "ground_blocker_compressor_skid",
+    "ground_blocker_transformer_bank",
+    "ground_blocker_exposed_gearbox",
+    "ground_blocker_conveyor_drive",
+    "ground_blocker_crusher_motor",
+    "ground_blocker_track_assembly",
+    "ground_blocker_vent_blower",
+    "ground_blocker_generator_pallet",
+];
+
+/// Full-tile barriers, ordered `neighbor_mask * 2 + variant`. The mask is
+/// north/east/south/west in bits 0 through 3.
+const PEAK_BARRIER_KEYS: [&str; 32] = [
+    "peak_barrier_00_0",
+    "peak_barrier_00_1",
+    "peak_barrier_01_0",
+    "peak_barrier_01_1",
+    "peak_barrier_02_0",
+    "peak_barrier_02_1",
+    "peak_barrier_03_0",
+    "peak_barrier_03_1",
+    "peak_barrier_04_0",
+    "peak_barrier_04_1",
+    "peak_barrier_05_0",
+    "peak_barrier_05_1",
+    "peak_barrier_06_0",
+    "peak_barrier_06_1",
+    "peak_barrier_07_0",
+    "peak_barrier_07_1",
+    "peak_barrier_08_0",
+    "peak_barrier_08_1",
+    "peak_barrier_09_0",
+    "peak_barrier_09_1",
+    "peak_barrier_0a_0",
+    "peak_barrier_0a_1",
+    "peak_barrier_0b_0",
+    "peak_barrier_0b_1",
+    "peak_barrier_0c_0",
+    "peak_barrier_0c_1",
+    "peak_barrier_0d_0",
+    "peak_barrier_0d_1",
+    "peak_barrier_0e_0",
+    "peak_barrier_0e_1",
+    "peak_barrier_0f_0",
+    "peak_barrier_0f_1",
+];
 
 const DECAL_KEYS: [&str; 4] = ["decal_crack", "decal_plate", "decal_stain", "decal_wreck"];
+
+/// Six flat ground-dressing sprites per shipped theme. Theme order is
+/// mirrored by [`Sprites::theme_prop`].
+const THEME_PROP_KEYS: [&str; 36] = [
+    "theme_rusted_yard_0",
+    "theme_rusted_yard_1",
+    "theme_rusted_yard_2",
+    "theme_rusted_yard_3",
+    "theme_rusted_yard_4",
+    "theme_rusted_yard_5",
+    "theme_cold_circuitry_0",
+    "theme_cold_circuitry_1",
+    "theme_cold_circuitry_2",
+    "theme_cold_circuitry_3",
+    "theme_cold_circuitry_4",
+    "theme_cold_circuitry_5",
+    "theme_quarry_dust_0",
+    "theme_quarry_dust_1",
+    "theme_quarry_dust_2",
+    "theme_quarry_dust_3",
+    "theme_quarry_dust_4",
+    "theme_quarry_dust_5",
+    "theme_basalt_0",
+    "theme_basalt_1",
+    "theme_basalt_2",
+    "theme_basalt_3",
+    "theme_basalt_4",
+    "theme_basalt_5",
+    "theme_slag_0",
+    "theme_slag_1",
+    "theme_slag_2",
+    "theme_slag_3",
+    "theme_slag_4",
+    "theme_slag_5",
+    "theme_verdigris_0",
+    "theme_verdigris_1",
+    "theme_verdigris_2",
+    "theme_verdigris_3",
+    "theme_verdigris_4",
+    "theme_verdigris_5",
+];
+
+fn theme_prop_row(theme: &str) -> Option<usize> {
+    match theme {
+        "rusted-yard" => Some(0),
+        "cold-circuitry" => Some(1),
+        "quarry-dust" => Some(2),
+        "basalt" => Some(3),
+        "slag" => Some(4),
+        "verdigris" => Some(5),
+        _ => None,
+    }
+}
 
 const SCAFFOLD_KEYS: [&str; 2] = ["scaffold_dense", "scaffold_sparse"];
 
@@ -132,9 +293,47 @@ const DEBRIS_KEYS: [&str; 3] = ["debris_0", "debris_1", "debris_2"];
 
 /// The Turret's gun is faction-varied like a unit, but belongs to no kind.
 const TURRET_BARREL_STEM: &str = "turret_barrel";
+const FLAK_MOUNT_STEM: &str = "flak_mount";
+const BASTION_MOUNT_STEM: &str = "bastion_mount";
 
 /// The Harvester's dig frames hang off its own stem.
 const SCOOP_SUFFIXES: [&str; 2] = ["_scoop1", "_scoop2"];
+const TREAD_SUFFIXES: [&str; 2] = ["_tread1", "_tread2"];
+const MOVE_SUFFIXES: [&str; 2] = ["_move1", "_move2"];
+const ACTION_SUFFIXES_4: [&str; 4] = ["_action1", "_action2", "_action3", "_action4"];
+const ACTION_SUFFIXES_6: [&str; 6] = [
+    "_action1", "_action2", "_action3", "_action4", "_action5", "_action6",
+];
+const ACTION_SUFFIXES_8: [&str; 8] = [
+    "_action1", "_action2", "_action3", "_action4", "_action5", "_action6", "_action7", "_action8",
+];
+const ACTION_SUFFIXES_9: [&str; 9] = [
+    "_action1", "_action2", "_action3", "_action4", "_action5", "_action6", "_action7", "_action8",
+    "_action9",
+];
+const WORK_SUFFIXES_3: [&str; 3] = ["_work1", "_work2", "_work3"];
+const WORK_SUFFIXES_4: [&str; 4] = ["_work1", "_work2", "_work3", "_work4"];
+const WORK_SUFFIXES_6: [&str; 6] = ["_work1", "_work2", "_work3", "_work4", "_work5", "_work6"];
+const HARVESTER_CARGO_LEVELS: usize = 5;
+const SITE_STAGES: usize = 3;
+const SITE_PHASES: usize = 2;
+const SITE_FRAME_COUNT: usize = SITE_STAGES * SITE_PHASES;
+const BUILDING_KIND_COUNT: usize = 8;
+
+/// One complete Harvester pose at a particular visible cargo level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HarvesterPose {
+    /// Resting chassis and tool.
+    Idle,
+    /// First authored tread phase.
+    Tread1,
+    /// Second authored tread phase.
+    Tread2,
+    /// Claws lowering around salvage.
+    Scoop1,
+    /// Claws closed on salvage.
+    Scoop2,
+}
 
 /// The atlas stem a unit kind's rows live under.
 fn unit_stem(kind: UnitKind) -> &'static str {
@@ -153,6 +352,19 @@ fn building_stem(kind: BuildingKind) -> &'static str {
         BuildingKind::Array => "array",
         BuildingKind::Reclaimer => "reclaimer",
         BuildingKind::RepairBay => "repair_bay",
+    }
+}
+
+fn building_index(kind: BuildingKind) -> usize {
+    match kind {
+        BuildingKind::Foundry => 0,
+        BuildingKind::Turret => 1,
+        BuildingKind::Fabricator => 2,
+        BuildingKind::FlakTurret => 3,
+        BuildingKind::Bastion => 4,
+        BuildingKind::Array => 5,
+        BuildingKind::Reclaimer => 6,
+        BuildingKind::RepairBay => 7,
     }
 }
 
@@ -189,6 +401,70 @@ fn variant_row(rects: &Manifest, stem: &str, suffix: &str) -> Result<[Rect; 3]> 
     Ok(out)
 }
 
+fn variant_rows<const N: usize>(
+    rects: &Manifest,
+    stem: &str,
+    suffixes: [&str; N],
+) -> Result<[[Rect; 3]; N]> {
+    let empty = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
+    let mut out = [empty; N];
+    for (row, suffix) in out.iter_mut().zip(suffixes) {
+        *row = variant_row(rects, stem, suffix)?;
+    }
+    Ok(out)
+}
+
+fn harvester_cargo_rows(rects: &Manifest) -> Result<[[Rect; 3]; HARVESTER_CARGO_LEVELS]> {
+    let empty = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
+    let mut out = [empty; HARVESTER_CARGO_LEVELS];
+    for (level, row) in out.iter_mut().enumerate() {
+        *row = variant_row(rects, "harvester", &format!("_cargo{level}"))?;
+    }
+    Ok(out)
+}
+
+fn harvester_cargo_motion_rows(
+    rects: &Manifest,
+    suffixes: [&str; 2],
+) -> Result<[[[Rect; 3]; 2]; HARVESTER_CARGO_LEVELS]> {
+    let empty_row = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
+    let mut out = [[empty_row; 2]; HARVESTER_CARGO_LEVELS];
+    for (level, rows) in out.iter_mut().enumerate() {
+        for (row, suffix) in rows.iter_mut().zip(suffixes) {
+            *row = variant_row(rects, "harvester", &format!("_cargo{level}{suffix}"))?;
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+fn unit_action_suffixes(kind: UnitKind) -> &'static [&'static str] {
+    match kind {
+        UnitKind::Harvester => &[],
+        UnitKind::Sentinel
+        | UnitKind::Scuttler
+        | UnitKind::Stinger
+        | UnitKind::Buzzard
+        | UnitKind::Darter
+        | UnitKind::Talon
+        | UnitKind::Wisp => &ACTION_SUFFIXES_4,
+        UnitKind::Lancer | UnitKind::Bombard => &ACTION_SUFFIXES_6,
+        UnitKind::Flakhound => &ACTION_SUFFIXES_9,
+    }
+}
+
+#[cfg(test)]
+fn building_work_suffixes(kind: BuildingKind) -> &'static [&'static str] {
+    match kind {
+        BuildingKind::Foundry | BuildingKind::Fabricator | BuildingKind::RepairBay => {
+            &WORK_SUFFIXES_4
+        }
+        BuildingKind::Array => &WORK_SUFFIXES_6,
+        BuildingKind::Reclaimer => &WORK_SUFFIXES_3,
+        BuildingKind::Turret | BuildingKind::FlakTurret | BuildingKind::Bastion => &[],
+    }
+}
+
 /// Every kind the shell must find art for.
 #[cfg(test)]
 const ALL_UNIT_KINDS: [UnitKind; 11] = [
@@ -205,7 +481,6 @@ const ALL_UNIT_KINDS: [UnitKind; 11] = [
     UnitKind::Wisp,
 ];
 
-#[cfg(test)]
 const ALL_BUILDING_KINDS: [BuildingKind; 8] = [
     BuildingKind::Foundry,
     BuildingKind::Turret,
@@ -217,8 +492,35 @@ const ALL_BUILDING_KINDS: [BuildingKind; 8] = [
     BuildingKind::RepairBay,
 ];
 
-/// Every atlas key [`Sprites::load`] resolves, built from the same lists
-/// and stems the loader itself uses.
+#[cfg(test)]
+const WORK_BUILDING_KINDS: [BuildingKind; 5] = [
+    BuildingKind::Foundry,
+    BuildingKind::Fabricator,
+    BuildingKind::Array,
+    BuildingKind::Reclaimer,
+    BuildingKind::RepairBay,
+];
+
+fn construction_rows(
+    rects: &Manifest,
+) -> Result<[[Rect; 3]; SITE_FRAME_COUNT * BUILDING_KIND_COUNT]> {
+    let empty = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
+    let mut out = [empty; SITE_FRAME_COUNT * BUILDING_KIND_COUNT];
+    for kind in ALL_BUILDING_KINDS {
+        for stage in 0..SITE_STAGES {
+            for phase in 0..SITE_PHASES {
+                let frame = stage * SITE_PHASES + phase;
+                let suffix = format!("_site{stage}_{phase}");
+                out[building_index(kind) * SITE_FRAME_COUNT + frame] =
+                    variant_row(rects, building_stem(kind), &suffix)?;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Every key accepted in the generated production atlas, including legacy
+/// compatibility aliases that remain in the generator output.
 #[cfg(test)]
 fn atlas_keys() -> Vec<String> {
     let mut keys: Vec<String> = SINGLE_KEYS
@@ -226,15 +528,28 @@ fn atlas_keys() -> Vec<String> {
         .chain(VERB_ICON_KEYS.iter())
         .chain(GROUND_KEYS.iter())
         .chain(ROCK_KEYS.iter())
-        .chain(PEAK_SKY_KEYS.iter())
-        .chain(PEAK_LONE_KEYS.iter())
-        .chain(PEAK_BODY_KEYS.iter())
+        .chain(PEAK_BARRIER_KEYS.iter())
         .chain(DECAL_KEYS.iter())
+        .chain(THEME_PROP_KEYS.iter())
+        .chain(FIELD_DEBRIS_KEYS.iter())
+        .chain(GROUND_BLOCKER_KEYS.iter())
         .chain(SCAFFOLD_KEYS.iter())
         .chain(DEBRIS_KEYS.iter())
         .map(|key| (*key).to_string())
         .collect();
     keys.extend(variant_keys(TURRET_BARREL_STEM, ""));
+    keys.extend(variant_keys(FLAK_MOUNT_STEM, ""));
+    keys.extend(variant_keys(BASTION_MOUNT_STEM, ""));
+    for suffix in ACTION_SUFFIXES_4 {
+        keys.extend(variant_keys(TURRET_BARREL_STEM, suffix));
+    }
+    for suffix in ACTION_SUFFIXES_8 {
+        keys.extend(variant_keys(FLAK_MOUNT_STEM, suffix));
+    }
+    for suffix in ACTION_SUFFIXES_9 {
+        keys.extend(variant_keys(BASTION_MOUNT_STEM, suffix));
+        keys.extend(variant_keys(building_stem(BuildingKind::Bastion), suffix));
+    }
     for kind in ALL_BUILDING_KINDS {
         keys.extend(variant_keys(building_stem(kind), ""));
     }
@@ -243,6 +558,52 @@ fn atlas_keys() -> Vec<String> {
     }
     for suffix in SCOOP_SUFFIXES {
         keys.extend(variant_keys(unit_stem(UnitKind::Harvester), suffix));
+    }
+    for kind in [UnitKind::Harvester, UnitKind::Flakhound] {
+        for suffix in TREAD_SUFFIXES {
+            keys.extend(variant_keys(unit_stem(kind), suffix));
+        }
+    }
+    for kind in [
+        UnitKind::Sentinel,
+        UnitKind::Scuttler,
+        UnitKind::Lancer,
+        UnitKind::Bombard,
+        UnitKind::Stinger,
+        UnitKind::Buzzard,
+        UnitKind::Darter,
+        UnitKind::Talon,
+        UnitKind::Wisp,
+    ] {
+        for suffix in MOVE_SUFFIXES {
+            keys.extend(variant_keys(unit_stem(kind), suffix));
+        }
+    }
+    for level in 0..HARVESTER_CARGO_LEVELS {
+        keys.extend(variant_keys("harvester", &format!("_cargo{level}")));
+        for suffix in TREAD_SUFFIXES.into_iter().chain(SCOOP_SUFFIXES) {
+            keys.extend(variant_keys("harvester", &format!("_cargo{level}{suffix}")));
+        }
+    }
+    for kind in ALL_UNIT_KINDS {
+        for suffix in unit_action_suffixes(kind) {
+            keys.extend(variant_keys(unit_stem(kind), suffix));
+        }
+    }
+    for kind in WORK_BUILDING_KINDS {
+        for suffix in building_work_suffixes(kind) {
+            keys.extend(variant_keys(building_stem(kind), suffix));
+        }
+    }
+    for kind in ALL_BUILDING_KINDS {
+        for stage in 0..SITE_STAGES {
+            for phase in 0..SITE_PHASES {
+                keys.extend(variant_keys(
+                    building_stem(kind),
+                    &format!("_site{stage}_{phase}"),
+                ));
+            }
+        }
     }
     keys
 }
@@ -292,7 +653,7 @@ impl Sprites {
             scrap_mid,
             scrap_low,
             scrap_rich,
-            muzzle_flash,
+            _muzzle_flash,
             scorch,
             wreck_pile,
             air_shadow,
@@ -305,17 +666,22 @@ impl Sprites {
             verb_icons: pick(&rects, VERB_ICON_KEYS)?,
             ground: pick(&rects, GROUND_KEYS)?,
             rock: pick(&rects, ROCK_KEYS)?,
-            peak_sky: pick(&rects, PEAK_SKY_KEYS)?,
-            peak_lone: pick(&rects, PEAK_LONE_KEYS)?,
-            peak_body: pick(&rects, PEAK_BODY_KEYS)?,
+            peak_barriers: pick(&rects, PEAK_BARRIER_KEYS)?,
             turret_barrel: variant_row(&rects, TURRET_BARREL_STEM, "")?,
+            flak_mount: variant_row(&rects, FLAK_MOUNT_STEM, "")?,
+            bastion_mount: variant_row(&rects, BASTION_MOUNT_STEM, "")?,
+            turret_barrel_action: variant_rows(&rects, TURRET_BARREL_STEM, ACTION_SUFFIXES_4)?,
+            flak_mount_action: variant_rows(&rects, FLAK_MOUNT_STEM, ACTION_SUFFIXES_8)?,
+            bastion_mount_action: variant_rows(&rects, BASTION_MOUNT_STEM, ACTION_SUFFIXES_9)?,
             rock_skirt,
             decals: pick(&rects, DECAL_KEYS)?,
+            theme_props: pick(&rects, THEME_PROP_KEYS)?,
+            field_debris: pick(&rects, FIELD_DEBRIS_KEYS)?,
+            ground_blockers: pick(&rects, GROUND_BLOCKER_KEYS)?,
             scrap_full,
             scrap_mid,
             scrap_low,
             scrap_rich,
-            muzzle_flash,
             scorch,
             wreck_pile,
             air_shadow,
@@ -328,23 +694,62 @@ impl Sprites {
             array: building(BuildingKind::Array)?,
             reclaimer: building(BuildingKind::Reclaimer)?,
             repair_bay: building(BuildingKind::RepairBay)?,
+            bastion_action: variant_rows(&rects, "bastion", ACTION_SUFFIXES_9)?,
+            foundry_work: variant_rows(&rects, "foundry", WORK_SUFFIXES_4)?,
+            fabricator_work: variant_rows(&rects, "fabricator", WORK_SUFFIXES_4)?,
+            array_work: variant_rows(&rects, "array", WORK_SUFFIXES_6)?,
+            reclaimer_work: variant_rows(&rects, "reclaimer", WORK_SUFFIXES_3)?,
+            repair_bay_work: variant_rows(&rects, "repair_bay", WORK_SUFFIXES_4)?,
+            construction: construction_rows(&rects)?,
             harvester: unit(UnitKind::Harvester)?,
-            harvester_scoop: [
-                variant_row(&rects, unit_stem(UnitKind::Harvester), SCOOP_SUFFIXES[0])?,
-                variant_row(&rects, unit_stem(UnitKind::Harvester), SCOOP_SUFFIXES[1])?,
-            ],
+            harvester_tread: variant_rows(&rects, unit_stem(UnitKind::Harvester), TREAD_SUFFIXES)?,
+            harvester_cargo: harvester_cargo_rows(&rects)?,
+            harvester_cargo_scoop: harvester_cargo_motion_rows(&rects, SCOOP_SUFFIXES)?,
+            harvester_cargo_tread: harvester_cargo_motion_rows(&rects, TREAD_SUFFIXES)?,
             scaffold: pick(&rects, SCAFFOLD_KEYS)?,
             debris: pick(&rects, DEBRIS_KEYS)?,
             scuttler: unit(UnitKind::Scuttler)?,
+            scuttler_move: variant_rows(&rects, unit_stem(UnitKind::Scuttler), MOVE_SUFFIXES)?,
+            scuttler_action: variant_rows(
+                &rects,
+                unit_stem(UnitKind::Scuttler),
+                ACTION_SUFFIXES_4,
+            )?,
             lancer: unit(UnitKind::Lancer)?,
+            lancer_move: variant_rows(&rects, unit_stem(UnitKind::Lancer), MOVE_SUFFIXES)?,
+            lancer_action: variant_rows(&rects, unit_stem(UnitKind::Lancer), ACTION_SUFFIXES_6)?,
             sentinel: unit(UnitKind::Sentinel)?,
+            sentinel_move: variant_rows(&rects, unit_stem(UnitKind::Sentinel), MOVE_SUFFIXES)?,
+            sentinel_action: variant_rows(
+                &rects,
+                unit_stem(UnitKind::Sentinel),
+                ACTION_SUFFIXES_4,
+            )?,
             bombard: unit(UnitKind::Bombard)?,
+            bombard_move: variant_rows(&rects, unit_stem(UnitKind::Bombard), MOVE_SUFFIXES)?,
+            bombard_action: variant_rows(&rects, unit_stem(UnitKind::Bombard), ACTION_SUFFIXES_6)?,
             flakhound: unit(UnitKind::Flakhound)?,
+            flakhound_tread: variant_rows(&rects, unit_stem(UnitKind::Flakhound), TREAD_SUFFIXES)?,
+            flakhound_action: variant_rows(
+                &rects,
+                unit_stem(UnitKind::Flakhound),
+                ACTION_SUFFIXES_9,
+            )?,
             stinger: unit(UnitKind::Stinger)?,
+            stinger_move: variant_rows(&rects, unit_stem(UnitKind::Stinger), MOVE_SUFFIXES)?,
+            stinger_action: variant_rows(&rects, unit_stem(UnitKind::Stinger), ACTION_SUFFIXES_4)?,
             buzzard: unit(UnitKind::Buzzard)?,
+            buzzard_move: variant_rows(&rects, unit_stem(UnitKind::Buzzard), MOVE_SUFFIXES)?,
+            buzzard_action: variant_rows(&rects, unit_stem(UnitKind::Buzzard), ACTION_SUFFIXES_4)?,
             darter: unit(UnitKind::Darter)?,
+            darter_move: variant_rows(&rects, unit_stem(UnitKind::Darter), MOVE_SUFFIXES)?,
+            darter_action: variant_rows(&rects, unit_stem(UnitKind::Darter), ACTION_SUFFIXES_4)?,
             talon: unit(UnitKind::Talon)?,
+            talon_move: variant_rows(&rects, unit_stem(UnitKind::Talon), MOVE_SUFFIXES)?,
+            talon_action: variant_rows(&rects, unit_stem(UnitKind::Talon), ACTION_SUFFIXES_4)?,
             wisp: unit(UnitKind::Wisp)?,
+            wisp_move: variant_rows(&rects, unit_stem(UnitKind::Wisp), MOVE_SUFFIXES)?,
+            wisp_action: variant_rows(&rects, unit_stem(UnitKind::Wisp), ACTION_SUFFIXES_4)?,
         })
     }
 
@@ -368,30 +773,70 @@ impl Sprites {
         self.rock[variant % self.rock.len()]
     }
 
-    /// The turret's rotating gun, per faction.
-    pub fn turret_barrel(&self, faction: oxide_sim::Faction) -> Rect {
-        self.turret_barrel[match faction {
-            oxide_sim::Faction::Ferrous => 0,
-            oxide_sim::Faction::Cupric => 1,
-        }]
+    /// A passable, flat remnant's atlas region.
+    pub fn field_debris(&self, variant: usize) -> Rect {
+        self.field_debris[variant % self.field_debris.len()]
     }
 
-    /// The skyline row of a mountain range: crests against open sky.
-    /// `w_conn`/`e_conn` say whether the ridge continues into the
-    /// neighboring tile on that side; connected sides meet the edge at
-    /// a fixed height so adjacent tiles join without a seam.
-    pub fn peak_sky(&self, w_conn: bool, e_conn: bool, variant: usize) -> Rect {
-        self.peak_sky[(w_conn as usize) * 4 + (e_conn as usize) * 2 + (variant % 2)]
+    /// A raised industrial obstacle's atlas region.
+    pub fn ground_blocker(&self, variant: usize) -> Rect {
+        self.ground_blockers[variant % self.ground_blockers.len()]
     }
 
-    /// A single standing peak with inset feet.
-    pub fn peak_lone(&self, variant: usize) -> Rect {
-        self.peak_lone[variant % self.peak_lone.len()]
+    /// A defense's directional mount, if its base art ships bare.
+    pub fn defense_mount(&self, kind: BuildingKind, faction: oxide_sim::Faction) -> Option<Rect> {
+        let row = match kind {
+            BuildingKind::Turret => &self.turret_barrel,
+            BuildingKind::FlakTurret => &self.flak_mount,
+            BuildingKind::Bastion => &self.bastion_mount,
+            _ => return None,
+        };
+        Some(row[faction_index(faction)])
     }
 
-    /// Interior of a mountain wall: solid rock, seamless on every edge.
-    pub fn peak_body(&self, variant: usize) -> Rect {
-        self.peak_body[variant % self.peak_body.len()]
+    /// The allegiance-accent mask matched to [`Self::defense_mount`].
+    pub fn defense_mount_accent(&self, kind: BuildingKind) -> Option<Rect> {
+        let row = match kind {
+            BuildingKind::Turret => &self.turret_barrel,
+            BuildingKind::FlakTurret => &self.flak_mount,
+            BuildingKind::Bastion => &self.bastion_mount,
+            _ => return None,
+        };
+        Some(row[ACCENT])
+    }
+
+    fn defense_mount_action_row(&self, kind: BuildingKind, frame: usize) -> Option<&[Rect; 3]> {
+        match kind {
+            BuildingKind::Turret => self.turret_barrel_action.get(frame),
+            BuildingKind::FlakTurret => self.flak_mount_action.get(frame),
+            BuildingKind::Bastion => self.bastion_mount_action.get(frame),
+            _ => None,
+        }
+    }
+
+    /// A defense mount's zero-based authored action frame. An out-of-range
+    /// frame falls back to the ready mount; unarmed buildings return `None`.
+    pub fn defense_mount_action(
+        &self,
+        kind: BuildingKind,
+        faction: Faction,
+        frame: usize,
+    ) -> Option<Rect> {
+        self.defense_mount_action_row(kind, frame)
+            .map(|row| row[faction_index(faction)])
+            .or_else(|| self.defense_mount(kind, faction))
+    }
+
+    /// The allegiance mask matched to [`Self::defense_mount_action`].
+    pub fn defense_mount_action_accent(&self, kind: BuildingKind, frame: usize) -> Option<Rect> {
+        self.defense_mount_action_row(kind, frame)
+            .map(|row| row[ACCENT])
+            .or_else(|| self.defense_mount_accent(kind))
+    }
+
+    /// A full-tile exclusion barrier connected to its peak neighbors.
+    pub fn peak_barrier(&self, neighbor_mask: u8, variant: usize) -> Rect {
+        self.peak_barriers[usize::from(neighbor_mask & 0x0f) * 2 + variant % 2]
     }
 
     /// The soft shadow a rock casts on a neighboring ground tile
@@ -403,6 +848,12 @@ impl Sprites {
     /// A ground decal's atlas region.
     pub fn decal(&self, variant: usize) -> Rect {
         self.decals[variant % self.decals.len()]
+    }
+
+    /// A flat ground-dressing sprite for a shipped map theme.
+    pub fn theme_prop(&self, theme: &str, variant: usize) -> Option<Rect> {
+        let row = theme_prop_row(theme)?;
+        Some(self.theme_props[row * 6 + variant % 6])
     }
 
     /// The scrap sprite region for a remaining amount: anything above a
@@ -417,11 +868,6 @@ impl Sprites {
         } else {
             self.scrap_low
         }
-    }
-
-    /// The muzzle-flash atlas region.
-    pub fn muzzle_flash(&self) -> Rect {
-        self.muzzle_flash
     }
 
     /// The building-death scorch decal region.
@@ -468,25 +914,153 @@ impl Sprites {
         self.building_row(kind)[ACCENT]
     }
 
-    /// A working harvester's scoop-cycle frame: 0 is the travel pose,
-    /// 1-2 the dig. Values past 2 are the caller's cycle math leaking.
-    pub fn harvester_working(&self, faction: Faction, frame: usize) -> Rect {
-        let f = faction_index(faction);
-        match frame {
-            0 => self.harvester[f],
-            1 => self.harvester_scoop[0][f],
-            _ => self.harvester_scoop[1][f],
+    fn building_action_row(&self, kind: BuildingKind, frame: usize) -> Option<&[Rect; 3]> {
+        match kind {
+            BuildingKind::Bastion => self.bastion_action.get(frame),
+            _ => None,
         }
     }
 
-    /// The scoop cycle's accent mask, frame-matched to
-    /// [`Self::harvester_working`].
-    pub fn harvester_working_accent(&self, frame: usize) -> Rect {
-        match frame {
-            0 => self.harvester[ACCENT],
-            1 => self.harvester_scoop[0][ACCENT],
-            _ => self.harvester_scoop[1][ACCENT],
+    /// A building base's zero-based authored action frame. Bastion charge
+    /// cells live here; other building bases and invalid frames stay ready.
+    pub fn building_action(&self, kind: BuildingKind, faction: Faction, frame: usize) -> Rect {
+        self.building_action_row(kind, frame)
+            .unwrap_or_else(|| self.building_row(kind))[faction_index(faction)]
+    }
+
+    /// The allegiance mask matched to [`Self::building_action`].
+    pub fn building_action_accent(&self, kind: BuildingKind, frame: usize) -> Rect {
+        self.building_action_row(kind, frame)
+            .unwrap_or_else(|| self.building_row(kind))[ACCENT]
+    }
+
+    /// The Bastion's five-cell rack as an atlas crop plus its normalized
+    /// placement inside the 2x2 base. Drawing this layer after the rotating
+    /// carriage keeps the meter readable at every aim angle.
+    pub fn bastion_charge_overlay(&self, faction: Faction, frame: Option<usize>) -> (Rect, Rect) {
+        const NATIVE_SIDE: f32 = 128.0;
+        const X: f32 = 10.0;
+        const Y: f32 = 50.0;
+        const W: f32 = 18.0;
+        const H: f32 = 56.0;
+        let base = frame.map_or_else(
+            || self.building(BuildingKind::Bastion, faction),
+            |action| self.building_action(BuildingKind::Bastion, faction, action),
+        );
+        let source = Rect::new(
+            base.x + base.w * X / NATIVE_SIDE,
+            base.y + base.h * Y / NATIVE_SIDE,
+            base.w * W / NATIVE_SIDE,
+            base.h * H / NATIVE_SIDE,
+        );
+        let placement = Rect::new(
+            X / NATIVE_SIDE,
+            Y / NATIVE_SIDE,
+            W / NATIVE_SIDE,
+            H / NATIVE_SIDE,
+        );
+        (source, placement)
+    }
+
+    fn building_work_row(&self, kind: BuildingKind, frame: usize) -> Option<&[Rect; 3]> {
+        let rows: &[[Rect; 3]] = match kind {
+            BuildingKind::Foundry => &self.foundry_work,
+            BuildingKind::Fabricator => &self.fabricator_work,
+            BuildingKind::Array => &self.array_work,
+            BuildingKind::Reclaimer => &self.reclaimer_work,
+            BuildingKind::RepairBay => &self.repair_bay_work,
+            _ => return None,
+        };
+        frame.checked_sub(1).and_then(|index| rows.get(index))
+    }
+
+    /// A complete authored activity frame for a working building. Frame 0
+    /// is the ordinary base art and is also the reduced-motion pose.
+    pub fn building_working(&self, kind: BuildingKind, faction: Faction, frame: usize) -> Rect {
+        self.building_work_row(kind, frame)
+            .unwrap_or_else(|| self.building_row(kind))[faction_index(faction)]
+    }
+
+    /// The allegiance mask matched to [`Self::building_working`].
+    pub fn building_working_accent(&self, kind: BuildingKind, frame: usize) -> Rect {
+        self.building_work_row(kind, frame)
+            .unwrap_or_else(|| self.building_row(kind))[ACCENT]
+    }
+
+    fn construction_row(&self, kind: BuildingKind, stage: usize, phase: usize) -> &[Rect; 3] {
+        let stage = stage.min(SITE_STAGES - 1);
+        let phase = phase.min(SITE_PHASES - 1);
+        &self.construction[building_index(kind) * SITE_FRAME_COUNT + stage * SITE_PHASES + phase]
+    }
+
+    /// A full construction-site frame authored for the final building's
+    /// footprint, progress stage, and machinery phase.
+    pub fn construction(
+        &self,
+        kind: BuildingKind,
+        faction: Faction,
+        stage: usize,
+        phase: usize,
+    ) -> Rect {
+        self.construction_row(kind, stage, phase)[faction_index(faction)]
+    }
+
+    /// The allegiance mask matched to [`Self::construction`].
+    pub fn construction_accent(&self, kind: BuildingKind, stage: usize, phase: usize) -> Rect {
+        self.construction_row(kind, stage, phase)[ACCENT]
+    }
+
+    fn harvester_frame_row(&self, cargo: usize, pose: HarvesterPose) -> &[Rect; 3] {
+        let cargo = cargo.min(HARVESTER_CARGO_LEVELS - 1);
+        match pose {
+            HarvesterPose::Idle => &self.harvester_cargo[cargo],
+            HarvesterPose::Tread1 => &self.harvester_cargo_tread[cargo][0],
+            HarvesterPose::Tread2 => &self.harvester_cargo_tread[cargo][1],
+            HarvesterPose::Scoop1 => &self.harvester_cargo_scoop[cargo][0],
+            HarvesterPose::Scoop2 => &self.harvester_cargo_scoop[cargo][1],
         }
+    }
+
+    /// A complete Harvester frame with its integral cargo meter. Cargo
+    /// values above four clamp to the full bay.
+    pub fn harvester_frame(&self, faction: Faction, cargo: usize, pose: HarvesterPose) -> Rect {
+        self.harvester_frame_row(cargo, pose)[faction_index(faction)]
+    }
+
+    /// The allegiance mask matched to [`Self::harvester_frame`].
+    pub fn harvester_frame_accent(&self, cargo: usize, pose: HarvesterPose) -> Rect {
+        self.harvester_frame_row(cargo, pose)[ACCENT]
+    }
+
+    fn moving_unit_row(&self, kind: UnitKind, frame: usize) -> &[Rect; 3] {
+        let rows = match kind {
+            UnitKind::Harvester => &self.harvester_tread,
+            UnitKind::Sentinel => &self.sentinel_move,
+            UnitKind::Scuttler => &self.scuttler_move,
+            UnitKind::Lancer => &self.lancer_move,
+            UnitKind::Bombard => &self.bombard_move,
+            UnitKind::Flakhound => &self.flakhound_tread,
+            UnitKind::Stinger => &self.stinger_move,
+            UnitKind::Buzzard => &self.buzzard_move,
+            UnitKind::Darter => &self.darter_move,
+            UnitKind::Talon => &self.talon_move,
+            UnitKind::Wisp => &self.wisp_move,
+        };
+        frame
+            .checked_sub(1)
+            .and_then(|index| rows.get(index))
+            .unwrap_or_else(|| self.unit_row(kind))
+    }
+
+    /// A unit's authored locomotion phase. Frame 0 is the ordinary base art;
+    /// frames 1 and 2 select the two movement poses.
+    pub fn unit_moving(&self, kind: UnitKind, faction: Faction, frame: usize) -> Rect {
+        self.moving_unit_row(kind, frame)[faction_index(faction)]
+    }
+
+    /// The allegiance mask matched to [`Self::unit_moving`].
+    pub fn unit_moving_accent(&self, kind: UnitKind, frame: usize) -> Rect {
+        self.moving_unit_row(kind, frame)[ACCENT]
     }
 
     /// The construction lattice: dense early, sparse near completion.
@@ -515,6 +1089,36 @@ impl Sprites {
         }
     }
 
+    fn unit_action_row(&self, kind: UnitKind, frame: usize) -> Option<&[Rect; 3]> {
+        let rows: &[[Rect; 3]] = match kind {
+            UnitKind::Harvester => return None,
+            UnitKind::Sentinel => &self.sentinel_action,
+            UnitKind::Scuttler => &self.scuttler_action,
+            UnitKind::Lancer => &self.lancer_action,
+            UnitKind::Bombard => &self.bombard_action,
+            UnitKind::Flakhound => &self.flakhound_action,
+            UnitKind::Stinger => &self.stinger_action,
+            UnitKind::Buzzard => &self.buzzard_action,
+            UnitKind::Darter => &self.darter_action,
+            UnitKind::Talon => &self.talon_action,
+            UnitKind::Wisp => &self.wisp_action,
+        };
+        rows.get(frame)
+    }
+
+    /// A unit's zero-based authored weapon-action frame. Harvester and
+    /// invalid frame requests fall back to the ordinary ready sprite.
+    pub fn unit_action(&self, kind: UnitKind, faction: Faction, frame: usize) -> Rect {
+        self.unit_action_row(kind, frame)
+            .unwrap_or_else(|| self.unit_row(kind))[faction_index(faction)]
+    }
+
+    /// The allegiance mask matched to [`Self::unit_action`].
+    pub fn unit_action_accent(&self, kind: UnitKind, frame: usize) -> Rect {
+        self.unit_action_row(kind, frame)
+            .unwrap_or_else(|| self.unit_row(kind))[ACCENT]
+    }
+
     /// The unit sprite region for a kind and faction.
     pub fn unit(&self, kind: UnitKind, faction: Faction) -> Rect {
         self.unit_row(kind)[faction_index(faction)]
@@ -525,19 +1129,12 @@ impl Sprites {
     pub fn unit_accent(&self, kind: UnitKind) -> Rect {
         self.unit_row(kind)[ACCENT]
     }
-
-    /// The turret barrel's accent mask.
-    pub fn turret_barrel_accent(&self) -> Rect {
-        self.turret_barrel[ACCENT]
-    }
 }
 
 /// Every clip the shell plays. Generated by `tools/gen_sounds.py`.
 pub struct Sounds {
     /// An attack landing.
     pub laser: Sound,
-    /// A Lancer's rail shot.
-    pub rail_fire: Sound,
     /// A unit popping.
     pub unit_death: Sound,
     /// A building coming down.
@@ -550,20 +1147,56 @@ pub struct Sounds {
     pub click: Sound,
     /// An order was refused.
     pub denied: Sound,
+    /// High-priority warning that the local player is under attack.
+    pub alert: Sound,
     /// You won.
     pub victory: Sound,
     /// You didn't.
     pub defeat: Sound,
-    /// Flak bursting against the sky.
-    pub flak: Sound,
     /// An artillery shell landing.
     pub artillery_boom: Sound,
-    /// The gun speaking (the boom belongs to the impact).
+    /// A fogged hostile artillery launch warning.
     pub artillery_launch: Sound,
     /// Order acknowledged.
     pub ack: Sound,
     /// The zap's lower sibling, alternated per shot.
     pub laser2: Sound,
+    /// A Sentinel's compact cannon report.
+    pub attack_sentinel: Sound,
+    /// A Scuttler's paired mechanical shear.
+    pub attack_scuttler: Sound,
+    /// A Lancer's charged rail report.
+    pub attack_lancer: Sound,
+    /// A Bombard's heavy artillery report.
+    pub attack_bombard: Sound,
+    /// A Flakhound's paired anti-air burst.
+    pub attack_flakhound: Sound,
+    /// A Stinger's light anti-air burst.
+    pub attack_stinger: Sound,
+    /// A Buzzard's heavy strike.
+    pub attack_buzzard: Sound,
+    /// A Darter's fast strike.
+    pub attack_darter: Sound,
+    /// A Talon's interceptor burst.
+    pub attack_talon: Sound,
+    /// A Wisp's compact interceptor burst.
+    pub attack_wisp: Sound,
+    /// A Bastion's emplaced artillery report.
+    pub attack_bastion: Sound,
+    /// A Flak Turret's paired-yoke burst.
+    pub attack_flak_turret: Sound,
+    /// Front-end industrial ambience.
+    pub music_menu: Sound,
+    /// The calm match bed.
+    pub music_calm: Sound,
+    /// Rhythmic pressure layered over the calm bed during combat.
+    pub music_combat: Sound,
+    /// A neutral result bed for draws.
+    pub music_result: Sound,
+    /// The local-player victory bed.
+    pub music_victory: Sound,
+    /// The local-player defeat or surrender bed.
+    pub music_defeat: Sound,
 }
 
 async fn clip(name: &str) -> Result<Sound> {
@@ -578,20 +1211,37 @@ impl Sounds {
     pub async fn load() -> Result<Self> {
         Ok(Self {
             laser: clip("laser").await?,
-            rail_fire: clip("rail_fire").await?,
             unit_death: clip("unit_death").await?,
             building_boom: clip("building_boom").await?,
             deposit: clip("deposit").await?,
             train_done: clip("train_done").await?,
             click: clip("click").await?,
             denied: clip("denied").await?,
+            alert: clip("alert").await?,
             victory: clip("victory").await?,
             defeat: clip("defeat").await?,
-            flak: clip("flak").await?,
             artillery_boom: clip("artillery_boom").await?,
             artillery_launch: clip("artillery_launch").await?,
             ack: clip("ack").await?,
             laser2: clip("laser2").await?,
+            attack_sentinel: clip("attack_sentinel").await?,
+            attack_scuttler: clip("attack_scuttler").await?,
+            attack_lancer: clip("attack_lancer").await?,
+            attack_bombard: clip("attack_bombard").await?,
+            attack_flakhound: clip("attack_flakhound").await?,
+            attack_stinger: clip("attack_stinger").await?,
+            attack_buzzard: clip("attack_buzzard").await?,
+            attack_darter: clip("attack_darter").await?,
+            attack_talon: clip("attack_talon").await?,
+            attack_wisp: clip("attack_wisp").await?,
+            attack_bastion: clip("attack_bastion").await?,
+            attack_flak_turret: clip("attack_flak_turret").await?,
+            music_menu: clip("music_menu").await?,
+            music_calm: clip("music_calm").await?,
+            music_combat: clip("music_combat").await?,
+            music_result: clip("music_result").await?,
+            music_victory: clip("music_victory").await?,
+            music_defeat: clip("music_defeat").await?,
         })
     }
 }
@@ -608,12 +1258,115 @@ impl Sounds {
 mod tests {
     use super::*;
 
+    const SOUND_NAMES: [&str; 34] = [
+        "ack",
+        "alert",
+        "artillery_boom",
+        "artillery_launch",
+        "attack_bastion",
+        "attack_bombard",
+        "attack_buzzard",
+        "attack_darter",
+        "attack_flak_turret",
+        "attack_flakhound",
+        "attack_lancer",
+        "attack_scuttler",
+        "attack_sentinel",
+        "attack_stinger",
+        "attack_talon",
+        "attack_wisp",
+        "building_boom",
+        "click",
+        "defeat",
+        "denied",
+        "deposit",
+        "flak",
+        "laser",
+        "laser2",
+        "music_calm",
+        "music_combat",
+        "music_defeat",
+        "music_menu",
+        "music_result",
+        "music_victory",
+        "rail_fire",
+        "train_done",
+        "unit_death",
+        "victory",
+    ];
+
     fn manifest() -> Manifest {
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/sprites/atlas.json");
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
         serde_json::from_str(&text).expect("atlas.json maps names to [x, y, w, h]")
+    }
+
+    #[test]
+    fn generated_sound_bank_is_complete_and_has_valid_pcm_metadata() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/sounds");
+        let mut actual: Vec<String> = std::fs::read_dir(&dir)
+            .expect("assets/sounds exists")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("wav"))
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        actual.sort();
+        let expected: Vec<String> = SOUND_NAMES
+            .iter()
+            .map(|name| format!("{name}.wav"))
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "tools/gen_sounds.py and the checked-in bank must be a bijection"
+        );
+
+        for name in SOUND_NAMES {
+            let path = dir.join(format!("{name}.wav"));
+            let bytes = std::fs::read(&path)
+                .unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
+            assert!(
+                bytes.len() >= 44,
+                "{} is shorter than a WAV header",
+                path.display()
+            );
+            assert_eq!(&bytes[0..4], b"RIFF", "{} is not RIFF", path.display());
+            assert_eq!(&bytes[8..12], b"WAVE", "{} is not WAVE", path.display());
+            assert_eq!(
+                u16::from_le_bytes([bytes[22], bytes[23]]),
+                1,
+                "{} must stay mono",
+                path.display()
+            );
+            let expected_rate = if name.starts_with("music_") {
+                22_050
+            } else {
+                44_100
+            };
+            assert_eq!(
+                u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]),
+                expected_rate,
+                "{} changed sample rate",
+                path.display()
+            );
+            assert_eq!(
+                u16::from_le_bytes([bytes[34], bytes[35]]),
+                16,
+                "{} must stay 16-bit PCM",
+                path.display()
+            );
+            if name.starts_with("music_") {
+                let data_bytes =
+                    u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
+                assert_eq!(
+                    data_bytes,
+                    12 * 22_050 * 2,
+                    "{} is not the authored twelve-second loop",
+                    path.display()
+                );
+            }
+        }
     }
 
     #[test]
@@ -625,7 +1378,7 @@ mod tests {
         assert!(
             missing.is_empty(),
             "the shell asks for sprites the atlas does not ship: {missing:?} \
-             — regenerate with tools/gen_sprites.py"
+             (regenerate with tools/gen_sprites.py)"
         );
         // The other direction: art nothing draws is art nobody blessed.
         // gen_sprites.py and the shell ship together, so a row with no
@@ -642,6 +1395,36 @@ mod tests {
     }
 
     #[test]
+    fn atlas_regions_fit_a_portable_texture_with_extrusion_room() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/sprites/atlas.png");
+        let bytes =
+            std::fs::read(&path).unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
+        let image = macroquad::prelude::Image::from_file_with_format(
+            &bytes,
+            Some(macroquad::prelude::ImageFormat::Png),
+        )
+        .unwrap_or_else(|err| panic!("decoding {}: {err}", path.display()));
+        assert!(
+            image.width <= 4096,
+            "atlas is too wide for a 4096px texture"
+        );
+        assert!(
+            image.height <= 4096,
+            "atlas is too tall for a 4096px texture"
+        );
+        let width = f32::from(image.width);
+        let height = f32::from(image.height);
+        for (name, [x, y, w, h]) in manifest() {
+            assert!(w > 0.0 && h > 0.0, "{name} has an empty atlas region");
+            assert!(
+                x >= 1.0 && y >= 1.0 && x + w < width && y + h < height,
+                "{name} leaves no room for its one-pixel edge extrusion"
+            );
+        }
+    }
+
+    #[test]
     fn every_kind_has_both_rosters_and_an_accent_mask() {
         let atlas = manifest();
         let stems = ALL_UNIT_KINDS
@@ -651,6 +1434,368 @@ mod tests {
         for stem in stems {
             for key in variant_keys(stem, "") {
                 assert!(atlas.contains_key(&key), "no {key} in the atlas");
+            }
+        }
+        for stem in [TURRET_BARREL_STEM, FLAK_MOUNT_STEM, BASTION_MOUNT_STEM] {
+            for key in variant_keys(stem, "") {
+                assert!(atlas.contains_key(&key), "no {key} in the atlas");
+            }
+        }
+    }
+
+    #[test]
+    fn defense_mounts_match_their_footprints_and_rotate_about_square_canvases() {
+        let atlas = manifest();
+        for (kind, mount, actions) in [
+            (
+                BuildingKind::Turret,
+                TURRET_BARREL_STEM,
+                ACTION_SUFFIXES_4.as_slice(),
+            ),
+            (
+                BuildingKind::FlakTurret,
+                FLAK_MOUNT_STEM,
+                ACTION_SUFFIXES_8.as_slice(),
+            ),
+            (
+                BuildingKind::Bastion,
+                BASTION_MOUNT_STEM,
+                ACTION_SUFFIXES_9.as_slice(),
+            ),
+        ] {
+            let base = &atlas[&variant_keys(building_stem(kind), "")[0]];
+            for suffix in std::iter::once("").chain(actions.iter().copied()) {
+                for key in variant_keys(mount, suffix) {
+                    let rect = &atlas[&key];
+                    assert_eq!(
+                        rect[2..],
+                        base[2..],
+                        "{key} must share the defense footprint"
+                    );
+                    assert_eq!(rect[2], rect[3], "{key} needs a centered rotation pivot");
+                }
+            }
+        }
+        for suffix in ACTION_SUFFIXES_9 {
+            for key in variant_keys("bastion", suffix) {
+                assert_eq!(
+                    atlas[&key][2..],
+                    atlas[&variant_keys("bastion", "")[0]][2..],
+                    "{key} must stay synchronized with the Bastion mount footprint"
+                );
+            }
+        }
+    }
+
+    fn sprite_image(name: &str) -> macroquad::prelude::Image {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../assets/sprites")
+            .join(format!("{name}.png"));
+        let bytes =
+            std::fs::read(&path).unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
+        macroquad::prelude::Image::from_file_with_format(
+            &bytes,
+            Some(macroquad::prelude::ImageFormat::Png),
+        )
+        .unwrap_or_else(|err| panic!("decoding {}: {err}", path.display()))
+    }
+
+    fn alpha_bytes(image: &macroquad::prelude::Image) -> impl Iterator<Item = u8> + '_ {
+        image.bytes.chunks_exact(4).map(|pixel| pixel[3])
+    }
+
+    fn opaque_bounds(image: &macroquad::prelude::Image) -> (usize, usize, usize, usize) {
+        let width = usize::from(image.width);
+        let height = usize::from(image.height);
+        let mut min_x = width;
+        let mut min_y = height;
+        let mut max_x = 0;
+        let mut max_y = 0;
+        let mut found = false;
+        for (index, pixel) in image.bytes.chunks_exact(4).enumerate() {
+            if pixel[3] < 64 {
+                continue;
+            }
+            let x = index % width;
+            let y = index / width;
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+            found = true;
+        }
+        assert!(found, "sprite has no opaque art");
+        (min_x, min_y, max_x, max_y)
+    }
+
+    fn opaque_span(image: &macroquad::prelude::Image) -> (usize, usize) {
+        let (min_x, min_y, max_x, max_y) = opaque_bounds(image);
+        (max_x - min_x + 1, max_y - min_y + 1)
+    }
+
+    fn assert_animation_variant(stem: &str, suffix: &str) {
+        let ferrous = sprite_image(&format!("{stem}_ferrous{suffix}"));
+        let cupric = sprite_image(&format!("{stem}_cupric{suffix}"));
+        let accent = sprite_image(&format!("{stem}_accent{suffix}"));
+        assert_eq!(
+            (ferrous.width, ferrous.height),
+            (cupric.width, cupric.height),
+            "{stem}{suffix} faction frames must share a footprint"
+        );
+        assert_eq!(
+            (ferrous.width, ferrous.height),
+            (accent.width, accent.height),
+            "{stem}{suffix} accent must share the frame footprint"
+        );
+        assert_eq!(
+            alpha_bytes(&ferrous).collect::<Vec<_>>(),
+            alpha_bytes(&cupric).collect::<Vec<_>>(),
+            "{stem}{suffix} variants must share a silhouette"
+        );
+        assert!(
+            alpha_bytes(&accent).any(|alpha| alpha > 0),
+            "{stem}{suffix} needs a non-empty allegiance mask"
+        );
+    }
+
+    #[test]
+    fn authored_animation_families_are_complete_distinct_and_faction_safe() {
+        for (stem, suffixes) in [
+            ("harvester", TREAD_SUFFIXES),
+            ("sentinel", MOVE_SUFFIXES),
+            ("scuttler", MOVE_SUFFIXES),
+            ("lancer", MOVE_SUFFIXES),
+            ("bombard", MOVE_SUFFIXES),
+            ("flakhound", TREAD_SUFFIXES),
+            ("stinger", MOVE_SUFFIXES),
+            ("buzzard", MOVE_SUFFIXES),
+            ("darter", MOVE_SUFFIXES),
+            ("talon", MOVE_SUFFIXES),
+            ("wisp", MOVE_SUFFIXES),
+        ] {
+            let mut ferrous_seen = vec![sprite_image(&format!("{stem}_ferrous")).bytes];
+            let mut cupric_seen = vec![sprite_image(&format!("{stem}_cupric")).bytes];
+            for suffix in suffixes {
+                assert_animation_variant(stem, suffix);
+                let ferrous = sprite_image(&format!("{stem}_ferrous{suffix}")).bytes;
+                let cupric = sprite_image(&format!("{stem}_cupric{suffix}")).bytes;
+                assert!(
+                    !ferrous_seen.contains(&ferrous),
+                    "{stem}{suffix} must be distinct from every other Ferrous locomotion phase"
+                );
+                assert!(
+                    !cupric_seen.contains(&cupric),
+                    "{stem}{suffix} must be distinct from every other Cupric locomotion phase"
+                );
+                ferrous_seen.push(ferrous);
+                cupric_seen.push(cupric);
+            }
+        }
+
+        let harvester = sprite_image("harvester_ferrous");
+        let base_alpha = alpha_bytes(&harvester).collect::<Vec<_>>();
+        for suffix in TREAD_SUFFIXES {
+            let tread = sprite_image(&format!("harvester_ferrous{suffix}"));
+            assert_eq!(
+                alpha_bytes(&tread).collect::<Vec<_>>(),
+                base_alpha,
+                "harvester{suffix} cleats must stay inside the resting silhouette"
+            );
+        }
+
+        for kind in WORK_BUILDING_KINDS {
+            let stem = building_stem(kind);
+            let base = sprite_image(&format!("{stem}_ferrous"));
+            let mut changed = false;
+            for suffix in building_work_suffixes(kind) {
+                assert_animation_variant(stem, suffix);
+                changed |= sprite_image(&format!("{stem}_ferrous{suffix}")).bytes != base.bytes;
+            }
+            assert!(changed, "{stem} needs at least one visible work pose");
+        }
+        for kind in ALL_BUILDING_KINDS {
+            let stem = building_stem(kind);
+            let base = sprite_image(&format!("{stem}_ferrous"));
+            for stage in 0..SITE_STAGES {
+                let mut phases = Vec::new();
+                for phase in 0..SITE_PHASES {
+                    let suffix = format!("_site{stage}_{phase}");
+                    assert_animation_variant(stem, &suffix);
+                    let frame = sprite_image(&format!("{stem}_ferrous{suffix}"));
+                    assert_eq!(
+                        (frame.width, frame.height),
+                        (base.width, base.height),
+                        "{stem}{suffix} must fill the final footprint"
+                    );
+                    phases.push(frame.bytes);
+                }
+                assert_ne!(
+                    phases[0], phases[1],
+                    "{stem} site stage {stage} must move its authored machinery"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn production_action_and_cargo_rows_match_the_runtime_contract() {
+        for kind in ALL_UNIT_KINDS {
+            let stem = unit_stem(kind);
+            for suffix in unit_action_suffixes(kind) {
+                assert_animation_variant(stem, suffix);
+            }
+        }
+
+        for level in 0..HARVESTER_CARGO_LEVELS {
+            for suffix in std::iter::once(format!("_cargo{level}")).chain(
+                TREAD_SUFFIXES
+                    .into_iter()
+                    .chain(SCOOP_SUFFIXES)
+                    .map(|pose| format!("_cargo{level}{pose}")),
+            ) {
+                assert_animation_variant("harvester", &suffix);
+            }
+        }
+
+        for (stem, suffixes) in [
+            (TURRET_BARREL_STEM, ACTION_SUFFIXES_4.as_slice()),
+            (FLAK_MOUNT_STEM, ACTION_SUFFIXES_8.as_slice()),
+            (BASTION_MOUNT_STEM, ACTION_SUFFIXES_9.as_slice()),
+            ("bastion", ACTION_SUFFIXES_9.as_slice()),
+        ] {
+            for suffix in suffixes {
+                assert_animation_variant(stem, suffix);
+            }
+        }
+    }
+
+    #[test]
+    fn defense_mount_art_covers_its_pivot_and_carries_an_allegiance_mask() {
+        for stem in [TURRET_BARREL_STEM, FLAK_MOUNT_STEM, BASTION_MOUNT_STEM] {
+            let ferrous = sprite_image(&format!("{stem}_ferrous"));
+            let cupric = sprite_image(&format!("{stem}_cupric"));
+            let accent = sprite_image(&format!("{stem}_accent"));
+
+            assert_eq!(
+                (ferrous.width, ferrous.height),
+                (cupric.width, cupric.height)
+            );
+            assert_eq!(
+                (ferrous.width, ferrous.height),
+                (accent.width, accent.height)
+            );
+            assert_eq!(
+                alpha_bytes(&ferrous).collect::<Vec<_>>(),
+                alpha_bytes(&cupric).collect::<Vec<_>>(),
+                "{stem} variants must rotate as one silhouette"
+            );
+
+            let (min_x, min_y, max_x, max_y) = opaque_bounds(&ferrous);
+            let center_x = usize::from(ferrous.width / 2);
+            let center_y = usize::from(ferrous.height / 2);
+            assert!(
+                min_x <= center_x && center_x <= max_x && min_y <= center_y && center_y <= max_y,
+                "{stem} opaque bounds must straddle its centered rotation pivot"
+            );
+            assert!(
+                alpha_bytes(&accent).any(|alpha| alpha > 0),
+                "{stem} needs a non-empty allegiance mask"
+            );
+        }
+    }
+
+    #[test]
+    fn specialist_defense_mounts_keep_their_heavy_silhouettes() {
+        let flak = sprite_image("flak_mount_ferrous");
+        let (width, height) = opaque_span(&flak);
+        assert!(
+            width * 4 >= usize::from(flak.width) * 3,
+            "the Flak mount must stay broad enough to read as a quad battery"
+        );
+        assert!(
+            height * 6 >= usize::from(flak.height) * 5,
+            "the Flak mount must keep visible barrels and rear magazines"
+        );
+
+        let bastion = sprite_image("bastion_mount_ferrous");
+        let (width, height) = opaque_span(&bastion);
+        assert!(
+            width * 2 >= usize::from(bastion.width),
+            "the Bastion mount must keep its oversized breech"
+        );
+        assert!(
+            height * 8 >= usize::from(bastion.height) * 7,
+            "the Bastion mount must span from muzzle to loader block"
+        );
+    }
+
+    #[test]
+    fn every_theme_prop_row_is_tile_sized_and_ordered_like_the_lookup() {
+        let atlas = manifest();
+        for (row, (theme, stem)) in [
+            ("rusted-yard", "rusted_yard"),
+            ("cold-circuitry", "cold_circuitry"),
+            ("quarry-dust", "quarry_dust"),
+            ("basalt", "basalt"),
+            ("slag", "slag"),
+            ("verdigris", "verdigris"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(theme_prop_row(theme), Some(row));
+            for variant in 0..6 {
+                let key = format!("theme_{stem}_{variant}");
+                assert_eq!(THEME_PROP_KEYS[row * 6 + variant], key);
+                assert_eq!(atlas[&key][2..], [64.0, 64.0]);
+            }
+        }
+        assert_eq!(theme_prop_row("unknown"), None);
+    }
+
+    #[test]
+    fn finalized_environment_regions_keep_their_authored_footprints() {
+        let atlas = manifest();
+        for key in FIELD_DEBRIS_KEYS {
+            let [_, _, width, height] = atlas[key];
+            assert!(matches!((width, height), (32.0, 32.0) | (64.0, 64.0)));
+        }
+        for (key, footprint) in GROUND_BLOCKER_KEYS.into_iter().zip([
+            (2, 2),
+            (2, 1),
+            (3, 2),
+            (2, 2),
+            (3, 2),
+            (3, 2),
+            (3, 1),
+            (2, 2),
+            (2, 2),
+        ]) {
+            assert_eq!(
+                atlas[key][2..],
+                [footprint.0 as f32 * 64.0, footprint.1 as f32 * 64.0]
+            );
+        }
+        for (key, footprint) in ROCK_KEYS.into_iter().zip(
+            std::iter::repeat_n((1, 1), 14)
+                .chain(std::iter::repeat_n((2, 1), 5))
+                .chain(std::iter::repeat_n((3, 1), 4)),
+        ) {
+            assert_eq!(
+                atlas[key][2..],
+                [footprint.0 as f32 * 64.0, footprint.1 as f32 * 64.0]
+            );
+        }
+    }
+
+    #[test]
+    fn every_peak_neighbor_mask_has_two_full_tile_barriers() {
+        let atlas = manifest();
+        for mask in 0..16 {
+            for variant in 0..2 {
+                let key = format!("peak_barrier_{mask:02x}_{variant}");
+                assert_eq!(PEAK_BARRIER_KEYS[mask * 2 + variant], key);
+                assert_eq!(atlas[&key][2..], [64.0, 64.0]);
             }
         }
     }

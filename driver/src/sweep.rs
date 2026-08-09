@@ -1,24 +1,25 @@
 //! The decisiveness sweep: N seeds of bot-vs-bot on one 1v1 scenario at
-//! one ladder level, each seed played twice — once with personalities
-//! dealt by the sim, once with the same two values exchanged between
+//! one ladder level, each seed played twice — once with complete named
+//! profiles resolved by the sim, once with those profiles exchanged between
 //! the seats. Where `balance-probe` reads what armies were made of,
 //! this reads whether games *end*: decided/undecided counts, seat bias
-//! that survives the personality exchange, and decision-tick medians.
+//! that survives the profile exchange, and decision-tick medians.
 //! The 0.12 bot phases gate on it.
 //!
-//! The exchange swaps only the personality knob; each seat keeps its
-//! own blunder stream, which is a per-seat variable at any degraded
+//! The exchange swaps the style, variant, aggression, role, and facets as one
+//! profile; each seat keeps its own faction and hesitation stream, which is a
+//! per-seat variable at any degraded
 //! level. A lean that shows up in both orientations is the map or the
-//! engine, not personality luck.
+//! engine, not profile assignment.
 //!
-//! `duel` is the sibling instrument: two named profiles (a ladder rung,
-//! optionally with candidate skill/cadence dial overrides) fight across
+//! `duel` is the sibling instrument: two ladder sides (a resolved rung,
+//! optionally with raw skill or cadence dial overrides) fight across
 //! N seeds with the sides exchanging seats — the head-to-head the
 //! Medium re-metering selects candidates on, since the in-tree ladder
 //! test is a tripwire, not a measuring stick.
 
 use anyhow::{Context, Result};
-use oxide_sim::bot::{Level, NeuralBot, QuantNet, deal_aggression, seat_bots};
+use oxide_sim::bot::{Level, NeuralBot, QuantNet, ResolvedBotProfile, resolve_bot_profiles};
 use oxide_sim::scenario::{BotConfig, Scenario};
 use oxide_sim::{GameResult, PlayerId, State};
 use serde::Serialize;
@@ -43,9 +44,9 @@ pub enum SweepOutcome {
 pub struct SweepMatch {
     /// Scenario seed this match ran under.
     pub seed: u64,
-    /// Whether the two seats' dealt personalities were exchanged.
+    /// Whether the two seats' complete resolved profiles were exchanged.
     pub swapped: bool,
-    /// The personality each seat actually played, seat-indexed.
+    /// The legacy aggression component of each complete profile, seat-indexed.
     pub aggression: [u32; 2],
     /// Final tick: the decision tick, or the cap.
     pub ticks: u64,
@@ -76,9 +77,9 @@ pub struct SweepReport {
     pub undecided_by_orientation: [u32; 2],
     /// Median decision tick over decided matches.
     pub median_decision_tick: Option<u64>,
-    /// Mean personality of winning seats over victories.
+    /// Mean legacy aggression component of winning profiles over victories.
     pub mean_winner_aggression: Option<f64>,
-    /// Mean personality of losing seats over victories.
+    /// Mean legacy aggression component of losing profiles over victories.
     pub mean_loser_aggression: Option<f64>,
     /// Every match, in (seed, orientation) order.
     pub matches: Vec<SweepMatch>,
@@ -220,23 +221,30 @@ fn play(
     swapped: bool,
     max_ticks: u64,
 ) -> Result<SweepMatch> {
-    // The shipped dealing itself — one definition, no replicated
-    // stream: same seed, same personalities as the game deals.
-    let dealt = [0u8, 1u8].map(|seat| deal_aggression(seed, PlayerId(seat)));
     let mut sc = base.clone();
     sc.seed = seed;
-    for (i, player) in sc.players.iter_mut().enumerate() {
-        player.bot = true;
-        // The dealt leg passes None so the shipped dealing path runs
-        // end-to-end; the swapped leg passes the same two values
-        // exchanged.
-        let aggression = swapped.then(|| dealt[1 - i]);
-        player.bot_config = Some(BotConfig { level, aggression });
-    }
+    configure_named_pair(&mut sc, [level; 2]);
+    let dealt = resolve_named_pair(&sc)?;
+    let profiles = orient_profiles(dealt, swapped);
     let mut state: State = sc.build().context("building scenario")?;
-    let mut bots = seat_bots(&sc);
+    let mut bots: Vec<NeuralBot> = profiles
+        .into_iter()
+        .enumerate()
+        .map(|(seat, profile)| {
+            NeuralBot::ladder_resolved(
+                PlayerId(seat as u8),
+                seed,
+                profile,
+                sc.players[seat].faction,
+            )
+        })
+        .collect();
     for _ in 0..max_ticks {
-        crate::runner::step(&mut state, &mut bots, None);
+        let mut commands = Vec::new();
+        for bot in &mut bots {
+            commands.extend(bot.act(&state));
+        }
+        state.tick(&commands);
         if state.result().is_some() {
             break;
         }
@@ -255,17 +263,54 @@ fn play(
     Ok(SweepMatch {
         seed,
         swapped,
-        aggression: if swapped { [dealt[1], dealt[0]] } else { dealt },
+        aggression: profiles.map(|profile| profile.aggression),
         ticks: state.current_tick(),
         outcome,
     })
 }
 
-/// One side of a duel: a named ladder rung, optionally with raw
-/// candidate skill or cadence overrides. Without a skill override the
-/// bot keeps the named rung's exact hesitation and strategy-conditioned
-/// policy skill; supplying a skill opts into the legacy raw profile
-/// whose hesitation derives from that skill.
+/// Configures both seats for the named runtime wrapper while preserving any
+/// authored named style, variant, or team role.
+pub(crate) fn configure_named_pair(scenario: &mut Scenario, levels: [Level; 2]) {
+    for (seat, player) in scenario.players.iter_mut().enumerate() {
+        let authored = player.bot_config;
+        player.bot = true;
+        player.bot_config = Some(BotConfig {
+            level: levels[seat],
+            aggression: None,
+            style: authored.and_then(|config| config.style),
+            variant: authored.and_then(|config| config.variant),
+            team_role: authored.and_then(|config| config.team_role),
+        });
+    }
+}
+
+/// Resolves the exact two profiles the runtime wrapper will seat.
+pub(crate) fn resolve_named_pair(scenario: &Scenario) -> Result<[ResolvedBotProfile; 2]> {
+    let profiles = resolve_bot_profiles(scenario)
+        .with_context(|| format!("resolving bot profiles for {}", scenario.name))?;
+    Ok([
+        profiles[0].context("seat 0 did not resolve a named profile")?,
+        profiles[1].context("seat 1 did not resolve a named profile")?,
+    ])
+}
+
+/// Exchanges complete resolved profiles without moving either seat's faction,
+/// player id, or hesitation stream.
+pub(crate) fn orient_profiles(
+    profiles: [ResolvedBotProfile; 2],
+    swapped: bool,
+) -> [ResolvedBotProfile; 2] {
+    if swapped {
+        [profiles[1], profiles[0]]
+    } else {
+        profiles
+    }
+}
+
+/// One side of a duel: a resolved named ladder profile, optionally with a
+/// cadence override. Supplying a skill explicitly opts that side into the
+/// zero-facet raw diagnostic path whose hesitation derives from that skill.
 #[derive(Debug, Clone, Serialize)]
 pub struct DuelSide {
     /// The base rung.
@@ -281,7 +326,7 @@ impl DuelSide {
     pub fn label(&self) -> String {
         let mut label = format!("{:?}", self.level).to_lowercase();
         if let Some(skill) = self.skill {
-            label.push_str(&format!("/s{skill}"));
+            label.push_str(&format!("/raw-s{skill}"));
         }
         if let Some(cadence) = self.cadence {
             label.push_str(&format!("/c{cadence}"));
@@ -289,11 +334,45 @@ impl DuelSide {
         label
     }
 
-    fn bot(&self, player: PlayerId, seed: u64, faction: oxide_sim::Faction) -> NeuralBot {
-        self.bot_with_aggression(player, seed, faction, deal_aggression(seed, player))
+    fn bot_with_resolved_profile(
+        &self,
+        player: PlayerId,
+        seed: u64,
+        faction: oxide_sim::Faction,
+        profile: ResolvedBotProfile,
+    ) -> NeuralBot {
+        if let Some(skill) = self.skill {
+            NeuralBot::with_profile(
+                player,
+                self.cadence.unwrap_or_else(|| self.level.cadence()),
+                QuantNet::ladder().clone(),
+                skill,
+                profile.aggression,
+                faction,
+                0,
+                seed,
+            )
+        } else if let Some(cadence) = self.cadence {
+            NeuralBot::ladder_resolved_with_net_at_cadence(
+                player,
+                seed,
+                profile,
+                faction,
+                QuantNet::ladder().clone(),
+                cadence,
+            )
+        } else {
+            NeuralBot::ladder_resolved_with_net(
+                player,
+                seed,
+                profile,
+                faction,
+                QuantNet::ladder().clone(),
+            )
+        }
     }
 
-    fn bot_with_aggression(
+    fn raw_bot_with_aggression(
         &self,
         player: PlayerId,
         seed: u64,
@@ -332,6 +411,10 @@ impl DuelSide {
             )
         }
     }
+
+    fn raw_yardstick_label(&self) -> String {
+        format!("{}/raw-a500", self.label())
+    }
 }
 
 /// The duel's aggregate verdict.
@@ -366,9 +449,9 @@ pub struct DuelReport {
 type DuelEntry = (usize, u64, Option<u8>, bool);
 
 /// Fights `a` against `b` across `seeds`, each seed from both seats.
-/// Sides carry their profiles with them when they change chairs;
-/// personalities stay dealt per seat, so the exchange isolates the
-/// profile difference from both seat bias and personality luck.
+/// Sides carry their level and any explicit raw override when they change
+/// chairs. The scenario resolves the complete named profiles for each leg;
+/// each physical seat retains its faction and hesitation stream.
 pub fn run_duel(
     scenario: &str,
     a: &DuelSide,
@@ -480,6 +563,10 @@ fn play_duel(
 ) -> Result<DuelEntry> {
     let mut sc = base.clone();
     sc.seed = seed;
+    let mut levels = [b.level; 2];
+    levels[a_seat] = a.level;
+    configure_named_pair(&mut sc, levels);
+    let profiles = resolve_named_pair(&sc)?;
     let mut state: State = sc.build().context("building scenario")?;
     let mut bots: Vec<NeuralBot> = sc
         .players
@@ -487,7 +574,12 @@ fn play_duel(
         .enumerate()
         .map(|(seat, player)| {
             let side = if seat == a_seat { a } else { b };
-            side.bot(PlayerId(seat as u8), seed, player.faction)
+            side.bot_with_resolved_profile(
+                PlayerId(seat as u8),
+                seed,
+                player.faction,
+                profiles[seat],
+            )
         })
         .collect();
     for _ in 0..max_ticks {
@@ -555,10 +647,9 @@ pub(crate) fn quantile(sorted: &[u64], num: usize, den: usize) -> Option<u64> {
     (!sorted.is_empty()).then(|| sorted[(sorted.len() * num / den).min(sorted.len() - 1)])
 }
 
-/// The widened scripted-yardstick verdict for one profile — the same
-/// methodology as the in-tree ladder gate (fixed 500 personality, the
-/// profile vs every scripted tier from both seats), over as many seeds
-/// as the recalibration wants instead of the gate's pinned 24.
+/// The scripted-yardstick verdict for one explicitly raw zero-facet profile.
+/// It fixes aggression at 500 and measures every scripted tier from both
+/// seats, over as many seeds as the recalibration wants.
 #[derive(Debug, Clone, Serialize)]
 pub struct YardstickReport {
     /// The measured profile's label.
@@ -657,7 +748,7 @@ fn map_report<'a>(
 ) -> YardstickReport {
     let per_tier = tier_records(entries);
     YardstickReport {
-        profile: side.label(),
+        profile: side.raw_yardstick_label(),
         scenario: name.to_string(),
         seeds_per_tier,
         max_ticks,
@@ -693,7 +784,7 @@ fn yardstick_entries(
         sc.seed = seed;
         let mut state: State = sc.build().context("building scenario")?;
         let faction = sc.players[usize::from(seat)].faction;
-        let mut bot = side.bot_with_aggression(PlayerId(seat), seed, faction, 500);
+        let mut bot = side.raw_bot_with_aggression(PlayerId(seat), seed, faction, 500);
         let mut opp = Brain::for_tier(PlayerId(1 - seat), seed, TIERS[t]);
         for _ in 0..max_ticks {
             let mut commands = bot.act(&state);
@@ -715,11 +806,9 @@ fn yardstick_entries(
     })
 }
 
-/// Measures `side` against the four scripted tiers. The profile plays
-/// the gate's fixed 500 personality so the skill dials are the only
-/// variable; scripted opponents are the fixed aggression yardstick the
-/// cadence calibration is doctrinally measured on (head-to-head
-/// neural mirrors reward patience instead).
+/// Measures `side` against the four scripted tiers on the explicit raw
+/// zero-facet path at aggression 500. This isolates legacy skill/cadence
+/// calibration; it is not named-profile or shipped-runtime coverage.
 pub fn run_yardstick(
     scenario: &str,
     side: &DuelSide,
@@ -789,7 +878,7 @@ pub fn run_yardstick_slate(
         .collect();
     let per_tier = tier_records(entries.iter());
     Ok(YardstickSlate {
-        profile: side.label(),
+        profile: side.raw_yardstick_label(),
         dir: dir.to_string(),
         seeds_per_tier,
         max_ticks,
@@ -914,8 +1003,8 @@ mod tests {
     }
 
     /// Two seeds, both orientations, a cap far too small to decide:
-    /// the plumbing must account for every job and mirror the
-    /// personality pairs exactly.
+    /// the plumbing must account for every job and exchange the reported
+    /// legacy aggression components with the profiles.
     #[test]
     fn sweep_accounts_for_every_job_and_mirrors_the_swap() {
         let report = run_sweep("skirmish", Level::Medium, 2, 40, 7_000).unwrap();
@@ -944,7 +1033,7 @@ mod tests {
             cadence: None,
         };
         let report = run_duel("skirmish", &a, &b, 2, 40, 7_000).unwrap();
-        assert_eq!(report.a, "medium/s700/c30");
+        assert_eq!(report.a, "medium/raw-s700/c30");
         assert_eq!(report.b, "easy");
         assert_eq!(
             report.a_wins + report.b_wins + report.draws + report.undecided,
@@ -952,28 +1041,29 @@ mod tests {
         );
     }
 
-    /// A side without a raw skill override is the shipped named
-    /// profile, including the strategy-specific policy skill and the
-    /// level's exact hesitation. Check both strategy bands explicitly:
-    /// a seed-dealt industry-only sample could hide the old raw-Medium
-    /// coincidence at skill 620.
+    /// A side without a raw skill override receives the complete profile
+    /// resolved by the same scenario path as an ordinary match.
     #[test]
-    fn default_duel_sides_are_exact_named_profiles_for_both_strategies() {
-        let seed = 17;
-        let player = PlayerId(0);
-        let faction = oxide_sim::Faction::Ferrous;
+    fn default_duel_sides_are_exact_resolved_named_profiles() {
+        let base = crate::runner::load_scenario("skirmish").unwrap();
         for level in Level::LADDER {
             let side = DuelSide {
                 level,
                 skill: None,
                 cadence: None,
             };
-            for aggression in [300, 550] {
+            for seed in [17, 31] {
+                let mut scenario = base.clone();
+                scenario.seed = seed;
+                configure_named_pair(&mut scenario, [level; 2]);
+                let profiles = resolve_named_pair(&scenario).unwrap();
+                let player = PlayerId(0);
+                let faction = scenario.players[0].faction;
                 assert_same_command_source(
-                    side.bot_with_aggression(player, seed, faction, aggression),
-                    NeuralBot::ladder(player, seed, level, Some(aggression), faction),
+                    side.bot_with_resolved_profile(player, seed, faction, profiles[0]),
+                    NeuralBot::ladder_resolved(player, seed, profiles[0], faction),
                     seed,
-                    &format!("{level:?} aggression {aggression}"),
+                    &format!("{level:?} profile {:?}", profiles[0]),
                 );
             }
         }
@@ -992,13 +1082,16 @@ mod tests {
             skill: None,
             cadence: Some(32),
         };
+        let mut scenario = crate::runner::load_scenario("skirmish").unwrap();
+        scenario.seed = seed;
+        configure_named_pair(&mut scenario, [Level::Hard; 2]);
+        let profile = resolve_named_pair(&scenario).unwrap()[0];
         assert_same_command_source(
-            cadence_only.bot_with_aggression(player, seed, faction, 550),
-            NeuralBot::ladder_with_net_at_cadence(
+            cadence_only.bot_with_resolved_profile(player, seed, faction, profile),
+            NeuralBot::ladder_resolved_with_net_at_cadence(
                 player,
                 seed,
-                Level::Hard,
-                Some(550),
+                profile,
                 faction,
                 QuantNet::ladder().clone(),
                 32,
@@ -1013,7 +1106,7 @@ mod tests {
             cadence: Some(30),
         };
         assert_same_command_source(
-            raw.bot_with_aggression(player, seed, faction, 550),
+            raw.raw_bot_with_aggression(player, seed, faction, 550),
             NeuralBot::with_profile(
                 player,
                 30,
@@ -1040,6 +1133,7 @@ mod tests {
             cadence: None,
         };
         let report = run_yardstick("skirmish", &side, 1, 40, 3_000).unwrap();
+        assert_eq!(report.profile, "medium/raw-a500");
         assert_eq!(report.per_tier.len(), 4);
         assert_eq!(report.matches, 8);
         assert_eq!(report.unresolved, 8);

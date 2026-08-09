@@ -94,7 +94,7 @@ pub struct PaceSlate {
     pub dir: String,
     /// Ladder level both seats played.
     pub level: String,
-    /// Seeds per map (each played in both personality orientations).
+    /// Seeds per map (each played in both complete-profile orientations).
     pub seeds: u64,
     /// Tick cap per match.
     pub max_ticks: u64,

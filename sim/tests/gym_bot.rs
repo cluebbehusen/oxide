@@ -5,9 +5,10 @@
 use chassis::rng::Pcg32;
 use oxide_sim::bot::{
     ACTION_HEADS, Action, ActionPlan, Brain, CONSTRUCTION_PLAN_TIMEOUT_TICKS, Difficulty,
-    FEATURE_NAMES, GymBot, Level, NeuralBot,
+    FEATURE_NAMES, GymBot, Level, NeuralBot, Observation, seat_bots,
 };
-use oxide_sim::state::GameResult;
+use oxide_sim::state::{GameResult, Order};
+use oxide_sim::stats::FOUNDRY_RECOVERY_RESERVE;
 use oxide_sim::{BuildingKind, Command, PlayerId, Scenario, UnitKind};
 
 #[test]
@@ -342,6 +343,109 @@ fn state_with_far_remembered_scrap(bank: u32) -> oxide_sim::State {
     let far = 12 * width + 20;
     vision["remembered_scrap"]["cells"][far] = 400.into();
     serde_json::from_value(value).unwrap()
+}
+
+fn defense_build_anchor(state: &oxide_sim::State, action: Action) -> chassis::grid::TilePos {
+    let mut bot = GymBot::new(PlayerId(0));
+    bot.step(state, action)
+        .into_iter()
+        .find_map(|command| match command.command {
+            Command::Build { anchor, .. } => Some(anchor),
+            _ => None,
+        })
+        .expect("the funded defense action should lower to a build")
+}
+
+#[test]
+fn defense_placement_is_deterministic_and_tracks_the_visible_approach() {
+    use oxide_sim::scenario::UnitSpec;
+
+    let threatened = |y| {
+        let mut scenario = Scenario::skirmish();
+        scenario.players[0].scrap = 1_000;
+        scenario.units.retain(|unit| unit.player == 0);
+        scenario.units.push(UnitSpec {
+            player: 1,
+            kind: UnitKind::Sentinel,
+            x: 12,
+            y,
+        });
+        scenario.build().unwrap()
+    };
+    let north = threatened(4);
+    let south = threatened(11);
+    let north_anchor = defense_build_anchor(&north, Action::BuildTurret);
+    let north_repeat = defense_build_anchor(&north, Action::BuildTurret);
+    let south_anchor = defense_build_anchor(&south, Action::BuildTurret);
+    assert_eq!(
+        north_anchor, north_repeat,
+        "the same fog-honest state must choose the same scored site"
+    );
+    assert!(
+        north_anchor.y < south_anchor.y,
+        "the defense should move with the visible approach: north {north_anchor:?}, south \
+         {south_anchor:?}"
+    );
+}
+
+#[test]
+fn unseen_enemy_units_cannot_steer_defense_placement() {
+    use oxide_sim::scenario::UnitSpec;
+
+    let mut quiet = Scenario::skirmish();
+    quiet.players[0].scrap = 1_000;
+    quiet.units.retain(|unit| unit.player == 0);
+    let quiet = quiet.build().unwrap();
+
+    let mut hidden = Scenario::skirmish();
+    hidden.players[0].scrap = 1_000;
+    hidden.units.retain(|unit| unit.player == 0);
+    hidden.units.push(UnitSpec {
+        player: 1,
+        kind: UnitKind::Sentinel,
+        x: 25,
+        y: 10,
+    });
+    let hidden = hidden.build().unwrap();
+
+    assert_eq!(
+        defense_build_anchor(&quiet, Action::BuildBastion),
+        defense_build_anchor(&hidden, Action::BuildBastion),
+        "the scored site may read visible threats, shared sight, blips, and shells, never an \
+         unseen enemy unit"
+    );
+}
+
+#[test]
+fn flak_placement_tracks_air_pressure_not_ground_noise() {
+    use oxide_sim::scenario::UnitSpec;
+
+    let threatened = |kind, y| {
+        let mut scenario = Scenario::skirmish();
+        scenario.players[0].scrap = 1_000;
+        scenario.units.retain(|unit| unit.player == 0);
+        scenario.units.push(UnitSpec {
+            player: 1,
+            kind,
+            x: 12,
+            y,
+        });
+        scenario.build().unwrap()
+    };
+    let ground_north = defense_build_anchor(&threatened(UnitKind::Sentinel, 4), Action::BuildFlak);
+    let ground_south = defense_build_anchor(&threatened(UnitKind::Sentinel, 11), Action::BuildFlak);
+    assert_eq!(
+        ground_north, ground_south,
+        "ground-only pressure must not pull an anti-air battery off its air-defense job"
+    );
+
+    let air_north = defense_build_anchor(&threatened(UnitKind::Darter, 4), Action::BuildFlak);
+    let air_south = defense_build_anchor(&threatened(UnitKind::Darter, 11), Action::BuildFlak);
+    assert!(
+        air_north.y < air_south.y,
+        "the flak battery should move with the visible air approach: north {air_north:?}, south \
+         {air_south:?}"
+    );
 }
 
 #[test]
@@ -874,6 +978,37 @@ fn stranded_scenario(scrap: u32) -> Scenario {
     scenario
 }
 
+fn guarded_stranded_scenario(scrap: u32) -> Scenario {
+    let mut scenario = stranded_scenario(scrap);
+    scenario.units.retain(|unit| unit.player != 0);
+    scenario.units.push(oxide_sim::scenario::UnitSpec {
+        player: 1,
+        kind: UnitKind::Sentinel,
+        x: 10,
+        y: 2,
+    });
+    scenario
+}
+
+fn turret_guarded_stranded_scenario(scrap: u32) -> Scenario {
+    let mut scenario = stranded_scenario(scrap);
+    scenario.units.retain(|unit| unit.player != 0);
+    scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+        player: 1,
+        kind: BuildingKind::Turret,
+        x: 10,
+        y: 1,
+    });
+    scenario
+}
+
+fn set_map_tile(scenario: &mut Scenario, tile: chassis::grid::TilePos, value: u8) {
+    let row = scenario.map[tile.y as usize].as_bytes();
+    let mut replaced = row.to_vec();
+    replaced[tile.x as usize] = value;
+    scenario.map[tile.y as usize] = String::from_utf8(replaced).unwrap();
+}
+
 #[test]
 fn recovery_reserves_partial_scrap_and_overrides_a_wrong_macro_action() {
     let state = stranded_scenario(UnitKind::Scuttler.stats().cost)
@@ -935,6 +1070,1524 @@ fn recovery_reserves_partial_scrap_and_overrides_a_wrong_macro_action() {
             ..
         }
     )));
+}
+
+#[test]
+fn guarded_recovery_buys_a_screen_before_its_harvester() {
+    let state = guarded_stranded_scenario(FOUNDRY_RECOVERY_RESERVE)
+        .build()
+        .unwrap();
+    let mut gym = GymBot::new(PlayerId(0));
+    let commands = gym.step_plan(&state, ActionPlan::default());
+    let trained: Vec<UnitKind> = commands
+        .iter()
+        .filter_map(|command| match command.command {
+            Command::Train { kind, .. } => Some(kind),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        trained,
+        vec![UnitKind::Sentinel, UnitKind::Harvester],
+        "a visibly guarded salvage line needs a cheap screen before the worker: {commands:?}"
+    );
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command.command, Command::Surrender)),
+        "a healthy Foundry with symmetric fallback income is recoverable"
+    );
+}
+
+#[test]
+fn guarded_recovery_does_not_mistake_lone_artillery_for_a_screen() {
+    let mut first = guarded_stranded_scenario(0);
+    first.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Bombard,
+        x: 5,
+        y: 7,
+    });
+    let state = first.build().unwrap();
+    let mut gym = GymBot::new(PlayerId(0));
+    let _ = gym.step_plan(&state, ActionPlan::default());
+
+    first.players[0].scrap = UnitKind::Sentinel.stats().cost;
+    first.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Harvester,
+        x: 5,
+        y: 6,
+    });
+    let state = first.build().unwrap();
+    let mut value = serde_json::to_value(state).unwrap();
+    value["tick"] = serde_json::json!(1);
+    let state: oxide_sim::State = serde_json::from_value(value).unwrap();
+    let commands = gym.step_plan(&state, ActionPlan::default());
+    assert!(
+        commands.iter().any(|command| matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Sentinel,
+                ..
+            }
+        )),
+        "artillery cannot directly contest a guarded salvage line: {commands:?}"
+    );
+}
+
+#[test]
+fn guarded_recovery_counts_a_queued_screen_before_training_another() {
+    let first = guarded_stranded_scenario(0);
+    let state = first.build().unwrap();
+    let mut gym = GymBot::new(PlayerId(0));
+    let _ = gym.step_plan(&state, ActionPlan::default());
+
+    let mut recovered = first;
+    recovered.players[0].scrap = 2 * UnitKind::Sentinel.stats().cost;
+    recovered.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Harvester,
+        x: 5,
+        y: 6,
+    });
+    let state = recovered.build().unwrap();
+    let mut value = serde_json::to_value(state).unwrap();
+    value["tick"] = serde_json::json!(1);
+    let mut state: oxide_sim::State = serde_json::from_value(value).unwrap();
+
+    let first_commands = gym.step_plan(&state, ActionPlan::default());
+    assert_eq!(
+        first_commands
+            .iter()
+            .filter(|command| matches!(
+                command.command,
+                Command::Train {
+                    kind: UnitKind::Sentinel,
+                    ..
+                }
+            ))
+            .count(),
+        1,
+        "the recovered Harvester needs one direct screen: {first_commands:?}"
+    );
+    state.tick(&first_commands);
+
+    let second_commands = gym.step_plan(&state, ActionPlan::default());
+    assert!(
+        !second_commands.iter().any(|command| matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Sentinel,
+                ..
+            }
+        )),
+        "the queued screen already satisfies recovery: {second_commands:?}"
+    );
+}
+
+#[test]
+fn guarded_recovery_cancels_a_naked_prepaid_harvester() {
+    let scenario = guarded_stranded_scenario(2 * UnitKind::Harvester.stats().cost);
+    let mut state = scenario.build().unwrap();
+    let foundry = state
+        .buildings()
+        .iter()
+        .find(|building| building.player == PlayerId(0))
+        .unwrap()
+        .id;
+    state.tick(&[oxide_sim::PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Train {
+            building: foundry,
+            kind: UnitKind::Harvester,
+        },
+    }]);
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        UnitKind::Harvester.stats().cost
+    );
+
+    let mut gym = GymBot::new(PlayerId(0));
+    let commands = gym.step_plan(&state, ActionPlan::default());
+    assert!(
+        commands.iter().any(|command| matches!(
+            command.command,
+            Command::CancelTrain {
+                building,
+                index: 0
+            } if building == foundry
+        )),
+        "the exposed worker is refunded so public recovery income can fund a coherent package: {commands:?}"
+    );
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Harvester,
+                ..
+            }
+        )),
+        "the same naked worker must not be immediately re-queued"
+    );
+}
+
+#[test]
+fn guarded_recovery_keeps_the_earliest_queued_screen() {
+    let mut state = guarded_stranded_scenario(500).build().unwrap();
+    let foundry = state
+        .buildings()
+        .iter()
+        .find(|building| building.player == PlayerId(0) && building.kind == BuildingKind::Foundry)
+        .unwrap()
+        .id;
+    let queue = (0..3)
+        .map(|_| oxide_sim::PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Train {
+                building: foundry,
+                kind: UnitKind::Sentinel,
+            },
+        })
+        .collect::<Vec<_>>();
+    state.tick(&queue);
+
+    let commands = GymBot::new(PlayerId(0)).step_plan(&state, ActionPlan::default());
+    let cancelled: Vec<u8> = commands
+        .iter()
+        .filter_map(|command| match command.command {
+            Command::CancelTrain { building, index } if building == foundry => Some(index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        cancelled,
+        vec![2, 1],
+        "later screens cancel in index-safe reverse order while the head keeps its progress"
+    );
+    assert!(commands.iter().any(|command| matches!(
+        command.command,
+        Command::Train {
+            building,
+            kind: UnitKind::Harvester,
+        } if building == foundry
+    )));
+}
+
+#[test]
+fn recovery_reroutes_to_a_safe_known_source() {
+    let mut first = guarded_stranded_scenario(UnitKind::Harvester.stats().cost);
+    let guard = first
+        .units
+        .iter_mut()
+        .find(|unit| unit.player == 1 && unit.kind == UnitKind::Sentinel && unit.x == 10)
+        .expect("the recovery fixture has a nearby guard");
+    guard.x = 14;
+    // This source lies in the Foundry's initial sight but outside the
+    // witnessed guard's danger radius, with a danger-free route from home.
+    let safe = chassis::grid::TilePos::new(2, 12);
+    set_map_tile(&mut first, safe, b's');
+    let state = first.build().unwrap();
+    let mut gym = GymBot::new(PlayerId(0));
+    let commands = gym.step_plan(&state, ActionPlan::default());
+    assert!(commands.iter().any(|command| matches!(
+        command.command,
+        Command::Train {
+            kind: UnitKind::Harvester,
+            ..
+        }
+    )));
+
+    let mut second = first;
+    second.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Harvester,
+        x: 5,
+        y: 6,
+    });
+    let state = second.build().unwrap();
+    let mut value = serde_json::to_value(state).unwrap();
+    value["tick"] = serde_json::json!(1);
+    let state: oxide_sim::State = serde_json::from_value(value).unwrap();
+    let commands = gym.step_plan(&state, ActionPlan::default());
+    assert!(
+        commands.iter().any(|command| matches!(
+            command.command,
+            Command::Harvest { node, .. } if node == safe
+        )),
+        "danger memory must route the replacement away from the guarded home patch: {commands:?}"
+    );
+}
+
+#[test]
+fn recovery_releases_a_replacement_only_after_its_harvest_order_lands() {
+    let mut scenario = guarded_stranded_scenario(UnitKind::Harvester.stats().cost);
+    let guard = scenario
+        .units
+        .iter_mut()
+        .find(|unit| unit.player == 1 && unit.kind == UnitKind::Sentinel && unit.x == 10)
+        .expect("the recovery fixture has a nearby guard");
+    guard.x = 14;
+    let safe = chassis::grid::TilePos::new(2, 12);
+    set_map_tile(&mut scenario, safe, b's');
+    let mut gym = GymBot::new(PlayerId(0));
+    let initial = gym.step_plan(&scenario.build().unwrap(), ActionPlan::default());
+    assert!(initial.iter().any(|command| matches!(
+        command.command,
+        Command::Train {
+            kind: UnitKind::Harvester,
+            ..
+        }
+    )));
+
+    scenario.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Harvester,
+        x: 5,
+        y: 6,
+    });
+    let mut value = serde_json::to_value(scenario.build().unwrap()).unwrap();
+    value["tick"] = serde_json::json!(1);
+    let replacement: oxide_sim::State = serde_json::from_value(value).unwrap();
+    let assignment = gym.step_plan(&replacement, ActionPlan::default());
+    let worker = assignment
+        .iter()
+        .find_map(|command| match &command.command {
+            Command::Harvest { units, node, .. } if *node == safe => units.first().copied(),
+            _ => None,
+        })
+        .expect("recovery assigns the replacement to the safe source");
+
+    let mut accepted_state = replacement.clone();
+    accepted_state.tick(&assignment);
+    let working = accepted_state
+        .units()
+        .iter()
+        .find(|unit| unit.id == worker)
+        .expect("the replacement survives command application");
+    assert!(matches!(
+        working.order,
+        Order::Harvest {
+            node,
+            anchor,
+            retiring: false,
+        } if anchor.unwrap_or(node) == safe
+    ));
+    assert!(
+        working.path.is_some() || working.progress > 0 || working.carrying > 0,
+        "the accepted assignment has observable work progress"
+    );
+    let accepted = gym.clone().decision(&accepted_state);
+    assert!(
+        accepted.mask[Action::TrainSentinel as usize],
+        "a safe, working Harvest route releases the emergency decision surface"
+    );
+
+    let mut dry_scenario = scenario;
+    set_map_tile(&mut dry_scenario, safe, b'.');
+    let mut dry_value = serde_json::to_value(dry_scenario.build().unwrap()).unwrap();
+    dry_value["tick"] = serde_json::json!(1);
+    let mut rejected_state: oxide_sim::State = serde_json::from_value(dry_value).unwrap();
+    rejected_state.tick(&assignment);
+    let rejected_worker = rejected_state
+        .units()
+        .iter()
+        .find(|unit| unit.id == worker)
+        .expect("the replacement survives the rejected command");
+    assert!(
+        matches!(rejected_worker.order, Order::Idle),
+        "the sim rejects the now-dry source instead of landing the assignment"
+    );
+
+    let rejected = gym.decision(&rejected_state);
+    let legal: Vec<usize> = rejected
+        .mask
+        .iter()
+        .enumerate()
+        .filter_map(|(index, legal)| legal.then_some(index))
+        .collect();
+    assert_eq!(
+        legal,
+        vec![
+            Action::Idle as usize,
+            Action::NoConstruction as usize,
+            Action::NoOperation as usize,
+        ],
+        "a rejected replacement assignment keeps recovery reconciliation active"
+    );
+
+    let ordinary = GymBot::new(PlayerId(0)).decision(&replacement);
+    assert!(
+        ordinary.mask[Action::TrainSentinel as usize],
+        "a fresh one-worker opening never enters emergency recovery"
+    );
+}
+
+#[test]
+fn recovery_keeps_a_pathful_retiring_assignment_inside_reconciliation() {
+    let mut scenario = guarded_stranded_scenario(UnitKind::Harvester.stats().cost);
+    let guard = scenario
+        .units
+        .iter_mut()
+        .find(|unit| unit.player == 1 && unit.kind == UnitKind::Sentinel && unit.x == 10)
+        .expect("the recovery fixture has a nearby guard");
+    guard.x = 14;
+    let safe = chassis::grid::TilePos::new(2, 12);
+    set_map_tile(&mut scenario, safe, b's');
+    let mut gym = GymBot::new(PlayerId(0));
+    let _ = gym.step_plan(&scenario.build().unwrap(), ActionPlan::default());
+
+    scenario.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Harvester,
+        x: 5,
+        y: 8,
+    });
+    let mut value = serde_json::to_value(scenario.build().unwrap()).unwrap();
+    value["tick"] = serde_json::json!(1);
+    let clear: oxide_sim::State = serde_json::from_value(value).unwrap();
+    let assignment = gym.step_plan(&clear, ActionPlan::default());
+    let worker = assignment
+        .iter()
+        .find_map(|command| match &command.command {
+            Command::Harvest { units, node, .. } if *node == safe => units.first().copied(),
+            _ => None,
+        })
+        .expect("the clear route receives an assignment");
+
+    for (dx, dy) in chassis::grid::CARDINALS
+        .into_iter()
+        .chain(chassis::grid::DIAGONALS)
+    {
+        set_map_tile(&mut scenario, safe.offset(dx, dy), b'#');
+    }
+    let mut blocked_value = serde_json::to_value(scenario.build().unwrap()).unwrap();
+    blocked_value["tick"] = serde_json::json!(1);
+    let mut blocked: oxide_sim::State = serde_json::from_value(blocked_value).unwrap();
+    blocked.tick(&assignment);
+    let retiring = blocked
+        .units()
+        .iter()
+        .find(|unit| unit.id == worker)
+        .expect("the replacement survives the failed route");
+    assert!(matches!(
+        retiring.order,
+        Order::Harvest {
+            node,
+            anchor,
+            retiring: true,
+        } if anchor.unwrap_or(node) == safe
+    ));
+    assert!(
+        retiring.path.is_some(),
+        "the failed source route becomes a pathful retirement toward home"
+    );
+
+    let decision = gym.decision(&blocked);
+    let legal: Vec<usize> = decision
+        .mask
+        .iter()
+        .enumerate()
+        .filter_map(|(index, legal)| legal.then_some(index))
+        .collect();
+    assert_eq!(
+        legal,
+        vec![
+            Action::Idle as usize,
+            Action::NoConstruction as usize,
+            Action::NoOperation as usize,
+        ],
+        "a path is not viable work when the Harvest order is retiring"
+    );
+}
+
+#[test]
+fn recovery_does_not_send_a_replacement_across_endpoint_clear_danger() {
+    let mut scenario = guarded_stranded_scenario(UnitKind::Harvester.stats().cost);
+    scenario.units.retain(|unit| {
+        unit.player != 1 || (unit.kind == UnitKind::Sentinel && unit.x == 10 && unit.y == 2)
+    });
+    let guard = chassis::grid::TilePos::new(13, 12);
+    let guard_unit = scenario
+        .units
+        .iter_mut()
+        .find(|unit| unit.player == 1)
+        .expect("the fixture keeps one hostile guard");
+    guard_unit.x = guard.x;
+    guard_unit.y = guard.y;
+    let salvage: Vec<_> = scenario
+        .map
+        .iter()
+        .enumerate()
+        .flat_map(|(y, row)| {
+            row.bytes().enumerate().filter_map(move |(x, tile)| {
+                matches!(tile, b's' | b'S').then_some(chassis::grid::TilePos::new(
+                    i32::try_from(x).unwrap(),
+                    i32::try_from(y).unwrap(),
+                ))
+            })
+        })
+        .collect();
+    for tile in salvage {
+        set_map_tile(&mut scenario, tile, b'.');
+    }
+    for y in 1..23 {
+        if y != guard.y {
+            set_map_tile(&mut scenario, chassis::grid::TilePos::new(guard.x, y), b'#');
+        }
+    }
+    let safe = chassis::grid::TilePos::new(21, 18);
+    assert!(guard.chebyshev(safe) > 7, "the source endpoint is clear");
+    set_map_tile(&mut scenario, safe, b's');
+    for (x, y) in [(12, 4), (12, 11), (12, 18), (21, 17)] {
+        scenario.units.push(oxide_sim::scenario::UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x,
+            y,
+        });
+    }
+    let mut gym = GymBot::new(PlayerId(0));
+    let initial = gym.step_plan(&scenario.build().unwrap(), ActionPlan::default());
+    assert!(initial.iter().any(|command| matches!(
+        command.command,
+        Command::Train {
+            kind: UnitKind::Harvester,
+            ..
+        }
+    )));
+
+    scenario.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Harvester,
+        x: 5,
+        y: 6,
+    });
+    let mut value = serde_json::to_value(scenario.build().unwrap()).unwrap();
+    value["tick"] = serde_json::json!(1);
+    let replacement: oxide_sim::State = serde_json::from_value(value).unwrap();
+    let observed = Observation::fog_honest(&replacement, PlayerId(0));
+    assert!(
+        (1..23).filter(|y| *y != guard.y).all(|y| observed
+            .known_rock
+            .contains(&chassis::grid::TilePos::new(guard.x, y))),
+        "the bot has explored the impassable wall around the guarded opening"
+    );
+    let worker = replacement
+        .units()
+        .iter()
+        .find(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Harvester)
+        .expect("the replacement exists")
+        .id;
+
+    let mut mechanical = replacement.clone();
+    mechanical.tick(&[oxide_sim::PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Harvest {
+            units: vec![worker],
+            node: safe,
+            queue: false,
+        },
+    }]);
+    let path = mechanical
+        .units()
+        .iter()
+        .find(|unit| unit.id == worker)
+        .and_then(|unit| unit.path.as_ref())
+        .expect("the explicit command has a mechanically valid route");
+    assert!(
+        path.waypoints
+            .iter()
+            .any(|waypoint| waypoint.chebyshev(guard) <= 7),
+        "the mechanically valid route crosses the bot's remembered danger envelope"
+    );
+
+    let commands = gym.step_plan(&replacement, ActionPlan::default());
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command.command, Command::Harvest { .. })),
+        "endpoint safety alone must not dispatch the replacement: {commands:?}"
+    );
+    let decision = gym.decision(&replacement);
+    let legal: Vec<usize> = decision
+        .mask
+        .iter()
+        .enumerate()
+        .filter_map(|(index, legal)| legal.then_some(index))
+        .collect();
+    assert_eq!(
+        legal,
+        vec![
+            Action::Idle as usize,
+            Action::NoConstruction as usize,
+            Action::NoOperation as usize,
+        ],
+        "the route-blocked replacement stays inside recovery reconciliation"
+    );
+}
+
+#[test]
+fn recovery_preflight_treats_visible_siege_reach_as_a_hard_barrier() {
+    let mut scenario = guarded_stranded_scenario(UnitKind::Harvester.stats().cost);
+    scenario.units.retain(|unit| {
+        unit.player != 1 || (unit.kind == UnitKind::Sentinel && unit.x == 10 && unit.y == 2)
+    });
+    let bombard = scenario
+        .units
+        .iter_mut()
+        .find(|unit| unit.player == 1)
+        .expect("the fixture keeps one hostile guard");
+    bombard.kind = UnitKind::Bombard;
+    bombard.x = 7;
+    bombard.y = 6;
+    let salvage: Vec<_> = scenario
+        .map
+        .iter()
+        .enumerate()
+        .flat_map(|(y, row)| {
+            row.bytes().enumerate().filter_map(move |(x, tile)| {
+                matches!(tile, b's' | b'S').then_some(chassis::grid::TilePos::new(
+                    i32::try_from(x).unwrap(),
+                    i32::try_from(y).unwrap(),
+                ))
+            })
+        })
+        .collect();
+    for tile in salvage {
+        set_map_tile(&mut scenario, tile, b'.');
+    }
+    let source = chassis::grid::TilePos::new(17, 6);
+    set_map_tile(&mut scenario, source, b's');
+    scenario.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Sentinel,
+        x: 17,
+        y: 7,
+    });
+
+    let mut gym = GymBot::new(PlayerId(0));
+    let initial = gym.step_plan(&scenario.build().unwrap(), ActionPlan::default());
+    assert!(initial.iter().any(|command| matches!(
+        command.command,
+        Command::Train {
+            kind: UnitKind::Harvester,
+            ..
+        }
+    )));
+    scenario.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Harvester,
+        x: 5,
+        y: 6,
+    });
+    let mut value = serde_json::to_value(scenario.build().unwrap()).unwrap();
+    value["tick"] = serde_json::json!(1);
+    let replacement: oxide_sim::State = serde_json::from_value(value).unwrap();
+    let worker = replacement
+        .units()
+        .iter()
+        .find(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Harvester)
+        .unwrap();
+    assert_eq!(
+        worker.tile().chebyshev(chassis::grid::TilePos::new(7, 6)),
+        2
+    );
+    assert_eq!(source.chebyshev(chassis::grid::TilePos::new(7, 6)), 10);
+
+    let commands = gym.step_plan(&replacement, ActionPlan::default());
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command.command, Command::Harvest { .. })),
+        "outward travel remains unsafe inside a visible Bombard's 12.5-tile salvage reach: \
+         {commands:?}"
+    );
+}
+
+#[test]
+fn recovery_confirms_a_flipped_seats_world_space_assignment() {
+    let mut scenario = Scenario::skirmish();
+    scenario.players[1].scrap = UnitKind::Harvester.stats().cost;
+    scenario
+        .units
+        .retain(|unit| unit.player != 1 || unit.kind != UnitKind::Harvester);
+    scenario.units.push(oxide_sim::scenario::UnitSpec {
+        player: 1,
+        kind: UnitKind::Sentinel,
+        x: 10,
+        y: 7,
+    });
+    let mut gym = GymBot::new(PlayerId(1));
+    let initial = gym.step_plan(&scenario.build().unwrap(), ActionPlan::default());
+    assert!(initial.iter().any(|command| matches!(
+        command.command,
+        Command::Train {
+            kind: UnitKind::Harvester,
+            ..
+        }
+    )));
+
+    scenario.units.push(oxide_sim::scenario::UnitSpec {
+        player: 1,
+        kind: UnitKind::Harvester,
+        x: 34,
+        y: 17,
+    });
+    let mut value = serde_json::to_value(scenario.build().unwrap()).unwrap();
+    value["tick"] = serde_json::json!(1);
+    let replacement: oxide_sim::State = serde_json::from_value(value).unwrap();
+    let assignment = gym.step_plan(&replacement, ActionPlan::default());
+    let (worker, world_source) = assignment
+        .iter()
+        .find_map(|command| match &command.command {
+            Command::Harvest { units, node, .. } => Some((*units.first()?, *node)),
+            _ => None,
+        })
+        .expect("the flipped seat assigns its replacement");
+    assert!(
+        world_source.x > replacement.map().width() / 2,
+        "the emitted command carries the southeast seat's world-space source"
+    );
+
+    let mut accepted = replacement;
+    accepted.tick(&assignment);
+    let working = accepted
+        .units()
+        .iter()
+        .find(|unit| unit.id == worker)
+        .expect("the replacement survives command application");
+    assert!(matches!(
+        working.order,
+        Order::Harvest {
+            node,
+            anchor,
+            retiring: false,
+        } if anchor.unwrap_or(node) == world_source
+    ));
+    assert!(working.path.is_some());
+    let mut danger_gym = gym.clone();
+    let decision = gym.decision(&accepted);
+    assert!(
+        decision.mask.iter().enumerate().any(|(index, legal)| {
+            *legal
+                && ![
+                    Action::Idle as usize,
+                    Action::NoConstruction as usize,
+                    Action::NoOperation as usize,
+                ]
+                .contains(&index)
+        }),
+        "world-space order confirmation must release the flipped seat's recovery surface"
+    );
+
+    let visible_enemy = Observation::fog_honest(&accepted, PlayerId(1))
+        .enemy_units
+        .into_iter()
+        .find(|unit| {
+            unit.kind
+                .stats()
+                .can_target(oxide_sim::stats::Domain::Ground)
+        })
+        .expect("the remote spotter keeps one hostile ground threat visible")
+        .tile;
+    let worker_slot = accepted
+        .units()
+        .iter()
+        .position(|unit| unit.id == worker)
+        .unwrap();
+    let mut forged = serde_json::to_value(&accepted).unwrap();
+    let next = forged["units"][worker_slot]["path"]["next"]
+        .as_u64()
+        .and_then(|next| usize::try_from(next).ok())
+        .unwrap();
+    let waypoints = forged["units"][worker_slot]["path"]["waypoints"]
+        .as_array_mut()
+        .unwrap();
+    assert!(next < waypoints.len());
+    waypoints[next] = serde_json::to_value(visible_enemy).unwrap();
+    let dangerous_path: oxide_sim::State = serde_json::from_value(forged).unwrap();
+    let blocked = danger_gym.decision(&dangerous_path);
+    let legal: Vec<usize> = blocked
+        .mask
+        .iter()
+        .enumerate()
+        .filter_map(|(index, legal)| legal.then_some(index))
+        .collect();
+    assert_eq!(
+        legal,
+        vec![
+            Action::Idle as usize,
+            Action::NoConstruction as usize,
+            Action::NoOperation as usize,
+        ],
+        "world-space waypoints must be oriented before auditing the flipped seat's route"
+    );
+}
+
+#[test]
+fn a_recovery_worker_liquidates_a_useful_nonessential_asset() {
+    let first = guarded_stranded_scenario(0);
+    let state = first.build().unwrap();
+    let mut gym = GymBot::new(PlayerId(0));
+    let _ = gym.step_plan(&state, ActionPlan::default());
+
+    let mut second = first;
+    second.players[0].scrap = 10;
+    second.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Harvester,
+        x: 5,
+        y: 6,
+    });
+    second.buildings.push(oxide_sim::scenario::BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Turret,
+        x: 3,
+        y: 8,
+    });
+    let state = second.build().unwrap();
+    let mut value = serde_json::to_value(state).unwrap();
+    value["tick"] = serde_json::json!(1);
+    let state: oxide_sim::State = serde_json::from_value(value).unwrap();
+    let turret = state
+        .buildings()
+        .iter()
+        .find(|building| building.kind == BuildingKind::Turret)
+        .unwrap()
+        .id;
+    let commands = gym.step_plan(&state, ActionPlan::default());
+    assert!(
+        commands.iter().any(|command| matches!(
+            command.command,
+            Command::Salvage { building, .. } if building == turret
+        )),
+        "an otherwise stranded worker should turn a nonessential turret into most of the screen fund: {commands:?}"
+    );
+}
+
+#[test]
+fn danger_memory_cools_before_recovery_reuses_a_source() {
+    let first = guarded_stranded_scenario(UnitKind::Harvester.stats().cost);
+    let state = first.build().unwrap();
+    let mut gym = GymBot::new(PlayerId(0));
+    let initial = gym.step_plan(&state, ActionPlan::default());
+    assert!(
+        !initial.iter().any(|command| matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Harvester,
+                ..
+            }
+        )),
+        "fresh danger must keep a naked worker out of the guarded line"
+    );
+
+    let mut quiet = first;
+    quiet.units.retain(|unit| {
+        !(unit.player == 1 && unit.kind == UnitKind::Sentinel && unit.x == 10 && unit.y == 2)
+    });
+    let at_tick = |tick: u64| {
+        let state = quiet.build().unwrap();
+        let mut value = serde_json::to_value(state).unwrap();
+        value["tick"] = serde_json::json!(tick);
+        serde_json::from_value::<oxide_sim::State>(value).unwrap()
+    };
+    let mut still_hot = gym.clone();
+    let commands = still_hot.step_plan(&at_tick(1_799), ActionPlan::default());
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Harvester,
+                ..
+            }
+        )),
+        "the last deterministic cooling tick remains guarded"
+    );
+    let commands = gym.step_plan(&at_tick(1_800), ActionPlan::default());
+    assert!(
+        commands.iter().any(|command| matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Harvester,
+                ..
+            }
+        )),
+        "expired danger memory must release the known source: {commands:?}"
+    );
+}
+
+#[test]
+fn a_remembered_armed_building_keeps_its_salvage_line_guarded() {
+    let scenario = turret_guarded_stranded_scenario(UnitKind::Harvester.stats().cost);
+    let state = scenario.build().unwrap();
+    let mut gym = GymBot::new(PlayerId(0));
+    let initial = gym.step_plan(&state, ActionPlan::default());
+    assert!(
+        !initial.iter().any(|command| matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Harvester,
+                ..
+            }
+        )),
+        "the visible Turret guards the home salvage"
+    );
+
+    let mut value = serde_json::to_value(state).unwrap();
+    value["tick"] = serde_json::json!(1_800);
+    for visible in value["vision"][0]["visible"]["cells"]
+        .as_array_mut()
+        .unwrap()
+    {
+        *visible = false.into();
+    }
+    let hidden: oxide_sim::State = serde_json::from_value(value).unwrap();
+    let observation = Observation::fog_honest(&hidden, PlayerId(0));
+    assert!(
+        observation
+            .enemy_buildings
+            .iter()
+            .any(|building| { building.kind == BuildingKind::Turret && !building.seen })
+    );
+
+    let commands = gym.step_plan(&hidden, ActionPlan::default());
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Harvester,
+                ..
+            }
+        )),
+        "a ghost Turret remains a static guard after mobile danger would cool: {commands:?}"
+    );
+}
+
+#[test]
+fn recovery_preview_and_direct_lowering_emit_identical_replay_commands() {
+    let scenario = guarded_stranded_scenario(FOUNDRY_RECOVERY_RESERVE);
+    let mut previewed_state = scenario.build().unwrap();
+    let mut direct_state = previewed_state.clone();
+    let mut previewed = GymBot::new(PlayerId(0));
+    let mut direct = GymBot::new(PlayerId(0));
+
+    for _ in 0..512 {
+        let mut previewed_commands = Vec::new();
+        let mut direct_commands = Vec::new();
+        if previewed_state
+            .current_tick()
+            .is_multiple_of(previewed.cadence())
+            && previewed_state.result().is_none()
+        {
+            let _ = previewed.decision(&previewed_state);
+            previewed_commands.extend(previewed.step_plan(&previewed_state, ActionPlan::default()));
+            direct_commands.extend(direct.step_plan(&direct_state, ActionPlan::default()));
+        }
+        assert_eq!(
+            previewed_commands,
+            direct_commands,
+            "decision preview changed lowering at tick {}",
+            previewed_state.current_tick()
+        );
+        previewed_state.tick(&previewed_commands);
+        direct_state.tick(&direct_commands);
+        assert_eq!(
+            previewed_state.hash(),
+            direct_state.hash(),
+            "equivalent recorded commands diverged at tick {}",
+            previewed_state.current_tick()
+        );
+    }
+}
+
+#[test]
+fn a_stalled_recovery_worker_hold_retries_on_a_bounded_cadence() {
+    let first = guarded_stranded_scenario(0);
+    let state = first.build().unwrap();
+    let mut gym = GymBot::new(PlayerId(0));
+    let _ = gym.step_plan(&state, ActionPlan::default());
+
+    let mut with_worker = first;
+    with_worker.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Harvester,
+        x: 2,
+        y: 10,
+    });
+    let at_tick = |tick: u64| {
+        let state = with_worker.build().unwrap();
+        let mut value = serde_json::to_value(state).unwrap();
+        value["tick"] = serde_json::json!(tick);
+        serde_json::from_value::<oxide_sim::State>(value).unwrap()
+    };
+    let is_hold =
+        |command: &oxide_sim::PlayerCommand| matches!(command.command, Command::Move { .. });
+
+    let first_hold = gym.step_plan(&at_tick(1), ActionPlan::default());
+    assert!(first_hold.iter().any(is_hold));
+    let suppressed = gym.step_plan(&at_tick(2), ActionPlan::default());
+    assert!(
+        !suppressed.iter().any(is_hold),
+        "the accepted path gets time to make progress"
+    );
+    let retry = gym.step_plan(&at_tick(121), ActionPlan::default());
+    assert!(
+        retry.iter().any(is_hold),
+        "a rejected or stalled hold cannot suppress retries forever: {retry:?}"
+    );
+}
+
+#[test]
+fn stale_artillery_army_does_not_suppress_a_fresh_recovery_screen() {
+    let first = guarded_stranded_scenario(0);
+    let state = first.build().unwrap();
+    let mut gym = GymBot::new(PlayerId(0));
+    let _ = gym.step_plan(&state, ActionPlan::default());
+
+    let mut contested = first;
+    contested.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Harvester,
+        x: 5,
+        y: 6,
+    });
+    for x in [5, 6] {
+        contested.units.push(oxide_sim::scenario::UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x,
+            y: 12,
+        });
+    }
+    let state = contested.build().unwrap();
+    let mut value = serde_json::to_value(state).unwrap();
+    value["tick"] = serde_json::json!(1);
+    let mut state: oxide_sim::State = serde_json::from_value(value).unwrap();
+
+    let form = gym.step_plan(&state, ActionPlan::default());
+    let stale_member = form
+        .iter()
+        .find_map(|command| match &command.command {
+            Command::AttackMove { units, .. } => units.first().copied(),
+            _ => None,
+        })
+        .expect("recovery should form one direct screen");
+    let fresh_screen = state
+        .units()
+        .iter()
+        .filter(|unit| unit.player == PlayerId(0) && unit.kind == UnitKind::Sentinel)
+        .map(|unit| unit.id)
+        .find(|unit| *unit != stale_member)
+        .expect("the second direct screen stays outside the first army");
+    state.tick(&form);
+
+    let push = gym.step_plan(&state, ActionPlan::default());
+    assert!(
+        push.iter().any(|command| matches!(
+            &command.command,
+            Command::AttackMove { units, .. } if units.contains(&stale_member)
+        )),
+        "the staged recovery screen should begin contesting the guarded source: {push:?}"
+    );
+    state.tick(&push);
+
+    let mut value = serde_json::to_value(state).unwrap();
+    let stale = value["units"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|unit| unit["id"] == serde_json::json!(stale_member.0))
+        .expect("the enlisted screen remains alive");
+    stale["kind"] = serde_json::json!("bombard");
+    let state: oxide_sim::State = serde_json::from_value(value).unwrap();
+
+    let replacement = gym.step_plan(&state, ActionPlan::default());
+    assert!(
+        replacement.iter().any(|command| matches!(
+            &command.command,
+            Command::AttackMove { units, .. } if units.contains(&fresh_screen)
+        )),
+        "a stale pure-artillery army cannot make the new direct screen look redundant: \
+         {replacement:?}"
+    );
+}
+
+#[test]
+fn a_recovery_screen_secures_the_source_after_its_push_lifecycle() {
+    let first = guarded_stranded_scenario(0);
+    let state = first.build().unwrap();
+    let mut gym = GymBot::new(PlayerId(0));
+    let _ = gym.step_plan(&state, ActionPlan::default());
+
+    let mut contested = first.clone();
+    contested.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Harvester,
+        x: 5,
+        y: 6,
+    });
+    contested.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Sentinel,
+        x: 5,
+        y: 12,
+    });
+    let state = contested.build().unwrap();
+    let mut value = serde_json::to_value(state).unwrap();
+    value["tick"] = serde_json::json!(1);
+    let mut state: oxide_sim::State = serde_json::from_value(value).unwrap();
+    let form = gym.step_plan(&state, ActionPlan::default());
+    assert!(
+        form.iter()
+            .any(|command| matches!(command.command, Command::AttackMove { .. }))
+    );
+    state.tick(&form);
+
+    let push = gym.step_plan(&state, ActionPlan::default());
+    let source = push
+        .iter()
+        .find_map(|command| match command.command {
+            Command::AttackMove { goal, .. } if goal.y <= 3 => Some(goal),
+            _ => None,
+        })
+        .expect("the staged screen contests one guarded source");
+
+    let guard = contested
+        .units
+        .iter_mut()
+        .find(|unit| {
+            unit.player == 1 && unit.kind == UnitKind::Sentinel && unit.x == 10 && unit.y == 2
+        })
+        .unwrap();
+    guard.kind = UnitKind::Harvester;
+    guard.x = 30;
+    guard.y = 16;
+    let screen = contested
+        .units
+        .iter_mut()
+        .find(|unit| unit.player == 0 && unit.kind == UnitKind::Sentinel)
+        .unwrap();
+    screen.x = source.x;
+    screen.y = source.y + 2;
+    let state = contested.build().unwrap();
+    let mut value = serde_json::to_value(state).unwrap();
+    value["tick"] = serde_json::json!(3);
+    let state: oxide_sim::State = serde_json::from_value(value).unwrap();
+    let secured = gym.step_plan(&state, ActionPlan::default());
+    assert!(
+        secured.iter().any(|command| matches!(
+            command.command,
+            Command::Harvest { node, .. } if node == source
+        )),
+        "a Pushing recovery army that reaches a cleared source must release its held worker: {secured:?}"
+    );
+    assert!(
+        !secured
+            .iter()
+            .any(|command| matches!(command.command, Command::AttackMove { .. })),
+        "arrival must not create a second recovery army"
+    );
+}
+
+#[test]
+fn recovery_concedes_only_a_critically_wounded_position_under_visible_pressure() {
+    let scenario = guarded_stranded_scenario(0);
+    let state = scenario.build().unwrap();
+    let (foundry, foundry_max_hp) = state
+        .buildings()
+        .iter()
+        .find(|building| building.player == PlayerId(0) && building.kind == BuildingKind::Foundry)
+        .map(|building| (building.id, building.kind.stats().max_hp))
+        .unwrap();
+    let mut value = serde_json::to_value(state).unwrap();
+    value["buildings"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|building| building["id"] == foundry.0)
+        .unwrap()["hp"] = serde_json::json!(foundry_max_hp / 4);
+    let state: oxide_sim::State = serde_json::from_value(value).unwrap();
+
+    let mut gym = GymBot::new(PlayerId(0));
+    let commands = gym.step_plan(&state, ActionPlan::default());
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| matches!(command.command, Command::Surrender))
+            .count(),
+        1,
+        "a doomed, assetless seat may stop feeding replacements into the guard: {commands:?}"
+    );
+}
+
+fn passive_victim_scenario(hidden_enemy_fighters: usize) -> Scenario {
+    let mut scenario = Scenario::skirmish();
+    scenario.units.clear();
+    scenario.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Harvester,
+        x: 7,
+        y: 5,
+    });
+    for index in 0..8 {
+        scenario.units.push(oxide_sim::scenario::UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x: 8 + index % 4,
+            y: 7 + index / 4,
+        });
+    }
+    // This spotter makes the hostile Foundry a legal, fog-honest target.
+    scenario.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Sentinel,
+        x: 31,
+        y: 18,
+    });
+    for index in 0..hidden_enemy_fighters {
+        let index = i32::try_from(index).unwrap();
+        scenario.units.push(oxide_sim::scenario::UnitSpec {
+            player: 1,
+            kind: UnitKind::Sentinel,
+            x: 18 + index % 4,
+            y: 2 + index / 4,
+        });
+    }
+    scenario
+}
+
+fn at_passive_victim_tick(scenario: &Scenario) -> oxide_sim::State {
+    let state = scenario.build().unwrap();
+    let mut value = serde_json::to_value(state).unwrap();
+    value["tick"] = serde_json::json!(27_002);
+    serde_json::from_value(value).unwrap()
+}
+
+#[test]
+fn passive_victim_finish_commitment_forms_and_pushes_a_dominant_army() {
+    let mut state = at_passive_victim_tick(&passive_victim_scenario(0));
+    let target = state
+        .buildings()
+        .iter()
+        .find(|building| building.player == PlayerId(1) && building.kind == BuildingKind::Foundry)
+        .unwrap()
+        .anchor;
+    let mut gym = GymBot::new(PlayerId(0));
+
+    let first = gym.step_plan(&state, ActionPlan::default());
+    assert!(
+        first.iter().any(|command| matches!(
+            &command.command,
+            Command::AttackMove { units, goal, .. }
+                if !units.is_empty() && goal.chebyshev(target) > 3
+        )),
+        "the no-operation learned plan must be reconciled into army formation: {first:?}"
+    );
+    state.tick(&first);
+
+    for _ in 0..4 {
+        let commands = gym.step_plan(&state, ActionPlan::default());
+        let pushed = commands.iter().any(|command| {
+            matches!(
+                command.command,
+                Command::AttackMove { goal, .. } if goal == target
+            )
+        });
+        state.tick(&commands);
+        if pushed {
+            return;
+        }
+    }
+    panic!("the dominant army never committed to the known Foundry");
+}
+
+#[test]
+fn undersized_active_finish_remnant_does_not_freeze_reserves() {
+    let mut scenario = passive_victim_scenario(0);
+    for index in 0..8 {
+        scenario.units.push(oxide_sim::scenario::UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x: 8 + index % 4,
+            y: 10 + index / 4,
+        });
+    }
+    let state = at_passive_victim_tick(&scenario);
+    let target = state
+        .buildings()
+        .iter()
+        .find(|building| building.player == PlayerId(1) && building.kind == BuildingKind::Foundry)
+        .unwrap()
+        .anchor;
+    let mut gym = GymBot::new(PlayerId(0));
+
+    let formed = gym.step(&state, Action::FormArmy);
+    let members = formed
+        .iter()
+        .find_map(|command| match &command.command {
+            Command::AttackMove { units, goal, .. } if *goal != target => Some(units.clone()),
+            _ => None,
+        })
+        .expect("the first army should form at its rally point");
+    assert!(members.len() >= 5);
+    gym.step(&state, Action::Push);
+
+    let casualties: Vec<_> = members.into_iter().skip(1).collect();
+    let mut value = serde_json::to_value(state).unwrap();
+    value["units"].as_array_mut().unwrap().retain(|unit| {
+        unit["player"] != 0
+            || !unit["id"]
+                .as_u64()
+                .is_some_and(|id| casualties.iter().any(|lost| u64::from(lost.0) == id))
+    });
+    let thinned: oxide_sim::State = serde_json::from_value(value).unwrap();
+
+    let reserve = gym.step_plan(&thinned, ActionPlan::default());
+    assert!(
+        reserve.iter().any(|command| matches!(
+            &command.command,
+            Command::AttackMove { units, goal, .. }
+                if !units.is_empty() && *goal != target
+        )),
+        "an undersized active remnant must release idle fighters into a new body: {reserve:?}"
+    );
+
+    for _ in 0..6 {
+        let commands = gym.step_plan(&thinned, ActionPlan::default());
+        if commands.iter().any(|command| {
+            matches!(
+                command.command,
+                Command::AttackMove { goal, .. } if goal == target
+            )
+        }) {
+            return;
+        }
+    }
+    panic!("the reserve body never committed past the undersized active remnant");
+}
+
+#[test]
+fn finish_commitment_chains_from_a_cleared_site_to_the_next_known_site() {
+    let first_target = chassis::grid::TilePos::new(22, 13);
+    let mut scenario = passive_victim_scenario(0);
+    scenario.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Sentinel,
+        x: 12,
+        y: 8,
+    });
+    scenario.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Harvester,
+        x: first_target.x,
+        y: first_target.y - 3,
+    });
+    scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+        player: 1,
+        kind: BuildingKind::Turret,
+        x: first_target.x,
+        y: first_target.y,
+    });
+    let mut state = at_passive_victim_tick(&scenario);
+    let final_target = state
+        .buildings()
+        .iter()
+        .find(|building| building.player == PlayerId(1) && building.kind == BuildingKind::Foundry)
+        .unwrap()
+        .anchor;
+    let mut gym = GymBot::new(PlayerId(0));
+    let mut first_push = false;
+    let mut attack_goals = Vec::new();
+    for _ in 0..5 {
+        let commands = gym.step_plan(&state, ActionPlan::default());
+        attack_goals.extend(commands.iter().filter_map(|command| match command.command {
+            Command::AttackMove { goal, .. } => Some(goal),
+            _ => None,
+        }));
+        first_push |= commands.iter().any(|command| {
+            matches!(
+                command.command,
+                Command::AttackMove { goal, .. } if goal == first_target
+            )
+        });
+        state.tick(&commands);
+        if first_push {
+            break;
+        }
+    }
+    assert!(
+        first_push,
+        "the nearer known Turret must be the first site; goals: {attack_goals:?}"
+    );
+
+    scenario
+        .buildings
+        .retain(|building| building.kind != BuildingKind::Turret);
+    let mut moved = 0;
+    for unit in scenario
+        .units
+        .iter_mut()
+        .filter(|unit| unit.player == 0 && unit.kind == UnitKind::Sentinel)
+    {
+        if unit.x == 31 && unit.y == 18 {
+            continue; // preserves legal knowledge of the final Foundry
+        }
+        unit.x = first_target.x - 1 + moved % 4;
+        unit.y = first_target.y - 1 + moved / 4;
+        moved += 1;
+    }
+    let cleared = scenario.build().unwrap();
+    let mut value = serde_json::to_value(cleared).unwrap();
+    value["tick"] = serde_json::json!(state.current_tick() + 1);
+    let cleared: oxide_sim::State = serde_json::from_value(value).unwrap();
+    let commands = gym.step_plan(&cleared, ActionPlan::default());
+    assert!(
+        commands.iter().any(|command| matches!(
+            command.command,
+            Command::AttackMove { goal, .. } if goal == final_target
+        )),
+        "arrival at a cleared target must stage and chain to the next known legal site: {commands:?}"
+    );
+}
+
+#[test]
+fn finish_commitment_cannot_read_a_hidden_enemy_army() {
+    let visible = at_passive_victim_tick(&passive_victim_scenario(0));
+    let hidden = at_passive_victim_tick(&passive_victim_scenario(12));
+    let commands =
+        |state: &oxide_sim::State| GymBot::new(PlayerId(0)).step_plan(state, ActionPlan::default());
+    assert_eq!(
+        commands(&visible),
+        commands(&hidden),
+        "units outside vision, radar, and remembered contact cannot affect tactical reconciliation"
+    );
+}
+
+#[test]
+fn finish_commitment_refuses_a_visible_disadvantage() {
+    let mut scenario = passive_victim_scenario(0);
+    for index in 0..16 {
+        scenario.units.push(oxide_sim::scenario::UnitSpec {
+            player: 1,
+            kind: UnitKind::Sentinel,
+            x: 28 + index % 4,
+            y: 15 + index / 4,
+        });
+    }
+    let state = at_passive_victim_tick(&scenario);
+    let commands = GymBot::new(PlayerId(0)).step_plan(&state, ActionPlan::default());
+    assert!(
+        !commands.iter().any(|command| matches!(
+            command.command,
+            Command::AttackMove { .. } | Command::Attack { .. }
+        )),
+        "known superior defenders must keep a no-operation plan passive: {commands:?}"
+    );
+}
+
+#[test]
+fn shipped_basalt_spine_finishes_the_tick_27002_passive_victim() {
+    let scenario = Scenario::load(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scenarios/basalt-spine.json"),
+    )
+    .expect("shipped Basalt Spine");
+    let mut state = scenario.build().expect("Basalt Spine builds");
+    let mut bots = seat_bots(&scenario);
+    assert_eq!(bots.len(), 1, "the shipped scenario has one bot commander");
+    assert_eq!(bots[0].player(), PlayerId(1));
+    let victim_foundry = state
+        .buildings()
+        .iter()
+        .find(|building| building.player == PlayerId(0) && building.kind == BuildingKind::Foundry)
+        .expect("the passive seat starts with a Foundry")
+        .anchor;
+
+    let mut saw_reproduction = false;
+    let mut finish_commitment = None;
+    let mut victory_tick = None;
+    while state.current_tick() < 40_000 {
+        if state.current_tick() == 27_002 {
+            let attacking_fighters: Vec<_> = state
+                .units()
+                .iter()
+                .filter(|unit| {
+                    unit.player == PlayerId(1)
+                        && unit
+                            .kind
+                            .stats()
+                            .can_target(oxide_sim::stats::Domain::Ground)
+                })
+                .collect();
+            let victim_fighters = state
+                .units()
+                .iter()
+                .filter(|unit| {
+                    unit.player == PlayerId(0)
+                        && unit
+                            .kind
+                            .stats()
+                            .can_target(oxide_sim::stats::Domain::Ground)
+                })
+                .count();
+            assert!(
+                state.result().is_none(),
+                "the historical stall is still live"
+            );
+            assert!(
+                attacking_fighters.len() >= 16
+                    && attacking_fighters.len() >= victim_fighters.saturating_mul(4),
+                "the neural seat must hold an unmistakable finishing advantage"
+            );
+            let committed = attacking_fighters
+                .iter()
+                .filter(|unit| {
+                    matches!(unit.order, Order::Attack { .. } | Order::AttackMove { .. })
+                })
+                .count();
+            let idle = attacking_fighters
+                .iter()
+                .filter(|unit| matches!(unit.order, Order::Idle))
+                .count();
+            assert!(
+                committed < 5 && idle >= 16,
+                "the fixture must still reproduce a dominant passive body at tick 27,002: {committed} committed, {idle} idle"
+            );
+            saw_reproduction = true;
+        }
+
+        let commands = bots[0].act(&state);
+        if saw_reproduction && finish_commitment.is_none() {
+            finish_commitment = commands.iter().find_map(|command| match &command.command {
+                Command::AttackMove { units, goal, .. }
+                    if units.len() >= 16 && goal.chebyshev(victim_foundry) <= 6 =>
+                {
+                    Some((state.current_tick(), units.len()))
+                }
+                _ => None,
+            });
+        }
+        state.tick(&commands);
+        if state.result().is_some() {
+            victory_tick = Some(state.current_tick());
+            break;
+        }
+    }
+
+    assert!(
+        saw_reproduction,
+        "the run never reached the historical checkpoint"
+    );
+    assert!(
+        finish_commitment.is_some(),
+        "the dominant idle army never committed into the passive victim's base"
+    );
+    assert_eq!(state.result(), Some(GameResult::Victory { team: 1 }));
+    assert!(
+        victory_tick.is_some_and(|tick| tick < 40_000),
+        "the real Basalt run remained stalled at the integration horizon"
+    );
 }
 
 #[test]

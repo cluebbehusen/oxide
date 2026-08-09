@@ -1,0 +1,1 @@
+"""Approved production sprite sources."""

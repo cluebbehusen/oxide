@@ -89,6 +89,100 @@ pub(crate) fn draw_overlay(game: &Game, alpha: f32) {
     draw_text(&info, screen_width() - 420.0 * s, 54.0 * s, 18.0 * s, BONE);
 }
 
+fn mode_ribbon_geometry(
+    viewport: Vec2,
+    scale: f32,
+    label_width: f32,
+    panel_top: f32,
+) -> (Rect, Rect) {
+    let height = crate::layout::MIN_TOUCH_TARGET * scale;
+    let cancel_width = crate::layout::MIN_TOUCH_TARGET * scale;
+    let width = (label_width + 34.0 * scale + cancel_width)
+        .max(210.0 * scale)
+        .min((viewport.x - 24.0 * scale).max(cancel_width));
+    let x = (viewport.x - width) * 0.5;
+    let preferred_y = if panel_top.is_finite() {
+        panel_top - height - 8.0 * scale
+    } else {
+        viewport.y - height - 12.0 * scale
+    };
+    let min_y = crate::layout::TOP_BAR_H * scale + 8.0 * scale;
+    let max_y = (viewport.y - height - 8.0 * scale).max(min_y);
+    let ribbon = Rect::new(x, preferred_y.clamp(min_y, max_y), width, height);
+    let cancel = Rect::new(
+        ribbon.x + ribbon.w - cancel_width,
+        ribbon.y,
+        cancel_width,
+        height,
+    );
+    (ribbon, cancel)
+}
+
+fn draw_mode_ribbon(input: &InputState, panel_top: f32) -> (Rect, Rect) {
+    let Some(mode) = input.armed_mode() else {
+        let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
+        return (zero, zero);
+    };
+    let s = ui_scale();
+    let label = format!("MODE  |  {}", mode.label());
+    let size = 15.0 * s;
+    let width = measure_text(&label, None, size as u16, 1.0).width;
+    let (ribbon, cancel) =
+        mode_ribbon_geometry(vec2(screen_width(), screen_height()), s, width, panel_top);
+    draw_rectangle(
+        ribbon.x,
+        ribbon.y,
+        ribbon.w,
+        ribbon.h,
+        Color::from_rgba(20, 20, 24, 248),
+    );
+    draw_rectangle_lines(ribbon.x, ribbon.y, ribbon.w, ribbon.h, 1.5 * s, SCRAP_COLOR);
+    draw_rectangle(ribbon.x, ribbon.y, 4.0 * s, ribbon.h, SCRAP_COLOR);
+    draw_text(
+        &label,
+        ribbon.x + 14.0 * s,
+        ribbon.y + ribbon.h * 0.62,
+        size,
+        TEXT_PRIMARY,
+    );
+    draw_rectangle(
+        cancel.x,
+        cancel.y,
+        cancel.w,
+        cancel.h,
+        Color::new(0.25, 0.10, 0.11, 1.0),
+    );
+    draw_rectangle_lines(cancel.x, cancel.y, cancel.w, cancel.h, 1.5 * s, DANGER);
+    let cancel_label = "CANCEL";
+    let cancel_size = 9.0 * s;
+    let dims = measure_text(cancel_label, None, cancel_size as u16, 1.0);
+    draw_text(
+        cancel_label,
+        cancel.x + (cancel.w - dims.width) * 0.5,
+        cancel.y + cancel.h * 0.59,
+        cancel_size,
+        TEXT_PRIMARY,
+    );
+    (ribbon, cancel)
+}
+
+fn toast_origin(viewport: Vec2, scale: f32, panel_top: f32, orders: Rect, index: usize) -> Vec2 {
+    let x = if orders.w > 0.0 {
+        orders.x + orders.w + 12.0 * scale
+    } else {
+        12.0 * scale
+    };
+    let newest = if panel_top.is_finite() {
+        panel_top - 12.0 * scale
+    } else {
+        viewport.y - 24.0 * scale
+    };
+    vec2(
+        x,
+        (newest - 24.0 * index as f32 * scale).max((crate::layout::TOP_BAR_H + 18.0) * scale),
+    )
+}
+
 pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
     let s = ui_scale();
     // A spectator commands nothing: no bank, no unit count, no idle
@@ -173,7 +267,8 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
         };
         let segments = [
             "LMB select".to_string(),
-            "RMB move/engage".to_string(),
+            "RMB advance".to_string(),
+            format!("{} attack-move", label(Action::AttackMove)),
             "Shift queues".to_string(),
             "1-9 train".to_string(),
             format!("{} build", label(Action::ToggleBuildPalette)),
@@ -187,7 +282,7 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
             let candidate = if hint.is_empty() {
                 seg
             } else {
-                format!("{hint} · {seg}")
+                format!("{hint} | {seg}")
             };
             if measure_text(&candidate, None, (16.0 * s) as u16, 1.0).width > max_w {
                 break;
@@ -209,6 +304,8 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
     *game.panel_model.borrow_mut() = crate::panel::build(game, &input.bindings);
     let panel = game.panel_model.borrow();
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
+    let mut roster_slots = [(zero, crate::panel::CardAction::None); 8];
+    let mut roster_count = 0;
     let mut cards = [(zero, crate::panel::CardAction::None); 16];
     let mut card_count = 0;
     let mut queue_slots = [(zero, crate::panel::CardAction::None); 8];
@@ -216,8 +313,12 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
     let mut panel_top = f32::INFINITY;
     let mut panel_right = 0.0;
     let mut orders_dock = Rect::new(0.0, 0.0, 0.0, 0.0);
+    let mut minimap = minimap_rect(game);
     if let Some(panel) = panel.as_ref() {
-        let (c, cc, q, qc, top, right, dock) = draw_panel(game, sprites, input, panel);
+        let (r, rc, c, cc, q, qc, top, right, dock, hides_minimap) =
+            draw_panel(game, sprites, input, panel);
+        roster_slots = r;
+        roster_count = rc;
         cards = c;
         card_count = cc;
         queue_slots = q;
@@ -225,7 +326,11 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
         panel_top = top;
         panel_right = right;
         orders_dock = dock;
+        if hides_minimap {
+            minimap = zero;
+        }
     }
+    let (mode_ribbon, mode_cancel) = draw_mode_ribbon(input, panel_top);
     // Publish the frame's chrome geometry — the model hit-testing reads.
     game.layout.set(crate::layout::LayoutModel::compute(
         vec2(screen_width(), screen_height()),
@@ -233,8 +338,12 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
         panel_top,
         panel_right,
         orders_dock,
-        minimap_rect(game),
+        minimap,
         idle_badge,
+        mode_ribbon,
+        mode_cancel,
+        roster_slots,
+        roster_count,
         cards,
         card_count,
         queue_slots,
@@ -244,9 +353,21 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
     // Toasts: rejected orders and stalled units, newest at the bottom.
     for (i, toast) in game.toasts.iter().rev().take(3).enumerate() {
         let fade = (1.0 - (toast.age - 1.5).max(0.0)).clamp(0.0, 1.0);
-        let y = screen_height() - (60.0 + 24.0 * i as f32) * s;
+        let origin = toast_origin(
+            vec2(screen_width(), screen_height()),
+            s,
+            panel_top,
+            orders_dock,
+            i,
+        );
+        let mut size = 20.0 * s;
+        let available = (screen_width() - origin.x - 12.0 * s).max(1.0);
+        while measure_text(&toast.text, None, size as u16, 1.0).width > available && size > 12.0 * s
+        {
+            size -= 1.0 * s;
+        }
         let color = Color::new(0.92, 0.5, 0.45, fade);
-        draw_text(&toast.text, 12.0 * s, y, 20.0 * s, color);
+        draw_text(&toast.text, origin.x, origin.y, size, color);
     }
 
     // Spectator strip: a foundry-less or resigned seat on a living team
@@ -281,162 +402,66 @@ pub(crate) fn draw_hud(game: &Game, sprites: &Sprites, input: &InputState) {
     }
 }
 
-/// The endgame verdict, drawn over every other layer — at 640x400 the
-/// old in-HUD version collided with the minimap and pushed its graph
-/// off screen. Geometry clamps to the viewport. The same overlay
-/// serves a team game's concede moment: the match is undecided, but
-/// the conceded human gets its numbers-so-far and the Esc exit while
-/// the ally plays on.
+/// A team-game concession can leave the match undecided while the ally
+/// keeps fighting. This compact exit offer is the only result-like layer
+/// gameplay still draws; a decided match moves to the dedicated Results
+/// screen with touchable next steps.
 pub(crate) fn draw_result_overlay(game: &Game) {
+    if !game.conceded_banner || game.state.result().is_some() {
+        return;
+    }
     let s = ui_scale();
-    let overlay = if let Some(result) = game.state.result() {
-        // The human's verdict first — the game knows whose screen this
-        // is; "FERROUS WINS" made every ending read like someone else's.
-        let winners = game.state.winners();
-        let (text, color) = match result {
-            GameResult::Victory { .. } if winners.contains(&game.human) => ("VICTORY", SCRAP_COLOR),
-            // A conceded defeat says so — the player chose this end.
-            GameResult::Victory { .. } if game.state.player(game.human).resigned => {
-                ("SURRENDERED", DANGER)
-            }
-            GameResult::Victory { .. } => ("DEFEAT", DANGER),
-            GameResult::Draw => ("MUTUAL DESTRUCTION", TEXT_BODY),
-        };
-        let sub = match result {
-            GameResult::Victory { .. } => {
-                let names: Vec<String> = winners
-                    .into_iter()
-                    .map(|p| game.state.player(p).name.to_uppercase())
-                    .collect();
-                format!("{} take the field", names.join(" & "))
-            }
-            GameResult::Draw => "no foundry survived".to_string(),
-        };
-        Some((text, color, sub, game.end_stats.as_ref()))
-    } else if game.conceded_banner {
-        Some((
-            "SURRENDERED",
-            DANGER,
-            "your team fights on".to_string(),
-            game.concede_stats.as_ref(),
-        ))
-    } else {
-        None
-    };
-    if let Some((text, color, sub, stats)) = overlay {
-        let size = 56.0 * s;
-        let dims = measure_text(text, None, size as u16, 1.0);
-        let x = (screen_width() - dims.width) * 0.5;
-        // The whole column (banner + stats + curves + caption) must fit
-        // the viewport: center it, then clamp against both edges.
-        let seats = game.state.players().len() as f32;
-        let column_h = 124.0 * s + seats * 22.0 * s + 96.0 * s + 60.0 * s;
-        let y = (screen_height() * 0.4)
-            .min(screen_height() - column_h + 48.0 * s)
-            .max(56.0 * s);
-        draw_rectangle(
-            x - 24.0 * s,
-            y - 48.0 * s,
-            dims.width + 48.0 * s,
-            124.0 * s,
-            PANEL,
-        );
-        draw_text(text, x, y, size, color);
-        let sub_dims = measure_text(&sub, None, (20.0 * s) as u16, 1.0);
-        draw_text(
-            &sub,
-            (screen_width() - sub_dims.width) * 0.5,
-            y + 26.0 * s,
-            20.0 * s,
-            TEXT_BODY,
-        );
-        // The match in numbers: one line per seat from the recomputed
-        // record — losses and the peak army it ever fielded — then the
-        // army curves themselves, seat-colored, so the shape of the
-        // game (the swing, the collapse, the long grind) reads at a
-        // glance.
-        if let Some(stats) = stats {
-            let curves_y = y + (92.0 + 22.0 * stats.players.len() as f32) * s;
-            let (gw, gh) = (
-                (360.0 * s).min(screen_width() - 48.0 * s),
-                (96.0 * s).min(screen_height() * 0.2),
-            );
-            let gx = (screen_width() - gw) * 0.5;
-            draw_rectangle(
-                gx - 8.0 * s,
-                curves_y - 8.0 * s,
-                gw + 16.0 * s,
-                gh + 16.0 * s,
-                PANEL,
-            );
-            let top = stats
-                .players
-                .iter()
-                .flat_map(|p| p.army_value.iter().copied())
-                .max()
-                .unwrap_or(1)
-                .max(1) as f32;
-            for (i, seat) in stats.players.iter().enumerate() {
-                let faction = game
-                    .state
-                    .players()
-                    .get(i)
-                    .map(|p| p.faction)
-                    .unwrap_or(oxide_sim::Faction::Ferrous);
-                let color = mini_faction_color(faction);
-                let n = seat.army_value.len().max(2);
-                let mut prev: Option<macroquad::prelude::Vec2> = None;
-                for (k, &v) in seat.army_value.iter().enumerate() {
-                    let px = gx + gw * k as f32 / (n - 1) as f32;
-                    let py = curves_y + gh - gh * (v as f32 / top);
-                    let point = vec2(px, py);
-                    if let Some(a) = prev {
-                        draw_line(a.x, a.y, point.x, point.y, 1.5 * s, color);
-                    }
-                    prev = Some(point);
-                }
-            }
-            let cap = "army value over the match";
-            let cap_dims = measure_text(cap, None, (13.0 * s) as u16, 1.0);
-            draw_text(
-                cap,
-                (screen_width() - cap_dims.width) * 0.5,
-                curves_y + gh + 14.0 * s,
-                13.0 * s,
-                TEXT_SECONDARY,
-            );
-            for (i, seat) in stats.players.iter().enumerate() {
-                let name = game
-                    .state
-                    .players()
-                    .get(i)
-                    .map(|p| p.name.clone())
-                    .unwrap_or_else(|| format!("seat {i}"));
-                let peak = seat.army_value.iter().copied().max().unwrap_or(0);
-                let line = format!(
-                    "{name}: lost {} units, {} buildings · peak army {peak} · scrap {}",
-                    seat.units_lost,
-                    seat.buildings_lost,
-                    seat.scrap.last().copied().unwrap_or(0),
-                );
-                let dims = measure_text(&line, None, (16.0 * s) as u16, 1.0);
-                draw_text(
-                    &line,
-                    (screen_width() - dims.width) * 0.5,
-                    y + (86.0 + 22.0 * i as f32) * s,
-                    16.0 * s,
-                    TEXT_BODY,
-                );
-            }
+    let text = "SURRENDERED";
+    let size = 48.0 * s;
+    let dims = measure_text(text, None, size as u16, 1.0);
+    let x = (screen_width() - dims.width) * 0.5;
+    let y = screen_height() * 0.38;
+    draw_rectangle(
+        x - 24.0 * s,
+        y - 48.0 * s,
+        dims.width + 48.0 * s,
+        112.0 * s,
+        PANEL,
+    );
+    draw_text(text, x, y, size, DANGER);
+    let sub = "your team fights on | Esc for options";
+    let sub_dims = measure_text(sub, None, (18.0 * s) as u16, 1.0);
+    draw_text(
+        sub,
+        (screen_width() - sub_dims.width) * 0.5,
+        y + 28.0 * s,
+        18.0 * s,
+        TEXT_BODY,
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn armed_mode_ribbon_and_cancel_fit_the_small_window_contract() {
+        for panel_top in [f32::INFINITY, 150.0] {
+            let viewport = vec2(640.0, 400.0);
+            let (ribbon, cancel) = mode_ribbon_geometry(viewport, 1.0, 180.0, panel_top);
+            assert!(ribbon.x >= 0.0 && ribbon.x + ribbon.w <= viewport.x);
+            assert!(ribbon.y >= crate::layout::TOP_BAR_H && ribbon.y + ribbon.h <= viewport.y);
+            assert_eq!(cancel.h, crate::layout::MIN_TOUCH_TARGET);
+            assert_eq!(cancel.w, crate::layout::MIN_TOUCH_TARGET);
+            assert!(ribbon.contains(cancel.center()));
         }
-        let hint = "Press Esc to continue";
-        let hint_dims = measure_text(hint, None, (20.0 * s) as u16, 1.0);
-        draw_text(
-            hint,
-            (screen_width() - hint_dims.width) * 0.5,
-            y + 52.0 * s,
-            20.0 * s,
-            TEXT_SECONDARY,
-        );
+    }
+
+    #[test]
+    fn toasts_clear_the_panel_and_its_orders_dock() {
+        let viewport = vec2(640.0, 400.0);
+        let panel_top = 128.0;
+        let orders = Rect::new(0.0, 52.0, 400.0, 76.0);
+        for index in 0..3 {
+            let origin = toast_origin(viewport, 1.0, panel_top, orders, index);
+            assert!(origin.x > orders.x + orders.w);
+            assert!(origin.y < panel_top);
+            assert!(origin.y >= crate::layout::TOP_BAR_H + 18.0);
+        }
     }
 }

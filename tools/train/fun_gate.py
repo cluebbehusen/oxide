@@ -4,11 +4,11 @@ way an inactive capped match fails the liveness rule.
 
     uv run fun_gate.py --weights runs/candidate.json
 
-Promotion runs the shipped personality deal plus fixed industry (300)
-and combined-arms (550) profiles on the same map/seed slate. The dealt
-profile receives the complete gate; fixed profiles receive composition
-and tech checks only, because specialization is their purpose and a long
-active match is not a defect.
+Promotion runs the shipped personality deal plus the named
+Industrial Attrition and Air Combined profiles on the same map/seed slate.
+The dealt profile receives the complete gate; named specialist profiles
+receive composition and tech checks only, because specialization is their
+purpose and a long active match is not a defect.
 
 The composition contract separates broad quality from catastrophic tails:
 
@@ -35,6 +35,11 @@ The composition contract separates broad quality from catastrophic tails:
     those completed structures across competitive lifetimes. Repair
     Bays remain diagnostic because field repair is the dedicated
     `repair-probe` gate and the building is intentionally niche.
+  Industrial Attrition must independently reach a Reclaimer in at least
+    25% of competitive lifetimes, and Air Combined must carry at least
+    13% of its army value in faction-appropriate air units. Named profiles
+    therefore have to express their advertised identity, not merely clear
+    the broad anti-spam floor.
 
 Composition judgment reads the competitive-lifetime combat fields from
 `driver balance-probe --out`. Every seat contributes while it is
@@ -61,6 +66,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 
 # The Fabricator's produce list (sim/src/stats.rs) — the roster a match
 # only reaches by building the tech gate first.
@@ -76,17 +82,36 @@ TECH_KINDS = {
     "wisp",
 }
 
-# The exact `--out` payload shape this gate reads. Schema 6 adds
-# competitive-lifetime combat fields alongside the preserved all-unit,
-# all-time diagnostics; accepting another schema risks silently judging
-# a different contract.
-EXPECTED_SCHEMA = 6
+AIR_KINDS = {
+    "buzzard",
+    "darter",
+    "talon",
+    "wisp",
+}
+
+# The exact `--out` payload shape this gate reads. Schema 7 identifies
+# explicitly selected named styles and variants alongside the legacy
+# aggression component; accepting another schema risks silently judging a
+# raw zero-facet profile while labeling it as a shipped personality.
+EXPECTED_SCHEMA = 7
 DEFAULT_STALE_CAP_TICKS = 2_000
 MIN_PROMOTION_SEEDS = 3
-PROFILE_AGGRESSIONS = (
-    ("dealt", None),
-    ("industry-300", 300),
-    ("combined-550", 550),
+
+
+@dataclass(frozen=True)
+class ProbeProfile:
+    """One exact shipped-profile path exercised by the promotion gate."""
+
+    label: str
+    style: str | None
+    variant: int | None
+    full_gate: bool
+
+
+PROFILES = (
+    ProbeProfile("dealt", None, None, True),
+    ProbeProfile("industrial-attrition", "turtle", 1, False),
+    ProbeProfile("air-combined", "balanced", 1, False),
 )
 
 
@@ -144,7 +169,7 @@ def combat_tail_rates(
     """Measures catastrophic competitive lifetimes from raw seat arrays.
 
     Aggregate quantiles hide the exact number of bad seats and small
-    cohorts make nearest-rank p10/p90 jump sharply. The raw schema-6 arrays
+    cohorts make nearest-rank p10/p90 jump sharply. The raw schema-7 arrays
     let the gate state its real contract as rates. Seats with no competitive
     combat mix are skipped, exactly as ``Aggregate.combat_seats`` skips them.
     """
@@ -323,6 +348,33 @@ def judge_structures(
     return failures
 
 
+def judge_profile_identity(
+    profile: ProbeProfile,
+    cohort: dict,
+    min_industrial_reclaimer_reach: float,
+    min_air_wing_share: float,
+) -> list[str]:
+    """Returns failures when a named specialist does not express its role."""
+    if profile.label == "industrial-attrition":
+        reach = float(cohort["competitive_seats_with_building"].get("reclaimer", 0.0))
+        if reach < min_industrial_reclaimer_reach:
+            return [
+                f"Reclaimer reach {reach * 100:.1f}% "
+                f"< {min_industrial_reclaimer_reach * 100:.0f}% — the industrial "
+                "profile did not establish its economy"
+            ]
+    elif profile.label == "air-combined":
+        shares = cohort["mean_combat_share"]
+        air_share = sum(float(shares.get(kind, 0.0)) for kind in AIR_KINDS)
+        if air_share < min_air_wing_share:
+            return [
+                f"air-wing value share {air_share * 100:.1f}% "
+                f"< {min_air_wing_share * 100:.0f}% — the air profile did not "
+                "field a meaningful air wing"
+            ]
+    return []
+
+
 def regression_failures(
     candidate: dict,
     candidate_tails: dict[str, float | int],
@@ -383,9 +435,9 @@ def run_probe(
     level: str,
     seeds: int,
     ticks: int,
-    aggression: int | None,
+    profile: ProbeProfile,
 ) -> dict:
-    """Runs one profile and returns its schema-6 JSON payload."""
+    """Runs one profile and returns its schema-7 JSON payload."""
     with tempfile.TemporaryDirectory(prefix="oxide-fun-gate-") as directory:
         out = pathlib.Path(directory) / "probe.json"
         command = [
@@ -404,8 +456,9 @@ def run_probe(
             "--out",
             str(out),
         ]
-        if aggression is not None:
-            command.extend(["--aggression", str(aggression)])
+        if profile.style is not None:
+            command.extend(["--style", profile.style])
+            command.extend(["--variant", str(profile.variant)])
         subprocess.run(command, check=True, capture_output=True)
         return json.loads(out.read_text())
 
@@ -413,7 +466,7 @@ def run_probe(
 def validate_profile_payload(
     payload: dict,
     expected_seeds: int,
-    expected_aggression: int | None,
+    profile: ProbeProfile,
     label: str,
 ) -> None:
     """Rejects a payload whose shape or sample does not match this run."""
@@ -428,12 +481,19 @@ def validate_profile_payload(
             f"{label} probe reported {payload.get('seeds')} seeds, expected "
             f"{expected_seeds}"
         )
-    actual_aggression = payload.get("dials", {}).get("aggression")
-    if actual_aggression != expected_aggression:
-        raise RuntimeError(
-            f"{label} probe reported aggression {actual_aggression}, expected "
-            f"{expected_aggression}"
-        )
+    dials = payload.get("dials", {})
+    for dial, expected in (
+        ("style", profile.style),
+        ("variant", profile.variant),
+        # Named selectors must not silently fall back to the raw,
+        # zero-facet compatibility path.
+        ("aggression", None),
+    ):
+        actual = dials.get(dial)
+        if actual != expected:
+            raise RuntimeError(
+                f"{label} probe reported {dial} {actual}, expected {expected}"
+            )
     overall = payload["overall"]
     if overall["combat_seats"] == 0:
         raise RuntimeError(
@@ -462,7 +522,7 @@ def evaluate_profile(
     args: argparse.Namespace,
     full_gate: bool,
 ) -> tuple[dict, dict[str, float | int], dict[str, int] | None, list[str]]:
-    """Evaluates one profile; fixed profiles deliberately skip game-length
+    """Evaluates one profile; named specialists deliberately skip game-length
     and structure judgments."""
     overall = payload["overall"]
     tails = combat_tail_rates(
@@ -557,7 +617,7 @@ def print_profile(
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Gate a neural artifact on dealt and fixed-profile composition.",
+        description="Gate a neural artifact on dealt and named-profile composition.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     ap.add_argument("--weights", required=True, help="candidate Q12 weights JSON")
@@ -711,6 +771,18 @@ def main() -> int:
         help="minimum dealt-profile competitive-seat Reclaimer reach",
     )
     ap.add_argument(
+        "--min-industrial-reclaimer-reach",
+        type=float,
+        default=0.25,
+        help="minimum Industrial Attrition competitive-seat Reclaimer reach",
+    )
+    ap.add_argument(
+        "--min-air-wing-share",
+        type=float,
+        default=0.13,
+        help="minimum Air Combined army-value share carried by air units",
+    )
+    ap.add_argument(
         "--max-baseline-entropy-drop",
         type=float,
         default=0.10,
@@ -755,7 +827,7 @@ def main() -> int:
     candidate_profiles = {}
     all_failures = []
     try:
-        for label, aggression in PROFILE_AGGRESSIONS:
+        for profile in PROFILES:
             payload = run_probe(
                 args.weights,
                 args.driver,
@@ -763,18 +835,26 @@ def main() -> int:
                 args.level,
                 args.seeds,
                 args.ticks,
-                aggression,
+                profile,
             )
-            validate_profile_payload(payload, args.seeds, aggression, label)
-            candidate_profiles[label] = payload
+            validate_profile_payload(payload, args.seeds, profile, profile.label)
+            candidate_profiles[profile.label] = payload
             overall, tails, health, failures = evaluate_profile(
-                payload, args, full_gate=aggression is None
+                payload, args, full_gate=profile.full_gate
             )
-            print_profile(label, overall, tails, health, args)
-            all_failures.extend(f"{label}: {failure}" for failure in failures)
+            failures.extend(
+                judge_profile_identity(
+                    profile,
+                    overall,
+                    args.min_industrial_reclaimer_reach,
+                    args.min_air_wing_share,
+                )
+            )
+            print_profile(profile.label, overall, tails, health, args)
+            all_failures.extend(f"{profile.label}: {failure}" for failure in failures)
 
         if args.baseline_weights:
-            for label, aggression in PROFILE_AGGRESSIONS:
+            for profile in PROFILES:
                 baseline = run_probe(
                     args.baseline_weights,
                     args.driver,
@@ -782,16 +862,16 @@ def main() -> int:
                     args.level,
                     args.seeds,
                     args.ticks,
-                    aggression,
+                    profile,
                 )
                 validate_profile_payload(
                     baseline,
                     args.seeds,
-                    aggression,
-                    f"baseline {label}",
+                    profile,
+                    f"baseline {profile.label}",
                 )
-                candidate = candidate_profiles[label]
-                validate_same_slate(candidate, baseline, label)
+                candidate = candidate_profiles[profile.label]
+                validate_same_slate(candidate, baseline, profile.label)
                 candidate_overall, candidate_tails, _, _ = evaluate_profile(
                     candidate, args, full_gate=False
                 )
@@ -809,7 +889,7 @@ def main() -> int:
                     args.max_baseline_leading_share_increase,
                 )
                 all_failures.extend(
-                    f"{label} vs baseline: {failure}" for failure in regressions
+                    f"{profile.label} vs baseline: {failure}" for failure in regressions
                 )
     except (KeyError, TypeError, ValueError, RuntimeError) as error:
         print(f"FUN GATE FAIL: invalid probe evidence: {error}")

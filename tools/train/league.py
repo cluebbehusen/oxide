@@ -80,11 +80,14 @@ from oxide_gym import (
     ACTION_HEADS,
     ACTIONS,
     CADENCE,
+    CONDITION_NAMES,
     FEATURE_NAMES,
     GYM_VERSION,
     NET_FEATURES,
     ActionPlan,
+    CanonicalProfile,
     Frame,
+    ProfileCatalog,
     SeatView,
     Worker,
     condition_from_profile,
@@ -117,6 +120,9 @@ LEAGUE_TRAINER_PATH = TRAIN_DIR / "league.py"
 MODEL_CODE_PATH = TRAIN_DIR / "models.py"
 PPO_CODE_PATH = TRAIN_DIR / "ppo.py"
 GYM_CLIENT_PATH = TRAIN_DIR / "oxide_gym.py"
+PROFILE_CONDITION_START = CONDITION_NAMES.index("profile_economy")
+PROFILE_CONDITION_COUNT = len(CONDITION_NAMES) - PROFILE_CONDITION_START
+PROFILE_CONDITION_NAMES = CONDITION_NAMES[PROFILE_CONDITION_START:]
 
 
 @dataclass(frozen=True)
@@ -135,59 +141,81 @@ class EpisodeDials:
     policy_skill: int
     aggression: int
     execution: ExecutionProfile
+    style: str | None = None
+    variant: int | None = None
+    role: str | None = None
 
-    def condition(self, faction: int) -> tuple[int, ...]:
+    def condition(
+        self,
+        faction: int,
+        catalog: ProfileCatalog | None = None,
+    ) -> tuple[int, ...]:
         """Builds the policy condition without coupling it to execution."""
+        if faction not in (0, 1000):
+            raise ValueError(f"faction must be 0 or 1000, got {faction}")
+        if self.style is not None:
+            if catalog is None or self.variant is None or self.role is None:
+                raise RuntimeError(
+                    "named episode dials require the Rust profile catalog"
+                )
+            faction_name = "cupric" if faction == 1000 else "ferrous"
+            return catalog.condition(
+                self.style,
+                self.variant,
+                self.role,
+                faction_name,
+            )
         return condition_from_profile(self.policy_skill, self.aggression, faction)
 
 
 SHIPPED_EXECUTION_PROFILES = (
     ExecutionProfile("easy", 350, 56),
     ExecutionProfile("medium", 190, 36),
-    ExecutionProfile("hard", 5, 28),
-    ExecutionProfile("expert", 0, 28),
+    ExecutionProfile("hard", 5, 34),
+    ExecutionProfile("expert", 0, 37),
 )
 SHIPPED_AGGRESSION_DISTRIBUTION: AggressionDistribution = (
     (250, 399, 0.6),
     (500, 600, 0.4),
 )
-_SHIPPED_POLICY_BANDS = (
-    (250, 399, 3),
-    (500, 600, 2),
-)
 
 
 class ProfileCurriculum:
-    """Seeded episode profiles with exact shipped-factorial coverage.
+    """Seeded policy profiles crossed independently with execution.
 
-    The default twenty-cell block is the product of all four named
-    execution profiles and the shipped 60/40 policy-style mix. Custom
-    aggression distributions retain their requested draws while a
-    separate four-cell cycle keeps execution coverage independent.
+    With a v8 Rust catalog, the default block is every authored named
+    variant crossed with all four execution profiles. Custom aggression
+    distributions remain raw, zero-facet experiments with their own
+    four-cell execution cycle.
     """
 
     def __init__(
         self,
         rng: np.random.Generator,
         aggression_distribution: AggressionDistribution,
+        profile_catalog: ProfileCatalog | None = None,
+        *,
+        use_named_profiles: bool | None = None,
     ) -> None:
         self.rng = rng
         self.aggression_distribution = aggression_distribution
-        self._default = aggression_distribution == SHIPPED_AGGRESSION_DISTRIBUTION
-        self._cells: list[tuple[int, int, int, ExecutionProfile]] = []
+        self.profile_catalog = profile_catalog
+        self._named = (
+            aggression_distribution == SHIPPED_AGGRESSION_DISTRIBUTION
+            if use_named_profiles is None
+            else use_named_profiles
+        )
+        self._cells: list[tuple[CanonicalProfile, ExecutionProfile]] = []
         self._execution: list[ExecutionProfile] = []
 
     def _refill_default(self) -> None:
+        catalog = self.profile_catalog
+        if catalog is None:
+            raise RuntimeError("the named curriculum requires a Rust profile catalog")
         cells = [
-            (
-                lower,
-                upper,
-                policy_skill_for_aggression(lower),
-                execution,
-            )
+            (profile, execution)
             for execution in SHIPPED_EXECUTION_PROFILES
-            for lower, upper, repeats in _SHIPPED_POLICY_BANDS
-            for _ in range(repeats)
+            for profile in catalog.profiles
         ]
         order = self.rng.permutation(len(cells))
         self._cells = [cells[int(index)] for index in reversed(order)]
@@ -200,19 +228,46 @@ class ProfileCurriculum:
             ]
         return self._execution.pop()
 
-    def sample(self, factions: dict[int, int]) -> dict[int, EpisodeDials]:
+    def sample(
+        self,
+        factions: dict[int, int],
+        *,
+        specialize_roles: bool = False,
+    ) -> dict[int, EpisodeDials]:
         """Samples one job-level execution profile and per-seat policy dials."""
-        if self._default:
+        if self._named:
             if not self._cells:
                 self._refill_default()
-            lower, upper, policy_skill, execution = self._cells.pop()
+            catalog = self.profile_catalog
+            if catalog is None:
+                raise RuntimeError(
+                    "the named curriculum requires a Rust profile catalog"
+                )
+            profile, execution = self._cells.pop()
+            roles = [catalog.default_role] * len(factions)
+            if specialize_roles:
+                specialist_roles = [
+                    role for role in catalog.team_roles if role != catalog.default_role
+                ]
+                if not specialist_roles:
+                    raise RuntimeError(
+                        "the Rust profile catalog has no specialist team roles"
+                    )
+                order = self.rng.permutation(len(specialist_roles))
+                roles = [
+                    specialist_roles[int(order[index % len(order)])]
+                    for index in range(len(factions))
+                ]
             return {
                 seat: EpisodeDials(
-                    policy_skill,
-                    int(self.rng.integers(lower, upper + 1)),
+                    policy_skill_for_aggression(profile.aggression),
+                    profile.aggression,
                     execution,
+                    profile.style,
+                    profile.variant,
+                    roles[index],
                 )
-                for seat in factions
+                for index, seat in enumerate(factions)
             }
 
         execution = self._next_execution()
@@ -286,6 +341,7 @@ DEFAULT_VALUE_WARMUP = 15
 
 
 F = {name: i for i, name in enumerate(FEATURE_NAMES)}
+C = {name: i for i, name in enumerate(CONDITION_NAMES)}
 
 
 def potential(raw: list[int]) -> float:
@@ -305,11 +361,90 @@ def potential(raw: list[int]) -> float:
     return owned / 500.0
 
 
-def style_alignment(raw: list[int], aggression: int) -> float:
-    """Signed posture agreement for one observation, in [-1, 1]."""
+def aggression_alignment(raw: list[int], aggression: int) -> float:
+    """Signed family-level posture agreement in [-1, 1]."""
     lean = (aggression - 500) / 500.0
     out_fighting = 1.0 if raw[F["army_state"]] in (2, 3) else -1.0
     return max(-1.0, min(1.0, lean * out_fighting))
+
+
+def _ratio_posture(part: int, total: int) -> float:
+    """Maps a 0..50% composition share onto -1..1."""
+    if total <= 0:
+        return -1.0
+    return max(-1.0, min(1.0, 4.0 * part / total - 1.0))
+
+
+def style_alignment(
+    raw: list[int],
+    condition: int | tuple[int, ...] | list[int],
+) -> float:
+    """Signed own-state agreement with a raw or named profile.
+
+    Raw-aggression experiments retain the old commitment-only signal.
+    Named profiles align the five Rust-authored facets with productive
+    economy, air and siege composition, support infrastructure, and
+    army commitment. The terminal mean stays capped by ``style_bonus``;
+    these own-state signals teach the new inputs without paying an action
+    quota or letting a long turtle game accumulate more reward.
+    """
+    if isinstance(condition, int):
+        return aggression_alignment(raw, condition)
+    if len(condition) != len(CONDITION_NAMES):
+        raise ValueError(
+            f"profile condition has {len(condition)} values, "
+            f"expected {len(CONDITION_NAMES)}"
+        )
+    facets = condition[C["profile_economy"] :]
+    if not any(facets):
+        return aggression_alignment(raw, condition[C["aggression"]])
+
+    harvesters = raw[F["my_harvesters"]]
+    reclaimers = raw[F["my_reclaimers_built"]]
+    economy = max(
+        -1.0, min(1.0, 2.0 * min((harvesters + 2 * reclaimers) / 8, 1.0) - 1.0)
+    )
+
+    combat = sum(
+        raw[F[name]]
+        for name in (
+            "my_sentinels",
+            "my_scuttlers",
+            "my_lancers",
+            "my_bombards",
+            "my_antiair",
+            "my_airground",
+            "my_airair",
+        )
+    )
+    air = _ratio_posture(raw[F["my_airground"]] + raw[F["my_airair"]], combat)
+    siege = _ratio_posture(raw[F["my_lancers"]] + raw[F["my_bombards"]], combat)
+    support_count = sum(
+        raw[F[name]]
+        for name in (
+            "my_turrets_built",
+            "my_flak_built",
+            "my_arrays_built",
+            "my_bastions_built",
+            "my_repair_bays_built",
+        )
+    )
+    support = 2.0 * min(support_count / 4, 1.0) - 1.0
+    commitment = 1.0 if raw[F["army_state"]] in (2, 3) else -1.0
+
+    postures = (economy, air, siege, support, commitment)
+    leans = tuple((value - 500) / 500.0 for value in facets)
+    weight = sum(abs(lean) for lean in leans)
+    if weight == 0.0:
+        return 0.0
+    return max(
+        -1.0,
+        min(
+            1.0,
+            sum(lean * posture for lean, posture in zip(leans, postures, strict=True))
+            / weight,
+        ),
+    )
 
 
 def style_bonus(total: float, steps: int, coefficient: float) -> float:
@@ -338,6 +473,7 @@ SEEDED_STRUCTURES = (
     "array",
 )
 MAX_STRUCTURE_KIND_BONUS = 0.02
+MAX_RECLAIMER_BONUS = 0.02
 
 # The agent's own army-count features with rough unit costs (varied
 # roles use the midpoint of their two faction kinds) — the same
@@ -386,6 +522,19 @@ def tech_bonus_at(base: float, rel_update: int, span: int) -> float:
     if base == 0.0 or span <= 0:
         return 0.0
     return base * max(0.0, 1.0 - rel_update / span)
+
+
+def reward_anneal_index(update: int, start_update: int, value_warmup: int) -> int:
+    """Returns the zero-based actor-update clock for reward seeding.
+
+    Critic-only warm-up learns the shaped return but cannot teach the actor,
+    so it holds exploration seeds at their initial value. The anneal begins
+    with the first update that is allowed to move the actor.
+    """
+    phase_update = update - start_update
+    if phase_update <= 0:
+        raise ValueError("reward annealing requires an update after phase start")
+    return max(phase_update - value_warmup - 1, 0)
 
 
 def value_warmup_active(update: int, start_update: int, warmup: int) -> bool:
@@ -569,6 +718,40 @@ def bounded_structure_bonus(text: str) -> float:
             f"[0, {MAX_STRUCTURE_KIND_BONUS}], got {text}"
         )
     return value
+
+
+def bounded_reclaimer_bonus(text: str) -> float:
+    """Argparse type for the successful-Reclaimer exploration seed."""
+    value = float(text)
+    if not np.isfinite(value) or not 0.0 <= value <= MAX_RECLAIMER_BONUS:
+        raise argparse.ArgumentTypeError(
+            f"reclaimer bonus must be finite in [0, {MAX_RECLAIMER_BONUS}], got {text}"
+        )
+    return value
+
+
+def add_reclaimer_bonus_argument(parser: argparse.ArgumentParser) -> None:
+    """Adds the completion-backed Reclaimer seed to a training CLI."""
+    parser.add_argument(
+        "--reclaimer-bonus",
+        type=bounded_reclaimer_bonus,
+        default=0.0,
+        help="terminal bonus paid once when the seat completes a Reclaimer "
+        "during the episode (own-state effect telemetry, fog-safe); capped "
+        "at 0.02 and annealed on the --tech-anneal schedule. 0 disables.",
+    )
+
+
+def reward_lineage_hyperparameters(args: argparse.Namespace) -> dict[str, float]:
+    """Returns every optional terminal reward dial consumed by rollout."""
+    return {
+        "mix_bonus": args.mix_bonus,
+        "reclaimer_bonus": args.reclaimer_bonus,
+        "repair_bonus": args.repair_bonus,
+        "salvage_bonus": args.salvage_bonus,
+        "structure_bonus": args.structure_bonus,
+        "tech_bonus": args.tech_bonus,
+    }
 
 
 def parse_opponent_mix(text: str) -> dict[str, float]:
@@ -1131,6 +1314,8 @@ class Job:
         self.profile_curriculum = ProfileCurriculum(
             rng,
             self.aggression_distribution,
+            getattr(worker, "profile_catalog", None),
+            use_named_profiles=aggression_range is None and aggression_mix is None,
         )
         self.tier: str | None = None
         self.past: nn.Module | None = None
@@ -1220,7 +1405,7 @@ class Job:
 
     def note_style(self, seat: int, raw: list[int]) -> None:
         """Adds one posture and combat-composition sample."""
-        self.style_total[seat] += style_alignment(raw, self.conditions[seat][1])
+        self.style_total[seat] += style_alignment(raw, self.conditions[seat])
         self.style_steps[seat] += 1
         for index, (feature, cost) in enumerate(ARMY_FEATURES):
             count = raw[feature]
@@ -1263,16 +1448,27 @@ class Job:
             for seat, code in enumerate(self.faction_code)
         }
         learner_factions = {seat: faction_knobs[seat] for seat in self.learner_seats}
-        self.episode_dials = self.profile_curriculum.sample(learner_factions)
+        self.episode_dials = self.profile_curriculum.sample(
+            learner_factions,
+            specialize_roles=self.kind in ("team", "team2"),
+        )
         self.conditions = {
-            seat: dials.condition(learner_factions[seat])
+            seat: dials.condition(
+                learner_factions[seat],
+                self.profile_curriculum.profile_catalog,
+            )
             for seat, dials in self.episode_dials.items()
         }
         cadence = next(iter(self.episode_dials.values())).execution.cadence
         for dials in self.episode_dials.values():
             if dials.execution.cadence != cadence:
                 raise RuntimeError("one job episode cannot use multiple cadences")
-            TEL[f"profile_{dials.policy_skill}_{dials.execution.name}"] += 1
+            policy = (
+                f"{dials.style}_{dials.variant}_{dials.role}"
+                if dials.style is not None
+                else f"raw_{dials.aggression}"
+            )
+            TEL[f"profile_{policy}_{dials.execution.name}"] += 1
         scenario = None
         if self.kind not in ("ffa", "team", "team2"):
             self.map_family = sample_map_family(self.rng, self.map_mix)
@@ -1362,12 +1558,22 @@ class Job:
                 self.past = None  # empty pool: play the rusher instead
         all_conds = dict(self.conditions)
         if self.opp_seat is not None:
-            # Frozen opponents play straight, under their honest faction.
-            all_conds[self.opp_seat] = condition_from_profile(
-                1000,
-                500,
-                faction_knobs[self.opp_seat],
-            )
+            if self.kind in ("past", "incumbent"):
+                # Frozen learned opponents see the same named policy
+                # profile as the learner, retinted for their own roster.
+                # Otherwise v8 training pits a faceted learner against a
+                # zero-facet version of the same policy.
+                learner_dials = self.episode_dials[self.learner_seats[0]]
+                all_conds[self.opp_seat] = learner_dials.condition(
+                    faction_knobs[self.opp_seat],
+                    self.profile_curriculum.profile_catalog,
+                )
+            else:
+                all_conds[self.opp_seat] = condition_from_profile(
+                    1000,
+                    500,
+                    faction_knobs[self.opp_seat],
+                )
         self.frame = self.worker.reset(
             seed,
             control=(0, 1),
@@ -1570,6 +1776,77 @@ def q12_initialization_provenance(blob: dict | None) -> bool:
     return blob is not None and blob.get("q12_recovered") is True
 
 
+def profile_column_parameters(
+    policy: nn.Module,
+    selected: tuple[str, ...] | None = None,
+) -> list[nn.Parameter]:
+    """Freezes an actor except for profile inputs while retaining its critic.
+
+    A fresh optimizer plus the gradient mask keeps every pre-v8 coefficient
+    byte-identical. This is the narrow continuation for teaching the widened
+    condition without moving the raw-profile ladder underneath it. The value
+    head remains trainable so an exactly recovered Q12 actor can complete its
+    detached-trunk critic warm-up through this same optimizer.
+    """
+    first = next(
+        (module for module in policy.modules() if isinstance(module, nn.Linear)),
+        None,
+    )
+    if first is None or first.in_features != NET_FEATURES:
+        raise ValueError("policy lacks the expected first observation layer")
+    if PROFILE_CONDITION_COUNT <= 0 or first.in_features <= PROFILE_CONDITION_COUNT:
+        raise ValueError("invalid profile-conditioning column span")
+    names = PROFILE_CONDITION_NAMES if selected is None else selected
+    if not names:
+        raise ValueError("at least one profile column must be selected")
+    if len(set(names)) != len(names):
+        raise ValueError("profile columns cannot be repeated")
+    unknown = [name for name in names if name not in PROFILE_CONDITION_NAMES]
+    if unknown:
+        raise ValueError(f"unknown profile columns: {', '.join(unknown)}")
+    for parameter in policy.parameters():
+        parameter.requires_grad_(False)
+    weight = first.weight
+    if not isinstance(weight, nn.Parameter):
+        raise TypeError("policy observation weights are not trainable parameters")
+    weight.requires_grad_(True)
+    mask = torch.zeros_like(weight)
+    first_profile_column = first.in_features - PROFILE_CONDITION_COUNT
+    for name in names:
+        offset = PROFILE_CONDITION_NAMES.index(name)
+        mask[:, first_profile_column + offset] = 1
+    weight.register_hook(lambda gradient: gradient * mask)
+    critic = getattr(policy, "v", None)
+    if not isinstance(critic, nn.Linear):
+        raise TypeError("policy lacks the expected value head")
+    critic_parameters = list(critic.parameters())
+    for parameter in critic_parameters:
+        parameter.requires_grad_(True)
+    return [weight, *critic_parameters]
+
+
+def validate_profile_column_mode(
+    enabled: bool,
+    named_profile_curriculum: bool,
+    style_coefficient: float,
+    initialized: bool,
+    selected: list[str] | None = None,
+) -> None:
+    """Rejects a profile-only phase that cannot teach the widened columns."""
+    if selected and not enabled:
+        raise ValueError("--profile-column requires --profile-columns-only")
+    if not enabled:
+        return
+    if not named_profile_curriculum:
+        raise ValueError(
+            "--profile-columns-only requires the Rust named-profile curriculum"
+        )
+    if not style_coefficient:
+        raise ValueError("--profile-columns-only requires --style-coef")
+    if not initialized:
+        raise ValueError("--profile-columns-only requires checkpoint initialization")
+
+
 def rollout(
     policy: nn.Module,
     jobs: list[Job],
@@ -1580,6 +1857,7 @@ def rollout(
     mix_bonus: float = 0.0,
     salvage_bonus: float = 0.0,
     repair_bonus: float = 0.0,
+    reclaimer_bonus: float = 0.0,
     structure_bonus: float = 0.0,
     style_coefficient: float = 0.0,
     collection: str = "windows",
@@ -1764,6 +2042,9 @@ def rollout(
                     if s in j.built_bay:
                         TEL["ep_bay"] += 1
                         mut_bonus += repair_bonus
+                    if "reclaimer" in j.completed_structures[s]:
+                        TEL["ep_build_reclaimer"] += 1
+                        mut_bonus += reclaimer_bonus
                     completed_structures = j.completed_structures[s].intersection(
                         SEEDED_STRUCTURES
                     )
@@ -1894,18 +2175,37 @@ def evaluate(
     opponent: str,
     seeds: Iterable[int] | None = None,
 ) -> float:
-    """Greedy, fixed suite, both seats per seed. `opponent` is a tier
-    name or 'rusher'."""
+    """Greedy fixed suite across canonical profiles and both physical seats.
+
+    ``opponent`` is a tier name or ``rusher``. Each seed uses one
+    Rust-authored named profile, cycling through the worker's catalog in
+    handshake order; both seat assignments therefore test the same
+    strategic policy vector under honest faction retinting.
+    """
     seeds = range(1000, 1010) if seeds is None else seeds
     wins = games = 0
-    jobs = [(seed, seat) for seed in seeds for seat in (0, 1)]
+    profiles = workers[0].profile_catalog.profiles
+    if not profiles:
+        raise RuntimeError("evaluation requires Rust canonical profiles")
+    jobs = [
+        (seed, seat, profiles[seed_index % len(profiles)])
+        for seed_index, seed in enumerate(seeds)
+        for seat in (0, 1)
+    ]
     for start in range(0, len(jobs), len(workers)):
         chunk = jobs[start : start + len(workers)]
         live = []
-        for i, (seed, seat) in enumerate(chunk):
+        for i, (seed, seat, profile) in enumerate(chunk):
             w = workers[i]
-            straight: dict[int, tuple[int, ...]] = {
-                s: condition_from_profile(1000, 500, faction_knob(s)) for s in (0, 1)
+            catalog = w.profile_catalog
+            straight = {
+                s: catalog.condition(
+                    profile.style,
+                    profile.variant,
+                    catalog.default_role,
+                    "cupric" if faction_knob(s) == 1000 else "ferrous",
+                )
+                for s in (0, 1)
             }
             if opponent == "rusher":
                 frame = w.reset(seed, control=(0, 1), conditions=straight)
@@ -2112,9 +2412,23 @@ def main() -> None:
         "--style-coef",
         type=bounded_style_coefficient,
         default=0.0,
-        help="bounded terminal personality bonus in 0..=0.1; the "
-        "episode's mean posture alignment earns at most this amount. "
-        "0 disables (default).",
+        help="bounded terminal personality bonus in 0..=0.1; named profiles "
+        "align own-state economy, air, siege, support, and commitment with "
+        "their Rust facets, while raw profiles retain aggression posture. "
+        "The episode mean earns at most this amount; 0 disables (default).",
+    )
+    ap.add_argument(
+        "--profile-columns-only",
+        action="store_true",
+        help="freeze the initialized policy except for the five widened "
+        "profile input columns; requires the Rust named-profile curriculum",
+    )
+    ap.add_argument(
+        "--profile-column",
+        action="append",
+        choices=PROFILE_CONDITION_NAMES,
+        help="with --profile-columns-only, train only this named widened column; "
+        "repeat to select several (default: all five)",
     )
     ap.add_argument(
         "--tech-bonus",
@@ -2157,6 +2471,7 @@ def main() -> None:
         "and annealed on the "
         "--tech-anneal schedule. 0 disables.",
     )
+    add_reclaimer_bonus_argument(ap)
     ap.add_argument(
         "--mix-bonus",
         type=float,
@@ -2192,14 +2507,14 @@ def main() -> None:
         type=int,
         default=None,
         help="lowest aggression conditioning for a custom uniform exploration "
-        "range (default curriculum is the shipped 60/40 style mix)",
+        "range (default consumes the Rust named-profile catalog)",
     )
     ap.add_argument(
         "--aggression-max",
         type=int,
         default=None,
         help="highest aggression conditioning for a custom uniform exploration "
-        "range (default curriculum is the shipped 60/40 style mix)",
+        "range (default consumes the Rust named-profile catalog)",
     )
     ap.add_argument(
         "--aggression-mix",
@@ -2256,6 +2571,16 @@ def main() -> None:
             aggression_range,
             args.aggression_mix,
         )
+        named_profile_curriculum = (
+            aggression_range is None and args.aggression_mix is None
+        )
+        validate_profile_column_mode(
+            args.profile_columns_only,
+            named_profile_curriculum,
+            args.style_coef,
+            args.initialize_from is not None or args.resume is not None,
+            args.profile_column,
+        )
         incumbent = load_incumbent_policy(mix, args.incumbent, device)
     except ValueError as err:
         ap.error(str(err))
@@ -2288,7 +2613,15 @@ def main() -> None:
         initialized=initialization_path is not None,
         critic_ready=initialize_critic_ready,
     )
-    opt = torch.optim.Adam(policy.parameters(), lr=args.lr)
+    optimizer_parameters = (
+        profile_column_parameters(
+            policy,
+            None if args.profile_column is None else tuple(args.profile_column),
+        )
+        if args.profile_columns_only
+        else list(policy.parameters())
+    )
+    opt = torch.optim.Adam(optimizer_parameters, lr=args.lr)
     anchor = None
     anchor_blob = None
     if args.anchor:
@@ -2327,10 +2660,24 @@ def main() -> None:
             "gym_version": GYM_VERSION,
             "learning_rate": args.lr,
             "map_mix": map_mix,
-            "mix_bonus": args.mix_bonus,
             "opponent_mix": mix,
             "optimizer_seed": 1,
             "pool_every": args.pool_every,
+            "profile_curriculum": (
+                "rust-named-factorial"
+                if named_profile_curriculum
+                else "custom-aggression"
+            ),
+            "trainable_scope": (
+                "profile-columns-only" if args.profile_columns_only else "full-policy"
+            ),
+            "trainable_profile_columns": (
+                list(PROFILE_CONDITION_NAMES)
+                if args.profile_columns_only and args.profile_column is None
+                else args.profile_column
+                if args.profile_columns_only
+                else []
+            ),
             "ppo": {
                 "clip": 0.2,
                 "epochs": 4,
@@ -2340,18 +2687,18 @@ def main() -> None:
                 "value_loss_coefficient": 0.5,
             },
             "production_entropy_coefficient": args.production_entropy_coef,
-            "repair_bonus": args.repair_bonus,
+            **reward_lineage_hyperparameters(args),
             "reward_gamma": TRAIN_GAMMA,
+            "reward_anneal_clock": "actor-updates-after-critic-warmup",
             "rollout_seed_base": 50_000,
-            "salvage_bonus": args.salvage_bonus,
             "steps": args.steps,
             "shape_coefficient": SHAPE_K,
-            "structure_bonus": args.structure_bonus,
             "style_coefficient": args.style_coef,
             "tech_anneal": args.tech_anneal or args.updates,
-            "tech_bonus": args.tech_bonus,
             "torch_seed": 0,
             "updates": args.updates,
+            "actor_updates": max(args.updates - value_warmup, 0),
+            "critic_warmup_updates": value_warmup,
             "value_warmup": value_warmup,
             "workers": args.workers,
             "aggression_distribution": [
@@ -2366,7 +2713,7 @@ def main() -> None:
     except RuntimeError as err:
         ap.error(str(err))
     workers = [Worker(args.driver) for _ in range(args.workers)]
-    if (args.repair_bonus or args.structure_bonus) and any(
+    if (args.repair_bonus or args.reclaimer_bonus or args.structure_bonus) and any(
         not worker.supports_effect_telemetry for worker in workers
     ):
         for worker in workers:
@@ -2434,30 +2781,42 @@ def main() -> None:
             TEL.clear()
             # The anneal runs on THIS run's clock, not the absolute one:
             # a resumed consolidation wants its exploration push at its
-            # own start, wherever the parent's clock stands.
+            # own start, wherever the parent's clock stands. Critic-only
+            # warm-up holds the initial seed because the actor cannot yet
+            # respond to it.
+            reward_update = reward_anneal_index(
+                update,
+                start_update,
+                value_warmup,
+            )
             tb = tech_bonus_at(
                 args.tech_bonus,
-                update - start_update - 1,
+                reward_update,
                 args.tech_anneal or args.updates,
             )
             mb = tech_bonus_at(
                 args.mix_bonus,
-                update - start_update - 1,
+                reward_update,
                 args.tech_anneal or args.updates,
             )
             sb = tech_bonus_at(
                 args.salvage_bonus,
-                update - start_update - 1,
+                reward_update,
                 args.tech_anneal or args.updates,
             )
             rb = tech_bonus_at(
                 args.repair_bonus,
-                update - start_update - 1,
+                reward_update,
+                args.tech_anneal or args.updates,
+            )
+            eb = tech_bonus_at(
+                args.reclaimer_bonus,
+                reward_update,
                 args.tech_anneal or args.updates,
             )
             ub = tech_bonus_at(
                 args.structure_bonus,
-                update - start_update - 1,
+                reward_update,
                 args.tech_anneal or args.updates,
             )
             batch, last_val, finals = rollout(
@@ -2470,6 +2829,7 @@ def main() -> None:
                 mix_bonus=mb,
                 salvage_bonus=sb,
                 repair_bonus=rb,
+                reclaimer_bonus=eb,
                 structure_bonus=ub,
                 style_coefficient=args.style_coef,
                 collection=args.collection,
@@ -2540,9 +2900,21 @@ def main() -> None:
                     for lower, upper, weight in aggression_distribution
                 ],
                 "profile_curriculum": (
-                    "shipped-factorial"
-                    if aggression_distribution == SHIPPED_AGGRESSION_DISTRIBUTION
+                    "rust-named-factorial"
+                    if named_profile_curriculum
                     else "custom-aggression"
+                ),
+                "trainable_scope": (
+                    "profile-columns-only"
+                    if args.profile_columns_only
+                    else "full-policy"
+                ),
+                "trainable_profile_columns": (
+                    list(PROFILE_CONDITION_NAMES)
+                    if args.profile_columns_only and args.profile_column is None
+                    else args.profile_column
+                    if args.profile_columns_only
+                    else []
                 ),
                 "execution_profiles": [
                     {
@@ -2565,6 +2937,14 @@ def main() -> None:
                 "initialize_critic_ready": initialize_critic_ready,
                 "initialize_q12_recovered": initialize_q12_recovered,
                 "value_warmup": value_warmup,
+                "phase_total_updates": args.updates,
+                "critic_warmup_updates": value_warmup,
+                "actor_updates": max(args.updates - value_warmup, 0),
+                "optimization_mode": (
+                    "critic-warmup"
+                    if value_warmup_active(update, start_update, value_warmup)
+                    else "actor-and-critic"
+                ),
                 "episodes": len(finals),
                 "avg_final": round(float(np.mean(finals)), 3) if finals else None,
                 "policy_loss": round(
@@ -2600,6 +2980,8 @@ def main() -> None:
                 entry["salvage_bonus"] = round(sb, 4)
             if args.repair_bonus:
                 entry["repair_bonus"] = round(rb, 4)
+            if args.reclaimer_bonus:
+                entry["reclaimer_bonus"] = round(eb, 4)
             if args.structure_bonus:
                 entry["structure_bonus"] = round(ub, 4)
             if args.style_coef:

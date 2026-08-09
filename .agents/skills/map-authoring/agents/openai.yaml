@@ -1,0 +1,4 @@
+interface:
+  display_name: "Oxide Map Authoring"
+  short_description: "Author and validate fair Oxide maps"
+  default_prompt: "Use $map-authoring to create or revise an Oxide scenario and validate its terrain, symmetry, routes, and seat fairness."

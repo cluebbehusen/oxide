@@ -265,9 +265,9 @@ fn lab_group_march() {
 #[ignore = "diagnostic: one mover ordered through a line of parked idles"]
 fn lab_parked_line() {
     let (w, h) = (41, 21);
-    let mut units = vec![common::unit(0, UnitKind::Sentinel, 5, 10)];
+    let mut units = vec![common::unit(0, UnitKind::Harvester, 5, 10)];
     for y in 8..=12 {
-        units.push(common::unit(0, UnitKind::Sentinel, 20, y));
+        units.push(common::unit(0, UnitKind::Harvester, 20, y));
     }
     let mut state = lane_arena(w, h, units).build().expect("builds");
     let mover = state.units()[0].id;
@@ -286,8 +286,13 @@ fn lab_parked_line() {
         },
     )]);
     let mut done = 0u64;
+    let mut previous = state.unit(mover).expect("mover").pos;
+    let mut max_step = 0i64;
     for t in 1..4_000u64 {
         state.tick(&[]);
+        let current = state.unit(mover).expect("mover").pos;
+        max_step = max_step.max(milli(current.dist(previous)));
+        previous = current;
         if done == 0
             && state
                 .units()
@@ -299,7 +304,7 @@ fn lab_parked_line() {
             break;
         }
     }
-    let solo = solo_walk(UnitKind::Sentinel, (5, 10), (35, 10), w, h);
+    let solo = solo_walk(UnitKind::Harvester, (5, 10), (35, 10), w, h);
     let max_shove = parked
         .iter()
         .map(|(id, start)| {
@@ -308,7 +313,9 @@ fn lab_parked_line() {
         })
         .max()
         .unwrap_or(0);
-    println!("LAB parked_line: mover_tick={done} solo={solo} max_parked_shove_milli={max_shove}");
+    println!(
+        "LAB parked_line: mover_tick={done} solo={solo} max_mover_step_milli={max_step} max_parked_shove_milli={max_shove}"
+    );
 }
 
 #[test]

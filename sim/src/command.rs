@@ -53,11 +53,12 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         queue: bool,
     },
-    /// Put harvesters to work on a scrap node.
+    /// Put harvesters to work in a bounded local zone around a known
+    /// scrap node or wreck.
     Harvest {
         /// The units to commit (only harvesters are accepted).
         units: Vec<UnitId>,
-        /// A tile that currently holds scrap.
+        /// The visible or remembered salvage tile anchoring the zone.
         node: TilePos,
         /// Append instead of replace (see [`Command::Move::queue`]).
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
@@ -172,8 +173,7 @@ pub enum Command {
     /// Air patients refuse — a harvester cannot service a machine
     /// hovering where it cannot stand. The patient's own orders are
     /// untouched: a fleeing machine keeps fleeing and simply goes
-    /// unwelded while out of reach. (Last variant by appending
-    /// discipline: earlier discriminants keep their serialized bytes.)
+    /// unwelded while out of reach.
     RepairUnit {
         /// The units to commit (only harvesters are accepted; the
         /// patient itself never joins its own crew).
@@ -183,6 +183,42 @@ pub enum Command {
         /// Append behind current orders instead of replacing them.
         #[serde(default, skip_serializing_if = "core::ops::Not::not")]
         queue: bool,
+    },
+    /// Move to a tile while taking primary-weapon shots that are already
+    /// available. Unlike [`Command::AttackMove`], units never chase,
+    /// stop for, or retaliate against targets during this move. Units
+    /// that cannot fight walk there normally.
+    Advance {
+        /// The units to commit.
+        units: Vec<UnitId>,
+        /// Destination tile (snapped like a move goal).
+        goal: TilePos,
+        /// Append instead of replace (see [`Command::Move::queue`]).
+        #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+        queue: bool,
+    },
+    /// Give built armed buildings a preferred visible hostile target.
+    /// The preference persists while the target remains valid and in true
+    /// sight. A focused defense still fires at an ordinary target when its
+    /// preference is currently out of reach or behind blocking terrain.
+    FocusFire {
+        /// The defenses to retask. The sim reads this as a sorted set.
+        buildings: Vec<BuildingId>,
+        /// The visible hostile unit or building to prefer.
+        target: Target,
+    },
+    /// Cancel one logical deferred construction site. Every own Harvester
+    /// carrying that exact [`crate::state::Order::Found`] promise drops it,
+    /// because a multi-builder command gives the whole crew one copy of the
+    /// same unpaid intent. Paid sites use [`Command::Cancel`] and its refund
+    /// rules instead.
+    /// (Last variant by appending discipline: earlier discriminants keep
+    /// their serialized bytes.)
+    CancelFound {
+        /// The promised structure.
+        kind: crate::stats::BuildingKind,
+        /// The promised top-left footprint tile.
+        anchor: TilePos,
     },
 }
 

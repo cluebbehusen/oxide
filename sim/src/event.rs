@@ -63,7 +63,7 @@ pub enum Event {
     },
     /// An attack landed this tick. Positions ride along because the victim
     /// may be gone by the time a renderer resolves the ids — a lethal hit
-    /// deserves its beam too.
+    /// still deserves the weapon's report.
     AttackHit {
         /// Who fired.
         attacker: UnitId,
@@ -115,8 +115,8 @@ pub enum Event {
         /// building may be rubble by the time presentation looks it up
         /// (a Bastion destroyed the tick it fires still booms).
         kind: crate::stats::BuildingKind,
-        /// The unit hit.
-        target: crate::ids::UnitId,
+        /// The unit or building hit.
+        target: Target,
         /// Muzzle position.
         turret_pos: chassis::fx::Vec2Fx,
         /// Impact position.
@@ -127,6 +127,8 @@ pub enum Event {
         /// The gun itself — a unit's mount or a building's emplacement;
         /// presentation turns it toward the work.
         shooter: crate::ids::Target,
+        /// The unit or building the gun led at launch time.
+        target: Target,
         /// The firing seat.
         player: PlayerId,
         /// Muzzle position.

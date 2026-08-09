@@ -46,7 +46,7 @@ fn faction_cup_reports_the_pair_and_each_physical_seat() {
         ["Scrapheap", "Standard", "Veteran", "Prime", "Rusher"]
     );
     for row in rows {
-        assert_eq!(row["profile"], "ladder");
+        assert_eq!(row["profile"], "canonical-slate");
         assert_eq!(row["factions"], "cf");
         assert_eq!(row["factions_source"], "override");
         assert_eq!(row["max_ticks"], 1);

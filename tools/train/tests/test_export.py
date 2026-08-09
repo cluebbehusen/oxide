@@ -87,7 +87,7 @@ class TestMain:
         export.main()
         art = json.loads(out.read_text())
         assert art["features"] == 81
-        assert art["conditioning"] == 7
+        assert art["conditioning"] == 12
         assert art["actions"] == 26
         assert len(art["head"]["w"]) == ACTIONS
 
@@ -136,7 +136,7 @@ class TestMain:
             policy,
             "mlp",
             plain_ckpt,
-            {"gym_version": 7, "update": 105},
+            {"gym_version": 8, "update": 105},
         )
         traced_ckpt = tmp_path / "traced.pt"
         save_policy(
@@ -145,7 +145,7 @@ class TestMain:
             traced_ckpt,
             checkpoint_metadata(
                 lineage,
-                {"gym_version": 7, "update": 105},
+                {"gym_version": 8, "update": 105},
             ),
         )
         _reloaded, blob = load_policy(str(traced_ckpt))

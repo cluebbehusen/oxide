@@ -1,0 +1,4 @@
+interface:
+  display_name: "Oxide Visual Assets"
+  short_description: "Create and promote readable Oxide pixel art"
+  default_prompt: "Use $visual-assets to generate, modify, and review Oxide visual assets, then productionize only the option I explicitly approve."
