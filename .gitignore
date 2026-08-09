@@ -8,6 +8,8 @@ __pycache__/
 /art-direction-archive/
 /roadmap-0.14.0-0.15.0.md
 /bot-retraining-deadlock-report.md
+/plan-0.15.0.md
+/review-0.15.0/
 
 # Runtime output — never commit; test fixtures live in driver/tests/.
 /screenshots/
