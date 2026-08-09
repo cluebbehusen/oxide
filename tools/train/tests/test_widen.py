@@ -145,9 +145,10 @@ class TestCheckpointBridge:
             "models.NET_FEATURES", widen.SRC_FEATURES + widen.SRC_CONDITIONING
         )
         policy = make_policy("mlp")
-        source_first = policy.state_dict()["trunk.0.weight"].clone()
-        source_pi_weight = policy.state_dict()["pi.weight"].clone()
-        source_pi_bias = policy.state_dict()["pi.bias"].clone()
+        source_state = {
+            name: tensor.clone() for name, tensor in policy.state_dict().items()
+        }
+        source_first = source_state["trunk.0.weight"]
         src = tmp_path / "src.pt"
         save_policy(policy, "mlp", src, {"gym_version": widen.SRC_VERSION, "update": 9})
         out = tmp_path / "out.pt"
@@ -168,18 +169,25 @@ class TestCheckpointBridge:
             == widen.DST_FEATURES + widen.DST_CONDITIONING
         )
         assert state["pi.weight"].shape[0] == widen.DST_ACTIONS
-        assert torch.all(state["trunk.0.weight"][:, -5:] == 0)
-        assert torch.equal(
+        assert state.keys() == source_state.keys()
+        torch.testing.assert_close(
             state["trunk.0.weight"][:, : source_first.shape[1]],
             source_first,
+            rtol=0,
+            atol=0,
         )
-        assert torch.equal(state["pi.weight"], source_pi_weight)
-        assert torch.equal(state["pi.bias"], source_pi_bias)
-
-        old_input = torch.randn(3, source_first.shape[1])
-        facets = torch.randn(3, widen.DST_CONDITIONING - widen.SRC_CONDITIONING)
-        widened_input = torch.cat([old_input, facets], dim=1)
-        assert torch.equal(
-            old_input @ source_first.T,
-            widened_input @ state["trunk.0.weight"].T,
+        profile_columns = state["trunk.0.weight"][:, source_first.shape[1] :]
+        assert profile_columns.shape == (
+            source_first.shape[0],
+            widen.DST_CONDITIONING - widen.SRC_CONDITIONING,
         )
+        torch.testing.assert_close(
+            profile_columns,
+            torch.zeros_like(profile_columns),
+            rtol=0,
+            atol=0,
+        )
+        for name, source_tensor in source_state.items():
+            if name == "trunk.0.weight":
+                continue
+            torch.testing.assert_close(state[name], source_tensor, rtol=0, atol=0)
