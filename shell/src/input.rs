@@ -768,7 +768,7 @@ mod select;
 mod tests;
 
 use dispatch::dispatch_action;
-use orders::context_order;
+use orders::{context_order, rally_selected_producers};
 pub use select::idle_harvesters;
 use select::{
     box_select, click_on_hud, click_select, cycle_idle_worker, select_all_of_kind_on_screen,
@@ -1001,6 +1001,8 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                                 queue,
                             });
                             game.ping(vec2(world.x, world.y), PingKind::Move);
+                        } else if units.is_empty() {
+                            rally_selected_producers(game, tile, world);
                         }
                     }
                 } else if !click_on_hud(game, vec2(x, y)) {

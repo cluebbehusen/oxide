@@ -610,14 +610,33 @@ fn resolve_founds(state: &mut State, mut founds: Vec<PendingFounding>, events: &
             f.kind,
             f.anchor,
             |state, site| {
-                // The founder's own active order becomes the build; its
-                // queued program survives untouched — deferral changes
-                // when the claim lands, never what comes after.
-                let unit = state.unit_mut(f.unit).expect("checked above");
-                unit.order = Order::Build { site };
-                unit.path = None;
-                unit.progress = 0;
-                true
+                // Every promise for this logical site must follow the paid
+                // entity. Otherwise a delayed crewmate can retain Found,
+                // outlive a cancellation that clears Build orders by id,
+                // and claim the same ground (and price) again.
+                let matches_claim = |order: &Order| {
+                    matches!(order, Order::Found { kind, anchor }
+                        if *kind == f.kind && *anchor == f.anchor)
+                };
+                let mut founder_committed = false;
+                for unit in state
+                    .units
+                    .iter_mut()
+                    .filter(|unit| unit.player == f.player)
+                {
+                    if matches_claim(&unit.order) {
+                        founder_committed |= unit.id == f.unit;
+                        unit.order = Order::Build { site };
+                        unit.path = None;
+                        unit.progress = 0;
+                    }
+                    for order in &mut unit.queue {
+                        if matches_claim(order) {
+                            *order = Order::Build { site };
+                        }
+                    }
+                }
+                founder_committed
             },
         );
         match claimed {

@@ -2839,6 +2839,56 @@ fn a_minimap_right_click_never_commands_a_foreign_selection() {
 }
 
 #[test]
+fn a_minimap_right_click_sets_every_selected_producer_rally() {
+    let mut game = empty_multi_producer_game();
+    let mut input = InputState::new();
+    let minimap = publish_minimap(&game);
+    let at = vec2(minimap.x + 30.0, minimap.y + 30.0);
+    let world = crate::render::minimap_world_at(&game, at).expect("point is inside minimap");
+    let rally = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
+    let mut producers: Vec<_> = game
+        .state
+        .buildings()
+        .iter()
+        .filter(|building| {
+            building.player == game.human && !building.kind.stats().produces.is_empty()
+        })
+        .map(|building| building.id)
+        .collect();
+    producers.sort_unstable();
+    game.selection.buildings = producers.clone();
+
+    apply_events(
+        &mut game,
+        &mut input,
+        &[RawEvent::MouseDown {
+            button: MouseButton::Right,
+            x: at.x,
+            y: at.y,
+        }],
+    );
+
+    let staged: Vec<_> = game
+        .pending
+        .iter()
+        .filter_map(|command| match command.command {
+            Command::SetRally {
+                building,
+                rally: Some(tile),
+            } => Some((building, tile)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        staged,
+        producers
+            .into_iter()
+            .map(|building| (building, rally))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn touch_respects_chrome_ownership() {
     let mut game = headless_game();
     let mut input = InputState::new();

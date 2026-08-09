@@ -1137,6 +1137,56 @@ fn guarded_recovery_does_not_mistake_lone_artillery_for_a_screen() {
 }
 
 #[test]
+fn guarded_recovery_counts_a_queued_screen_before_training_another() {
+    let first = guarded_stranded_scenario(0);
+    let state = first.build().unwrap();
+    let mut gym = GymBot::new(PlayerId(0));
+    let _ = gym.step_plan(&state, ActionPlan::default());
+
+    let mut recovered = first;
+    recovered.players[0].scrap = 2 * UnitKind::Sentinel.stats().cost;
+    recovered.units.push(oxide_sim::scenario::UnitSpec {
+        player: 0,
+        kind: UnitKind::Harvester,
+        x: 5,
+        y: 6,
+    });
+    let state = recovered.build().unwrap();
+    let mut value = serde_json::to_value(state).unwrap();
+    value["tick"] = serde_json::json!(1);
+    let mut state: oxide_sim::State = serde_json::from_value(value).unwrap();
+
+    let first_commands = gym.step_plan(&state, ActionPlan::default());
+    assert_eq!(
+        first_commands
+            .iter()
+            .filter(|command| matches!(
+                command.command,
+                Command::Train {
+                    kind: UnitKind::Sentinel,
+                    ..
+                }
+            ))
+            .count(),
+        1,
+        "the recovered Harvester needs one direct screen: {first_commands:?}"
+    );
+    state.tick(&first_commands);
+
+    let second_commands = gym.step_plan(&state, ActionPlan::default());
+    assert!(
+        !second_commands.iter().any(|command| matches!(
+            command.command,
+            Command::Train {
+                kind: UnitKind::Sentinel,
+                ..
+            }
+        )),
+        "the queued screen already satisfies recovery: {second_commands:?}"
+    );
+}
+
+#[test]
 fn guarded_recovery_cancels_a_naked_prepaid_harvester() {
     let scenario = guarded_stranded_scenario(2 * UnitKind::Harvester.stats().cost);
     let mut state = scenario.build().unwrap();

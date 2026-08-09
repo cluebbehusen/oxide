@@ -368,6 +368,42 @@ fn a_direct_fire_turret_can_focus_a_hostile_building() {
 }
 
 #[test]
+fn focused_defense_does_not_fire_when_the_footprint_aim_lands_on_a_peak() {
+    let mut scenario = open_arena_with(24, 16, Vec::new(), |rows| rows[6][8] = '^');
+    scenario.buildings = vec![
+        building(0, BuildingKind::Turret, 11, 6),
+        building(1, BuildingKind::Reclaimer, 7, 6),
+    ];
+    let mut state = scenario.build().unwrap();
+    let turret = building_id(&state, 0, BuildingKind::Turret, 0);
+    let target = building_id(&state, 1, BuildingKind::Reclaimer, 0);
+    let before = state.building(target).unwrap().hp;
+
+    let report = state.tick(&[cmd(
+        0,
+        Command::FocusFire {
+            buildings: vec![turret],
+            target: Target::Building(target),
+        },
+    )]);
+
+    assert!(!report.events.iter().any(|event| matches!(
+        event,
+        Event::TurretFired {
+            turret: fired,
+            target: Target::Building(hit),
+            ..
+        } if *fired == turret && *hit == target
+    )));
+    assert_eq!(state.building(target).unwrap().hp, before);
+    assert_eq!(
+        state.building(turret).unwrap().focus,
+        Some(Target::Building(target)),
+        "cover delays a valid preference instead of clearing it"
+    );
+}
+
+#[test]
 fn missing_focus_field_deserializes_as_no_preference() {
     let mut state = two_turret_state();
     let turret = building_id(&state, 0, BuildingKind::Turret, 0);

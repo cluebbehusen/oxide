@@ -2272,11 +2272,7 @@ impl GymBot {
         }
 
         let live_screen = recovery_screen_units(obs).next().is_some();
-        let queued_screen = obs
-            .my_queues
-            .iter()
-            .flatten()
-            .any(|kind| recovery_screen_kind(*kind));
+        let queued_screen = recovery_screen_queued(obs);
         if live_screen {
             if queued_harvester {
                 RecoveryPosture::Saving
@@ -2418,28 +2414,31 @@ impl GymBot {
                 };
                 let live_screen: Vec<UnitId> = recovery_screen_units(obs).collect();
                 if live_screen.is_empty() {
+                    let queued_screen = recovery_screen_queued(obs);
                     self.recovery_liquidation = self.recovery_liquidation.filter(|building| {
                         obs.my_units
                             .iter()
                             .any(|unit| unit.salvaging == Some(*building))
                     });
                     let mut liquidating = self.recovery_liquidation.is_some();
-                    if obs.scrap >= UnitKind::Sentinel.stats().cost
-                        && let Some(foundry) = open_foundry(obs, 1)
-                    {
-                        commands.push(PlayerCommand {
-                            player: self.player,
-                            command: Command::Train {
-                                building: foundry,
-                                kind: UnitKind::Sentinel,
-                            },
-                        });
-                    } else if self.recovery_liquidation.is_none()
-                        && let Some(building) = useful_recovery_liquidation(obs)
-                    {
-                        commands.extend(lower(self, vec![Intent::Salvage { building }]));
-                        self.recovery_liquidation = Some(building);
-                        liquidating = true;
+                    if !queued_screen {
+                        if obs.scrap >= UnitKind::Sentinel.stats().cost
+                            && let Some(foundry) = open_foundry(obs, 1)
+                        {
+                            commands.push(PlayerCommand {
+                                player: self.player,
+                                command: Command::Train {
+                                    building: foundry,
+                                    kind: UnitKind::Sentinel,
+                                },
+                            });
+                        } else if self.recovery_liquidation.is_none()
+                            && let Some(building) = useful_recovery_liquidation(obs)
+                        {
+                            commands.extend(lower(self, vec![Intent::Salvage { building }]));
+                            self.recovery_liquidation = Some(building);
+                            liquidating = true;
+                        }
                     }
                     if !liquidating {
                         commands.extend(self.hold_recovery_worker(obs, worker, home, orientation));
@@ -4275,6 +4274,13 @@ fn recovery_screen_units(obs: &Observation) -> impl Iterator<Item = UnitId> + '_
         .iter()
         .filter(|unit| recovery_screen_kind(unit.kind))
         .map(|unit| unit.id)
+}
+
+fn recovery_screen_queued(obs: &Observation) -> bool {
+    obs.my_queues
+        .iter()
+        .flatten()
+        .any(|kind| recovery_screen_kind(*kind))
 }
 
 fn recovery_worker(obs: &Observation) -> Option<UnitId> {

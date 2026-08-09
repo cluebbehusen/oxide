@@ -24,6 +24,20 @@ pub(super) fn selected_producers(game: &Game) -> Vec<oxide_sim::BuildingId> {
         .collect()
 }
 
+pub(super) fn rally_selected_producers(game: &mut Game, rally: TilePos, at: Vec2) {
+    let producers = selected_producers(game);
+    if producers.is_empty() {
+        return;
+    }
+    for building in producers {
+        game.issue(Command::SetRally {
+            building,
+            rally: Some(rally),
+        });
+    }
+    game.ping(at, PingKind::Rally);
+}
+
 fn visible_hostile_target_at(
     game: &Game,
     world: Vec2,
@@ -168,16 +182,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         }
         // Selected producers share one rally destination. Non-producers
         // ignore a ground right-click.
-        let producers = selected_producers(game);
-        if !producers.is_empty() {
-            for building in producers {
-                game.issue(Command::SetRally {
-                    building,
-                    rally: Some(tile),
-                });
-            }
-            game.ping(world, PingKind::Rally);
-        }
+        rally_selected_producers(game, tile, world);
         return;
     }
     if !game.selection_commandable() {

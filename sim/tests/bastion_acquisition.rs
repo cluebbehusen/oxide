@@ -125,6 +125,30 @@ fn bastion_building_acquisition_honors_both_range_edges_and_peak_cover() {
 }
 
 #[test]
+fn bastion_fallback_does_not_shell_when_the_footprint_aim_lands_on_a_peak() {
+    let mut scenario = open_arena_with(24, 18, Vec::new(), |rows| rows[7][8] = '^');
+    scenario.buildings = vec![
+        building(0, BuildingKind::Bastion, 11, 6),
+        building(1, BuildingKind::Reclaimer, 7, 7),
+    ];
+    let mut state = scenario.build().unwrap();
+    let bastion = building_id(&state, PlayerId(0), BuildingKind::Bastion);
+    let target = building_id(&state, PlayerId(1), BuildingKind::Reclaimer);
+    let before = state.building(target).unwrap().hp;
+    assert!(state.can_see(PlayerId(0), TilePos::new(7, 7)));
+
+    for _ in 0..120 {
+        let report = state.tick(&[]);
+        assert!(
+            bastion_launch(&report.events, bastion).is_none(),
+            "the closest-point endpoint cannot tunnel an indirect shell through a peak: {:?}",
+            report.events
+        );
+    }
+    assert_eq!(state.building(target).unwrap().hp, before);
+}
+
+#[test]
 fn an_eligible_visible_unit_keeps_priority_over_a_closer_building() {
     let mut scenario = open_arena(32, 22, vec![unit(1, UnitKind::Harvester, 14, 7)]);
     scenario.buildings = vec![

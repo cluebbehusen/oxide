@@ -2705,6 +2705,95 @@ fn a_deferred_crew_founds_once_and_stacks() {
     );
 }
 
+#[test]
+fn cancelling_a_paid_deferred_site_clears_every_crewmates_promise() {
+    use oxide_sim::stats::BuildingKind;
+
+    let mut scenario = open_arena(
+        24,
+        14,
+        vec![
+            unit(0, UnitKind::Harvester, 9, 6),
+            unit(0, UnitKind::Harvester, 3, 5),
+            unit(0, UnitKind::Harvester, 3, 10),
+        ],
+    );
+    scenario.players[0].scrap = 500;
+    let mut state = scenario.build().unwrap();
+    let crew: Vec<_> = state.units().iter().map(|unit| unit.id).collect();
+    let (founder, active_crewmate, queued_crewmate) = (crew[0], crew[1], crew[2]);
+    let anchor = TilePos::new(10, 6);
+
+    state.tick(&[cmd(
+        0,
+        Command::Move {
+            units: vec![queued_crewmate],
+            goal: TilePos::new(3, 2),
+            queue: false,
+        },
+    )]);
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: crew,
+            kind: BuildingKind::Turret,
+            anchor,
+            queue: true,
+            defer: true,
+        },
+    )]);
+
+    let site = state
+        .buildings()
+        .iter()
+        .find(|building| building.anchor == anchor)
+        .expect("the adjacent founder claims the deferred site")
+        .id;
+    assert_eq!(state.unit(founder).unwrap().order, Order::Build { site });
+    assert_eq!(
+        state.unit(active_crewmate).unwrap().order,
+        Order::Build { site },
+        "an active crewmate's promise follows the paid site"
+    );
+    assert_eq!(
+        state
+            .unit(queued_crewmate)
+            .unwrap()
+            .queue
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![Order::Build { site }],
+        "a queued crewmate's promise follows the paid site"
+    );
+
+    state.tick(&[cmd(0, Command::Cancel { building: site })]);
+    let scrap_after_cancel = state.player(PlayerId(0)).scrap;
+    assert!(state.units().iter().all(|unit| {
+        unit.order != Order::Build { site }
+            && unit
+                .queue
+                .iter()
+                .all(|order| *order != Order::Build { site })
+    }));
+
+    for _ in 0..1_200 {
+        state.tick(&[]);
+    }
+    assert!(
+        state
+            .buildings()
+            .iter()
+            .all(|building| building.anchor != anchor),
+        "a delayed crewmate cannot resurrect the cancelled site"
+    );
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        scrap_after_cancel,
+        "a stale founding promise cannot charge the player again"
+    );
+}
+
 /// A crewmate arriving after the crew already FINISHED the building is
 /// done, not stalled: its founding succeeded by other hands, and
 /// reading its own standing building as taken ground would mislabel

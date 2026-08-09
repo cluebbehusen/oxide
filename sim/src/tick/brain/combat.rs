@@ -407,6 +407,7 @@ pub(super) fn turret_fire(
             let distance = center.dist_sq(aim);
             let full = traces_terrain(atk, Domain::Ground, domain);
             (within_weapon_reach(atk, distance)
+                && shot_open(TilePos::containing(aim), full)
                 && !chassis::path::line_blocked(center, aim, |tile| shot_open(tile, full)))
             .then_some((target, aim))
         });
@@ -448,7 +449,8 @@ pub(super) fn turret_fire(
                 .filter(|(distance, _, _)| within_weapon_reach(atk, *distance))
                 .filter(|(_, _, aim)| {
                     let full = traces_terrain(atk, Domain::Ground, Domain::Ground);
-                    !chassis::path::line_blocked(center, *aim, |tile| shot_open(tile, full))
+                    shot_open(TilePos::containing(*aim), full)
+                        && !chassis::path::line_blocked(center, *aim, |tile| shot_open(tile, full))
                 })
                 .min_by_key(|&(distance, target, _)| (distance, target))
         })
