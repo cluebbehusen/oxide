@@ -1050,6 +1050,10 @@ impl GymBot {
             mask[Action::TrainAntiAir as usize] = fab_open;
             mask[Action::TrainAirGround as usize] = fab_open;
             mask[Action::TrainAirAir as usize] = fab_open;
+            // Turret, FlakTurret, and Bastion feasibility all consult the
+            // same known passability and builder routes; one think builds
+            // that pair at most once and shares it across the loop.
+            let mut defense_probe = None;
             for action in [
                 Action::BuildFabricator,
                 Action::BuildTurret,
@@ -1068,8 +1072,8 @@ impl GymBot {
                         .count()
                         >= FABRICATOR_MIN_HARVESTERS
                         && my_strength >= FABRICATOR_MIN_SCREEN_STRENGTH);
-                mask[action as usize] =
-                    screen_ready && self.can_plan_build(&obs, &enlisted, h, kind);
+                mask[action as usize] = screen_ready
+                    && self.can_plan_build(&obs, &enlisted, h, kind, &mut defense_probe);
             }
             // Repair and salvage never share a target: a patient an
             // own crew is stripping is not a patient (the sim evicts
@@ -1378,7 +1382,7 @@ impl GymBot {
         }
 
         if let Some(kind) = plan.construction.building()
-            && self.can_plan_build(&obs, &enlisted, home, kind)
+            && self.can_plan_build(&obs, &enlisted, home, kind, &mut None)
         {
             self.set_planned_build(kind, obs.tick);
         }
@@ -1775,6 +1779,7 @@ impl GymBot {
         enlisted: &[crate::ids::UnitId],
         home: TilePos,
         kind: BuildingKind,
+        defense_probe: &mut Option<(KnownPassability, DefenseBuilderRoutes)>,
     ) -> bool {
         obs.tick >= self.capital_retry_after
             && committed_buildings(obs, kind) < building_cap(kind)
@@ -1784,20 +1789,27 @@ impl GymBot {
                 .iter()
                 .any(|(blocked, retry_after)| *blocked == kind && obs.tick < *retry_after)
             && free_builder(obs, enlisted)
-            && self.has_build_anchor(obs, enlisted, home, kind)
+            && self.has_build_anchor(obs, enlisted, home, kind, defense_probe)
     }
 
+    /// `defense_probe` memoizes the known-passability grid and builder-route
+    /// Dijkstra for one think: they depend only on the observation and the
+    /// enlisted set, both fixed across a think, never on the queried kind.
     fn has_build_anchor(
         &self,
         obs: &Observation,
         enlisted: &[UnitId],
         home: TilePos,
         kind: BuildingKind,
+        defense_probe: &mut Option<(KnownPassability, DefenseBuilderRoutes)>,
     ) -> bool {
         match kind {
             BuildingKind::Turret | BuildingKind::FlakTurret | BuildingKind::Bastion => {
-                let passability = KnownPassability::from_observation(obs);
-                let builders = DefenseBuilderRoutes::measure(obs, enlisted, &passability);
+                let (_, builders) = defense_probe.get_or_insert_with(|| {
+                    let passability = KnownPassability::from_observation(obs);
+                    let builders = DefenseBuilderRoutes::measure(obs, enlisted, &passability);
+                    (passability, builders)
+                });
                 defense_foci(obs, home, kind)
                     .into_iter()
                     .chain(std::iter::once(home))

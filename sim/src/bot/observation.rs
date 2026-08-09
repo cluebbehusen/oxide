@@ -160,6 +160,23 @@ pub struct Observation {
 }
 
 impl Observation {
+    /// Whether `tile` is known impassable terrain — a binary point lookup
+    /// into `known_rock`, which is sorted by (y, x) both by row-major
+    /// construction and by the orientation re-sort.
+    pub fn known_rock_at(&self, tile: TilePos) -> bool {
+        self.known_rock
+            .binary_search_by_key(&(tile.y, tile.x), |p| (p.y, p.x))
+            .is_ok()
+    }
+
+    /// Whether `tile` holds a known scrap node — the same sorted point
+    /// lookup into `known_scrap`.
+    pub fn known_scrap_at(&self, tile: TilePos) -> bool {
+        self.known_scrap
+            .binary_search_by_key(&(tile.y, tile.x), |(p, _)| (p.y, p.x))
+            .is_ok()
+    }
+
     /// Whether `tile` has ever been seen by this seat's team.
     pub fn explored(&self, tile: TilePos) -> bool {
         if tile.x < 0 || tile.y < 0 || tile.x >= self.map_width || tile.y >= self.map_height {

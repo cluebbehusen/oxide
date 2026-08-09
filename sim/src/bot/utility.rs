@@ -1268,7 +1268,7 @@ impl UtilityPolicy {
     /// Known-buildable: not rock, not scrap, not under any known
     /// building footprint.
     fn tile_open(&self, obs: &Observation, t: TilePos) -> bool {
-        if self.rock_at(obs, t) || obs.known_scrap.iter().any(|(p, _)| *p == t) {
+        if self.rock_at(obs, t) || obs.known_scrap_at(t) {
             return false;
         }
         let covered = |b: &super::observation::BuildingObs| {
@@ -1281,7 +1281,7 @@ impl UtilityPolicy {
     }
 
     fn rock_at(&self, obs: &Observation, t: TilePos) -> bool {
-        obs.known_rock.contains(&t)
+        obs.known_rock_at(t)
     }
 
     /// The nearest known-open tile to `want` (spiral out to 3), for
