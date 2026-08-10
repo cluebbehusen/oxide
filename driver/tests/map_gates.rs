@@ -101,6 +101,9 @@ fn routes_connect_and_pace_labels_hold() {
                 // 0.10: matches should run tens of minutes — the vast
                 // class exists to hold maps big enough to make it so.
                 "vast" => 91..=150,
+                // 0.15: the grand class — island wars, 12-seat FFAs,
+                // maps whose matches are campaigns.
+                "grand" => 151..=400,
                 other => panic!("{name}: unknown pace '{other}'"),
             };
             assert!(
@@ -113,13 +116,16 @@ fn routes_connect_and_pace_labels_hold() {
 
 #[test]
 fn artillery_pressure_stays_bounded() {
-    // Past ~0.5 the map is a siege range, not a battlefield. Quick
-    // brawl maps tolerate more by design (Scrapyard is the honest
-    // ceiling); standard and large must leave room to maneuver.
+    // The caps preserve the same minimum-route floors the 0.10 caps
+    // enforced with the Bombard's 9.5 reach (quick >= ~14.6 steps,
+    // everything else >= 19): the 0.15 Avalanche stretched the longest
+    // reach to 14, which rescales the ratio, not the geometry the maps
+    // must keep. A tier-three siege piece on a knife map is a late
+    // commitment, not the opening problem the old cap policed.
     for (name, scenario) in shipped() {
         let report = audit(&scenario).expect("audit builds");
         let pace = scenario.meta.as_ref().unwrap().pace.clone();
-        let cap = if pace == "quick" { 0.65 } else { 0.50 };
+        let cap = if pace == "quick" { 0.96 } else { 0.74 };
         for route in &report.routes {
             let Some(pressure) = route.artillery_pressure else {
                 continue;
@@ -137,6 +143,15 @@ fn spawns_are_fair_to_every_seat() {
     for (name, scenario) in shipped() {
         let report = audit(&scenario).expect("audit builds");
         let seats = &report.seats;
+        let symmetry = scenario
+            .meta
+            .as_ref()
+            .map(|m| m.symmetry.clone())
+            .unwrap_or_default();
+        if symmetry == "metric" {
+            metric_fairness(&name, seats);
+            continue;
+        }
         let first = &seats[0];
         for seat in seats.iter().skip(1) {
             assert_eq!(
@@ -177,13 +192,85 @@ fn spawns_are_fair_to_every_seat() {
                     );
                 }
             }
-            n => panic!("{name}: unexpected seat count {n}"),
+            // 0.15 seat counts beyond the legacy lanes: mirrored maps
+            // still hold room and clock exactly (asserted above); scrap
+            // holds within the cross-parity lean the 4p rule tolerates.
+            _ => {
+                for i in 1..seats.len() {
+                    assert!(
+                        gap(0, i) <= 1.5,
+                        "{name}: scrap leans {:.2} against seat {i}",
+                        gap(0, i)
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The free-for-all fairness class: no tile mirror to lean on, so every
+/// seat's measured position must sit inside a tolerance of the field's
+/// mean — room within 5%, first-contact clock within 15%, scrap within
+/// 2.5 tiles, and (when the map has frames at all) extractor access
+/// within 20%.
+fn metric_fairness(name: &str, seats: &[oxide_driver::audit::SeatAudit]) {
+    let mean = |xs: &[f64]| xs.iter().sum::<f64>() / xs.len() as f64;
+    let rooms: Vec<f64> = seats.iter().map(|s| s.reachable_tiles as f64).collect();
+    let room_mean = mean(&rooms);
+    for s in seats {
+        let dev = (s.reachable_tiles as f64 - room_mean).abs() / room_mean;
+        assert!(
+            dev <= 0.05,
+            "{name}: seat {} rooms {:.1}% off the field",
+            s.seat,
+            dev * 100.0
+        );
+    }
+    let clocks: Vec<f64> = seats
+        .iter()
+        .map(|s| {
+            s.nearest_enemy_route
+                .unwrap_or_else(|| panic!("{name}: seat {} sealed off", s.seat)) as f64
+        })
+        .collect();
+    let clock_mean = mean(&clocks);
+    for (s, clock) in seats.iter().zip(&clocks) {
+        let dev = (clock - clock_mean).abs() / clock_mean;
+        assert!(
+            dev <= 0.15,
+            "{name}: seat {} meets the enemy {:.1}% off the field's clock",
+            s.seat,
+            dev * 100.0
+        );
+    }
+    let scrap_mean = mean(&seats.iter().map(|s| s.nearest_scrap).collect::<Vec<_>>());
+    for s in seats {
+        assert!(
+            (s.nearest_scrap - scrap_mean).abs() <= 2.5,
+            "{name}: seat {} digs {:.2} tiles off the field's scrap",
+            s.seat,
+            (s.nearest_scrap - scrap_mean).abs()
+        );
+    }
+    if seats.iter().all(|s| s.nearest_extractor.is_some()) {
+        let frames: Vec<f64> = seats.iter().map(|s| s.nearest_extractor.unwrap()).collect();
+        let frame_mean = mean(&frames);
+        for (s, d) in seats.iter().zip(&frames) {
+            let dev = (d - frame_mean).abs() / frame_mean.max(1.0);
+            assert!(
+                dev <= 0.20,
+                "{name}: seat {} reaches its extractor {:.1}% off the field",
+                s.seat,
+                dev * 100.0
+            );
         }
     }
 }
 
 #[test]
 fn every_map_mirrors_its_paired_seats_entry_by_entry() {
+    // The metric class opts out: its fairness is measured, not
+    // mirrored (see `metric_fairness`).
     // The authoring rule the 0.7 mirror bug broke: a paired seat's
     // starting units must be the entry-by-entry 180-degree image of its
     // partner's, because ids are handed out in list order and every
@@ -198,6 +285,13 @@ fn every_map_mirrors_its_paired_seats_entry_by_entry() {
     // Kinds compare by Role, not by kind: a launch-time retint and any
     // future faction-varied starting unit must still read as a mirror.
     for (name, scenario) in shipped() {
+        if scenario
+            .meta
+            .as_ref()
+            .is_some_and(|m| m.symmetry == "metric")
+        {
+            continue;
+        }
         let (map, anchors) =
             Map::parse(&scenario.map).unwrap_or_else(|e| panic!("{name}: map parses ({e})"));
         let (w, h) = (map.width(), map.height());

@@ -224,8 +224,14 @@ impl Map {
                         wreck: 0,
                         cosmetic: 0,
                     },
-                    '1'..='8' => {
-                        let player = PlayerId(c as u8 - b'1');
+                    '1'..='8' | 'a'..='h' => {
+                        // Seats 1-8 wear digits; 9-16 wear 'a'-'h'
+                        // (chosen to dodge the terrain letters).
+                        let player = if c.is_ascii_digit() {
+                            PlayerId(c as u8 - b'1')
+                        } else {
+                            PlayerId(8 + (c as u8 - b'a'))
+                        };
                         if anchors.iter().any(|(p, _)| *p == player) {
                             return Err(MapError::DuplicateAnchor(player));
                         }

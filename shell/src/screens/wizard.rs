@@ -354,15 +354,19 @@ pub fn setup_layout(scenario: &Scenario, seat_choice: usize, view: Vec2, ui: f32
 }
 
 /// Every Foundry anchor authored on an ASCII map: `(seat, (x, y))` for
-/// each digit `1`..=`8`, in row-major order.
+/// each digit `1`..=`8` and letter `a`..=`h` (seats 9-16), in
+/// row-major order.
 pub fn seat_anchors(map: &[String]) -> Vec<(usize, (i32, i32))> {
     let mut anchors = Vec::new();
     for (y, row) in map.iter().enumerate() {
         for (x, ch) in row.chars().enumerate() {
-            if let Some(digit) = ch.to_digit(10)
-                && (1..=8).contains(&digit)
-            {
-                anchors.push((digit as usize - 1, (x as i32, y as i32)));
+            let seat = match ch {
+                '1'..='8' => Some(ch as usize - '1' as usize),
+                'a'..='h' => Some(8 + ch as usize - 'a' as usize),
+                _ => None,
+            };
+            if let Some(seat) = seat {
+                anchors.push((seat, (x as i32, y as i32)));
             }
         }
     }

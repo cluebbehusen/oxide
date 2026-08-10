@@ -22,6 +22,9 @@ pub struct SeatAudit {
     pub nearest_scrap: f64,
     /// Shortest ground route to any enemy Foundry doorstep, in steps.
     pub nearest_enemy_route: Option<usize>,
+    /// Straight-line distance to the nearest derelict extractor frame,
+    /// in tiles; None on maps without frames.
+    pub nearest_extractor: Option<f64>,
 }
 
 /// A Foundry-to-Foundry route measured both ways of moving.
@@ -64,8 +67,10 @@ pub struct MapAudit {
 /// kind joins this list.
 fn longest_reach() -> f64 {
     let bombard = oxide_sim::UnitKind::Bombard.stats().weapons.iter();
+    let avalanche = oxide_sim::UnitKind::Avalanche.stats().weapons.iter();
     let bastion = BuildingKind::Bastion.base_stats().weapons.iter();
     bombard
+        .chain(avalanche)
         .chain(bastion)
         .map(|w| w.range.to_num::<f64>())
         .fold(0.0, f64::max)
@@ -380,11 +385,23 @@ pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
                     (dx * dx + dy * dy).sqrt()
                 })
                 .fold(f64::INFINITY, f64::min);
+            let nearest_extractor = state
+                .map()
+                .extractor_frames()
+                .iter()
+                .map(|f| {
+                    let (dx, dy) = (f.x as f64 + 1.0 - center.0, f.y as f64 + 1.0 - center.1);
+                    (dx * dx + dy * dy).sqrt()
+                })
+                .fold(None, |best: Option<f64>, d| {
+                    Some(best.map_or(d, |b| b.min(d)))
+                });
             SeatAudit {
                 seat: *seat,
                 reachable_tiles: reachable_from(&state, doorstep),
                 nearest_scrap,
                 nearest_enemy_route: nearest_enemy[idx],
+                nearest_extractor,
             }
         })
         .collect();

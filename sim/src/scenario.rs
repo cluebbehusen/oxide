@@ -65,6 +65,13 @@ pub struct ScenarioMeta {
     /// Resource richness in plain words ("lean", "standard", "rich").
     #[serde(default)]
     pub richness: String,
+    /// Fairness class. Empty (the default) claims exact 180-degree
+    /// paired-seat mirroring, which the map gates verify tile by tile.
+    /// "metric" claims measured fairness instead — equal room, route,
+    /// scrap, and extractor access within tolerance, with no tile
+    /// mirror — the class free-for-all layouts live in.
+    #[serde(default)]
+    pub symmetry: String,
     /// Tileset/theme key for grading and previews.
     #[serde(default)]
     pub theme: String,
@@ -359,7 +366,7 @@ impl Scenario {
     /// Building the same scenario twice yields bit-identical states (a test
     /// enforces this).
     pub fn build(&self) -> Result<State, ScenarioError> {
-        if self.players.is_empty() || self.players.len() > 8 {
+        if self.players.is_empty() || self.players.len() > 16 {
             return Err(ScenarioError::PlayerCount(self.players.len()));
         }
         let (map, anchors) = Map::parse(&self.map)?;
