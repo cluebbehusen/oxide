@@ -84,6 +84,18 @@ pub enum SoundKind {
     BastionFire,
     /// A Flak Turret's paired-yoke burst.
     FlakTurretFire,
+    /// The Warden's fork cannon report.
+    WardenFire,
+    /// The Breaker's siege mortar.
+    BreakerFire,
+    /// The Avalanche bank launching.
+    AvalancheFire,
+    /// A bomber releasing its load.
+    BombRelease,
+    /// A buried charge or Sapper detonating.
+    DemolitionBoom,
+    /// A works coming back online one rung higher.
+    UpgradeDone,
 }
 
 /// What an order-acknowledgment ping means (decides its color).
@@ -232,19 +244,19 @@ fn unit_fire_sound(kind: oxide_sim::UnitKind) -> SoundKind {
         UnitKind::Darter => SoundKind::DarterFire,
         UnitKind::Talon => SoundKind::TalonFire,
         UnitKind::Wisp => SoundKind::WispFire,
-        // 0.15 placeholders until the sound pass gives them voices.
-        UnitKind::Warden => SoundKind::SentinelFire,
+        UnitKind::Warden => SoundKind::WardenFire,
+        // Interceptors share the air-superiority zap family on purpose.
         UnitKind::Shrike => SoundKind::TalonFire,
         UnitKind::Sylph => SoundKind::WispFire,
-        UnitKind::Condor | UnitKind::Moth | UnitKind::Avalanche => SoundKind::BombardFire,
-        UnitKind::Breaker => SoundKind::BastionFire,
+        UnitKind::Condor | UnitKind::Moth => SoundKind::BombRelease,
+        UnitKind::Avalanche => SoundKind::AvalancheFire,
+        UnitKind::Breaker => SoundKind::BreakerFire,
         UnitKind::Tender
         | UnitKind::Excavator
         | UnitKind::Kestrel
         | UnitKind::Gnat
         | UnitKind::Skyhook => SoundKind::Laser,
-        // The detonation borrows the heaviest report until the 2.7 pass.
-        UnitKind::Sapper => SoundKind::BastionFire,
+        UnitKind::Sapper => SoundKind::DemolitionBoom,
         UnitKind::Harvester => SoundKind::Laser,
     }
 }
@@ -539,9 +551,21 @@ impl Game {
                         self.state.current_tick(),
                     );
                 }
-                Event::BuildingCompleted { player, kind, .. } if *player == self.human => {
-                    self.sounds_pending.push((SoundKind::TrainDone, None));
-                    self.toast(format!("{} online", kind.name()));
+                Event::BuildingCompleted {
+                    building,
+                    player,
+                    kind,
+                } if *player == self.human => {
+                    // A completion at a nonzero tier is an upgrade
+                    // finishing: its own cue, its own name.
+                    let tier = self.state.building(*building).map_or(0, |b| b.tier);
+                    if tier > 0 {
+                        self.sounds_pending.push((SoundKind::UpgradeDone, None));
+                        self.toast(format!("{} online", kind.tier_name(tier)));
+                    } else {
+                        self.sounds_pending.push((SoundKind::TrainDone, None));
+                        self.toast(format!("{} online", kind.name()));
+                    }
                 }
                 Event::BuildCancelled { player, refund, .. } if *player == self.human => {
                     self.toast(format!("site salvaged (+{refund} scrap)"));
@@ -701,7 +725,7 @@ impl Game {
                 }
                 Event::ChargeDetonated { at, .. } => {
                     // A mine going off is loud and unmistakable whoever
-                    // owned it: the burst art and the heaviest report.
+                    // owned it.
                     self.fx.push(Effect {
                         kind: EffectKind::Burst {
                             at: world_vec(*at),
@@ -710,7 +734,7 @@ impl Game {
                         age: 0.0,
                     });
                     self.sounds_pending
-                        .push((SoundKind::BastionFire, Some(world_vec(*at))));
+                        .push((SoundKind::DemolitionBoom, Some(world_vec(*at))));
                 }
                 Event::ShellLanded {
                     player,

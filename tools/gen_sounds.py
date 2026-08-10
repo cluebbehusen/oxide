@@ -57,6 +57,8 @@ SFX_CATEGORY_BUDGETS = {
     "result": (3.0, 0.50),
 }
 SFX_ATTACK_AUDIBILITY_NAMES = {
+    "attack_breaker",
+    "demolition_boom",
     "attack_flakhound",
     "attack_flak_turret",
     "flak",
@@ -144,6 +146,12 @@ SFX_METADATA = (
         "01-flak-turret-paired-yokes.gif",
     ),
     ("flak", "signature-weapon", 0.30, 0.12, "01-flak-turret-paired-yokes.gif"),
+    ("attack_warden", "generic-weapon", 0.30, 0.10, None),
+    ("attack_breaker", "signature-weapon", 0.55, 0.15, None),
+    ("avalanche_launch", "signature-weapon", 0.50, 0.15, None),
+    ("bomb_release", "signature-weapon", 0.45, 0.15, None),
+    ("demolition_boom", "destruction", 0.80, 0.20, None),
+    ("upgrade_done", "economy", 0.55, 0.10, None),
     (
         "attack_bombard",
         "signature-weapon",
@@ -203,7 +211,13 @@ EXPECTED_SFX_SHA256 = {
     "defeat.wav": "ae70d17788e2a91f63ebac69d0c302ba30d101ec157bd2a30caddff1342a387b",
     "denied.wav": "e77550193b4ce7615f6aae8afe9e817f55c8df84ff58361b5703d6cd0de2714c",
     "deposit.wav": "d92bbc7bfd413943db5fe5bd52ef03fcb318ae550a7eb8291fca80ddf6e0a036",
+    "attack_breaker.wav": "33f327ca63858234a34ce4ddcba6d5cf72f77c1ecddc497a77219a30771fc3e2",
+    "attack_warden.wav": "9c094a4623eeca1d205db2eba26efbb54c9d559bdb56871eae79e7428739697c",
+    "avalanche_launch.wav": "e56a8da38dfab471ccd248716f41498cc6954c1dbea9a1a3f0b7804df97d2afd",
+    "bomb_release.wav": "6b18f6e7db76d0a51a46930f3e17c017055575e3daec2dae01372a130d489413",
+    "demolition_boom.wav": "8a7d117cc678fb98bba9b2d4ba72cb26bdb47c7ff77fa100256d767e14be69cd",
     "flak.wav": "bb4566e35ae2c1a0f080913b29514b0ef262f9a8eec7a46a34b3a4b32b61f16c",
+    "upgrade_done.wav": "f60e6045845b53946224d33ce1cc8dbf96671903893a36fe3a0738c73ea646f0",
     "laser.wav": "252519a8fb00d4587deefb182d1025c2d6c309d63f51d176119e39f24bdf63cd",
     "laser2.wav": "b44d1b4311b750fc6005b22d1a6021db39d1dbdbddabce7dd240d19a0b5ac1b3",
     "rail_fire.wav": "562f5072e5bf73377ee6db5180403f867c0dc5b55e2577cb3043f5afd43f3d14",
@@ -1206,6 +1220,99 @@ def sfx_building_boom() -> np.ndarray:
     )
 
 
+def sfx_warden() -> np.ndarray:
+    # The Warden's fork cannon: the sentinel zap grown up — lower,
+    # longer, with more chest and the same dry report.
+    return sfx_finish(
+        sfx_crush(
+            sfx_zap(731, 640.0, 150.0, 0.17, thump=0.8, sync_gain=0.45, sharp=4.8),
+            10,
+            2,
+        ),
+        highpass=85,
+        peak=0.87,
+    )
+
+
+def sfx_breaker() -> np.ndarray:
+    # The siege mortar: one crack into the deepest pound in the roster,
+    # still leading with energy above 180 Hz for laptop speakers.
+    canvas = SfxCanvas(0.85)
+    canvas.add(sfx_crack(741, noise_gain=1.1), 0.0, 1.0)
+    canvas.add(sfx_pound(742, 118.0, 42.0, 0.5, bloom=0.85, sharp=4.2), 0.006, 0.9)
+    result = sfx_crush(sfx_drive(canvas.output(), 2.1), 10, 2)
+    result = sfx_slapback(result, 0.14, 2, 0.26)
+    return sfx_finish(result, highpass=52, peak=0.9)
+
+
+def sfx_avalanche_launch() -> np.ndarray:
+    # The rocket bank leaving its tubes: a dark fused-noise sweep rising
+    # out of a soft ignition, no impact — the shells land elsewhere.
+    n = int(0.55 * SFX_RATE)
+    rush = sfx_bandpass(sfx_noise(n, 751), 380, 3200)
+    ramp = np.linspace(0.3, 1.0, n) * sfx_decay(n, 1.6)
+    body = sfx_softsquare(sfx_glide(n, 180.0, 460.0), 2.0) * sfx_decay(n, 2.4)
+    canvas = SfxCanvas(0.7)
+    canvas.add(sfx_attack(rush * ramp, 8.0), 0.0, 0.9)
+    canvas.add(body, 0.02, 0.3)
+    return sfx_finish(
+        sfx_space(sfx_crush(canvas.output(), 10, 3), 0.10, tail=0.2),
+        highpass=90,
+        peak=0.85,
+    )
+
+
+def sfx_bomb_release() -> np.ndarray:
+    # The bay opens and the load drops away: one falling glide with a
+    # mechanical unlatch, no boom — the landing shell owns the boom.
+    canvas = SfxCanvas(0.5)
+    latch_frames = int(0.06 * SFX_RATE)
+    latch = sfx_bandpass(sfx_noise(latch_frames, 761), 1200, 4200) * sfx_decay(
+        latch_frames, 7.0
+    )
+    canvas.add(sfx_attack(latch, 3.0), 0.0, 0.5)
+    n = int(0.4 * SFX_RATE)
+    fall = sfx_softsquare(sfx_glide(n, 520.0, 190.0), 2.4) * sfx_decay(n, 2.0)
+    canvas.add(fall, 0.04, 0.6)
+    return sfx_finish(
+        sfx_crush(canvas.output(), 10, 3),
+        highpass=120,
+        peak=0.8,
+    )
+
+
+def sfx_demolition_boom() -> np.ndarray:
+    # One buried charge, one gesture: a hard crack fused straight into a
+    # floor-shaking pound with missing-fundamental voicing. Serves the
+    # Scuttle Charge and the Sapper alike.
+    canvas = SfxCanvas(0.9)
+    canvas.add(sfx_crack(771, noise_gain=1.2), 0.0, 1.0)
+    canvas.add(sfx_pound(772, 112.0, 38.0, 0.55, bloom=0.95, sharp=3.8), 0.004, 0.9)
+    result = sfx_crush(sfx_drive(canvas.output(), 2.2), 9, 3)
+    result = sfx_slapback(result, 0.15, 2, 0.28)
+    return sfx_finish(result, highpass=52, peak=0.9)
+
+
+def sfx_upgrade_done() -> np.ndarray:
+    # The works comes back online a rung higher: the train_done vent
+    # into a two-step RISING figure (D up to A — reserved rising motion,
+    # kin to victory's, never the falling tritone).
+    canvas = SfxCanvas(0.8)
+    vent_frames = int(0.11 * SFX_RATE)
+    vent = sfx_bandpass(sfx_noise(vent_frames, 781), 700, 2800) * sfx_decay(
+        vent_frames, 6.0
+    )
+    canvas.add(sfx_attack(vent, 6.0), 0.0, 0.3)
+    bell_frames = int(0.5 * SFX_RATE)
+    canvas.add(sfx_bell(bell_frames, 293.66, ratio=2.0, index=1.1, sharp=4.5), 0.04, 0.55)
+    canvas.add(sfx_bell(bell_frames, 440.0, ratio=3.01, index=1.5, sharp=5.0), 0.2, 0.7)
+    return sfx_finish(
+        sfx_space(sfx_crush(canvas.output(), 11, 2), 0.16, tail=0.3),
+        highpass=105,
+        peak=0.8,
+    )
+
+
 SFX_BUILDERS = {
     "click": sfx_click,
     "ack": sfx_ack,
@@ -1227,6 +1334,12 @@ SFX_BUILDERS = {
     "attack_flakhound": sfx_flakhound,
     "attack_flak_turret": sfx_flak_turret,
     "flak": sfx_flak,
+    "attack_warden": sfx_warden,
+    "attack_breaker": sfx_breaker,
+    "avalanche_launch": sfx_avalanche_launch,
+    "bomb_release": sfx_bomb_release,
+    "demolition_boom": sfx_demolition_boom,
+    "upgrade_done": sfx_upgrade_done,
     "attack_bombard": sfx_bombard,
     "attack_bastion": sfx_bastion,
     "artillery_launch": sfx_artillery_launch,

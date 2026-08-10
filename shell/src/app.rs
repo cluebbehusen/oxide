@@ -239,6 +239,12 @@ impl Mixer {
             | SoundKind::Artillery
             | SoundKind::ArtilleryLaunch => 0.2,
             SoundKind::FlakhoundFire | SoundKind::FlakTurretFire => 0.12,
+            SoundKind::WardenFire => 0.1,
+            SoundKind::BreakerFire
+            | SoundKind::AvalancheFire
+            | SoundKind::BombRelease
+            | SoundKind::DemolitionBoom => 0.2,
+            SoundKind::UpgradeDone => 0.3,
             SoundKind::StingerFire
             | SoundKind::BuzzardFire
             | SoundKind::DarterFire
@@ -277,6 +283,12 @@ impl Mixer {
             SoundKind::WispFire => 0.23,
             SoundKind::BastionFire => 0.55,
             SoundKind::FlakTurretFire => 0.34,
+            SoundKind::WardenFire => 0.3,
+            SoundKind::BreakerFire => 0.55,
+            SoundKind::AvalancheFire => 0.5,
+            SoundKind::BombRelease => 0.45,
+            SoundKind::DemolitionBoom => 0.65,
+            SoundKind::UpgradeDone => 0.35,
         }
     }
 
@@ -314,6 +326,12 @@ impl Mixer {
             SoundKind::WispFire => &sounds.attack_wisp,
             SoundKind::BastionFire => &sounds.attack_bastion,
             SoundKind::FlakTurretFire => &sounds.attack_flak_turret,
+            SoundKind::WardenFire => &sounds.attack_warden,
+            SoundKind::BreakerFire => &sounds.attack_breaker,
+            SoundKind::AvalancheFire => &sounds.avalanche_launch,
+            SoundKind::BombRelease => &sounds.bomb_release,
+            SoundKind::DemolitionBoom => &sounds.demolition_boom,
+            SoundKind::UpgradeDone => &sounds.upgrade_done,
         }
     }
 

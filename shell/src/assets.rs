@@ -1494,6 +1494,18 @@ pub struct Sounds {
     pub attack_talon: Sound,
     /// A Wisp's compact interceptor burst.
     pub attack_wisp: Sound,
+    /// The Warden's fork cannon.
+    pub attack_warden: Sound,
+    /// The Breaker's siege mortar.
+    pub attack_breaker: Sound,
+    /// The Avalanche bank leaving its tubes.
+    pub avalanche_launch: Sound,
+    /// A bomber's bay opening and its load dropping away.
+    pub bomb_release: Sound,
+    /// A buried charge or Sapper going up.
+    pub demolition_boom: Sound,
+    /// A works coming back online one rung higher.
+    pub upgrade_done: Sound,
     /// A Bastion's emplaced artillery report.
     pub attack_bastion: Sound,
     /// A Flak Turret's paired-yoke burst.
@@ -1547,6 +1559,12 @@ impl Sounds {
             attack_darter: clip("attack_darter").await?,
             attack_talon: clip("attack_talon").await?,
             attack_wisp: clip("attack_wisp").await?,
+            attack_warden: clip("attack_warden").await?,
+            attack_breaker: clip("attack_breaker").await?,
+            avalanche_launch: clip("avalanche_launch").await?,
+            bomb_release: clip("bomb_release").await?,
+            demolition_boom: clip("demolition_boom").await?,
+            upgrade_done: clip("upgrade_done").await?,
             attack_bastion: clip("attack_bastion").await?,
             attack_flak_turret: clip("attack_flak_turret").await?,
             music_menu: clip("music_menu").await?,
@@ -1571,13 +1589,14 @@ impl Sounds {
 mod tests {
     use super::*;
 
-    const SOUND_NAMES: [&str; 34] = [
+    const SOUND_NAMES: [&str; 40] = [
         "ack",
         "alert",
         "artillery_boom",
         "artillery_launch",
         "attack_bastion",
         "attack_bombard",
+        "attack_breaker",
         "attack_buzzard",
         "attack_darter",
         "attack_flak_turret",
@@ -1587,10 +1606,14 @@ mod tests {
         "attack_sentinel",
         "attack_stinger",
         "attack_talon",
+        "attack_warden",
         "attack_wisp",
+        "avalanche_launch",
+        "bomb_release",
         "building_boom",
         "click",
         "defeat",
+        "demolition_boom",
         "denied",
         "deposit",
         "flak",
@@ -1605,6 +1628,7 @@ mod tests {
         "rail_fire",
         "train_done",
         "unit_death",
+        "upgrade_done",
         "victory",
     ];
 
