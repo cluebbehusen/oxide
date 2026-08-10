@@ -51,6 +51,13 @@ pub(crate) enum UnitKindArg {
     Darter,
     Talon,
     Wisp,
+    Warden,
+    Tender,
+    Excavator,
+    Kestrel,
+    Gnat,
+    Shrike,
+    Sylph,
 }
 
 impl From<UnitKindArg> for UnitKind {
@@ -67,6 +74,13 @@ impl From<UnitKindArg> for UnitKind {
             UnitKindArg::Darter => UnitKind::Darter,
             UnitKindArg::Talon => UnitKind::Talon,
             UnitKindArg::Wisp => UnitKind::Wisp,
+            UnitKindArg::Warden => UnitKind::Warden,
+            UnitKindArg::Tender => UnitKind::Tender,
+            UnitKindArg::Excavator => UnitKind::Excavator,
+            UnitKindArg::Kestrel => UnitKind::Kestrel,
+            UnitKindArg::Gnat => UnitKind::Gnat,
+            UnitKindArg::Shrike => UnitKind::Shrike,
+            UnitKindArg::Sylph => UnitKind::Sylph,
         }
     }
 }

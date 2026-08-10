@@ -529,6 +529,11 @@ fn command_behavior_in(
                     UnitKind::Sentinel | UnitKind::Flakhound | UnitKind::Stinger => {
                         behavior.fighters += 1;
                     }
+                    UnitKind::Warden | UnitKind::Shrike | UnitKind::Sylph => {
+                        behavior.fighters += 1;
+                    }
+                    UnitKind::Tender | UnitKind::Excavator | UnitKind::Kestrel | UnitKind::Gnat => {
+                    }
                 },
                 Command::Build { kind, .. } => match kind {
                     BuildingKind::Fabricator | BuildingKind::Reclaimer => {

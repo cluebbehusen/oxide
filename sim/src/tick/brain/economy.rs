@@ -60,9 +60,18 @@ pub(super) fn build(
     if tile_adjacent_to_rect(tile, anchor, size) {
         let start_hp = stats.max_hp / 5;
         let ramp = stats.max_hp - start_hp;
+        // An Excavator's crew-tick counts double: same ramp, half the
+        // wall clock, telescoping exactly like a second pair of hands.
+        let rate = state
+            .unit(id)
+            .expect("caller checked")
+            .kind
+            .stats()
+            .build_rate;
         let b = state.building_mut(site).expect("just seen");
-        let step = (ramp * (b.progress + 1) / build_ticks) - (ramp * b.progress / build_ticks);
-        b.progress += 1;
+        let advanced = (b.progress + rate).min(build_ticks);
+        let step = (ramp * advanced / build_ticks) - (ramp * b.progress / build_ticks);
+        b.progress = advanced;
         // Both the hp gain and the completion are buffered and applied
         // after damage — see PendingHpGain. The builder learns the site is
         // done next tick, through the built-site branch above.

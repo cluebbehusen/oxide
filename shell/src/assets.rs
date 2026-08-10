@@ -100,6 +100,23 @@ pub struct Sprites {
     wisp: [Rect; 3],
     wisp_move: [[Rect; 3]; 2],
     wisp_action: [[Rect; 3]; 4],
+    warden: [Rect; 3],
+    warden_move: [[Rect; 3]; 2],
+    warden_action: [[Rect; 3]; 4],
+    shrike: [Rect; 3],
+    shrike_move: [[Rect; 3]; 2],
+    shrike_action: [[Rect; 3]; 4],
+    sylph: [Rect; 3],
+    sylph_move: [[Rect; 3]; 2],
+    sylph_action: [[Rect; 3]; 4],
+    tender: [Rect; 3],
+    tender_move: [[Rect; 3]; 2],
+    excavator: [Rect; 3],
+    excavator_move: [[Rect; 3]; 2],
+    kestrel: [Rect; 3],
+    kestrel_move: [[Rect; 3]; 2],
+    gnat: [Rect; 3],
+    gnat_move: [[Rect; 3]; 2],
 }
 
 fn faction_index(faction: Faction) -> usize {
@@ -462,6 +479,8 @@ fn unit_action_suffixes(kind: UnitKind) -> &'static [&'static str] {
         | UnitKind::Wisp => &ACTION_SUFFIXES_4,
         UnitKind::Lancer | UnitKind::Bombard => &ACTION_SUFFIXES_6,
         UnitKind::Flakhound => &ACTION_SUFFIXES_9,
+        UnitKind::Warden | UnitKind::Shrike | UnitKind::Sylph => &ACTION_SUFFIXES_4,
+        UnitKind::Tender | UnitKind::Excavator | UnitKind::Kestrel | UnitKind::Gnat => &[],
     }
 }
 
@@ -482,7 +501,7 @@ fn building_work_suffixes(kind: BuildingKind) -> &'static [&'static str] {
 
 /// Every kind the shell must find art for.
 #[cfg(test)]
-const ALL_UNIT_KINDS: [UnitKind; 11] = [
+const ALL_UNIT_KINDS: [UnitKind; 18] = [
     UnitKind::Harvester,
     UnitKind::Sentinel,
     UnitKind::Scuttler,
@@ -494,6 +513,13 @@ const ALL_UNIT_KINDS: [UnitKind; 11] = [
     UnitKind::Darter,
     UnitKind::Talon,
     UnitKind::Wisp,
+    UnitKind::Warden,
+    UnitKind::Tender,
+    UnitKind::Excavator,
+    UnitKind::Kestrel,
+    UnitKind::Gnat,
+    UnitKind::Shrike,
+    UnitKind::Sylph,
 ];
 
 const ALL_BUILDING_KINDS: [BuildingKind; 11] = [
@@ -595,6 +621,13 @@ fn atlas_keys() -> Vec<String> {
         UnitKind::Darter,
         UnitKind::Talon,
         UnitKind::Wisp,
+        UnitKind::Warden,
+        UnitKind::Tender,
+        UnitKind::Excavator,
+        UnitKind::Kestrel,
+        UnitKind::Gnat,
+        UnitKind::Shrike,
+        UnitKind::Sylph,
     ] {
         for suffix in MOVE_SUFFIXES {
             keys.extend(variant_keys(unit_stem(kind), suffix));
@@ -777,6 +810,23 @@ impl Sprites {
             wisp: unit(UnitKind::Wisp)?,
             wisp_move: variant_rows(&rects, unit_stem(UnitKind::Wisp), MOVE_SUFFIXES)?,
             wisp_action: variant_rows(&rects, unit_stem(UnitKind::Wisp), ACTION_SUFFIXES_4)?,
+            warden: unit(UnitKind::Warden)?,
+            warden_move: variant_rows(&rects, unit_stem(UnitKind::Warden), MOVE_SUFFIXES)?,
+            warden_action: variant_rows(&rects, unit_stem(UnitKind::Warden), ACTION_SUFFIXES_4)?,
+            shrike: unit(UnitKind::Shrike)?,
+            shrike_move: variant_rows(&rects, unit_stem(UnitKind::Shrike), MOVE_SUFFIXES)?,
+            shrike_action: variant_rows(&rects, unit_stem(UnitKind::Shrike), ACTION_SUFFIXES_4)?,
+            sylph: unit(UnitKind::Sylph)?,
+            sylph_move: variant_rows(&rects, unit_stem(UnitKind::Sylph), MOVE_SUFFIXES)?,
+            sylph_action: variant_rows(&rects, unit_stem(UnitKind::Sylph), ACTION_SUFFIXES_4)?,
+            tender: unit(UnitKind::Tender)?,
+            tender_move: variant_rows(&rects, unit_stem(UnitKind::Tender), MOVE_SUFFIXES)?,
+            excavator: unit(UnitKind::Excavator)?,
+            excavator_move: variant_rows(&rects, unit_stem(UnitKind::Excavator), MOVE_SUFFIXES)?,
+            kestrel: unit(UnitKind::Kestrel)?,
+            kestrel_move: variant_rows(&rects, unit_stem(UnitKind::Kestrel), MOVE_SUFFIXES)?,
+            gnat: unit(UnitKind::Gnat)?,
+            gnat_move: variant_rows(&rects, unit_stem(UnitKind::Gnat), MOVE_SUFFIXES)?,
         })
     }
 
@@ -1078,6 +1128,13 @@ impl Sprites {
             UnitKind::Darter => &self.darter_move,
             UnitKind::Talon => &self.talon_move,
             UnitKind::Wisp => &self.wisp_move,
+            UnitKind::Warden => &self.warden_move,
+            UnitKind::Tender => &self.tender_move,
+            UnitKind::Excavator => &self.excavator_move,
+            UnitKind::Kestrel => &self.kestrel_move,
+            UnitKind::Gnat => &self.gnat_move,
+            UnitKind::Shrike => &self.shrike_move,
+            UnitKind::Sylph => &self.sylph_move,
         };
         frame
             .checked_sub(1)
@@ -1119,6 +1176,13 @@ impl Sprites {
             UnitKind::Darter => &self.darter,
             UnitKind::Talon => &self.talon,
             UnitKind::Wisp => &self.wisp,
+            UnitKind::Warden => &self.warden,
+            UnitKind::Tender => &self.tender,
+            UnitKind::Excavator => &self.excavator,
+            UnitKind::Kestrel => &self.kestrel,
+            UnitKind::Gnat => &self.gnat,
+            UnitKind::Shrike => &self.shrike,
+            UnitKind::Sylph => &self.sylph,
         }
     }
 
@@ -1135,6 +1199,12 @@ impl Sprites {
             UnitKind::Darter => &self.darter_action,
             UnitKind::Talon => &self.talon_action,
             UnitKind::Wisp => &self.wisp_action,
+            UnitKind::Warden => &self.warden_action,
+            UnitKind::Shrike => &self.shrike_action,
+            UnitKind::Sylph => &self.sylph_action,
+            UnitKind::Tender | UnitKind::Excavator | UnitKind::Kestrel | UnitKind::Gnat => {
+                return None;
+            }
         };
         rows.get(frame)
     }

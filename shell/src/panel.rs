@@ -225,6 +225,13 @@ pub fn unit_flavor(kind: UnitKind) -> &'static str {
         UnitKind::Stinger => "Low-cost ground anti-air unit.",
         UnitKind::Darter => "Fast aircraft that attacks ground targets.",
         UnitKind::Wisp => "Fast interceptor that attacks air targets only.",
+        UnitKind::Warden => "Tier-two line brawler: the wall that walks.",
+        UnitKind::Tender => "Armored mobile welder: field sustain for long pushes.",
+        UnitKind::Excavator => "Super-harvester: digs faster, hauls triple, builds at double pace.",
+        UnitKind::Kestrel => "Unarmed scout flyer with far sight.",
+        UnitKind::Gnat => "Unarmed scout flyer with far sight.",
+        UnitKind::Shrike => "Heavy interceptor: the bomber's escort and its answer.",
+        UnitKind::Sylph => "Heavy interceptor: lighter, quicker, hungrier.",
     }
 }
 
@@ -1228,8 +1235,9 @@ mod tests {
         assert_eq!(panel.title, "FOUNDRY");
         assert_eq!(
             panel.cards.len(),
-            4,
-            "three units plus the rally affordance (0.15: the Scuttler trains here)"
+            5,
+            "four units plus the rally affordance (0.15: the Scuttler and \
+             the Excavator train here)"
         );
         assert_eq!(panel.cards[0].title, "Set rally");
         assert_eq!(panel.cards[0].action, CardAction::ArmRally);

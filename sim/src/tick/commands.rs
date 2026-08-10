@@ -172,9 +172,9 @@ fn for_owned_units(
     applied
 }
 
-/// [`for_owned_units`] narrowed to the labor crew — the three economy
-/// verbs all address the same harvesters, and each reports `NoValidUnits`
-/// when the selection holds none.
+/// [`for_owned_units`] narrowed to the gathering crew — Harvest and
+/// Salvage address machines with cargo gear, and each reports
+/// `NoValidUnits` when the selection holds none.
 fn for_owned_workers(
     state: &mut State,
     player: PlayerId,
@@ -186,6 +186,28 @@ fn for_owned_workers(
         if let Some(unit) = state.unit_mut(id)
             && unit.player == player
             && unit.kind.stats().harvest.is_some()
+        {
+            f(unit);
+            applied += 1;
+        }
+    }
+    applied
+}
+
+/// [`for_owned_units`] narrowed to the welding crew: the Repair verbs
+/// take anyone carrying a torch — harvesters, Excavators, and the
+/// Tender alike.
+fn for_owned_welders(
+    state: &mut State,
+    player: PlayerId,
+    ids: &[UnitId],
+    mut f: impl FnMut(&mut crate::state::Unit),
+) -> usize {
+    let mut applied = 0;
+    for &id in ids {
+        if let Some(unit) = state.unit_mut(id)
+            && unit.player == player
+            && unit.kind.stats().welder
         {
             f(unit);
             applied += 1;
@@ -867,7 +889,7 @@ fn apply_repair(
         return Err(RejectReason::InvalidTarget);
     }
     let mut landed = 0;
-    let applied = for_owned_workers(state, player, units, |unit| {
+    let applied = for_owned_welders(state, player, units, |unit| {
         if assign(unit, Order::Repair { building }, queue) {
             landed += 1;
         }
@@ -943,7 +965,7 @@ fn apply_repair_unit(
     }
     let crew: Vec<UnitId> = units.iter().copied().filter(|&id| id != target).collect();
     let mut landed = 0;
-    let applied = for_owned_workers(state, player, &crew, |unit| {
+    let applied = for_owned_welders(state, player, &crew, |unit| {
         if assign(unit, Order::RepairUnit { unit: target }, queue) {
             landed += 1;
         }
@@ -1079,6 +1101,18 @@ fn apply_train(
         }
         if b.queue.len() >= QUEUE_CAP {
             return Err(RejectReason::QueueFull);
+        }
+        // The tree's production gate: some machines wait on completed
+        // tech works beyond their producer (the same rule for every
+        // command source).
+        let met = kind.stats().requires.iter().all(|required| {
+            state
+                .buildings
+                .iter()
+                .any(|owned| owned.player == player && owned.kind == *required && owned.built)
+        });
+        if !met {
+            return Err(RejectReason::MissingPrerequisite);
         }
     }
     let bank = &mut state.player_mut(player).scrap;

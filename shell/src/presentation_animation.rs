@@ -597,6 +597,20 @@ fn unit_attack_timing(kind: UnitKind) -> AttackTiming {
             report_ticks: 2.0,
             recover_ticks: 4.0,
         },
+        UnitKind::Warden => AttackTiming {
+            report_ticks: 2.0,
+            recover_ticks: 4.0,
+        },
+        UnitKind::Shrike | UnitKind::Sylph => AttackTiming {
+            report_ticks: 2.0,
+            recover_ticks: 3.0,
+        },
+        UnitKind::Tender | UnitKind::Excavator | UnitKind::Kestrel | UnitKind::Gnat => {
+            AttackTiming {
+                report_ticks: 1.0,
+                recover_ticks: 1.0,
+            }
+        }
         UnitKind::Darter | UnitKind::Talon | UnitKind::Wisp => AttackTiming {
             report_ticks: 2.0,
             recover_ticks: 3.0,

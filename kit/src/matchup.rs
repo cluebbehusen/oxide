@@ -92,7 +92,7 @@ fn structure_cost(kind: BuildingKind) -> u32 {
     kind.base_stats().construction.map(|c| c.cost).unwrap_or(0)
 }
 
-const ALL_KINDS: [UnitKind; 11] = [
+const ALL_KINDS: [UnitKind; 18] = [
     UnitKind::Harvester,
     UnitKind::Sentinel,
     UnitKind::Scuttler,
@@ -104,6 +104,13 @@ const ALL_KINDS: [UnitKind; 11] = [
     UnitKind::Stinger,
     UnitKind::Darter,
     UnitKind::Wisp,
+    UnitKind::Warden,
+    UnitKind::Tender,
+    UnitKind::Excavator,
+    UnitKind::Kestrel,
+    UnitKind::Gnat,
+    UnitKind::Shrike,
+    UnitKind::Sylph,
 ];
 
 /// Total scrap an army costs.

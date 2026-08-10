@@ -43,6 +43,23 @@ pub enum UnitKind {
     Talon,
     /// Cupric air-superiority flyer: a swarm wing — fragile, rapid, cheap.
     Wisp,
+    /// Tier-two line brawler: an upgunned sentinel-class hull. The
+    /// frontline that lets tier two fight as a wall, not a clinic.
+    Warden,
+    /// Armored mobile welder: field sustain for long pushes. No harvest
+    /// gear — its torch is the whole job.
+    Tender,
+    /// Tier-two super-harvester: digs faster, hauls triple, and stands
+    /// works up at twice the pace. The juiciest raid target alive.
+    Excavator,
+    /// Ferrous scout flyer: fast, unarmed, far-sighted.
+    Kestrel,
+    /// Cupric scout flyer: faster still, frailer still.
+    Gnat,
+    /// Ferrous heavy interceptor: the bomber's escort and its answer.
+    Shrike,
+    /// Cupric heavy interceptor: lighter, quicker, hungrier.
+    Sylph,
 }
 
 /// Every building type.
@@ -195,6 +212,17 @@ pub struct UnitStats {
     pub harvest: Option<HarvestStats>,
     /// Fog-of-war reveal radius, in tiles.
     pub vision: i32,
+    /// Building kinds the owner must have COMPLETED before training this
+    /// unit — the tech tree's production gate, identical for humans and
+    /// bots. Empty means the producer alone decides.
+    pub requires: &'static [BuildingKind],
+    /// Whether this machine carries a welding torch: eligibility for the
+    /// Repair and RepairUnit crews (and construction labor rides with
+    /// `harvest` or a torch).
+    pub welder: bool,
+    /// Construction work applied per adjacent tick (1 for everyone but
+    /// the Excavator).
+    pub build_rate: u32,
 }
 
 impl UnitStats {
@@ -327,6 +355,16 @@ pub enum Role {
     AirGround,
     /// The air-superiority flyer.
     AirAir,
+    /// Tier-two line brawler (shared).
+    Warden,
+    /// Mobile welder (shared).
+    Tender,
+    /// Super-harvester (shared).
+    Excavator,
+    /// Unarmed far-sighted flyer — faction-varied.
+    Scout,
+    /// Heavy air-superiority flyer — faction-varied.
+    Interceptor,
 }
 
 impl Role {
@@ -344,6 +382,13 @@ impl Role {
             (Role::AirGround, Faction::Cupric) => UnitKind::Darter,
             (Role::AirAir, Faction::Ferrous) => UnitKind::Talon,
             (Role::AirAir, Faction::Cupric) => UnitKind::Wisp,
+            (Role::Warden, _) => UnitKind::Warden,
+            (Role::Tender, _) => UnitKind::Tender,
+            (Role::Excavator, _) => UnitKind::Excavator,
+            (Role::Scout, Faction::Ferrous) => UnitKind::Kestrel,
+            (Role::Scout, Faction::Cupric) => UnitKind::Gnat,
+            (Role::Interceptor, Faction::Ferrous) => UnitKind::Shrike,
+            (Role::Interceptor, Faction::Cupric) => UnitKind::Sylph,
         }
     }
 }
@@ -359,8 +404,17 @@ impl UnitKind {
             | UnitKind::Scuttler
             | UnitKind::Lancer
             | UnitKind::Bombard => None,
-            UnitKind::Flakhound | UnitKind::Buzzard | UnitKind::Talon => Some(Faction::Ferrous),
-            UnitKind::Stinger | UnitKind::Darter | UnitKind::Wisp => Some(Faction::Cupric),
+            UnitKind::Warden | UnitKind::Tender | UnitKind::Excavator => None,
+            UnitKind::Flakhound
+            | UnitKind::Buzzard
+            | UnitKind::Talon
+            | UnitKind::Kestrel
+            | UnitKind::Shrike => Some(Faction::Ferrous),
+            UnitKind::Stinger
+            | UnitKind::Darter
+            | UnitKind::Wisp
+            | UnitKind::Gnat
+            | UnitKind::Sylph => Some(Faction::Cupric),
         }
     }
 
@@ -378,6 +432,13 @@ impl UnitKind {
             UnitKind::Darter => "darter",
             UnitKind::Talon => "talon",
             UnitKind::Wisp => "wisp",
+            UnitKind::Warden => "warden",
+            UnitKind::Tender => "tender",
+            UnitKind::Excavator => "excavator",
+            UnitKind::Kestrel => "kestrel",
+            UnitKind::Gnat => "gnat",
+            UnitKind::Shrike => "shrike",
+            UnitKind::Sylph => "sylph",
         }
     }
 
@@ -392,6 +453,11 @@ impl UnitKind {
             UnitKind::Flakhound | UnitKind::Stinger => Role::AntiAir,
             UnitKind::Buzzard | UnitKind::Darter => Role::AirGround,
             UnitKind::Talon | UnitKind::Wisp => Role::AirAir,
+            UnitKind::Warden => Role::Warden,
+            UnitKind::Tender => Role::Tender,
+            UnitKind::Excavator => Role::Excavator,
+            UnitKind::Kestrel | UnitKind::Gnat => Role::Scout,
+            UnitKind::Shrike | UnitKind::Sylph => Role::Interceptor,
         }
     }
 }
@@ -414,6 +480,9 @@ const HARVESTER: UnitStats = UnitStats {
         ticks_per_scrap: 10, // 2 scrap/s while extracting
     }),
     vision: 6,
+    requires: &[],
+    welder: true,
+    build_rate: 1,
 };
 
 const SENTINEL: UnitStats = UnitStats {
@@ -462,6 +531,9 @@ const SENTINEL: UnitStats = UnitStats {
     aggro_range: Fx::lit("5"),
     harvest: None,
     vision: 7, // strictly wider than aggro, so acquired targets are seen
+    requires: &[],
+    welder: false,
+    build_rate: 1,
 };
 
 const SCUTTLER: UnitStats = UnitStats {
@@ -484,6 +556,9 @@ const SCUTTLER: UnitStats = UnitStats {
     aggro_range: Fx::lit("5"),
     harvest: None,
     vision: 6,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
 };
 
 const LANCER: UnitStats = UnitStats {
@@ -510,6 +585,9 @@ const LANCER: UnitStats = UnitStats {
     aggro_range: Fx::lit("5"),
     harvest: None,
     vision: 7,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
 };
 
 const BOMBARD: UnitStats = UnitStats {
@@ -532,6 +610,9 @@ const BOMBARD: UnitStats = UnitStats {
     aggro_range: Fx::lit("9.5"), // its whole spotter-enabled firing envelope
     harvest: None,
     vision: 5, // it cannot see as far as it shoots — on purpose
+    requires: &[],
+    welder: false,
+    build_rate: 1,
 };
 
 const FLAKHOUND: UnitStats = UnitStats {
@@ -554,6 +635,9 @@ const FLAKHOUND: UnitStats = UnitStats {
     aggro_range: Fx::lit("5"),
     harvest: None,
     vision: 7,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
 };
 
 const STINGER: UnitStats = UnitStats {
@@ -576,6 +660,9 @@ const STINGER: UnitStats = UnitStats {
     aggro_range: Fx::lit("5"),
     harvest: None,
     vision: 7,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
 };
 
 const BUZZARD: UnitStats = UnitStats {
@@ -602,6 +689,9 @@ const BUZZARD: UnitStats = UnitStats {
     aggro_range: Fx::lit("5"),
     harvest: None,
     vision: 7,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
 };
 
 const DARTER: UnitStats = UnitStats {
@@ -628,6 +718,9 @@ const DARTER: UnitStats = UnitStats {
     aggro_range: Fx::lit("5"),
     harvest: None,
     vision: 7,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
 };
 
 const TALON: UnitStats = UnitStats {
@@ -650,6 +743,9 @@ const TALON: UnitStats = UnitStats {
     aggro_range: Fx::lit("5"),
     harvest: None,
     vision: 8,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
 };
 
 const WISP: UnitStats = UnitStats {
@@ -672,6 +768,151 @@ const WISP: UnitStats = UnitStats {
     aggro_range: Fx::lit("5"),
     harvest: None,
     vision: 8,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+};
+
+const WARDEN: UnitStats = UnitStats {
+    max_hp: 240,
+    speed: Fx::lit("0.09"),
+    radius: Fx::lit("0.45"),
+    cost: 280,
+    train_ticks: 400,
+    domain: Domain::Ground,
+    weapons: &[WeaponStats {
+        damage: 24,
+        range: Fx::lit("3"),
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 25,
+        targets: DomainMask::GROUND,
+        splash: None,
+        indirect: false,
+        projectile: false,
+    }],
+    aggro_range: Fx::lit("5"),
+    harvest: None,
+    vision: 7,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+};
+
+const TENDER: UnitStats = UnitStats {
+    max_hp: 150,
+    speed: Fx::lit("0.11"),
+    radius: Fx::lit("0.38"),
+    cost: 180,
+    train_ticks: 300,
+    domain: Domain::Ground,
+    weapons: &[],
+    aggro_range: Fx::ZERO,
+    harvest: None,
+    vision: 7,
+    requires: &[],
+    welder: true,
+    build_rate: 1,
+};
+
+const EXCAVATOR: UnitStats = UnitStats {
+    max_hp: 160,
+    speed: Fx::lit("0.11"),
+    radius: Fx::lit("0.42"),
+    cost: 200,
+    train_ticks: 350,
+    domain: Domain::Ground,
+    weapons: &[],
+    aggro_range: Fx::ZERO,
+    harvest: Some(HarvestStats {
+        capacity: 30,
+        ticks_per_scrap: 5,
+    }),
+    vision: 6,
+    requires: &[BuildingKind::Fabricator],
+    welder: true,
+    build_rate: 2,
+};
+
+const KESTREL: UnitStats = UnitStats {
+    max_hp: 60,
+    speed: Fx::lit("0.2"),
+    radius: Fx::lit("0.3"),
+    cost: 60,
+    train_ticks: 120,
+    domain: Domain::Air,
+    weapons: &[],
+    aggro_range: Fx::ZERO,
+    harvest: None,
+    vision: 10,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+};
+
+const GNAT: UnitStats = UnitStats {
+    max_hp: 45,
+    speed: Fx::lit("0.22"),
+    radius: Fx::lit("0.26"),
+    cost: 50,
+    train_ticks: 100,
+    domain: Domain::Air,
+    weapons: &[],
+    aggro_range: Fx::ZERO,
+    harvest: None,
+    vision: 10,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+};
+
+const SHRIKE: UnitStats = UnitStats {
+    max_hp: 160,
+    speed: Fx::lit("0.16"),
+    radius: Fx::lit("0.38"),
+    cost: 260,
+    train_ticks: 300,
+    domain: Domain::Air,
+    weapons: &[WeaponStats {
+        damage: 30,
+        range: Fx::lit("4"),
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 30,
+        targets: DomainMask::AIR,
+        splash: None,
+        indirect: false,
+        projectile: false,
+    }],
+    aggro_range: Fx::lit("6"),
+    harvest: None,
+    vision: 8,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+};
+
+const SYLPH: UnitStats = UnitStats {
+    max_hp: 100,
+    speed: Fx::lit("0.21"),
+    radius: Fx::lit("0.3"),
+    cost: 200,
+    train_ticks: 240,
+    domain: Domain::Air,
+    weapons: &[WeaponStats {
+        damage: 16,
+        range: Fx::lit("3.5"),
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 20,
+        targets: DomainMask::AIR,
+        splash: None,
+        indirect: false,
+        projectile: false,
+    }],
+    aggro_range: Fx::lit("6"),
+    harvest: None,
+    vision: 8,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
 };
 
 const FOUNDRY: BuildingStats = BuildingStats {
@@ -680,7 +921,12 @@ const FOUNDRY: BuildingStats = BuildingStats {
     max_hp: 1600,
     size: (2, 2),
     vision: 8,
-    produces: &[UnitKind::Harvester, UnitKind::Sentinel, UnitKind::Scuttler],
+    produces: &[
+        UnitKind::Harvester,
+        UnitKind::Sentinel,
+        UnitKind::Scuttler,
+        UnitKind::Excavator,
+    ],
     weapons: &[],
     // 0.15: buildable — the expansion base and the comeback path. Gated
     // on a Fabricator so a proxy Foundry is a committed tech play, and
@@ -734,6 +980,8 @@ const FABRICATOR: BuildingStats = BuildingStats {
         UnitKind::Bombard,
         UnitKind::Flakhound,
         UnitKind::Stinger,
+        UnitKind::Warden,
+        UnitKind::Tender,
         UnitKind::Buzzard,
         UnitKind::Darter,
         UnitKind::Talon,
@@ -841,6 +1089,10 @@ const AIRWORKS: BuildingStats = BuildingStats {
         UnitKind::Darter,
         UnitKind::Talon,
         UnitKind::Wisp,
+        UnitKind::Kestrel,
+        UnitKind::Gnat,
+        UnitKind::Shrike,
+        UnitKind::Sylph,
     ],
     weapons: &[],
     construction: Some(ConstructionStats {
@@ -993,6 +1245,13 @@ impl UnitKind {
             UnitKind::Darter => &DARTER,
             UnitKind::Talon => &TALON,
             UnitKind::Wisp => &WISP,
+            UnitKind::Warden => &WARDEN,
+            UnitKind::Tender => &TENDER,
+            UnitKind::Excavator => &EXCAVATOR,
+            UnitKind::Kestrel => &KESTREL,
+            UnitKind::Gnat => &GNAT,
+            UnitKind::Shrike => &SHRIKE,
+            UnitKind::Sylph => &SYLPH,
         }
     }
 

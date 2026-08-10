@@ -232,6 +232,13 @@ fn unit_fire_sound(kind: oxide_sim::UnitKind) -> SoundKind {
         UnitKind::Darter => SoundKind::DarterFire,
         UnitKind::Talon => SoundKind::TalonFire,
         UnitKind::Wisp => SoundKind::WispFire,
+        // 0.15 placeholders until the sound pass gives them voices.
+        UnitKind::Warden => SoundKind::SentinelFire,
+        UnitKind::Shrike => SoundKind::TalonFire,
+        UnitKind::Sylph => SoundKind::WispFire,
+        UnitKind::Tender | UnitKind::Excavator | UnitKind::Kestrel | UnitKind::Gnat => {
+            SoundKind::Laser
+        }
         UnitKind::Harvester => SoundKind::Laser,
     }
 }

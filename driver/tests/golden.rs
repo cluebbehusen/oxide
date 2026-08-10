@@ -98,15 +98,15 @@ const SHOWCASE_MAP: [&str; 30] = [
     "#..,,,,,..####..^^^^^...s.S....................#",
     "#..,,,,,..####..^^^^^..........................#",
     "#..............................................#",
+    "#................................~~~~~.........#",
+    "#................................~~~~~.........#",
+    "#................................~~~~~.........#",
     "#..............................................#",
     "#..............................................#",
     "#..............................................#",
     "#..............................................#",
     "#..............................................#",
     "#..............................................#",
-    "#.........................~~~~~................#",
-    "#.........................~~~~~................#",
-    "#.........................~~~~~................#",
     "#..............................................#",
     "#..............................................#",
     "#..............................................#",
@@ -214,6 +214,16 @@ fn showcase_scenario() -> (Scenario, Cast) {
             UnitKind::Sentinel,
             UnitKind::Sentinel,
             UnitKind::Sentinel,
+            // 0.15 additions, interleaved so every victim's shooter
+            // stands one column over (2.24 tiles, inside every range).
+            UnitKind::Warden,
+            UnitKind::Tender,
+            UnitKind::Sentinel,
+            UnitKind::Excavator,
+            UnitKind::Sentinel,
+            oxide_sim::stats::Role::Scout.unit_for(faction),
+            oxide_sim::stats::Role::Interceptor.unit_for(faction),
+            oxide_sim::stats::Role::AntiAir.unit_for(faction),
         ]
     };
     let west: Vec<UnitId> = line(Faction::Ferrous)
@@ -227,11 +237,15 @@ fn showcase_scenario() -> (Scenario, Cast) {
         .map(|(i, kind)| roster.add(1, kind, 8 + i as i32, 22))
         .collect();
     let interloper = roster.add(2, UnitKind::Sentinel, 20, 20);
+    // The same-faction-foes pin must not depend on the interloper
+    // surviving its cameo among thirty-eight hostiles: a second South
+    // Ferrous machine idles in the far corner where nothing ever walks.
+    roster.add(2, UnitKind::Harvester, 44, 2);
 
     // Artillery: far enough off the line that the splash reaches only
     // the other gun, close enough that each is its own spotter.
-    let gun_west = roster.add(0, UnitKind::Bombard, 23, 20);
-    let gun_east = roster.add(1, UnitKind::Bombard, 23, 22);
+    let gun_west = roster.add(0, UnitKind::Bombard, 29, 20);
+    let gun_east = roster.add(1, UnitKind::Bombard, 29, 22);
 
     // Seat 0's standing structures: one of every kind the build palette
     // offers, whole. Its Foundry comes from the map anchor.
@@ -409,6 +423,19 @@ fn opening_orders(cast: &Cast) -> Vec<PlayerCommand> {
         attack(1, e[9], w[9]),
         attack(1, e[10], w[10]),
         attack(2, cast.interloper, w[10]),
+        // The 0.15 roster's wounds: Wardens trade, the flanking
+        // sentinels wound the labor machines, the interceptors clip the
+        // scouts, and the anti-air rear clips the interceptors.
+        attack(0, w[11], e[11]),
+        attack(1, e[11], w[11]),
+        attack(0, w[13], e[12]),
+        attack(1, e[13], w[12]),
+        attack(0, w[15], e[14]),
+        attack(1, e[15], w[14]),
+        attack(0, w[17], e[16]),
+        attack(1, e[17], w[16]),
+        attack(0, w[18], e[17]),
+        attack(1, e[18], w[17]),
         attack(0, cast.guns.0, cast.guns.1),
         attack(1, cast.guns.1, cast.guns.0),
     ]);
@@ -421,7 +448,9 @@ fn disengage(cast: &Cast) -> Vec<PlayerCommand> {
     vec![
         walk(0, cast.west.clone(), 6, 14),
         walk(1, cast.east.clone(), 14, 27),
-        walk(2, vec![cast.interloper], 19, 14),
+        // Clear of the widened west column's march lane (idle aggro
+        // killed it at its old post once the line grew eight slots).
+        walk(2, vec![cast.interloper], 36, 6),
         walk(0, vec![cast.guns.0], 30, 13),
         walk(1, vec![cast.guns.1], 30, 27),
     ]
@@ -454,7 +483,7 @@ fn showcase_state() -> State {
 
 /// Every kind, on every roster that can field it.
 fn every_kind_and_faction() -> impl Iterator<Item = (UnitKind, Faction)> {
-    const KINDS: [UnitKind; 11] = [
+    const KINDS: [UnitKind; 18] = [
         UnitKind::Harvester,
         UnitKind::Sentinel,
         UnitKind::Scuttler,
@@ -466,6 +495,13 @@ fn every_kind_and_faction() -> impl Iterator<Item = (UnitKind, Faction)> {
         UnitKind::Darter,
         UnitKind::Talon,
         UnitKind::Wisp,
+        UnitKind::Warden,
+        UnitKind::Tender,
+        UnitKind::Excavator,
+        UnitKind::Kestrel,
+        UnitKind::Gnat,
+        UnitKind::Shrike,
+        UnitKind::Sylph,
     ];
     KINDS.into_iter().flat_map(|kind| {
         [Faction::Ferrous, Faction::Cupric]

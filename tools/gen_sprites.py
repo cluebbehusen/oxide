@@ -85,6 +85,13 @@ def finish(img: Image.Image, px: int, name: str) -> None:
             "darter",
             "talon",
             "wisp",
+            "warden",
+            "tender",
+            "excavator",
+            "kestrel",
+            "gnat",
+            "shrike",
+            "sylph",
         )
     ):
         img = rim_light(img)
@@ -122,7 +129,7 @@ def pack_atlas() -> None:
     pad = 2
     # Animation rows add many complete 2x2 frames. A wider shelf keeps the
     # deterministic atlas comfortably below common 8192px texture limits.
-    atlas_w = 2048
+    atlas_w = 4096
     entries = sorted(REGISTRY.items(), key=lambda kv: (-kv[1].height, kv[0]))
     placements: dict[str, tuple[int, int, int, int]] = {}
     x, y, shelf_h = pad, pad, 0
@@ -1664,6 +1671,165 @@ def crucible(faction: str, work: int = 0) -> None:
     finish(img, px, f"crucible_{faction}{suffix}")
 
 
+def warden(faction: str, move: int = 0, action: int = 0) -> None:
+    """Tier-two line brawler: a broad plated hull behind twin shield
+    cheeks, one heavy fork cannon dead ahead — the wall that walks."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    body_dy = (0, -1, 1)[move % 3]
+    # Twin tread blocks, heavier than a sentinel's runners.
+    for x in (10, 46):
+        d.rounded_rectangle([s(x), s(20), s(x + 8), s(56)], radius=s(3), fill=(*IRON_DARK, 255))
+        pip_y = (26, 34, 42)[move % 3]
+        d.rectangle([s(x + 2), s(pip_y), s(x + 6), s(pip_y + 6)], fill=(*IRON_LIGHT, 255))
+    # The plated hull: a blunt keep.
+    d.rounded_rectangle(
+        [s(16), s(14 + body_dy), s(48), s(56 + body_dy)], radius=s(5), fill=(*IRON, 255)
+    )
+    d.rounded_rectangle(
+        [s(20), s(20 + body_dy), s(44), s(50 + body_dy)], radius=s(4), fill=(*pal["base"], 255)
+    )
+    # Shield cheeks flanking the gun trench.
+    for x in (18, 40):
+        d.rounded_rectangle(
+            [s(x), s(10 + body_dy), s(x + 6), s(26 + body_dy)], radius=s(2), fill=(*pal["dark"], 255)
+        )
+    # The fork cannon: recoils through the action frames.
+    recoil = (0, 3, 5, 2, 1)[action]
+    d.rectangle([s(29), s(2 + recoil + body_dy), s(35), s(24 + body_dy)], fill=(*IRON_DARK, 255))
+    d.rectangle([s(30), s(4 + recoil + body_dy), s(34), s(10 + recoil + body_dy)], fill=(*pal["light"], 255))
+    if action in (2, 3):
+        d.ellipse([s(28), s(0), s(36), s(8)], fill=(*BONE, 200))
+    d.ellipse([s(28), s(30 + body_dy), s(36), s(38 + body_dy)], fill=(*pal["dark"], 255))
+    suffix = ""
+    if move:
+        suffix = f"_move{move}"
+    if action:
+        suffix = f"_action{action}"
+    finish(img, px, f"warden_{faction}{suffix}")
+
+
+def tender(faction: str, move: int = 0) -> None:
+    """Armored mobile welder: a boxy sled with a jointed torch arm and a
+    coil drum — the field workshop that follows the push."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    dy = (0, -1, 1)[move % 3]
+    for x in (12, 46):
+        d.rounded_rectangle([s(x), s(24), s(x + 6), s(52)], radius=s(2), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle([s(16), s(16 + dy), s(48), s(54 + dy)], radius=s(6), fill=(*IRON, 255))
+    d.rounded_rectangle([s(20), s(22 + dy), s(44), s(48 + dy)], radius=s(4), fill=(*pal["base"], 255))
+    # Coil drum on the back deck.
+    d.ellipse([s(24), s(36 + dy), s(40), s(52 + dy)], fill=(*pal["dark"], 255))
+    d.ellipse([s(28), s(40 + dy), s(36), s(48 + dy)], fill=(*IRON_LIGHT, 255))
+    # The torch arm, folded forward; its tip glows faintly always.
+    d.line([(s(32), s(26 + dy)), (s(24), s(12 + dy)), (s(38), s(6 + dy))], fill=(*IRON_DARK, 255), width=s(4))
+    d.ellipse([s(36), s(3 + dy), s(42), s(9 + dy)], fill=(*SCRAP_LIGHT, 255))
+    suffix = "" if move == 0 else f"_move{move}"
+    finish(img, px, f"tender_{faction}{suffix}")
+
+
+def excavator(faction: str, move: int = 0) -> None:
+    """Tier-two super-harvester: twin bucket arms around a tall hopper —
+    the harvester's silhouette grown into industry."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    dy = (0, -1, 1)[move % 3]
+    for x in (8, 48):
+        d.rounded_rectangle([s(x), s(18), s(x + 8), s(56)], radius=s(3), fill=(*IRON_DARK, 255))
+        pip_y = (24, 33, 42)[move % 3]
+        d.rectangle([s(x + 2), s(pip_y), s(x + 6), s(pip_y + 7)], fill=(*IRON_LIGHT, 255))
+    d.rounded_rectangle([s(16), s(14 + dy), s(48), s(56 + dy)], radius=s(6), fill=(*IRON, 255))
+    # The hopper: a tall amber-stained bin.
+    d.rounded_rectangle([s(22), s(28 + dy), s(42), s(52 + dy)], radius=s(4), fill=(*pal["base"], 255))
+    d.rectangle([s(26), s(34 + dy), s(38), s(48 + dy)], fill=(*SCRAP_DARK, 255))
+    d.rectangle([s(28), s(38 + dy), s(36), s(46 + dy)], fill=(*SCRAP, 255))
+    # Twin bucket arms reaching forward.
+    for x0, x1 in ((18, 26), (38, 46)):
+        d.line([(s((x0 + x1) // 2), s(28 + dy)), (s((x0 + x1) // 2), s(10 + dy))], fill=(*IRON_DARK, 255), width=s(4))
+        d.polygon(
+            [(s(x0), s(4 + dy)), (s(x1), s(4 + dy)), (s(x1 - 2), s(12 + dy)), (s(x0 + 2), s(12 + dy))],
+            fill=(*pal["dark"], 255),
+        )
+    suffix = "" if move == 0 else f"_move{move}"
+    finish(img, px, f"excavator_{faction}{suffix}")
+
+
+def scout_flyer(stem: str, faction: str, move: int = 0) -> None:
+    """Shared scout drawing: a slim delta with a long sensor boom."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    tilt = (0, -2, 2)[move % 3]
+    d.polygon(
+        [(s(32), s(8)), (s(52), s(46 + tilt)), (s(32), s(38)), (s(12), s(46 - tilt))],
+        fill=(*IRON, 255),
+    )
+    d.polygon(
+        [(s(32), s(14)), (s(46), s(42 + tilt)), (s(32), s(34)), (s(18), s(42 - tilt))],
+        fill=(*pal["base"], 255),
+    )
+    # The sensor boom: the eye the whole machine exists for.
+    d.line([(s(32), s(8)), (s(32), s(0))], fill=(*IRON_LIGHT, 255), width=s(3))
+    d.ellipse([s(29), s(0), s(35), s(6)], fill=(*BONE, 255))
+    d.ellipse([s(30), s(24), s(34), s(28)], fill=(*pal["light"], 255))
+    suffix = "" if move == 0 else f"_move{move}"
+    finish(img, px, f"{stem}_{faction}{suffix}")
+
+
+def kestrel(faction: str, move: int = 0) -> None:
+    scout_flyer("kestrel", faction, move)
+
+
+def gnat(faction: str, move: int = 0) -> None:
+    scout_flyer("gnat", faction, move)
+
+
+def interceptor_flyer(stem: str, faction: str, move: int = 0, action: int = 0) -> None:
+    """Shared interceptor drawing: swept wings, twin intakes, and a
+    chin gun that flares through the action frames."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    tilt = (0, -2, 2)[move % 3]
+    # Swept wings.
+    d.polygon(
+        [(s(32), s(6)), (s(58), s(40 + tilt)), (s(44), s(36)), (s(32), s(52)),
+         (s(20), s(36)), (s(6), s(40 - tilt))],
+        fill=(*IRON, 255),
+    )
+    d.polygon(
+        [(s(32), s(12)), (s(50), s(38 + tilt)), (s(40), s(34)), (s(32), s(46)),
+         (s(24), s(34)), (s(14), s(38 - tilt))],
+        fill=(*pal["base"], 255),
+    )
+    # Twin intakes.
+    for x in (26, 34):
+        d.rectangle([s(x), s(18), s(x + 4), s(28)], fill=(*pal["dark"], 255))
+    # Chin gun with muzzle flare on report frames.
+    d.rectangle([s(30), s(4), s(34), s(14)], fill=(*IRON_DARK, 255))
+    if action in (2, 3):
+        d.ellipse([s(27), s(0), s(37), s(8)], fill=(*BONE, 210))
+    d.ellipse([s(29), s(26), s(35), s(32)], fill=(*pal["light"], 255))
+    suffix = ""
+    if move:
+        suffix = f"_move{move}"
+    if action:
+        suffix = f"_action{action}"
+    finish(img, px, f"{stem}_{faction}{suffix}")
+
+
+def shrike(faction: str, move: int = 0, action: int = 0) -> None:
+    interceptor_flyer("shrike", faction, move, action)
+
+
+def sylph(faction: str, move: int = 0, action: int = 0) -> None:
+    interceptor_flyer("sylph", faction, move, action)
+
+
 def _gear(
     d, cx: float, cy: float, radius: float, teeth: int, turn: float, color
 ) -> None:
@@ -2926,6 +3092,16 @@ def generate(output: Path) -> None:
         extractor(faction)
         for work in range(1, 4):
             extractor(faction, work)
+        for unit_fn in (warden, shrike, sylph):
+            unit_fn(faction)
+            for move in (1, 2):
+                unit_fn(faction, move)
+            for act in range(1, 5):
+                unit_fn(faction, 0, act)
+        for unit_fn in (tender, excavator, kestrel, gnat):
+            unit_fn(faction)
+            for move in (1, 2):
+                unit_fn(faction, move)
         airworks(faction)
         for work in range(1, 4):
             airworks(faction, work)

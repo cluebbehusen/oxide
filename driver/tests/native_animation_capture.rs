@@ -871,7 +871,13 @@ fn unit_duel_scenario(attacker: UnitKind) -> Value {
         UnitKind::Flakhound | UnitKind::Stinger => 4,
         UnitKind::Lancer => 5,
         UnitKind::Bombard => 9,
-        UnitKind::Harvester => unreachable!("the combat roster excludes Harvesters"),
+        UnitKind::Warden => 2,
+        UnitKind::Shrike | UnitKind::Sylph => 3,
+        UnitKind::Harvester
+        | UnitKind::Tender
+        | UnitKind::Excavator
+        | UnitKind::Kestrel
+        | UnitKind::Gnat => unreachable!("the combat roster excludes unarmed machines"),
     };
     let units = vec![
         unit(0, attacker, 15, 10),
