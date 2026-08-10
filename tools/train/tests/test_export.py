@@ -73,6 +73,7 @@ class TestMain:
             # factorized selection as well as raw logit fidelity.
             policy.pi.bias[8] += 2.0
             policy.pi.bias[23] += 2.5
+            policy.pi.bias[40] += 3.5
             policy.pi.bias[20] += 3.0
         policy.eval()
         ckpt = tmp_path / "net.pt"
@@ -86,9 +87,9 @@ class TestMain:
         )
         export.main()
         art = json.loads(out.read_text())
-        assert art["features"] == 81
+        assert art["features"] == 107
         assert art["conditioning"] == 12
-        assert art["actions"] == 26
+        assert art["actions"] == 43
         assert len(art["head"]["w"]) == ACTIONS
 
         rng = np.random.default_rng(0)
@@ -136,7 +137,7 @@ class TestMain:
             policy,
             "mlp",
             plain_ckpt,
-            {"gym_version": 8, "update": 105},
+            {"gym_version": 9, "update": 105},
         )
         traced_ckpt = tmp_path / "traced.pt"
         save_policy(
@@ -145,7 +146,7 @@ class TestMain:
             traced_ckpt,
             checkpoint_metadata(
                 lineage,
-                {"gym_version": 8, "update": 105},
+                {"gym_version": 9, "update": 105},
             ),
         )
         _reloaded, blob = load_policy(str(traced_ckpt))

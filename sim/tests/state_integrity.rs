@@ -13,7 +13,7 @@
 //! exercises the verbs the bots rarely reach and is checked every single
 //! tick, and a ticked state makes the full round trip through JSON.
 
-use oxide_sim::bot::{Brain, Difficulty, Level, NeuralBot};
+use oxide_sim::bot::Brain;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
 use oxide_sim::stats::{BuildingKind, QUEUE_CAP};
 use oxide_sim::{
@@ -617,7 +617,7 @@ fn every_checklist_row_refuses_its_forgery() {
         ),
         (
             "a Ferrous Fabricator queuing the Cupric roster",
-            |d| d["buildings"][2]["queue"] = json!(["wisp"]),
+            |d| d["buildings"][2]["queue"] = json!(["stinger"]),
             "building b2 queues a unit it could never train",
         ),
         (
@@ -950,7 +950,7 @@ fn a_full_verb_run_stays_valid_every_tick() {
                     0,
                     Command::Train {
                         building: fabricator,
-                        kind: UnitKind::Scuttler,
+                        kind: UnitKind::Lancer,
                     },
                 ),
             ],
@@ -1037,31 +1037,17 @@ fn a_full_verb_run_stays_valid_every_tick() {
     );
 }
 
-/// A seat's command source for the sweep. The two families reach
-/// different shapes — the shipped ladder builds and techs, the scripted
-/// tiers scout hard and leave memories behind them — so the sweep runs
-/// both and insists on seeing both.
-enum Mind {
-    Scripted(Box<Brain>),
-    Ladder(Box<NeuralBot>),
-}
-
-impl Mind {
-    fn act(&mut self, state: &State) -> Vec<PlayerCommand> {
-        match self {
-            Mind::Scripted(brain) => brain.act(state),
-            Mind::Ladder(bot) => bot.act(state),
-        }
-    }
-}
-
 /// The bring-up gate, broad half: every shipped map, every seat driven,
 /// thousands of ticks, the checklist sampled along the way. Independent
 /// deterministic sims, so the sweep fans across threads like the other
 /// map sweeps.
 #[test]
 fn every_shipped_map_stays_valid_under_bot_play() {
-    const TICKS: u32 = 2_000;
+    // Re-anchored on the all-Overseer sweep: its first construction
+    // lands around tick 1,100-3,600 depending on the map (the deleted
+    // 0.14 actors built earlier), and at 8,000 ticks every shipped map
+    // measures both built-up (34/34) and remembered (34/34).
+    const TICKS: u32 = 8_000;
     /// How often the checklist runs directly (cheap: entities, not tiles).
     const SAMPLE: u32 = 100;
     /// How often the state makes the full trip through the deserializer,
@@ -1081,7 +1067,7 @@ fn every_shipped_map_stays_valid_under_bot_play() {
     let built_up = std::sync::atomic::AtomicUsize::new(0);
     let remembered = std::sync::atomic::AtomicUsize::new(0);
     std::thread::scope(|scope| {
-        for (index, path) in paths.iter().enumerate() {
+        for path in &paths {
             let (built_up, remembered) = (&built_up, &remembered);
             scope.spawn(move || {
                 let name = path.file_stem().unwrap().to_string_lossy().into_owned();
@@ -1094,24 +1080,10 @@ fn every_shipped_map_stays_valid_under_bot_play() {
                     (state.units().len(), state.buildings().len());
                 // Every chair thinks: the widest spread of live orders,
                 // construction, and battle the shipped maps can produce.
-                let mut brains: Vec<Mind> = state
-                    .players()
-                    .iter()
-                    .enumerate()
-                    .map(|(i, p)| {
-                        let seat = PlayerId(i as u8);
-                        if index.is_multiple_of(2) {
-                            Mind::Ladder(Box::new(NeuralBot::ladder(
-                                seat,
-                                seed,
-                                Level::Expert,
-                                None,
-                                p.faction,
-                            )))
-                        } else {
-                            Mind::Scripted(Box::new(Brain::for_tier(seat, seed, Difficulty::Prime)))
-                        }
-                    })
+                // The Overseer is the one commander left standing while
+                // bot seats await the retrained actor.
+                let mut brains: Vec<Brain> = (0..state.players().len())
+                    .map(|i| Brain::overseer(PlayerId(i as u8), seed))
                     .collect();
                 let mut saw_ghost = false;
                 for tick in 0..TICKS {
@@ -1152,6 +1124,10 @@ fn every_shipped_map_stays_valid_under_bot_play() {
     let (built_up, remembered) = (
         built_up.load(std::sync::atomic::Ordering::Relaxed),
         remembered.load(std::sync::atomic::Ordering::Relaxed),
+    );
+    eprintln!(
+        "sweep tallies: built_up {built_up}, remembered {remembered}, maps {}",
+        paths.len()
     );
     assert!(
         built_up * 3 >= paths.len(),

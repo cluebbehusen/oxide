@@ -62,7 +62,8 @@ pub struct ReplayPlayerSummary {
     pub team: u8,
     /// Whether the scenario assigns this seat to a built-in bot.
     pub bot: bool,
-    /// Authored neural ladder configuration, or `None` for a human or legacy bot.
+    /// Authored bot configuration, or `None` for a human seat (or a
+    /// legacy replay recorded before configs were required).
     pub bot_config: Option<BotConfig>,
 }
 

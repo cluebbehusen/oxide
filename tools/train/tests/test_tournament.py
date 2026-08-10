@@ -62,14 +62,13 @@ class OneStepWorker:
         self,
         seed: int,
         control: tuple[int, ...] = (0,),
-        tier: str = "veteran",
         max_ticks: int = 40_000,
         cadence: int = 16,
         scenario: str | None = None,
         conditions: dict[int, tuple[int, ...]] | None = None,
         factions: str | Sequence[FactionName] | None = None,
     ) -> Frame:
-        _ = (seed, control, tier, max_ticks, scenario, factions)
+        _ = (seed, control, max_ticks, scenario, factions)
         self.cadence = cadence
         self.conditions = {} if conditions is None else conditions
         view = SeatView(
@@ -89,7 +88,7 @@ def test_tournament_keeps_policy_condition_separate_from_execution() -> None:
     won, ticks = tournament.play(
         FixedPolicy(),
         worker,
-        "scrapheap",
+        "overseer",
         seed=7,
         seat=0,
         condition=(1000, 550),
@@ -100,7 +99,7 @@ def test_tournament_keeps_policy_condition_separate_from_execution() -> None:
     assert won is True
     assert ticks == 1
     assert worker.cadence == 28
-    assert worker.actions == {0: (2, 10, 17)}
+    assert worker.actions == {0: (2, 10, 42, 17)}
 
 
 def test_tournament_applies_exact_hesitation_not_policy_skill() -> None:
@@ -108,7 +107,7 @@ def test_tournament_applies_exact_hesitation_not_policy_skill() -> None:
     tournament.play(
         FixedPolicy(),
         worker,
-        "scrapheap",
+        "overseer",
         seed=7,
         seat=0,
         condition=(620, 300),
@@ -117,7 +116,7 @@ def test_tournament_applies_exact_hesitation_not_policy_skill() -> None:
     )
 
     assert worker.cadence == 36
-    assert worker.actions == {0: (0, 24, 25)}
+    assert worker.actions == {0: (0, 24, 42, 25)}
 
 
 def test_tournament_default_consumes_named_profile_and_specialist_role() -> None:
@@ -125,7 +124,7 @@ def test_tournament_default_consumes_named_profile_and_specialist_role() -> None
     won, _ticks = tournament.play(
         FixedPolicy(),
         worker,
-        "scrapheap",
+        "overseer",
         seed=7,
         seat=0,
         role="vanguard",

@@ -234,7 +234,7 @@ Start the shell with a socket, then talk to it:
 ```sh
 cargo run -p oxide-shell -- --debug-server --paused   # driven mode
 cargo run -p oxide-driver -- balance-probe          # value/body-time composition + entropy
-cargo run -p oxide-driver -- repair-probe --weights sim/src/bot/ladder_weights.json
+cargo run -p oxide-driver -- repair-probe --weights tools/train/runs/candidate.json
 cargo run -p oxide-driver -- matchup --a sentinel:8 --b bombard:2,sentinel:4
 cargo run -p oxide-driver -- bench                  # 500-unit ticks/s
 cargo run -p oxide-driver -- live status

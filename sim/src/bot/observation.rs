@@ -54,6 +54,9 @@ pub struct UnitObs {
     pub idle: bool,
     /// Scrap carried (own harvesters; zero otherwise).
     pub carrying: u32,
+    /// Sling room its riders occupy (own transports; zero otherwise).
+    #[serde(default)]
+    pub cargo: u8,
     /// The construction site this unit is building, if any (own units
     /// only; always `None` for enemy observations).
     pub site: Option<BuildingId>,
@@ -434,6 +437,7 @@ fn own_unit(u: &crate::state::Unit) -> UnitObs {
         hp: u.hp,
         idle: u.order == Order::Idle,
         carrying: u.carrying,
+        cargo: u.cargo.iter().map(|r| r.kind.stats().transport_size).sum(),
         site: match u.order {
             Order::Build { site } => Some(site),
             _ => None,
@@ -458,6 +462,7 @@ fn enemy_unit(u: &crate::state::Unit) -> UnitObs {
         hp: u.hp,
         idle: false,     // enemy intent is not observable
         carrying: 0,     // nor their cargo manifests
+        cargo: 0,        // a sealed sling shows nothing
         site: None,      // nor their work orders
         salvaging: None, // ditto
         founding: None,  // ditto

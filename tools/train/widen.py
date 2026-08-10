@@ -1,13 +1,13 @@
-"""Widen a v7 actor into the behavior-identical gym-v8 profile contract.
+"""Widen a v7 actor to the v8 contract, behavior-identically.
 
-V8 appends five Rust-authored named-profile facets after the existing policy
-condition. Every new first-layer column is exactly zero, so the widened actor's
-logits and factorized action plan are identical for every possible facet value.
-Only later continuation training can make the new inputs matter.
+The bridge appends five named-profile facet columns (zero weights).
+Every zero column is the behavior-preservation proof: only continuation
+training can make the new inputs matter. The 0.15 campaign trains from
+scratch on the v9 contract, so this tool exists for lineage and history
+reproduction of the v7/v8 era, not as a path onto v9.
 
 Usage:
-    uv run widen.py --src runs/incumbent-v7.json \
-        --out runs/incumbent-v8.json
+    uv run widen.py --src runs/old-v7.json --out runs/new-v8.json
 """
 
 import argparse
@@ -18,8 +18,8 @@ import torch
 
 from lineage import build_lineage, input_identity
 
-# The v8 contract this bridge widens TO. Kept as explicit literals so
-# a rerun against the wrong source fails loudly instead of stacking.
+# Contract literals per bridge. Kept explicit so a rerun against the
+# wrong source fails loudly instead of stacking.
 SRC_VERSION = 7
 SRC_FEATURES = 81
 SRC_ACTIONS = 26
@@ -74,9 +74,7 @@ def main() -> None:
         art = json.load(f)
     lineage = widening_lineage(args.src, art)
     if art["gym_version"] != SRC_VERSION:
-        raise SystemExit(
-            f"source speaks gym v{art['gym_version']}, widen expects v{SRC_VERSION}"
-        )
+        raise SystemExit(f"source speaks gym v{art['gym_version']}, widen expects v7")
     if art["features"] != SRC_FEATURES or art["actions"] != SRC_ACTIONS:
         raise SystemExit("source shape mismatch")
     q = art["q_bits"]

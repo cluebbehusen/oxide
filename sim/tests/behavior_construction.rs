@@ -311,7 +311,7 @@ fn scouted_sites_are_remembered_as_sites() {
 
 #[test]
 fn bot_sends_a_relief_builder_to_an_orphaned_site() {
-    use oxide_sim::bot::Bot;
+    use oxide_sim::bot::Brain;
     use oxide_sim::stats::BuildingKind;
     // Manufacture the orphan directly: a scripted Build, then Stop the
     // builder on the spot. Hand the seat to a bot — its relief loop must
@@ -349,7 +349,7 @@ fn bot_sends_a_relief_builder_to_an_orphaned_site() {
         .id;
     assert!(!state.building(site).unwrap().built);
 
-    let mut bot = Bot::new(PlayerId(1), 42);
+    let mut bot = Brain::overseer(PlayerId(1), 42);
     for _ in 0..3000u32 {
         let commands = bot.act(&state);
         state.tick(&commands);

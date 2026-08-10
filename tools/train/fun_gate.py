@@ -89,11 +89,12 @@ AIR_KINDS = {
     "wisp",
 }
 
-# The exact `--out` payload shape this gate reads. Schema 7 identifies
+# The exact `--out` payload shape this gate reads. Schema 8 identifies
 # explicitly selected named styles and variants alongside the legacy
-# aggression component; accepting another schema risks silently judging a
-# raw zero-facet profile while labeling it as a shipped personality.
-EXPECTED_SCHEMA = 7
+# aggression component and carries no scripted-tier dial; accepting
+# another schema risks silently judging a raw zero-facet profile while
+# labeling it as a shipped personality.
+EXPECTED_SCHEMA = 8
 DEFAULT_STALE_CAP_TICKS = 2_000
 MIN_PROMOTION_SEEDS = 3
 
@@ -169,7 +170,7 @@ def combat_tail_rates(
     """Measures catastrophic competitive lifetimes from raw seat arrays.
 
     Aggregate quantiles hide the exact number of bad seats and small
-    cohorts make nearest-rank p10/p90 jump sharply. The raw schema-7 arrays
+    cohorts make nearest-rank p10/p90 jump sharply. The raw schema-8 arrays
     let the gate state its real contract as rates. Seats with no competitive
     combat mix are skipped, exactly as ``Aggregate.combat_seats`` skips them.
     """
@@ -437,7 +438,7 @@ def run_probe(
     ticks: int,
     profile: ProbeProfile,
 ) -> dict:
-    """Runs one profile and returns its schema-7 JSON payload."""
+    """Runs one profile and returns its schema-8 JSON payload."""
     with tempfile.TemporaryDirectory(prefix="oxide-fun-gate-") as directory:
         out = pathlib.Path(directory) / "probe.json"
         command = [

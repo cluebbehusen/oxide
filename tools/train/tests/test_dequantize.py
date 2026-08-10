@@ -43,8 +43,8 @@ def _bridge_artifact(
 
 
 class TestExactRecovery:
-    def test_v7_artifact_rejection_names_the_json_migration(self) -> None:
-        with pytest.raises(ValueError, match=r"widen\.py --src OLD\.json"):
+    def test_a_stale_artifact_version_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="speak gym v7, trainer speaks v9"):
             dequantize.recover_actor({"gym_version": 7})
 
     def test_the_recovered_actor_round_trips_exactly_and_the_critic_is_zero(

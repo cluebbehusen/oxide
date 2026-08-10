@@ -3,13 +3,14 @@
 //!
 //! A [`GymBot`] is the Phase-A architecture with the policy layer
 //! removed and handed to whoever is driving — the PPO trainer over the
-//! debug socket's sibling protocol, a scripted test, eventually frozen
-//! weights. Chores stay automatic (harvest assignment, orphan-site
-//! resume — bookkeeping nobody needs to learn), the executive keeps all
-//! its micro (focus fire, withdrawal, pullbacks), and the external
-//! policy picks one action from each of three fixed, masked heads per
-//! think: production, construction/maintenance, and operations. The
-//! executive instantiates all three against one shared budget.
+//! debug socket's sibling protocol, a scripted test, eventually
+//! promoted weights. Chores stay automatic (harvest assignment,
+//! orphan-site resume — bookkeeping nobody needs to learn), the
+//! executive keeps all its micro (focus fire, withdrawal, pullbacks),
+//! and the external policy picks one action from each of four fixed,
+//! masked heads per think: production, construction/maintenance,
+//! upgrades, and operations. The executive instantiates them against
+//! one shared budget.
 //! Everything runs fog-honest and seat-oriented: a learned policy is
 //! honest and seat-symmetric by construction.
 
@@ -27,7 +28,7 @@ use chassis::grid::{CARDINALS, DIAGONALS, TilePos};
 
 /// Bump when actions or features change shape — recorded checkpoints
 /// and shipped weights must refuse mismatched worlds.
-pub const GYM_VERSION: u32 = 8;
+pub const GYM_VERSION: u32 = 9;
 
 /// The global macro menu, partitioned among [`ACTION_HEADS`]. Training
 /// slots are role-indexed where the factions differ: one action means
@@ -42,7 +43,7 @@ pub enum Action {
     TrainHarvester = 1,
     /// Queue a Sentinel at the Foundry.
     TrainSentinel = 2,
-    /// Queue a Scuttler at the Fabricator.
+    /// Queue a Scuttler at the Foundry.
     TrainScuttler = 3,
     /// Queue a Lancer at the Fabricator.
     TrainLancer = 4,
@@ -50,9 +51,9 @@ pub enum Action {
     TrainBombard = 5,
     /// Queue the faction's anti-air crawler at the Fabricator.
     TrainAntiAir = 6,
-    /// Queue the faction's ground-attack flyer at the Fabricator.
+    /// Queue the faction's ground-attack flyer at the Airworks.
     TrainAirGround = 7,
-    /// Queue the faction's air-superiority flyer at the Fabricator.
+    /// Queue the faction's air-superiority flyer at the Airworks.
     TrainAirAir = 8,
     /// Start a Fabricator near home.
     BuildFabricator = 9,
@@ -88,29 +89,75 @@ pub enum Action {
     NoConstruction = 24,
     /// Do nothing in the military-operations head.
     NoOperation = 25,
+    /// Queue a Warden at the Fabricator.
+    TrainWarden = 26,
+    /// Queue a Tender at the Fabricator.
+    TrainTender = 27,
+    /// Queue an Excavator at the Foundry (requires a Fabricator).
+    TrainExcavator = 28,
+    /// Queue the faction's scout flyer at the Airworks.
+    TrainScoutFlyer = 29,
+    /// Queue the faction's interceptor at the Airworks.
+    TrainInterceptor = 30,
+    /// Queue the faction's bomber at the Airworks (requires a Crucible).
+    TrainBomber = 31,
+    /// Queue a Skyhook at the Airworks.
+    TrainTransport = 32,
+    /// Queue a Sapper at the Fabricator.
+    TrainSapper = 33,
+    /// Queue a Breaker at the Crucible.
+    TrainBreaker = 34,
+    /// Queue an Avalanche at the Crucible.
+    TrainAvalanche = 35,
+    /// Start an Airworks near home.
+    BuildAirworks = 36,
+    /// Start a Crucible near home.
+    BuildCrucible = 37,
+    /// Start an expansion Foundry near known salvage.
+    BuildFoundry = 38,
+    /// Restore the nearest known derelict Extractor frame.
+    BuildExtractor = 39,
+    /// Lift the best-value eligible works one rung (fixed priority:
+    /// Refinery, then Heavy Turret, then Deep Array, then Burst Flak,
+    /// then Bulwark — the documented lowering abstraction).
+    Upgrade = 40,
+    /// Airlift: a loaded transport drops its cargo at the front; an
+    /// empty one gathers the nearest idle fighters aboard.
+    Airlift = 41,
+    /// Keep the upgrade head idle.
+    NoUpgrade = 42,
 }
 
 /// Number of actions in [`Action`].
-pub const ACTION_COUNT: usize = 26;
+pub const ACTION_COUNT: usize = 43;
 
 /// Global action indices in the production head, in policy order.
-pub const PRODUCTION_ACTIONS: [usize; 9] = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+/// Indices are a wire contract with the trainer — append, never
+/// renumber.
+pub const PRODUCTION_ACTIONS: [usize; 19] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
+];
 /// Global action indices in the construction/maintenance head, in
 /// policy order.
-pub const CONSTRUCTION_ACTIONS: [usize; 11] = [24, 9, 10, 11, 12, 13, 14, 15, 21, 22, 23];
+pub const CONSTRUCTION_ACTIONS: [usize; 15] =
+    [24, 9, 10, 11, 12, 13, 14, 15, 21, 22, 23, 36, 37, 38, 39];
+/// Global action indices in the dedicated upgrade head. Idling first,
+/// like every head's no-op.
+pub const UPGRADE_ACTIONS: [usize; 2] = [42, 40];
 /// Global action indices in the military-operations head, in policy
 /// order.
-pub const OPERATION_ACTIONS: [usize; 6] = [25, 16, 17, 18, 19, 20];
-/// The three independent policy heads, each expressed in global action
+pub const OPERATION_ACTIONS: [usize; 7] = [25, 16, 17, 18, 19, 20, 41];
+/// The four independent policy heads, each expressed in global action
 /// indices.
-pub const ACTION_HEADS: [&[usize]; 3] = [
+pub const ACTION_HEADS: [&[usize]; 4] = [
     &PRODUCTION_ACTIONS,
     &CONSTRUCTION_ACTIONS,
+    &UPGRADE_ACTIONS,
     &OPERATION_ACTIONS,
 ];
 
 /// Number of entries in the feature vector.
-pub const FEATURE_COUNT: usize = 81;
+pub const FEATURE_COUNT: usize = 107;
 
 /// How far (Manhattan tiles) a free harvester may stand from a wounded
 /// machine for [`Action::RepairUnit`] to consider it a patient. The
@@ -126,9 +173,16 @@ pub const REPAIR_UNIT_RADIUS: i32 = 12;
 /// outright, and a walking founder receives Stop on the next think.
 pub const CONSTRUCTION_PLAN_TIMEOUT_TICKS: u64 = 1_200;
 
-/// Capital tech must wait for a minimal home screen. Committing the
-/// opening bank before the bot can survive a straight Sentinel rush
-/// turns every small map into a deterministic build-order loss.
+/// A remembered salvage field farther than this (Chebyshev) from every
+/// own Foundry counts as an unserved frontier — the place an expansion
+/// Foundry earns its keep as a drop-off and production forward base.
+const FOUNDRY_EXPANSION_RADIUS: i32 = 12;
+
+/// The named-profile opening doctrine holds capital tech until a
+/// minimal home screen stands: committing the opening bank before the
+/// seat can survive a straight Sentinel rush turns every small map
+/// into a deterministic build-order loss. Doctrine only — the mask
+/// never enforces this.
 const FABRICATOR_MIN_HARVESTERS: usize = 4;
 const FABRICATOR_MIN_SCREEN_STRENGTH: i64 = 150;
 
@@ -330,6 +384,32 @@ pub const FEATURE_NAMES: [&str; FEATURE_COUNT] = [
     "nearest_enemy_distance",
     "construction_plan",
     "construction_reserve",
+    "my_wardens",
+    "my_tenders",
+    "my_excavators",
+    "my_scout_flyers",
+    "my_interceptors",
+    "my_bombers",
+    "my_transports",
+    "my_sappers",
+    "my_breakers",
+    "my_avalanches",
+    "enemy_interceptors",
+    "enemy_bombers",
+    "enemy_heavies",
+    "airworks_built",
+    "crucible_built",
+    "my_foundries_built",
+    "my_extractors_built",
+    "known_frames",
+    "nearest_frame_x",
+    "nearest_frame_y",
+    "nearest_frame_distance",
+    "my_upgraded_works",
+    "upgrade_candidates",
+    "tech_tier",
+    "transport_cargo",
+    "enemy_foundries_known",
 ];
 
 /// Salvage's fixed liquidation order: cheapest and least useful
@@ -376,6 +456,23 @@ impl Action {
             23 => Action::BuildRepairBay,
             24 => Action::NoConstruction,
             25 => Action::NoOperation,
+            26 => Action::TrainWarden,
+            27 => Action::TrainTender,
+            28 => Action::TrainExcavator,
+            29 => Action::TrainScoutFlyer,
+            30 => Action::TrainInterceptor,
+            31 => Action::TrainBomber,
+            32 => Action::TrainTransport,
+            33 => Action::TrainSapper,
+            34 => Action::TrainBreaker,
+            35 => Action::TrainAvalanche,
+            36 => Action::BuildAirworks,
+            37 => Action::BuildCrucible,
+            38 => Action::BuildFoundry,
+            39 => Action::BuildExtractor,
+            40 => Action::Upgrade,
+            41 => Action::Airlift,
+            42 => Action::NoUpgrade,
             _ => Action::Idle,
         }
     }
@@ -392,6 +489,10 @@ impl Action {
         OPERATION_ACTIONS.contains(&(self as usize))
     }
 
+    fn upgrade(self) -> bool {
+        UPGRADE_ACTIONS.contains(&(self as usize))
+    }
+
     fn building(self) -> Option<BuildingKind> {
         match self {
             Action::BuildFabricator => Some(BuildingKind::Fabricator),
@@ -401,6 +502,9 @@ impl Action {
             Action::BuildArray => Some(BuildingKind::Array),
             Action::BuildReclaimer => Some(BuildingKind::Reclaimer),
             Action::BuildRepairBay => Some(BuildingKind::RepairBay),
+            Action::BuildAirworks => Some(BuildingKind::Airworks),
+            Action::BuildCrucible => Some(BuildingKind::Crucible),
+            Action::BuildFoundry => Some(BuildingKind::Foundry),
             _ => None,
         }
     }
@@ -413,17 +517,20 @@ pub struct ActionPlan {
     pub production: Action,
     /// Construction or maintenance choice.
     pub construction: Action,
+    /// Upgrade-head choice.
+    pub upgrade: Action,
     /// Military-operations choice.
     pub operation: Action,
 }
 
 impl ActionPlan {
-    /// Decodes a wire triple, folding an invalid or wrong-head index to
+    /// Decodes a wire quad, folding an invalid or wrong-head index to
     /// that head's no-op.
-    pub fn from_indices(indices: [usize; 3]) -> Self {
+    pub fn from_indices(indices: [usize; 4]) -> Self {
         let production = Action::from_index(indices[0]);
         let construction = Action::from_index(indices[1]);
-        let operation = Action::from_index(indices[2]);
+        let upgrade = Action::from_index(indices[2]);
+        let operation = Action::from_index(indices[3]);
         Self {
             production: if production.production() {
                 production
@@ -435,6 +542,11 @@ impl ActionPlan {
             } else {
                 Action::NoConstruction
             },
+            upgrade: if upgrade.upgrade() {
+                upgrade
+            } else {
+                Action::NoUpgrade
+            },
             operation: if operation.operation() {
                 operation
             } else {
@@ -443,7 +555,7 @@ impl ActionPlan {
         }
     }
 
-    /// Maps one legacy flat action into its head while the other two
+    /// Maps one legacy flat action into its head while the other
     /// heads stay idle.
     pub fn from_action(action: Action) -> Self {
         if action.production() {
@@ -456,6 +568,11 @@ impl ActionPlan {
                 construction: action,
                 ..Self::default()
             }
+        } else if action.upgrade() {
+            Self {
+                upgrade: action,
+                ..Self::default()
+            }
         } else if action.operation() {
             Self {
                 operation: action,
@@ -466,11 +583,12 @@ impl ActionPlan {
         }
     }
 
-    /// Returns the three global action indices in head order.
-    pub fn indices(self) -> [usize; 3] {
+    /// Returns the four global action indices in head order.
+    pub fn indices(self) -> [usize; 4] {
         [
             self.production as usize,
             self.construction as usize,
+            self.upgrade as usize,
             self.operation as usize,
         ]
     }
@@ -481,6 +599,7 @@ impl Default for ActionPlan {
         Self {
             production: Action::Idle,
             construction: Action::NoConstruction,
+            upgrade: Action::NoUpgrade,
             operation: Action::NoOperation,
         }
     }
@@ -491,6 +610,7 @@ struct ProfileDoctrineProgress {
     workforce: bool,
     commitment_screen: bool,
     fabricator: bool,
+    airworks: bool,
     reclaimer: bool,
     air_ground: bool,
     air_air: bool,
@@ -888,6 +1008,88 @@ impl GymBot {
         let construction_plan = self.planned_build.map_or(0, building_plan_code);
         let construction_reserve = i64::from(self.construction_reserve(&obs));
 
+        // v9 additions: the 0.15 roster, tree state, and frame intel.
+        let count_mine = |kind: UnitKind| -> i64 {
+            obs.my_units.iter().filter(|u| u.kind == kind).count() as i64
+        };
+        let count_enemy = |kind: UnitKind| -> i64 {
+            obs.enemy_units.iter().filter(|u| u.kind == kind).count() as i64
+        };
+        let built_count = |kind: BuildingKind| -> i64 {
+            obs.my_buildings
+                .iter()
+                .filter(|b| b.kind == kind && b.built)
+                .count() as i64
+        };
+        let my_scout_flyers = count_mine(UnitKind::Kestrel) + count_mine(UnitKind::Gnat);
+        let my_interceptors = count_mine(UnitKind::Shrike) + count_mine(UnitKind::Sylph);
+        let my_bombers = count_mine(UnitKind::Condor) + count_mine(UnitKind::Moth);
+        let enemy_interceptors = count_enemy(UnitKind::Shrike) + count_enemy(UnitKind::Sylph);
+        let enemy_bombers = count_enemy(UnitKind::Condor) + count_enemy(UnitKind::Moth);
+        let enemy_heavies = count_enemy(UnitKind::Breaker) + count_enemy(UnitKind::Avalanche);
+        let airworks_built = built_count(BuildingKind::Airworks);
+        let crucible_built = built_count(BuildingKind::Crucible);
+        let my_foundries_built = built_count(BuildingKind::Foundry);
+        let my_extractors_built = built_count(BuildingKind::Extractor);
+        let unclaimed_frame = |anchor: TilePos| -> bool {
+            !obs.my_buildings.iter().any(|b| b.anchor == anchor)
+                && !obs.enemy_buildings.iter().any(|b| b.anchor == anchor)
+        };
+        let open_frames: Vec<TilePos> = obs
+            .known_frames
+            .iter()
+            .copied()
+            .filter(|f| unclaimed_frame(*f))
+            .collect();
+        let nearest_frame = home.and_then(|home| {
+            open_frames
+                .iter()
+                .min_by_key(|f| (f.chebyshev(home), f.y, f.x))
+                .copied()
+        });
+        let (nearest_frame_x, nearest_frame_y, nearest_frame_distance) = match (nearest_frame, home)
+        {
+            (Some(f), Some(home)) => (i64::from(f.x), i64::from(f.y), i64::from(f.chebyshev(home))),
+            _ => (-1, -1, -1),
+        };
+        let my_upgraded_works = obs
+            .my_buildings
+            .iter()
+            .filter(|b| b.built && b.tier > 0)
+            .count() as i64;
+        let upgrade_candidates = obs
+            .my_buildings
+            .iter()
+            .filter(|b| {
+                b.built
+                    && b.kind.upgrade_from(b.tier).is_some_and(|upgrade| {
+                        upgrade.requires.iter().all(|req| {
+                            obs.my_buildings
+                                .iter()
+                                .any(|owned| owned.kind == *req && owned.built)
+                        })
+                    })
+            })
+            .count() as i64;
+        let tech_tier = if crucible_built > 0 {
+            3
+        } else if airworks_built > 0 || built_count(BuildingKind::Fabricator) > 0 {
+            2
+        } else {
+            1
+        };
+        let transport_cargo = obs
+            .my_units
+            .iter()
+            .filter(|u| u.kind.stats().transport_capacity > 0)
+            .map(|u| i64::from(u.cargo))
+            .sum::<i64>();
+        let enemy_foundries_known = obs
+            .enemy_buildings
+            .iter()
+            .filter(|b| b.kind == BuildingKind::Foundry)
+            .count() as i64;
+
         let features: [i64; FEATURE_COUNT] = [
             obs.tick as i64,
             i64::from(obs.scrap),
@@ -1009,6 +1211,32 @@ impl GymBot {
             nearest_enemy_distance,
             construction_plan,
             construction_reserve,
+            count_mine(UnitKind::Warden),
+            count_mine(UnitKind::Tender),
+            count_mine(UnitKind::Excavator),
+            my_scout_flyers,
+            my_interceptors,
+            my_bombers,
+            count_mine(UnitKind::Skyhook),
+            count_mine(UnitKind::Sapper),
+            count_mine(UnitKind::Breaker),
+            count_mine(UnitKind::Avalanche),
+            enemy_interceptors,
+            enemy_bombers,
+            enemy_heavies,
+            airworks_built,
+            crucible_built,
+            my_foundries_built,
+            my_extractors_built,
+            open_frames.len() as i64,
+            nearest_frame_x,
+            nearest_frame_y,
+            nearest_frame_distance,
+            my_upgraded_works,
+            upgrade_candidates,
+            tech_tier,
+            transport_cargo,
+            enemy_foundries_known,
         ];
 
         let mut mask = [false; ACTION_COUNT];
@@ -1017,12 +1245,19 @@ impl GymBot {
         mask[Action::NoConstruction as usize] = true;
         mask[Action::NoOperation as usize] = true;
         if let Some(h) = home {
-            let foundry_open = obs.my_buildings.iter().enumerate().any(|(qi, b)| {
-                b.kind == BuildingKind::Foundry && b.built && obs.my_queues[qi].len() < 2
-            });
-            let fab_open = obs.my_buildings.iter().enumerate().any(|(qi, b)| {
-                b.kind == BuildingKind::Fabricator && b.built && obs.my_queues[qi].len() < 2
-            });
+            let producer_open = |wanted: BuildingKind| {
+                obs.my_buildings.iter().enumerate().any(|(qi, b)| {
+                    b.kind == wanted && b.built && obs.my_queues[qi].len() < crate::stats::QUEUE_CAP
+                })
+            };
+            let foundry_open = producer_open(BuildingKind::Foundry);
+            let fab_open = producer_open(BuildingKind::Fabricator);
+            let airworks_open = producer_open(BuildingKind::Airworks);
+            let crucible_open = producer_open(BuildingKind::Crucible);
+            let crucible_standing = obs
+                .my_buildings
+                .iter()
+                .any(|b| b.kind == BuildingKind::Crucible && b.built);
             let reserve = self.construction_reserve(&obs);
             let spendable = obs.scrap.saturating_sub(reserve);
             // Production choices are intentions: an open producer is
@@ -1030,12 +1265,26 @@ impl GymBot {
             // lowering waits until the post-construction bank can pay.
             mask[Action::TrainHarvester as usize] = foundry_open;
             mask[Action::TrainSentinel as usize] = foundry_open;
-            mask[Action::TrainScuttler as usize] = fab_open;
+            mask[Action::TrainScuttler as usize] = foundry_open;
             mask[Action::TrainLancer as usize] = fab_open;
             mask[Action::TrainBombard as usize] = fab_open;
             mask[Action::TrainAntiAir as usize] = fab_open;
-            mask[Action::TrainAirGround as usize] = fab_open;
-            mask[Action::TrainAirAir as usize] = fab_open;
+            mask[Action::TrainAirGround as usize] = airworks_open;
+            mask[Action::TrainAirAir as usize] = airworks_open;
+            mask[Action::TrainWarden as usize] = fab_open;
+            mask[Action::TrainTender as usize] = fab_open;
+            mask[Action::TrainSapper as usize] = fab_open;
+            mask[Action::TrainExcavator as usize] = foundry_open
+                && obs
+                    .my_buildings
+                    .iter()
+                    .any(|b| b.kind == BuildingKind::Fabricator && b.built);
+            mask[Action::TrainScoutFlyer as usize] = airworks_open;
+            mask[Action::TrainInterceptor as usize] = airworks_open;
+            mask[Action::TrainTransport as usize] = airworks_open;
+            mask[Action::TrainBomber as usize] = airworks_open && crucible_standing;
+            mask[Action::TrainBreaker as usize] = crucible_open;
+            mask[Action::TrainAvalanche as usize] = crucible_open;
             // Turret, FlakTurret, and Bastion feasibility all consult the
             // same known passability and builder routes; one think builds
             // that pair at most once and shares it across the loop.
@@ -1048,19 +1297,49 @@ impl GymBot {
                 Action::BuildArray,
                 Action::BuildReclaimer,
                 Action::BuildRepairBay,
+                Action::BuildAirworks,
+                Action::BuildCrucible,
+                Action::BuildFoundry,
             ] {
                 let kind = action.building().expect("build action names a kind");
-                let screen_ready = kind != BuildingKind::Fabricator
-                    || (obs
-                        .my_units
-                        .iter()
-                        .filter(|unit| unit.kind == UnitKind::Harvester)
-                        .count()
-                        >= FABRICATOR_MIN_HARVESTERS
-                        && my_strength >= FABRICATOR_MIN_SCREEN_STRENGTH);
-                mask[action as usize] = screen_ready
-                    && self.can_plan_build(&obs, &enlisted, h, kind, &mut defense_probe);
+                mask[action as usize] =
+                    self.can_plan_build(&obs, &enlisted, h, kind, &mut defense_probe);
             }
+            let unclaimed_frame = |anchor: TilePos| {
+                !obs.my_buildings.iter().any(|b| b.anchor == anchor)
+                    && !obs.enemy_buildings.iter().any(|b| b.anchor == anchor)
+            };
+            mask[Action::BuildExtractor as usize] = free_builder(&obs, &enlisted)
+                && self.unpaid_claim_reserve(&obs) == 0
+                && obs.known_frames.iter().any(|f| unclaimed_frame(*f));
+            mask[Action::Upgrade as usize] = free_builder(&obs, &enlisted)
+                && obs.my_buildings.iter().any(|b| {
+                    b.built
+                        && b.kind.upgrade_from(b.tier).is_some_and(|upgrade| {
+                            upgrade.requires.iter().all(|req| {
+                                obs.my_buildings
+                                    .iter()
+                                    .any(|owned| owned.kind == *req && owned.built)
+                            })
+                        })
+                });
+            let loaded_transport = obs
+                .my_units
+                .iter()
+                .any(|u| u.kind.stats().transport_capacity > 0 && u.cargo > 0);
+            let empty_transport = obs
+                .my_units
+                .iter()
+                .any(|u| u.kind.stats().transport_capacity > 0 && u.cargo == 0 && u.idle);
+            let liftable_fighters = obs.my_units.iter().any(|u| {
+                u.idle
+                    && !enlisted.contains(&u.id)
+                    && u.kind.stats().transport_size > 0
+                    && u.kind.stats().can_fight()
+            });
+            mask[Action::Airlift as usize] = (loaded_transport
+                && (enemy_site.is_some() || staging.is_some()))
+                || (empty_transport && liftable_fighters);
             // Repair and salvage never share a target: a patient an
             // own crew is stripping is not a patient (the sim evicts
             // the loser anyway; masking keeps the oscillator out of
@@ -1135,6 +1414,7 @@ impl GymBot {
                 }
             }
         }
+        mask[Action::NoUpgrade as usize] = true;
         let recovery = self.recovery_posture(&obs, &orientation);
         if recovery != RecoveryPosture::Inactive {
             mask.fill(false);
@@ -1151,6 +1431,7 @@ impl GymBot {
             mask[action as usize] = true;
             mask[Action::NoConstruction as usize] = true;
             mask[Action::NoOperation as usize] = true;
+            mask[Action::NoUpgrade as usize] = true;
         } else if !tactical_reconciliation && home_intruder.is_none() {
             self.apply_profile_doctrine(&obs, &mut mask);
         }
@@ -1270,6 +1551,16 @@ impl GymBot {
             return Some(Action::BuildFabricator);
         }
 
+        // The sky lives at the Airworks on the closed tree, so an air
+        // lean owes its own hangar before its wings can queue.
+        if facets.air_bias >= PROFILE_DOCTRINE_THRESHOLD
+            && self.profile_progress.fabricator
+            && !self.profile_progress.airworks
+            && mask[Action::BuildAirworks as usize]
+        {
+            return Some(Action::BuildAirworks);
+        }
+
         if facets.support_bias >= PROFILE_DOCTRINE_THRESHOLD
             && !self.profile_progress.turret
             && mask[Action::BuildTurret as usize]
@@ -1288,6 +1579,7 @@ impl GymBot {
         self.profile_progress.commitment_screen |=
             committed_direct_ground_fighters(obs) >= PROFILE_COMMITMENT_SCREEN_TARGET;
         self.profile_progress.fabricator |= committed_buildings(obs, BuildingKind::Fabricator) > 0;
+        self.profile_progress.airworks |= committed_buildings(obs, BuildingKind::Airworks) > 0;
         self.profile_progress.reclaimer |= committed_buildings(obs, BuildingKind::Reclaimer) > 0;
         self.profile_progress.air_ground |=
             committed_units(obs, Role::AirGround.unit_for(obs.faction)) > 0;
@@ -1372,6 +1664,36 @@ impl GymBot {
         {
             self.set_planned_build(kind, obs.tick);
         }
+        // Restoring a frame skips the planned-build machinery: its
+        // anchor is the frame itself, not a placement search.
+        if plan.construction == Action::BuildExtractor {
+            let cost = BuildingKind::Extractor
+                .base_stats()
+                .construction
+                .map(|c| c.cost)
+                .unwrap_or(0);
+            let unclaimed = |anchor: TilePos| {
+                !obs.my_buildings.iter().any(|b| b.anchor == anchor)
+                    && !obs.enemy_buildings.iter().any(|b| b.anchor == anchor)
+            };
+            if obs.scrap >= cost
+                && let Some(frame) = obs
+                    .known_frames
+                    .iter()
+                    .filter(|f| unclaimed(**f))
+                    .min_by_key(|f| (f.chebyshev(home), f.y, f.x))
+            {
+                intents.push(Intent::Build {
+                    kind: BuildingKind::Extractor,
+                    anchor: *frame,
+                });
+            }
+        }
+        // The upgrade head: fixed priority over the eligible ladder,
+        // the documented lowering abstraction.
+        if plan.upgrade == Action::Upgrade {
+            self.lower_upgrade(&obs, &mut intents);
+        }
         let maintenance_selected = matches!(
             plan.construction,
             Action::Repair | Action::Salvage | Action::RepairUnit
@@ -1410,8 +1732,8 @@ impl GymBot {
         );
 
         // Chores after the heads: idle harvesters to work (with the
-        // starvation ladder behind the normal channel — neural bots
-        // prospect; the scripted yardstick tiers never do), orphaned
+        // starvation ladder behind the normal channel — gym bots
+        // prospect; the scripted Brain never does), orphaned
         // sites resumed (paid-for progress must not strand).
         self.policy.economy(&obs, home, &mut intents);
         // The action's Build/Repair/Salvage spends a harvester the
@@ -1445,8 +1767,7 @@ impl GymBot {
         // strict predicate's live-occupancy checks. Own vision is own
         // knowledge, and the emitted intents are world-space like the
         // commands. The gym rules also arm the Scout claim guard; the
-        // scripted tiers keep both amendments off — they are the
-        // ladder's anchors and must not move.
+        // scripted path keeps both amendments off.
         let vision = state.vision(self.player);
         let defer_needed = |kind: BuildingKind, anchor: TilePos| {
             let (w, h) = kind.base_stats().size;
@@ -1461,6 +1782,40 @@ impl GymBot {
         commands
     }
 
+    /// Lifts the first eligible works on a fixed priority: income
+    /// first (Refinery), then the defense ladder, then the deep rungs.
+    fn lower_upgrade(&self, obs: &Observation, intents: &mut Vec<Intent>) {
+        const PRIORITY: [(BuildingKind, u8); 5] = [
+            (BuildingKind::Reclaimer, 0),
+            (BuildingKind::Turret, 0),
+            (BuildingKind::Array, 0),
+            (BuildingKind::FlakTurret, 0),
+            (BuildingKind::Turret, 1),
+        ];
+        for (kind, tier) in PRIORITY {
+            let Some(upgrade) = kind.upgrade_from(tier) else {
+                continue;
+            };
+            let tech_met = upgrade.requires.iter().all(|req| {
+                obs.my_buildings
+                    .iter()
+                    .any(|owned| owned.kind == *req && owned.built)
+            });
+            if !tech_met || obs.scrap < upgrade.cost {
+                continue;
+            }
+            let target = obs
+                .my_buildings
+                .iter()
+                .filter(|b| b.kind == kind && b.built && b.tier == tier)
+                .min_by_key(|b| (b.anchor.y, b.anchor.x, b.id));
+            if let Some(b) = target {
+                intents.push(Intent::Upgrade { building: b.id });
+                return;
+            }
+        }
+    }
+
     fn lower_production(
         &self,
         obs: &Observation,
@@ -1471,7 +1826,7 @@ impl GymBot {
         let choice = match action {
             Action::TrainHarvester => Some((BuildingKind::Foundry, UnitKind::Harvester)),
             Action::TrainSentinel => Some((BuildingKind::Foundry, UnitKind::Sentinel)),
-            Action::TrainScuttler => Some((BuildingKind::Fabricator, UnitKind::Scuttler)),
+            Action::TrainScuttler => Some((BuildingKind::Foundry, UnitKind::Scuttler)),
             Action::TrainLancer => Some((BuildingKind::Fabricator, UnitKind::Lancer)),
             Action::TrainBombard => Some((BuildingKind::Fabricator, UnitKind::Bombard)),
             Action::TrainAntiAir => Some((
@@ -1479,12 +1834,29 @@ impl GymBot {
                 Role::AntiAir.unit_for(obs.faction),
             )),
             Action::TrainAirGround => Some((
-                BuildingKind::Fabricator,
+                BuildingKind::Airworks,
                 Role::AirGround.unit_for(obs.faction),
             )),
             Action::TrainAirAir => {
-                Some((BuildingKind::Fabricator, Role::AirAir.unit_for(obs.faction)))
+                Some((BuildingKind::Airworks, Role::AirAir.unit_for(obs.faction)))
             }
+            Action::TrainWarden => Some((BuildingKind::Fabricator, UnitKind::Warden)),
+            Action::TrainTender => Some((BuildingKind::Fabricator, UnitKind::Tender)),
+            Action::TrainSapper => Some((BuildingKind::Fabricator, UnitKind::Sapper)),
+            Action::TrainExcavator => Some((BuildingKind::Foundry, UnitKind::Excavator)),
+            Action::TrainScoutFlyer => {
+                Some((BuildingKind::Airworks, Role::Scout.unit_for(obs.faction)))
+            }
+            Action::TrainInterceptor => Some((
+                BuildingKind::Airworks,
+                Role::Interceptor.unit_for(obs.faction),
+            )),
+            Action::TrainBomber => {
+                Some((BuildingKind::Airworks, Role::Bomber.unit_for(obs.faction)))
+            }
+            Action::TrainTransport => Some((BuildingKind::Airworks, UnitKind::Skyhook)),
+            Action::TrainBreaker => Some((BuildingKind::Crucible, UnitKind::Breaker)),
+            Action::TrainAvalanche => Some((BuildingKind::Crucible, UnitKind::Avalanche)),
             _ => None,
         };
         if let Some((building, kind)) = choice
@@ -1572,6 +1944,50 @@ impl GymBot {
         intents: &mut Vec<Intent>,
     ) {
         match action {
+            Action::Airlift => {
+                // A loaded sling drops at the front; an empty one
+                // gathers the nearest idle fighters. One leg per
+                // decision — the policy paces the ferry.
+                let loaded = obs
+                    .my_units
+                    .iter()
+                    .filter(|u| u.kind.stats().transport_capacity > 0 && u.cargo > 0)
+                    .min_by_key(|u| u.id);
+                if let Some(t) = loaded {
+                    if let Some(at) = enemy_site.or_else(|| staging.map(|a| a.staging)) {
+                        intents.push(Intent::Unload {
+                            transport: t.id,
+                            at,
+                        });
+                    }
+                } else if let Some(t) = obs
+                    .my_units
+                    .iter()
+                    .filter(|u| u.kind.stats().transport_capacity > 0 && u.cargo == 0 && u.idle)
+                    .min_by_key(|u| u.id)
+                {
+                    let mut riders: Vec<(i32, UnitId)> = obs
+                        .my_units
+                        .iter()
+                        .filter(|u| {
+                            u.idle
+                                && !enlisted.contains(&u.id)
+                                && u.kind.stats().transport_size > 0
+                                && u.kind.stats().can_fight()
+                        })
+                        .map(|u| (u.tile.chebyshev(t.tile), u.id))
+                        .collect();
+                    riders.sort();
+                    let riders: Vec<UnitId> =
+                        riders.into_iter().take(4).map(|(_, id)| id).collect();
+                    if !riders.is_empty() {
+                        intents.push(Intent::Load {
+                            transport: t.id,
+                            riders,
+                        });
+                    }
+                }
+            }
             Action::AirRaid => {
                 let target = obs
                     .enemy_units
@@ -1619,10 +2035,6 @@ impl GymBot {
             self.planned_since = None;
             return;
         };
-        if committed_buildings(obs, kind) >= building_cap(kind) {
-            self.clear_planned_build();
-            return;
-        }
         if self
             .planned_since
             .is_some_and(|since| obs.tick.saturating_sub(since) >= CONSTRUCTION_PLAN_TIMEOUT_TICKS)
@@ -1770,7 +2182,6 @@ impl GymBot {
         defense_probe: &mut Option<(KnownPassability, DefenseBuilderRoutes)>,
     ) -> bool {
         obs.tick >= self.capital_retry_after
-            && committed_buildings(obs, kind) < building_cap(kind)
             && self.unpaid_claim_reserve(obs) == 0
             && !self
                 .build_retry_after
@@ -1804,9 +2215,42 @@ impl GymBot {
                     .flat_map(|focus| self.policy.placements_near(obs, kind, focus))
                     .any(|anchor| builders.travel_to(anchor, kind).is_some())
             }
-            BuildingKind::Foundry => false,
+            BuildingKind::Foundry => self
+                .expansion_focus(obs)
+                .and_then(|focus| self.policy.placement_near(obs, kind, focus))
+                .is_some(),
             _ => self.policy.placement_near(obs, kind, home).is_some(),
         }
+    }
+
+    /// Where an expansion Foundry wants to stand: the closest
+    /// remembered salvage field no own Foundry already serves. `None`
+    /// when the known map holds no such frontier — the action stays
+    /// masked rather than lowering into a redundant home Foundry.
+    fn expansion_focus(&self, obs: &Observation) -> Option<TilePos> {
+        let foundries: Vec<TilePos> = obs
+            .my_buildings
+            .iter()
+            .filter(|b| b.kind == BuildingKind::Foundry)
+            .map(|b| b.anchor)
+            .collect();
+        obs.known_scrap
+            .iter()
+            .filter(|(tile, amount)| {
+                *amount > 0
+                    && foundries
+                        .iter()
+                        .all(|f| f.chebyshev(*tile) > FOUNDRY_EXPANSION_RADIUS)
+            })
+            .map(|(tile, _)| *tile)
+            .min_by_key(|tile| {
+                let frontier = foundries
+                    .iter()
+                    .map(|f| f.chebyshev(*tile))
+                    .min()
+                    .unwrap_or(0);
+                (frontier, tile.y, tile.x)
+            })
     }
 
     fn build_anchor(
@@ -1820,7 +2264,9 @@ impl GymBot {
             BuildingKind::Turret | BuildingKind::FlakTurret | BuildingKind::Bastion => {
                 self.defense_anchor(obs, enlisted, home, kind)
             }
-            BuildingKind::Foundry => None,
+            BuildingKind::Foundry => self
+                .expansion_focus(obs)
+                .and_then(|focus| self.policy.placement_near(obs, kind, focus)),
             _ => self.policy.placement_near(obs, kind, home),
         }
     }
@@ -1885,7 +2331,6 @@ impl GymBot {
         if self.unpaid_claim_reserve(obs) > 0
             || obs.scrap < construction.cost
             || !free_builder(obs, enlisted)
-            || committed_buildings(obs, kind) >= building_cap(kind)
         {
             return None;
         }
@@ -1907,7 +2352,9 @@ impl GymBot {
             .my_buildings
             .iter()
             .enumerate()
-            .filter(|(qi, b)| b.kind == at && b.built && obs.my_queues[*qi].len() < 2)
+            .filter(|(qi, b)| {
+                b.kind == at && b.built && obs.my_queues[*qi].len() < crate::stats::QUEUE_CAP
+            })
             .min_by_key(|(_, b)| b.id)
         {
             intents.push(Intent::TrainAt {
@@ -3972,16 +4419,10 @@ fn defense_threats(obs: &Observation, kind: BuildingKind) -> Vec<(Point2, i64)> 
     threats
 }
 
-/// A building's price for the value-aggregate features (standing stock,
-/// health value, site value). The Foundry prices as ZERO even now that
-/// it is purchasable: the shipped v8 policy trained when Foundry
-/// construction did not exist, and these aggregates must keep that
-/// input distribution until the gym v9 feature redesign re-prices the
-/// world coherently for the retrain.
+/// A building's price for the value-aggregate features (standing
+/// stock, health value, site value): its construction cost, or zero
+/// for kinds that cannot be built.
 fn feature_price(kind: BuildingKind) -> i64 {
-    if kind == BuildingKind::Foundry {
-        return 0;
-    }
     kind.base_stats()
         .construction
         .map_or(0, |construction| i64::from(construction.cost))
@@ -4003,8 +4444,7 @@ fn protected_points(obs: &Observation, kind: BuildingKind) -> Vec<(Point2, i64)>
             BuildingKind::Airworks => 1_000,
             BuildingKind::Crucible => 1_400,
             // Field fortifications and buried charges are positions,
-            // not assets: the frozen actor neither builds nor defends
-            // them specially.
+            // not assets.
             BuildingKind::Barricade | BuildingKind::ScuttleCharge => 100,
             BuildingKind::ScrapDepot => 300,
         };
@@ -4111,25 +4551,8 @@ fn known_open_coverage(
     open
 }
 
-fn building_cap(kind: BuildingKind) -> usize {
-    match kind {
-        BuildingKind::Fabricator => 1,
-        BuildingKind::Turret | BuildingKind::FlakTurret | BuildingKind::Bastion => 2,
-        BuildingKind::Array | BuildingKind::RepairBay => 1,
-        BuildingKind::Reclaimer => 2,
-        // The frozen v8 actor predates these kinds; it never plans them.
-        // These zeros die with the rest of the caps in the gym v9
-        // parity migration.
-        BuildingKind::Foundry
-        | BuildingKind::Extractor
-        | BuildingKind::Airworks
-        | BuildingKind::Crucible
-        | BuildingKind::Barricade
-        | BuildingKind::ScrapDepot
-        | BuildingKind::ScuttleCharge => 0,
-    }
-}
-
+/// Nonzero code per plannable kind for the `construction_plan`
+/// feature; zero is reserved for "no saved plan".
 fn building_plan_code(kind: BuildingKind) -> i64 {
     match kind {
         BuildingKind::Fabricator => 1,
@@ -4139,15 +4562,15 @@ fn building_plan_code(kind: BuildingKind) -> i64 {
         BuildingKind::Array => 5,
         BuildingKind::Reclaimer => 6,
         BuildingKind::RepairBay => 7,
-        // Unplannable under the frozen v8 actor: shares the plan-less
-        // code with the Foundry until the v9 feature redesign.
-        BuildingKind::Foundry
-        | BuildingKind::Extractor
-        | BuildingKind::Airworks
-        | BuildingKind::Crucible
-        | BuildingKind::Barricade
-        | BuildingKind::ScrapDepot
-        | BuildingKind::ScuttleCharge => 0,
+        BuildingKind::Airworks => 8,
+        BuildingKind::Crucible => 9,
+        BuildingKind::Foundry => 10,
+        BuildingKind::Extractor => 11,
+        // Never planned through the construction head today; distinct
+        // codes anyway so a future plan cannot alias "no plan".
+        BuildingKind::Barricade => 12,
+        BuildingKind::ScrapDepot => 13,
+        BuildingKind::ScuttleCharge => 14,
     }
 }
 

@@ -25,7 +25,6 @@
 
 use crate::sweep::{SweepOutcome, SweepReport, quantile, run_sweep};
 use anyhow::{Context, Result};
-use oxide_sim::bot::Level;
 use oxide_sim::scenario::Scenario;
 use serde::Serialize;
 
@@ -68,7 +67,7 @@ pub struct PaceRow {
     /// Shortest Foundry-to-Foundry ground route in the audit's weighted
     /// tile-equivalents — the figure the pace bands are gated on.
     pub ground_route: Option<usize>,
-    /// Matches played (seeds x 2 orientations).
+    /// Matches played (one per seed).
     pub matches: u32,
     /// Matches that reached a victory or a mutual-death draw.
     pub decided: u32,
@@ -92,9 +91,7 @@ pub struct PaceRow {
 pub struct PaceSlate {
     /// The scenario directory swept.
     pub dir: String,
-    /// Ladder level both seats played.
-    pub level: String,
-    /// Seeds per map (each played in both complete-profile orientations).
+    /// Seeds per map (one Overseer-vs-Overseer match per seed).
     pub seeds: u64,
     /// Tick cap per match.
     pub max_ticks: u64,
@@ -111,13 +108,7 @@ pub struct PaceSlate {
 /// Sweeps every 1v1 scenario in `dir` and folds each into a row. Maps
 /// of any other format are skipped, not refused — the shipped directory
 /// mixes formats and the sweep reads 1v1 decisiveness.
-pub fn run_pace_sweep(
-    dir: &str,
-    level: Level,
-    seeds: u64,
-    max_ticks: u64,
-    seed_base: u64,
-) -> Result<PaceSlate> {
+pub fn run_pace_sweep(dir: &str, seeds: u64, max_ticks: u64, seed_base: u64) -> Result<PaceSlate> {
     let mut paths: Vec<_> = std::fs::read_dir(dir)
         .with_context(|| format!("reading {dir}"))?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -145,12 +136,11 @@ pub fn run_pace_sweep(
     let mut per_map = Vec::with_capacity(maps.len());
     for (path, scenario) in &maps {
         eprintln!("\n{}:", scenario.name);
-        let sweep = run_sweep(path, level, seeds, max_ticks, seed_base)?;
+        let sweep = run_sweep(path, seeds, max_ticks, seed_base)?;
         per_map.push(row(path, scenario, sweep)?);
     }
     Ok(PaceSlate {
         dir: dir.to_string(),
-        level: format!("{level:?}"),
         seeds,
         max_ticks,
         matches: per_map.iter().map(|r| r.matches).sum(),
@@ -203,18 +193,16 @@ fn row(path: &str, scenario: &Scenario, sweep: SweepReport) -> Result<PaceRow> {
 /// JSON for the record — the CLI entry.
 pub fn pace_sweep_report(
     dir: &str,
-    level: Level,
     seeds: u64,
     max_ticks: u64,
     seed_base: u64,
     out: Option<&str>,
 ) -> Result<()> {
-    let slate = run_pace_sweep(dir, level, seeds, max_ticks, seed_base)?;
+    let slate = run_pace_sweep(dir, seeds, max_ticks, seed_base)?;
     println!(
-        "\nPACE SWEEP  ·  {}  ·  {} 1v1 maps  ·  level {}  ·  {} seeds x 2 orientations  ·  cap {}",
+        "\nPACE SWEEP  ·  {}  ·  {} 1v1 maps  ·  Overseer both seats  ·  {} seeds  ·  cap {}",
         slate.dir,
         slate.per_map.len(),
-        slate.level,
         slate.seeds,
         slate.max_ticks
     );
@@ -261,13 +249,13 @@ mod tests {
     #[test]
     fn the_slate_rows_every_duel_map_and_admits_full_censoring() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../scenarios");
-        let slate = run_pace_sweep(dir, Level::Medium, 1, 20, 3_000).unwrap();
+        let slate = run_pace_sweep(dir, 1, 20, 3_000).unwrap();
         assert!(slate.per_map.len() >= 10, "the 1v1 roster is present");
         assert_eq!(slate.decided, 0);
         assert_eq!(slate.undecided, slate.matches);
-        assert_eq!(slate.matches, 2 * slate.per_map.len() as u32);
+        assert_eq!(slate.matches, slate.per_map.len() as u32);
         for r in &slate.per_map {
-            assert_eq!(r.matches, 2, "{}: one seed, both orientations", r.scenario);
+            assert_eq!(r.matches, 1, "{}: one seed, one match", r.scenario);
             assert_eq!(r.censored_percent, 100.0);
             assert!(r.median.is_none(), "{}: no decision to report", r.scenario);
             assert!(r.p25.is_none() && r.p75.is_none());
@@ -281,7 +269,7 @@ mod tests {
                 "{}: shipped maps are connected by ground",
                 r.scenario
             );
-            assert_eq!(r.sweep.matches.len(), 2);
+            assert_eq!(r.sweep.matches.len(), 1);
         }
     }
 
@@ -292,24 +280,18 @@ mod tests {
         let scenario = crate::runner::load_scenario("skirmish").unwrap();
         let played = |ticks, outcome| SweepMatch {
             seed: 1,
-            swapped: false,
-            aggression: [500, 500],
             ticks,
             outcome,
         };
         let sweep = SweepReport {
             scenario: scenario.name.clone(),
-            level: "Medium".to_string(),
-            seeds: 2,
+            seeds: 4,
             max_ticks: 999,
             victories: 2,
             draws: 1,
             undecided: 1,
             seat_wins: [1, 1],
-            undecided_by_orientation: [1, 0],
             median_decision_tick: Some(200),
-            mean_winner_aggression: None,
-            mean_loser_aggression: None,
             matches: vec![
                 played(300, SweepOutcome::Victory { seat: 0 }),
                 played(100, SweepOutcome::Victory { seat: 1 }),

@@ -19,7 +19,6 @@
 //! advanced kinds available to choose, and the unit shares alone cannot
 //! say which of the two happened.
 
-use crate::runner;
 use anyhow::{Result, ensure};
 use oxide_sim::{
     BuildingId, BuildingKind, Event, Faction, GameResult, Scenario, State, TickReport, UnitKind,
@@ -160,14 +159,23 @@ pub struct MatchComposition {
 /// kind: every sample adds `cost` for each living unit, so a unit's
 /// share reflects both how many were fielded and how long they lived —
 /// the honest "what was this army made of" number.
+///
+/// The Overseer — the scripted QA anchor — plays every `bot`-flagged
+/// seat: bot seats proper are inert until the retrained actor ships,
+/// and this is balance-probe's default sampler, so it must produce
+/// real matches in the meantime.
 pub fn sample_match(
     scenario: &Scenario,
     max_ticks: u64,
     sample_every: u64,
 ) -> Result<MatchComposition> {
-    let mut bots = oxide_sim::bot::seat_bots(scenario);
+    let mut bots = crate::bench::overseer_bots(scenario);
     sample_driven(scenario, max_ticks, sample_every, |state| {
-        runner::step(state, &mut bots, None)
+        let mut commands = Vec::new();
+        for bot in bots.iter_mut() {
+            commands.extend(bot.act(state));
+        }
+        state.tick(&commands)
     })
 }
 

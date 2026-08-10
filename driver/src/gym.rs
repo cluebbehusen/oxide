@@ -3,7 +3,7 @@
 //! `oxide-driver gym` speaks newline-delimited JSON on stdin/stdout so
 //! a trainer (see `tools/train/`) can drive [`GymBot`] episodes without
 //! linking Rust. `control` names the externally-driven seats: one seat
-//! against a scripted tier for curriculum and evaluation, or both
+//! against the Overseer for curriculum and evaluation, or both
 //! seats for self-play and league play — every decision tick then
 //! carries features and masks for each controlled seat, and `step`
 //! takes one production/construction/operation action triple per
@@ -16,7 +16,7 @@
 use anyhow::{Context, Result, bail};
 use oxide_sim::bot::{
     ACTION_COUNT, ACTION_HEADS, Action, ActionPlan, Brain, CONDITION_NAMES, CONDITIONING_COUNT,
-    CanonicalProfile, Decision, Difficulty, FEATURE_COUNT, FEATURE_NAMES, GYM_VERSION, GymBot,
+    CanonicalProfile, Decision, FEATURE_COUNT, FEATURE_NAMES, GYM_VERSION, GymBot,
     PROFILE_CONDITION_COUNT, PROFILE_TEAM_ROLES, ProfileFacets, ResolvedBotProfile,
     canonical_profiles, ladder_condition_values_with_facets,
 };
@@ -154,14 +154,14 @@ fn prepare_cup_scenario(
 
 #[derive(Clone, Copy)]
 enum CupOpponent {
-    Tier(Difficulty),
+    Overseer,
     Rusher,
 }
 
 impl CupOpponent {
     fn name(self) -> String {
         match self {
-            Self::Tier(tier) => format!("{tier:?}"),
+            Self::Overseer => "Overseer".to_string(),
             Self::Rusher => "Rusher".to_string(),
         }
     }
@@ -204,12 +204,10 @@ fn cup_rusher_plan(decision: &Decision, tick: u64) -> ActionPlan {
 enum Request {
     Reset {
         seed: u64,
-        /// Externally-driven seats (default `[0]`).
+        /// Externally-driven seats (default `[0]`). Every uncontrolled
+        /// seat is played by the Overseer.
         #[serde(default = "default_control")]
         control: Vec<u8>,
-        /// Scripted opponent tier for any uncontrolled seat.
-        #[serde(default = "default_tier")]
-        tier: Difficulty,
         #[serde(default = "default_max_ticks")]
         max_ticks: u64,
         #[serde(default)]
@@ -228,17 +226,13 @@ enum Request {
     },
     Step {
         /// One action triple per controlled seat, in `control` order.
-        actions: Vec<[usize; 3]>,
+        actions: Vec<[usize; 4]>,
     },
     Quit,
 }
 
 fn default_control() -> Vec<u8> {
     vec![0]
-}
-
-fn default_tier() -> Difficulty {
-    Difficulty::Veteran
 }
 
 fn default_max_ticks() -> u64 {
@@ -314,7 +308,6 @@ impl Episode {
     fn new(
         seed: u64,
         control: &[u8],
-        tier: Difficulty,
         max_ticks: u64,
         scenario: Option<&str>,
         options: EpisodeOptions<'_>,
@@ -379,7 +372,7 @@ impl Episode {
             .collect();
         let opponents: Vec<Brain> = (0..players)
             .filter(|s| !control.contains(s))
-            .map(|s| Brain::for_tier(PlayerId(s), seed, tier))
+            .map(|s| Brain::overseer(PlayerId(s), seed))
             .collect();
         let effects = control
             .iter()
@@ -501,7 +494,7 @@ impl Episode {
 
     /// Applies the trainer's actions at the current decision tick, then
     /// advances to the next decision tick (or the end).
-    fn step(&mut self, actions: &[[usize; 3]]) -> Result<()> {
+    fn step(&mut self, actions: &[[usize; 4]]) -> Result<()> {
         // One action triple per *living* controlled seat, in seat order
         // — dead learners dropped out of the frame's seats list and send
         // none.
@@ -731,7 +724,6 @@ pub fn serve() -> Result<()> {
             Ok(Request::Reset {
                 seed,
                 control,
-                tier,
                 max_ticks,
                 scenario,
                 factions,
@@ -743,14 +735,7 @@ pub fn serve() -> Result<()> {
                     Some(facets) => options.with_profile_facets(facets),
                     None => options,
                 };
-                match Episode::new(
-                    seed,
-                    &control,
-                    tier,
-                    max_ticks,
-                    scenario.as_deref(),
-                    options,
-                ) {
+                match Episode::new(seed, &control, max_ticks, scenario.as_deref(), options) {
                     Ok(mut e) => {
                         let reply = e.reply();
                         episode = Some(e);
@@ -776,10 +761,10 @@ pub fn serve() -> Result<()> {
     Ok(())
 }
 
-/// Runs the promotion tournament for a quantized artifact: every
-/// scripted tier plus the rush canary, `seeds` seeds x both seats,
-/// printed as JSON lines. This measures the shipped integer bot — the
-/// float checkpoint it came from is a different (unshippable) player.
+/// Runs the promotion tournament for a quantized artifact: the
+/// Overseer plus the rush canary, `seeds` seeds x both seats, printed
+/// as JSON lines. This measures the shipped integer bot — the float
+/// checkpoint it came from is a different (unshippable) player.
 pub fn neural_cup(
     weights: &std::path::Path,
     seeds: u64,
@@ -822,13 +807,7 @@ pub fn neural_cup(
         weights.display(),
         actual_factions.code()
     );
-    for opponent_kind in [
-        CupOpponent::Tier(Difficulty::Scrapheap),
-        CupOpponent::Tier(Difficulty::Standard),
-        CupOpponent::Tier(Difficulty::Veteran),
-        CupOpponent::Tier(Difficulty::Prime),
-        CupOpponent::Rusher,
-    ] {
+    for opponent_kind in [CupOpponent::Overseer, CupOpponent::Rusher] {
         // Every (seed, seat) game is an independent deterministic sim, so
         // they run across threads; aggregation folds a pre-ordered result
         // vector, keeping the printed numbers identical to the serial
@@ -873,11 +852,11 @@ pub fn neural_cup(
                 }
             };
             let mut opponent = match opponent_kind {
-                CupOpponent::Tier(tier) => Some(Brain::for_tier(PlayerId(1 - seat), seed, tier)),
+                CupOpponent::Overseer => Some(Brain::overseer(PlayerId(1 - seat), seed)),
                 CupOpponent::Rusher => None,
             };
             let mut rusher = match opponent_kind {
-                CupOpponent::Tier(_) => None,
+                CupOpponent::Overseer => None,
                 CupOpponent::Rusher => {
                     Some(GymBot::with_cadence(PlayerId(1 - seat), effective_cadence))
                 }
@@ -994,15 +973,8 @@ mod tests {
     use oxide_sim::state::Order;
 
     fn episode(factions: Option<&[Faction]>) -> Episode {
-        Episode::new(
-            17,
-            &[0, 1],
-            Difficulty::Veteran,
-            100,
-            None,
-            EpisodeOptions::new(factions, 8),
-        )
-        .expect("skirmish episode")
+        Episode::new(17, &[0, 1], 100, None, EpisodeOptions::new(factions, 8))
+            .expect("skirmish episode")
     }
 
     #[test]
@@ -1035,6 +1007,7 @@ mod tests {
             ActionPlan {
                 production: Action::TrainHarvester,
                 construction: Action::NoConstruction,
+                upgrade: Action::NoUpgrade,
                 operation: Action::FormArmy,
             }
         );
@@ -1046,6 +1019,7 @@ mod tests {
             ActionPlan {
                 production: Action::TrainSentinel,
                 construction: Action::NoConstruction,
+                upgrade: Action::NoUpgrade,
                 operation: Action::Push,
             }
         );
@@ -1185,9 +1159,12 @@ mod tests {
         assert_eq!(
             hello["action_heads"],
             serde_json::json!([
-                [0, 1, 2, 3, 4, 5, 6, 7, 8],
-                [24, 9, 10, 11, 12, 13, 14, 15, 21, 22, 23],
-                [25, 16, 17, 18, 19, 20],
+                [
+                    0, 1, 2, 3, 4, 5, 6, 7, 8, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35
+                ],
+                [24, 9, 10, 11, 12, 13, 14, 15, 21, 22, 23, 36, 37, 38, 39],
+                [42, 40],
+                [25, 16, 17, 18, 19, 20, 41],
             ])
         );
 
@@ -1253,7 +1230,6 @@ mod tests {
         let mut episode = Episode::new(
             17,
             &[0],
-            Difficulty::Veteran,
             100,
             None,
             EpisodeOptions::new(None, 8).with_profile_facets(&rows),
@@ -1269,20 +1245,12 @@ mod tests {
 
     #[test]
     fn zero_profile_facets_select_the_historical_gym_path() {
-        let mut omitted = Episode::new(
-            17,
-            &[0],
-            Difficulty::Veteran,
-            100,
-            None,
-            EpisodeOptions::new(None, 8),
-        )
-        .expect("unprofiled skirmish episode");
+        let mut omitted = Episode::new(17, &[0], 100, None, EpisodeOptions::new(None, 8))
+            .expect("unprofiled skirmish episode");
         let zero_rows = [[0; PROFILE_CONDITION_COUNT]];
         let mut explicit_zero = Episode::new(
             17,
             &[0],
-            Difficulty::Veteran,
             100,
             None,
             EpisodeOptions::new(None, 8).with_profile_facets(&zero_rows),
@@ -1306,7 +1274,6 @@ mod tests {
         let misaligned = Episode::new(
             17,
             &[0, 1],
-            Difficulty::Veteran,
             100,
             None,
             EpisodeOptions::new(None, 8).with_profile_facets(&[[0; PROFILE_CONDITION_COUNT]]),
@@ -1325,7 +1292,6 @@ mod tests {
         let out_of_range = Episode::new(
             17,
             &[0],
-            Difficulty::Veteran,
             100,
             None,
             EpisodeOptions::new(None, 8).with_profile_facets(&[invalid]),
@@ -1342,15 +1308,8 @@ mod tests {
 
     #[test]
     fn terminal_reply_distinguishes_tick_cap_from_a_game_result() {
-        let mut capped = Episode::new(
-            17,
-            &[0, 1],
-            Difficulty::Veteran,
-            0,
-            None,
-            EpisodeOptions::new(None, 8),
-        )
-        .expect("capped skirmish episode");
+        let mut capped = Episode::new(17, &[0, 1], 0, None, EpisodeOptions::new(None, 8))
+            .expect("capped skirmish episode");
         let capped_reply = capped.reply();
         assert_eq!(capped_reply["done"], true);
         assert_eq!(capped_reply["truncated"], true);
@@ -1369,15 +1328,8 @@ mod tests {
 
     #[test]
     fn repair_effects_accumulate_across_the_whole_decision_interval() {
-        let mut episode = Episode::new(
-            17,
-            &[0],
-            Difficulty::Veteran,
-            300,
-            None,
-            EpisodeOptions::new(None, 64),
-        )
-        .expect("skirmish episode");
+        let mut episode = Episode::new(17, &[0], 300, None, EpisodeOptions::new(None, 64))
+            .expect("skirmish episode");
         wound_sentinel(&mut episode, PlayerId(0));
         let reset = episode.reply();
         assert_eq!(reset["effects"][0]["unit_hp_restored"], 0);
@@ -1386,6 +1338,7 @@ mod tests {
             .step(&[[
                 Action::Idle as usize,
                 Action::RepairUnit as usize,
+                Action::NoUpgrade as usize,
                 Action::NoOperation as usize,
             ]])
             .expect("legal repair action");
@@ -1733,14 +1686,22 @@ mod tests {
     }
 
     #[test]
-    fn step_wire_requires_one_three_head_plan_per_seat() {
-        let request =
-            serde_json::from_str::<Request>(r#"{"cmd":"step","actions":[[2,13,18],[0,24,25]]}"#)
-                .expect("factorized step request");
+    fn step_wire_requires_one_four_head_plan_per_seat() {
+        let request = serde_json::from_str::<Request>(
+            r#"{"cmd":"step","actions":[[2,13,42,18],[0,24,42,25]]}"#,
+        )
+        .expect("factorized step request");
         match request {
-            Request::Step { actions } => assert_eq!(actions, vec![[2, 13, 18], [0, 24, 25]]),
+            Request::Step { actions } => {
+                assert_eq!(actions, vec![[2, 13, 42, 18], [0, 24, 42, 25]])
+            }
             _ => panic!("parsed the wrong request"),
         }
+        assert!(
+            serde_json::from_str::<Request>(r#"{"cmd":"step","actions":[[2,13,18],[0,24,25]]}"#)
+                .is_err(),
+            "the three-head v8 wire shape must fail at the contract boundary"
+        );
         assert!(
             serde_json::from_str::<Request>(r#"{"cmd":"step","actions":[2,13]}"#).is_err(),
             "the flat v6 wire shape must fail at the contract boundary"
@@ -1795,7 +1756,6 @@ mod tests {
         let err = Episode::new(
             17,
             &[0],
-            Difficulty::Veteran,
             100,
             None,
             EpisodeOptions::new(Some(&[Faction::Cupric]), 8),

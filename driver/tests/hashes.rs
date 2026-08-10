@@ -1,10 +1,10 @@
 //! Fixed state-hash fixtures: the cheap, image-free determinism tripwire.
 //!
-//! Every shipped scenario runs bot-vs-bot to tick 2,000 and its state hash
-//! is compared against `tests/goldens/state-hashes.json`. Any sim change
-//! that moves behavior shows up here as a one-line diff instead of golden
-//! PNG churn, and CI regenerates the file on every OS to prove the
-//! cross-platform bit-identical invariant.
+//! Every shipped scenario runs Overseer-vs-Overseer to tick 2,000 and its
+//! state hash is compared against `tests/goldens/state-hashes.json`. Any
+//! sim change that moves behavior shows up here as a one-line diff instead
+//! of golden PNG churn, and CI regenerates the file on every OS to prove
+//! the cross-platform bit-identical invariant.
 //!
 //! The fixture carries the `SIM_VERSION` it was blessed under, and the
 //! bless path enforces the compatibility discipline mechanically: hash
@@ -15,7 +15,6 @@
 //! commit, explain. `BLESS_SAME_VERSION=1` overrides the refusal for a
 //! deliberate exception; the commit message owns the justification.
 
-use oxide_driver::runner;
 use oxide_sim::Scenario;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -44,26 +43,33 @@ fn compute_hashes() -> BTreeMap<String, String> {
             .map(|path| {
                 scope.spawn(move || {
                     let name = path.file_stem().unwrap().to_string_lossy().into_owned();
-                    let mut scenario = Scenario::load(path)
+                    let scenario = Scenario::load(path)
                         .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-                    for player in &mut scenario.players {
-                        player.bot = true;
-                        // The fixtures pin the *shipped* opponent: the
-                        // neural ladder at full strength, personalities
-                        // dealt from the map seed. Weight changes now trip
-                        // the tripwire, exactly like rule changes — the
-                        // network is part of the sim's behavior.
-                        player.bot_config = Some(oxide_sim::scenario::BotConfig {
-                            level: oxide_sim::bot::Level::Expert,
-                            aggression: None,
-                            style: None,
-                            variant: None,
-                            team_role: None,
-                        });
+                    // The fixtures pin the Overseer — the scripted QA
+                    // anchor — in every seat, driven by hand: bot seats
+                    // proper are inert until the retrained actor ships,
+                    // and an all-idle run would be a vacuum, not a
+                    // tripwire. Overseer behavior changes now trip this
+                    // exactly like rule changes.
+                    let mut state = scenario
+                        .build()
+                        .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+                    let mut bots: Vec<oxide_sim::bot::Brain> = (0..scenario.players.len())
+                        .map(|seat| {
+                            oxide_sim::bot::Brain::overseer(
+                                oxide_sim::PlayerId(seat as u8),
+                                scenario.seed,
+                            )
+                        })
+                        .collect();
+                    for _ in 0..FIXTURE_TICKS {
+                        let mut commands = Vec::new();
+                        for bot in &mut bots {
+                            commands.extend(bot.act(&state));
+                        }
+                        state.tick(&commands);
                     }
-                    let outcome = runner::run_scenario(&scenario, FIXTURE_TICKS, true, false)
-                        .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
-                    (name, oxide_protocol::hash_hex(outcome.state.hash()))
+                    (name, oxide_protocol::hash_hex(state.hash()))
                 })
             })
             .collect();

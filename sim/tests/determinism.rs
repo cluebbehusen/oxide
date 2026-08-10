@@ -7,9 +7,9 @@ mod common;
 
 use chassis::grid::TilePos;
 use chassis::replay::Replay;
-use oxide_sim::bot::Bot;
+use oxide_sim::bot::Brain;
 use oxide_sim::{
-    Command, GameResult, Order, PlayerCommand, SIM_VERSION, Scenario, State, UnitKind,
+    Command, GameResult, Order, PlayerCommand, PlayerId, SIM_VERSION, Scenario, State, UnitKind,
 };
 
 use common::{cmd, open_arena, unit};
@@ -17,7 +17,7 @@ use common::{cmd, open_arena, unit};
 /// Advances one tick with bot commands included, optionally recording them.
 fn tick_with_bots(
     state: &mut State,
-    bots: &mut [Bot],
+    bots: &mut [Brain],
     recorder: &mut Option<&mut Replay<Scenario, PlayerCommand>>,
 ) {
     let mut commands: Vec<PlayerCommand> = Vec::new();
@@ -32,14 +32,18 @@ fn tick_with_bots(
     state.tick(&commands);
 }
 
-/// Skirmish with both seats handed to bots.
-fn bot_match() -> (Scenario, State, Vec<Bot>) {
+/// Skirmish with both seats handed to the scripted Overseer — the one
+/// surviving in-tree command source while bot seats await the retrained
+/// actor.
+fn bot_match() -> (Scenario, State, Vec<Brain>) {
     let mut scenario = Scenario::skirmish();
     for player in &mut scenario.players {
         player.bot = true;
     }
     let state = scenario.build().unwrap();
-    let bots = Bot::for_scenario(&scenario);
+    let bots: Vec<Brain> = (0..scenario.players.len())
+        .map(|i| Brain::overseer(PlayerId(i as u8), scenario.seed))
+        .collect();
     assert_eq!(bots.len(), 2);
     (scenario, state, bots)
 }

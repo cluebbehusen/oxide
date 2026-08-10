@@ -54,9 +54,9 @@ pub struct ScenarioMeta {
     #[serde(default)]
     pub pace: String,
     /// Measured duration band, e.g. "5-8 min": the p25-p75 decision
-    /// window from `driver pace-sweep` at Medium with the shipped
-    /// artifact. An artifact-stamped measurement, never a gate —
-    /// re-stamp it when a weights or balance bless moves the clock.
+    /// window from `driver pace-sweep`. A bot-stamped measurement,
+    /// never a gate — re-stamp it when a weights or balance bless
+    /// moves the clock (stale until the retrained actor re-measures).
     #[serde(default)]
     pub duration: String,
     /// Mode support, e.g. "1v1" or "2v2".
@@ -97,12 +97,10 @@ pub struct PlayerSpec {
     /// ignores this — shells and drivers honor it).
     #[serde(default)]
     pub bot: bool,
-    /// How that bot plays: a ladder level and personality. `None` means
-    /// the legacy rule-cascade bot — which is also what keeps replays
-    /// recorded before bot configs existed reproducing, since the
-    /// scenario (and therefore
-    /// this config) rides inside every replay. The legacy bot is
-    /// team-blind: a seat with a `team` must set a config.
+    /// How that bot plays: a ladder level and personality. Authored
+    /// scenario data — it rides inside every replay, and the promoted
+    /// actor reads its difficulty and profile from here. `None` seats
+    /// no bot at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bot_config: Option<BotConfig>,
 }
@@ -313,12 +311,6 @@ pub enum ScenarioError {
     /// Every seat on one team: nobody to fight, no way to win.
     #[error("all players share one team, so the match could never end")]
     OneTeam,
-    /// A teamed seat asked for the config-less classic bot, which is
-    /// team-blind by design and would spend the match targeting allies.
-    #[error(
-        "player {0} shares a team but fields the classic bot; teamed bot seats need a bot_config"
-    )]
-    TeamBotNeedsConfig(PlayerId),
     /// A bot's personality or team-role selection cannot be resolved.
     #[error(transparent)]
     BotProfile(#[from] crate::bot::BotProfileError),
@@ -421,19 +413,6 @@ impl Scenario {
             let first = players[0].team;
             if players.iter().all(|p| p.team == first) {
                 return Err(ScenarioError::OneTeam);
-            }
-        }
-        // The config-less classic bot is team-blind by design (frozen for
-        // pre-0.7 replay reproduction); on a seat with a genuine teammate
-        // it would spend the match targeting allies. A team of one is
-        // fine — everyone really is its enemy there.
-        for (index, spec) in self.players.iter().enumerate() {
-            let teamed = players
-                .iter()
-                .enumerate()
-                .any(|(j, p)| j != index && p.team == players[index].team);
-            if teamed && spec.bot && spec.bot_config.is_none() {
-                return Err(ScenarioError::TeamBotNeedsConfig(PlayerId(index as u8)));
             }
         }
         let mut state = State::assemble(map, players, self.seed);

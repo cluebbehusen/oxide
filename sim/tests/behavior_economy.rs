@@ -52,19 +52,20 @@ fn harvester_gathers_and_deposits() {
 #[test]
 fn bot_economy_progresses_against_an_idle_opponent() {
     // The exact configuration that froze pre-fix: shipped skirmish, human
-    // seat idle, Cupric bot alone. Its bank plus spending must exceed its
+    // seat idle, Cupric bot alone (driven by the Overseer, the surviving
+    // scripted commander). Its bank plus spending must exceed its
     // starting stake — deposits happened — well before 12k ticks.
     let scenario = Scenario::skirmish();
     let mut state = scenario.build().unwrap();
-    let mut bots = oxide_sim::bot::Bot::for_scenario(&scenario);
-    assert_eq!(bots.len(), 1, "skirmish ships with exactly one bot seat");
+    assert!(
+        scenario.players[1].bot,
+        "skirmish ships with exactly one bot seat"
+    );
+    let mut bot = oxide_sim::bot::Brain::overseer(PlayerId(1), scenario.seed);
 
     let mut deposited = 0u32;
     for _ in 0..12_000u64 {
-        let mut commands = Vec::new();
-        for bot in &mut bots {
-            commands.extend(bot.act(&state));
-        }
+        let commands = bot.act(&state);
         let report = state.tick(&commands);
         for event in &report.events {
             if let Event::ScrapDeposited {
@@ -220,19 +221,13 @@ fn spending_the_recovery_package_does_not_refill_the_entitlement() {
 fn first_tick_spending_cannot_expand_a_recovery_entitlement() {
     let mut scenario = arena(Vec::new());
     scenario.players[0].scrap = FOUNDRY_RECOVERY_RESERVE;
-    scenario.buildings.push(BuildingSpec {
-        player: 0,
-        kind: BuildingKind::Fabricator,
-        x: 4,
-        y: 1,
-    });
     let mut state = scenario.build().unwrap();
-    let fabricator = state
+    // The closed tree trains the Scuttler at the Foundry, the only
+    // producer standing on the first tick anyway.
+    let foundry = state
         .buildings()
         .iter()
-        .find(|building| {
-            building.player == PlayerId(0) && building.kind == BuildingKind::Fabricator
-        })
+        .find(|building| building.player == PlayerId(0) && building.kind == BuildingKind::Foundry)
         .unwrap()
         .id;
 
@@ -240,14 +235,14 @@ fn first_tick_spending_cannot_expand_a_recovery_entitlement() {
         cmd(
             0,
             Command::Train {
-                building: fabricator,
+                building: foundry,
                 kind: UnitKind::Scuttler,
             },
         ),
         cmd(
             0,
             Command::Train {
-                building: fabricator,
+                building: foundry,
                 kind: UnitKind::Scuttler,
             },
         ),
@@ -724,9 +719,11 @@ fn foundry_refuses_kinds_it_cannot_produce() {
 #[test]
 fn fabricator_gates_the_advanced_roster() {
     use oxide_sim::stats::BuildingKind;
-    let mut state = arena(vec![unit(0, UnitKind::Harvester, 4, 6)])
-        .build()
-        .unwrap();
+    // 0.15: the Scuttler moved to the Foundry, so the Lancer is the
+    // cheapest kind that proves the Fabricator's gate.
+    let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 4, 6)]);
+    scenario.players[0].scrap = 300; // Fabricator (120) plus a Lancer (110)
+    let mut state = scenario.build().unwrap();
     let builder = state.units()[0].id;
     let anchor = TilePos::new(5, 5);
     state.tick(&[cmd(
@@ -750,7 +747,7 @@ fn fabricator_gates_the_advanced_roster() {
         0,
         Command::Train {
             building: fab,
-            kind: UnitKind::Scuttler,
+            kind: UnitKind::Lancer,
         },
     )]);
     assert!(report.events.iter().any(|e| matches!(
@@ -763,13 +760,13 @@ fn fabricator_gates_the_advanced_roster() {
     run_until(&mut state, 900, |s, _| {
         s.building(fab).is_some_and(|b| b.built)
     });
-    // Finished: scuttlers roll out; sentinels are still Foundry-only.
+    // Finished: lancers roll out; sentinels are still Foundry-only.
     let report = state.tick(&[
         cmd(
             0,
             Command::Train {
                 building: fab,
-                kind: UnitKind::Scuttler,
+                kind: UnitKind::Lancer,
             },
         ),
         cmd(
@@ -787,13 +784,13 @@ fn fabricator_gates_the_advanced_roster() {
             ..
         }
     )));
-    run_until(&mut state, 200, |s, events| {
+    run_until(&mut state, 400, |s, events| {
         let _ = s;
         events.iter().any(|e| {
             matches!(
                 e,
                 Event::UnitTrained {
-                    kind: UnitKind::Scuttler,
+                    kind: UnitKind::Lancer,
                     ..
                 }
             )
@@ -803,23 +800,23 @@ fn fabricator_gates_the_advanced_roster() {
 
 #[test]
 fn bot_reaches_its_tech_and_mixes_its_army() {
-    use oxide_sim::bot::Bot;
+    use oxide_sim::bot::Brain;
     use oxide_sim::stats::BuildingKind;
-    // Bot vs an idle opponent: within 12k ticks it should have stood up a
-    // Fabricator and fielded at least one advanced unit — proof the build
-    // and composition logic actually runs, not just compiles.
+    // The Overseer vs an idle opponent: within 12k ticks it should have
+    // stood up a Fabricator and fielded at least one advanced unit —
+    // proof the build and composition logic actually runs, not just
+    // compiles. On the closed tree the Scuttler comes from the Foundry
+    // and the Fabricator serves Lancers and Wardens, so any of those
+    // proves the mixed army.
     let mut scenario = Scenario::skirmish();
     scenario.players[1].bot = true;
     let mut state = scenario.build().unwrap();
-    let mut bots = Bot::for_scenario(&scenario);
+    let mut bot = Brain::overseer(PlayerId(1), scenario.seed);
     for _ in 0..12_000u32 {
         if state.result().is_some() {
             break;
         }
-        let mut commands = Vec::new();
-        for bot in &mut bots {
-            commands.extend(bot.act(&state));
-        }
+        let commands = bot.act(&state);
         state.tick(&commands);
     }
     let me = PlayerId(1);
@@ -830,7 +827,13 @@ fn bot_reaches_its_tech_and_mixes_its_army() {
     let advanced = state
         .units()
         .iter()
-        .filter(|u| u.player == me && matches!(u.kind, UnitKind::Scuttler | UnitKind::Lancer))
+        .filter(|u| {
+            u.player == me
+                && matches!(
+                    u.kind,
+                    UnitKind::Scuttler | UnitKind::Lancer | UnitKind::Warden
+                )
+        })
         .count();
     // The bot may have already razed the idle opponent and won; that is
     // also a pass as long as tech came up first.

@@ -317,9 +317,9 @@ fn training_uses_the_first_selected_factory_that_supports_the_slot() {
         .id;
     game.selection.buildings = vec![foundry, fabricator];
 
-    // Slot 4 (the Lancer) lives only on the Fabricator's card list —
-    // slots the Foundry also serves (0.15 added the Scuttler there)
-    // would legitimately land on the first selected producer instead.
+    // Slot 4 sits past the Foundry's four-card roster, so only the
+    // Fabricator can serve it — a slot both producers serve would
+    // legitimately land on the first selected producer instead.
     super::orders::train(&mut game, 4);
 
     assert!(matches!(

@@ -9,13 +9,9 @@ an opponent kind —
           train — the arms race lives here)
   past    a frozen checkpoint from this run's pool (stops cycling:
           you must still beat who you used to be)
-  incumbent
-          the recovered shipped actor, held fixed and played greedily
-  tier    a scripted ladder bot (the anchor that keeps play grounded
-          against sensible opponents, and the eventual yardstick)
-  scrapheap | standard | veteran | prime
-          one exact scripted ladder tier, for targeted consolidation
-          against a specific yardstick without a per-episode tier draw
+  overseer
+          the scripted Overseer commander (the anchor that keeps play
+          grounded against a sensible opponent, and the yardstick)
   rusher  the scripted rush teacher (the known exploit, kept in the
           curriculum forever so the answer to it never fades)
 
@@ -95,15 +91,12 @@ from oxide_gym import (
 )
 from ppo import TRAIN_GAMMA, gae, ppo_update
 
-TIERS = ["scrapheap", "standard", "veteran", "prime"]
 MAP_FAMILIES = ("fixed", "random", "grand")
 FACTION_PAIRS = ("ff", "fc", "cf", "cc")
 OPPONENT_KINDS = (
     "self",
     "past",
-    "incumbent",
-    "tier",
-    *TIERS,
+    "overseer",
     "rusher",
     "ffa",
     "team",
@@ -687,7 +680,7 @@ def add_entropy_arguments(ap: argparse.ArgumentParser) -> None:
         default=0.0,
         help="additional production-head entropy coefficient in "
         f"[0, {MAX_ENTROPY_COEFFICIENT}]; its effective head weight also "
-        "includes one third of --entropy-coef (default: 0)",
+        "includes one quarter of --entropy-coef (default: 0)",
     )
 
 
@@ -1189,12 +1182,14 @@ def maybe_blunder(
         )
     if hesitation_permille == 0 or int(rng.integers(1000)) >= hesitation_permille:
         return action
-    return (0, 24, 25)
+    return (0, 24, 42, 25)
 
 
-# Rush teacher — the v3 action menu; feature indices resolved by name.
+# Rush teacher — global v9 action indices in the four-head plan order;
+# feature indices resolved by name. The logic mirrors the Rust-side
+# `cup_rusher_plan` (driver/src/gym.rs) so both teachers stay one canary.
 IDLE, TRAIN_H, TRAIN_S, FORM, PUSH, SCOUT = 0, 1, 2, 17, 18, 20
-NO_CONSTRUCTION, NO_OPERATION = 24, 25
+NO_CONSTRUCTION, NO_OPERATION, NO_UPGRADE = 24, 25, 42
 
 
 def rusher(raw: list[int], mask: np.ndarray, tick: int) -> ActionPlan:
@@ -1212,49 +1207,7 @@ def rusher(raw: list[int], mask: np.ndarray, tick: int) -> ActionPlan:
         operation = FORM
     elif mask[SCOUT] and tick % 1024 == 0:
         operation = SCOUT
-    return (production, NO_CONSTRUCTION, operation)
-
-
-def legacy_incumbent_plan(
-    logits: torch.Tensor,
-    mask: torch.Tensor,
-) -> torch.Tensor:
-    """Arbitrates a recovered v6 actor as its original single flat head.
-
-    The v7 bridge retained rows 0..23 exactly, but factorized greedy
-    evaluation would activate three of those rows at once. Pick one
-    masked winner across the inherited rows, then place only that action
-    into its v7 head while the other heads take their explicit no-op.
-    """
-    if logits.ndim == 0 or logits.shape[-1] != ACTIONS:
-        raise ValueError(
-            f"incumbent logits must end in {ACTIONS} actions, got {tuple(logits.shape)}"
-        )
-    if mask.shape != logits.shape:
-        raise ValueError(
-            "incumbent mask must match logits exactly, got "
-            f"{tuple(mask.shape)} vs {tuple(logits.shape)}"
-        )
-    inherited = logits[..., :24].masked_fill(~mask[..., :24], float("-inf"))
-    invalid = torch.isnan(inherited) | torch.isposinf(inherited)
-    if bool(invalid.any().item()):
-        raise ValueError("incumbent inherited actions contain NaN or +inf logits")
-    if not bool(torch.isfinite(inherited).any(dim=-1).all().item()):
-        raise ValueError("incumbent has no legal inherited action")
-    winners = inherited.argmax(dim=-1)
-    plan = torch.empty((*winners.shape, 3), dtype=torch.int64, device=logits.device)
-    plan[..., 0] = IDLE
-    plan[..., 1] = NO_CONSTRUCTION
-    plan[..., 2] = NO_OPERATION
-    for head_index, head in enumerate(ACTION_HEADS):
-        inherited_head = tuple(action for action in head if action < 24)
-        for action in inherited_head:
-            plan[..., head_index] = torch.where(
-                winners == action,
-                winners,
-                plan[..., head_index],
-            )
-    return plan
+    return (production, NO_CONSTRUCTION, NO_UPGRADE, operation)
 
 
 class Lane:
@@ -1276,8 +1229,7 @@ class Job:
     """One worker's permanent role. Roles are fixed for the run — the
     lane geometry must never change, because episodes span many rollouts
     and a trajectory stream has to stay contiguous. What varies per
-    episode is the detail: map family, tier, and past checkpoint. The
-    incumbent policy itself stays fixed for the whole run."""
+    episode is the detail: map family and past checkpoint."""
 
     def __init__(
         self,
@@ -1289,7 +1241,6 @@ class Job:
         device: str,
         maps: str = "fixed",
         map_mix: dict[str, float] | None = None,
-        incumbent: nn.Module | None = None,
         faction_mix: dict[str, float] | None = None,
         aggression_range: tuple[int, int] | None = None,
         aggression_mix: AggressionDistribution | None = None,
@@ -1317,9 +1268,7 @@ class Job:
             getattr(worker, "profile_catalog", None),
             use_named_profiles=aggression_range is None and aggression_mix is None,
         )
-        self.tier: str | None = None
         self.past: nn.Module | None = None
-        self.incumbent = incumbent
         self.map_family: str | None = None
         self.faction_code: str | None = None
         self.frame: Frame | None = None
@@ -1349,28 +1298,26 @@ class Job:
             self.opp_seat = None
         elif kind == "team":
             # 2v2: the west column (seats 0 and 2 by the mapgen
-            # convention) learns as one team against scripted tiers.
+            # convention) learns as one team against the Overseer.
             self.learner_seats = [0, 2]
             self.opp_seat = None
         elif kind == "team2":
             # 2v2 beside a scripted ally: the learner holds one west
-            # chair, a tier Brain drives its teammate (and both foes) —
+            # chair, the Overseer drives its teammate (and both foes) —
             # the robustness half of team training, so the policy
             # learns to fight NEXT TO conventions it doesn't share.
             self.learner_seats = [seat * 2]  # 0 or 2, the west chairs
             self.opp_seat = None
-        elif kind in ("tier", "ffa") or kind in TIERS:
+        elif kind in ("overseer", "ffa"):
             self.learner_seats = [seat]
             self.opp_seat = None
-        elif kind in ("past", "rusher", "incumbent"):
+        elif kind in ("past", "rusher"):
             # Both seats are controlled, with the opponent driven
             # locally by a frozen policy or the scripted rush teacher.
             self.learner_seats = [seat]
             self.opp_seat = 1 - seat
         else:
             raise ValueError(f"unknown league opponent kind {kind!r}")
-        if kind == "incumbent" and incumbent is None:
-            raise ValueError("incumbent jobs require an incumbent checkpoint")
         self.episode_dials = {
             learner: EpisodeDials(1000, 500, SHIPPED_EXECUTION_PROFILES[-1])
             for learner in self.learner_seats
@@ -1497,11 +1444,9 @@ class Job:
                 players=4,
                 driver=self.map_driver,
             )
-            self.tier = TIERS[int(self.rng.integers(len(TIERS)))]
             self.frame = self.worker.reset(
                 seed,
                 control=(self.learner_seats[0],),
-                tier=self.tier,
                 conditions=self.conditions,
                 scenario=scenario,
                 factions=self.faction_code,
@@ -1518,11 +1463,9 @@ class Job:
                 teams=True,
                 driver=self.map_driver,
             )
-            self.tier = TIERS[int(self.rng.integers(len(TIERS)))]
             self.frame = self.worker.reset(
                 seed,
                 control=tuple(self.learner_seats),
-                tier=self.tier,
                 conditions=self.conditions,
                 scenario=scenario,
                 factions=self.faction_code,
@@ -1530,16 +1473,10 @@ class Job:
             )
             self._sync_worker_conditions()
             return
-        if self.kind == "tier" or self.kind in TIERS:
-            self.tier = (
-                TIERS[int(self.rng.integers(len(TIERS)))]
-                if self.kind == "tier"
-                else self.kind
-            )
+        if self.kind == "overseer":
             self.frame = self.worker.reset(
                 seed,
                 control=(self.learner_seats[0],),
-                tier=self.tier,
                 conditions=self.conditions,
                 scenario=scenario,
                 factions=self.faction_code,
@@ -1558,10 +1495,10 @@ class Job:
                 self.past = None  # empty pool: play the rusher instead
         all_conds = dict(self.conditions)
         if self.opp_seat is not None:
-            if self.kind in ("past", "incumbent"):
-                # Frozen learned opponents see the same named policy
-                # profile as the learner, retinted for their own roster.
-                # Otherwise v8 training pits a faceted learner against a
+            if self.kind == "past":
+                # A frozen learned opponent sees the same named policy
+                # profile as the learner, retinted for its own roster.
+                # Otherwise training pits a faceted learner against a
                 # zero-facet version of the same policy.
                 learner_dials = self.episode_dials[self.learner_seats[0]]
                 all_conds[self.opp_seat] = learner_dials.condition(
@@ -1598,29 +1535,7 @@ class Job:
         if self.opp_seat is None:
             return {}
         view = self.view.seats[self.opp_seat]
-        if self.kind == "rusher":
-            return {self.opp_seat: rusher(view.raw, view.mask, self.view.tick)}
-        if self.kind == "incumbent":
-            policy = self.incumbent
-            if policy is None:
-                raise RuntimeError("incumbent job has no frozen policy")
-            with torch.no_grad():
-                logits, _ = policy(
-                    torch.as_tensor(view.obs[None], device=policy_device),
-                    torch.as_tensor(view.mask[None], device=policy_device),
-                )
-            plan = legacy_incumbent_plan(
-                logits,
-                torch.as_tensor(view.mask[None], device=policy_device),
-            )[0].cpu()
-            return {
-                self.opp_seat: (
-                    int(plan[0]),
-                    int(plan[1]),
-                    int(plan[2]),
-                )
-            }
-        if self.past is None:
+        if self.kind == "rusher" or self.past is None:
             return {self.opp_seat: rusher(view.raw, view.mask, self.view.tick)}
         policy, device = self.past, policy_device
         with torch.no_grad():
@@ -1634,6 +1549,7 @@ class Job:
                 int(plan[0]),
                 int(plan[1]),
                 int(plan[2]),
+                int(plan[3]),
             )
         }
 
@@ -1696,7 +1612,6 @@ def assign_roles(
     device: str,
     maps: str = "fixed",
     map_mix: dict[str, float] | None = None,
-    incumbent: nn.Module | None = None,
     faction_mix: dict[str, float] | None = None,
     aggression_range: tuple[int, int] | None = None,
     aggression_mix: AggressionDistribution | None = None,
@@ -1737,7 +1652,6 @@ def assign_roles(
                     device,
                     maps,
                     map_mix,
-                    incumbent,
                     faction_mix,
                     aggression_range,
                     aggression_mix,
@@ -1746,29 +1660,6 @@ def assign_roles(
             )
             i += 1
     return jobs
-
-
-def load_incumbent_policy(
-    mix: dict[str, float],
-    checkpoint: str | None,
-    device: str,
-) -> nn.Module | None:
-    """Loads the exact recovered Q12 actor when its lane is active."""
-    if mix.get("incumbent", 0.0) <= 0.0:
-        return None
-    if not checkpoint:
-        raise ValueError("an incumbent opponent mix requires --incumbent CHECKPOINT")
-    policy, blob = load_policy(checkpoint, device)
-    if blob.get("q12_recovered") is not True or blob.get("unfloored_actions") not in (
-        None,
-        [],
-    ):
-        raise ValueError(
-            "--incumbent must be an exact Q12-recovered checkpoint "
-            "with no unfloored actions"
-        )
-    policy.eval()
-    return policy
 
 
 def q12_initialization_provenance(blob: dict | None) -> bool:
@@ -1934,6 +1825,7 @@ def rollout(
                     int(action[k, 0]),
                     int(action[k, 1]),
                     int(action[k, 2]),
+                    int(action[k, 3]),
                 )
                 acts[s] = maybe_blunder(
                     intended,
@@ -2177,7 +2069,7 @@ def evaluate(
 ) -> float:
     """Greedy fixed suite across canonical profiles and both physical seats.
 
-    ``opponent`` is a tier name or ``rusher``. Each seed uses one
+    ``opponent`` is ``overseer`` or ``rusher``. Each seed uses one
     Rust-authored named profile, cycling through the worker's catalog in
     handshake order; both seat assignments therefore test the same
     strategic policy vector under honest faction retinting.
@@ -2210,9 +2102,7 @@ def evaluate(
             if opponent == "rusher":
                 frame = w.reset(seed, control=(0, 1), conditions=straight)
             else:
-                frame = w.reset(
-                    seed, control=(seat,), tier=opponent, conditions=straight
-                )
+                frame = w.reset(seed, control=(seat,), conditions=straight)
             live.append((i, seat, frame))
         while live:
             still = []
@@ -2232,6 +2122,7 @@ def evaluate(
                     int(action[k, 0]),
                     int(action[k, 1]),
                     int(action[k, 2]),
+                    int(action[k, 3]),
                 )
                 acts: dict[int, ActionPlan] = {seat: plan}
                 if opponent == "rusher":
@@ -2291,9 +2182,10 @@ def probe_canary(payload: dict) -> dict:
     }
 
 
-# Schema 6 adds competitive-lifetime combat metrics without redefining
-# the preserved all-unit diagnostics.
-PROBE_SCHEMA = 6
+# Schema 8 drops the deleted scripted-tier dial from the probe payload
+# while keeping the competitive-lifetime combat metrics beside the
+# preserved all-unit diagnostics.
+PROBE_SCHEMA = 8
 
 
 def composition_probe(
@@ -2527,14 +2419,9 @@ def main() -> None:
     ap.add_argument(
         "--mix",
         type=parse_opponent_mix,
-        default=parse_opponent_mix("self=0.45,past=0.20,tier=0.20,rusher=0.15"),
-        help="opponent kind weights; tier samples the scripted ladder, "
-        "while scrapheap, standard, veteran, and prime select an exact tier",
-    )
-    ap.add_argument(
-        "--incumbent",
-        default=None,
-        help="exact Q12-recovered checkpoint used by an incumbent opponent lane",
+        default=parse_opponent_mix("self=0.45,past=0.20,overseer=0.20,rusher=0.15"),
+        help="opponent kind weights; overseer seats the scripted Overseer "
+        "commander as the fixed anchor and rusher the scripted rush teacher",
     )
     ap.add_argument(
         "--probe-every",
@@ -2581,7 +2468,6 @@ def main() -> None:
             args.initialize_from is not None or args.resume is not None,
             args.profile_column,
         )
-        incumbent = load_incumbent_policy(mix, args.incumbent, device)
     except ValueError as err:
         ap.error(str(err))
 
@@ -2635,8 +2521,6 @@ def main() -> None:
         )
     if args.anchor:
         lineage_inputs["anchor"] = input_identity(args.anchor, anchor_blob)
-    if incumbent is not None and args.incumbent:
-        lineage_inputs["incumbent"] = input_identity(args.incumbent)
     run_lineage = build_lineage(
         phase="league",
         phase_start_update=start_update,
@@ -2768,7 +2652,6 @@ def main() -> None:
             device,
             args.maps,
             map_mix,
-            incumbent,
             faction_mix,
             aggression_range,
             args.aggression_mix,
@@ -3011,7 +2894,7 @@ def main() -> None:
             ):
                 entry["eval"] = {
                     op: round(evaluate(policy, workers, device, op), 3)
-                    for op in ("veteran", "prime", "rusher")
+                    for op in ("overseer", "rusher")
                 }
                 save_policy(
                     policy,

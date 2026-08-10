@@ -187,6 +187,10 @@ impl Orientation {
                 Intent::RaidAir { target } => Intent::RaidAir {
                     target: self.tile(target),
                 },
+                Intent::Unload { transport, at } => Intent::Unload {
+                    transport,
+                    at: self.tile(at),
+                },
                 // Positionless intents pass through — and the match stays
                 // exhaustive on purpose: a new positioned intent that
                 // slips through unflipped is a silent seat-bias
@@ -196,7 +200,8 @@ impl Orientation {
                 | Intent::Repair { .. }
                 | Intent::Salvage { .. }
                 | Intent::RepairUnit { .. }
-                | Intent::Upgrade { .. }) => keep,
+                | Intent::Upgrade { .. }
+                | Intent::Load { .. }) => keep,
             })
             .collect()
     }

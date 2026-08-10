@@ -3,12 +3,14 @@
 //! The sim may not touch floats, so a shipped network is a fixed-point
 //! artifact produced by `tools/train/export.py`: Q12 weights, a Q12
 //! tanh lookup table, per-feature reciprocal scales. Everything here is
-//! `i64` adds, multiplies, and shifts — bit-identical on every platform,
-//! which is what lets a neural tier live inside replays and hash
-//! fixtures like any other command source. The quantized network is a
-//! slightly different player than the float one that trained (12
-//! fractional bits), so promotion tournaments run against *this* bot,
-//! not the torch checkpoint.
+//! `i64` adds, multiplies, and shifts — bit-identical on every
+//! platform, which is what lets a neural policy live inside replays
+//! and hash fixtures like any other command source. The quantized
+//! network is a slightly different player than the float one that
+//! trained (12 fractional bits), so promotion tournaments run against
+//! *this* bot, not the torch checkpoint. No artifact ships embedded
+//! today: the frozen 0.14 ladder is deleted, and the retrained v9
+//! actor loads from a file until promotion embeds it.
 
 use super::gym::{
     ACTION_COUNT, ACTION_HEADS, ActionPlan, Decision, FEATURE_COUNT, GYM_VERSION, GymBot,
@@ -22,10 +24,6 @@ use chassis::rng::Pcg32;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::fmt::Write as _;
-use std::sync::OnceLock;
-
-/// The decision cadence the shipped ladder network trained at.
-pub const LADDER_CADENCE: u64 = 16;
 
 /// Stream selector a seat's hesitation rng runs on: this base plus the
 /// player index. Every shipped path uses that derivation; the constant
@@ -87,11 +85,11 @@ pub fn deal_aggression(scenario_seed: u64, player: PlayerId) -> u32 {
     }
 }
 
-/// The shipped difficulty ladder: one trained network, four execution
-/// handicaps calibrated against the scripted tiers. Difficulty changes
-/// hesitation and reaction cadence, while the network receives the
-/// measured strong conditioning for the selected strategy. This keeps a
-/// non-monotonic learned conditioning input from inverting named levels.
+/// The player-facing difficulty ladder: one trained network, four
+/// execution handicaps. Difficulty changes hesitation and reaction
+/// cadence, never rules or information. The enum is authored scenario
+/// data (`BotConfig.level`) and survives the 0.14 actor's deletion;
+/// the retrained actor re-measures every handicap before promotion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Level {
@@ -110,10 +108,10 @@ impl Level {
     pub const LADDER: [Level; 4] = [Level::Easy, Level::Medium, Level::Hard, Level::Expert];
 
     /// The historical raw skill profile for dial-isolation experiments.
-    /// Named ladder play does not feed this value to the network: learned
-    /// skill conditioning is not monotonic, so [`NeuralBot::ladder`] uses
-    /// a measured strategy-specific condition and takes only hesitation
-    /// and cadence from the level.
+    /// Named ladder play does not feed this value to the network:
+    /// learned skill conditioning is not monotonic, so ladder
+    /// constructors use a measured strategy-specific condition and take
+    /// only hesitation and cadence from the level.
     pub fn skill(self) -> u32 {
         match self {
             Level::Easy => 300,
@@ -137,11 +135,10 @@ impl Level {
     }
 
     /// How often this level thinks, in ticks — the second execution
-    /// handicap. Calibrated against aggressive scripted yardsticks,
-    /// because slower neural mirrors can turtle into an advantage and
-    /// hide an inverted ladder. The response has sharp local optima, so
-    /// the 160-match, two-style gate and a disjoint-seed holdout measure
-    /// these exact values rather than assuming faster is always stronger.
+    /// handicap. These exact values were measured for the deleted 0.14
+    /// actor (slower neural mirrors can turtle into an advantage and
+    /// hide an inverted ladder, so gates measured rather than assumed);
+    /// the retrained actor owes its own calibration sweep.
     pub fn cadence(self) -> u64 {
         match self {
             Level::Easy => 56,
@@ -444,19 +441,6 @@ pub struct QuantNet {
 }
 
 impl QuantNet {
-    /// The embedded ladder network (parsed once, shared).
-    ///
-    /// # Panics
-    /// If the embedded artifact doesn't match this build's gym
-    /// contract — a build error surfaced at first use, caught by tests.
-    pub fn ladder() -> &'static QuantNet {
-        static NET: OnceLock<QuantNet> = OnceLock::new();
-        NET.get_or_init(|| {
-            QuantNet::from_json(include_str!("ladder_weights.json"))
-                .expect("embedded ladder weights match the gym contract")
-        })
-    }
-
     /// Parses an exported artifact, refusing version, shape, or
     /// magnitude drift. The magnitude ceilings are what make the
     /// integer kernel total: see the numeric contract above.
@@ -466,13 +450,6 @@ impl QuantNet {
             validate_lineage(lineage)?;
         }
         if dto.gym_version != GYM_VERSION {
-            if dto.gym_version == 7 && GYM_VERSION == 8 {
-                return Err(
-                    "weights speak gym v7, sim speaks v8; migrate the artifact with \
-                     `cd tools/train && uv run widen.py --src OLD.json --out NEW.json`"
-                        .into(),
-                );
-            }
             return Err(format!(
                 "weights speak gym v{}, sim speaks v{GYM_VERSION}",
                 dto.gym_version
@@ -889,45 +866,6 @@ impl NeuralBot {
         }
     }
 
-    /// Backward-compatible raw ladder bot with embedded weights and zero
-    /// named-profile facets. `aggression` is 0..=1000; `None` uses the
-    /// deterministic legacy raw deal.
-    pub fn ladder(
-        player: PlayerId,
-        scenario_seed: u64,
-        level: Level,
-        aggression: Option<u32>,
-        faction: Faction,
-    ) -> Self {
-        Self::ladder_with_net(
-            player,
-            scenario_seed,
-            level,
-            aggression,
-            faction,
-            QuantNet::ladder().clone(),
-        )
-    }
-
-    /// The shipped ladder wrapper for one construction-time named profile.
-    ///
-    /// Unlike the raw-aggression constructors, this carries the resolved
-    /// style, variant, and team-role facets into the learned condition.
-    pub fn ladder_resolved(
-        player: PlayerId,
-        scenario_seed: u64,
-        profile: ResolvedBotProfile,
-        faction: Faction,
-    ) -> Self {
-        Self::ladder_resolved_with_net(
-            player,
-            scenario_seed,
-            profile,
-            faction,
-            QuantNet::ladder().clone(),
-        )
-    }
-
     /// Applies one resolved named profile to an arbitrary candidate actor.
     ///
     /// Promotion diagnostics use this path to measure the exact runtime
@@ -1153,7 +1091,43 @@ impl NeuralBot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bot::{PROFILE_TEAM_ROLES, canonical_profiles};
+    use crate::bot::canonical_profiles;
+
+    /// A hand-built v9 artifact: identity-ish single layer. The
+    /// constructor contracts under test read knobs, cadence, and rng —
+    /// any shape-valid net serves them.
+    fn tiny_net() -> QuantNet {
+        let inputs = FEATURE_COUNT + CONDITIONING_COUNT;
+        let lut: Vec<i32> = (0..=512).map(|i| (i - 256) * 16).collect();
+        let trunk_w: Vec<Vec<i32>> = (0..4)
+            .map(|o| {
+                let mut row = vec![0; inputs];
+                row[o] = 4096;
+                row
+            })
+            .collect();
+        let head_w: Vec<Vec<i32>> = (0..ACTION_COUNT)
+            .map(|o| {
+                let mut row = vec![0; 4];
+                if o < 4 {
+                    row[o] = 4096;
+                }
+                row
+            })
+            .collect();
+        let artifact = serde_json::json!({
+            "gym_version": GYM_VERSION,
+            "q_bits": 12,
+            "features": FEATURE_COUNT,
+            "conditioning": CONDITIONING_COUNT,
+            "actions": ACTION_COUNT,
+            "recips": vec![1i64 << 24; inputs],
+            "tanh_lut": lut,
+            "layers": [{"w": trunk_w, "b": vec![0; 4]}],
+            "head": {"w": head_w, "b": vec![0; ACTION_COUNT]},
+        });
+        QuantNet::from_json(&artifact.to_string()).expect("the tiny artifact is shape-valid")
+    }
 
     /// The numeric contract's arithmetic, checked rather than argued:
     /// if a future ceiling rises past what `i64` holds, this fails
@@ -1209,55 +1183,6 @@ mod tests {
     }
 
     #[test]
-    fn promoted_ladder_carries_every_trained_profile_column() {
-        let dto: ArtifactDto =
-            serde_json::from_str(include_str!("ladder_weights.json")).expect("embedded artifact");
-        assert_eq!(dto.gym_version, 8);
-        assert_eq!(dto.conditioning, 12);
-        assert_eq!(dto.recips.len(), FEATURE_COUNT + CONDITIONING_COUNT);
-        for column in FEATURE_COUNT + 7..FEATURE_COUNT + CONDITIONING_COUNT {
-            assert!(
-                dto.layers[0].w.iter().any(|row| row[column] != 0),
-                "promoted profile column {column} must carry learned coefficients"
-            );
-        }
-        assert_eq!(
-            QuantNet::ladder().digest(),
-            0xc36f_ce50_824b_9fb5,
-            "the embedded policy must remain the fully gated promotion artifact"
-        );
-    }
-
-    #[test]
-    fn named_profile_conditioning_changes_promoted_logits() {
-        let net = QuantNet::ladder();
-        let mut features = [0; FEATURE_COUNT];
-        for (index, feature) in features.iter_mut().enumerate() {
-            *feature = (index as i64 * 97) % 1_001;
-        }
-        let mut changed = 0;
-
-        for profile in canonical_profiles() {
-            for role in PROFILE_TEAM_ROLES {
-                for faction in [Faction::Ferrous, Faction::Cupric] {
-                    let named = ladder_condition_values_with_facets(
-                        profile.aggression,
-                        faction,
-                        profile.facets.with_role(role),
-                    );
-                    let raw = ladder_condition_values(profile.aggression, faction);
-                    changed +=
-                        usize::from(net.logits(&features, &named) != net.logits(&features, &raw));
-                }
-            }
-        }
-        assert!(
-            changed > 0,
-            "the promoted artifact must consume named profile facets"
-        );
-    }
-
-    #[test]
     fn legacy_raw_deal_stays_inside_the_promoted_safe_window() {
         let mut saw_industry = false;
         let mut saw_combined = false;
@@ -1293,7 +1218,7 @@ mod tests {
                     level,
                     Some(aggression),
                     Faction::Ferrous,
-                    QuantNet::ladder().clone(),
+                    tiny_net(),
                 );
                 assert_eq!(raw.knobs[0], policy_skill);
                 assert_eq!(raw.blunder_permille, level.hesitation_permille());
@@ -1305,7 +1230,7 @@ mod tests {
                     level,
                     Some(aggression),
                     Faction::Ferrous,
-                    QuantNet::ladder().clone(),
+                    tiny_net(),
                     DECISION_STREAM_BASE,
                 );
                 assert_eq!(explicit_stream.knobs, raw.knobs);
@@ -1334,14 +1259,14 @@ mod tests {
             17,
             profile,
             Faction::Cupric,
-            QuantNet::ladder().clone(),
+            tiny_net(),
         );
         let faster = NeuralBot::ladder_resolved_with_net_at_cadence(
             PlayerId(0),
             17,
             profile,
             Faction::Cupric,
-            QuantNet::ladder().clone(),
+            tiny_net(),
             11,
         );
 
@@ -1359,7 +1284,7 @@ mod tests {
             Level::Medium,
             Some(550),
             Faction::Ferrous,
-            QuantNet::ladder().clone(),
+            tiny_net(),
         );
         let crossed = NeuralBot::ladder_with_net_at_stream(
             PlayerId(0),
@@ -1367,7 +1292,7 @@ mod tests {
             Level::Medium,
             Some(550),
             Faction::Ferrous,
-            QuantNet::ladder().clone(),
+            tiny_net(),
             DECISION_STREAM_BASE + 1,
         );
         assert_eq!(crossed.knobs, raw.knobs);
@@ -1394,14 +1319,14 @@ mod tests {
             17,
             profile,
             Faction::Ferrous,
-            QuantNet::ladder().clone(),
+            tiny_net(),
         );
         let crossed = NeuralBot::ladder_resolved_with_net_at_stream(
             PlayerId(0),
             17,
             profile,
             Faction::Ferrous,
-            QuantNet::ladder().clone(),
+            tiny_net(),
             DECISION_STREAM_BASE + 1,
         );
         assert_eq!(crossed.knobs, named.knobs);
@@ -1415,8 +1340,8 @@ mod tests {
     fn exact_zero_hesitation_does_not_change_the_legacy_profile_api() {
         let legacy = NeuralBot::with_profile(
             PlayerId(0),
-            LADDER_CADENCE,
-            QuantNet::ladder().clone(),
+            16,
+            tiny_net(),
             620,
             300,
             Faction::Ferrous,
@@ -1425,8 +1350,8 @@ mod tests {
         );
         let exact = NeuralBot::with_profile_hesitation(
             PlayerId(0),
-            LADDER_CADENCE,
-            QuantNet::ladder().clone(),
+            16,
+            tiny_net(),
             620,
             300,
             Faction::Ferrous,

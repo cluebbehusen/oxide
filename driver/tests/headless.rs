@@ -62,7 +62,9 @@ impl MatchActivity {
 }
 
 /// Plays `scenario` for `ticks` bot-vs-bot ticks, tallying per-seat
-/// activity out of the tick reports.
+/// activity out of the tick reports. The Overseer — the scripted QA
+/// anchor — drives every `bot`-flagged seat directly, since bot seats
+/// proper are inert until the retrained actor ships.
 ///
 /// Events name a shooter by id and the shooter may be dead by the time
 /// the report is read, so ownership is tracked in a ledger seeded from
@@ -73,7 +75,7 @@ fn play_and_tally(scenario: &Scenario, ticks: u64) -> anyhow::Result<MatchActivi
     use oxide_sim::event::Event;
 
     let mut state = scenario.build()?;
-    let mut bots = oxide_sim::bot::seat_bots(scenario);
+    let mut bots = oxide_kit::bench::overseer_bots(scenario);
     let mut seats = vec![SeatActivity::default(); scenario.players.len()];
     let mut unit_owner: BTreeMap<u32, usize> = state
         .units()
@@ -88,7 +90,11 @@ fn play_and_tally(scenario: &Scenario, ticks: u64) -> anyhow::Result<MatchActivi
     let mut decided_at = None;
 
     for _ in 0..ticks {
-        let report = runner::step(&mut state, &mut bots, None);
+        let mut commands = Vec::new();
+        for bot in &mut bots {
+            commands.extend(bot.act(&state));
+        }
+        let report = state.tick(&commands);
         for event in &report.events {
             let seat = match event {
                 Event::UnitTrained { unit, player, .. } => {
@@ -168,9 +174,10 @@ fn shipped_scenarios() -> Vec<PathBuf> {
     paths
 }
 
-/// A shipped map with every seat flipped to the shipped default
-/// opponent. A configless flip would field the team-blind classic bot,
-/// which team maps reject.
+/// A shipped map with every seat flipped to a configured bot seat, the
+/// shape every launched match declares. The sweep itself fields the
+/// Overseer per bot seat — bot seats proper are inert until the
+/// retrained actor ships.
 fn all_bots(path: &std::path::Path) -> Scenario {
     let mut scenario =
         Scenario::load(path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
@@ -193,21 +200,46 @@ fn bot_skirmish() -> Scenario {
     let mut scenario = Scenario::skirmish();
     for player in &mut scenario.players {
         player.bot = true;
+        player.bot_config = Some(oxide_sim::scenario::BotConfig {
+            level: oxide_sim::bot::Level::Medium,
+            aggression: None,
+            style: None,
+            variant: None,
+            team_role: None,
+        });
     }
     scenario
 }
 
 #[test]
 fn recorded_scenario_run_reproduces_from_its_replay() {
+    // Replay round-tripping needs a non-empty command log, and inert
+    // bot seats record nothing — so the Overseer drives both seats
+    // explicitly, recording exactly as the runner's step would.
+    use chassis::replay::Replay;
+    use oxide_sim::{PlayerCommand, SIM_VERSION};
+
     let scenario = bot_skirmish();
-    let outcome = runner::run_scenario(&scenario, 900, true, true).unwrap();
-    let replay = outcome.replay.unwrap();
+    let mut state = scenario.build().unwrap();
+    let mut bots = oxide_kit::bench::overseer_bots(&scenario);
+    let mut replay: Replay<Scenario, PlayerCommand> = Replay::new(SIM_VERSION, scenario.clone());
+    for _ in 0..900 {
+        let mut commands = Vec::new();
+        for bot in &mut bots {
+            commands.extend(bot.act(&state));
+        }
+        for command in &commands {
+            replay.record(state.current_tick(), command.clone());
+        }
+        state.tick(&commands);
+    }
+    replay.meta.ticks = Some(state.current_tick());
     assert_eq!(replay.meta.ticks, Some(900));
     assert!(!replay.commands.is_empty());
 
     let replayed = runner::run_replay(&replay, None, false).unwrap();
-    assert_eq!(replayed.current_tick(), outcome.state.current_tick());
-    assert_eq!(replayed.hash(), outcome.state.hash());
+    assert_eq!(replayed.current_tick(), state.current_tick());
+    assert_eq!(replayed.hash(), state.hash());
 }
 
 /// Ticks of bot-vs-bot play every shipped map must survive.

@@ -135,8 +135,8 @@ struct App {
 fn launch(draft: &NewMatchDraft) -> Result<Game> {
     let mut scenario = (**draft.scenario.as_ref().context("draft has a map")?).clone();
     // ONE consumer, one source: the per-seat vector the setup screen
-    // filled. Every AI seat gets its own config here, and the vacated
-    // human seat can never fall to the team-blind classic bot.
+    // filled. Every AI seat gets its own explicit config here, so a
+    // launched scenario always declares what each bot seat plays.
     anyhow::ensure!(
         draft.seats.len() == scenario.players.len(),
         "draft seats out of step with the map"

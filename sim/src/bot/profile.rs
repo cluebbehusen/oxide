@@ -50,7 +50,7 @@ const PROFILE_STYLE_DECK_STREAM: u64 = 7100;
 /// First scenario-wide stream used to shuffle each style's variant deck.
 const PROFILE_VARIANT_DECK_STREAM_BASE: u64 = 7200;
 
-/// High-level strategy inputs appended by the gym-v8 widening.
+/// High-level strategy inputs in the policy conditioning vector.
 ///
 /// These values resolve once so setup, diagnostics, runtime inference, and
 /// training all share one contract.
@@ -306,7 +306,7 @@ fn variant_spec(style: NamedStyle, variant: u8) -> VariantSpec {
 /// A bot's fully resolved construction-time profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolvedBotProfile {
-    /// Execution rung on the shipped ladder.
+    /// Execution rung on the player-facing difficulty ladder.
     pub level: Level,
     /// Named style, or `None` for an exact legacy aggression selection.
     pub style: Option<NamedStyle>,
@@ -326,7 +326,7 @@ impl ResolvedBotProfile {
         Some(variant_spec(self.style?, self.variant?).name)
     }
 
-    /// The complete gym-v8 conditioning values.
+    /// The complete policy-conditioning values.
     pub fn conditions(self, faction: Faction) -> [i64; CONDITIONING_COUNT] {
         if self.style.is_some() {
             ladder_condition_values_with_facets(self.aggression, faction, self.facets)
@@ -400,7 +400,7 @@ pub fn deal_style_variant(scenario_seed: u64, player: PlayerId) -> u8 {
 
 /// Resolves every configured bot in a scenario.
 ///
-/// The returned vector stays aligned with `scenario.players`; classic
+/// The returned vector stays aligned with `scenario.players`;
 /// config-less seats are `None`.
 pub fn resolve_bot_profiles(
     scenario: &Scenario,

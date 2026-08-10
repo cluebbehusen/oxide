@@ -1,10 +1,12 @@
 """Action-balanced behavior cloning for the factorized policy.
 
 The old two-teacher corpus was 89% Idle and omitted most of the roster
-and every new v6 verb. V7 demonstrates four coherent match strategies
-through independent production, capital/maintenance, and operations
-heads. Per-head class weighting keeps rare strategic labels from being
-buried under no-ops.
+and every new v6 verb. The teachers demonstrate four coherent match
+strategies through independent production, capital/maintenance,
+upgrade, and operations heads (the scripted teachers hold the upgrade
+head at its no-op). Per-head class weighting keeps rare strategic
+labels from being buried under no-ops. Every uncontrolled seat is the
+Rust-side Overseer.
 
 Usage (from tools/train/):
     uv run bc.py --episodes 40 --out runs/bc.pt
@@ -49,7 +51,7 @@ BUILD_TURRET, BUILD_FLAK, BUILD_BASTION, BUILD_ARRAY = 10, 11, 12, 13
 BUILD_RECLAIMER, REPAIR, AIR_RAID = 14, 15, 16
 FORM, PUSH, RECALL, SCOUT = 17, 18, 19, 20
 SALVAGE, REPAIR_UNIT, BUILD_BAY = 21, 22, 23
-NO_CONSTRUCTION, NO_OPERATION = 24, 25
+NO_CONSTRUCTION, NO_OPERATION, NO_UPGRADE = 24, 25, 42
 
 STRATEGIES = ("fortify", "industry", "combined", "pressure")
 AGGRESSION_RANGES = {
@@ -300,6 +302,7 @@ def teacher(
         (
             production_teacher(strategy, raw, mask),
             construction_teacher(strategy, raw, mask),
+            NO_UPGRADE,
             operations_teacher(strategy, raw, mask, tick),
         )
     )
@@ -366,17 +369,16 @@ def duel_scenarios(directory: pathlib.Path) -> list[pathlib.Path]:
 def episode_assignment(
     episode: int,
     scenario_count: int,
-    tier_count: int,
-) -> tuple[str, int, int, str, int]:
-    """Returns strategy, seat, map, faction pair, and tier indices.
+) -> tuple[str, int, int, str]:
+    """Returns strategy, seat, map index, and faction pair.
 
     One 128-episode pass crosses every strategy/seat pair with every
     shipped duel map. Faction pairs vary within each map instead of
     aliasing map index; subsequent 128-episode passes rotate the pair
     for the same strategy/seat/map cell.
     """
-    if scenario_count <= 0 or tier_count <= 0:
-        raise ValueError("scenario and tier counts must be positive")
+    if scenario_count <= 0:
+        raise ValueError("scenario count must be positive")
     local = episode % (2 * len(STRATEGIES))
     block = episode // (2 * len(STRATEGIES))
     strategy = STRATEGIES[local // 2]
@@ -384,21 +386,13 @@ def episode_assignment(
     scenario_index = (block * 5 + local) % scenario_count
     faction_rotation = block // scenario_count
     faction_index = (block + 2 * local + faction_rotation) % len(FACTION_PAIRS)
-    tier_index = (block + local) % tier_count
-    return strategy, seat, scenario_index, FACTION_PAIRS[faction_index], tier_index
+    return strategy, seat, scenario_index, FACTION_PAIRS[faction_index]
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--driver", default="../../target/release/oxide-driver")
     ap.add_argument("--episodes", type=int, default=64)
-    ap.add_argument("--tier", default="scrapheap")
-    ap.add_argument(
-        "--tiers",
-        default=None,
-        help="optional comma-separated opponent curriculum, such as "
-        "scrapheap,standard,veteran",
-    )
     ap.add_argument(
         "--scenario-dir",
         default="../../scenarios",
@@ -416,16 +410,13 @@ def main() -> None:
     ap.add_argument(
         "--resume",
         default=None,
-        help="initialize from a widened v8 checkpoint instead of fresh weights",
+        help="initialize from an existing checkpoint instead of fresh weights",
     )
     ap.add_argument("--out", default="runs/bc.pt")
     args = ap.parse_args()
 
     torch.manual_seed(0)
     scenarios = duel_scenarios(pathlib.Path(args.scenario_dir))
-    tiers = tuple(entry.strip() for entry in (args.tiers or args.tier).split(","))
-    if not all(tiers):
-        ap.error("--tiers must be a non-empty comma-separated list")
     driver_identity = input_identity(args.driver)
     worker = Worker(args.driver)
     obs_all, mask_all, act_all = [], [], []
@@ -433,19 +424,15 @@ def main() -> None:
     try:
         strategy_wins = dict.fromkeys(STRATEGIES, 0)
         scenario_wins = dict.fromkeys((path.stem for path in scenarios), 0)
-        tier_wins = dict.fromkeys(tiers, 0)
         for ep in range(args.episodes):
-            strategy, seat, scenario_index, factions, tier_index = episode_assignment(
+            strategy, seat, scenario_index, factions = episode_assignment(
                 ep,
                 len(scenarios),
-                len(tiers),
             )
             scenario = scenarios[scenario_index]
-            tier = tiers[tier_index]
             frame = worker.reset(
                 20_000 + ep,
                 control=(seat,),
-                tier=tier,
                 scenario=str(scenario),
                 factions=factions,
             )
@@ -472,10 +459,8 @@ def main() -> None:
                 wins += 1
                 strategy_wins[strategy] += 1
                 scenario_wins[scenario.stem] += 1
-                tier_wins[tier] += 1
         print(f"per-strategy wins: {strategy_wins}")
         print(f"per-scenario wins: {scenario_wins}")
-        print(f"per-tier wins: {tier_wins}")
         print(f"teacher: {wins}/{args.episodes} wins")
     finally:
         worker.close()
@@ -541,7 +526,6 @@ def main() -> None:
             "strategy_aggression_ranges": {
                 strategy: list(bounds) for strategy, bounds in AGGRESSION_RANGES.items()
             },
-            "tiers": list(tiers),
             "torch_seed": 0,
         },
         inputs=lineage_inputs,

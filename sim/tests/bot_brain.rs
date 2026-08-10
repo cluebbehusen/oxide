@@ -307,6 +307,7 @@ fn wounded_members_rejoin_after_full_repair() {
         hp,
         idle: true,
         carrying: 0,
+        cargo: 0,
         site: None,
         salvaging: None,
         founding: None,
@@ -367,8 +368,8 @@ fn wounded_members_rejoin_after_full_repair() {
         );
     }
 
-    // The frozen scripted path retains even an externally healed rear
-    // member, so its ladder behavior does not move.
+    // Plain scripted maintenance retains even an externally healed rear
+    // member; only the repair-capable entry point releases it.
     let healed = obs_with(vec![sentinel(0, 0, 1, 1, 100), sentinel(1, 0, 4, 2, 100)]);
     let _ = exec.maintain(me, &healed, TilePos::new(1, 1));
     let _ = exec.apply(
@@ -383,7 +384,7 @@ fn wounded_members_rejoin_after_full_repair() {
         exec.armies()
             .iter()
             .all(|army| !army.members.contains(&UnitId(0))),
-        "scripted maintenance preserves the frozen rear line"
+        "plain scripted maintenance retains the rear line"
     );
 
     // A repair-capable policy releases the unit at full health. A

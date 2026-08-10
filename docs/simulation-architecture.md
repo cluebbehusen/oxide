@@ -197,18 +197,19 @@ its remaining machines continue as autonomous remnants.
 
 Bots live outside `State::tick`. A bot reads a state-derived observation and
 emits ordinary `PlayerCommand` values, which the shell or runner records before
-the simulation sees them. Configured neural seats use the fog-honest
-observation path and deterministic quantized inference. The classic bot is a
-legacy replay/benchmark path with older, team-blind behavior; team scenarios
-must configure the neural path. Read-only playback runs no bot because the
-recorded command stream is already the match.
+the simulation sees them. Neural seats use the fog-honest observation path and
+deterministic quantized inference; until the gym-v9 retrain promotes an
+artifact, `seat_bots` seats nothing and bot seats are inert. The Overseer
+(`Brain::overseer`) is the only scripted commander — training and QA
+infrastructure, never player-facing. Read-only playback runs no bot because
+the recorded command stream is already the match.
 
 ## Source and test map
 
 | Contract | Primary source | Behavioral evidence |
 |---|---|---|
 | State, hashing, validation, teams | `sim/src/state.rs` | `sim/tests/state_integrity.rs`, `sim/tests/determinism.rs`, `sim/tests/teams.rs` |
-| Tick phase order and cleanup | `sim/src/tick/mod.rs` | `sim/tests/behavior_rules.rs`, `sim/tests/seat_bias.rs` |
+| Tick phase order and cleanup | `sim/src/tick/mod.rs` | `sim/tests/behavior_rules.rs`, `sim/tests/determinism.rs` |
 | Command vocabulary and canonicalization | `sim/src/command.rs`, `sim/src/tick/commands.rs` | `sim/tests/command_canonicalization.rs`, `sim/tests/fuzz.rs` |
 | Programs, movement, and collision | `sim/src/tick/brain.rs`, `sim/src/tick/movement.rs` | `sim/tests/behavior_movement.rs`, `sim/tests/movement_lab.rs` |
 | Economy and building work | `sim/src/tick/brain/economy.rs`, `sim/src/tick/production.rs` | `sim/tests/behavior_economy.rs`, `sim/tests/behavior_construction.rs`, `sim/tests/salvage.rs`, `sim/tests/repair_unit.rs` |

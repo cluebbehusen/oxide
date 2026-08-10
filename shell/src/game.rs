@@ -184,9 +184,8 @@ impl Game {
         // never permutes seats (parity carries factions, teams, and the
         // automation harness), it just moves which chair the human
         // takes. Anything but exactly one non-bot seat is a malformed
-        // PLAYABLE session (a bot seat without a config would fall to
-        // the team-blind classic bot on team maps); the spectator
-        // constructor above is the lenient door.
+        // PLAYABLE session; the spectator constructor above is the
+        // lenient door.
         let humans: Vec<PlayerId> = scenario
             .players
             .iter()
@@ -867,10 +866,9 @@ mod tests {
         });
         game.do_tick();
         assert!(game.demo.trained_fighter);
-        // The opponent bot issues commands every think; none of them
-        // may grade the human's homework (flags above already proved
-        // the human path; run a few bot-only ticks and check the
-        // unrelated flags stay cold).
+        // Run a few more ticks with no human commands and check the
+        // unrelated flags stay cold — only the human's own commands
+        // may grade the tutorial.
         for _ in 0..20 {
             game.do_tick();
         }
@@ -1041,8 +1039,8 @@ mod tests {
             team: Some(team),
             scrap: 100,
             bot,
-            // Teamed bot seats need a config (the classic bot is
-            // team-blind by design).
+            // Bot seats carry an explicit config, the shape every
+            // launched scenario declares.
             bot_config: bot.then_some(oxide_sim::scenario::BotConfig {
                 level: oxide_sim::bot::Level::Easy,
                 aggression: Some(500),

@@ -109,6 +109,9 @@ fn advanced_state_for(faction: Faction, units: &[UnitKind]) -> State {
     scenario.retint_seat(0, faction);
     scenario.players[0].scrap = 1_000;
     add_building(&mut scenario, BuildingKind::Fabricator, 9, 2);
+    // The closed tree homes the sky at the Airworks, so the advanced
+    // fixture stands one — air-unit training masks off without it.
+    add_building(&mut scenario, BuildingKind::Airworks, 13, 2);
     for (index, kind) in units.iter().copied().enumerate() {
         scenario.units.push(UnitSpec {
             player: 0,
@@ -461,6 +464,19 @@ fn air_package_commits_tech_then_one_of_each_combined_arm() {
         "advanced doctrine must establish a saved tech intention before the bank can afford it"
     );
 
+    // On the closed tree the sky lives at the Airworks: once the
+    // Fabricator stands, the air lean owes its own hangar before any
+    // wing can queue.
+    let mut hangar_pending = Scenario::skirmish();
+    hangar_pending.players[0].scrap = 1_000;
+    add_building(&mut hangar_pending, BuildingKind::Fabricator, 9, 2);
+    let decision = profiled(air).decision(&hangar_pending.build().unwrap());
+    assert_eq!(
+        only_enabled(&decision.mask, &CONSTRUCTION_ACTIONS),
+        vec![Action::BuildAirworks as usize],
+        "an air lean with a standing Fabricator commits to the Airworks next"
+    );
+
     let state = advanced_state(&[]);
     let decision = profiled(air).decision(&state);
     assert_eq!(
@@ -469,13 +485,13 @@ fn air_package_commits_tech_then_one_of_each_combined_arm() {
     );
 
     let mut queued = serde_json::to_value(&state).unwrap();
-    let fabricator = queued["buildings"]
+    let airworks = queued["buildings"]
         .as_array_mut()
         .unwrap()
         .iter_mut()
-        .find(|building| building["player"] == 0 && building["kind"] == "fabricator")
+        .find(|building| building["player"] == 0 && building["kind"] == "airworks")
         .unwrap();
-    fabricator["queue"] = serde_json::json!(["buzzard"]);
+    airworks["queue"] = serde_json::json!(["buzzard"]);
     let queued: State = serde_json::from_value(queued).unwrap();
     let decision = profiled(air).decision(&queued);
     assert_eq!(
@@ -551,8 +567,11 @@ fn completed_opening_commitments_do_not_relock_after_losses() {
     add_harvesters(&mut achieved, 5);
     add_home_screen(&mut achieved);
     add_building(&mut achieved, BuildingKind::Fabricator, 9, 2);
-    add_building(&mut achieved, BuildingKind::Reclaimer, 14, 2);
-    add_building(&mut achieved, BuildingKind::Turret, 18, 2);
+    // The air lean's closed-tree opening includes its Airworks; without
+    // one the milestone would legitimately still be owed after losses.
+    add_building(&mut achieved, BuildingKind::Airworks, 13, 2);
+    add_building(&mut achieved, BuildingKind::Reclaimer, 16, 2);
+    add_building(&mut achieved, BuildingKind::Turret, 20, 2);
     for (index, kind) in [
         UnitKind::Buzzard,
         UnitKind::Talon,

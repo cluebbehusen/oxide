@@ -254,9 +254,9 @@ audio principles live in the visual-assets and sound-design skills.
 
 ## Bots and the level-playing-field contract
 
-The shipped opponent is a quantized neural policy embedded in `oxide-sim` and
-evaluated with deterministic integer math. Difficulty changes execution cadence
-and hesitation around one strategic policy. Personality changes deterministic
+The shipped opponent is a quantized neural policy evaluated with
+deterministic integer math. Difficulty changes execution cadence and
+hesitation around one strategic policy. Personality changes deterministic
 preferences and team role; it does not grant information or legal actions.
 
 The level-playing-field contract is non-negotiable: **a bot is a command source,
@@ -273,37 +273,28 @@ pathological, fix shared balance or training rather than concealing it from the
 bot. Difficulty can degrade execution; personality can alter preferences;
 neither changes the strategy surface.
 
-### Transitional 0.15 exception
+### 0.15 status: no shipped actor yet
 
-The shipped neural ladder is still the frozen 0.14 actor behind its inherited
-bot-only action masks: per-kind caps, a private production-queue threshold, a
-hard Fabricator screen gate, and zero-caps on every 0.15 kind. These remain a
-known temporary violation, retained because the weights were trained within
-that surface and naive removal caused a policy collapse. Do not add more
-restrictions, present these as acceptable balance, bless their uncapped
-drift, or remove them independently.
+The frozen 0.14 actor and every legacy bot — its bot-only masks, the
+scripted difficulty tiers, and the classic rule cascade — are deleted.
+The gym v9 surface is parity-clean by construction: the mask encodes
+shared legality only. Until the from-scratch retrain promotes an
+actor, bot seats are inert (`seat_bots` seats nothing); 0.14.0 on git
+is the playable build. `BotConfig` (level, personality) remains
+authored scenario data the promoted actor will consume.
 
-0.15 shipped the content half of the migration: the tree the retrain will
-target, a transitional Fabricator roster (it keeps the full 0.14 lists so the
-frozen actor's gates still resolve — the final tree homes the sky at the
-Airworks and the Scuttler at the Foundry), and the Overseer
-(`Brain::overseer`), a scripted commander on the shared intent surface that
-plays the whole new tree legally. It is training infrastructure only — the
-retrain era's demonstration source, curriculum anchor, and yardstick — and is
-deliberately unreachable from any player-facing surface. Cap removal, gym v9, and the from-scratch
-retrain remain one coordinated change; until it lands, this section is the
-durable decision: do not change the masks or the transitional rosters
-outside that migration.
+The Overseer (`Brain::overseer`) is the only scripted commander: the
+retrain era's demonstration source, curriculum anchor, and evaluation
+yardstick, and the anchor for liveness, determinism, and hash gates.
+It is training and QA infrastructure only, deliberately unreachable
+from any player-facing surface (no scenario field, no wizard dial, no
+`SeatBot` arm). Keep it that way.
 
-Any action-surface expansion must first evaluate current weights unchanged,
-then retrain when the evidence requires it, and finally pass the complete
-native-Q12, faction/seat, composition, profile, liveness, ladder, and
-determinism battery before promotion. Never bless a new actor merely because it
-runs. See `.agents/skills/bot-training/SKILL.md` for the gym contract, current
-artifact lineage, training commands, and promotion procedure.
-
-Scenarios without `PlayerSpec.bot_config` intentionally reproduce the legacy
-rule-cascade bot for old replays. Do not silently migrate that path.
+A candidate actor must pass the complete native-Q12, faction/seat,
+composition, profile, liveness, ladder, and determinism battery before
+promotion. Never bless a new actor merely because it runs. See
+`.agents/skills/bot-training/SKILL.md` for the gym contract, training
+commands, and promotion procedure.
 
 ## Cross-cutting gotchas
 

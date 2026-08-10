@@ -603,8 +603,9 @@ const SENTINEL: UnitStats = UnitStats {
     radius: Fx::lit("0.35"),
     cost: 90, // 0.10 balance: spam pays — four campaign rounds proved 75 optimal-by-flooding
     // 0.13 balance: 7.5 s, and load-bearing twice over despite the kind
-    // being faction-shared. Measured at 160 under the 0.13 economy:
-    // classic-bot long-haul stalls past the liveness horizon (8,245
+    // being faction-shared. Measured at 160 under the 0.13 economy
+    // (yardstick: the since-deleted classic bot): long-haul stalls past
+    // the liveness horizon (8,245
     // ticks of zero progress), and the mixed-roster marginal reads
     // ferrous 37.3% [34.9, 39.8] against 48.5% at 150 — Ferrous fields
     // the heavier Sentinel share, so the shared cadence is not
@@ -1319,13 +1320,7 @@ const FABRICATOR: BuildingStats = BuildingStats {
     vision: 6,
     // Both factions' variants are listed; the train gate deals each seat
     // only its own. Order groups the roles for the HUD's slot labels.
-    // 0.15 transition: the final tree homes the sky at the Airworks and
-    // the Scuttler at the Foundry, but the frozen v8 actor can neither
-    // build an Airworks nor re-aim its train gates, so the Fabricator
-    // keeps its 0.14 roster — shared and legal for humans and bots
-    // alike — until the gym v9 retrain closes the overlap.
     produces: &[
-        UnitKind::Scuttler,
         UnitKind::Lancer,
         UnitKind::Bombard,
         UnitKind::Flakhound,
@@ -1333,10 +1328,6 @@ const FABRICATOR: BuildingStats = BuildingStats {
         UnitKind::Warden,
         UnitKind::Tender,
         UnitKind::Sapper,
-        UnitKind::Buzzard,
-        UnitKind::Darter,
-        UnitKind::Talon,
-        UnitKind::Wisp,
     ],
     weapons: &[],
     construction: Some(ConstructionStats {
@@ -1775,11 +1766,6 @@ pub const FOUNDRY_RECOVERY_PERIOD: u64 = 10;
 /// ground screen captures only the Harvester-sized deficit.
 pub const FOUNDRY_RECOVERY_RESERVE: u32 = SENTINEL.cost + HARVESTER.cost;
 
-/// Ticks per scrap smelted by each standing, completed Foundry — the
-/// transparent income floor, running from tick zero.
-///
-/// This is the economy's guarantee: exhausted nodes, lost Reclaimers,
-/// and camped salvage can make progress slow, but never leave a seat
 /// Release gate for turn-limited bombers: the target must sit inside
 /// the forward cone, `dot(heading, to_target) >= |to_target| * CONE`.
 /// 0.92 is a half-angle of about 23 degrees — wide enough that a clean
@@ -1838,6 +1824,11 @@ pub const SAPPER_BLAST_RADIUS: Fx = Fx::lit("1.5");
 /// fires (measured to the target's closest point).
 pub const SAPPER_CONTACT_RANGE: Fx = Fx::lit("0.9");
 
+/// Ticks per scrap smelted by each standing, completed Foundry — the
+/// transparent income floor.
+///
+/// This is the economy's guarantee: exhausted nodes, lost Reclaimers,
+/// and camped salvage can make progress slow, but never leave a seat
 /// with no income at all. Credit is per Foundry so expansion bases are
 /// worth their keep, but the rate is tuned so income alone never pays
 /// for one (20/min against a 400 cost: production, drop-off reach,
@@ -1848,9 +1839,10 @@ pub const FOUNDRY_DRIP_PERIOD: u64 = 60;
 
 /// First completed tick eligible for the drip: a two-minute warm-up.
 /// The floor exists for mid- and late-game lockouts; openings stay
-/// exactly as tuned without it. Measured: a from-tick-zero drip handed
-/// the omniscient classic anchor a decisive edge over the fog-honest
-/// scripted brain (13/40 -> passing) purely on perfectly-converted
+/// exactly as tuned without it. Measured (against the since-deleted
+/// 0.14 scripted bots): a from-tick-zero drip handed an omniscient
+/// anchor a decisive edge over a fog-honest brain (13/40 -> passing)
+/// purely on perfectly-converted
 /// early free scrap — the floor should never be an opening build order.
 pub const FOUNDRY_DRIP_START_TICK: u64 = 2_400;
 
@@ -2057,5 +2049,6 @@ pub const LEASH_REACQUIRE_COOLDOWN: u16 = 60;
 /// a stationed machine's self-acquired fights tether. A unit cycling
 /// through idle mid-battle (its target fell, the next is a tick away)
 /// re-acquires unleashed: tethering those turned army fights into
-/// seat-parity coin flips and collapsed the scripted tier ladder.
+/// seat-parity coin flips (measured against the since-deleted scripted
+/// tier ladder, which it collapsed).
 pub const LEASH_STATION_TICKS: u16 = 40;

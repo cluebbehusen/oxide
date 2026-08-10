@@ -8,7 +8,7 @@ quantized bot is the shipped artifact; it re-runs the tournament after
 export, because 12 bits of mantissa is a (slightly) different player.
 
 Usage (from tools/train/):
-    uv run export.py --ckpt runs/league4w/latest.pt --out runs/prime.json
+    uv run export.py --ckpt runs/league4w/latest.pt --out runs/candidate.json
 """
 
 import argparse

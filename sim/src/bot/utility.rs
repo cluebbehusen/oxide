@@ -1,6 +1,6 @@
 //! The utility policy: decision channels over an [`Observation`].
 //!
-//! Where the classic bot is one long rule cascade, this policy is a set
+//! The policy is a set
 //! of independent **channels** — economy, production, construction,
 //! scouting, army command — each contributing its best intents per think
 //! under one shared scrap budget. Channels don't compete for a single
@@ -48,9 +48,8 @@ const SALVAGE_LOW: u32 = 250;
 /// Known anti-air within this range of a raid target scrubs the raid.
 const RAID_AA_RADIUS: i32 = 6;
 
-/// The policy's tunable considerations. Phase C's difficulty tiers are
-/// presets over these dials (plus the executive's); the fairness rule is
-/// that dials change *thinking* — never income, vision, or combat math.
+/// The policy's tunable considerations. The fairness rule is that
+/// dials change *thinking* — never income, vision, or combat math.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dials {
     /// Think every N ticks.
@@ -89,10 +88,10 @@ pub struct Dials {
 }
 
 impl Dials {
-    /// Everything the LEGACY commander had on. The 0.15 channels stay
-    /// off here on purpose: the frozen ladder tiers and gym parity
-    /// fixtures were measured against this exact commander, and their
-    /// behavior must not drift underneath them.
+    /// Everything the 0.14-era commander had on. The 0.15 channels
+    /// stay off here: gym parity fixtures were measured against this
+    /// exact commander, and their behavior must not drift underneath
+    /// them.
     pub fn full() -> Self {
         Self {
             cadence: 8,
@@ -115,24 +114,14 @@ impl Dials {
     }
 
     /// The Overseer: the full commander with the 0.15 tree switched
-    /// on — deep tech, extractor restoration, and tier upgrades. The
-    /// playtest opponent that actually uses the new game.
+    /// on — deep tech, extractor restoration, and tier upgrades.
+    /// Training bootstrap and QA yardstick only, never player-facing.
     pub fn overseer() -> Self {
         Self {
             deep_tech: true,
             extractors: true,
             upgrades: true,
             harvester_target: 5,
-            ..Self::full()
-        }
-    }
-
-    /// Full strength with the classic cheating view — the strongest
-    /// purely scripted opponent (Phase C tiers pick between these).
-    pub fn full_omniscient() -> Self {
-        Self {
-            scouting: false,
-            fog_honest: false,
             ..Self::full()
         }
     }
@@ -271,8 +260,8 @@ impl UtilityPolicy {
     /// the founder pays on arrival, so while one is still walking the
     /// anchor stays pending for a later audit to judge (blacklisting
     /// it would poison ground the claim is about to prove). The
-    /// scripted tiers never defer — `founding` is always `None` on
-    /// their path.
+    /// scripted `Brain` never defers — `founding` is always `None` on
+    /// its path.
     pub(super) fn audit_sites(&mut self, obs: &Observation) {
         for anchor in std::mem::take(&mut self.pending_sites) {
             let appeared = obs.my_buildings.iter().any(|b| b.anchor == anchor);
@@ -351,8 +340,7 @@ impl UtilityPolicy {
     }
 
     /// Starvation ladder — the neural bot's chore only; the scripted
-    /// tiers never climb it (they are the ladder's fixed yardstick and
-    /// must stay byte-identical). Runs after [`Self::economy`]: any
+    /// `Brain` never climbs it. Runs after [`Self::economy`]: any
     /// harvester still idle found no qualifying node. Rung 1 re-tries
     /// with the enemy-side rule dropped — a dry home half makes
     /// contested nodes acceptable. Rung 2, nothing known at all: one
@@ -445,7 +433,12 @@ impl UtilityPolicy {
     }
 
     /// Production channel: harvesters to target, then a sentinel drip
-    /// from the Foundry; counters and lancers from the Fabricator.
+    /// from the Foundry; counters and lancers from the Fabricator. The
+    /// unbounded drip arms respect [`Self::capital_reserve`] so the
+    /// tech fund
+    /// can actually accumulate — without that discipline the drip eats
+    /// every think's income and the brain never techs at all (the
+    /// contested-play starvation the all-Overseer sweeps exposed).
     fn production(
         &mut self,
         dials: &Dials,
@@ -463,6 +456,22 @@ impl UtilityPolicy {
         let alive =
             |kind: UnitKind| -> usize { obs.my_units.iter().filter(|u| u.kind == kind).count() };
         let harvesters = alive(UnitKind::Harvester) + queued(UnitKind::Harvester);
+        // Survival outranks saving: with the home screen thin, the drip
+        // spends freely — a banked Fabricator is worthless underneath a
+        // Sentinel rush.
+        let screen = obs
+            .my_units
+            .iter()
+            .filter(|u| {
+                let stats = u.kind.stats();
+                stats.domain == Domain::Ground && stats.can_fight()
+            })
+            .count();
+        let capital = if screen < 3 {
+            0
+        } else {
+            Self::capital_reserve(dials, obs)
+        };
 
         // The Overseer's heavy metal: one Warden per think from the
         // Fabricator once it stands, and one Breaker whenever the
@@ -523,7 +532,7 @@ impl UtilityPolicy {
                     building: foundry.id,
                     kind: UnitKind::Harvester,
                 });
-            } else if *budget >= UnitKind::Sentinel.stats().cost {
+            } else if *budget >= UnitKind::Sentinel.stats().cost + capital {
                 *budget -= UnitKind::Sentinel.stats().cost;
                 intents.push(Intent::TrainAt {
                     building: foundry.id,
@@ -551,10 +560,17 @@ impl UtilityPolicy {
             .iter()
             .filter(|u| u.kind == UnitKind::Harvester)
             .count();
-        if let Some((qi, fab)) = fabricator
-            && obs.my_queues[qi].len() < 2
-        {
+        if let Some((qi, fab)) = fabricator {
             use crate::stats::{Domain, Role};
+            let fab_open = obs.my_queues[qi].len() < 2;
+            let foundry_open = foundry.filter(|(fqi, _)| obs.my_queues[*fqi].len() < 2);
+            let airworks_open = obs
+                .my_buildings
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| b.kind == BuildingKind::Airworks && b.built)
+                .min_by_key(|(_, b)| b.id)
+                .filter(|(aqi, _)| obs.my_queues[*aqi].len() < 2);
             let aa_kind = Role::AntiAir.unit_for(obs.faction);
             let wing_kind = Role::AirGround.unit_for(obs.faction);
             let lancer = UnitKind::Lancer.stats().cost;
@@ -574,6 +590,7 @@ impl UtilityPolicy {
                 usize::from(self.seen_air)
             };
             if dials.aa_response
+                && fab_open
                 && alive(aa_kind) + queued(aa_kind) < want_aa
                 && *budget >= aa_kind.stats().cost
             {
@@ -582,7 +599,8 @@ impl UtilityPolicy {
                     building: fab.id,
                     kind: aa_kind,
                 });
-            } else if enemy_turrets > alive(UnitKind::Lancer) + queued(UnitKind::Lancer)
+            } else if fab_open
+                && enemy_turrets > alive(UnitKind::Lancer) + queued(UnitKind::Lancer)
                 && *budget >= lancer
             {
                 *budget -= lancer;
@@ -593,25 +611,28 @@ impl UtilityPolicy {
             } else if alive(UnitKind::Scuttler) < 4
                 && enemy_harvesters >= 2
                 && *budget >= scuttler + reserve
+                && let Some((_, raid_bay)) = foundry_open
             {
+                // The Scuttler homes at the Foundry on the closed tree.
                 *budget -= scuttler;
                 intents.push(Intent::TrainAt {
-                    building: fab.id,
+                    building: raid_bay.id,
                     kind: UnitKind::Scuttler,
                 });
             } else if dials.air_harass
                 && alive(wing_kind) + queued(wing_kind) < AIR_WING
                 && enemy_harvesters >= 2
                 && *budget >= wing_kind.stats().cost + reserve
+                && let Some((_, airworks)) = airworks_open
             {
                 // A wing for the harvest line — bought only once raiding
-                // has something to eat.
+                // has something to eat, and only from a standing Airworks.
                 *budget -= wing_kind.stats().cost;
                 intents.push(Intent::TrainAt {
-                    building: fab.id,
+                    building: airworks.id,
                     kind: wing_kind,
                 });
-            } else if *budget >= lancer + reserve {
+            } else if fab_open && *budget >= lancer + reserve + capital {
                 *budget -= lancer;
                 intents.push(Intent::TrainAt {
                     building: fab.id,
@@ -621,7 +642,30 @@ impl UtilityPolicy {
         }
     }
 
-    /// Construction channel: orphaned sites first (paid-for progress must
+    /// The next owed tech rung's price plus the fighting reserve — the
+    /// fund the unbounded military drip must leave untouched so the
+    /// construction channel can ever afford to climb. Zero once the
+    /// dials' tree is fully raised (a standing site counts: its cost is
+    /// already spent).
+    fn capital_reserve(dials: &Dials, obs: &Observation) -> u32 {
+        if !dials.tech {
+            return 0;
+        }
+        let have = |kind: BuildingKind| obs.my_buildings.iter().any(|b| b.kind == kind);
+        let price =
+            |kind: BuildingKind| kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
+        let mut rungs = vec![BuildingKind::Fabricator];
+        if dials.deep_tech {
+            rungs.push(BuildingKind::Airworks);
+            rungs.push(BuildingKind::Crucible);
+        }
+        rungs
+            .into_iter()
+            .find(|kind| !have(*kind))
+            .map(|kind| price(kind) + TECH_RESERVE)
+            .unwrap_or(0)
+    }
+
     /// The Overseer's 0.15 ladder: restore a known frame, then raise the
     /// Airworks, then the Crucible, then lift a Reclaimer or Turret one
     /// rung — one act per think, each gated on a healthy bank so the
@@ -715,8 +759,9 @@ impl UtilityPolicy {
         false
     }
 
-    /// not strand), then the Fabricator, then a turret answer to raids.
-    /// One build per think.
+    /// Construction channel: orphaned sites first (paid-for progress
+    /// must not strand), then the Fabricator, then a turret answer to
+    /// raids. One build per think.
     fn construction(
         &mut self,
         dials: &Dials,
@@ -939,10 +984,10 @@ impl UtilityPolicy {
     /// Salvage channel: when the war has outlived the economy — bank
     /// starved, nothing known left to mine or strip off the ground —
     /// liquidate static defense cheapest-first and spend the ground on
-    /// one more wave. Deliberately narrow: a scripted tier that sells
-    /// its walls mid-siege teaches the learner the wrong lesson; one
-    /// that converts dead weight into a late push teaches the right
-    /// one, from the receiving side.
+    /// one more wave. Deliberately narrow: a commander that sells its
+    /// walls mid-siege teaches the learner the wrong lesson; one that
+    /// converts dead weight into a late push teaches the right one,
+    /// from the receiving side.
     fn salvage(&mut self, dials: &Dials, obs: &Observation, intents: &mut Vec<Intent>) {
         if !dials.salvage {
             return;
@@ -1486,7 +1531,7 @@ impl UtilityPolicy {
     }
 }
 
-/// Convenience for tests and future tiers: whether a unit observation
+/// Convenience for tests and policies: whether a unit observation
 /// can fight.
 pub fn is_fighter(u: &UnitObs) -> bool {
     u.kind.stats().can_fight()
@@ -1535,6 +1580,7 @@ mod tests {
             hp: UnitKind::Harvester.stats().max_hp,
             idle: founding.is_none(),
             carrying: 0,
+            cargo: 0,
             site: None,
             salvaging: None,
             founding,

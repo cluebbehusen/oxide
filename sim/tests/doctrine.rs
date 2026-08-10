@@ -1,7 +1,7 @@
-//! Doctrine tests for the 0.8 scripted brain: artillery standoff, air
-//! defense, repair audits, wreck salvage, raid discipline — and the
-//! orientation involution that keeps every new observation field
-//! seat-fair.
+//! Doctrine tests for the scripted brain (the channel policy the
+//! Overseer commands through): artillery standoff, air defense, repair
+//! audits, wreck salvage, raid discipline — and the orientation
+//! involution that keeps every new observation field seat-fair.
 
 use chassis::grid::TilePos;
 use oxide_sim::bot::observation::OBSERVATION_VERSION;
@@ -46,6 +46,7 @@ fn unit_obs(id: u32, player: u8, kind: UnitKind, x: i32, y: i32) -> UnitObs {
         hp: kind.stats().max_hp,
         idle: true,
         carrying: 0,
+        cargo: 0,
         site: None,
         salvaging: None,
         founding: None,

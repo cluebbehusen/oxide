@@ -606,7 +606,6 @@ def collect_teacher_corpus(
     driver: str,
     scenario_dir: pathlib.Path,
     episodes: int,
-    tiers: tuple[str, ...],
     episode_seed_base: int,
     max_ticks: int,
     cadence: int,
@@ -620,13 +619,12 @@ def collect_teacher_corpus(
     worker = Worker(driver)
     try:
         for episode in range(episodes):
-            strategy, seat, scenario_index, factions, tier_index = (
-                bc.episode_assignment(episode, len(scenarios), len(tiers))
+            strategy, seat, scenario_index, factions = bc.episode_assignment(
+                episode, len(scenarios)
             )
             frame = worker.reset(
                 episode_seed_base + episode,
                 control=(seat,),
-                tier=tiers[tier_index],
                 max_ticks=max_ticks,
                 cadence=cadence,
                 scenario=str(scenarios[scenario_index]),
@@ -682,7 +680,6 @@ def main() -> None:
     ap.add_argument("--driver", default="../../target/release/oxide-driver")
     ap.add_argument("--scenario-dir", default="../../scenarios")
     ap.add_argument("--episodes", type=_positive_int, default=64)
-    ap.add_argument("--tiers", default="scrapheap")
     ap.add_argument("--episode-seed-base", type=int, default=42_000)
     ap.add_argument("--max-ticks", type=_positive_int, default=40_000)
     ap.add_argument("--cadence", type=_positive_int, default=16)
@@ -711,9 +708,6 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    tiers = tuple(entry.strip() for entry in args.tiers.split(","))
-    if not all(tiers):
-        ap.error("--tiers must be a non-empty comma-separated list")
     config = RevivalConfig(
         actions=args.actions,
         steps=args.steps,
@@ -736,7 +730,6 @@ def main() -> None:
         driver=args.driver,
         scenario_dir=pathlib.Path(args.scenario_dir),
         episodes=args.episodes,
-        tiers=tiers,
         episode_seed_base=args.episode_seed_base,
         max_ticks=args.max_ticks,
         cadence=args.cadence,
@@ -769,7 +762,6 @@ def main() -> None:
                 }
                 for strategy, aggression in STRATEGY_AGGRESSION.items()
             },
-            "tiers": list(tiers),
         },
         inputs={
             "dequantize_code": input_identity(training_dir / "dequantize.py"),
@@ -832,7 +824,6 @@ def main() -> None:
                     "source_kind": source_kind,
                     "config": asdict(config),
                     "episodes": args.episodes,
-                    "tiers": list(tiers),
                     "episode_seed_base": args.episode_seed_base,
                     "max_ticks": args.max_ticks,
                     "cadence": args.cadence,

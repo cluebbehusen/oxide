@@ -35,28 +35,39 @@ class TestFeatureContract:
             "profile_commitment",
         )
 
-    def test_v7_appends_the_exact_context_features(self) -> None:
-        expected = {
-            "known_salvage_value": 2_000,
-            "near_home_salvage_value": 1_000,
-            "nearest_salvage_distance": 200,
-            "idle_harvesters": 8,
-            "carried_scrap": 200,
-            "queued_unit_value": 1_000,
-            "construction_site_value": 1_000,
-            "my_unit_health_value": 2_000,
-            "my_building_health_value": 1_000,
-            "my_bastions_built": 2,
-            "my_repair_bays_built": 1,
-            "my_construction_sites": 4,
-            "home_enemy_pressure": 500,
-            "nearest_enemy_distance": 200,
-            "construction_plan": 7,
-            "construction_reserve": 250,
-        }
-        assert oxide_gym.FEATURES == 81
-        assert oxide_gym.FEATURE_NAMES[-len(expected) :] == list(expected)
-        assert {name: oxide_gym.SCALE_BY_NAME[name] for name in expected} == expected
+    def test_v9_appends_the_exact_roster_tree_and_frame_features(self) -> None:
+        expected = [
+            "my_wardens",
+            "my_tenders",
+            "my_excavators",
+            "my_scout_flyers",
+            "my_interceptors",
+            "my_bombers",
+            "my_transports",
+            "my_sappers",
+            "my_breakers",
+            "my_avalanches",
+            "enemy_interceptors",
+            "enemy_bombers",
+            "enemy_heavies",
+            "airworks_built",
+            "crucible_built",
+            "my_foundries_built",
+            "my_extractors_built",
+            "known_frames",
+            "nearest_frame_x",
+            "nearest_frame_y",
+            "nearest_frame_distance",
+            "my_upgraded_works",
+            "upgrade_candidates",
+            "tech_tier",
+            "transport_cargo",
+            "enemy_foundries_known",
+        ]
+        assert oxide_gym.FEATURES == 107
+        assert oxide_gym.FEATURE_NAMES[-len(expected) :] == expected
+        assert oxide_gym.FEATURE_NAMES[80] == "construction_reserve"
+        assert all(oxide_gym.SCALE_BY_NAME[name] >= 1 for name in expected)
 
 
 class _FakeProcess:
@@ -109,20 +120,23 @@ def contract_hello() -> dict:
 
 class TestFactorizedContract:
     def test_the_heads_are_global_indices_and_preserve_old_rows(self) -> None:
-        assert oxide_gym.GYM_VERSION == 8
-        assert oxide_gym.ACTIONS == 26
+        assert oxide_gym.GYM_VERSION == 9
+        assert oxide_gym.ACTIONS == 43
         assert oxide_gym.ACTION_HEADS == (
-            (0, 1, 2, 3, 4, 5, 6, 7, 8),
-            (24, 9, 10, 11, 12, 13, 14, 15, 21, 22, 23),
-            (25, 16, 17, 18, 19, 20),
+            (0, 1, 2, 3, 4, 5, 6, 7, 8, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35),
+            (24, 9, 10, 11, 12, 13, 14, 15, 21, 22, 23, 36, 37, 38, 39),
+            (42, 40),
+            (25, 16, 17, 18, 19, 20, 41),
         )
 
     def test_action_plans_validate_global_head_membership(self) -> None:
-        assert oxide_gym.validate_action_plan([8, 24, 20]) == (8, 24, 20)
+        assert oxide_gym.validate_action_plan([8, 24, 42, 20]) == (8, 24, 42, 20)
         with pytest.raises(ValueError, match="head 1"):
-            oxide_gym.validate_action_plan((8, 8, 20))
-        with pytest.raises(ValueError, match="must contain 3"):
-            oxide_gym.validate_action_plan((8, 24))
+            oxide_gym.validate_action_plan((8, 8, 42, 20))
+        with pytest.raises(ValueError, match="head 2"):
+            oxide_gym.validate_action_plan((8, 24, 41, 20))
+        with pytest.raises(ValueError, match="must contain 4"):
+            oxide_gym.validate_action_plan((8, 24, 20))
 
     def test_worker_requires_exact_heads_and_writes_nested_plans(
         self, monkeypatch: pytest.MonkeyPatch
@@ -136,12 +150,12 @@ class TestFactorizedContract:
         monkeypatch.setattr(oxide_gym.subprocess, "Popen", fake_popen)
         worker = oxide_gym.Worker("fake-driver")
         worker.control = (1, 0)
-        worker.send_step({0: (0, 24, 25), 1: (8, 23, 20)})
+        worker.send_step({0: (0, 24, 42, 25), 1: (8, 23, 40, 20)})
 
         request = json.loads(proc.stdin.getvalue().splitlines()[-1])
         assert request == {
             "cmd": "step",
-            "actions": [[8, 23, 20], [0, 24, 25]],
+            "actions": [[8, 23, 40, 20], [0, 24, 42, 25]],
         }
 
     def test_worker_rejects_a_different_action_partition(

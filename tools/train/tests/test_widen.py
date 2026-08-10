@@ -120,13 +120,13 @@ class TestArtifactBridge:
 
 
 class TestCheckpointBridge:
-    def test_v7_checkpoint_rejection_names_the_ckpt_migration(
+    def test_a_v7_checkpoint_is_refused_by_the_v9_trainer(
         self, tmp_path: pathlib.Path
     ) -> None:
         src = tmp_path / "old.pt"
         torch.save({"arch": "mlp", "gym_version": 7, "state": {}}, src)
 
-        with pytest.raises(RuntimeError, match=r"widen\.py --ckpt --src OLD\.pt"):
+        with pytest.raises(RuntimeError, match="speaks gym v7, trainer speaks v9"):
             load_policy(str(src))
 
     def test_the_float_resume_gets_only_zero_profile_columns(

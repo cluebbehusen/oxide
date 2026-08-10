@@ -114,17 +114,17 @@ class TestFactorizedDistribution:
 
         assert torch.equal(
             factorized_greedy(logits),
-            torch.tensor([[8, 23, 20]]).expand(5, -1),
+            torch.tensor([[8, 23, 42, 20]]).expand(5, -1),
         )
         torch.manual_seed(4)
         sampled = factorized_sample(logits)
-        assert sampled.shape == (5, 3)
+        assert sampled.shape == (5, 4)
         for head_index, head in enumerate(ACTION_HEADS):
             assert set(sampled[:, head_index].tolist()).issubset(head)
 
     def test_joint_log_prob_sums_while_entropy_and_kl_average(self) -> None:
         logits = torch.zeros(2, ACTIONS)
-        actions = torch.tensor([[0, 24, 25], [8, 23, 20]])
+        actions = torch.tensor([[0, 24, 42, 25], [8, 23, 40, 20]])
 
         logp = factorized_joint_log_prob(logits, actions)
         expected_logp = -sum(np.log(len(head)) for head in ACTION_HEADS)
@@ -167,7 +167,7 @@ class TestFactorizedDistribution:
     def test_wrong_global_head_indices_and_empty_heads_fail_loudly(self) -> None:
         logits = torch.zeros(1, ACTIONS)
         with pytest.raises(ValueError, match="head 1"):
-            factorized_joint_log_prob(logits, torch.tensor([[0, 8, 25]]))
+            factorized_joint_log_prob(logits, torch.tensor([[0, 8, 42, 25]]))
 
         logits[:, list(ACTION_HEADS[2])] = float("-inf")
         with pytest.raises(ValueError, match="head 2 has no legal"):

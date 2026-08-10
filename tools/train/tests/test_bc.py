@@ -1,4 +1,4 @@
-"""Focused tests for the factorized v7 behavior-cloning teachers."""
+"""Focused tests for the factorized behavior-cloning teachers."""
 
 import json
 from typing import TYPE_CHECKING
@@ -36,10 +36,11 @@ def test_every_teacher_emits_one_legal_global_index_per_head() -> None:
 def test_teacher_reconciles_a_masked_noop_to_the_legal_head_action() -> None:
     raw = _raw()
     mask = np.zeros(ACTIONS, dtype=bool)
-    mask[[bc.IDLE, bc.NO_CONSTRUCTION, bc.RECALL]] = True
+    mask[[bc.IDLE, bc.NO_CONSTRUCTION, bc.NO_UPGRADE, bc.RECALL]] = True
     assert bc.teacher("industry", raw, mask, 1_024) == (
         bc.IDLE,
         bc.NO_CONSTRUCTION,
+        bc.NO_UPGRADE,
         bc.RECALL,
     )
 
@@ -47,8 +48,8 @@ def test_teacher_reconciles_a_masked_noop_to_the_legal_head_action() -> None:
 def test_teacher_refuses_an_action_head_without_a_legal_target() -> None:
     raw = _raw()
     mask = np.zeros(ACTIONS, dtype=bool)
-    mask[[bc.IDLE, bc.NO_CONSTRUCTION]] = True
-    with pytest.raises(ValueError, match="action head 2 has no legal"):
+    mask[[bc.IDLE, bc.NO_CONSTRUCTION, bc.NO_UPGRADE]] = True
+    with pytest.raises(ValueError, match="action head 3 has no legal"):
         bc.teacher("industry", raw, mask, 1_024)
 
 
@@ -133,17 +134,18 @@ def test_pressure_commits_earlier_than_fortify() -> None:
 def test_global_plans_map_to_the_correct_noncontiguous_local_classes() -> None:
     targets = bc.local_action_targets(
         [
-            (0, 24, 25),
-            (8, 9, 20),
-            (1, 23, 16),
+            (0, 24, 42, 25),
+            (8, 9, 40, 20),
+            (1, 23, 42, 16),
         ]
     )
     np.testing.assert_array_equal(targets[0], [0, 8, 1])
     np.testing.assert_array_equal(targets[1], [0, 1, 10])
-    np.testing.assert_array_equal(targets[2], [0, 5, 1])
+    np.testing.assert_array_equal(targets[2], [0, 1, 0])
+    np.testing.assert_array_equal(targets[3], [0, 5, 1])
 
     with pytest.raises(ValueError, match="head 1"):
-        bc.local_action_targets([(0, 8, 25)])
+        bc.local_action_targets([(0, 8, 42, 25)])
 
 
 def test_the_demonstration_slate_keeps_only_duel_maps(
@@ -159,12 +161,12 @@ def test_the_demonstration_slate_keeps_only_duel_maps(
 
 
 def test_the_128_episode_schedule_crosses_maps_without_faction_aliasing() -> None:
-    cases = [bc.episode_assignment(ep, 16, 3) for ep in range(128)]
+    cases = [bc.episode_assignment(ep, 16) for ep in range(128)]
     for strategy in bc.STRATEGIES:
         for seat in (0, 1):
             maps = {
                 map_index
-                for assigned, assigned_seat, map_index, _factions, _tier in cases
+                for assigned, assigned_seat, map_index, _factions in cases
                 if assigned == strategy and assigned_seat == seat
             }
             assert maps == set(range(16))
@@ -172,20 +174,20 @@ def test_the_128_episode_schedule_crosses_maps_without_faction_aliasing() -> Non
     for map_index in range(16):
         pairs = {
             factions
-            for _strategy, _seat, assigned_map, factions, _tier in cases
+            for _strategy, _seat, assigned_map, factions in cases
             if assigned_map == map_index
         }
         assert pairs == set(bc.FACTION_PAIRS)
 
 
 def test_a_second_schedule_pass_rotates_each_exact_map_cell() -> None:
-    cases = [bc.episode_assignment(ep, 16, 3) for ep in range(256)]
+    cases = [bc.episode_assignment(ep, 16) for ep in range(256)]
     for strategy in bc.STRATEGIES:
         for seat in (0, 1):
             for map_index in range(16):
                 pairs = {
                     factions
-                    for assigned, assigned_seat, assigned_map, factions, _tier in cases
+                    for assigned, assigned_seat, assigned_map, factions in cases
                     if assigned == strategy
                     and assigned_seat == seat
                     and assigned_map == map_index

@@ -9,7 +9,7 @@
 //! 3. commit them together with the change and say why.
 
 use chassis::grid::TilePos;
-use oxide_driver::{render, runner};
+use oxide_driver::render;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
 use oxide_sim::{
     BuildingKind, Command, Faction, PlayerCommand, PlayerId, Scenario, State, Target, UnitId,
@@ -56,12 +56,23 @@ fn skirmish_opening_matches_golden() {
 
 #[test]
 fn skirmish_midgame_matches_golden() {
+    // The Overseer — the scripted QA anchor — drives both seats by
+    // hand: bot seats proper are inert until the retrained actor
+    // ships, and an idle world would be a vacuous midgame picture.
     let mut scenario = Scenario::skirmish();
     for player in &mut scenario.players {
         player.bot = true;
     }
-    let outcome = runner::run_scenario(&scenario, 1200, true, false).unwrap();
-    golden_check("skirmish-t1200", &outcome.state);
+    let mut state = scenario.build().unwrap();
+    let mut bots: Vec<oxide_sim::bot::Brain> = (0..scenario.players.len())
+        .map(|seat| oxide_sim::bot::Brain::overseer(PlayerId(seat as u8), scenario.seed))
+        .collect();
+    for _ in 0..1200 {
+        let commands: Vec<PlayerCommand> =
+            bots.iter_mut().flat_map(|bot| bot.act(&state)).collect();
+        state.tick(&commands);
+    }
+    golden_check("skirmish-t1200", &state);
 }
 
 // ---------------------------------------------------------------------------

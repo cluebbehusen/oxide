@@ -462,12 +462,11 @@ fn bot_level_label(game: &Game, player: oxide_sim::PlayerId) -> Option<&'static 
     if !spec.bot {
         return None;
     }
-    Some(match spec.bot_config.map(|config| config.level) {
-        Some(oxide_sim::bot::Level::Easy) => "Easy",
-        Some(oxide_sim::bot::Level::Medium) => "Medium",
-        Some(oxide_sim::bot::Level::Hard) => "Hard",
-        Some(oxide_sim::bot::Level::Expert) => "Expert",
-        None => "Classic",
+    spec.bot_config.map(|config| match config.level {
+        oxide_sim::bot::Level::Easy => "Easy",
+        oxide_sim::bot::Level::Medium => "Medium",
+        oxide_sim::bot::Level::Hard => "Hard",
+        oxide_sim::bot::Level::Expert => "Expert",
     })
 }
 

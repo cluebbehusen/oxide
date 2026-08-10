@@ -65,6 +65,7 @@ def test_the_handshake_and_one_masked_step() -> None:
             next(action for action in ACTION_HEADS[0] if view.mask[action]),
             next(action for action in ACTION_HEADS[1] if view.mask[action]),
             next(action for action in ACTION_HEADS[2] if view.mask[action]),
+            next(action for action in ACTION_HEADS[3] if view.mask[action]),
         )
         after = worker.step({seat: plan})
         assert after.tick > frame.tick

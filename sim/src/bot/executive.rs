@@ -139,6 +139,20 @@ pub enum Intent {
         /// The works to lift.
         building: crate::ids::BuildingId,
     },
+    /// Send riders to climb aboard an own transport.
+    Load {
+        /// The carrier.
+        transport: UnitId,
+        /// The machines to carry.
+        riders: Vec<UnitId>,
+    },
+    /// Fly a transport to a tile and set its riders down.
+    Unload {
+        /// The carrier.
+        transport: UnitId,
+        /// The drop point.
+        at: TilePos,
+    },
 }
 
 /// Fraction of max hp below which a member is rotated out of its army.
@@ -158,7 +172,7 @@ const ENGAGE_RADIUS: i32 = 8;
 /// A pushing army is engaged once enemies are inside this radius.
 const CONTACT_RADIUS: i32 = 6;
 
-/// Combat habits a tier can switch off. Fairness note: these change
+/// Combat habits a policy can switch off. Fairness note: these change
 /// how well the executive fights, never the rules it fights under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Doctrine {
@@ -178,17 +192,14 @@ impl Default for Doctrine {
 }
 
 /// Per-path lowering rules: the freedoms a command source grants
-/// [`Executive::apply_with`] beyond the scripted baseline. The scripted
-/// `Brain` tiers are the ladder's anchors and yardsticks — their
-/// lowering is frozen at [`LoweringRules::scripted`] so their measured
-/// behavior cannot move — while the gym path carries the two
-/// amendments that would move them: deferred founding (fog placement
-/// Part B) and the Scout-arm claim guard. The guard closes the
-/// labor-claims trap (an unconditional Scout replaces the whole
+/// [`Executive::apply_with`] beyond the scripted baseline. The
+/// scripted `Brain` lowers under [`LoweringRules::scripted`], while
+/// the gym path carries the two amendments: deferred founding (fog
+/// placement Part B) and the Scout-arm claim guard. The guard closes
+/// the labor-claims trap (an unconditional Scout replaces the whole
 /// program of a machine an earlier intent already bought); it stays
-/// off the scripted path because their scouting channel follows its
-/// construction claims, and guarding it measurably inverts both
-/// ladder gates.
+/// off the scripted path because that scouting channel follows its
+/// construction claims.
 pub struct LoweringRules<'a> {
     /// Judge whether a Build must defer its claim to arrival
     /// ([`crate::Command::Build`]'s `defer`); `None` never defers.
@@ -199,8 +210,7 @@ pub struct LoweringRules<'a> {
 }
 
 impl LoweringRules<'static> {
-    /// The frozen baseline the scripted tiers lower under: instant
-    /// claims only, Scout unconditional.
+    /// The scripted baseline: instant claims only, Scout unconditional.
     pub fn scripted() -> Self {
         Self {
             defer_needed: None,
@@ -229,7 +239,8 @@ pub struct Executive {
     armies: Vec<Army>,
     next_army: u32,
     /// Rear-line members kept out of drafts. Repair-capable policies
-    /// release them at full health; frozen scripted paths retain them.
+    /// release them at full health; the plain scripted path retains
+    /// them.
     rear: Vec<UnitId>,
     /// Which combat habits this executive practices.
     doctrine: Doctrine,
@@ -239,15 +250,6 @@ impl Executive {
     /// Fresh, armyless, full doctrine.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Fresh with an explicit doctrine (how the difficulty tiers strip
-    /// combat habits from the lower rungs).
-    pub fn with_doctrine(doctrine: Doctrine) -> Self {
-        Self {
-            doctrine,
-            ..Self::default()
-        }
     }
 
     /// Read access for policies and tests.
@@ -473,7 +475,7 @@ impl Executive {
                     // Scout naming a machine an earlier intent already
                     // bought would orphan a paid site or drop a weld.
                     // Guarded on the gym path only — the scripted
-                    // tiers' scouting follows its construction claims.
+                    // Brain's scouting follows its construction claims.
                     if rules.scout_honors_claims && claimed.contains(unit) {
                         continue;
                     }
@@ -506,6 +508,26 @@ impl Executive {
                             },
                         });
                     }
+                }
+                Intent::Load { transport, riders } => {
+                    out.push(PlayerCommand {
+                        player: me,
+                        command: Command::Load {
+                            units: riders.clone(),
+                            transport: *transport,
+                            queue: false,
+                        },
+                    });
+                }
+                Intent::Unload { transport, at } => {
+                    out.push(PlayerCommand {
+                        player: me,
+                        command: Command::Unload {
+                            transport: *transport,
+                            at: *at,
+                            queue: false,
+                        },
+                    });
                 }
                 Intent::Upgrade { building } => {
                     let anchor = obs
@@ -620,8 +642,8 @@ impl Executive {
         out
     }
 
-    /// The frozen scripted path's per-think housekeeping. Rear-line
-    /// veterans remain reserved even if an external effect heals them.
+    /// The scripted path's per-think housekeeping. Rear-line veterans
+    /// remain reserved even if an external effect heals them.
     pub fn maintain(
         &mut self,
         me: PlayerId,
@@ -865,8 +887,8 @@ impl Executive {
                     && u.site.is_none()
                     // A walking founder is as spoken for as a builder
                     // on site: re-tasking it silently drops the
-                    // promised claim. Scripted tiers never defer, so
-                    // this arm is dead on their path.
+                    // promised claim. The scripted Brain never defers,
+                    // so this arm is dead on its path.
                     && u.founding.is_none()
                     && !enlisted.contains(&u.id)
                     && !claimed.contains(&u.id)
