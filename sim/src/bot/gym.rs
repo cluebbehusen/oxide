@@ -2204,6 +2204,16 @@ impl GymBot {
         if !self.recovery_active {
             return RecoveryPosture::Inactive;
         }
+        // A broken economy adopts its rear line: whatever screens the
+        // executive was resting become draftable for the emergency.
+        let screen_kinds: Vec<UnitId> = obs
+            .my_units
+            .iter()
+            .filter(|u| recovery_screen_kind(u.kind))
+            .map(|u| u.id)
+            .collect();
+        self.exec
+            .release_rear_where(|id| screen_kinds.contains(&id));
         if self.recovery_assignment.is_some() {
             return RecoveryPosture::Saving;
         }
@@ -2271,7 +2281,9 @@ impl GymBot {
             };
         }
 
-        let live_screen = recovery_screen_units(obs).next().is_some();
+        let live_screen = recovery_screen_units(obs, self.exec.rear())
+            .next()
+            .is_some();
         let queued_screen = recovery_screen_queued(obs);
         if live_screen {
             if queued_harvester {
@@ -2346,7 +2358,9 @@ impl GymBot {
                     foundry_slots,
                 ) = self.cancel_for_recovery(obs);
                 commands.append(&mut cancellations);
-                let live_screen = recovery_screen_units(obs).next().is_some();
+                let live_screen = recovery_screen_units(obs, self.exec.rear())
+                    .next()
+                    .is_some();
                 let need_screen = !live_screen && !screen_queued;
                 let need_worker = !worker_queued;
                 let buy_screen = need_screen && projected_scrap >= UnitKind::Sentinel.stats().cost;
@@ -2412,7 +2426,8 @@ impl GymBot {
                 let Some(worker) = recovery_worker(obs) else {
                     return commands;
                 };
-                let live_screen: Vec<UnitId> = recovery_screen_units(obs).collect();
+                let live_screen: Vec<UnitId> =
+                    recovery_screen_units(obs, self.exec.rear()).collect();
                 if live_screen.is_empty() {
                     let queued_screen = recovery_screen_queued(obs);
                     self.recovery_liquidation = self.recovery_liquidation.filter(|building| {
@@ -2613,7 +2628,9 @@ impl GymBot {
                     .map(move |(index, _)| (queue_index, index))
             })
             .min_by_key(|(queue_index, index)| (*index, obs.my_buildings[*queue_index].id));
-        let worker_to_keep = (recovery_screen_units(obs).next().is_some()
+        let worker_to_keep = (recovery_screen_units(obs, self.exec.rear())
+            .next()
+            .is_some()
             || screen_to_keep.is_some())
         .then(|| {
             obs.my_queues
@@ -4312,10 +4329,19 @@ fn recovery_screen_kind(kind: UnitKind) -> bool {
     kind.is_recovery_screen()
 }
 
-fn recovery_screen_units(obs: &Observation) -> impl Iterator<Item = UnitId> + '_ {
+/// Live, DEPLOYABLE screens: the rear-held are excluded because
+/// recovery cannot draft them — counting an undraftable wounded
+/// veteran as "the screen exists" while suppressing every ordinary
+/// head was the 0.14 controller deadlock. Callers release rear-held
+/// screen kinds before consulting this, so in practice the set only
+/// shrinks while the executive still holds patients mid-weld.
+fn recovery_screen_units<'a>(
+    obs: &'a Observation,
+    rear: &'a [UnitId],
+) -> impl Iterator<Item = UnitId> + 'a {
     obs.my_units
         .iter()
-        .filter(|unit| recovery_screen_kind(unit.kind))
+        .filter(|unit| recovery_screen_kind(unit.kind) && !rear.contains(&unit.id))
         .map(|unit| unit.id)
 }
 
@@ -4423,6 +4449,48 @@ fn useful_recovery_liquidation(obs: &Observation) -> Option<BuildingId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_adopts_rear_held_screens_instead_of_deadlocking() {
+        // The 0.14 replay shape: a broken economy (no harvesters), a
+        // wounded screen-kind fighter the executive parked on the rear
+        // line, and recovery consulting "is there a live screen?". The
+        // old controller counted the undraftable veteran as a screen
+        // while suppressing every ordinary head — a stall that held for
+        // thousands of ticks. The fix: recovery ADOPTS the rear line
+        // (screen kinds are released) before the screen question is
+        // asked, and the predicate itself refuses rear-held ids.
+        let mut scenario = crate::Scenario::skirmish();
+        scenario.units.clear();
+        scenario.units.push(crate::scenario::UnitSpec {
+            player: 0,
+            kind: UnitKind::Sentinel,
+            x: 6,
+            y: 3,
+        });
+        let state = scenario.build().expect("fixture builds");
+        let mut bot = GymBot::new(PlayerId(0));
+        let sentinel = state.units()[0].id;
+        bot.exec.hold_rear_for_test(sentinel);
+        let (obs, orientation) = bot.observe(&state);
+        assert!(
+            recovery_screen_units(&obs, bot.exec.rear())
+                .next()
+                .is_none(),
+            "a rear-held veteran is not a deployable screen"
+        );
+        let posture = bot.recovery_posture(&obs, &orientation);
+        assert!(
+            !bot.exec.rear().contains(&sentinel),
+            "recovery adopts the rear line: {posture:?}"
+        );
+        assert!(
+            recovery_screen_units(&obs, bot.exec.rear())
+                .next()
+                .is_some(),
+            "once adopted, the veteran counts as the live screen it is"
+        );
+    }
 
     #[test]
     fn danger_memory_is_bounded_and_cools_deterministically() {

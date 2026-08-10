@@ -19,3 +19,4 @@ dist/
 .claude/*
 !.claude/skills/
 !.claude/skills/**
+origin-0.15.0.md

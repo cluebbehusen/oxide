@@ -255,6 +255,31 @@ impl Executive {
         &self.armies
     }
 
+    /// Rear-line ids currently held out of the draft.
+    pub fn rear(&self) -> &[UnitId] {
+        &self.rear
+    }
+
+    /// Test-only: force a unit onto the rear line, reproducing the
+    /// reservation state the 0.14 deadlock replays captured.
+    #[cfg(test)]
+    pub(crate) fn hold_rear_for_test(&mut self, id: UnitId) {
+        if !self.rear.contains(&id) {
+            self.rear.push(id);
+            self.rear.sort_unstable();
+        }
+    }
+
+    /// Releases every rear-held unit whose id satisfies `pick` back to
+    /// the draftable pool. Recovery adopts its screens through this:
+    /// a wounded fighter parked on the rear line is a real screen the
+    /// emergency controller must be able to use, or the reservation and
+    /// the recovery suppression deadlock each other (the exact stall
+    /// the 0.14 replay forensics pinned).
+    pub fn release_rear_where(&mut self, pick: impl Fn(UnitId) -> bool) {
+        self.rear.retain(|id| !pick(*id));
+    }
+
     /// Ids of units already spoken for (army members and the rear line) —
     /// the pool FormArmy and harvest assignment must not double-book.
     pub fn enlisted(&self) -> impl Iterator<Item = UnitId> + '_ {
