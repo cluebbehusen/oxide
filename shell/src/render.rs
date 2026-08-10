@@ -522,6 +522,7 @@ pub fn draw(game: &Game, sprites: &Sprites, input: &InputState) {
     environment::draw_backdrop(game);
     let alpha = game.render_alpha();
     draw_tiles(game, sprites);
+    crate::render::world::draw_extractor_frames(game, sprites);
     environment::draw_boundary(game);
     draw_scorches(game, sprites);
     draw_buildings(game, sprites);
