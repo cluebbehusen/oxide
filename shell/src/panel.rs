@@ -232,6 +232,10 @@ pub fn unit_flavor(kind: UnitKind) -> &'static str {
         UnitKind::Gnat => "Unarmed scout flyer with far sight.",
         UnitKind::Shrike => "Heavy interceptor: the bomber's escort and its answer.",
         UnitKind::Sylph => "Heavy interceptor: lighter, quicker, hungrier.",
+        UnitKind::Condor => "Strategic bomber: one enormous bomb per committed pass.",
+        UnitKind::Moth => "Carpet bomber: lays a stick of six bombs along its run.",
+        UnitKind::Breaker => "Tier-three assault walker built to crack fortress lines.",
+        UnitKind::Avalanche => "Tier-three rocket battery: extreme reach, blind up close.",
     }
 }
 

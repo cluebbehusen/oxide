@@ -529,8 +529,16 @@ fn command_behavior_in(
                     UnitKind::Sentinel | UnitKind::Flakhound | UnitKind::Stinger => {
                         behavior.fighters += 1;
                     }
-                    UnitKind::Warden | UnitKind::Shrike | UnitKind::Sylph => {
+                    UnitKind::Warden
+                    | UnitKind::Shrike
+                    | UnitKind::Sylph
+                    | UnitKind::Breaker
+                    | UnitKind::Avalanche => {
                         behavior.fighters += 1;
+                    }
+                    UnitKind::Condor | UnitKind::Moth => {
+                        behavior.fighters += 1;
+                        behavior.air_units += 1;
                     }
                     UnitKind::Tender | UnitKind::Excavator | UnitKind::Kestrel | UnitKind::Gnat => {
                     }

@@ -236,6 +236,8 @@ fn unit_fire_sound(kind: oxide_sim::UnitKind) -> SoundKind {
         UnitKind::Warden => SoundKind::SentinelFire,
         UnitKind::Shrike => SoundKind::TalonFire,
         UnitKind::Sylph => SoundKind::WispFire,
+        UnitKind::Condor | UnitKind::Moth | UnitKind::Avalanche => SoundKind::BombardFire,
+        UnitKind::Breaker => SoundKind::BastionFire,
         UnitKind::Tender | UnitKind::Excavator | UnitKind::Kestrel | UnitKind::Gnat => {
             SoundKind::Laser
         }

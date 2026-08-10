@@ -60,6 +60,18 @@ pub enum UnitKind {
     Shrike,
     /// Cupric heavy interceptor: lighter, quicker, hungrier.
     Sylph,
+    /// Ferrous strategic bomber: one enormous bomb per pass, flown on a
+    /// committed attack run — it cannot stop and strafe.
+    Condor,
+    /// Cupric carpet bomber: a stick of six small bombs laid along its
+    /// flight line each pass.
+    Moth,
+    /// Tier-three assault walker: a slow siege-breaking wall of a
+    /// machine. Shared roster.
+    Breaker,
+    /// Tier-three rocket battery: extreme-reach indirect saturation with
+    /// a blind ring at its feet. Shared roster.
+    Avalanche,
 }
 
 /// Every building type.
@@ -170,6 +182,11 @@ pub struct WeaponStats {
     /// Indirect fire arcs over terrain: the line-of-sight trace that lets
     /// rock block direct shots is skipped.
     pub indirect: bool,
+    /// Bombs released per trigger pull, laid in a line along the
+    /// shooter's heading through the aim point (spacing
+    /// [`BOMB_SALVO_SPACING`]). 1 for every conventional weapon; only
+    /// turn-limited bombers carry sticks.
+    pub salvo: u8,
     /// The shot is a real projectile: a Shell entity travels to a fixed
     /// fire-time aim point and resolves on arrival. Artillery may lead an
     /// existing path before launch, but the shell is never guided and a
@@ -223,6 +240,12 @@ pub struct UnitStats {
     /// Construction work applied per adjacent tick (1 for everyone but
     /// the Excavator).
     pub build_rate: u32,
+    /// Maximum compass steps (of 256) this unit may turn per tick.
+    /// 0 means turning is free — the unit is not flight-committed. A
+    /// nonzero rate makes the unit fly heading-first: it steers on a
+    /// bounded arc, attacks on passes, and releases bombs only into its
+    /// forward cone.
+    pub turn_rate: u8,
 }
 
 impl UnitStats {
@@ -359,6 +382,12 @@ pub enum Role {
     Warden,
     /// Mobile welder (shared).
     Tender,
+    /// The attack-run bomber.
+    Bomber,
+    /// Tier-three assault walker (shared).
+    Breaker,
+    /// Tier-three rocket battery (shared).
+    Avalanche,
     /// Super-harvester (shared).
     Excavator,
     /// Unarmed far-sighted flyer — faction-varied.
@@ -389,6 +418,10 @@ impl Role {
             (Role::Scout, Faction::Cupric) => UnitKind::Gnat,
             (Role::Interceptor, Faction::Ferrous) => UnitKind::Shrike,
             (Role::Interceptor, Faction::Cupric) => UnitKind::Sylph,
+            (Role::Bomber, Faction::Ferrous) => UnitKind::Condor,
+            (Role::Bomber, Faction::Cupric) => UnitKind::Moth,
+            (Role::Breaker, _) => UnitKind::Breaker,
+            (Role::Avalanche, _) => UnitKind::Avalanche,
         }
     }
 }
@@ -404,17 +437,23 @@ impl UnitKind {
             | UnitKind::Scuttler
             | UnitKind::Lancer
             | UnitKind::Bombard => None,
-            UnitKind::Warden | UnitKind::Tender | UnitKind::Excavator => None,
+            UnitKind::Warden
+            | UnitKind::Tender
+            | UnitKind::Excavator
+            | UnitKind::Breaker
+            | UnitKind::Avalanche => None,
             UnitKind::Flakhound
             | UnitKind::Buzzard
             | UnitKind::Talon
             | UnitKind::Kestrel
-            | UnitKind::Shrike => Some(Faction::Ferrous),
+            | UnitKind::Shrike
+            | UnitKind::Condor => Some(Faction::Ferrous),
             UnitKind::Stinger
             | UnitKind::Darter
             | UnitKind::Wisp
             | UnitKind::Gnat
-            | UnitKind::Sylph => Some(Faction::Cupric),
+            | UnitKind::Sylph
+            | UnitKind::Moth => Some(Faction::Cupric),
         }
     }
 
@@ -439,6 +478,10 @@ impl UnitKind {
             UnitKind::Gnat => "gnat",
             UnitKind::Shrike => "shrike",
             UnitKind::Sylph => "sylph",
+            UnitKind::Condor => "condor",
+            UnitKind::Moth => "moth",
+            UnitKind::Breaker => "breaker",
+            UnitKind::Avalanche => "avalanche",
         }
     }
 
@@ -458,6 +501,9 @@ impl UnitKind {
             UnitKind::Excavator => Role::Excavator,
             UnitKind::Kestrel | UnitKind::Gnat => Role::Scout,
             UnitKind::Shrike | UnitKind::Sylph => Role::Interceptor,
+            UnitKind::Condor | UnitKind::Moth => Role::Bomber,
+            UnitKind::Breaker => Role::Breaker,
+            UnitKind::Avalanche => Role::Avalanche,
         }
     }
 }
@@ -483,6 +529,7 @@ const HARVESTER: UnitStats = UnitStats {
     requires: &[],
     welder: true,
     build_rate: 1,
+    turn_rate: 0,
 };
 
 const SENTINEL: UnitStats = UnitStats {
@@ -513,6 +560,7 @@ const SENTINEL: UnitStats = UnitStats {
             targets: DomainMask::GROUND,
             splash: None,
             indirect: false,
+            salvo: 1,
             projectile: false,
         },
         // A weak skyward poke: the tier-0 reason a pure air ball cannot
@@ -525,6 +573,7 @@ const SENTINEL: UnitStats = UnitStats {
             targets: DomainMask::AIR,
             splash: None,
             indirect: false,
+            salvo: 1,
             projectile: false,
         },
     ],
@@ -534,6 +583,7 @@ const SENTINEL: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    turn_rate: 0,
 };
 
 const SCUTTLER: UnitStats = UnitStats {
@@ -551,6 +601,7 @@ const SCUTTLER: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     aggro_range: Fx::lit("5"),
@@ -559,6 +610,7 @@ const SCUTTLER: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    turn_rate: 0,
 };
 
 const LANCER: UnitStats = UnitStats {
@@ -580,6 +632,7 @@ const LANCER: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     aggro_range: Fx::lit("5"),
@@ -588,6 +641,7 @@ const LANCER: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    turn_rate: 0,
 };
 
 const BOMBARD: UnitStats = UnitStats {
@@ -605,6 +659,7 @@ const BOMBARD: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: Some(Fx::lit("1.4")),
         indirect: true,
+        salvo: 1,
         projectile: true,
     }],
     aggro_range: Fx::lit("9.5"), // its whole spotter-enabled firing envelope
@@ -613,6 +668,7 @@ const BOMBARD: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    turn_rate: 0,
 };
 
 const FLAKHOUND: UnitStats = UnitStats {
@@ -630,6 +686,7 @@ const FLAKHOUND: UnitStats = UnitStats {
         targets: DomainMask::AIR,
         splash: Some(Fx::lit("1.2")),
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     aggro_range: Fx::lit("5"),
@@ -638,6 +695,7 @@ const FLAKHOUND: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    turn_rate: 0,
 };
 
 const STINGER: UnitStats = UnitStats {
@@ -655,6 +713,7 @@ const STINGER: UnitStats = UnitStats {
         targets: DomainMask::AIR,
         splash: Some(Fx::lit("1")),
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     aggro_range: Fx::lit("5"),
@@ -663,6 +722,7 @@ const STINGER: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    turn_rate: 0,
 };
 
 const BUZZARD: UnitStats = UnitStats {
@@ -684,6 +744,7 @@ const BUZZARD: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     aggro_range: Fx::lit("5"),
@@ -692,6 +753,7 @@ const BUZZARD: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    turn_rate: 0,
 };
 
 const DARTER: UnitStats = UnitStats {
@@ -713,6 +775,7 @@ const DARTER: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     aggro_range: Fx::lit("5"),
@@ -721,6 +784,7 @@ const DARTER: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    turn_rate: 0,
 };
 
 const TALON: UnitStats = UnitStats {
@@ -738,6 +802,7 @@ const TALON: UnitStats = UnitStats {
         targets: DomainMask::AIR,
         splash: None,
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     aggro_range: Fx::lit("5"),
@@ -746,6 +811,7 @@ const TALON: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    turn_rate: 0,
 };
 
 const WISP: UnitStats = UnitStats {
@@ -763,6 +829,7 @@ const WISP: UnitStats = UnitStats {
         targets: DomainMask::AIR,
         splash: None,
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     aggro_range: Fx::lit("5"),
@@ -771,6 +838,7 @@ const WISP: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    turn_rate: 0,
 };
 
 const WARDEN: UnitStats = UnitStats {
@@ -788,6 +856,7 @@ const WARDEN: UnitStats = UnitStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     aggro_range: Fx::lit("5"),
@@ -796,6 +865,7 @@ const WARDEN: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    turn_rate: 0,
 };
 
 const TENDER: UnitStats = UnitStats {
@@ -812,6 +882,7 @@ const TENDER: UnitStats = UnitStats {
     requires: &[],
     welder: true,
     build_rate: 1,
+    turn_rate: 0,
 };
 
 const EXCAVATOR: UnitStats = UnitStats {
@@ -831,6 +902,7 @@ const EXCAVATOR: UnitStats = UnitStats {
     requires: &[BuildingKind::Fabricator],
     welder: true,
     build_rate: 2,
+    turn_rate: 0,
 };
 
 const KESTREL: UnitStats = UnitStats {
@@ -847,6 +919,7 @@ const KESTREL: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    turn_rate: 0,
 };
 
 const GNAT: UnitStats = UnitStats {
@@ -863,6 +936,7 @@ const GNAT: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    turn_rate: 0,
 };
 
 const SHRIKE: UnitStats = UnitStats {
@@ -880,6 +954,7 @@ const SHRIKE: UnitStats = UnitStats {
         targets: DomainMask::AIR,
         splash: None,
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     aggro_range: Fx::lit("6"),
@@ -888,6 +963,7 @@ const SHRIKE: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    turn_rate: 0,
 };
 
 const SYLPH: UnitStats = UnitStats {
@@ -905,6 +981,7 @@ const SYLPH: UnitStats = UnitStats {
         targets: DomainMask::AIR,
         splash: None,
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     aggro_range: Fx::lit("6"),
@@ -913,6 +990,115 @@ const SYLPH: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    turn_rate: 0,
+};
+
+const CONDOR: UnitStats = UnitStats {
+    max_hp: 260,
+    speed: Fx::lit("0.11"),
+    radius: Fx::lit("0.45"),
+    cost: 700,
+    train_ticks: 800,
+    domain: Domain::Air,
+    weapons: &[WeaponStats {
+        damage: 100,
+        range: Fx::lit("2.5"), // release point, not a standoff gun
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 150, // one bomb per pass; the loop IS the reload
+        targets: DomainMask::GROUND,
+        splash: Some(Fx::lit("2.2")),
+        indirect: true,
+        salvo: 1,
+        projectile: true,
+    }],
+    aggro_range: Fx::lit("5"),
+    harvest: None,
+    vision: 6,
+    requires: &[BuildingKind::Crucible],
+    welder: false,
+    build_rate: 1,
+    turn_rate: 2, // ~2.2-tile turn radius: every run is a commitment
+};
+
+const MOTH: UnitStats = UnitStats {
+    max_hp: 140,
+    speed: Fx::lit("0.15"),
+    radius: Fx::lit("0.4"),
+    cost: 550,
+    train_ticks: 700,
+    domain: Domain::Air,
+    weapons: &[WeaponStats {
+        damage: 25,
+        range: Fx::lit("2.5"),
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 130,
+        targets: DomainMask::GROUND,
+        splash: Some(Fx::lit("1.2")),
+        indirect: true,
+        salvo: 6, // the stick, laid along the flight line
+        projectile: true,
+    }],
+    aggro_range: Fx::lit("5"),
+    harvest: None,
+    vision: 6,
+    requires: &[BuildingKind::Crucible],
+    welder: false,
+    build_rate: 1,
+    turn_rate: 3, // tighter loops than the Condor, weaker punch
+};
+
+const BREAKER: UnitStats = UnitStats {
+    max_hp: 900,
+    speed: Fx::lit("0.055"),
+    radius: Fx::lit("0.55"),
+    cost: 900,
+    train_ticks: 1200,
+    domain: Domain::Ground,
+    weapons: &[WeaponStats {
+        damage: 90,
+        range: Fx::lit("4"),
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 60,
+        targets: DomainMask::GROUND,
+        splash: Some(Fx::lit("1.2")),
+        indirect: false,
+        salvo: 1,
+        projectile: false,
+    }],
+    aggro_range: Fx::lit("6"),
+    harvest: None,
+    vision: 6,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    turn_rate: 0,
+};
+
+const AVALANCHE: UnitStats = UnitStats {
+    max_hp: 300,
+    speed: Fx::lit("0.045"),
+    radius: Fx::lit("0.5"),
+    cost: 700,
+    train_ticks: 900,
+    domain: Domain::Ground,
+    weapons: &[WeaponStats {
+        damage: 70,
+        range: Fx::lit("14"),        // far past its own eyes: a spotter weapon
+        minimum_range: Fx::lit("4"), // blind at its feet — close the gap
+        cooldown_ticks: 140,
+        targets: DomainMask::GROUND,
+        splash: Some(Fx::lit("1.6")),
+        indirect: true,
+        salvo: 1,
+        projectile: true,
+    }],
+    aggro_range: Fx::lit("14"),
+    harvest: None,
+    vision: 5,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    turn_rate: 0,
 };
 
 const FOUNDRY: BuildingStats = BuildingStats {
@@ -954,6 +1140,7 @@ const TURRET: BuildingStats = BuildingStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     construction: Some(ConstructionStats {
@@ -1008,6 +1195,7 @@ const FLAK_TURRET: BuildingStats = BuildingStats {
         targets: DomainMask::AIR,
         splash: Some(Fx::lit("1.2")),
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     construction: Some(ConstructionStats {
@@ -1030,6 +1218,7 @@ const BASTION: BuildingStats = BuildingStats {
         targets: DomainMask::GROUND,
         splash: Some(Fx::lit("1.3")),
         indirect: true,
+        salvo: 1,
         projectile: true,
     }],
     construction: Some(ConstructionStats {
@@ -1093,6 +1282,8 @@ const AIRWORKS: BuildingStats = BuildingStats {
         UnitKind::Gnat,
         UnitKind::Shrike,
         UnitKind::Sylph,
+        UnitKind::Condor,
+        UnitKind::Moth,
     ],
     weapons: &[],
     construction: Some(ConstructionStats {
@@ -1106,7 +1297,7 @@ const CRUCIBLE: BuildingStats = BuildingStats {
     max_hp: 900,
     size: (2, 2),
     vision: 6,
-    produces: &[],
+    produces: &[UnitKind::Breaker, UnitKind::Avalanche],
     weapons: &[],
     construction: Some(ConstructionStats {
         cost: 500,
@@ -1151,6 +1342,7 @@ const HEAVY_TURRET: BuildingStats = BuildingStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     construction: Some(ConstructionStats {
@@ -1173,6 +1365,7 @@ const BULWARK: BuildingStats = BuildingStats {
         targets: DomainMask::GROUND,
         splash: None,
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     construction: Some(ConstructionStats {
@@ -1195,6 +1388,7 @@ const BURST_FLAK: BuildingStats = BuildingStats {
         targets: DomainMask::AIR,
         splash: Some(Fx::lit("1.5")),
         indirect: false,
+        salvo: 1,
         projectile: false,
     }],
     construction: Some(ConstructionStats {
@@ -1252,6 +1446,10 @@ impl UnitKind {
             UnitKind::Gnat => &GNAT,
             UnitKind::Shrike => &SHRIKE,
             UnitKind::Sylph => &SYLPH,
+            UnitKind::Condor => &CONDOR,
+            UnitKind::Moth => &MOTH,
+            UnitKind::Breaker => &BREAKER,
+            UnitKind::Avalanche => &AVALANCHE,
         }
     }
 
@@ -1363,6 +1561,21 @@ pub const FOUNDRY_RECOVERY_RESERVE: u32 = SENTINEL.cost + HARVESTER.cost;
 ///
 /// This is the economy's guarantee: exhausted nodes, lost Reclaimers,
 /// and camped salvage can make progress slow, but never leave a seat
+/// Release gate for turn-limited bombers: the target must sit inside
+/// the forward cone, `dot(heading, to_target) >= |to_target| * CONE`.
+/// 0.92 is a half-angle of about 23 degrees — wide enough that a clean
+/// pass releases, narrow enough that a bomber circling its target must
+/// straighten out before the bay opens.
+pub const BOMBER_CONE_DOT: Fx = Fx::lit("0.92");
+
+/// Distance between consecutive bombs of a stick along the flight line.
+pub const BOMB_SALVO_SPACING: Fx = Fx::lit("0.8");
+
+/// Arrival radius for turn-limited fliers: a bounded-turn aircraft can
+/// never promise to cross an exact tile center, so any goal inside this
+/// ring counts as reached.
+pub const BOMBER_ARRIVE: Fx = Fx::lit("0.9");
+
 /// with no income at all. Credit is per Foundry so expansion bases are
 /// worth their keep, but the rate is tuned so income alone never pays
 /// for one (20/min against a 400 cost: production, drop-off reach,

@@ -92,6 +92,10 @@ def finish(img: Image.Image, px: int, name: str) -> None:
             "gnat",
             "shrike",
             "sylph",
+            "condor",
+            "moth",
+            "breaker",
+            "avalanche",
         )
     ):
         img = rim_light(img)
@@ -1830,6 +1834,134 @@ def sylph(faction: str, move: int = 0, action: int = 0) -> None:
     interceptor_flyer("sylph", faction, move, action)
 
 
+def condor(faction: str, move: int = 0, action: int = 0) -> None:
+    """Strategic bomber: a broad flying wing around one cavernous bomb
+    bay. The action frames swing the bay doors and drop the load."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    tilt = (0, -2, 2)[move % 3]
+    # The wing is the aircraft.
+    d.polygon(
+        [(s(32), s(8)), (s(60), s(46 + tilt)), (s(32), s(38)), (s(4), s(46 - tilt))],
+        fill=(*IRON, 255),
+    )
+    d.polygon(
+        [(s(32), s(14)), (s(52), s(42 + tilt)), (s(32), s(34)), (s(12), s(42 - tilt))],
+        fill=(*pal["base"], 255),
+    )
+    # Inboard engine nacelles.
+    for x in (20, 40):
+        d.rectangle([s(x), s(24), s(x + 4), s(36)], fill=(*pal["dark"], 255))
+    # The bay: shut, cracked, open with the bomb, open and empty.
+    bay = (0, 2, 4, 4, 2)[action]
+    d.rectangle([s(28), s(20), s(36), s(34)], fill=(*IRON_DARK, 255))
+    if bay:
+        d.rectangle([s(32 - bay), s(22), s(32 + bay), s(32)], fill=(12, 10, 10, 255))
+    if action in (2, 3):
+        d.ellipse([s(29), s(24), s(35), s(30)], fill=(*BONE, 230))
+    d.ellipse([s(30), s(10), s(34), s(14)], fill=(*pal["light"], 255))
+    suffix = ""
+    if move:
+        suffix = f"_move{move}"
+    if action:
+        suffix = f"_action{action}"
+    finish(img, px, f"condor_{faction}{suffix}")
+
+
+def moth(faction: str, move: int = 0, action: int = 0) -> None:
+    """Carpet bomber: a slighter twin-boom frame with a rack of small
+    bombs slung under the spine; the rack empties through the action."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    tilt = (0, -2, 2)[move % 3]
+    # Twin booms and the joining wing.
+    for x in (18, 42):
+        d.rectangle([s(x), s(10), s(x + 4), s(50)], fill=(*IRON, 255))
+    d.polygon(
+        [(s(32), s(16)), (s(56), s(40 + tilt)), (s(32), s(34)), (s(8), s(40 - tilt))],
+        fill=(*pal["base"], 255),
+    )
+    # The bomb rack: pips vanish as the stick releases.
+    remaining = (6, 4, 2, 0, 0)[action]
+    for i in range(remaining):
+        y = 18 + i * 5
+        d.rectangle([s(30), s(y), s(34), s(y + 3)], fill=(*IRON_DARK, 255))
+    if action in (2, 3):
+        d.ellipse([s(28), s(40), s(36), s(48)], fill=(*BONE, 200))
+    d.ellipse([s(30), s(10), s(34), s(14)], fill=(*pal["light"], 255))
+    suffix = ""
+    if move:
+        suffix = f"_move{move}"
+    if action:
+        suffix = f"_action{action}"
+    finish(img, px, f"moth_{faction}{suffix}")
+
+
+def breaker(faction: str, move: int = 0, action: int = 0) -> None:
+    """Tier-three assault walker: a fortress hull on four piston legs
+    with one siege mortar over the shoulder — the wall-breaker."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    stride = (0, 2, -2)[move % 3]
+    # Four piston legs.
+    for x, flip in ((6, 1), (48, -1)):
+        d.rectangle([s(x), s(16 + stride * flip), s(x + 10), s(28 + stride * flip)], fill=(*IRON_DARK, 255))
+        d.rectangle([s(x), s(40 - stride * flip), s(x + 10), s(52 - stride * flip)], fill=(*IRON_DARK, 255))
+    # The fortress hull.
+    d.rounded_rectangle([s(14), s(12), s(50), s(56)], radius=s(6), fill=(*IRON, 255))
+    d.rounded_rectangle([s(18), s(18), s(46), s(50)], radius=s(5), fill=(*pal["base"], 255))
+    d.rectangle([s(20), s(30), s(44), s(38)], fill=(*pal["dark"], 255))
+    # The siege mortar: a fat, short barrel with a violent report.
+    recoil = (0, 4, 6, 3, 1)[action]
+    d.rectangle([s(26), s(0 + recoil), s(38), s(22)], fill=(*IRON_DARK, 255))
+    d.rectangle([s(28), s(2 + recoil), s(36), s(10 + recoil)], fill=(*pal["light"], 255))
+    if action in (2, 3):
+        d.ellipse([s(24), s(0), s(40), s(10)], fill=(*BONE, 220))
+    d.ellipse([s(28), s(40), s(36), s(48)], fill=(*pal["dark"], 255))
+    suffix = ""
+    if move:
+        suffix = f"_move{move}"
+    if action:
+        suffix = f"_action{action}"
+    finish(img, px, f"breaker_{faction}{suffix}")
+
+
+def avalanche(faction: str, move: int = 0, action: int = 0) -> None:
+    """Tier-three rocket battery: a low tracked chassis under a raked
+    bank of launch tubes; the bank flashes as the salvo leaves."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    dy = (0, -1, 1)[move % 3]
+    # Wide tracks.
+    for x in (8, 46):
+        d.rounded_rectangle([s(x), s(18), s(x + 10), s(58)], radius=s(3), fill=(*IRON_DARK, 255))
+        pip_y = (24, 32, 40)[move % 3]
+        d.rectangle([s(x + 3), s(pip_y), s(x + 7), s(pip_y + 6)], fill=(*IRON_LIGHT, 255))
+    # The low hull.
+    d.rounded_rectangle([s(16), s(26 + dy), s(48), s(56 + dy)], radius=s(4), fill=(*IRON, 255))
+    d.rounded_rectangle([s(20), s(30 + dy), s(44), s(52 + dy)], radius=s(3), fill=(*pal["base"], 255))
+    # The raked tube bank: three rows of launch mouths.
+    lift = (0, 1, 2, 1, 0)[action]
+    for row in range(3):
+        y = 8 + row * 7 - lift + dy
+        for x in (22, 30, 38):
+            mouth = (*pal["dark"], 255)
+            if action in (2, 3) and row == action - 2:
+                mouth = (*BONE, 235)
+            d.rectangle([s(x), s(y), s(x + 6), s(y + 5)], fill=mouth)
+    d.rectangle([s(20), s(6 - lift + dy), s(44), s(8 - lift + dy)], fill=(*IRON_LIGHT, 255))
+    suffix = ""
+    if move:
+        suffix = f"_move{move}"
+    if action:
+        suffix = f"_action{action}"
+    finish(img, px, f"avalanche_{faction}{suffix}")
+
+
 def _gear(
     d, cx: float, cy: float, radius: float, teeth: int, turn: float, color
 ) -> None:
@@ -3092,7 +3224,7 @@ def generate(output: Path) -> None:
         extractor(faction)
         for work in range(1, 4):
             extractor(faction, work)
-        for unit_fn in (warden, shrike, sylph):
+        for unit_fn in (warden, shrike, sylph, condor, moth, breaker, avalanche):
             unit_fn(faction)
             for move in (1, 2):
                 unit_fn(faction, move)

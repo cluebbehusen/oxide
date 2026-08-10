@@ -58,6 +58,10 @@ pub(crate) enum UnitKindArg {
     Gnat,
     Shrike,
     Sylph,
+    Condor,
+    Moth,
+    Breaker,
+    Avalanche,
 }
 
 impl From<UnitKindArg> for UnitKind {
@@ -81,6 +85,10 @@ impl From<UnitKindArg> for UnitKind {
             UnitKindArg::Gnat => UnitKind::Gnat,
             UnitKindArg::Shrike => UnitKind::Shrike,
             UnitKindArg::Sylph => UnitKind::Sylph,
+            UnitKindArg::Condor => UnitKind::Condor,
+            UnitKindArg::Moth => UnitKind::Moth,
+            UnitKindArg::Breaker => UnitKind::Breaker,
+            UnitKindArg::Avalanche => UnitKind::Avalanche,
         }
     }
 }

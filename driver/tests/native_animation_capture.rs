@@ -873,6 +873,9 @@ fn unit_duel_scenario(attacker: UnitKind) -> Value {
         UnitKind::Bombard => 9,
         UnitKind::Warden => 2,
         UnitKind::Shrike | UnitKind::Sylph => 3,
+        UnitKind::Condor | UnitKind::Moth => 2,
+        UnitKind::Breaker => 3,
+        UnitKind::Avalanche => 8,
         UnitKind::Harvester
         | UnitKind::Tender
         | UnitKind::Excavator

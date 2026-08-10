@@ -268,6 +268,12 @@ pub struct Unit {
     /// once collapsed the scripted tier ladder to a seat-parity coin.
     #[serde(default, skip_serializing_if = "is_zero_u16")]
     pub settled: u16,
+    /// Compass step (of 256, see [`chassis::compass`]) this body faces.
+    /// Only turn-limited kinds (`stats().turn_rate > 0`) steer by it;
+    /// everyone else leaves it wherever it spawned. Every `u8` is a
+    /// valid heading, so deserialization needs no extra validation row.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub heading: u8,
 }
 
 impl Unit {
@@ -1121,6 +1127,10 @@ impl State {
             path: None,
             leash: None,
             settled: 0,
+            // Spawn facing is derived from position parity rather than
+            // fixed so a wing leaving one factory doesn't share one
+            // heading forever; any constant would be equally legal.
+            heading: (TilePos::containing(pos).x as u8).wrapping_mul(64),
         });
         id
     }

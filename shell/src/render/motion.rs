@@ -209,7 +209,11 @@ fn unit_preparation_frame(kind: UnitKind, progress: f32) -> usize {
         | UnitKind::Wisp
         | UnitKind::Warden
         | UnitKind::Shrike
-        | UnitKind::Sylph => 0,
+        | UnitKind::Sylph
+        | UnitKind::Condor
+        | UnitKind::Moth
+        | UnitKind::Breaker
+        | UnitKind::Avalanche => 0,
         UnitKind::Harvester
         | UnitKind::Tender
         | UnitKind::Excavator
@@ -232,7 +236,11 @@ fn unit_attack_frame(kind: UnitKind, attack: AttackPhase) -> usize {
             | UnitKind::Wisp
             | UnitKind::Warden
             | UnitKind::Shrike
-            | UnitKind::Sylph => 1,
+            | UnitKind::Sylph
+            | UnitKind::Condor
+            | UnitKind::Moth
+            | UnitKind::Breaker
+            | UnitKind::Avalanche => 1,
             UnitKind::Harvester
             | UnitKind::Tender
             | UnitKind::Excavator
@@ -251,7 +259,11 @@ fn unit_attack_frame(kind: UnitKind, attack: AttackPhase) -> usize {
             | UnitKind::Wisp
             | UnitKind::Warden
             | UnitKind::Shrike
-            | UnitKind::Sylph => 2 + cycle_index(progress, 2),
+            | UnitKind::Sylph
+            | UnitKind::Condor
+            | UnitKind::Moth
+            | UnitKind::Breaker
+            | UnitKind::Avalanche => 2 + cycle_index(progress, 2),
             UnitKind::Harvester
             | UnitKind::Tender
             | UnitKind::Excavator

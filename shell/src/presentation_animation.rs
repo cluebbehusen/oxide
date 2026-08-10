@@ -605,6 +605,14 @@ fn unit_attack_timing(kind: UnitKind) -> AttackTiming {
             report_ticks: 2.0,
             recover_ticks: 3.0,
         },
+        UnitKind::Condor | UnitKind::Moth => AttackTiming {
+            report_ticks: 3.0,
+            recover_ticks: 5.0,
+        },
+        UnitKind::Breaker | UnitKind::Avalanche => AttackTiming {
+            report_ticks: 3.0,
+            recover_ticks: 6.0,
+        },
         UnitKind::Tender | UnitKind::Excavator | UnitKind::Kestrel | UnitKind::Gnat => {
             AttackTiming {
                 report_ticks: 1.0,
@@ -1094,6 +1102,7 @@ mod tests {
             path: None,
             leash: None,
             settled: 0,
+            heading: 0,
         };
         assert!(tile_adjacent_to_building(builder.tile(), &site));
         assert!(matches!(builder.order, Order::Build { site: id } if id == site.id));

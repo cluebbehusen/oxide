@@ -740,6 +740,211 @@ pub(super) fn advance(
     }
 }
 
+/// The attack run: a turn-limited flier never takes a firing stance.
+/// It keeps a live route on its victim, steers there on a bounded arc
+/// (movement's steering integrator), and releases only when the bay is
+/// cold, the victim is inside release range, AND the victim sits in the
+/// forward cone — the geometry a straight pass produces and a tight
+/// orbit cannot. Each release lays `salvo` bombs along the flight line
+/// and rolls the bomber onto an egress leg past the target, so the wide
+/// loop back IS the reload.
+fn bomber_attack(
+    state: &mut State,
+    motion: &MotionSnapshot,
+    id: UnitId,
+    target: Target,
+    resume: Option<TilePos>,
+    events: &mut Vec<Event>,
+    launches: &mut Vec<crate::state::Shell>,
+) {
+    let unit = state.unit(id).expect("caller checked");
+    let stats = unit.kind.stats();
+    let (pos, tile, me, kind, heading, cooldowns) = (
+        unit.pos,
+        unit.tile(),
+        unit.player,
+        unit.kind,
+        unit.heading,
+        unit.cooldowns,
+    );
+
+    // Vanished or uncoverable target: same hand-back as the ground arm.
+    let target_info: Option<(Vec2Fx, TilePos)> = match target {
+        Target::Unit(uid) => state
+            .unit(uid)
+            .filter(|t| t.hp > 0)
+            .map(|t| (t.pos, t.tile())),
+        Target::Building(bid) => state
+            .building(bid)
+            .filter(|b| b.hp > 0)
+            .map(|b| (b.closest_point_to(pos), b.anchor)),
+    };
+    let victim_domain = target_domain(state, target);
+    let primary = stats
+        .weapons
+        .iter()
+        .position(|w| w.targets.covers(victim_domain));
+    let (Some((aim_point, target_tile)), Some(pi)) = (target_info, primary) else {
+        let unit = state.unit_mut(id).expect("caller checked");
+        match resume {
+            Some(goal) => {
+                unit.order = Order::AttackMove { goal };
+                unit.path = None;
+            }
+            None => unit.advance_queue(),
+        }
+        return;
+    };
+    let weapon = &stats.weapons[pi];
+
+    // Release gate: cold bay, in range, spotted, clear arc, and the
+    // victim dead ahead. The sight and trace rules are the shared ones.
+    let full = traces_terrain(weapon, stats.domain, victim_domain);
+    let shot_open = |t: TilePos| shot_crosses(state, t, full);
+    let seen = match target {
+        Target::Unit(_) => state.can_see(me, target_tile),
+        Target::Building(bid) => state
+            .building(bid)
+            .is_some_and(|b| b.tiles().any(|t| state.can_see(me, t))),
+    };
+    let to_target = aim_point - pos;
+    let in_range = within_weapon_reach(weapon, pos.dist_sq(aim_point));
+    let hv = chassis::compass::dir(heading);
+    let ahead = hv.x * to_target.x + hv.y * to_target.y
+        >= to_target.length() * crate::stats::BOMBER_CONE_DOT;
+    if cooldowns[pi] == 0
+        && in_range
+        && seen
+        && ahead
+        && shot_open(TilePos::containing(aim_point))
+        && !chassis::path::line_blocked(pos, aim_point, shot_open)
+    {
+        let center = projectile_aim(
+            state,
+            motion,
+            ProjectileShooter {
+                owner: me,
+                domain: stats.domain,
+            },
+            pos,
+            target,
+            aim_point,
+            weapon,
+        );
+        // The stick lays out along the flight line, centered on the aim
+        // point; a single bomb is a one-entry stick.
+        let salvo = weapon.salvo.max(1) as i32;
+        for k in 0..salvo {
+            let along = Fx::from_num(2 * k - (salvo - 1)) * chassis::fx::HALF;
+            let impact = center + hv * (along * crate::stats::BOMB_SALVO_SPACING);
+            let impact = clamp_to_envelope(state, impact);
+            let flight = launch_shell(state, launches, Target::Unit(id), me, pos, impact, weapon);
+            events.push(Event::ShellLaunched {
+                shooter: Target::Unit(id),
+                target,
+                player: me,
+                from: pos,
+                to: impact,
+                flight,
+            });
+        }
+        // Egress: fly through and past the release point. The leg is a
+        // plain path goal, so steering, arrival, and repath all reuse
+        // the ordinary machinery; when it completes (or goes stale) the
+        // chase below lines up the next run.
+        let egress = egress_goal(state, pos, heading);
+        let unit = state.unit_mut(id).expect("caller checked");
+        unit.cooldowns[pi] = weapon.cooldown_ticks;
+        unit.path = egress.map(|goal| PathFollow {
+            goal,
+            waypoints: vec![goal],
+            next: 0,
+        });
+        return;
+    }
+
+    // A hot bay keeps flying. Until the reload is half done the bomber
+    // never turns back toward its victim: it finishes the egress leg,
+    // then keeps extending the run straight ahead — a committed
+    // airframe has no brakes, and hovering over the target to re-bomb
+    // point-blank is exactly the stop-and-strafe this chassis forbids.
+    if cooldowns[pi] > weapon.cooldown_ticks / 2 {
+        if state.unit(id).expect("caller checked").path.is_none()
+            && let Some(goal) = egress_goal(state, pos, heading)
+        {
+            let unit = state.unit_mut(id).expect("caller checked");
+            unit.path = Some(PathFollow {
+                goal,
+                waypoints: vec![goal],
+                next: 0,
+            });
+        }
+        return;
+    }
+
+    // Chase: keep a live route on the victim, repathing when it drifts.
+    let stale = state
+        .unit(id)
+        .expect("caller checked")
+        .path
+        .as_ref()
+        .is_none_or(|p| p.goal != target_tile && p.goal.chebyshev(target_tile) > 1);
+    if stale {
+        match route_for(state, kind, tile, target_tile) {
+            Some(waypoints) => {
+                let unit = state.unit_mut(id).expect("caller checked");
+                unit.path = Some(PathFollow {
+                    goal: target_tile,
+                    waypoints,
+                    next: 0,
+                });
+            }
+            None => {
+                let unit = state.unit_mut(id).expect("caller checked");
+                let (player, upos) = (unit.player, unit.pos);
+                unit.clear_program();
+                events.push(Event::OrderStalled {
+                    unit: id,
+                    player,
+                    pos: upos,
+                    reason: StallReason::NoRoute,
+                });
+            }
+        }
+    }
+}
+
+/// Where a bomber rolls out after a release: straight ahead along its
+/// heading, as far as the map and the mesas allow (shrinking from four
+/// tiles down to one), or `None` when even one tile ahead is closed.
+fn egress_goal(state: &State, pos: Vec2Fx, heading: u8) -> Option<TilePos> {
+    let hv = chassis::compass::dir(heading);
+    for reach in [4i64, 3, 2, 1] {
+        let probe = pos + hv * Fx::from_num(reach);
+        let tile = TilePos::containing(probe);
+        if tile.x >= 0
+            && tile.y >= 0
+            && tile.x < state.map().width()
+            && tile.y < state.map().height()
+            && state.passable_for(Domain::Air, tile)
+        {
+            return Some(tile);
+        }
+    }
+    None
+}
+
+/// Clamps an impact point into the map envelope so an edge-of-map stick
+/// never lands a shell outside the world.
+fn clamp_to_envelope(state: &State, p: Vec2Fx) -> Vec2Fx {
+    let max_x = Fx::from_num(state.map().width()) - chassis::fx::HALF;
+    let max_y = Fx::from_num(state.map().height()) - chassis::fx::HALF;
+    Vec2Fx::new(
+        p.x.clamp(chassis::fx::HALF, max_x),
+        p.y.clamp(chassis::fx::HALF, max_y),
+    )
+}
+
 /// Chase-and-hit. Range is measured to the target's closest point and
 /// shots are buffered. A vanished target — or one no carried weapon can
 /// cover — hands control back to the remembered attack-move (or idle,
@@ -760,6 +965,10 @@ pub(super) fn attack(
     let stats = unit.kind.stats();
     if !stats.can_fight() {
         state.unit_mut(id).expect("caller checked").clear_program();
+        return;
+    }
+    if stats.turn_rate > 0 {
+        bomber_attack(state, motion, id, target, resume, events, launches);
         return;
     }
     let (pos, tile, me, kind, cooldowns) = (

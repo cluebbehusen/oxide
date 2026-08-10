@@ -174,6 +174,12 @@ struct Cast {
     interloper: UnitId,
     /// The two Bombards, shelling each other across open ground.
     guns: (UnitId, UnitId),
+    /// Seat 0's tier-three annex: Condor, Flakhound wounder, Breaker.
+    annex_f: Vec<UnitId>,
+    /// Seat 1's tier-three annex: Moth, Stinger wounder, Breaker.
+    annex_c: Vec<UnitId>,
+    /// The Avalanche pair, trading one volley across their blind rings.
+    avalanches: (UnitId, UnitId),
 }
 
 fn showcase_scenario() -> (Scenario, Cast) {
@@ -247,6 +253,22 @@ fn showcase_scenario() -> (Scenario, Cast) {
     let gun_west = roster.add(0, UnitKind::Bombard, 29, 20);
     let gun_east = roster.add(1, UnitKind::Bombard, 29, 22);
 
+    // The tier-three annex, northeast of the pit and clear of every
+    // march lane: each new 0.15 kind stands next to (or five tiles
+    // from) the thing that wounds it inside the 24-tick fight window.
+    // Bombers are victims here, not shooters — a released bomb's 2.2
+    // splash would rewrite the carefully bounded wounds around it.
+    let condor = roster.add(0, UnitKind::Condor, 39, 12);
+    let stinger_annex = roster.add(1, UnitKind::Stinger, 40, 12);
+    let flakhound_annex = roster.add(0, UnitKind::Flakhound, 43, 12);
+    let moth = roster.add(1, UnitKind::Moth, 44, 12);
+    let breaker_w = roster.add(0, UnitKind::Breaker, 40, 9);
+    let breaker_e = roster.add(1, UnitKind::Breaker, 43, 9);
+    // Five tiles apart: outside both blind rings, inside both reaches,
+    // spotted for each seat by its annex flak sitting four tiles off.
+    let avalanche_w = roster.add(0, UnitKind::Avalanche, 39, 16);
+    let avalanche_e = roster.add(1, UnitKind::Avalanche, 44, 16);
+
     // Seat 0's standing structures: one of every kind the build palette
     // offers, whole. Its Foundry comes from the map anchor.
     let buildings = vec![
@@ -316,6 +338,9 @@ fn showcase_scenario() -> (Scenario, Cast) {
             east,
             interloper,
             guns: (gun_west, gun_east),
+            annex_f: vec![condor, flakhound_annex, breaker_w],
+            annex_c: vec![moth, stinger_annex, breaker_e],
+            avalanches: (avalanche_w, avalanche_e),
         },
     )
 }
@@ -438,6 +463,15 @@ fn opening_orders(cast: &Cast) -> Vec<PlayerCommand> {
         attack(1, e[18], w[17]),
         attack(0, cast.guns.0, cast.guns.1),
         attack(1, cast.guns.1, cast.guns.0),
+        // The annex wounds: Breakers trade one 90-point blow, the
+        // Avalanches trade one spotter-lit volley, and each seat's flak
+        // clips the other's bomber.
+        attack(0, cast.annex_f[2], cast.annex_c[2]),
+        attack(1, cast.annex_c[2], cast.annex_f[2]),
+        attack(0, cast.annex_f[1], cast.annex_c[0]),
+        attack(1, cast.annex_c[1], cast.annex_f[0]),
+        attack(0, cast.avalanches.0, cast.avalanches.1),
+        attack(1, cast.avalanches.1, cast.avalanches.0),
     ]);
     commands
 }
@@ -453,6 +487,10 @@ fn disengage(cast: &Cast) -> Vec<PlayerCommand> {
         walk(2, vec![cast.interloper], 36, 6),
         walk(0, vec![cast.guns.0], 30, 13),
         walk(1, vec![cast.guns.1], 30, 27),
+        walk(0, cast.annex_f.clone(), 38, 14),
+        walk(1, cast.annex_c.clone(), 47, 27),
+        walk(0, vec![cast.avalanches.0], 10, 10),
+        walk(1, vec![cast.avalanches.1], 46, 27),
     ]
 }
 
@@ -483,7 +521,7 @@ fn showcase_state() -> State {
 
 /// Every kind, on every roster that can field it.
 fn every_kind_and_faction() -> impl Iterator<Item = (UnitKind, Faction)> {
-    const KINDS: [UnitKind; 18] = [
+    const KINDS: [UnitKind; 22] = [
         UnitKind::Harvester,
         UnitKind::Sentinel,
         UnitKind::Scuttler,
@@ -502,6 +540,10 @@ fn every_kind_and_faction() -> impl Iterator<Item = (UnitKind, Faction)> {
         UnitKind::Gnat,
         UnitKind::Shrike,
         UnitKind::Sylph,
+        UnitKind::Condor,
+        UnitKind::Moth,
+        UnitKind::Breaker,
+        UnitKind::Avalanche,
     ];
     KINDS.into_iter().flat_map(|kind| {
         [Faction::Ferrous, Faction::Cupric]

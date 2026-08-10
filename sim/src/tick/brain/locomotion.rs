@@ -91,7 +91,12 @@ pub(super) fn attack_move(
 pub(super) fn walk(state: &mut State, id: UnitId, goal: TilePos, events: &mut Vec<Event>) {
     let unit = state.unit(id).expect("caller checked");
     let tile = unit.tile();
-    if tile == goal || touching_settled_arrival(state, id, goal) {
+    // A bounded-turn flier cannot promise an exact tile center — the
+    // ring the steering integrator accepts is the arrival contract.
+    let arced_in = unit.kind.stats().turn_rate > 0
+        && unit.pos.dist_sq(goal.center())
+            <= crate::stats::BOMBER_ARRIVE * crate::stats::BOMBER_ARRIVE;
+    if tile == goal || arced_in || touching_settled_arrival(state, id, goal) {
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     }

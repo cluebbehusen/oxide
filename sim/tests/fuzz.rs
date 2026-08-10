@@ -155,7 +155,7 @@ fn tag_of(command: &Command) -> CommandTag {
 
 /// The whole roster, cross-faction kinds included — `apply_train` owes
 /// every one of them a verdict. Exhaustive by the same rule as the verbs.
-const UNIT_KINDS: [UnitKind; 18] = [
+const UNIT_KINDS: [UnitKind; 22] = [
     UnitKind::Harvester,
     UnitKind::Sentinel,
     UnitKind::Scuttler,
@@ -174,6 +174,10 @@ const UNIT_KINDS: [UnitKind; 18] = [
     UnitKind::Gnat,
     UnitKind::Shrike,
     UnitKind::Sylph,
+    UnitKind::Condor,
+    UnitKind::Moth,
+    UnitKind::Breaker,
+    UnitKind::Avalanche,
 ];
 
 fn unit_kind_index(kind: UnitKind) -> usize {
@@ -196,6 +200,10 @@ fn unit_kind_index(kind: UnitKind) -> usize {
         UnitKind::Gnat => 15,
         UnitKind::Shrike => 16,
         UnitKind::Sylph => 17,
+        UnitKind::Condor => 18,
+        UnitKind::Moth => 19,
+        UnitKind::Breaker => 20,
+        UnitKind::Avalanche => 21,
     }
 }
 
