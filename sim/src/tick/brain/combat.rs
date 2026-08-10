@@ -33,6 +33,16 @@ fn traces_terrain(weapon: &WeaponStats, shooter: Domain, victim: Domain) -> bool
     !weapon.indirect && shooter == Domain::Ground && victim == Domain::Ground
 }
 
+/// Whether a shot's line may pass over `t`. Peaks wall every pairing and
+/// every arc; full-cover tracing (direct ground-vs-ground) additionally
+/// respects terrain that grants cover. Pits block neither: machines trade
+/// fire across a void nobody can walk.
+fn shot_crosses(state: &State, t: TilePos, full: bool) -> bool {
+    state.map.tile(t).is_some_and(|tile| {
+        !tile.terrain.blocks_all_fire() && (!full || !tile.terrain.blocks_direct_fire())
+    })
+}
+
 fn within_weapon_reach(weapon: &WeaponStats, distance_sq: chassis::fx::Fx) -> bool {
     distance_sq <= weapon.range * weapon.range
         && distance_sq >= weapon.minimum_range * weapon.minimum_range
@@ -99,12 +109,7 @@ impl MotionSnapshot {
 }
 
 fn predicted_impact_open(state: &State, from: Vec2Fx, aim: Vec2Fx, full: bool) -> bool {
-    let shot_open = |tile: TilePos| {
-        state.map.tile(tile).is_some_and(|tile| {
-            tile.terrain != crate::map::Terrain::Peak
-                && (!full || tile.terrain == crate::map::Terrain::Ground)
-        })
-    };
+    let shot_open = |tile: TilePos| shot_crosses(state, tile, full);
     shot_open(TilePos::containing(aim)) && !chassis::path::line_blocked(from, aim, shot_open)
 }
 
@@ -388,15 +393,7 @@ pub(super) fn turret_fire(
             }
             // Reached zero this tick: fire now, like unit cooldowns do.
         }
-        let shot_open = |t: TilePos, full: bool| {
-            let Some(tile) = state.map.tile(t) else {
-                return false;
-            };
-            if tile.terrain == crate::map::Terrain::Peak {
-                return false;
-            }
-            !full || tile.terrain == crate::map::Terrain::Ground
-        };
+        let shot_open = |t: TilePos, full: bool| shot_crosses(state, t, full);
         // The owner must see the victim's tile — a turret that outranges
         // its own mast fires on a spotter's eyes, never into fog.
         let focused_victim = focus.zip(focus_domain).and_then(|(target, domain)| {
@@ -648,15 +645,7 @@ pub(super) fn advance(
     }
     let (pos, home, me, kind) = (unit.pos, unit.tile(), unit.player, unit.kind);
     let reach = weapon.range.floor().to_num::<i32>() + 1;
-    let shot_open = |t: TilePos, full: bool| {
-        let Some(tile) = state.map.tile(t) else {
-            return false;
-        };
-        if tile.terrain == crate::map::Terrain::Peak {
-            return false;
-        }
-        !full || tile.terrain == crate::map::Terrain::Ground
-    };
+    let shot_open = |t: TilePos, full: bool| shot_crosses(state, t, full);
 
     let mut unit_target: Option<(chassis::fx::Fx, UnitId, Vec2Fx)> = None;
     for dy in -reach..=reach {
@@ -852,15 +841,7 @@ pub(super) fn attack(
     // (scrap piles are low junk — fire passes over them). No shot →
     // keep approaching; the chase path already routes around what's in
     // the way.
-    let shot_open = |t: TilePos, full: bool| {
-        let Some(tile) = state.map.tile(t) else {
-            return false;
-        };
-        if tile.terrain == crate::map::Terrain::Peak {
-            return false;
-        }
-        !full || tile.terrain == crate::map::Terrain::Ground
-    };
+    let shot_open = |t: TilePos, full: bool| shot_crosses(state, t, full);
     // Sight of any footprint tile serves for a building (matching attack
     // validation); a unit is seen at its own tile. The line trace runs
     // only once in range — it is not built for cross-map endpoints.
@@ -1098,15 +1079,7 @@ fn sidearm_victim(
     shooter_domain: Domain,
     weapon: &WeaponStats,
 ) -> Option<(chassis::fx::Fx, UnitId, Vec2Fx, Domain)> {
-    let shot_open = |t: TilePos, full: bool| {
-        let Some(tile) = state.map.tile(t) else {
-            return false;
-        };
-        if tile.terrain == crate::map::Terrain::Peak {
-            return false;
-        }
-        !full || tile.terrain == crate::map::Terrain::Ground
-    };
+    let shot_open = |t: TilePos, full: bool| shot_crosses(state, t, full);
     // |Δpos| <= range on either axis puts the victim's tile within
     // floor(range) + 1 of the shooter's — the acquire_target bound.
     let home = TilePos::containing(shooter_pos);
@@ -1545,13 +1518,9 @@ mod tests {
         weapon: &WeaponStats,
     ) -> Option<(Fx, UnitId, Vec2Fx, Domain)> {
         let shot_open = |t: TilePos, full: bool| {
-            let Some(tile) = state.map.tile(t) else {
-                return false;
-            };
-            if tile.terrain == crate::map::Terrain::Peak {
-                return false;
-            }
-            !full || tile.terrain == crate::map::Terrain::Ground
+            state.map.tile(t).is_some_and(|tile| {
+                !tile.terrain.blocks_all_fire() && (!full || !tile.terrain.blocks_direct_fire())
+            })
         };
         state
             .units

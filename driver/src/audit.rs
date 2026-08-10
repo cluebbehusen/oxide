@@ -210,7 +210,7 @@ fn air_route(state: &State, a: &oxide_sim::Building, b: &oxide_sim::Building) ->
             state
                 .map()
                 .tile(t)
-                .is_none_or(|tile| tile.terrain != oxide_sim::map::Terrain::Peak)
+                .is_none_or(|tile| !tile.terrain.blocks_air())
         },
     );
     if !blocked {
@@ -222,7 +222,7 @@ fn air_route(state: &State, a: &oxide_sim::Building, b: &oxide_sim::Building) ->
         state
             .map()
             .tile(t)
-            .is_some_and(|tile| tile.terrain != oxide_sim::map::Terrain::Peak)
+            .is_some_and(|tile| !tile.terrain.blocks_air())
     };
     // Uniform-cost search with diagonals at sqrt(2), so the detour
     // branch reports the same Euclidean-ish tile unit as the straight

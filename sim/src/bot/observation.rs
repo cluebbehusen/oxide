@@ -246,10 +246,10 @@ impl Observation {
             if tile.wreck > 0 {
                 obs.known_wrecks.push((pos, tile.wreck));
             }
-            if tile.terrain != crate::map::Terrain::Ground {
+            if tile.terrain.blocks_ground() {
                 obs.known_rock.push(pos);
             }
-            if tile.terrain == crate::map::Terrain::Peak {
+            if tile.terrain.blocks_air() {
                 obs.known_peaks.push(pos);
             }
         }
@@ -356,10 +356,10 @@ impl Observation {
             if wreck > 0 {
                 obs.known_wrecks.push((pos, wreck));
             }
-            if tile.terrain != crate::map::Terrain::Ground && vision.explored(pos) {
+            if tile.terrain.blocks_ground() && vision.explored(pos) {
                 obs.known_rock.push(pos);
             }
-            if tile.terrain == crate::map::Terrain::Peak && vision.explored(pos) {
+            if tile.terrain.blocks_air() && vision.explored(pos) {
                 obs.known_peaks.push(pos);
             }
         }

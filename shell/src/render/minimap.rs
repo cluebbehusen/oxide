@@ -10,6 +10,7 @@ const MINI_VOID: Color = color_u8!(10, 10, 13, 255);
 const MINI_GROUND: Color = color_u8!(44, 44, 52, 255);
 const MINI_ROCK: Color = color_u8!(84, 84, 96, 255);
 const MINI_PEAK: Color = color_u8!(48, 47, 57, 255);
+const MINI_PIT: Color = color_u8!(6, 6, 9, 255);
 
 /// Minimap identity color: the same faction-own, cool-allied, warm-hostile
 /// seat accents used by the world renderer.
@@ -158,6 +159,7 @@ pub(crate) fn draw_minimap(game: &Game) {
             let base = match (tile.terrain, scrap) {
                 (oxide_sim::map::Terrain::Rock, _) => MINI_ROCK,
                 (oxide_sim::map::Terrain::Peak, _) => MINI_PEAK,
+                (oxide_sim::map::Terrain::Pit, _) => MINI_PIT,
                 (_, 0) => MINI_GROUND,
                 (_, _) => SCRAP_COLOR,
             };

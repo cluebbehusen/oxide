@@ -6,6 +6,8 @@
 //! ```text
 //! .    ground
 //! #    rock (impassable)
+//! ^    peak (blocks ground, air, and all fire)
+//! ~    bottomless pit (blocks ground; air and fire cross)
 //! s    scrap node (impassable until mined out, then ground)
 //! 1-8  Foundry anchor (top-left tile) for player N-1; the tile is ground
 //! ```
@@ -19,6 +21,9 @@ use serde::{Deserialize, Serialize};
 pub const MAX_MAP_EDGE: usize = 256;
 
 /// Base terrain of a tile.
+///
+/// Variant order is hash-load-bearing: postcard serializes the
+/// declaration index, so new variants are appended, never inserted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Terrain {
@@ -30,6 +35,35 @@ pub enum Terrain {
     /// aircraft, and artillery arcs — the one terrain that makes
     /// genuinely siege-safe geography.
     Peak,
+    /// A bottomless excavation: blocks ground utterly, open sky above,
+    /// and fire of every kind crosses it — machines trade shots over a
+    /// void neither can walk. Wrecks that fall here are gone.
+    Pit,
+}
+
+impl Terrain {
+    /// Whether ground machines can never enter this terrain.
+    pub fn blocks_ground(self) -> bool {
+        self != Terrain::Ground
+    }
+
+    /// Whether aircraft cannot overfly this terrain.
+    pub fn blocks_air(self) -> bool {
+        self == Terrain::Peak
+    }
+
+    /// Whether this terrain gives cover against direct ground-vs-ground
+    /// fire. Air-involved and indirect fire ignore this; see
+    /// [`Terrain::blocks_all_fire`] for the absolute wall.
+    pub fn blocks_direct_fire(self) -> bool {
+        matches!(self, Terrain::Rock | Terrain::Peak)
+    }
+
+    /// Whether this terrain blocks every shot in every pairing,
+    /// artillery arcs included.
+    pub fn blocks_all_fire(self) -> bool {
+        self == Terrain::Peak
+    }
 }
 
 /// One tile of the map.
@@ -152,6 +186,12 @@ impl Map {
                         wreck: 0,
                         cosmetic: 0,
                     },
+                    '~' => Tile {
+                        terrain: Terrain::Pit,
+                        scrap: 0,
+                        wreck: 0,
+                        cosmetic: 0,
+                    },
                     's' => Tile {
                         terrain: Terrain::Ground,
                         scrap: SCRAP_NODE_AMOUNT,
@@ -223,7 +263,7 @@ impl Map {
     pub fn terrain_passable(&self, pos: TilePos) -> bool {
         self.grid
             .get(pos)
-            .is_some_and(|t| t.terrain == Terrain::Ground && t.scrap == 0)
+            .is_some_and(|t| !t.terrain.blocks_ground() && t.scrap == 0)
     }
 
     /// The raw tile grid — row-slice access for hot scans (vision's
@@ -307,6 +347,7 @@ impl Map {
             let c = match (tile.terrain, tile.scrap) {
                 (Terrain::Rock, _) => '#',
                 (Terrain::Peak, _) => '^',
+                (Terrain::Pit, _) => '~',
                 // Render-only: wrecks are never authored, so `w` stays out
                 // of the parse legend.
                 (Terrain::Ground, 0) if tile.wreck > 0 => 'w',

@@ -344,6 +344,25 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
                     ..Default::default()
                 },
             );
+            // Bottomless pit: a flat void with a lit north rim, covering
+            // the ground sprite entirely — placeholder until the autotiled
+            // pit-edge art lands with the 0.15 asset pass.
+            if tile.terrain == oxide_sim::map::Terrain::Pit {
+                draw_rectangle(
+                    screen.x.floor(),
+                    screen.y.floor(),
+                    size,
+                    size,
+                    color_u8!(11, 11, 16, 255),
+                );
+                draw_rectangle(
+                    screen.x.floor(),
+                    screen.y.floor(),
+                    size,
+                    (size * 0.09).max(1.0),
+                    color_u8!(27, 27, 34, 255),
+                );
+            }
             // Ground dressing stays under resources, entities, and the fog
             // veil. Static sprites use no wall clock, so reduced-motion mode
             // needs no alternate path.
@@ -466,6 +485,8 @@ pub(crate) fn draw_tiles(game: &Game, sprites: &Sprites) {
                     Some(sprites.peak_barrier(peak_neighbor_mask(game, pos), h % 2)),
                     false,
                 ),
+                // The void was already painted under the dressing pass.
+                (oxide_sim::map::Terrain::Pit, _) => (None, false),
                 (_, 0) if wreck > 0 => (Some(sprites.wreck_pile()), h % 5 < 2),
                 (_, 0) => (None, false),
                 (_, s) => (Some(sprites.scrap(s, SCRAP_NODE_AMOUNT)), false),

@@ -339,13 +339,13 @@ pub(crate) fn route_for(
             } else {
                 snap_air_goal(state, to)?
             };
-            let peak_free = |t: TilePos| {
+            let sky_open = |t: TilePos| {
                 state
                     .map
                     .tile(t)
-                    .is_none_or(|tile| tile.terrain != crate::map::Terrain::Peak)
+                    .is_none_or(|tile| !tile.terrain.blocks_air())
             };
-            if !chassis::path::line_blocked(from.center(), to.center(), peak_free) {
+            if !chassis::path::line_blocked(from.center(), to.center(), sky_open) {
                 return Some(vec![to]);
             }
             astar(

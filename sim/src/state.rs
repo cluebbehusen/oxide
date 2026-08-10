@@ -1073,10 +1073,9 @@ impl State {
     pub fn passable_for(&self, domain: crate::stats::Domain, pos: TilePos) -> bool {
         match domain {
             crate::stats::Domain::Ground => self.passable(pos),
-            crate::stats::Domain::Air => self
-                .map
-                .tile(pos)
-                .is_some_and(|t| t.terrain != crate::map::Terrain::Peak),
+            crate::stats::Domain::Air => {
+                self.map.tile(pos).is_some_and(|t| !t.terrain.blocks_air())
+            }
         }
     }
 
