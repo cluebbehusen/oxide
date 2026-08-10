@@ -273,20 +273,26 @@ pathological, fix shared balance or training rather than concealing it from the
 bot. Difficulty can degrade execution; personality can alter preferences;
 neither changes the strategy surface.
 
-### Temporary 0.14 exception
+### Transitional 0.15 exception
 
-The 0.14 actor still runs behind inherited bot-only action masks, including
-per-kind caps, a private production-queue threshold, and a hard Fabricator
-screen gate. These are a known temporary violation, retained only because the
-current weights were trained within that surface and naive removal caused a
-policy collapse. Do not add more restrictions, present these as acceptable
-balance, bless their uncapped drift, or remove them independently.
+The shipped neural ladder is still the frozen 0.14 actor behind its inherited
+bot-only action masks: per-kind caps, a private production-queue threshold, a
+hard Fabricator screen gate, and zero-caps on every 0.15 kind. These remain a
+known temporary violation, retained because the weights were trained within
+that surface and naive removal caused a policy collapse. Do not add more
+restrictions, present these as acceptable balance, bless their uncapped
+drift, or remove them independently.
 
-Cap removal and retraining are one coordinated 0.15 change. The local,
-intentionally uncommitted `roadmap-0.14.0-0.15.0.md` records the evidence and
-promotion requirements. If that working note is absent, this section remains
-the durable decision: do not change the masks outside the coordinated 0.15
-migration.
+0.15 shipped the content half of the migration: the tree the retrain will
+target, a transitional Fabricator roster (it keeps the full 0.14 lists so the
+frozen actor's gates still resolve — the final tree homes the sky at the
+Airworks and the Scuttler at the Foundry), and the Overseer
+(`BotConfig.overseer`), a scripted commander on the shared intent surface
+that plays the whole new tree legally and serves as the retrain era's
+curriculum anchor and yardstick. Cap removal, gym v9, and the from-scratch
+retrain remain one coordinated change; until it lands, this section is the
+durable decision: do not change the masks or the transitional rosters
+outside that migration.
 
 Any action-surface expansion must first evaluate current weights unchanged,
 then retrain when the evidence requires it, and finally pass the complete

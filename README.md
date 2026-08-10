@@ -331,33 +331,39 @@ for is deleted only by you.
 ## Status and road ahead
 
 Working today: the full loop (harvest → train → fight → win) with fog of
-war and ghost memory, the two-faction eleven-unit roster (ground, air,
-artillery) behind a build-your-tech gate, the harvester-built structure
-palette from turrets to radar to Reclaimers, wreck salvage and repair
-welding (buildings and ground machines alike), team games from 2v2 to
-4v4 with shared sight, order queues
-and patrols, solid
-units that crowd without gridlocking, zero-chase advances and attack-move with line-of-sight
-fire, damage retaliation, rally points, control groups, shift-select,
-order feedback, a fog-aware minimap, sound, twenty-five maps in a
-thumbnail-grid browser sectioned by format (sixteen duels, five 2v2s,
-two 3v3s, two 4v4s), per-seat match setup on
-team maps (team-grouped seat cards with inline difficulty,
-personality, and faction dials beside a who-is-where map — every
-seat's faction is free, yours included), building salvage as harvester labor, ally
-inspection with visible orders and team-color accents on the machines
-themselves (allied seats use distinct cool accents, hostile seats use distinct
-warm accents, and your own keep pure faction paint), touch gestures (pan, tap, long-press,
-pinch, two-finger box), menus, a trained neural opponent with four
-difficulty levels and selectable personalities, save/resume via
-replays, and the agent tooling described above.
+war and ghost memory, a two-faction TWENTY-FOUR-unit roster across three
+tiers (line infantry through bombers on committed attack runs, air
+transports with sealed cargo holds, tier-three siege walkers and rocket
+batteries, a walking demolition charge), buildable Foundry expansions
+with kill-all-Foundries elimination, derelict Extractor frames restored
+for escalating contested income, in-place building upgrades (Heavy
+Turret, Bulwark, Burst Flak, Refinery, Deep Array — each wearing its
+own hull), buried Scuttle Charges as the game's only stealth (detected
+by scouts and Deep Arrays, cleared honestly by saturation fire),
+Barricade walls and Scrap Depot drop-offs, bottomless-pit terrain that
+blocks ground while air passes over, wreck salvage and repair welding,
+team games from 2v2 to 4v4 with shared sight plus the first shipped
+free-for-alls (3-, 5-, and 6-way on a measured-fairness gate class),
+order queues and patrols, solid units that crowd without gridlocking,
+zero-chase advances and attack-move with line-of-sight fire, damage
+retaliation, rally points, control groups, shift-select, order
+feedback, a fog-aware minimap, a synth sound bank with voices for the
+new heavy weapons, THIRTY-FOUR maps in a thumbnail-grid browser
+sectioned by format, per-seat match setup on team maps, building
+salvage as harvester labor, ally inspection with team-color accents,
+touch gestures, menus, a trained neural opponent with four difficulty
+levels and selectable personalities plus the Overseer — a scripted
+commander that climbs the whole new tech tree (flagship maps seat it
+by default), save/resume via replays, and the agent tooling described
+above.
 
-Not yet: expansions (Foundries aren't buildable), formations,
-free-for-all (the sim seats up to eight players and the menu lists any
-scenario it can parse, but no shipped map plays FFA), and the mobile
-ports — macroquad makes iOS/Android plausible, and the desktop shell
-already resolves touch gestures, but no mobile build exists. The sim freezes at game
-end; the pause menu's Restart is the rematch.
+Not yet: the neural ladder retrained onto the 0.15 surface (the frozen
+0.14 network remains the default opponent and does not use the new
+tree; the Overseer covers that gap until the coordinated gym-v9
+retrain), island maps whose only routes are air, formations, and the
+mobile ports — macroquad makes iOS/Android plausible, and the desktop
+shell already resolves touch gestures, but no mobile build exists. The
+sim freezes at game end; the pause menu's Restart is the rematch.
 
 Built with [macroquad](https://macroquad.rs/); simulation math on the
 [`fixed`](https://crates.io/crates/fixed) crate; goldens via
