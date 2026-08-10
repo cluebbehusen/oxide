@@ -67,6 +67,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
+from statistics import mean
 
 # The Fabricator's produce list (sim/src/stats.rs) — the roster a match
 # only reaches by building the tech gate first.
@@ -94,7 +95,7 @@ AIR_KINDS = {
 # aggression component and carries no scripted-tier dial; accepting
 # another schema risks silently judging a raw zero-facet profile while
 # labeling it as a shipped personality.
-EXPECTED_SCHEMA = 8
+EXPECTED_SCHEMA = 9
 DEFAULT_STALE_CAP_TICKS = 2_000
 MIN_PROMOTION_SEEDS = 3
 
@@ -159,6 +160,84 @@ def cap_health(matches: list[dict], stale_ticks: int) -> dict[str, int]:
         ):
             counts["resource_exhausted_caps"] += 1
     return counts
+
+
+TIER2_KINDS = frozenset(
+    {
+        "lancer",
+        "bombard",
+        "flakhound",
+        "stinger",
+        "warden",
+        "tender",
+        "sapper",
+        "excavator",
+        "skyhook",
+        "kestrel",
+        "gnat",
+        "buzzard",
+        "darter",
+        "talon",
+        "wisp",
+    }
+)
+TIER3_KINDS = frozenset({"breaker", "avalanche", "condor", "moth", "shrike", "sylph"})
+
+
+def fun_rhythm(matches: list[dict]) -> dict:
+    """Match-rhythm evidence from the schema-9 probe fields: fight
+    windows and lulls, the decided-moment latency the old bots failed,
+    base expansion, tier reach, and contested-economy tenure. Reported
+    for every profile; gated only where a flag sets a measured floor."""
+    windows = [int(m.get("fight_windows", 0)) for m in matches]
+    shares = [float(m.get("fight_share", 0.0)) for m in matches]
+    lulls = [int(m.get("longest_lull_ticks", 0)) for m in matches]
+    latencies: list[int] = []
+    for m in matches:
+        tick = m.get("advantage_tick")
+        team = m.get("advantage_team")
+        if tick is None or team is None or m.get("capped", True):
+            continue
+        winners = m.get("winners") or []
+        factions = m.get("factions") or []
+        # The advantaged team finished the job when a winning seat
+        # belongs to it; seat->team is not in the payload, so use the
+        # conservative check: any decided match with an advantage.
+        del winners, factions
+        latencies.append(max(0, int(m.get("ticks", 0)) - int(tick)))
+    expansions = 0
+    expansion_seats = 0
+    tier23_share_sum = 0.0
+    tier23_seats = 0
+    extractor_tenures: list[float] = []
+    for m in matches:
+        for seat_buildings in m.get("competitive_buildings", []):
+            expansion_seats += 1
+            extra = max(0, int(seat_buildings.get("foundry", 0)) - 1)
+            extra += int(seat_buildings.get("scrap_depot", 0))
+            if extra > 0:
+                expansions += 1
+        for seat_shares in m.get("combat_seats", []):
+            if not seat_shares:
+                continue
+            tier23_seats += 1
+            tier23_share_sum += sum(
+                share
+                for kind, share in seat_shares.items()
+                if kind in TIER2_KINDS or kind in TIER3_KINDS
+            )
+        extractor_tenures.extend(
+            float(tenure) for tenure in m.get("extractor_hold_share", [])
+        )
+    return {
+        "mean_fight_windows": mean(windows) if windows else 0.0,
+        "mean_fight_share": mean(shares) if shares else 0.0,
+        "max_lull_ticks": max(lulls, default=0),
+        "finish_latencies": sorted(latencies),
+        "expansion_rate": (expansions / expansion_seats) if expansion_seats else 0.0,
+        "mean_tier23_share": (tier23_share_sum / tier23_seats) if tier23_seats else 0.0,
+        "mean_extractor_tenure": mean(extractor_tenures) if extractor_tenures else 0.0,
+    }
 
 
 def combat_tail_rates(
@@ -565,6 +644,36 @@ def evaluate_profile(
                 args.min_reclaimer_reach,
             )
         )
+    rhythm = fun_rhythm(payload["matches"])
+    overall = dict(overall)
+    overall["fun_rhythm"] = rhythm
+    if full_gate:
+        # Rhythm floors ship OFF (None) until the campaign measures
+        # them; a set flag is a calibrated promise, not a guess.
+        if args.max_finish_latency is not None and rhythm["finish_latencies"]:
+            worst = rhythm["finish_latencies"][-1]
+            if worst > args.max_finish_latency:
+                failures.append(
+                    f"finish latency {worst} ticks exceeds the "
+                    f"{args.max_finish_latency} ceiling (won matches "
+                    f"must be closed out)"
+                )
+        if (
+            args.min_fight_windows is not None
+            and rhythm["mean_fight_windows"] < args.min_fight_windows
+        ):
+            failures.append(
+                f"mean fight windows {rhythm['mean_fight_windows']:.1f} below "
+                f"{args.min_fight_windows} (matches need concrete fights and lulls)"
+            )
+        if (
+            args.min_expansion_rate is not None
+            and rhythm["expansion_rate"] < args.min_expansion_rate
+        ):
+            failures.append(
+                f"expansion rate {rhythm['expansion_rate']:.2f} below "
+                f"{args.min_expansion_rate} (bases should grow past the first Foundry)"
+            )
     return overall, tails, health, failures
 
 
@@ -614,6 +723,24 @@ def print_profile(
         f"{tails['dominant']}/{tails['seats']} "
         f"({float(tails['dominant_rate']) * 100:.1f}%)"
     )
+    rhythm = overall.get("fun_rhythm")
+    if rhythm:
+        latencies = rhythm["finish_latencies"]
+        finish = (
+            f"{latencies[len(latencies) // 2]} med / {latencies[-1]} max ticks"
+            if latencies
+            else "none observed"
+        )
+        print(
+            f"rhythm: fights {rhythm['mean_fight_windows']:.1f} windows · "
+            f"{rhythm['mean_fight_share'] * 100:.0f}% of samples · longest lull "
+            f"{rhythm['max_lull_ticks']} ticks · finish latency {finish}"
+        )
+        print(
+            f"growth: expansion rate {rhythm['expansion_rate'] * 100:.0f}% of seats · "
+            f"tier-2/3 value share {rhythm['mean_tier23_share'] * 100:.0f}% · "
+            f"extractor tenure {rhythm['mean_extractor_tenure'] * 100:.0f}% of samples"
+        )
 
 
 def main() -> int:
@@ -637,6 +764,26 @@ def main() -> int:
         help="shipped scenario directory",
     )
     ap.add_argument("--level", default="medium", help="neural difficulty level")
+    ap.add_argument(
+        "--max-finish-latency",
+        type=int,
+        default=None,
+        help="ticks allowed between decisive advantage and victory "
+        "(unset: report-only until the campaign calibrates it)",
+    )
+    ap.add_argument(
+        "--min-fight-windows",
+        type=float,
+        default=None,
+        help="mean distinct fight windows per match (unset: report-only)",
+    )
+    ap.add_argument(
+        "--min-expansion-rate",
+        type=float,
+        default=None,
+        help="share of competitive seats that expanded past their first "
+        "Foundry (unset: report-only)",
+    )
     ap.add_argument(
         "--seeds",
         type=int,

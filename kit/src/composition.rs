@@ -153,6 +153,29 @@ pub struct MatchComposition {
     /// building count changed. Sample-resolution, so a frozen tail
     /// reads as `ticks - last_progress_tick`.
     pub last_progress_tick: u64,
+    /// Distinct fight windows: maximal runs of consecutive samples
+    /// whose window saw any combat event. A good match has several —
+    /// concrete fights separated by concrete lulls — where one long
+    /// smear or none at all both read as poor rhythm.
+    pub fight_windows: u64,
+    /// Fraction of sample windows that saw combat.
+    pub fight_share: f64,
+    /// Longest run of combat-free ticks between the first and last
+    /// combat window (0 when fewer than two windows exist). The
+    /// mid-match dead air fun reviews should look at.
+    pub longest_lull_ticks: u64,
+    /// First tick at which one team's fielded fighter value held at
+    /// least three times every hostile team's for two consecutive
+    /// samples — the "this is decided" moment. `None` when no team
+    /// ever reached it. `ticks - advantage_tick` on a decided match is
+    /// the finish latency the old bots famously failed.
+    pub advantage_tick: Option<u64>,
+    /// The team holding that first decisive advantage.
+    pub advantage_team: Option<u8>,
+    /// Per seat: fraction of samples holding at least one standing
+    /// completed Extractor — how long the contestable economy was
+    /// actually worked.
+    pub extractor_hold_share: Vec<f64>,
 }
 
 /// Runs one bot-vs-bot match and integrates each seat's army value by
@@ -202,6 +225,17 @@ pub fn sample_driven(
     let mut last_progress_tick = 0;
     let mut activity = MatchActivity::default();
     let mut ran = 0;
+    let mut samples: u64 = 0;
+    let mut fight_samples: u64 = 0;
+    let mut fight_windows: u64 = 0;
+    let mut in_fight_window = false;
+    let mut lull_run: u64 = 0;
+    let mut longest_lull: u64 = 0;
+    let mut combat_seen_before_sample: u64 = 0;
+    let mut advantage_tick: Option<u64> = None;
+    let mut advantage_team: Option<u8> = None;
+    let mut advantage_streak: (Option<u8>, u32) = (None, 0);
+    let mut extractor_samples: Vec<u64> = vec![0; seats];
     for tick in 0..max_ticks {
         let report = tick_fn(&mut state);
         note_activity(&mut activity, &report);
@@ -221,7 +255,28 @@ pub fn sample_driven(
         }
         previous_banks = banks;
         if tick % sample_every == 0 {
+            samples += 1;
+            let combat_total = activity.attack_hits + activity.turret_shots + activity.shell_shots;
+            let fought = combat_total > combat_seen_before_sample;
+            combat_seen_before_sample = combat_total;
+            if fought {
+                fight_samples += 1;
+                if !in_fight_window {
+                    fight_windows += 1;
+                    in_fight_window = true;
+                    if fight_windows > 1 {
+                        longest_lull = longest_lull.max(lull_run * sample_every);
+                    }
+                }
+                lull_run = 0;
+            } else {
+                in_fight_window = false;
+                if fight_windows > 0 {
+                    lull_run += 1;
+                }
+            }
             let mut live: Vec<(u64, usize)> = vec![(0, 0); seats];
+            let mut fighter_value: Vec<u64> = vec![0; seats];
             let competitive: Vec<bool> = (0..seats)
                 .map(|seat| {
                     !state.players()[seat].resigned
@@ -239,23 +294,66 @@ pub fn sample_driven(
                     let cost = u64::from(unit.kind.stats().cost);
                     *value_acc[seat].entry(unit.kind).or_default() += cost;
                     *count_acc[seat].entry(unit.kind).or_default() += 1;
-                    if competitive[seat] && unit.kind.stats().can_fight() {
-                        *combat_value_acc[seat].entry(unit.kind).or_default() += cost;
-                        *combat_count_acc[seat].entry(unit.kind).or_default() += 1;
+                    if unit.kind.stats().can_fight() {
+                        fighter_value[seat] += cost;
+                        if competitive[seat] {
+                            *combat_value_acc[seat].entry(unit.kind).or_default() += cost;
+                            *combat_count_acc[seat].entry(unit.kind).or_default() += 1;
+                        }
                     }
                     live[seat].0 += cost;
                 }
             }
+            let mut holds_extractor = vec![false; seats];
             for building in state.buildings() {
                 let seat = building.player.0 as usize;
                 if seat < seats {
                     live[seat].1 += 1;
                     if building.built {
                         standing[seat].insert((building.kind, building.id));
+                        if building.kind == BuildingKind::Extractor {
+                            holds_extractor[seat] = true;
+                        }
                         if competitive[seat] {
                             competitive_standing[seat].insert((building.kind, building.id));
                         }
                     }
+                }
+            }
+            for (seat, holds) in holds_extractor.iter().enumerate() {
+                if *holds {
+                    extractor_samples[seat] += 1;
+                }
+            }
+            if advantage_tick.is_none() {
+                let mut team_value: BTreeMap<u8, u64> = BTreeMap::new();
+                for (seat, value) in fighter_value.iter().enumerate() {
+                    *team_value.entry(state.players()[seat].team).or_default() += value;
+                }
+                let leader = team_value
+                    .iter()
+                    .max_by_key(|(team, value)| (**value, std::cmp::Reverse(**team)))
+                    .map(|(team, value)| (*team, *value));
+                let decisive = leader.filter(|(team, value)| {
+                    *value > 0
+                        && team_value
+                            .iter()
+                            .filter(|(other, _)| *other != team)
+                            .all(|(_, other_value)| *value >= other_value.saturating_mul(3))
+                });
+                match decisive {
+                    Some((team, _)) => {
+                        if advantage_streak.0 == Some(team) {
+                            advantage_streak.1 += 1;
+                        } else {
+                            advantage_streak = (Some(team), 1);
+                        }
+                        if advantage_streak.1 >= 2 {
+                            advantage_tick = Some(ran);
+                            advantage_team = Some(team);
+                        }
+                    }
+                    None => advantage_streak = (None, 0),
                 }
             }
             if live != previous {
@@ -353,6 +451,25 @@ pub fn sample_driven(
         final_economy,
         activity,
         last_progress_tick,
+        fight_windows,
+        fight_share: if samples == 0 {
+            0.0
+        } else {
+            fight_samples as f64 / samples as f64
+        },
+        longest_lull_ticks: longest_lull,
+        advantage_tick,
+        advantage_team,
+        extractor_hold_share: extractor_samples
+            .into_iter()
+            .map(|held| {
+                if samples == 0 {
+                    0.0
+                } else {
+                    held as f64 / samples as f64
+                }
+            })
+            .collect(),
     })
 }
 
@@ -854,6 +971,12 @@ mod tests {
             },
             activity: MatchActivity::default(),
             last_progress_tick: 0,
+            fight_windows: 0,
+            fight_share: 0.0,
+            longest_lull_ticks: 0,
+            advantage_tick: None,
+            advantage_team: None,
+            extractor_hold_share: Vec::new(),
         }
     }
 

@@ -300,7 +300,7 @@ def good_payload(
             "reclaimer": 0.30 if style == "turtle" and variant == 1 else 0.0,
         }
     return {
-        "schema": 8,
+        "schema": 9,
         "seeds": seeds,
         "dials": {
             "style": style,

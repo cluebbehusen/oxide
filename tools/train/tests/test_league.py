@@ -2776,7 +2776,7 @@ _PROBE_COHORT = {
     },
 }
 _PROBE_PAYLOAD = {
-    "schema": 8,
+    "schema": 9,
     "overall": {
         "matches": 50,
         "decided": 41,
@@ -2896,11 +2896,11 @@ class TestCompositionProbe:
 
     def test_a_future_probe_schema_is_refused(self, tmp_path: pathlib.Path) -> None:
         future = json.loads(json.dumps(_PROBE_PAYLOAD))
-        future["schema"] = 9
+        future["schema"] = 10
         driver = self._fake_driver(tmp_path, future)
         torch.manual_seed(0)
         policy = make_policy("mlp")
-        with pytest.raises(RuntimeError, match="schema 9"):
+        with pytest.raises(RuntimeError, match="schema 10"):
             composition_probe(policy, "mlp", 5, tmp_path, str(driver), "s", "medium", 1)
 
 

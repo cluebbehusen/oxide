@@ -375,7 +375,7 @@ pub fn balance_probe(
         let payload = serde_json::json!({
             // Bumped whenever a consumer (tools/train/fun_gate.py) would
             // need to read this file differently.
-            "schema": 8,
+            "schema": 9,
             "level": format!("{level:?}"),
             "artifact": artifact,
             "digest": digest,
@@ -670,7 +670,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
         std::fs::remove_file(&out).ok();
 
-        assert_eq!(payload["schema"], 8);
+        assert_eq!(payload["schema"], 9);
         assert_eq!(payload["profile"], "ladder");
         assert_eq!(payload["dials"]["style"], "balanced");
         assert_eq!(payload["dials"]["variant"], 1);
@@ -702,7 +702,7 @@ mod tests {
         let payload: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
         std::fs::remove_file(&out).ok();
-        assert_eq!(payload["schema"], 8);
+        assert_eq!(payload["schema"], 9);
         // One match per shipped map: the roster is mid-rework for 0.15,
         // so the floor tracks the roster instead of pinning a count.
         let shipped = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../scenarios"))
@@ -765,6 +765,20 @@ mod tests {
         ] {
             assert!(first["activity"][key].is_u64(), "{key} is reported");
         }
+        // The fun-metric fields the retrain campaign reads: fight
+        // rhythm, the decided moment, and contested-economy tenure.
+        assert!(first["fight_windows"].is_u64());
+        assert!(first["fight_share"].is_number());
+        assert!(first["longest_lull_ticks"].is_u64());
+        assert!(first["advantage_tick"].is_null() || first["advantage_tick"].is_u64());
+        assert!(first["advantage_team"].is_null() || first["advantage_team"].is_u64());
+        assert!(
+            first["extractor_hold_share"].as_array().is_some_and(|per| {
+                per.len() == first["factions"].as_array().unwrap().len()
+                    && per.iter().all(serde_json::Value::is_number)
+            }),
+            "extractor hold share is per-seat"
+        );
         assert!(
             first["final_economy"]["remaining_map_salvage"]
                 .as_u64()
