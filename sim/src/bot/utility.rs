@@ -47,6 +47,9 @@ const HOME_SALVAGE_RADIUS: i32 = 14;
 const SALVAGE_LOW: u32 = 250;
 /// Known anti-air within this range of a raid target scrubs the raid.
 const RAID_AA_RADIUS: i32 = 6;
+/// A salvage field farther than this (Chebyshev) from every own
+/// Foundry counts as an unserved frontier worth an expansion.
+const EXPANSION_RADIUS: i32 = 12;
 
 /// The policy's tunable considerations. The fairness rule is that
 /// dials change *thinking* — never income, vision, or combat math.
@@ -85,6 +88,8 @@ pub struct Dials {
     pub extractors: bool,
     /// Lift Reclaimers and Turrets one rung when the bank runs rich.
     pub upgrades: bool,
+    /// Raise expansion Foundries toward unserved salvage frontiers.
+    pub expansion: bool,
 }
 
 impl Dials {
@@ -110,6 +115,7 @@ impl Dials {
             deep_tech: false,
             extractors: false,
             upgrades: false,
+            expansion: false,
         }
     }
 
@@ -121,6 +127,7 @@ impl Dials {
             deep_tech: true,
             extractors: true,
             upgrades: true,
+            expansion: true,
             harvester_target: 5,
             ..Self::full()
         }
@@ -726,6 +733,35 @@ impl UtilityPolicy {
         let mut rungs = vec![BuildingKind::Fabricator];
         if dials.deep_tech {
             rungs.push(BuildingKind::Airworks);
+        }
+        // The expansion Foundry is a capital rung too: without holding
+        // its fund, the wartime drip pins the bank far below it and the
+        // core 0.15 economy move never happens. Cheap frontier proxy
+        // here (any known salvage beyond the radius); the construction
+        // arm still proves reachability before claiming.
+        if dials.expansion && (!dials.deep_tech || have(BuildingKind::Airworks)) {
+            let foundries: Vec<TilePos> = obs
+                .my_buildings
+                .iter()
+                .filter(|b| b.kind == BuildingKind::Foundry)
+                .map(|b| b.anchor)
+                .collect();
+            let frontier = obs
+                .known_scrap
+                .iter()
+                .filter(|(_, amount)| *amount > 0)
+                .map(|(tile, _)| *tile)
+                .chain(obs.known_frames.iter().copied())
+                .any(|tile| {
+                    foundries
+                        .iter()
+                        .all(|f| f.chebyshev(tile) > EXPANSION_RADIUS)
+                });
+            if frontier && foundries.len() < 2 && have(BuildingKind::Foundry) {
+                return price(BuildingKind::Foundry) + TECH_RESERVE;
+            }
+        }
+        if dials.deep_tech {
             rungs.push(BuildingKind::Crucible);
         }
         rungs
@@ -784,6 +820,60 @@ impl UtilityPolicy {
                     *budget -= cost;
                     intents.push(Intent::Build {
                         kind: BuildingKind::Extractor,
+                        anchor,
+                    });
+                    return true;
+                }
+            }
+        }
+        // Expansion: once the tree stands, a second Foundry toward the
+        // nearest salvage frontier no Foundry serves — forward
+        // production, a drop-off that shortens the haul, and one more
+        // victory token the enemy must come dig out. The core 0.15
+        // economy move, demonstrated where training can see it.
+        if dials.expansion
+            && have_built(BuildingKind::Foundry)
+            && (!dials.deep_tech || have(BuildingKind::Airworks))
+        {
+            let cost = BuildingKind::Foundry
+                .base_stats()
+                .construction
+                .map(|c| c.cost)
+                .unwrap_or(0);
+            let foundries: Vec<TilePos> = obs
+                .my_buildings
+                .iter()
+                .filter(|b| b.kind == BuildingKind::Foundry)
+                .map(|b| b.anchor)
+                .collect();
+            if foundries.len() < 3 && *budget >= cost + TECH_RESERVE {
+                let frontier = obs
+                    .known_scrap
+                    .iter()
+                    .filter(|(_, amount)| *amount > 0)
+                    .map(|(tile, _)| *tile)
+                    .chain(obs.known_frames.iter().copied())
+                    .filter(|tile| {
+                        foundries
+                            .iter()
+                            .all(|f| f.chebyshev(*tile) > EXPANSION_RADIUS)
+                            && Self::ground_reaches(obs, home, *tile)
+                    })
+                    .min_by_key(|tile| {
+                        let frontier = foundries
+                            .iter()
+                            .map(|f| f.chebyshev(*tile))
+                            .min()
+                            .unwrap_or(0);
+                        (frontier, tile.y, tile.x)
+                    });
+                if let Some(focus) = frontier
+                    && let Some(anchor) = self.placement_near(obs, BuildingKind::Foundry, focus)
+                {
+                    *budget -= cost;
+                    self.pending_sites.push(anchor);
+                    intents.push(Intent::Build {
+                        kind: BuildingKind::Foundry,
                         anchor,
                     });
                     return true;
@@ -860,7 +950,7 @@ impl UtilityPolicy {
         }
 
         // The 0.15 climb: one rung per think, cheapest gate first.
-        if (dials.deep_tech || dials.extractors || dials.upgrades)
+        if (dials.deep_tech || dials.extractors || dials.upgrades || dials.expansion)
             && self.overseer_construction(dials, obs, home, budget, intents)
         {
             return;
