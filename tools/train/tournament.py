@@ -120,6 +120,8 @@ def play(
             s: condition_from_profile(*condition, faction_knob(s)) for s in range(8)
         }
     rusher_seat = None
+    # The wire requires conditions to name exactly the controlled
+    # seats; scripted opponents take none.
     if opponent == "rusher":
         # The rusher is driven locally, so its seat must be controlled
         # too — whichever seat the learner isn't (any of them in FFA).
@@ -128,7 +130,7 @@ def play(
             seed,
             control=(seat, rusher_seat),
             scenario=scenario,
-            conditions=conds,
+            conditions={s: conds[s] for s in (seat, rusher_seat)},
             cadence=cadence,
         )
     else:
@@ -136,7 +138,7 @@ def play(
             seed,
             control=(seat,),
             scenario=scenario,
-            conditions=conds,
+            conditions={seat: conds[seat]},
             cadence=cadence,
         )
     rng = np.random.default_rng(seed * 2 + seat)

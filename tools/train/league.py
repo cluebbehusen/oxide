@@ -40,6 +40,7 @@ new ``--name`` for the new phase.
 
 import argparse
 import contextlib
+import dataclasses
 import json
 import pathlib
 import subprocess
@@ -1406,6 +1407,23 @@ class Job:
             learner_factions,
             specialize_roles=self.kind in ("team", "team2"),
         )
+        if self.kind == "rusher":
+            # The rush canary gates promotion at EXPERT execution: a
+            # learner that only ever faces the all-in at easy/medium
+            # tempo never learns the fight the cup actually tests
+            # (measured: 70% vs the slow training rush, 33% in the
+            # expert-cadence cup, dying on an identical clock with a
+            # two-unit opening). Rush episodes train at the gate's
+            # tempo.
+            expert = next(
+                profile
+                for profile in SHIPPED_EXECUTION_PROFILES
+                if profile.name == "expert"
+            )
+            self.episode_dials = {
+                seat: dataclasses.replace(dials, execution=expert)
+                for seat, dials in self.episode_dials.items()
+            }
         self.conditions = {
             seat: dials.condition(
                 learner_factions[seat],

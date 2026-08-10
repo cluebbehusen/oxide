@@ -132,4 +132,6 @@ def test_tournament_default_consumes_named_profile_and_specialist_role() -> None
 
     assert won is True
     assert worker.conditions[0][-5:] == (500, 300, 400, 450, 650)
-    assert worker.conditions[1][-5:] == (500, 300, 400, 500, 500)
+    # The wire requires conditions to name exactly the controlled
+    # seats; the scripted opponent's seat carries none.
+    assert set(worker.conditions) == {0}
