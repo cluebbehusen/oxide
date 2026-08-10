@@ -1280,10 +1280,11 @@ fn place_refusal_names_the_actual_blocker() {
     // The enemy Foundry's ground is fogged — and fog must win before
     // the building underneath can leak through the reason.
     assert_eq!(refusal(13, 6), Some(PlaceRefusal::Fog));
-    // Scenario-only kinds are never placeable.
+    // A Foundry without a completed Fabricator names the missing tech
+    // (0.15: Foundries are buildable expansions behind the tree's gate).
     assert_eq!(
         state.place_refusal(p, BuildingKind::Foundry, TilePos::new(5, 6)),
-        Some(PlaceRefusal::NotConstructible)
+        Some(PlaceRefusal::Prerequisite)
     );
 }
 
@@ -1682,6 +1683,22 @@ fn a_fresh_placement_commits_the_whole_crew() {
 /// nothing and places nothing at accept, hands the founder
 /// [`Order::Found`], and founds — site, payment, Build order — only
 /// when the founder stands beside ground it can see again.
+/// Foundry drip credits a single-Foundry seat has earned by `state`'s
+/// current tick — exact-bank assertions add this so passive income and
+/// spend accounting stay separately verifiable.
+fn drip_credits(state: &oxide_sim::State) -> u32 {
+    let period = oxide_sim::stats::FOUNDRY_DRIP_PERIOD;
+    let start = oxide_sim::stats::FOUNDRY_DRIP_START_TICK;
+    let credits_by = |tick: u64| {
+        if tick < start {
+            0
+        } else {
+            tick / period - (start / period - 1)
+        }
+    };
+    u32::try_from(credits_by(state.current_tick())).unwrap()
+}
+
 #[test]
 fn a_deferred_build_founds_on_arrival() {
     use oxide_sim::stats::BuildingKind;
@@ -1746,8 +1763,8 @@ fn a_deferred_build_founds_on_arrival() {
     let cost = BuildingKind::Turret.stats().construction.unwrap().cost;
     assert_eq!(
         state.player(PlayerId(0)).scrap,
-        scrap_before - cost,
-        "paid in full when the ground was claimed"
+        scrap_before - cost + drip_credits(&state),
+        "paid in full when the ground was claimed (plus the passive drip)"
     );
     let site = state
         .buildings()
@@ -2460,8 +2477,8 @@ fn a_deferred_claim_on_taken_ground_stalls_without_spending() {
     );
     assert_eq!(
         state.player(PlayerId(0)).scrap,
-        scrap_before,
-        "a claim that never landed cost nothing"
+        scrap_before + drip_credits(&state),
+        "a claim that never landed cost nothing (the drip still runs)"
     );
     assert_eq!(
         state.unit(founder).unwrap().order,
@@ -2521,8 +2538,8 @@ fn a_stopped_pending_found_spends_nothing() {
     }
     assert_eq!(
         state.player(PlayerId(0)).scrap,
-        scrap_before,
-        "no charge ever landed"
+        scrap_before + drip_credits(&state),
+        "no charge ever landed (only the passive drip accrued)"
     );
     assert!(
         state.buildings().iter().all(|b| b.anchor != spot),
@@ -2787,10 +2804,11 @@ fn cancelling_a_paid_deferred_site_clears_every_crewmates_promise() {
             .all(|building| building.anchor != anchor),
         "a delayed crewmate cannot resurrect the cancelled site"
     );
-    assert_eq!(
-        state.player(PlayerId(0)).scrap,
-        scrap_after_cancel,
-        "a stale founding promise cannot charge the player again"
+    assert!(
+        state.player(PlayerId(0)).scrap >= scrap_after_cancel
+            && state.player(PlayerId(0)).scrap <= scrap_after_cancel + drip_credits(&state),
+        "a stale founding promise cannot charge the player again \
+         (only drip credits may accrue past the cancel point)"
     );
 }
 

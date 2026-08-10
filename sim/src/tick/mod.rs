@@ -167,6 +167,7 @@ impl State {
             production::capture_recovery_entitlements(self);
             commands::apply(self, commands, &mut events);
             production::run(self, &mut events);
+            production::decay_abandoned_sites(self);
             brain::run(self, &mut index, &mut events);
             movement::evict_claimed_ground(self);
             let travel = movement::run(self);

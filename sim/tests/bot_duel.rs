@@ -63,9 +63,13 @@ fn fog_honest_brain_beats_classic_from_either_seat() {
     let mut per_seat = [0u32; 2];
     for seat in [0u8, 1] {
         for seed in 42..62u64 {
-            if duel_seeded(seat, Dials::full(), seed) == Some(PlayerId(seat)) {
-                combined += 1;
-                per_seat[seat as usize] += 1;
+            match duel_seeded(seat, Dials::full(), seed) {
+                Some(winner) if winner == PlayerId(seat) => {
+                    combined += 1;
+                    per_seat[seat as usize] += 1;
+                }
+                Some(_) => {}
+                None => eprintln!("DIAG timeout seed {seed} seat {seat}"),
             }
         }
     }

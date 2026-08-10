@@ -627,6 +627,9 @@ impl Game {
                         }
                         oxide_sim::command::RejectReason::OutOfBounds => "outside the map",
                         oxide_sim::command::RejectReason::Eliminated => "you are eliminated",
+                        oxide_sim::command::RejectReason::MissingPrerequisite => {
+                            "needs its tech building first"
+                        }
                     };
                     self.toast(why);
                     self.sounds_pending.push((SoundKind::Denied, None));

@@ -183,15 +183,25 @@ pub(super) fn repair(
     let (anchor, kind) = (b.anchor, b.kind);
     let stats = kind.stats();
     let size = stats.size;
-    // The welding rate is the construction ramp; the unbuyable Foundry
-    // repairs on an authored ramp (and billing basis) of its own.
-    let (ramp_ticks, basis) = stats.construction.map_or(
+    // The welding rate is the construction ramp — except the Foundry,
+    // which keeps its authored ramp and billing basis: repairing the
+    // victory token stays the tuned defensive lever it always was, even
+    // now that expansions make Foundries purchasable at a price that
+    // would otherwise quadruple the weld bill.
+    let (ramp_ticks, basis) = if kind == crate::stats::BuildingKind::Foundry {
         (
             crate::stats::FOUNDRY_REPAIR_TICKS,
             crate::stats::FOUNDRY_REPAIR_PRICE,
-        ),
-        |c| (c.build_ticks, c.cost),
-    );
+        )
+    } else {
+        stats.construction.map_or(
+            (
+                crate::stats::FOUNDRY_REPAIR_TICKS,
+                crate::stats::FOUNDRY_REPAIR_PRICE,
+            ),
+            |c| (c.build_ticks, c.cost),
+        )
+    };
     let tile = state.unit(id).expect("caller checked").tile();
     if tile_adjacent_to_rect(tile, anchor, size) {
         // Billing derives entirely from the welder's own tick meter:
@@ -1139,13 +1149,13 @@ fn deliver(
 ) {
     let unit = state.unit(id).expect("caller checked");
     let (tile, me, carrying) = (unit.tile(), unit.player, unit.carrying);
-    let foundries = foundries_by_distance(state, id);
-    let at_foundry = foundries.iter().any(|foundry_id| {
+    let drop_offs = drop_offs_by_distance(state, id);
+    let at_drop_off = drop_offs.iter().any(|foundry_id| {
         state.building(*foundry_id).is_some_and(|foundry| {
             tile_adjacent_to_rect(tile, foundry.anchor, foundry.kind.stats().size)
         })
     });
-    if at_foundry {
+    if at_drop_off {
         let unit = state.unit_mut(id).expect("caller checked");
         unit.carrying = 0;
         unit.progress = 0;
@@ -1172,8 +1182,8 @@ fn deliver(
     }
 
     let mut danger_blocked = false;
-    for foundry_id in foundries {
-        let foundry = state.building(foundry_id).expect("collected live Foundry");
+    for foundry_id in drop_offs {
+        let foundry = state.building(foundry_id).expect("collected live drop-off");
         let (anchor, size) = (foundry.anchor, foundry.kind.stats().size);
         match approach_safe_rect(state, danger, id, anchor, size) {
             SafeApproach::Moving => return,
@@ -1207,17 +1217,19 @@ fn retire(state: &mut State, danger: &GroundSalvageDanger, id: UnitId, events: &
         return;
     }
     let tile = state.unit(id).expect("caller checked").tile();
-    let foundries = foundries_by_distance(state, id);
-    if foundries.iter().any(|foundry_id| {
-        let foundry = state.building(*foundry_id).expect("collected live Foundry");
+    let drop_offs = drop_offs_by_distance(state, id);
+    if drop_offs.iter().any(|foundry_id| {
+        let foundry = state
+            .building(*foundry_id)
+            .expect("collected live drop-off");
         tile_adjacent_to_rect(tile, foundry.anchor, foundry.kind.stats().size)
     }) {
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     }
     let mut danger_blocked = false;
-    for foundry_id in foundries {
-        let foundry = state.building(foundry_id).expect("collected live Foundry");
+    for foundry_id in drop_offs {
+        let foundry = state.building(foundry_id).expect("collected live drop-off");
         let (anchor, size) = (foundry.anchor, foundry.kind.stats().size);
         match approach_safe_rect(state, danger, id, anchor, size) {
             SafeApproach::Moving => return,
@@ -1239,23 +1251,26 @@ fn retire(state: &mut State, danger: &GroundSalvageDanger, id: UnitId, events: &
     });
 }
 
-fn foundries_by_distance(state: &State, id: UnitId) -> Vec<BuildingId> {
+/// The player's completed drop-off structures, nearest first. The one
+/// funnel deliveries and retirement consult — a kind joins the drop-off
+/// network by answering [`crate::stats::BuildingKind::is_drop_off`].
+fn drop_offs_by_distance(state: &State, id: UnitId) -> Vec<BuildingId> {
     let unit = state.unit(id).expect("caller checked");
-    let mut foundries: Vec<(chassis::fx::Fx, BuildingId)> = state
+    let mut drop_offs: Vec<(chassis::fx::Fx, BuildingId)> = state
         .buildings
         .iter()
         .filter(|building| {
             building.player == unit.player
                 && building.hp > 0
                 && building.built
-                && building.kind == crate::stats::BuildingKind::Foundry
+                && building.kind.is_drop_off()
         })
         .map(|building| (unit.pos.dist_sq(building.center()), building.id))
         .collect();
-    foundries.sort_unstable();
-    foundries
+    drop_offs.sort_unstable();
+    drop_offs
         .into_iter()
-        .map(|(_, foundry_id)| foundry_id)
+        .map(|(_, drop_off_id)| drop_off_id)
         .collect()
 }
 

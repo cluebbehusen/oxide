@@ -104,9 +104,9 @@ const SHOWCASE_MAP: [&str; 30] = [
     "#..............................................#",
     "#..............................................#",
     "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
-    "#..............................................#",
+    "#.........................~~~~~................#",
+    "#.........................~~~~~................#",
+    "#.........................~~~~~................#",
     "#..............................................#",
     "#..............................................#",
     "#..............................................#",
@@ -285,7 +285,7 @@ fn showcase_scenario() -> (Scenario, Cast) {
         seed: 20_130,
         map: SHOWCASE_MAP.iter().map(|r| (*r).to_string()).collect(),
         players: vec![
-            seat("West Ferrous", Faction::Ferrous, 100),
+            seat("West Ferrous", Faction::Ferrous, 500),
             seat("East Cupric", Faction::Cupric, 2000),
             seat("South Ferrous", Faction::Ferrous, 100),
         ],
@@ -328,6 +328,37 @@ fn walk(player: u8, units: Vec<UnitId>, x: i32, y: i32) -> PlayerCommand {
     }
 }
 
+/// The tick the construction yard founds its seven scaffolds. Late
+/// enough that abandonment decay (one hp per SITE_DECAY_PERIOD) cannot
+/// finish off even the frailest site before the picture is taken.
+const YARD_FOUNDS: u64 = 200;
+
+/// Seven sites, founded and then abandoned: the builder's order is
+/// replaced each time, but the ground is claimed on placement.
+fn yard_orders(cast: &Cast) -> Vec<PlayerCommand> {
+    [
+        (BuildingKind::Turret, 33, 23),
+        (BuildingKind::FlakTurret, 35, 23),
+        (BuildingKind::Array, 37, 23),
+        (BuildingKind::Reclaimer, 39, 23),
+        (BuildingKind::Fabricator, 32, 25),
+        (BuildingKind::Bastion, 38, 25),
+        (BuildingKind::RepairBay, 41, 25),
+    ]
+    .into_iter()
+    .map(|(kind, x, y)| PlayerCommand {
+        player: PlayerId(1),
+        command: Command::Build {
+            units: vec![cast.builder],
+            kind,
+            anchor: TilePos::new(x, y),
+            queue: false,
+            defer: false,
+        },
+    })
+    .collect()
+}
+
 /// The opening orders: dig, found, and pair every machine off against one
 /// it can actually shoot.
 fn opening_orders(cast: &Cast) -> Vec<PlayerCommand> {
@@ -339,29 +370,19 @@ fn opening_orders(cast: &Cast) -> Vec<PlayerCommand> {
             queue: false,
         },
     }];
-    // Seven sites, founded and then abandoned: the builder's order is
-    // replaced each time, but the ground is claimed on placement.
-    for (kind, x, y) in [
-        (BuildingKind::Turret, 33, 23),
-        (BuildingKind::FlakTurret, 35, 23),
-        (BuildingKind::Array, 37, 23),
-        (BuildingKind::Reclaimer, 39, 23),
-        (BuildingKind::Fabricator, 32, 25),
-        (BuildingKind::Bastion, 38, 25),
-        (BuildingKind::RepairBay, 41, 25),
-    ] {
-        commands.push(PlayerCommand {
-            player: PlayerId(1),
-            command: Command::Build {
-                units: vec![cast.builder],
-                kind,
-                anchor: TilePos::new(x, y),
-                queue: false,
-                defer: false,
-            },
-        });
-    }
-
+    // Seat 0's Foundry expansion: the 0.15 buildable base, founded by a
+    // crew harvester behind the standing Fabricator's tech gate. Its
+    // builder stays on the site, so it renders as attended construction.
+    commands.push(PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Build {
+            units: vec![cast.crew[1]],
+            kind: BuildingKind::Foundry,
+            anchor: TilePos::new(9, 5),
+            queue: false,
+            defer: false,
+        },
+    });
     let (w, e) = (&cast.west, &cast.east);
     // Every machine that must show a health bar gets a shooter one slot
     // away that covers its movement domain; the harvesters take fire and
@@ -412,9 +433,11 @@ fn showcase_state() -> State {
     for tick in 0..SHOWCASE_TICKS {
         let commands = match tick {
             0 => opening_orders(&cast),
-            // Calling the builder off leaves all seven sites orphaned at a
-            // fifth of their hp — scaffolding, for as long as we like.
-            1 => vec![PlayerCommand {
+            // The construction yard founds late and is then abandoned:
+            // orphaned scaffolds decay now, and the frailest (the Array,
+            // a fifth of 250 hp) must still be standing at the picture.
+            t if t == YARD_FOUNDS => yard_orders(&cast),
+            t if t == YARD_FOUNDS + 1 => vec![PlayerCommand {
                 player: PlayerId(1),
                 command: Command::Stop {
                     units: vec![cast.builder],
@@ -465,7 +488,7 @@ fn showcase_covers_every_rendered_feature() {
         state.result().is_none(),
         "the showcase pictures a live match; a decided one freezes production"
     );
-    for terrain in [Terrain::Ground, Terrain::Rock, Terrain::Peak] {
+    for terrain in [Terrain::Ground, Terrain::Rock, Terrain::Peak, Terrain::Pit] {
         assert!(
             tiles().any(|t| t.terrain == terrain),
             "no {terrain:?} tile on the showcase map"
@@ -507,8 +530,8 @@ fn showcase_covers_every_rendered_feature() {
             state.buildings().iter().any(|b| b.kind == kind && b.built),
             "no standing {kind:?}"
         );
-        // The Foundry is placed, never constructed, so it has no site
-        // form to draw. Anything the build palette offers must show one.
+        // Anything constructible must show a site form — the Foundry
+        // included, now that expansions are buildable.
         assert_eq!(
             kind.stats().construction.is_some(),
             state.buildings().iter().any(|b| b.kind == kind && !b.built),

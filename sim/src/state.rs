@@ -475,17 +475,10 @@ impl State {
                 && building.built
                 && building.kind == BuildingKind::Reclaimer
         });
-        let baseline = self.tick.saturating_add(1) >= crate::stats::FOUNDRY_BASELINE_START_TICK;
-        let seat = self.player(player);
-        let target = if seat.recovery_ready {
-            self.recovery_package_target(player)
-        } else {
-            u32::from(seat.recovery_target)
-        };
-        let emergency = self.harvester_recovery_needed(player)
-            && seat.scrap < target
-            && (seat.recovery_ready || seat.recovery_allowance > 0);
-        reclaimer || baseline || emergency
+        // The Foundry drip runs from tick zero, so any seat that passed
+        // the completed-Foundry check above always has passive income.
+        let _ = reclaimer;
+        true
     }
 
     /// Whether a living Foundry owns neither a live Harvester nor a prepaid
@@ -765,9 +758,6 @@ impl State {
                 return Err(E::ForeignBuildingOwner(b.id));
             }
             let stats = b.kind.stats();
-            if !b.built && stats.construction.is_none() {
-                return Err(E::UnconstructibleSite(b.id));
-            }
             if b.hp == 0 || b.hp > stats.max_hp {
                 return Err(E::BuildingHpOutOfRange(b.id));
             }
@@ -1191,6 +1181,9 @@ impl State {
         if kind.stats().construction.is_none() {
             return Some(PlaceRefusal::NotConstructible);
         }
+        if !self.prerequisites_met(player, kind) {
+            return Some(PlaceRefusal::Prerequisite);
+        }
         let (w, h) = kind.stats().size;
         for dy in 0..h {
             for dx in 0..w {
@@ -1222,6 +1215,24 @@ impl State {
                 }
         });
         hostile_in_footprint.then_some(PlaceRefusal::Unit)
+    }
+
+    /// Whether `player` owns a completed building of every kind that
+    /// `kind`'s construction requires — the tech tree's construction
+    /// gate, shared verbatim by command validation, the armed placement
+    /// ghost, and every bot. An unconstructible kind trivially passes
+    /// (its own refusal arm answers first).
+    pub fn prerequisites_met(&self, player: PlayerId, kind: BuildingKind) -> bool {
+        kind.stats().construction.is_none_or(|construction| {
+            construction.requires.iter().all(|required| {
+                self.buildings.iter().any(|building| {
+                    building.player == player
+                        && building.hp > 0
+                        && building.built
+                        && building.kind == *required
+                })
+            })
+        })
     }
 
     /// Whether `player` may *intend* to build `kind` at `anchor` — the
@@ -1263,6 +1274,9 @@ impl State {
     ) -> Option<PlaceRefusal> {
         if kind.stats().construction.is_none() {
             return Some(PlaceRefusal::NotConstructible);
+        }
+        if !self.prerequisites_met(player, kind) {
+            return Some(PlaceRefusal::Prerequisite);
         }
         let vision = self.vision(player);
         let my_team = self.players[player.0 as usize].team;
@@ -1486,6 +1500,8 @@ pub enum PlaceRefusal {
     /// A hostile machine holds a footprint tile (friendly machines
     /// make way instead of blocking).
     Unit,
+    /// The owner has not completed the kind's required tech buildings.
+    Prerequisite,
 }
 
 #[cfg(test)]
@@ -1714,8 +1730,6 @@ pub enum StateIntegrityError {
     #[error("building {0} is owned by a player outside the table")]
     ForeignBuildingOwner(BuildingId),
     /// An unfinished building kind has no construction definition.
-    #[error("building {0} is unfinished but its kind cannot be constructed")]
-    UnconstructibleSite(BuildingId),
     /// A building's hit points sit outside `(0, max_hp]`.
     #[error("building {0} carries hit points its kind cannot hold")]
     BuildingHpOutOfRange(BuildingId),

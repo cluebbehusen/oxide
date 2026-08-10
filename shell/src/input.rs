@@ -1292,6 +1292,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                         "can't build there: an enemy machine is holding that ground"
                     }
                     PlaceRefusal::NotConstructible => "that can't be built",
+                    PlaceRefusal::Prerequisite => "can't build that yet: needs its tech building",
                 });
                 game.sounds_pending
                     .push((crate::game::SoundKind::Denied, None));

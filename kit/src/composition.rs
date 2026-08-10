@@ -933,7 +933,7 @@ mod tests {
                 },
                 SeatEconomy {
                     resigned: false,
-                    recovery_income_active: false,
+                    recovery_income_active: true,
                     bank_scrap: 150,
                     living_harvesters: 3,
                     queued_harvesters: 0,
@@ -992,8 +992,8 @@ mod tests {
             "a stranded seat with a living Foundry has fast automatic recovery"
         );
         assert!(
-            !m.final_economy.seats[1].recovery_income_active,
-            "an ordinary early-game harvest line has no automatic income"
+            m.final_economy.seats[1].recovery_income_active,
+            "the Foundry drip means every unresigned Foundry seat reports passive income"
         );
     }
 
@@ -1038,11 +1038,11 @@ mod tests {
         let scenario = Scenario::skirmish();
         let m = sample_driven(
             &scenario,
-            oxide_sim::stats::FOUNDRY_BASELINE_START_TICK,
+            oxide_sim::stats::FOUNDRY_DRIP_START_TICK,
             20,
             |state| state.tick(&[]),
         )
-        .expect("samples the Foundry's baseline credit");
+        .expect("samples the Foundry's drip credit");
         assert_eq!(m.activity.last_economy_tick, 0);
         assert_eq!(m.activity.deliveries, 0);
         assert_eq!(m.activity.units_trained, 0);
@@ -1051,7 +1051,7 @@ mod tests {
                 .seats
                 .iter()
                 .all(|seat| seat.recovery_income_active),
-            "the Rust economy reports the late Foundry baseline without Python constants"
+            "the Rust economy reports the Foundry drip without Python constants"
         );
     }
 

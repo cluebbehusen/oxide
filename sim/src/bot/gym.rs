@@ -850,13 +850,7 @@ impl GymBot {
             .my_buildings
             .iter()
             .filter(|building| !building.built)
-            .map(|building| {
-                building
-                    .kind
-                    .stats()
-                    .construction
-                    .map_or(0, |construction| i64::from(construction.cost))
-            })
+            .map(|building| feature_price(building.kind))
             .sum::<i64>();
         let my_unit_health_value = obs
             .my_units
@@ -870,12 +864,7 @@ impl GymBot {
             .my_buildings
             .iter()
             .filter(|b| b.built)
-            .filter_map(|b| {
-                b.kind.stats().construction.map(|construction| {
-                    i64::from(construction.cost) * i64::from(b.hp)
-                        / i64::from(b.kind.stats().max_hp)
-                })
-            })
+            .map(|b| feature_price(b.kind) * i64::from(b.hp) / i64::from(b.kind.stats().max_hp))
             .sum::<i64>();
         let hostile_fighters_near_home = home.map_or(0, |home| {
             obs.enemy_units
@@ -985,12 +974,7 @@ impl GymBot {
             obs.my_buildings
                 .iter()
                 .filter(|b| b.built)
-                .map(|b| {
-                    b.kind
-                        .stats()
-                        .construction
-                        .map_or(0i64, |c| i64::from(c.cost))
-                })
+                .map(|b| feature_price(b.kind))
                 .sum::<i64>(),
             // v6: scrap locked in own ground wounds — what RepairUnit
             // recovers and what a Repair Bay amortizes against.
@@ -3964,6 +3948,21 @@ fn defense_threats(obs: &Observation, kind: BuildingKind) -> Vec<(Point2, i64)> 
         );
     }
     threats
+}
+
+/// A building's price for the value-aggregate features (standing stock,
+/// health value, site value). The Foundry prices as ZERO even now that
+/// it is purchasable: the shipped v8 policy trained when Foundry
+/// construction did not exist, and these aggregates must keep that
+/// input distribution until the gym v9 feature redesign re-prices the
+/// world coherently for the retrain.
+fn feature_price(kind: BuildingKind) -> i64 {
+    if kind == BuildingKind::Foundry {
+        return 0;
+    }
+    kind.stats()
+        .construction
+        .map_or(0, |construction| i64::from(construction.cost))
 }
 
 fn protected_points(obs: &Observation, kind: BuildingKind) -> Vec<(Point2, i64)> {

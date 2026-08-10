@@ -742,7 +742,17 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
         std::fs::remove_file(&out).ok();
         assert_eq!(payload["schema"], 7);
-        assert!(payload["overall"]["matches"].as_u64().unwrap() >= 25);
+        // One match per shipped map: the roster is mid-rework for 0.15,
+        // so the floor tracks the roster instead of pinning a count.
+        let shipped = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../scenarios"))
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .is_ok_and(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+            })
+            .count() as u64;
+        assert!(payload["overall"]["matches"].as_u64().unwrap() >= shipped);
         // Nothing decides in 40 ticks, so the diagnostic decided cohort
         // is empty — which consumers must be able to see, not infer.
         assert_eq!(payload["decided"]["seats"], 0);
@@ -774,7 +784,10 @@ mod tests {
                 "{cohort} cohort is reported"
             );
         }
-        assert_eq!(payload["cohorts"]["faction"]["ferrous"]["capped"], 25);
+        assert_eq!(
+            payload["cohorts"]["faction"]["ferrous"]["capped"], shipped,
+            "every map's single probe match caps at 40 ticks"
+        );
         let first = &payload["matches"][0];
         assert!(first["capped"].as_bool().unwrap() && first["result"].is_null());
         assert!(first["last_progress_tick"].as_u64().unwrap() > 0);

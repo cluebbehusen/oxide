@@ -647,6 +647,13 @@ fn apply_build(
         }
         return (landed > 0).then_some(()).ok_or(RejectReason::QueueFull);
     }
+    // Tech gating answers before site questions, with its own reason —
+    // "you can't build this yet" and "not there" are different words.
+    // Resuming an existing site above deliberately skips this: losing
+    // the Fabricator does not orphan work already claimed.
+    if !state.prerequisites_met(player, kind) {
+        return Err(RejectReason::MissingPrerequisite);
+    }
     if defer {
         // The deferred mode: validate against the issuer's KNOWLEDGE,
         // then hand out intent. No site, no charge, no route demand —

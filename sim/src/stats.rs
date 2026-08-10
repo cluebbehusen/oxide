@@ -242,6 +242,10 @@ pub struct ConstructionStats {
     pub cost: u32,
     /// Builder-adjacent ticks from site to standing building.
     pub build_ticks: u32,
+    /// Building kinds the owner must have COMPLETED before placing this
+    /// one — the tech tree's construction gate, identical for humans
+    /// and bots. Empty means always available.
+    pub requires: &'static [BuildingKind],
 }
 
 /// A production role: the slot a unit fills in a roster, independent of
@@ -620,7 +624,17 @@ const FOUNDRY: BuildingStats = BuildingStats {
     vision: 8,
     produces: &[UnitKind::Harvester, UnitKind::Sentinel],
     weapons: &[],
-    construction: None,
+    // 0.15: buildable — the expansion base and the comeback path. Gated
+    // on a Fabricator so a proxy Foundry is a committed tech play, and
+    // priced so its income drip alone never pays for it (~20 minutes;
+    // production, drop-off reach, and survivability are the reasons to
+    // build one). Victory counts sites too, so a dying main can be
+    // answered by ground already claimed.
+    construction: Some(ConstructionStats {
+        cost: 400,
+        build_ticks: 800,
+        requires: &[BuildingKind::Fabricator],
+    }),
 };
 
 const TURRET: BuildingStats = BuildingStats {
@@ -641,6 +655,7 @@ const TURRET: BuildingStats = BuildingStats {
     construction: Some(ConstructionStats {
         cost: 100,
         build_ticks: 300, // 15 s of builder attention
+        requires: &[],
     }),
 };
 
@@ -665,6 +680,7 @@ const FABRICATOR: BuildingStats = BuildingStats {
     construction: Some(ConstructionStats {
         cost: 120,
         build_ticks: 280, // 14 s — the tech window must fit inside the rush window
+        requires: &[],
     }),
 };
 
@@ -686,6 +702,7 @@ const FLAK_TURRET: BuildingStats = BuildingStats {
     construction: Some(ConstructionStats {
         cost: 90,
         build_ticks: 250,
+        requires: &[],
     }),
 };
 
@@ -707,6 +724,7 @@ const BASTION: BuildingStats = BuildingStats {
     construction: Some(ConstructionStats {
         cost: 250,
         build_ticks: 500,
+        requires: &[],
     }),
 };
 
@@ -719,6 +737,7 @@ const ARRAY: BuildingStats = BuildingStats {
     construction: Some(ConstructionStats {
         cost: 120,
         build_ticks: 300,
+        requires: &[],
     }),
 };
 
@@ -731,6 +750,7 @@ const RECLAIMER: BuildingStats = BuildingStats {
     construction: Some(ConstructionStats {
         cost: 150,
         build_ticks: 350,
+        requires: &[],
     }),
 };
 
@@ -743,6 +763,7 @@ const REPAIR_BAY: BuildingStats = BuildingStats {
     construction: Some(ConstructionStats {
         cost: 200,
         build_ticks: 350,
+        requires: &[],
     }),
 };
 
@@ -804,6 +825,13 @@ impl BuildingKind {
             BuildingKind::RepairBay => &REPAIR_BAY,
         }
     }
+
+    /// Whether harvesters can deliver their cargo here. The one funnel
+    /// every drop-off decision consults — deliveries, retirement homes,
+    /// and route planning alike.
+    pub const fn is_drop_off(self) -> bool {
+        matches!(self, BuildingKind::Foundry)
+    }
 }
 
 /// Scrap contained in a freshly parsed node tile.
@@ -851,19 +879,34 @@ pub const FOUNDRY_RECOVERY_PERIOD: u64 = 10;
 /// ground screen captures only the Harvester-sized deficit.
 pub const FOUNDRY_RECOVERY_RESERVE: u32 = SENTINEL.cost + HARVESTER.cost;
 
-/// Ticks per baseline scrap credited by a living player's Foundry.
+/// Ticks per scrap smelted by each standing, completed Foundry — the
+/// transparent income floor, running from tick zero.
 ///
-/// This is the economy's last-resort clock: exhausted nodes and a destroyed
-/// Reclaimer may make progress slow, but can never make the match
-/// unrecoverable. Credit is per player rather than per Foundry, so extra
-/// bases add resilience without multiplying the free income.
-pub const FOUNDRY_BASELINE_PERIOD: u64 = 60;
+/// This is the economy's guarantee: exhausted nodes, lost Reclaimers,
+/// and camped salvage can make progress slow, but never leave a seat
+/// with no income at all. Credit is per Foundry so expansion bases are
+/// worth their keep, but the rate is tuned so income alone never pays
+/// for one (20/min against a 400 cost: production, drop-off reach,
+/// and survivability are the reasons to expand). Watched in training
+/// telemetry for foundry-farm degeneracy; the fallback design is a
+/// flat per-player floor at this same period.
+pub const FOUNDRY_DRIP_PERIOD: u64 = 60;
 
-/// The baseline Foundry income begins only after the normal opening and
-/// midgame economy have had time to matter. Reclaimers remain the efficient
-/// insurance investment; this late floor exists only to make a long match
-/// recoverable.
-pub const FOUNDRY_BASELINE_START_TICK: u64 = 12_000;
+/// First completed tick eligible for the drip: a two-minute warm-up.
+/// The floor exists for mid- and late-game lockouts; openings stay
+/// exactly as tuned without it. Measured: a from-tick-zero drip handed
+/// the omniscient classic anchor a decisive edge over the fog-honest
+/// scripted brain (13/40 -> passing) purely on perfectly-converted
+/// early free scrap — the floor should never be an opening build order.
+pub const FOUNDRY_DRIP_START_TICK: u64 = 2_400;
+
+/// Ticks between decay steps on an unattended construction site (one hp
+/// per step, applied while no own harvest-capable machine stands beside
+/// the footprint). Sites count for survival exactly like standing
+/// Foundries, so abandoned scaffolds must rust away rather than keep a
+/// beaten seat technically alive forever — and an untended half-built
+/// anything is a melting asset, not a free land claim.
+pub const SITE_DECAY_PERIOD: u64 = 8;
 
 /// Per-mille of a building's cost billed per hp welded (against max_hp).
 /// The three economy verbs price strictly build > repair > salvage:
