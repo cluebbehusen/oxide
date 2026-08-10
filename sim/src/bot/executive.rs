@@ -133,6 +133,12 @@ pub enum Intent {
         /// Where the strike flies.
         target: TilePos,
     },
+    /// Lift a built own building one tier (the executive picks the
+    /// crew, exactly like a repair).
+    Upgrade {
+        /// The works to lift.
+        building: crate::ids::BuildingId,
+    },
 }
 
 /// Fraction of max hp below which a member is rotated out of its army.
@@ -476,6 +482,26 @@ impl Executive {
                         });
                     }
                 }
+                Intent::Upgrade { building } => {
+                    let anchor = obs
+                        .my_buildings
+                        .iter()
+                        .find(|b| b.id == *building)
+                        .map(|b| b.anchor);
+                    if let Some(anchor) = anchor
+                        && let Some(crew) = self.free_harvester(obs, anchor, &claimed)
+                    {
+                        claimed.push(crew);
+                        out.push(PlayerCommand {
+                            player: me,
+                            command: Command::UpgradeBuilding {
+                                units: vec![crew],
+                                building: *building,
+                                queue: false,
+                            },
+                        });
+                    }
+                }
                 Intent::Salvage { building } => {
                     let anchor = obs
                         .my_buildings
@@ -771,7 +797,9 @@ impl Executive {
             // never names; a new one belongs in this list too.
             let (anchor, patient) = match intent {
                 Intent::Build { anchor, .. } => (Some(*anchor), None),
-                Intent::Repair { building } | Intent::Salvage { building } => (
+                Intent::Repair { building }
+                | Intent::Salvage { building }
+                | Intent::Upgrade { building } => (
                     obs.my_buildings
                         .iter()
                         .find(|b| b.id == *building)

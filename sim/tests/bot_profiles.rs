@@ -26,6 +26,7 @@ fn named_config(style: Option<NamedStyle>) -> BotConfig {
         style,
         variant: None,
         team_role: None,
+        overseer: false,
     }
 }
 
@@ -304,6 +305,7 @@ fn an_exact_aggression_override_bypasses_named_dealing_exactly() {
         style: None,
         variant: None,
         team_role: Some(TeamRole::Generalist),
+        overseer: false,
     });
     let profile = resolve_bot_profiles(&scenario).unwrap()[1].unwrap();
     assert_eq!(profile.level, Level::Expert);
@@ -333,6 +335,7 @@ fn construction_time_profile_streams_do_not_shift_hesitation() {
         style: None,
         variant: None,
         team_role: None,
+        overseer: false,
     });
     let mut resolved_state = scenario.build().unwrap();
     let mut direct_state = resolved_state.clone();
@@ -492,6 +495,7 @@ fn command_behavior_in(
         style: Some(style),
         variant: Some(variant),
         team_role: Some(role),
+        overseer: false,
     });
     let profile = resolve_bot_profiles(&scenario).unwrap()[usize::from(player.0)]
         .expect("configured profile");

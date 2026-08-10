@@ -14,7 +14,8 @@
    "scrap": 150,
    "bot": true,
    "bot_config": {
-    "level": "medium"
+    "level": "medium",
+    "overseer": true
    }
   }
  ],

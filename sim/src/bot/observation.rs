@@ -87,6 +87,10 @@ pub struct BuildingObs {
     pub built: bool,
     /// Live sight right now (false = remembered ghost).
     pub seen: bool,
+    /// Upgrade-ladder rung (0 = base; ghosts report their last-seen
+    /// hull, which for now is always the base row).
+    #[serde(default)]
+    pub tier: u8,
 }
 
 /// Everything a policy gets. Same shape for both builders.
@@ -134,6 +138,10 @@ pub struct Observation {
     /// static, so once seen it is known forever). What placement and
     /// staging decisions steer around; sorted by (y, x).
     pub known_rock: Vec<TilePos>,
+    /// Derelict Extractor frame anchors on explored ground (all of
+    /// them, omnisciently). Frames are map facts and never move.
+    #[serde(default)]
+    pub known_frames: Vec<TilePos>,
     /// Explored peak terrain, also present in `known_rock`. This separate
     /// subset is what air routing and peak-blocked fire steer around while
     /// ordinary rock remains open sky. Sorted by (y, x).
@@ -226,6 +234,7 @@ impl Observation {
                     hp: b.hp,
                     built: b.built,
                     seen: true,
+                    tier: 0,
                 });
             } else {
                 obs.enemy_buildings.push(BuildingObs {
@@ -236,6 +245,7 @@ impl Observation {
                     hp: b.hp,
                     built: b.built,
                     seen: true,
+                    tier: 0,
                 });
             }
         }
@@ -248,6 +258,9 @@ impl Observation {
             }
             if tile.terrain.blocks_ground() {
                 obs.known_rock.push(pos);
+            }
+            if state.map().is_extractor_frame(pos) {
+                obs.known_frames.push(pos);
             }
             if tile.terrain.blocks_air() {
                 obs.known_peaks.push(pos);
@@ -298,6 +311,7 @@ impl Observation {
                     hp: b.hp,
                     built: b.built,
                     seen: true,
+                    tier: 0,
                 });
             } else if b.tiles().any(|t| vision.visible(t)) && state.building_apparent(me, b) {
                 obs.enemy_buildings.push(BuildingObs {
@@ -308,6 +322,7 @@ impl Observation {
                     hp: b.hp,
                     built: b.built,
                     seen: true,
+                    tier: 0,
                 });
             }
         }
@@ -331,6 +346,7 @@ impl Observation {
                     hp: ghost.hp,
                     built: ghost.built,
                     seen: false,
+                    tier: 0,
                 });
             }
         }
@@ -355,6 +371,9 @@ impl Observation {
             };
             if wreck > 0 {
                 obs.known_wrecks.push((pos, wreck));
+            }
+            if state.map().is_extractor_frame(pos) && vision.explored(pos) {
+                obs.known_frames.push(pos);
             }
             if tile.terrain.blocks_ground() && vision.explored(pos) {
                 obs.known_rock.push(pos);
@@ -395,6 +414,7 @@ impl Observation {
             explored: Vec::new(),
             known_scrap: Vec::new(),
             known_rock: Vec::new(),
+            known_frames: Vec::new(),
             known_peaks: Vec::new(),
             known_wrecks: Vec::new(),
             blips: Vec::new(),
@@ -453,5 +473,6 @@ fn own_building(b: &crate::state::Building) -> BuildingObs {
         hp: b.hp,
         built: b.built,
         seen: true,
+        tier: b.tier,
     }
 }

@@ -934,6 +934,7 @@ mod tests {
             style: Some(NamedStyle::Turtle),
             variant: Some(1),
             team_role: None,
+            overseer: false,
         });
         scenario.players[1].bot_config = Some(BotConfig {
             level: Level::Medium,
@@ -941,6 +942,7 @@ mod tests {
             style: Some(NamedStyle::Balanced),
             variant: Some(2),
             team_role: None,
+            overseer: false,
         });
         configure_named_pair(&mut scenario, [Level::Hard; 2]);
         let dealt = resolve_named_pair(&scenario).unwrap();

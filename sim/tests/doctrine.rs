@@ -27,6 +27,7 @@ fn obs_base() -> Observation {
         explored: vec![true; 24 * 13],
         known_scrap: Vec::new(),
         known_rock: Vec::new(),
+        known_frames: Vec::new(),
         known_peaks: Vec::new(),
         known_wrecks: Vec::new(),
         blips: Vec::new(),
@@ -60,6 +61,7 @@ fn building_obs(id: u32, player: u8, kind: BuildingKind, x: i32, y: i32) -> Buil
         hp: kind.base_stats().max_hp,
         built: true,
         seen: true,
+        tier: 0,
     }
 }
 

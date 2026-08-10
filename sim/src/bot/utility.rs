@@ -79,10 +79,20 @@ pub struct Dials {
     pub air_harass: bool,
     /// Liquidate static defense when the war outlives the economy.
     pub salvage: bool,
+    /// Climb the 0.15 tree: Airworks after the Fabricator, Crucible
+    /// after that, and tier-three metal once the Crucible stands.
+    pub deep_tech: bool,
+    /// Restore derelict Extractor frames when known and affordable.
+    pub extractors: bool,
+    /// Lift Reclaimers and Turrets one rung when the bank runs rich.
+    pub upgrades: bool,
 }
 
 impl Dials {
-    /// Everything on: the full-strength scripted commander.
+    /// Everything the LEGACY commander had on. The 0.15 channels stay
+    /// off here on purpose: the frozen ladder tiers and gym parity
+    /// fixtures were measured against this exact commander, and their
+    /// behavior must not drift underneath them.
     pub fn full() -> Self {
         Self {
             cadence: 8,
@@ -98,6 +108,22 @@ impl Dials {
             repair: true,
             air_harass: true,
             salvage: true,
+            deep_tech: false,
+            extractors: false,
+            upgrades: false,
+        }
+    }
+
+    /// The Overseer: the full commander with the 0.15 tree switched
+    /// on — deep tech, extractor restoration, and tier upgrades. The
+    /// playtest opponent that actually uses the new game.
+    pub fn overseer() -> Self {
+        Self {
+            deep_tech: true,
+            extractors: true,
+            upgrades: true,
+            harvester_target: 5,
+            ..Self::full()
         }
     }
 
@@ -438,6 +464,48 @@ impl UtilityPolicy {
             |kind: UnitKind| -> usize { obs.my_units.iter().filter(|u| u.kind == kind).count() };
         let harvesters = alive(UnitKind::Harvester) + queued(UnitKind::Harvester);
 
+        // The Overseer's heavy metal: one Warden per think from the
+        // Fabricator once it stands, and one Breaker whenever the
+        // Crucible is idle and the bank can take it. Deliberately ahead
+        // of the legacy drip so tier-two walks the field before another
+        // sentinel does.
+        if dials.deep_tech {
+            let crucible = obs
+                .my_buildings
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| b.kind == BuildingKind::Crucible && b.built)
+                .min_by_key(|(_, b)| b.id);
+            if let Some((qi, crucible)) = crucible
+                && obs.my_queues[qi].is_empty()
+                && alive(UnitKind::Breaker) + queued(UnitKind::Breaker) < 2
+                && *budget >= UnitKind::Breaker.stats().cost + TECH_RESERVE
+            {
+                *budget -= UnitKind::Breaker.stats().cost;
+                intents.push(Intent::TrainAt {
+                    building: crucible.id,
+                    kind: UnitKind::Breaker,
+                });
+            }
+            let fabricator = obs
+                .my_buildings
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| b.kind == BuildingKind::Fabricator && b.built)
+                .min_by_key(|(_, b)| b.id);
+            if let Some((qi, fabricator)) = fabricator
+                && obs.my_queues[qi].len() < 2
+                && alive(UnitKind::Warden) + queued(UnitKind::Warden) < 4
+                && *budget >= UnitKind::Warden.stats().cost + UnitKind::Harvester.stats().cost
+            {
+                *budget -= UnitKind::Warden.stats().cost;
+                intents.push(Intent::TrainAt {
+                    building: fabricator.id,
+                    kind: UnitKind::Warden,
+                });
+            }
+        }
+
         let foundry = obs
             .my_buildings
             .iter()
@@ -554,6 +622,99 @@ impl UtilityPolicy {
     }
 
     /// Construction channel: orphaned sites first (paid-for progress must
+    /// The Overseer's 0.15 ladder: restore a known frame, then raise the
+    /// Airworks, then the Crucible, then lift a Reclaimer or Turret one
+    /// rung — one act per think, each gated on a healthy bank so the
+    /// army channels never starve. Returns true when it spent the think.
+    fn overseer_construction(
+        &mut self,
+        dials: &Dials,
+        obs: &Observation,
+        home: TilePos,
+        budget: &mut u32,
+        intents: &mut Vec<Intent>,
+    ) -> bool {
+        let have = |kind: BuildingKind| obs.my_buildings.iter().any(|b| b.kind == kind);
+        let have_built =
+            |kind: BuildingKind| obs.my_buildings.iter().any(|b| b.kind == kind && b.built);
+        // Restoring a frame is the cheapest, highest-yield act on the
+        // board: take the nearest known unclaimed frame.
+        if dials.extractors {
+            let cost = BuildingKind::Extractor
+                .base_stats()
+                .construction
+                .map(|c| c.cost)
+                .unwrap_or(0);
+            if *budget >= cost + TECH_RESERVE {
+                // A frame's anchor is FIXED, so it must never enter the
+                // pending/dead blacklists: one think whose builders were
+                // all claimed elsewhere would poison the only anchor the
+                // Extractor can ever have. The intent simply re-issues
+                // until a standing site claims the frame.
+                let claimed = |anchor: TilePos| {
+                    obs.my_buildings.iter().any(|b| b.anchor == anchor)
+                        || obs.enemy_buildings.iter().any(|b| b.anchor == anchor)
+                };
+                let frame = obs
+                    .known_frames
+                    .iter()
+                    .filter(|f| !claimed(**f))
+                    .min_by_key(|f| (f.chebyshev(home), f.y, f.x))
+                    .copied();
+                if let Some(anchor) = frame {
+                    *budget -= cost;
+                    intents.push(Intent::Build {
+                        kind: BuildingKind::Extractor,
+                        anchor,
+                    });
+                    return true;
+                }
+            }
+        }
+        if dials.deep_tech && have_built(BuildingKind::Fabricator) {
+            for kind in [BuildingKind::Airworks, BuildingKind::Crucible] {
+                if have(kind) {
+                    continue;
+                }
+                let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
+                if *budget >= cost + TECH_RESERVE
+                    && let Some(anchor) = self.placement_near(obs, kind, home)
+                {
+                    *budget -= cost;
+                    self.pending_sites.push(anchor);
+                    intents.push(Intent::Build { kind, anchor });
+                    return true;
+                }
+                // The next rung waits until this one is affordable.
+                return false;
+            }
+        }
+        if dials.upgrades {
+            for (kind, tier) in [(BuildingKind::Reclaimer, 0), (BuildingKind::Turret, 0)] {
+                let Some(upgrade) = kind.upgrade_from(tier) else {
+                    continue;
+                };
+                if upgrade.requires.iter().any(|req| !have_built(*req)) {
+                    continue;
+                }
+                if *budget < upgrade.cost + TECH_RESERVE {
+                    continue;
+                }
+                let target = obs
+                    .my_buildings
+                    .iter()
+                    .filter(|b| b.kind == kind && b.built && b.tier == tier)
+                    .min_by_key(|b| (b.anchor.y, b.anchor.x));
+                if let Some(b) = target {
+                    *budget -= upgrade.cost;
+                    intents.push(Intent::Upgrade { building: b.id });
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// not strand), then the Fabricator, then a turret answer to raids.
     /// One build per think.
     fn construction(
@@ -575,6 +736,13 @@ impl UtilityPolicy {
                 kind: site.kind,
                 anchor: site.anchor,
             });
+            return;
+        }
+
+        // The 0.15 climb: one rung per think, cheapest gate first.
+        if (dials.deep_tech || dials.extractors || dials.upgrades)
+            && self.overseer_construction(dials, obs, home, budget, intents)
+        {
             return;
         }
 
@@ -1348,6 +1516,7 @@ mod tests {
             explored: vec![true; 32 * 20],
             known_scrap: Vec::new(),
             known_rock: Vec::new(),
+            known_frames: Vec::new(),
             known_peaks: Vec::new(),
             known_wrecks: Vec::new(),
             blips: Vec::new(),

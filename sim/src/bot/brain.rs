@@ -39,6 +39,13 @@ impl Brain {
         Self::with_doctrine(player, scenario_seed, tier.dials(), tier.doctrine())
     }
 
+    /// The Overseer: the scripted commander with the whole 0.15 tree
+    /// switched on — the tech-climbing playtest opponent and the
+    /// yardstick the retrained ladder must answer to.
+    pub fn overseer(player: PlayerId, scenario_seed: u64) -> Self {
+        Self::new(player, scenario_seed, Dials::overseer())
+    }
+
     fn with_doctrine(
         player: PlayerId,
         scenario_seed: u64,

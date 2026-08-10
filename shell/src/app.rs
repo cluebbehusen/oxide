@@ -156,6 +156,7 @@ fn launch(draft: &NewMatchDraft) -> Result<Game> {
                 style: screens::wizard::personality_style(plan.personality_choice),
                 variant: None,
                 team_role: None,
+                overseer: false,
             })
         } else {
             None

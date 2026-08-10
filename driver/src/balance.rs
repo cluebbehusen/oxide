@@ -169,6 +169,7 @@ pub fn balance_probe(
                 style: dials.style,
                 variant: dials.variant,
                 team_role: None,
+                overseer: false,
             });
         }
         let m = match (dials.scripted, &net) {
@@ -621,6 +622,7 @@ mod tests {
                 style: Some(NamedStyle::Turtle),
                 variant: Some(1),
                 team_role: None,
+                overseer: false,
             });
         }
         let profiles = resolve_bot_profiles(&scenario).unwrap();

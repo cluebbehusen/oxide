@@ -195,7 +195,8 @@ impl Orientation {
                 | Intent::RecallArmy { .. }
                 | Intent::Repair { .. }
                 | Intent::Salvage { .. }
-                | Intent::RepairUnit { .. }) => keep,
+                | Intent::RepairUnit { .. }
+                | Intent::Upgrade { .. }) => keep,
             })
             .collect()
     }

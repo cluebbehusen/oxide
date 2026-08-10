@@ -61,6 +61,8 @@ pub enum SeatBot {
     Classic(Box<Bot>),
     /// The shipped ladder network.
     Neural(Box<NeuralBot>),
+    /// The Overseer: the scripted commander with the 0.15 tree on.
+    Overseer(Box<Brain>),
 }
 
 impl SeatBot {
@@ -69,6 +71,7 @@ impl SeatBot {
         match self {
             SeatBot::Classic(b) => b.act(state),
             SeatBot::Neural(b) => b.act(state),
+            SeatBot::Overseer(b) => b.act(state),
         }
     }
 
@@ -77,6 +80,7 @@ impl SeatBot {
         match self {
             SeatBot::Classic(b) => b.player(),
             SeatBot::Neural(b) => b.player(),
+            SeatBot::Overseer(b) => b.player(),
         }
     }
 }
@@ -92,7 +96,10 @@ pub fn seat_bots(scenario: &crate::Scenario) -> Vec<SeatBot> {
         .filter(|(_, p)| p.bot)
         .map(|(i, p)| {
             let player = crate::ids::PlayerId(i as u8);
-            match p.bot_config {
+            match &p.bot_config {
+                Some(config) if config.overseer => {
+                    SeatBot::Overseer(Box::new(Brain::overseer(player, scenario.seed)))
+                }
                 Some(_) => {
                     let profile = profiles[i].expect("a configured bot resolves a profile");
                     SeatBot::Neural(Box::new(NeuralBot::ladder_resolved(

@@ -149,6 +149,7 @@ pub fn all_bots(scenario: &mut Scenario) {
             style: None,
             variant: None,
             team_role: None,
+            overseer: false,
         });
     }
 }

@@ -59,6 +59,7 @@ fn compute_hashes() -> BTreeMap<String, String> {
                             style: None,
                             variant: None,
                             team_role: None,
+                            overseer: false,
                         });
                     }
                     let outcome = runner::run_scenario(&scenario, FIXTURE_TICKS, true, false)

@@ -333,6 +333,7 @@ mod lowering_rules {
             explored: vec![true; 32 * 20],
             known_scrap: Vec::new(),
             known_rock: Vec::new(),
+            known_frames: Vec::new(),
             known_peaks: Vec::new(),
             known_wrecks: Vec::new(),
             blips: Vec::new(),
