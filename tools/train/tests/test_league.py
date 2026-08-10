@@ -839,16 +839,19 @@ def test_default_evaluation_rotates_through_rust_canonical_profiles() -> None:
                 "dict[int, tuple[int, ...]]",
                 reset["conditions"],
             )
-            for conditioned_seat, faction in ((0, "ferrous"), (1, "cupric")):
-                assert conditions[conditioned_seat] == (
-                    worker.profile_catalog.condition(
-                        profile.style,
-                        profile.variant,
-                        worker.profile_catalog.default_role,
-                        faction,
-                    )
+            # The wire requires conditions to name exactly the
+            # controlled seats; the scripted opponent takes none.
+            assert set(conditions) == {seat}
+            faction = "ferrous" if seat == 0 else "cupric"
+            assert conditions[seat] == (
+                worker.profile_catalog.condition(
+                    profile.style,
+                    profile.variant,
+                    worker.profile_catalog.default_role,
+                    faction,
                 )
-                assert any(conditions[conditioned_seat][7:])
+            )
+            assert any(conditions[seat][7:])
 
 
 class TestPerEpisodeAggressionSampling:

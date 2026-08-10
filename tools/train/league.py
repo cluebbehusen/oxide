@@ -2102,7 +2102,12 @@ def evaluate(
             if opponent == "rusher":
                 frame = w.reset(seed, control=(0, 1), conditions=straight)
             else:
-                frame = w.reset(seed, control=(seat,), conditions=straight)
+                # The scripted opponent consumes no neural conditions;
+                # the wire requires conditions to name exactly the
+                # controlled seats.
+                frame = w.reset(
+                    seed, control=(seat,), conditions={seat: straight[seat]}
+                )
             live.append((i, seat, frame))
         while live:
             still = []
@@ -2735,7 +2740,7 @@ def main() -> None:
             flat = (
                 obs_b.reshape(-1, NET_FEATURES)[rows],
                 mask_b.reshape(-1, ACTIONS)[rows],
-                act_b.reshape(-1, 3)[rows],
+                act_b.reshape(-1, len(ACTION_HEADS))[rows],
                 logp_b.reshape(-1)[rows],
                 adv.reshape(-1)[rows],
                 ret.reshape(-1)[rows],
