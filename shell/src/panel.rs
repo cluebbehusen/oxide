@@ -237,6 +237,9 @@ pub fn unit_flavor(kind: UnitKind) -> &'static str {
         UnitKind::Breaker => "Tier-three assault walker built to crack fortress lines.",
         UnitKind::Avalanche => "Tier-three rocket battery: extreme reach, blind up close.",
         UnitKind::Skyhook => "Air transport: carries ground machines across anything.",
+        UnitKind::Sapper => {
+            "Walking charge: detonates against its target; devastating to structures."
+        }
     }
 }
 
@@ -261,6 +264,11 @@ pub fn building_flavor(kind: BuildingKind) -> &'static str {
         BuildingKind::Airworks => "Air production hall: trains every flyer.",
         BuildingKind::Crucible => {
             "The tier-three works: trains the heaviest machines and gates the deepest upgrades."
+        }
+        BuildingKind::Barricade => "Standing wall segment: blocks ground movement.",
+        BuildingKind::ScrapDepot => "Bare scrap drop-off pad: shortens haul lines.",
+        BuildingKind::ScuttleCharge => {
+            "Buried charge: hidden from enemies until scouted; detonates under hostile machines."
         }
         BuildingKind::Reclaimer => "Generates 1 scrap every 1.5 seconds.",
         BuildingKind::RepairBay => {

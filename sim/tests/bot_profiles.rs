@@ -545,6 +545,9 @@ fn command_behavior_in(
                     | UnitKind::Kestrel
                     | UnitKind::Gnat
                     | UnitKind::Skyhook => {}
+                    UnitKind::Sapper => {
+                        behavior.fighters += 1;
+                    }
                 },
                 Command::Build { kind, .. } => match kind {
                     BuildingKind::Fabricator | BuildingKind::Reclaimer => {
@@ -558,7 +561,10 @@ fn command_behavior_in(
                     BuildingKind::Foundry
                     | BuildingKind::Extractor
                     | BuildingKind::Airworks
-                    | BuildingKind::Crucible => {}
+                    | BuildingKind::Crucible
+                    | BuildingKind::Barricade
+                    | BuildingKind::ScrapDepot
+                    | BuildingKind::ScuttleCharge => {}
                 },
                 _ => {}
             }

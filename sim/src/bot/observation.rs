@@ -299,7 +299,7 @@ impl Observation {
                     built: b.built,
                     seen: true,
                 });
-            } else if b.tiles().any(|t| vision.visible(t)) {
+            } else if b.tiles().any(|t| vision.visible(t)) && state.building_apparent(me, b) {
                 obs.enemy_buildings.push(BuildingObs {
                     id: b.id,
                     player: b.player,

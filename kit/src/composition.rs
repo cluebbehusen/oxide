@@ -382,7 +382,9 @@ fn note_activity(activity: &mut MatchActivity, report: &TickReport) {
             | Event::NodeDepleted { .. } => {
                 activity.last_economy_tick = tick;
             }
-            Event::UnitDied { .. } | Event::BuildingDestroyed { .. } => {
+            Event::UnitDied { .. }
+            | Event::BuildingDestroyed { .. }
+            | Event::ChargeDetonated { .. } => {
                 activity.last_combat_tick = tick;
             }
             Event::UnitBoarded { .. } | Event::UnitUnloaded { .. } => {

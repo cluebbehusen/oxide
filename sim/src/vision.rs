@@ -698,6 +698,12 @@ pub(crate) fn refresh(state: &mut State) {
         let mut ghosts = std::mem::take(&mut view.ghosts);
         ghosts.retain(|ghost| !ghost.footprint().any(|t| view.visible(t)));
         for building in state.buildings.iter().filter(|b| !allied(b.player)) {
+            // An undetected buried charge never enters memory: sight of
+            // its tile alone is not knowledge of it (the one stealth
+            // rule; see `State::building_apparent`).
+            if !state.building_apparent(PlayerId(index as u8), building) {
+                continue;
+            }
             if building.tiles().any(|t| view.visible(t)) {
                 ghosts.push(GhostBuilding {
                     kind: building.kind,

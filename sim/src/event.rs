@@ -59,6 +59,15 @@ pub enum Event {
         /// The tile it stands on now.
         at: TilePos,
     },
+    /// A buried charge went off under a hostile machine.
+    ChargeDetonated {
+        /// The charge that fired.
+        building: BuildingId,
+        /// Its owner.
+        player: PlayerId,
+        /// The blast center.
+        at: Vec2Fx,
+    },
     /// A building was destroyed.
     BuildingDestroyed {
         /// The casualty.

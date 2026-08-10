@@ -134,6 +134,10 @@ const SHOWCASE_TICKS: u64 = 400;
 /// harvesters ringing a tile would hide the very thing they mined.
 const CREW_STEPS_OFF: u64 = SHOWCASE_TICKS - 30;
 
+/// The buried-charge site is founded just before the picture: at a
+/// fifth of 20 hp it survives only a couple of abandonment-decay beats.
+const CHARGE_FOUNDS: u64 = SHOWCASE_TICKS - 12;
+
 /// Collects unit specs while handing back the id each one will get:
 /// `Scenario::build` spawns them in list order, so the index *is* the id.
 #[derive(Default)]
@@ -274,6 +278,12 @@ fn showcase_scenario() -> (Scenario, Cast) {
     let stinger_sling = roster.add(1, UnitKind::Stinger, 40, 18);
     let flakhound_sling = roster.add(0, UnitKind::Flakhound, 43, 18);
     let skyhook_e = roster.add(1, UnitKind::Skyhook, 44, 18);
+    // The sapper pair, each nicked by a line sentinel; sappers have no
+    // aggro of their own and stand their wounds passively.
+    let sapper_w = roster.add(0, UnitKind::Sapper, 40, 20);
+    let sentinel_sapper_e = roster.add(1, UnitKind::Sentinel, 41, 20);
+    let sentinel_sapper_w = roster.add(0, UnitKind::Sentinel, 42, 20);
+    let sapper_e = roster.add(1, UnitKind::Sapper, 43, 20);
 
     // Seat 0's standing structures: one of every kind the build palette
     // offers, whole. Its Foundry comes from the map anchor.
@@ -320,6 +330,26 @@ fn showcase_scenario() -> (Scenario, Cast) {
             x: 22,
             y: 2,
         },
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Barricade,
+            x: 25,
+            y: 2,
+        },
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::ScrapDepot,
+            x: 27,
+            y: 2,
+        },
+        // The owner sees its own buried charge; the omniscient CPU
+        // renderer draws it regardless.
+        BuildingSpec {
+            player: 0,
+            kind: BuildingKind::ScuttleCharge,
+            x: 29,
+            y: 2,
+        },
     ];
 
     let scenario = Scenario {
@@ -327,7 +357,7 @@ fn showcase_scenario() -> (Scenario, Cast) {
         seed: 20_130,
         map: SHOWCASE_MAP.iter().map(|r| (*r).to_string()).collect(),
         players: vec![
-            seat("West Ferrous", Faction::Ferrous, 500),
+            seat("West Ferrous", Faction::Ferrous, 700),
             seat("East Cupric", Faction::Cupric, 2000),
             seat("South Ferrous", Faction::Ferrous, 100),
         ],
@@ -350,8 +380,18 @@ fn showcase_scenario() -> (Scenario, Cast) {
                 breaker_w,
                 skyhook_w,
                 flakhound_sling,
+                sapper_w,
+                sentinel_sapper_w,
             ],
-            annex_c: vec![moth, stinger_annex, breaker_e, skyhook_e, stinger_sling],
+            annex_c: vec![
+                moth,
+                stinger_annex,
+                breaker_e,
+                skyhook_e,
+                stinger_sling,
+                sapper_e,
+                sentinel_sapper_e,
+            ],
             avalanches: (avalanche_w, avalanche_e),
         },
     )
@@ -401,6 +441,27 @@ fn yard_orders(cast: &Cast) -> Vec<PlayerCommand> {
         player: PlayerId(1),
         command: Command::Build {
             units: vec![cast.builder],
+            kind,
+            anchor: TilePos::new(x, y),
+            queue: false,
+            defer: false,
+        },
+    })
+    .collect()
+}
+
+/// The western field kit, founded by a crew harvester and then
+/// abandoned with the same shrug as the eastern yard.
+fn field_kit_orders(cast: &Cast) -> Vec<PlayerCommand> {
+    [
+        (BuildingKind::Barricade, 2, 10),
+        (BuildingKind::ScrapDepot, 4, 10),
+    ]
+    .into_iter()
+    .map(|(kind, x, y)| PlayerCommand {
+        player: PlayerId(0),
+        command: Command::Build {
+            units: vec![cast.crew[2]],
             kind,
             anchor: TilePos::new(x, y),
             queue: false,
@@ -486,6 +547,8 @@ fn opening_orders(cast: &Cast) -> Vec<PlayerCommand> {
         attack(1, cast.avalanches.1, cast.avalanches.0),
         attack(0, cast.annex_f[4], cast.annex_c[3]),
         attack(1, cast.annex_c[4], cast.annex_f[3]),
+        attack(0, cast.annex_f[6], cast.annex_c[5]),
+        attack(1, cast.annex_c[6], cast.annex_f[5]),
     ]);
     commands
 }
@@ -517,15 +580,43 @@ fn showcase_state() -> State {
             // The construction yard founds late and is then abandoned:
             // orphaned scaffolds decay now, and the frailest (the Array,
             // a fifth of 250 hp) must still be standing at the picture.
-            t if t == YARD_FOUNDS => yard_orders(&cast),
-            t if t == YARD_FOUNDS + 1 => vec![PlayerCommand {
-                player: PlayerId(1),
-                command: Command::Stop {
-                    units: vec![cast.builder],
+            t if t == YARD_FOUNDS => {
+                let mut commands = yard_orders(&cast);
+                commands.extend(field_kit_orders(&cast));
+                commands
+            }
+            t if t == YARD_FOUNDS + 1 => vec![
+                PlayerCommand {
+                    player: PlayerId(1),
+                    command: Command::Stop {
+                        units: vec![cast.builder],
+                    },
                 },
-            }],
+                PlayerCommand {
+                    player: PlayerId(0),
+                    command: Command::Stop {
+                        units: vec![cast.crew[2]],
+                    },
+                },
+            ],
             t if t == FIGHT_TICKS => disengage(&cast),
             t if t == CREW_STEPS_OFF => vec![walk(0, cast.crew.clone(), 2, 6)],
+            t if t == CHARGE_FOUNDS => vec![PlayerCommand {
+                player: PlayerId(0),
+                command: Command::Build {
+                    units: vec![cast.crew[2]],
+                    kind: BuildingKind::ScuttleCharge,
+                    anchor: TilePos::new(6, 10),
+                    queue: false,
+                    defer: false,
+                },
+            }],
+            t if t == CHARGE_FOUNDS + 1 => vec![PlayerCommand {
+                player: PlayerId(0),
+                command: Command::Stop {
+                    units: vec![cast.crew[2]],
+                },
+            }],
             _ => Vec::new(),
         };
         state.tick(&commands);
@@ -535,7 +626,7 @@ fn showcase_state() -> State {
 
 /// Every kind, on every roster that can field it.
 fn every_kind_and_faction() -> impl Iterator<Item = (UnitKind, Faction)> {
-    const KINDS: [UnitKind; 23] = [
+    const KINDS: [UnitKind; 24] = [
         UnitKind::Harvester,
         UnitKind::Sentinel,
         UnitKind::Scuttler,
@@ -559,6 +650,7 @@ fn every_kind_and_faction() -> impl Iterator<Item = (UnitKind, Faction)> {
         UnitKind::Breaker,
         UnitKind::Avalanche,
         UnitKind::Skyhook,
+        UnitKind::Sapper,
     ];
     KINDS.into_iter().flat_map(|kind| {
         [Faction::Ferrous, Faction::Cupric]
@@ -618,6 +710,9 @@ fn showcase_covers_every_rendered_feature() {
         BuildingKind::Array,
         BuildingKind::Reclaimer,
         BuildingKind::RepairBay,
+        BuildingKind::Barricade,
+        BuildingKind::ScrapDepot,
+        BuildingKind::ScuttleCharge,
     ] {
         assert!(
             state.buildings().iter().any(|b| b.kind == kind && b.built),

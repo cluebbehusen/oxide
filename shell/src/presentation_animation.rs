@@ -617,7 +617,8 @@ fn unit_attack_timing(kind: UnitKind) -> AttackTiming {
         | UnitKind::Excavator
         | UnitKind::Kestrel
         | UnitKind::Gnat
-        | UnitKind::Skyhook => AttackTiming {
+        | UnitKind::Skyhook
+        | UnitKind::Sapper => AttackTiming {
             report_ticks: 1.0,
             recover_ticks: 1.0,
         },

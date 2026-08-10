@@ -76,6 +76,10 @@ pub enum UnitKind {
     /// Cargo rides sealed — it fights nothing, sees nothing, and dies
     /// with the airframe. Shared roster.
     Skyhook,
+    /// A walking demolition charge: presses to its ordered target and
+    /// detonates — enormous against structures, modest splash against
+    /// machines, always fatal to itself. Shared roster.
+    Sapper,
 }
 
 /// Every building type.
@@ -115,6 +119,16 @@ pub enum BuildingKind {
     /// The tier-three works: trains the heaviest machines and gates the
     /// deepest upgrades. Expensive, slow, and worth killing.
     Crucible,
+    /// A cheap standing wall segment: blocks ground movement and
+    /// nothing else. Terrain you can buy.
+    Barricade,
+    /// A bare scrap drop-off pad: shortens haul lines without granting
+    /// production, sight, or victory weight.
+    ScrapDepot,
+    /// A buried demolition charge — the game's only stealth. Invisible
+    /// to enemies until a scout flies close or a Deep Array's ring
+    /// covers it; detonates under hostile ground machines.
+    ScuttleCharge,
 }
 
 /// A movement medium. Ground units path and collide on the terrain grid;
@@ -244,6 +258,10 @@ pub struct UnitStats {
     /// Construction work applied per adjacent tick (1 for everyone but
     /// the Excavator).
     pub build_rate: u32,
+    /// The machine IS its own warhead: an ordered attack ends with the
+    /// unit pressing to contact and detonating (the SAPPER_* constants
+    /// govern the blast). Grants attack legality without weapons.
+    pub demolition: bool,
     /// Room this machine occupies aboard a transport. 0 means it can
     /// never be carried — every flyer, and the transport itself.
     pub transport_size: u8,
@@ -275,7 +293,7 @@ impl UnitStats {
 impl UnitStats {
     /// Whether this kind carries any weapon at all.
     pub const fn can_fight(&self) -> bool {
-        !self.weapons.is_empty()
+        !self.weapons.is_empty() || self.demolition
     }
 
     /// Whether any weapon covers the given domain.
@@ -328,6 +346,9 @@ impl BuildingKind {
             BuildingKind::Extractor => &[&EXTRACTOR],
             BuildingKind::Airworks => &[&AIRWORKS],
             BuildingKind::Crucible => &[&CRUCIBLE],
+            BuildingKind::Barricade => &[&BARRICADE],
+            BuildingKind::ScrapDepot => &[&SCRAP_DEPOT],
+            BuildingKind::ScuttleCharge => &[&SCUTTLE_CHARGE],
         }
     }
 
@@ -414,6 +435,8 @@ pub enum Role {
     Avalanche,
     /// The air transport (shared).
     Skyhook,
+    /// The walking demolition charge (shared).
+    Sapper,
     /// Super-harvester (shared).
     Excavator,
     /// Unarmed far-sighted flyer — faction-varied.
@@ -449,6 +472,7 @@ impl Role {
             (Role::Breaker, _) => UnitKind::Breaker,
             (Role::Avalanche, _) => UnitKind::Avalanche,
             (Role::Skyhook, _) => UnitKind::Skyhook,
+            (Role::Sapper, _) => UnitKind::Sapper,
         }
     }
 }
@@ -469,7 +493,8 @@ impl UnitKind {
             | UnitKind::Excavator
             | UnitKind::Breaker
             | UnitKind::Avalanche
-            | UnitKind::Skyhook => None,
+            | UnitKind::Skyhook
+            | UnitKind::Sapper => None,
             UnitKind::Flakhound
             | UnitKind::Buzzard
             | UnitKind::Talon
@@ -511,6 +536,7 @@ impl UnitKind {
             UnitKind::Breaker => "breaker",
             UnitKind::Avalanche => "avalanche",
             UnitKind::Skyhook => "skyhook",
+            UnitKind::Sapper => "sapper",
         }
     }
 
@@ -534,6 +560,7 @@ impl UnitKind {
             UnitKind::Breaker => Role::Breaker,
             UnitKind::Avalanche => Role::Avalanche,
             UnitKind::Skyhook => Role::Skyhook,
+            UnitKind::Sapper => Role::Sapper,
         }
     }
 }
@@ -559,6 +586,7 @@ const HARVESTER: UnitStats = UnitStats {
     requires: &[],
     welder: true,
     build_rate: 1,
+    demolition: false,
     transport_size: 1,
     transport_capacity: 0,
     turn_rate: 0,
@@ -615,6 +643,7 @@ const SENTINEL: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    demolition: false,
     transport_size: 1,
     transport_capacity: 0,
     turn_rate: 0,
@@ -644,6 +673,7 @@ const SCUTTLER: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    demolition: false,
     transport_size: 1,
     transport_capacity: 0,
     turn_rate: 0,
@@ -677,6 +707,7 @@ const LANCER: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    demolition: false,
     transport_size: 2,
     transport_capacity: 0,
     turn_rate: 0,
@@ -706,6 +737,7 @@ const BOMBARD: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    demolition: false,
     transport_size: 3,
     transport_capacity: 0,
     turn_rate: 0,
@@ -735,6 +767,7 @@ const FLAKHOUND: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    demolition: false,
     transport_size: 2,
     transport_capacity: 0,
     turn_rate: 0,
@@ -764,6 +797,7 @@ const STINGER: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    demolition: false,
     transport_size: 1,
     transport_capacity: 0,
     turn_rate: 0,
@@ -797,6 +831,7 @@ const BUZZARD: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    demolition: false,
     transport_size: 0,
     transport_capacity: 0,
     turn_rate: 0,
@@ -830,6 +865,7 @@ const DARTER: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    demolition: false,
     transport_size: 0,
     transport_capacity: 0,
     turn_rate: 0,
@@ -859,6 +895,7 @@ const TALON: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    demolition: false,
     transport_size: 0,
     transport_capacity: 0,
     turn_rate: 0,
@@ -888,6 +925,7 @@ const WISP: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    demolition: false,
     transport_size: 0,
     transport_capacity: 0,
     turn_rate: 0,
@@ -917,6 +955,7 @@ const WARDEN: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    demolition: false,
     transport_size: 2,
     transport_capacity: 0,
     turn_rate: 0,
@@ -936,6 +975,7 @@ const TENDER: UnitStats = UnitStats {
     requires: &[],
     welder: true,
     build_rate: 1,
+    demolition: false,
     transport_size: 2,
     transport_capacity: 0,
     turn_rate: 0,
@@ -958,6 +998,7 @@ const EXCAVATOR: UnitStats = UnitStats {
     requires: &[BuildingKind::Fabricator],
     welder: true,
     build_rate: 2,
+    demolition: false,
     transport_size: 2,
     transport_capacity: 0,
     turn_rate: 0,
@@ -977,6 +1018,7 @@ const KESTREL: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    demolition: false,
     transport_size: 0,
     transport_capacity: 0,
     turn_rate: 0,
@@ -996,6 +1038,7 @@ const GNAT: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    demolition: false,
     transport_size: 0,
     transport_capacity: 0,
     turn_rate: 0,
@@ -1025,6 +1068,7 @@ const SHRIKE: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    demolition: false,
     transport_size: 0,
     transport_capacity: 0,
     turn_rate: 0,
@@ -1054,6 +1098,7 @@ const SYLPH: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    demolition: false,
     transport_size: 0,
     transport_capacity: 0,
     turn_rate: 0,
@@ -1083,6 +1128,7 @@ const CONDOR: UnitStats = UnitStats {
     requires: &[BuildingKind::Crucible],
     welder: false,
     build_rate: 1,
+    demolition: false,
     transport_size: 0,
     transport_capacity: 0,
     turn_rate: 2, // ~2.2-tile turn radius: every run is a commitment
@@ -1112,6 +1158,7 @@ const MOTH: UnitStats = UnitStats {
     requires: &[BuildingKind::Crucible],
     welder: false,
     build_rate: 1,
+    demolition: false,
     transport_size: 0,
     transport_capacity: 0,
     turn_rate: 3, // tighter loops than the Condor, weaker punch
@@ -1141,6 +1188,7 @@ const BREAKER: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    demolition: false,
     transport_size: 4,
     transport_capacity: 0,
     turn_rate: 0,
@@ -1170,6 +1218,7 @@ const AVALANCHE: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    demolition: false,
     transport_size: 4,
     transport_capacity: 0,
     turn_rate: 0,
@@ -1189,8 +1238,29 @@ const SKYHOOK: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    demolition: false,
     transport_size: 0,
     transport_capacity: 4,
+    turn_rate: 0,
+};
+
+const SAPPER: UnitStats = UnitStats {
+    max_hp: 50,
+    speed: Fx::lit("0.15"),
+    radius: Fx::lit("0.3"),
+    cost: 120,
+    train_ticks: 180,
+    domain: Domain::Ground,
+    weapons: &[],
+    aggro_range: Fx::ZERO, // it never picks its own grave
+    harvest: None,
+    vision: 5,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    demolition: true,
+    transport_size: 1,
+    transport_capacity: 0,
     turn_rate: 0,
 };
 
@@ -1262,6 +1332,7 @@ const FABRICATOR: BuildingStats = BuildingStats {
         UnitKind::Stinger,
         UnitKind::Warden,
         UnitKind::Tender,
+        UnitKind::Sapper,
         UnitKind::Buzzard,
         UnitKind::Darter,
         UnitKind::Talon,
@@ -1396,6 +1467,45 @@ const CRUCIBLE: BuildingStats = BuildingStats {
     construction: Some(ConstructionStats {
         cost: 500,
         build_ticks: 700,
+        requires: &[BuildingKind::Fabricator],
+    }),
+};
+
+const BARRICADE: BuildingStats = BuildingStats {
+    max_hp: 400,
+    size: (1, 1),
+    vision: 1,
+    produces: &[],
+    weapons: &[],
+    construction: Some(ConstructionStats {
+        cost: 40,
+        build_ticks: 120,
+        requires: &[],
+    }),
+};
+
+const SCRAP_DEPOT: BuildingStats = BuildingStats {
+    max_hp: 300,
+    size: (1, 1),
+    vision: 3,
+    produces: &[],
+    weapons: &[],
+    construction: Some(ConstructionStats {
+        cost: 80,
+        build_ticks: 200,
+        requires: &[],
+    }),
+};
+
+const SCUTTLE_CHARGE: BuildingStats = BuildingStats {
+    max_hp: 20,
+    size: (1, 1),
+    vision: 1,
+    produces: &[],
+    weapons: &[],
+    construction: Some(ConstructionStats {
+        cost: 30,
+        build_ticks: 60,
         requires: &[BuildingKind::Fabricator],
     }),
 };
@@ -1545,6 +1655,7 @@ impl UnitKind {
             UnitKind::Breaker => &BREAKER,
             UnitKind::Avalanche => &AVALANCHE,
             UnitKind::Skyhook => &SKYHOOK,
+            UnitKind::Sapper => &SAPPER,
         }
     }
 
@@ -1575,6 +1686,9 @@ impl BuildingKind {
             BuildingKind::Extractor => "extractor",
             BuildingKind::Airworks => "airworks",
             BuildingKind::Crucible => "crucible",
+            BuildingKind::Barricade => "barricade",
+            BuildingKind::ScrapDepot => "scrap depot",
+            BuildingKind::ScuttleCharge => "scuttle charge",
         }
     }
 
@@ -1595,6 +1709,9 @@ impl BuildingKind {
             BuildingKind::Extractor => &EXTRACTOR,
             BuildingKind::Airworks => &AIRWORKS,
             BuildingKind::Crucible => &CRUCIBLE,
+            BuildingKind::Barricade => &BARRICADE,
+            BuildingKind::ScrapDepot => &SCRAP_DEPOT,
+            BuildingKind::ScuttleCharge => &SCUTTLE_CHARGE,
         }
     }
 
@@ -1602,7 +1719,14 @@ impl BuildingKind {
     /// every drop-off decision consults — deliveries, retirement homes,
     /// and route planning alike.
     pub const fn is_drop_off(self) -> bool {
-        matches!(self, BuildingKind::Foundry)
+        matches!(self, BuildingKind::Foundry | BuildingKind::ScrapDepot)
+    }
+
+    /// Whether this kind hides from enemies until actively detected
+    /// (see `State::building_apparent`). The Scuttle Charge is the
+    /// game's only stealth.
+    pub const fn is_stealthy(self) -> bool {
+        matches!(self, BuildingKind::ScuttleCharge)
     }
 }
 
@@ -1679,6 +1803,40 @@ pub const LOAD_REACH: Fx = Fx::lit("1.5");
 /// Ring-scan radius when a transport sets its cargo down: the farthest
 /// tile from the drop point a disgorged machine may appear on.
 pub const UNLOAD_SCAN_RADIUS: i32 = 4;
+
+/// A hostile ground machine inside this radius of a buried charge sets
+/// it off.
+pub const CHARGE_TRIGGER_RADIUS: Fx = Fx::lit("0.8");
+
+/// Damage a detonating charge deals to every hostile ground machine in
+/// its blast ring.
+pub const CHARGE_DAMAGE: u32 = 60;
+
+/// The charge's blast ring.
+pub const CHARGE_BLAST_RADIUS: Fx = Fx::lit("1.5");
+
+/// A scout-role flyer within this many tiles reveals buried charges to
+/// its team.
+pub const CHARGE_SCOUT_DETECT_RADIUS: i32 = 4;
+
+/// A built Deep Array (Array tier 1) reveals buried charges anywhere
+/// inside its radar ring (euclidean, like radar contacts).
+pub const CHARGE_ARRAY_DETECT_RADIUS: i32 = 22;
+
+/// A Sapper reaching contact with its ordered target detonates: this
+/// lands on a building target directly...
+pub const SAPPER_STRUCTURE_DAMAGE: u32 = 250;
+
+/// ...while every hostile ground machine in the blast ring (the
+/// building's occupants aside) takes the splash.
+pub const SAPPER_SPLASH_DAMAGE: u32 = 60;
+
+/// The Sapper's blast ring.
+pub const SAPPER_BLAST_RADIUS: Fx = Fx::lit("1.5");
+
+/// How close the Sapper must press to its target before the charge
+/// fires (measured to the target's closest point).
+pub const SAPPER_CONTACT_RANGE: Fx = Fx::lit("0.9");
 
 /// with no income at all. Credit is per Foundry so expansion bases are
 /// worth their keep, but the rate is tuned so income alone never pays

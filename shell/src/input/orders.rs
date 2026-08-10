@@ -75,6 +75,7 @@ fn visible_hostile_target_at(
                 && building
                     .tiles()
                     .any(|footprint| game.my_vision().visible(footprint))
+                && game.state.building_apparent(game.human, building)
         })
         .map(|building| {
             (

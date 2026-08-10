@@ -457,7 +457,8 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
     for building in game.state.buildings() {
         if building.player != game.human
             && !game.all_seeing()
-            && !building.tiles().any(|t| game.my_vision().visible(t))
+            && (!building.tiles().any(|t| game.my_vision().visible(t))
+                || !game.state.building_apparent(game.human, building))
         {
             continue;
         }

@@ -163,7 +163,7 @@ fn tag_of(command: &Command) -> CommandTag {
 
 /// The whole roster, cross-faction kinds included — `apply_train` owes
 /// every one of them a verdict. Exhaustive by the same rule as the verbs.
-const UNIT_KINDS: [UnitKind; 23] = [
+const UNIT_KINDS: [UnitKind; 24] = [
     UnitKind::Harvester,
     UnitKind::Sentinel,
     UnitKind::Scuttler,
@@ -187,6 +187,7 @@ const UNIT_KINDS: [UnitKind; 23] = [
     UnitKind::Breaker,
     UnitKind::Avalanche,
     UnitKind::Skyhook,
+    UnitKind::Sapper,
 ];
 
 fn unit_kind_index(kind: UnitKind) -> usize {
@@ -211,6 +212,7 @@ fn unit_kind_index(kind: UnitKind) -> usize {
         UnitKind::Sylph => 17,
         UnitKind::Condor => 18,
         UnitKind::Skyhook => 22,
+        UnitKind::Sapper => 23,
         UnitKind::Moth => 19,
         UnitKind::Breaker => 20,
         UnitKind::Avalanche => 21,
@@ -219,7 +221,7 @@ fn unit_kind_index(kind: UnitKind) -> usize {
 
 /// Every building kind, frame-bound and tech-gated ones included —
 /// hostile input must aim at all of them.
-const BUILDING_KINDS: [BuildingKind; 11] = [
+const BUILDING_KINDS: [BuildingKind; 14] = [
     BuildingKind::Foundry,
     BuildingKind::Turret,
     BuildingKind::Fabricator,
@@ -231,6 +233,9 @@ const BUILDING_KINDS: [BuildingKind; 11] = [
     BuildingKind::Extractor,
     BuildingKind::Airworks,
     BuildingKind::Crucible,
+    BuildingKind::Barricade,
+    BuildingKind::ScrapDepot,
+    BuildingKind::ScuttleCharge,
 ];
 
 fn building_kind_index(kind: BuildingKind) -> usize {
@@ -246,6 +251,9 @@ fn building_kind_index(kind: BuildingKind) -> usize {
         BuildingKind::Extractor => 8,
         BuildingKind::Airworks => 9,
         BuildingKind::Crucible => 10,
+        BuildingKind::Barricade => 11,
+        BuildingKind::ScrapDepot => 12,
+        BuildingKind::ScuttleCharge => 13,
     }
 }
 

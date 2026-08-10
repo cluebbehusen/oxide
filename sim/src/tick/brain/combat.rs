@@ -302,6 +302,24 @@ pub(super) fn land_shells(state: &mut State, hits: &mut Vec<PendingHit>, events:
         }
         let Some(radius) = shell.splash else { continue };
         let radius_sq = radius * radius;
+        // Splash-vulnerable buried charges (see the buffer_shot twin).
+        if shell.targets.ground {
+            for b in state.buildings.iter() {
+                if b.hp == 0
+                    || !b.kind.is_stealthy()
+                    || !state.hostile(shell.player, b.player)
+                    || direct.is_some_and(|d| d.id == b.id)
+                    || b.center().dist_sq(shell.impact) > radius_sq
+                {
+                    continue;
+                }
+                hits.push(PendingHit {
+                    attacker: shell.shooter,
+                    victim: Target::Building(b.id),
+                    damage: shell.damage,
+                });
+            }
+        }
         for u in state.units.iter() {
             if u.hp == 0
                 || !state.hostile(shell.player, u.player)
@@ -349,6 +367,26 @@ fn buffer_shot(
             victim: Target::Unit(u.id),
             damage: weapon.damage,
         });
+    }
+    // The one exception to buildings-take-direct-hits-only: a buried
+    // charge is splash-vulnerable, detected or not — saturation fire is
+    // the honest way to clear a field you cannot see.
+    if weapon.targets.ground {
+        for b in state.buildings.iter() {
+            if b.hp == 0
+                || !b.kind.is_stealthy()
+                || !state.hostile(attacker_owner, b.player)
+                || Target::Building(b.id) == victim
+                || b.center().dist_sq(aim) > radius_sq
+            {
+                continue;
+            }
+            hits.push(PendingHit {
+                attacker,
+                victim: Target::Building(b.id),
+                damage: weapon.damage,
+            });
+        }
     }
 }
 
@@ -598,6 +636,10 @@ pub(super) fn acquire_target(
         .buildings
         .iter()
         .filter(|b| state.hostile(me, b.player) && b.hp > 0)
+        // An undetected buried charge must never be auto-attacked: the
+        // machine would be shooting at something its owner cannot know
+        // exists — the stealth leaking through the guns.
+        .filter(|b| state.building_apparent(me, b))
         .filter(|b| !needs_shared_sight || b.tiles().any(|tile| state.can_see(me, tile)))
         .map(|b| (pos.dist_sq(b.closest_point_to(pos)), b.id))
         .filter(|(d, _)| {
@@ -740,6 +782,160 @@ pub(super) fn advance(
     }
 }
 
+/// The walking charge: chase the ordered target to contact and go up
+/// with it. Damage is buffered like every shot — the sapper decides
+/// against the start-of-tick world and its own death lands in the same
+/// resolution as its blast — structures take the full charge, every
+/// hostile ground machine in the ring (the victim included) takes the
+/// splash, and the sapper itself is always consumed.
+fn sapper_attack(
+    state: &mut State,
+    id: UnitId,
+    target: Target,
+    resume: Option<TilePos>,
+    events: &mut Vec<Event>,
+    hits: &mut Vec<PendingHit>,
+) {
+    let unit = state.unit(id).expect("caller checked");
+    let (pos, tile, me, kind) = (unit.pos, unit.tile(), unit.player, unit.kind);
+    let target_info: Option<(Vec2Fx, TilePos)> = match target {
+        Target::Unit(uid) => state
+            .unit(uid)
+            .filter(|t| t.hp > 0)
+            .map(|t| (t.pos, t.tile())),
+        Target::Building(bid) => state
+            .building(bid)
+            .filter(|b| b.hp > 0)
+            .map(|b| (b.closest_point_to(pos), b.anchor)),
+    };
+    let victim_domain = target_domain(state, target);
+    let Some((aim_point, target_tile)) = target_info else {
+        let unit = state.unit_mut(id).expect("caller checked");
+        match resume {
+            Some(goal) => {
+                unit.order = Order::AttackMove { goal };
+                unit.path = None;
+            }
+            None => unit.advance_queue(),
+        }
+        return;
+    };
+    // A charge only ever presses on ground: air victims are simply out
+    // of its reach forever.
+    if victim_domain != Domain::Ground {
+        state.unit_mut(id).expect("caller checked").clear_program();
+        return;
+    }
+    let reach = crate::stats::SAPPER_CONTACT_RANGE;
+    if pos.dist_sq(aim_point) <= reach * reach {
+        let direct = match target {
+            Target::Building(_) => crate::stats::SAPPER_STRUCTURE_DAMAGE,
+            Target::Unit(_) => crate::stats::SAPPER_SPLASH_DAMAGE,
+        };
+        hits.push(PendingHit {
+            attacker: Target::Unit(id),
+            victim: target,
+            damage: direct,
+        });
+        let ring = crate::stats::SAPPER_BLAST_RADIUS;
+        let ring_sq = ring * ring;
+        for u in state.units.iter() {
+            if u.hp == 0
+                || !state.hostile(me, u.player)
+                || Target::Unit(u.id) == target
+                || u.kind.stats().domain != Domain::Ground
+                || u.pos.dist_sq(aim_point) > ring_sq
+            {
+                continue;
+            }
+            hits.push(PendingHit {
+                attacker: Target::Unit(id),
+                victim: Target::Unit(u.id),
+                damage: crate::stats::SAPPER_SPLASH_DAMAGE,
+            });
+        }
+        // The charge consumes its carrier, through the same buffer, so
+        // a simultaneous kill on the sapper changes nothing.
+        let own_hp = state.unit(id).expect("caller checked").hp;
+        hits.push(PendingHit {
+            attacker: Target::Unit(id),
+            victim: Target::Unit(id),
+            damage: own_hp,
+        });
+        events.push(Event::AttackHit {
+            attacker: id,
+            attacker_kind: kind,
+            weapon: 0,
+            target,
+            attacker_pos: pos,
+            target_pos: aim_point,
+        });
+        let unit = state.unit_mut(id).expect("caller checked");
+        unit.path = None;
+        return;
+    }
+    // Not there yet: press on. The chase is the plain building/unit
+    // pursuit the ground arm uses, without any firing stance.
+    let stale = state
+        .unit(id)
+        .expect("caller checked")
+        .path
+        .as_ref()
+        .is_none_or(|p| p.goal != target_tile && p.goal.chebyshev(target_tile) > 1);
+    if !stale {
+        return;
+    }
+    let goal = if state.passable_for(Domain::Ground, target_tile) {
+        Some(target_tile)
+    } else {
+        // A building's tiles are closed ground: press to the nearest
+        // open doorstep instead.
+        None
+    };
+    let routed = match goal {
+        Some(goal) => route_for(state, kind, tile, goal).map(|w| (goal, w)),
+        None => {
+            let mut best: Option<(TilePos, Vec<TilePos>)> = None;
+            if let Target::Building(bid) = target
+                && let Some(b) = state.building(bid)
+            {
+                let stats = b.stats();
+                for t in super::super::rect_adjacent_tiles(b.anchor, (stats.size.0, stats.size.1)) {
+                    if !state.passable_for(Domain::Ground, t) {
+                        continue;
+                    }
+                    if let Some(w) = route_for(state, kind, tile, t) {
+                        best = Some((t, w));
+                        break;
+                    }
+                }
+            }
+            best
+        }
+    };
+    match routed {
+        Some((goal, waypoints)) => {
+            let unit = state.unit_mut(id).expect("caller checked");
+            unit.path = Some(PathFollow {
+                goal,
+                waypoints,
+                next: 0,
+            });
+        }
+        None => {
+            let unit = state.unit_mut(id).expect("caller checked");
+            let (player, upos) = (unit.player, unit.pos);
+            unit.clear_program();
+            events.push(Event::OrderStalled {
+                unit: id,
+                player,
+                pos: upos,
+                reason: StallReason::NoRoute,
+            });
+        }
+    }
+}
+
 /// The attack run: a turn-limited flier never takes a firing stance.
 /// It keeps a live route on its victim, steers there on a bounded arc
 /// (movement's steering integrator), and releases only when the bay is
@@ -803,9 +999,9 @@ fn bomber_attack(
     let shot_open = |t: TilePos| shot_crosses(state, t, full);
     let seen = match target {
         Target::Unit(_) => state.can_see(me, target_tile),
-        Target::Building(bid) => state
-            .building(bid)
-            .is_some_and(|b| b.tiles().any(|t| state.can_see(me, t))),
+        Target::Building(bid) => state.building(bid).is_some_and(|b| {
+            b.tiles().any(|t| state.can_see(me, t)) && state.building_apparent(me, b)
+        }),
     };
     let to_target = aim_point - pos;
     let in_range = within_weapon_reach(weapon, pos.dist_sq(aim_point));
@@ -978,6 +1174,10 @@ pub(super) fn attack(
         bomber_attack(state, motion, id, target, resume, events, launches);
         return;
     }
+    if stats.demolition {
+        sapper_attack(state, id, target, resume, events, hits);
+        return;
+    }
     let (pos, tile, me, kind, cooldowns) = (
         unit.pos,
         unit.tile(),
@@ -1063,9 +1263,9 @@ pub(super) fn attack(
     // only once in range — it is not built for cross-map endpoints.
     let seen = match target {
         Target::Unit(_) => state.can_see(me, target_tile),
-        Target::Building(bid) => state
-            .building(bid)
-            .is_some_and(|b| b.tiles().any(|t| state.can_see(me, t))),
+        Target::Building(bid) => state.building(bid).is_some_and(|b| {
+            b.tiles().any(|t| state.can_see(me, t)) && state.building_apparent(me, b)
+        }),
     };
     let in_range = within_weapon_reach(weapon, pos.dist_sq(aim_point));
     let full = traces_terrain(weapon, stats.domain, victim_domain);

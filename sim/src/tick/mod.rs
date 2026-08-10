@@ -176,6 +176,7 @@ impl State {
             movement::evict_claimed_ground(self);
             let travel = movement::run(self);
             movement::resolve_collisions(self, &travel, &mut index);
+            detonate_charges(self, &mut events);
             cleanup(self, &mut events);
             if self.tick.is_multiple_of(crate::stats::WRECK_DECAY_TICKS) {
                 self.map.decay_wrecks();
@@ -185,6 +186,64 @@ impl State {
         }
         self.tick += 1;
         TickReport { tick, events }
+    }
+}
+
+/// Buried charges under hostile treads go off — after movement, so the
+/// step onto the trigger and the blast share a tick. Charges detonate
+/// in id order against post-movement positions; a charge zeroed by
+/// combat (or by an earlier blast — mines never sympathetically
+/// detonate, they are simply destroyed) no longer fires. The blast
+/// hits every hostile ground machine in the ring and every hostile
+/// buried charge (the splash-vulnerability rule), and cleanup sweeps
+/// the casualties in the same tick.
+fn detonate_charges(state: &mut State, events: &mut Vec<Event>) {
+    use crate::stats::{BuildingKind, CHARGE_BLAST_RADIUS, CHARGE_DAMAGE, CHARGE_TRIGGER_RADIUS};
+    let trigger_sq = CHARGE_TRIGGER_RADIUS * CHARGE_TRIGGER_RADIUS;
+    let blast_sq = CHARGE_BLAST_RADIUS * CHARGE_BLAST_RADIUS;
+    for slot in 0..state.buildings.len() {
+        let b = &state.buildings[slot];
+        if b.kind != BuildingKind::ScuttleCharge || !b.built || b.hp == 0 {
+            continue;
+        }
+        let (id, owner, center) = (b.id, b.player, b.center());
+        let tripped = state.units.iter().any(|u| {
+            u.hp > 0
+                && state.hostile(owner, u.player)
+                && u.kind.stats().domain == crate::stats::Domain::Ground
+                && u.pos.dist_sq(center) <= trigger_sq
+        });
+        if !tripped {
+            continue;
+        }
+        state.buildings[slot].hp = 0;
+        events.push(Event::ChargeDetonated {
+            building: id,
+            player: owner,
+            at: center,
+        });
+        for u in state.units.iter_mut() {
+            if u.hp > 0
+                && state.players[owner.0 as usize].team != state.players[u.player.0 as usize].team
+                && u.kind.stats().domain == crate::stats::Domain::Ground
+                && u.pos.dist_sq(center) <= blast_sq
+            {
+                u.hp = u.hp.saturating_sub(CHARGE_DAMAGE);
+            }
+        }
+        for other in 0..state.buildings.len() {
+            if other == slot {
+                continue;
+            }
+            let ob = &state.buildings[other];
+            if ob.hp > 0
+                && ob.kind.is_stealthy()
+                && state.players[owner.0 as usize].team != state.players[ob.player.0 as usize].team
+                && ob.center().dist_sq(center) <= blast_sq
+            {
+                state.buildings[other].hp = ob.hp.saturating_sub(CHARGE_DAMAGE);
+            }
+        }
     }
 }
 

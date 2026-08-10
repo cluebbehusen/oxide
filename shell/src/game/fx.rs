@@ -243,6 +243,8 @@ fn unit_fire_sound(kind: oxide_sim::UnitKind) -> SoundKind {
         | UnitKind::Kestrel
         | UnitKind::Gnat
         | UnitKind::Skyhook => SoundKind::Laser,
+        // The detonation borrows the heaviest report until the 2.7 pass.
+        UnitKind::Sapper => SoundKind::BastionFire,
         UnitKind::Harvester => SoundKind::Laser,
     }
 }
@@ -696,6 +698,19 @@ impl Game {
                         };
                         self.sounds_pending.push((sound, Some(world_vec(at))));
                     }
+                }
+                Event::ChargeDetonated { at, .. } => {
+                    // A mine going off is loud and unmistakable whoever
+                    // owned it: the burst art and the heaviest report.
+                    self.fx.push(Effect {
+                        kind: EffectKind::Burst {
+                            at: world_vec(*at),
+                            radius: oxide_sim::stats::CHARGE_BLAST_RADIUS.to_num::<f32>(),
+                        },
+                        age: 0.0,
+                    });
+                    self.sounds_pending
+                        .push((SoundKind::BastionFire, Some(world_vec(*at))));
                 }
                 Event::ShellLanded {
                     player,

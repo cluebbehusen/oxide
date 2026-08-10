@@ -3985,6 +3985,11 @@ fn protected_points(obs: &Observation, kind: BuildingKind) -> Vec<(Point2, i64)>
             BuildingKind::Extractor => 900,
             BuildingKind::Airworks => 1_000,
             BuildingKind::Crucible => 1_400,
+            // Field fortifications and buried charges are positions,
+            // not assets: the frozen actor neither builds nor defends
+            // them specially.
+            BuildingKind::Barricade | BuildingKind::ScuttleCharge => 100,
+            BuildingKind::ScrapDepot => 300,
         };
         if building.built { base } else { base / 2 }
     };
@@ -4101,7 +4106,10 @@ fn building_cap(kind: BuildingKind) -> usize {
         BuildingKind::Foundry
         | BuildingKind::Extractor
         | BuildingKind::Airworks
-        | BuildingKind::Crucible => 0,
+        | BuildingKind::Crucible
+        | BuildingKind::Barricade
+        | BuildingKind::ScrapDepot
+        | BuildingKind::ScuttleCharge => 0,
     }
 }
 
@@ -4119,7 +4127,10 @@ fn building_plan_code(kind: BuildingKind) -> i64 {
         BuildingKind::Foundry
         | BuildingKind::Extractor
         | BuildingKind::Airworks
-        | BuildingKind::Crucible => 0,
+        | BuildingKind::Crucible
+        | BuildingKind::Barricade
+        | BuildingKind::ScrapDepot
+        | BuildingKind::ScuttleCharge => 0,
     }
 }
 

@@ -52,6 +52,9 @@ pub struct Sprites {
     extractor: [Rect; 3],
     airworks: [Rect; 3],
     crucible: [Rect; 3],
+    barricade: [Rect; 3],
+    scrap_depot: [Rect; 3],
+    scuttle_charge: [Rect; 3],
     repair_bay: [Rect; 3],
     bastion_action: [[Rect; 3]; 9],
     foundry_work: [[Rect; 3]; 4],
@@ -131,6 +134,8 @@ pub struct Sprites {
     avalanche_action: [[Rect; 3]; 4],
     skyhook: [Rect; 3],
     skyhook_move: [[Rect; 3]; 2],
+    sapper: [Rect; 3],
+    sapper_move: [[Rect; 3]; 2],
 }
 
 fn faction_index(faction: Faction) -> usize {
@@ -355,7 +360,7 @@ const HARVESTER_CARGO_LEVELS: usize = 5;
 const SITE_STAGES: usize = 3;
 const SITE_PHASES: usize = 2;
 const SITE_FRAME_COUNT: usize = SITE_STAGES * SITE_PHASES;
-const BUILDING_KIND_COUNT: usize = 11;
+const BUILDING_KIND_COUNT: usize = 14;
 
 /// One complete Harvester pose at a particular visible cargo level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -392,6 +397,9 @@ fn building_stem(kind: BuildingKind) -> &'static str {
         BuildingKind::Extractor => "extractor",
         BuildingKind::Airworks => "airworks",
         BuildingKind::Crucible => "crucible",
+        BuildingKind::Barricade => "barricade",
+        BuildingKind::ScrapDepot => "scrap_depot",
+        BuildingKind::ScuttleCharge => "scuttle_charge",
     }
 }
 
@@ -408,6 +416,9 @@ fn building_index(kind: BuildingKind) -> usize {
         BuildingKind::Extractor => 8,
         BuildingKind::Airworks => 9,
         BuildingKind::Crucible => 10,
+        BuildingKind::Barricade => 11,
+        BuildingKind::ScrapDepot => 12,
+        BuildingKind::ScuttleCharge => 13,
     }
 }
 
@@ -504,7 +515,8 @@ fn unit_action_suffixes(kind: UnitKind) -> &'static [&'static str] {
         | UnitKind::Excavator
         | UnitKind::Kestrel
         | UnitKind::Gnat
-        | UnitKind::Skyhook => &[],
+        | UnitKind::Skyhook
+        | UnitKind::Sapper => &[],
     }
 }
 
@@ -519,13 +531,18 @@ fn building_work_suffixes(kind: BuildingKind) -> &'static [&'static str] {
         | BuildingKind::Extractor
         | BuildingKind::Airworks
         | BuildingKind::Crucible => &WORK_SUFFIXES_3,
-        BuildingKind::Turret | BuildingKind::FlakTurret | BuildingKind::Bastion => &[],
+        BuildingKind::Turret
+        | BuildingKind::FlakTurret
+        | BuildingKind::Bastion
+        | BuildingKind::Barricade
+        | BuildingKind::ScrapDepot
+        | BuildingKind::ScuttleCharge => &[],
     }
 }
 
 /// Every kind the shell must find art for.
 #[cfg(test)]
-const ALL_UNIT_KINDS: [UnitKind; 23] = [
+const ALL_UNIT_KINDS: [UnitKind; 24] = [
     UnitKind::Harvester,
     UnitKind::Sentinel,
     UnitKind::Scuttler,
@@ -549,9 +566,10 @@ const ALL_UNIT_KINDS: [UnitKind; 23] = [
     UnitKind::Breaker,
     UnitKind::Avalanche,
     UnitKind::Skyhook,
+    UnitKind::Sapper,
 ];
 
-const ALL_BUILDING_KINDS: [BuildingKind; 11] = [
+const ALL_BUILDING_KINDS: [BuildingKind; 14] = [
     BuildingKind::Foundry,
     BuildingKind::Turret,
     BuildingKind::Fabricator,
@@ -563,6 +581,9 @@ const ALL_BUILDING_KINDS: [BuildingKind; 11] = [
     BuildingKind::Extractor,
     BuildingKind::Airworks,
     BuildingKind::Crucible,
+    BuildingKind::Barricade,
+    BuildingKind::ScrapDepot,
+    BuildingKind::ScuttleCharge,
 ];
 
 #[cfg(test)]
@@ -662,6 +683,7 @@ fn atlas_keys() -> Vec<String> {
         UnitKind::Breaker,
         UnitKind::Avalanche,
         UnitKind::Skyhook,
+        UnitKind::Sapper,
     ] {
         for suffix in MOVE_SUFFIXES {
             keys.extend(variant_keys(unit_stem(kind), suffix));
@@ -784,6 +806,9 @@ impl Sprites {
             extractor: building(BuildingKind::Extractor)?,
             airworks: building(BuildingKind::Airworks)?,
             crucible: building(BuildingKind::Crucible)?,
+            barricade: building(BuildingKind::Barricade)?,
+            scrap_depot: building(BuildingKind::ScrapDepot)?,
+            scuttle_charge: building(BuildingKind::ScuttleCharge)?,
             repair_bay: building(BuildingKind::RepairBay)?,
             bastion_action: variant_rows(&rects, "bastion", ACTION_SUFFIXES_9)?,
             foundry_work: variant_rows(&rects, "foundry", WORK_SUFFIXES_4)?,
@@ -879,6 +904,8 @@ impl Sprites {
             )?,
             skyhook: unit(UnitKind::Skyhook)?,
             skyhook_move: variant_rows(&rects, unit_stem(UnitKind::Skyhook), MOVE_SUFFIXES)?,
+            sapper: unit(UnitKind::Sapper)?,
+            sapper_move: variant_rows(&rects, unit_stem(UnitKind::Sapper), MOVE_SUFFIXES)?,
         })
     }
 
@@ -1033,6 +1060,9 @@ impl Sprites {
             oxide_sim::BuildingKind::Extractor => &self.extractor,
             oxide_sim::BuildingKind::Airworks => &self.airworks,
             oxide_sim::BuildingKind::Crucible => &self.crucible,
+            oxide_sim::BuildingKind::Barricade => &self.barricade,
+            oxide_sim::BuildingKind::ScrapDepot => &self.scrap_depot,
+            oxide_sim::BuildingKind::ScuttleCharge => &self.scuttle_charge,
         }
     }
 
@@ -1192,6 +1222,7 @@ impl Sprites {
             UnitKind::Breaker => &self.breaker_move,
             UnitKind::Avalanche => &self.avalanche_move,
             UnitKind::Skyhook => &self.skyhook_move,
+            UnitKind::Sapper => &self.sapper_move,
         };
         frame
             .checked_sub(1)
@@ -1245,6 +1276,7 @@ impl Sprites {
             UnitKind::Breaker => &self.breaker,
             UnitKind::Avalanche => &self.avalanche,
             UnitKind::Skyhook => &self.skyhook,
+            UnitKind::Sapper => &self.sapper,
         }
     }
 
@@ -1272,7 +1304,8 @@ impl Sprites {
             | UnitKind::Excavator
             | UnitKind::Kestrel
             | UnitKind::Gnat
-            | UnitKind::Skyhook => {
+            | UnitKind::Skyhook
+            | UnitKind::Sapper => {
                 return None;
             }
         };

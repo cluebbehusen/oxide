@@ -233,7 +233,8 @@ pub(crate) fn draw_minimap(game: &Game) {
     for building in game.state.buildings() {
         let seen = omniscient
             || building.player == game.human
-            || building.tiles().any(|t| vision.visible(t));
+            || (building.tiles().any(|t| vision.visible(t))
+                && game.state.building_apparent(game.human, building));
         if !seen {
             continue;
         }

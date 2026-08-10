@@ -97,6 +97,7 @@ def finish(img: Image.Image, px: int, name: str) -> None:
             "breaker",
             "avalanche",
             "skyhook",
+            "sapper",
         )
     ):
         img = rim_light(img)
@@ -1676,6 +1677,76 @@ def crucible(faction: str, work: int = 0) -> None:
     finish(img, px, f"crucible_{faction}{suffix}")
 
 
+def barricade(faction: str) -> None:
+    """A bought wall segment: layered plate courses over a rubble sill."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    d.rectangle([s(4), s(44), s(60), s(58)], fill=(*IRON_DARK, 255))
+    for row, y in enumerate((12, 24, 36)):
+        off = 6 if row % 2 else 0
+        for x in range(4 + off, 52 + off, 16):
+            d.rectangle([s(x), s(y), s(x + 14), s(y + 10)], fill=(*IRON, 255))
+            d.rectangle([s(x + 2), s(y + 2), s(x + 12), s(y + 8)], fill=(*pal["base"], 255))
+    d.rectangle([s(4), s(8), s(60), s(11)], fill=(*pal["dark"], 255))
+    finish(img, px, f"barricade_{faction}")
+
+
+def scrap_depot(faction: str) -> None:
+    """A bare drop-off pad: a ringed apron with corner posts and the
+    faction's chevron painted across the deck."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    d.rounded_rectangle([s(6), s(6), s(58), s(58)], radius=s(6), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle([s(10), s(10), s(54), s(54)], radius=s(5), fill=(*IRON, 255))
+    for x, y in ((8, 8), (48, 8), (8, 48), (48, 48)):
+        d.rectangle([s(x), s(y), s(x + 8), s(y + 8)], fill=(*pal["dark"], 255))
+    d.polygon(
+        [(s(18), s(40)), (s(32), s(24)), (s(46), s(40)), (s(40), s(40)),
+         (s(32), s(31)), (s(24), s(40))],
+        fill=(*pal["base"], 255),
+    )
+    d.ellipse([s(29), s(44), s(35), s(50)], fill=(*SCRAP_LIGHT, 255))
+    finish(img, px, f"scrap_depot_{faction}")
+
+
+def scuttle_charge(faction: str) -> None:
+    """The buried charge: a low disc almost flush with the ground, a
+    ring of anchor cleats, one faint armed lamp."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    d.ellipse([s(14), s(14), s(50), s(50)], fill=(*IRON_DARK, 255))
+    d.ellipse([s(18), s(18), s(46), s(46)], fill=(*IRON, 255))
+    d.ellipse([s(24), s(24), s(40), s(40)], fill=(*pal["dark"], 255))
+    for x, y in ((30, 12), (30, 48), (12, 30), (48, 30)):
+        d.rectangle([s(x), s(y), s(x + 4), s(y + 4)], fill=(*IRON_DARK, 255))
+    d.ellipse([s(29), s(29), s(35), s(35)], fill=(*pal["light"], 255))
+    finish(img, px, f"scuttle_charge_{faction}")
+
+
+def sapper(faction: str, move: int = 0) -> None:
+    """The walking charge: a squat frame hauling one oversized shaped
+    canister on its back — all payload, no gun."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    dy = (0, -1, 1)[move % 3]
+    for x in (16, 42):
+        d.rounded_rectangle([s(x), s(28), s(x + 6), s(56)], radius=s(2), fill=(*IRON_DARK, 255))
+        pip_y = (32, 40, 48)[move % 3]
+        d.rectangle([s(x + 1), s(pip_y), s(x + 5), s(pip_y + 5)], fill=(*IRON_LIGHT, 255))
+    d.rounded_rectangle([s(20), s(30 + dy), s(44), s(54 + dy)], radius=s(4), fill=(*pal["base"], 255))
+    # The canister dominates the silhouette.
+    d.rounded_rectangle([s(24), s(6 + dy), s(40), s(34 + dy)], radius=s(6), fill=(*IRON, 255))
+    d.rounded_rectangle([s(27), s(9 + dy), s(37), s(28 + dy)], radius=s(5), fill=(*pal["dark"], 255))
+    d.rectangle([s(30), s(2 + dy), s(34), s(8 + dy)], fill=(*SCRAP_LIGHT, 255))
+    d.ellipse([s(30), s(40 + dy), s(34), s(44 + dy)], fill=(*pal["light"], 255))
+    suffix = "" if move == 0 else f"_move{move}"
+    finish(img, px, f"sapper_{faction}{suffix}")
+
+
 def warden(faction: str, move: int = 0, action: int = 0) -> None:
     """Tier-two line brawler: a broad plated hull behind twin shield
     cheeks, one heavy fork cannon dead ahead — the wall that walks."""
@@ -3043,6 +3114,9 @@ BUILDING_STEMS = (
     "extractor",
     "airworks",
     "crucible",
+    "barricade",
+    "scrap_depot",
+    "scuttle_charge",
 )
 
 
@@ -3254,7 +3328,7 @@ def generate(output: Path) -> None:
                 unit_fn(faction, move)
             for act in range(1, 5):
                 unit_fn(faction, 0, act)
-        for unit_fn in (tender, excavator, kestrel, gnat, skyhook):
+        for unit_fn in (tender, excavator, kestrel, gnat, skyhook, sapper):
             unit_fn(faction)
             for move in (1, 2):
                 unit_fn(faction, move)
@@ -3264,6 +3338,9 @@ def generate(output: Path) -> None:
         crucible(faction)
         for work in range(1, 4):
             crucible(faction, work)
+        barricade(faction)
+        scrap_depot(faction)
+        scuttle_charge(faction)
     _install_finalized_sprite_bank()
     _install_finalized_environment_bank()
     for faction in FACTIONS:

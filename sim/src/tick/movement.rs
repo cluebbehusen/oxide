@@ -36,7 +36,12 @@ fn early_advance_safe(
     map: &Map,
     buildings: &[crate::state::Building],
 ) -> bool {
-    let open = |t: TilePos| map.terrain_passable(t) && !buildings.iter().any(|b| b.contains(t));
+    let open = |t: TilePos| {
+        map.terrain_passable(t)
+            && !buildings
+                .iter()
+                .any(|b| b.contains(t) && !b.kind.is_stealthy())
+    };
     let (dx, dy) = (nxt.x - cur.x, nxt.y - cur.y);
     if dx == 0 || dy == 0 {
         return true;
@@ -89,7 +94,9 @@ pub(super) fn claimed_ground_escape(state: &State, id: crate::ids::UnitId) -> Op
     if unit.hp == 0
         || unit.kind.stats().domain != crate::stats::Domain::Ground
         || unit.path.is_some()
-        || state.building_at(unit.tile()).is_none()
+        || state
+            .building_at(unit.tile())
+            .is_none_or(|b| b.kind.is_stealthy())
     {
         return None;
     }
@@ -161,7 +168,10 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
             // it binds a flyer: air routes never close.
             if !airborne {
                 let open = |t: TilePos| {
-                    map.terrain_passable(t) && !buildings.iter().any(|b| b.contains(t))
+                    map.terrain_passable(t)
+                        && !buildings
+                            .iter()
+                            .any(|b| b.contains(t) && !b.kind.is_stealthy())
                 };
                 let here = TilePos::containing(unit.pos);
                 let (dx, dy) = (waypoint.x - here.x, waypoint.y - here.y);

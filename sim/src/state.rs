@@ -1044,7 +1044,8 @@ impl State {
             Target::Building(id) => self.building(id).and_then(|building| {
                 (building.hp > 0
                     && self.hostile(viewer, building.player)
-                    && building.tiles().any(|tile| self.can_see(viewer, tile)))
+                    && building.tiles().any(|tile| self.can_see(viewer, tile))
+                    && self.building_apparent(viewer, building))
                 .then_some(crate::stats::Domain::Ground)
             }),
         }
@@ -1158,9 +1159,16 @@ impl State {
 
     /// Whether a unit may stand on `pos`: ground terrain, no live scrap, no
     /// building. Units never block tiles — overlap is resolved by the
-    /// separation phase instead.
+    /// separation phase instead. A buried charge blocks nothing: a mine
+    /// that closed its tile could never be stepped on, and worse, enemy
+    /// pathfinding routing around it would leak its position through
+    /// movement — the stealth would tell on itself.
     pub fn passable(&self, pos: TilePos) -> bool {
-        self.map.terrain_passable(pos) && self.building_at(pos).is_none()
+        self.map.terrain_passable(pos)
+            && !self
+                .buildings
+                .iter()
+                .any(|b| b.contains(pos) && !b.kind.is_stealthy())
     }
 
     /// Whether a unit of the given movement domain may stand on `pos`.
@@ -1174,6 +1182,43 @@ impl State {
                 self.map.tile(pos).is_some_and(|t| !t.terrain.blocks_air())
             }
         }
+    }
+
+    /// Whether `viewer` is allowed to KNOW this building exists, over
+    /// and above ordinary tile sight. True for everything except an
+    /// enemy [`BuildingKind::is_stealthy`] charge, which must be
+    /// actively detected: an allied scout-role flyer within
+    /// [`crate::stats::CHARGE_SCOUT_DETECT_RADIUS`] tiles, or an allied
+    /// built Deep Array (Array tier 1+) whose radar ring covers it.
+    /// Every fog-honest surface — ghosts, targeting, views, rendering —
+    /// must consult this before showing a hostile building.
+    pub fn building_apparent(&self, viewer: PlayerId, building: &Building) -> bool {
+        if !building.kind.is_stealthy() || !self.hostile(viewer, building.player) {
+            return true;
+        }
+        let anchor = building.anchor;
+        let scout_r = crate::stats::CHARGE_SCOUT_DETECT_RADIUS;
+        let scouted = self.units.iter().any(|u| {
+            u.hp > 0
+                && !self.hostile(viewer, u.player)
+                && u.kind.role() == crate::stats::Role::Scout
+                && u.tile().chebyshev(anchor) <= scout_r
+        });
+        if scouted {
+            return true;
+        }
+        let r = crate::stats::CHARGE_ARRAY_DETECT_RADIUS;
+        self.buildings.iter().any(|b| {
+            b.hp > 0
+                && b.built
+                && b.tier >= 1
+                && b.kind == BuildingKind::Array
+                && !self.hostile(viewer, b.player)
+                && {
+                    let (dx, dy) = (anchor.x - b.anchor.x, anchor.y - b.anchor.y);
+                    dx * dx + dy * dy <= r * r
+                }
+        })
     }
 
     /// Spawns a unit at full health. Position is the caller's problem to

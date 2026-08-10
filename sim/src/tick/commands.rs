@@ -410,7 +410,10 @@ fn apply_attack(
         Target::Building(id) => state
             .building(id)
             .map(|b| {
-                let seen = b.tiles().any(|t| state.can_see(player, t));
+                // Sight of the ground is not knowledge of a buried
+                // charge: stealth gates targeting exactly like fog.
+                let seen = b.tiles().any(|t| state.can_see(player, t))
+                    && state.building_apparent(player, b);
                 (b.player, b.anchor, seen)
             })
             .ok_or(RejectReason::InvalidTarget)?,
@@ -434,7 +437,11 @@ fn apply_attack(
     let mut landed = 0;
     let applied = for_owned_units(state, player, units, |u| {
         let stats = u.kind.stats();
-        if stats.can_target(victim_domain) {
+        // A demolition machine carries no gun, but its charge covers
+        // ground the same way a weapon would.
+        let covers = stats.can_target(victim_domain)
+            || (stats.demolition && victim_domain == Domain::Ground);
+        if covers {
             if assign(
                 u,
                 Order::Attack {
