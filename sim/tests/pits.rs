@@ -360,9 +360,11 @@ fn a_chasm_map_reproduces_bit_identically() {
 }
 
 #[test]
-fn a_chasm_severs_scenario_ground_connectivity() {
-    // Anchors on opposite rims of a full-height chasm: the build gate
-    // must refuse — victory would be unreachable on the ground.
+fn a_chasm_severs_ground_but_the_sky_keeps_the_map_legal() {
+    // Anchors on opposite rims of a full-height chasm: ground never
+    // crosses, but air does — the shared tree reaches the sky at tier
+    // two, so the build gate accepts an air-only connection. (A mesa
+    // seal, which closes the sky too, still refuses — see below.)
     let mut map = vec!["#".repeat(24)];
     for y in 1..11 {
         let mut row = String::from("#");
@@ -380,6 +382,41 @@ fn a_chasm_severs_scenario_ground_connectivity() {
     map.push("#".repeat(24));
     let scenario = Scenario {
         name: "severed".into(),
+        seed: 9,
+        map,
+        players: players(),
+        units: Vec::new(),
+        buildings: Vec::new(),
+        meta: None,
+    };
+    scenario
+        .build()
+        .expect("a pit-severed map is legal: the sky still connects the foundries");
+}
+
+#[test]
+fn a_mesa_seal_still_refuses_to_build() {
+    // The same severing wall as a mesa closes ground AND air. It must
+    // run through the rock border too: rock is flyable, so a wall that
+    // stops at the border would leave an air corridor around its ends.
+    let border: String = (0..24).map(|x| if x == 12 { '^' } else { '#' }).collect();
+    let mut map = vec![border.clone()];
+    for y in 1..11 {
+        let mut row = String::from("#");
+        for x in 1..23 {
+            row.push(match (x, y) {
+                (1, 1) => '1',
+                (20, 9) => '2',
+                (12, _) => '^',
+                _ => '.',
+            });
+        }
+        row.push('#');
+        map.push(row);
+    }
+    map.push(border);
+    let scenario = Scenario {
+        name: "sealed".into(),
         seed: 9,
         map,
         players: players(),

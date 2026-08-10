@@ -214,16 +214,18 @@ fn cancel_refunds_by_health_and_damage_burns_it() {
 #[test]
 fn sealed_apart_scenarios_refuse_to_build() {
     use oxide_sim::scenario::ScenarioError;
+    // A mesa wall: rock alone would leave the sky open, and an
+    // air-connected map is legal since the island relaxation.
     let scenario = Scenario {
         name: "sealed".into(),
         seed: 1,
         map: vec![
-            "############".into(),
-            "#1...#.....#".into(),
-            "#....#.....#".into(),
-            "#....#..2..#".into(),
-            "#....#.....#".into(),
-            "############".into(),
+            "#####^######".into(),
+            "#1...^.....#".into(),
+            "#....^.....#".into(),
+            "#....^..2..#".into(),
+            "#....^.....#".into(),
+            "#####^######".into(),
         ],
         players: arena(vec![]).players,
         units: vec![],

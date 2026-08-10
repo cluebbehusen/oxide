@@ -305,8 +305,11 @@ pub enum ScenarioError {
     /// A pre-built structure is misplaced or mis-owned.
     #[error("starting building #{0} is invalid (owner in range? footprint on open ground?)")]
     BadBuilding(usize),
-    /// Two Foundries can't reach each other: the match could never end.
-    #[error("players {0} and {1} are sealed apart; no ground route connects their foundries")]
+    /// Two Foundries can't reach each other by ground or air: the
+    /// match could never end.
+    #[error(
+        "players {0} and {1} are sealed apart; no ground or air route connects their foundries"
+    )]
     Disconnected(PlayerId, PlayerId),
     /// Every seat on one team: nobody to fight, no way to win.
     #[error("all players share one team, so the match could never end")]
@@ -462,41 +465,56 @@ impl Scenario {
             state.spawn_unit(PlayerId(spec.player), spec.kind, tile.center());
         }
 
-        // Authoring tripwire: every pair of Foundries must share a ground
-        // route, or the victory condition is unreachable by construction.
-        // Flood from the first anchor over terrain (scrap mines out and
-        // buildings — foundries and authored structures alike — can be
-        // demolished, so terrain is the honest floor of reachability).
+        // Authoring tripwire: every pair of Foundries must share a route
+        // some mover can actually take, or the victory condition is
+        // unreachable by construction. Ground connectivity is the
+        // ordinary case; an air route is an honest fallback — the shared
+        // tree reaches the sky at tier two, so a Foundry across a pit
+        // can genuinely be scouted, bombed, and boarded. Only terrain
+        // that seals the sky as well (mesas) makes a true seal. Flood
+        // over terrain (scrap mines out and buildings — foundries and
+        // authored structures alike — can be demolished, so terrain is
+        // the honest floor of reachability).
         if let Some((first, rest)) = anchors.split_first() {
-            let mut open = std::collections::VecDeque::new();
             let width = state.map().width();
             let height = state.map().height();
             let idx = |t: TilePos| (t.y * width + t.x) as usize;
-            let mut seen = vec![false; (width * height) as usize];
-            let walkable = |t: TilePos, state: &State| {
-                t.x >= 0
-                    && t.y >= 0
-                    && t.x < width
-                    && t.y < height
-                    && state
-                        .map()
-                        .tile(t)
-                        .is_some_and(|tile| tile.terrain == crate::map::Terrain::Ground)
-            };
-            let seed = first.1;
-            seen[idx(seed)] = true;
-            open.push_back(seed);
-            while let Some(t) = open.pop_front() {
-                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                    let n = t.offset(dx, dy);
-                    if walkable(n, &state) && !seen[idx(n)] {
-                        seen[idx(n)] = true;
-                        open.push_back(n);
+            let flood = |passable: &dyn Fn(crate::map::Terrain) -> bool| {
+                let mut open = std::collections::VecDeque::new();
+                let mut seen = vec![false; (width * height) as usize];
+                let walkable = |t: TilePos| {
+                    t.x >= 0
+                        && t.y >= 0
+                        && t.x < width
+                        && t.y < height
+                        && state
+                            .map()
+                            .tile(t)
+                            .is_some_and(|tile| passable(tile.terrain))
+                };
+                let seed = first.1;
+                seen[idx(seed)] = true;
+                open.push_back(seed);
+                while let Some(t) = open.pop_front() {
+                    for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                        let n = t.offset(dx, dy);
+                        if walkable(n) && !seen[idx(n)] {
+                            seen[idx(n)] = true;
+                            open.push_back(n);
+                        }
                     }
                 }
-            }
+                seen
+            };
+            let ground = flood(&|terrain| terrain == crate::map::Terrain::Ground);
+            let mut air = None;
             for (player, anchor) in rest {
-                if !seen[idx(*anchor)] {
+                if ground[idx(*anchor)] {
+                    continue;
+                }
+                let air = air
+                    .get_or_insert_with(|| flood(&|terrain| terrain != crate::map::Terrain::Peak));
+                if !air[idx(*anchor)] {
                     return Err(ScenarioError::Disconnected(first.0, *player));
                 }
             }
