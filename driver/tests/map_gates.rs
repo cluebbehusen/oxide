@@ -82,8 +82,11 @@ fn routes_connect_and_pace_labels_hold() {
     // doorsteps. Disjoint on purpose: an overlapping band gates nothing.
     for (name, scenario) in shipped() {
         let report = audit(&scenario).expect("audit builds");
-        let pace = scenario.meta.as_ref().unwrap().pace.clone();
+        let meta = scenario.meta.as_ref().unwrap();
+        let pace = meta.pace.clone();
+        let metric = meta.symmetry == "metric";
         assert!(!report.routes.is_empty(), "{name}: no hostile pair routed");
+        let mut min_ground = usize::MAX;
         for route in &report.routes {
             let ground = route
                 .ground_steps
@@ -106,9 +109,36 @@ fn routes_connect_and_pace_labels_hold() {
                 "grand" => 151..=400,
                 other => panic!("{name}: unknown pace '{other}'"),
             };
+            min_ground = min_ground.min(ground);
+            if metric {
+                // A free-for-all ring spans near and far neighbors by
+                // construction; the pace label is the FIRST-contact
+                // clock, so the floor binds every pair and the band
+                // binds the nearest one (checked after the loop).
+                assert!(
+                    ground >= *band.start(),
+                    "{name}: pace '{pace}' floor {} broken by a {ground}-step pair",
+                    band.start()
+                );
+            } else {
+                assert!(
+                    band.contains(&ground),
+                    "{name}: pace '{pace}' promises {band:?} ground steps, measured {ground}"
+                );
+            }
+        }
+        if metric {
+            let band = match pace.as_str() {
+                "quick" => 8..=28,
+                "standard" => 29..=52,
+                "large" => 53..=90,
+                "vast" => 91..=150,
+                "grand" => 151..=400,
+                other => panic!("{name}: unknown pace '{other}'"),
+            };
             assert!(
-                band.contains(&ground),
-                "{name}: pace '{pace}' promises {band:?} ground steps, measured {ground}"
+                band.contains(&min_ground),
+                "{name}: pace '{pace}' promises first contact in {band:?}, measured {min_ground}"
             );
         }
     }
