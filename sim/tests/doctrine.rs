@@ -341,6 +341,203 @@ fn a_pushed_army_holds_its_artillery_at_standoff() {
     );
 }
 
+// --- 0.15 Overseer channels: the ferry and the lane mines -------------
+
+/// An island world: home in the northwest, a known-rock wall severing
+/// the map top to bottom, and the enemy Foundry remembered across it.
+fn island_obs() -> Observation {
+    let mut obs = obs_with_home();
+    obs.known_rock = (0..obs.map_height).map(|y| TilePos::new(12, y)).collect();
+    obs.enemy_buildings = vec![building_obs(5, 1, BuildingKind::Foundry, 18, 8)];
+    obs
+}
+
+#[test]
+fn the_ferry_lifts_a_squad_over_a_severed_gulf() {
+    let mut obs = island_obs();
+    obs.my_units = vec![
+        unit_obs(1, 0, UnitKind::Sentinel, 3, 3),
+        unit_obs(2, 0, UnitKind::Sentinel, 4, 3),
+        unit_obs(3, 0, UnitKind::Sentinel, 5, 3),
+        unit_obs(10, 0, UnitKind::Skyhook, 4, 4),
+    ];
+    let mut policy = UtilityPolicy::new();
+    let intents = policy.think(&Dials::overseer(), &obs, &[], &[]);
+    let load = intents.iter().find_map(|i| match i {
+        Intent::Load { transport, riders } => Some((*transport, riders.clone())),
+        _ => None,
+    });
+    let (transport, riders) = load.expect("an idle skyhook and three idle fighters make a lift");
+    assert_eq!(transport, UnitId(10));
+    assert_eq!(
+        riders,
+        vec![UnitId(1), UnitId(2), UnitId(3)],
+        "the nearest fighters board, ties to the lowest id"
+    );
+
+    // Two fighters are a trickle, not a squad: no lift yet.
+    let mut short = obs.clone();
+    short.my_units.remove(0);
+    let mut policy = UtilityPolicy::new();
+    let intents = policy.think(&Dials::overseer(), &short, &[], &[]);
+    assert!(
+        !intents.iter().any(|i| matches!(i, Intent::Load { .. })),
+        "the ferry waits for a squad: {intents:?}"
+    );
+
+    // The same world under the 0.14 dials never ferries.
+    let mut policy = UtilityPolicy::new();
+    let intents = policy.think(&Dials::full(), &obs, &[], &[]);
+    assert!(
+        !intents.iter().any(|i| matches!(i, Intent::Load { .. })),
+        "the ferry is dial-gated: {intents:?}"
+    );
+}
+
+#[test]
+fn a_loaded_skyhook_drops_beside_the_island_base() {
+    let mut obs = island_obs();
+    let mut sky = unit_obs(10, 0, UnitKind::Skyhook, 13, 8);
+    sky.cargo = 3;
+    obs.my_units = vec![sky];
+    let mut policy = UtilityPolicy::new();
+    let intents = policy.think(&Dials::overseer(), &obs, &[], &[]);
+    let at = intents.iter().find_map(|i| match i {
+        Intent::Unload { transport, at } if *transport == UnitId(10) => Some(*at),
+        _ => None,
+    });
+    let at = at.expect("a settled, loaded skyhook flies the drop");
+    let base = TilePos::new(18, 8);
+    assert!(
+        at.chebyshev(base) <= 6,
+        "the drop lands beside the island base: {at:?}"
+    );
+    assert!(
+        !obs.known_rock_at(at),
+        "the drop centers on known-walkable ground: {at:?}"
+    );
+}
+
+#[test]
+fn the_skyhook_is_bought_only_for_an_island_war() {
+    let mut obs = island_obs();
+    obs.my_buildings
+        .push(building_obs(1, 0, BuildingKind::Airworks, 5, 5));
+    obs.my_queues.push(Vec::new());
+
+    // A lifter without riders is dead capital: no squad, no purchase.
+    let mut policy = UtilityPolicy::new();
+    let intents = policy.think(&Dials::overseer(), &obs, &[], &[]);
+    assert!(
+        !intents.iter().any(|i| matches!(
+            i,
+            Intent::TrainAt {
+                kind: UnitKind::Skyhook,
+                ..
+            }
+        )),
+        "the fighters come before the lifter: {intents:?}"
+    );
+
+    obs.my_units = vec![
+        unit_obs(1, 0, UnitKind::Sentinel, 3, 3),
+        unit_obs(2, 0, UnitKind::Sentinel, 4, 3),
+        unit_obs(3, 0, UnitKind::Sentinel, 5, 3),
+    ];
+    let mut policy = UtilityPolicy::new();
+    let intents = policy.think(&Dials::overseer(), &obs, &[], &[]);
+    assert!(
+        intents.iter().any(|i| matches!(
+            i,
+            Intent::TrainAt { kind: UnitKind::Skyhook, building } if *building == BuildingId(1)
+        )),
+        "a severed gulf and a standing squad buy the lifter at the Airworks: {intents:?}"
+    );
+
+    // With the road open there is no island war and no lifter.
+    let mut open = obs.clone();
+    open.known_rock.clear();
+    let mut policy = UtilityPolicy::new();
+    let intents = policy.think(&Dials::overseer(), &open, &[], &[]);
+    assert!(
+        !intents.iter().any(|i| matches!(
+            i,
+            Intent::TrainAt {
+                kind: UnitKind::Skyhook,
+                ..
+            }
+        )),
+        "a walkable enemy base buys no lifter: {intents:?}"
+    );
+
+    // One lifter is the cap.
+    obs.my_units = vec![unit_obs(10, 0, UnitKind::Skyhook, 4, 4)];
+    let mut policy = UtilityPolicy::new();
+    let intents = policy.think(&Dials::overseer(), &obs, &[], &[]);
+    assert!(
+        !intents.iter().any(|i| matches!(
+            i,
+            Intent::TrainAt {
+                kind: UnitKind::Skyhook,
+                ..
+            }
+        )),
+        "a live skyhook satisfies the ferry: {intents:?}"
+    );
+}
+
+#[test]
+fn lane_mines_bury_along_the_known_approach() {
+    let mut obs = obs_with_home();
+    // Full queues keep the production channel quiet so the bank stays
+    // for the construction arms under test.
+    obs.my_queues[0] = vec![UnitKind::Sentinel, UnitKind::Sentinel];
+    obs.my_buildings
+        .push(building_obs(1, 0, BuildingKind::Fabricator, 5, 2));
+    obs.my_queues.push(vec![UnitKind::Lancer, UnitKind::Lancer]);
+    obs.my_buildings
+        .push(building_obs(2, 0, BuildingKind::Airworks, 8, 2));
+    obs.my_queues
+        .push(vec![UnitKind::Buzzard, UnitKind::Buzzard]);
+    obs.my_units = (0..5)
+        .map(|i| unit_obs(i, 0, UnitKind::Harvester, 3 + i as i32, 5))
+        .collect();
+    obs.enemy_buildings = vec![building_obs(5, 1, BuildingKind::Foundry, 18, 8)];
+    let mut policy = UtilityPolicy::new();
+    let intents = policy.think(&Dials::overseer(), &obs, &[], &[]);
+    let anchor = intents.iter().find_map(|i| match i {
+        Intent::Build {
+            kind: BuildingKind::ScuttleCharge,
+            anchor,
+        } => Some(*anchor),
+        _ => None,
+    });
+    let anchor = anchor.expect("a known ground road draws a buried charge");
+    let home = TilePos::new(2, 2);
+    assert!(
+        anchor.chebyshev(home) <= 2 * (5 + 7),
+        "the field sits a few tiles out from home: {anchor:?}"
+    );
+    assert!(
+        anchor.x >= home.x && anchor.y >= home.y,
+        "the charge leans toward the enemy, never behind the base: {anchor:?}"
+    );
+
+    // The 0.14 dials never mine.
+    let mut policy = UtilityPolicy::new();
+    let intents = policy.think(&Dials::full(), &obs, &[], &[]);
+    assert!(
+        !intents.iter().any(|i| matches!(
+            i,
+            Intent::Build {
+                kind: BuildingKind::ScuttleCharge,
+                ..
+            }
+        )),
+        "mining is dial-gated: {intents:?}"
+    );
+}
+
 #[test]
 fn the_army_draft_never_conscripts_the_air_wing() {
     use oxide_sim::bot::Executive;

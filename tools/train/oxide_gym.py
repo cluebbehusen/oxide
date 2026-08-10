@@ -609,6 +609,10 @@ class Frame:
     seats: dict[int, SeatView] = field(default_factory=dict)
     factions: list[FactionName] | None = None  # every scenario seat, in order
     effects: dict[int, SeatEffects] = field(default_factory=dict)
+    # Full replay JSON of a `record=True` episode — present only on the
+    # terminal frame, in the same shape `driver run --save-replay`
+    # writes, so a campaign can dump it to disk and eyeball the match.
+    replay: dict | None = None
 
     def reward(self, seat: int) -> float:
         """Terminal reward for `seat` (call when done). A team win pays
@@ -696,6 +700,7 @@ class Worker:
         self.profile_catalog = ProfileCatalog.from_hello(hello)
         self._supports_reset_factions = hello.get("reset_factions") is True
         self._supports_effect_telemetry = hello.get("effect_telemetry") is True
+        self._supports_episode_replay = hello.get("episode_replay") is True
 
     def named_condition(
         self,
@@ -711,6 +716,11 @@ class Worker:
     def supports_effect_telemetry(self) -> bool:
         """Whether replies carry the optional successful-effect sideband."""
         return self._supports_effect_telemetry
+
+    @property
+    def supports_episode_replay(self) -> bool:
+        """Whether ``reset(record=True)`` can attach a terminal replay."""
+        return self._supports_episode_replay
 
     def _rpc(self, request: dict) -> Frame:
         self.send(request)
@@ -744,6 +754,7 @@ class Worker:
                 alive=reply.get("alive"),
                 factions=self.factions,
                 effects=parse_effects(reply),
+                replay=reply.get("replay"),
             )
             # v5: terminal frames carry observations for living
             # controlled seats — evidence for terminal shaping (the
@@ -802,6 +813,7 @@ class Worker:
         scenario: str | None = None,
         conditions: dict[int, tuple[int, ...]] | None = None,
         factions: str | Sequence[FactionName] | None = None,
+        record: bool = False,
     ) -> Frame:
         """Starts an episode. Every uncontrolled seat is driven by the
         Rust-side Overseer. ``factions`` optionally names every
@@ -809,7 +821,11 @@ class Worker:
         or as full names. The returned Rust observation is authoritative
         for the condition's faction knob. Profile facets are extracted by
         their advertised condition names and sent to the Rust executive;
-        raw zero-facet conditions retain its historical doctrine."""
+        raw zero-facet conditions retain its historical doctrine.
+        ``record=True`` asks the driver to keep a command log; the
+        terminal frame then carries the full replay JSON in
+        ``Frame.replay``, ready to dump to a file for the replay
+        viewer."""
         if conditions is not None and set(conditions) != set(control):
             raise ValueError(
                 "conditions must name exactly the controlled seats: "
@@ -839,6 +855,12 @@ class Worker:
                 )
             self.requested_factions = normalize_factions(factions)
             req["factions"] = self.requested_factions
+        if record:
+            if not self._supports_episode_replay:
+                raise RuntimeError(
+                    "gym driver does not advertise episode-replay support"
+                )
+            req["record"] = True
         return self._rpc(req)
 
     def step(self, actions: dict[int, ActionPlan]) -> Frame:

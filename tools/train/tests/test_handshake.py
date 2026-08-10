@@ -75,6 +75,30 @@ def test_the_handshake_and_one_masked_step() -> None:
         worker.close()
 
 
+def test_a_recorded_episode_returns_its_replay() -> None:
+    worker = Worker(os.environ["OXIDE_DRIVER_BIN"])
+    try:
+        assert worker.supports_episode_replay
+        frame = worker.reset(seed=7, max_ticks=32, cadence=16, record=True)
+        assert frame.replay is None, "the replay arrives only with the terminal frame"
+        (seat,) = worker.control
+        while not frame.done:
+            view = frame.seats[seat]
+            plan = (
+                next(action for action in ACTION_HEADS[0] if view.mask[action]),
+                next(action for action in ACTION_HEADS[1] if view.mask[action]),
+                next(action for action in ACTION_HEADS[2] if view.mask[action]),
+                next(action for action in ACTION_HEADS[3] if view.mask[action]),
+            )
+            frame = worker.step({seat: plan})
+        assert isinstance(frame.replay, dict)
+        assert frame.replay["meta"]["ticks"] == frame.tick
+        assert "setup" in frame.replay
+        assert isinstance(frame.replay["commands"], list)
+    finally:
+        worker.close()
+
+
 def test_reset_retints_every_faction_pair_and_conditions_follow_rust() -> None:
     worker = Worker(os.environ["OXIDE_DRIVER_BIN"])
     try:

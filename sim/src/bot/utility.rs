@@ -50,6 +50,13 @@ const RAID_AA_RADIUS: i32 = 6;
 /// A salvage field farther than this (Chebyshev) from every own
 /// Foundry counts as an unserved frontier worth an expansion.
 const EXPANSION_RADIUS: i32 = 12;
+/// Idle ground fighters gathered before the ferry loads a lift.
+const FERRY_SQUAD: usize = 3;
+/// Most Scuttle Charges the lane-mining arm keeps in the ground.
+const MINE_CAP: usize = 3;
+/// How far out from home (per axis) the mining arm centers its field
+/// along the approach.
+const MINE_LEAN: i32 = 5;
 
 /// The policy's tunable considerations. The fairness rule is that
 /// dials change *thinking* — never income, vision, or combat math.
@@ -90,6 +97,12 @@ pub struct Dials {
     pub upgrades: bool,
     /// Raise expansion Foundries toward unserved salvage frontiers.
     pub expansion: bool,
+    /// Run a Skyhook shuttle at a known enemy base no ground route
+    /// reaches: buy the lifter, load a squad, drop it on their shore.
+    pub ferry: bool,
+    /// Bury Scuttle Charges along the ground approach once raided or
+    /// once the enemy's road home is known.
+    pub mines: bool,
 }
 
 impl Dials {
@@ -116,6 +129,8 @@ impl Dials {
             extractors: false,
             upgrades: false,
             expansion: false,
+            ferry: false,
+            mines: false,
         }
     }
 
@@ -128,6 +143,8 @@ impl Dials {
             extractors: true,
             upgrades: true,
             expansion: true,
+            ferry: true,
+            mines: true,
             harvester_target: 5,
             ..Self::full()
         }
@@ -173,6 +190,10 @@ pub struct UtilityPolicy {
     /// Whether enemy air has ever been sighted — the sky stays suspect
     /// afterward.
     seen_air: bool,
+    /// Riders sent to board the ferry on its last Load — still walking
+    /// until they vanish into the sling (aboard), die, or go idle again
+    /// (bounced). The lift waits for this ledger to drain.
+    ferry_boarding: Vec<UnitId>,
 }
 
 impl UtilityPolicy {
@@ -218,7 +239,7 @@ impl UtilityPolicy {
         }
 
         self.economy(obs, home_tile, &mut intents);
-        self.production(dials, obs, &mut budget, &mut intents);
+        self.production(dials, obs, home_tile, &mut budget, &mut intents);
         self.construction(dials, obs, home_tile, &mut budget, &mut intents);
         self.repairs(dials, obs, &mut budget, &mut intents);
         self.salvage(dials, obs, &mut intents);
@@ -233,6 +254,9 @@ impl UtilityPolicy {
         if dials.scouting && harvesters >= dials.harvester_target as usize {
             self.scouting(obs, home_tile, enlisted, false, &mut intents);
         }
+        // The ferry gathers before the army channel so its Load claims
+        // riders ahead of the draft (intents lower in order).
+        self.ferry(dials, obs, armies, home_tile, enlisted, &mut intents);
         self.army(dials, obs, armies, home_tile, &mut intents);
         self.air_raid(dials, obs, home_tile, enlisted, &mut intents);
         intents
@@ -450,6 +474,7 @@ impl UtilityPolicy {
         &mut self,
         dials: &Dials,
         obs: &Observation,
+        home: TilePos,
         budget: &mut u32,
         intents: &mut Vec<Intent>,
     ) {
@@ -479,6 +504,42 @@ impl UtilityPolicy {
         } else {
             Self::capital_reserve(dials, obs)
         };
+
+        // The ferry fund: with a built Airworks, a known island target,
+        // a squad worth lifting, and no lifter, the Skyhook's price is
+        // banked ahead of every other military purchase — the wing and
+        // AA arms otherwise skim the bank at their own smaller reserves
+        // forever and the lifter never arrives (the Severance probe's
+        // exact stall). Bought the moment the Airworks has room; the
+        // hold ends with the purchase. The squad gate keeps the order
+        // right and the seat alive: a lifter without riders is dead
+        // capital, so while the last squad lies dead on the far shore
+        // the fund stands down and the drip rebuilds fighters first.
+        if dials.ferry
+            && screen >= FERRY_SQUAD
+            && alive(UnitKind::Skyhook) + queued(UnitKind::Skyhook) < 1
+        {
+            let airworks = obs
+                .my_buildings
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| b.kind == BuildingKind::Airworks && b.built)
+                .min_by_key(|(_, b)| b.id);
+            if let Some((qi, airworks)) = airworks
+                && Self::island_target(obs, home).is_some()
+            {
+                let price = UnitKind::Skyhook.stats().cost + TECH_RESERVE;
+                if *budget >= price && obs.my_queues[qi].len() < 2 {
+                    *budget -= UnitKind::Skyhook.stats().cost;
+                    intents.push(Intent::TrainAt {
+                        building: airworks.id,
+                        kind: UnitKind::Skyhook,
+                    });
+                } else {
+                    *budget = budget.saturating_sub(price);
+                }
+            }
+        }
 
         // The Overseer's heavy metal: one Warden per think from the
         // Fabricator once it stands, and one Breaker whenever the
@@ -687,6 +748,29 @@ impl UtilityPolicy {
     /// walk uses. Runs only when a frame claim is otherwise ready, so
     /// the flood's cost is paid a handful of times per match.
     fn ground_reaches(obs: &Observation, home: TilePos, anchor: TilePos) -> bool {
+        Self::ground_flood(obs, home, anchor, |t| !obs.known_rock_at(t))
+    }
+
+    /// Whether a ground road from `home` to `anchor` is actually KNOWN:
+    /// the same flood, but unexplored tiles count blocked. This is the
+    /// ferry's and the mining arm's route question — a base only ever
+    /// seen from the sky is an island war until a walked road proves
+    /// otherwise, and the optimistic flood above can wander through any
+    /// unexplored gulf forever without ever proving severance.
+    fn ground_route_known(obs: &Observation, home: TilePos, anchor: TilePos) -> bool {
+        Self::ground_flood(obs, home, anchor, |t| {
+            obs.explored(t) && !obs.known_rock_at(t)
+        })
+    }
+
+    /// The shared reachability flood: BFS from `home` through tiles
+    /// `enter` admits, looking for the 2x2 footprint at `anchor`.
+    fn ground_flood(
+        obs: &Observation,
+        home: TilePos,
+        anchor: TilePos,
+        enter: impl Fn(TilePos) -> bool,
+    ) -> bool {
         let (w, h) = (obs.map_width, obs.map_height);
         if w <= 0 || h <= 0 {
             return false;
@@ -709,13 +793,159 @@ impl UtilityPolicy {
             }
             for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
                 let n = t.offset(dx, dy);
-                if in_bounds(n) && !seen[idx(n)] && !obs.known_rock_at(n) {
+                if in_bounds(n) && !seen[idx(n)] && enter(n) {
                     seen[idx(n)] = true;
                     open.push_back(n);
                 }
             }
         }
         false
+    }
+
+    /// The nearest known enemy building no KNOWN ground road reaches —
+    /// the island war's objective — or `None` while every known site
+    /// has a walked road. Candidates are tried nearest-first by
+    /// (manhattan, y, x).
+    fn island_target(obs: &Observation, home: TilePos) -> Option<TilePos> {
+        let mut sites: Vec<(i32, i32, i32)> = obs
+            .enemy_buildings
+            .iter()
+            .map(|b| (b.anchor.manhattan(home), b.anchor.y, b.anchor.x))
+            .collect();
+        sites.sort_unstable();
+        sites
+            .into_iter()
+            .map(|(_, y, x)| TilePos::new(x, y))
+            .find(|anchor| !Self::ground_route_known(obs, home, *anchor))
+    }
+
+    /// A drop point beside the enemy base, from the target side's own
+    /// known ground: the first ring-scanned tile ((r, y, x) order) that
+    /// is not known rock, scrap, or a known building footprint —
+    /// unexplored tiles count open, like every founding walk. The sim's
+    /// unload scan handles exact placement around it; everything nearby
+    /// known-blocked falls back to the anchor itself.
+    fn unload_site(&self, obs: &Observation, target: TilePos) -> TilePos {
+        for r in 2i32..=6 {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if dx.abs().max(dy.abs()) != r {
+                        continue;
+                    }
+                    let t = target.offset(dx, dy);
+                    let in_bounds =
+                        t.x >= 0 && t.y >= 0 && t.x < obs.map_width && t.y < obs.map_height;
+                    if in_bounds && self.tile_open(obs, t) {
+                        return t;
+                    }
+                }
+            }
+        }
+        target
+    }
+
+    /// Ferry channel (dial-gated, Overseer only): when the known enemy
+    /// base sits across ground no crawler can walk, run the Skyhook as
+    /// a shuttle — gather a squad of idle ground fighters aboard, fly
+    /// them to walkable ground beside the enemy base, and set them
+    /// down. Landed machines are ordinary units again: the army channel
+    /// drafts them where they stand and their own aggro carries the
+    /// fight. The staging army's members are fair riders — on a gulf
+    /// map the rally body IS the assault, and the Load lowering strikes
+    /// riders from army bookkeeping — but the rear line and mid-march
+    /// bodies are not.
+    fn ferry(
+        &mut self,
+        dials: &Dials,
+        obs: &Observation,
+        armies: &[Army],
+        home: TilePos,
+        enlisted: &[UnitId],
+        intents: &mut Vec<Intent>,
+    ) {
+        if !dials.ferry {
+            return;
+        }
+        let Some(sky) = obs
+            .my_units
+            .iter()
+            .filter(|u| u.kind.stats().transport_capacity > 0)
+            .min_by_key(|u| u.id)
+        else {
+            self.ferry_boarding.clear();
+            return;
+        };
+        let Some(target) = Self::island_target(obs, home) else {
+            return;
+        };
+        // Riders gone from the field are aboard or dead; riders idle
+        // again bounced off the sling. Either way, no longer pending.
+        self.ferry_boarding
+            .retain(|id| obs.my_units.iter().any(|u| u.id == *id && !u.idle));
+        if sky.cargo > 0 {
+            // Loaded, settled, and nobody still walking out: fly the
+            // drop. A partial squad flies rather than waiting forever.
+            if sky.idle && self.ferry_boarding.is_empty() {
+                intents.push(Intent::Unload {
+                    transport: sky.id,
+                    at: self.unload_site(obs, target),
+                });
+            }
+            return;
+        }
+        if !sky.idle {
+            return; // outbound or returning
+        }
+        let staging: Vec<UnitId> = armies
+            .iter()
+            .filter(|a| a.state == ArmyState::Staging)
+            .flat_map(|a| a.members.iter().copied())
+            .collect();
+        let pool: Vec<&UnitObs> = obs
+            .my_units
+            .iter()
+            .filter(|u| {
+                let stats = u.kind.stats();
+                stats.domain == Domain::Ground
+                    && stats.can_fight()
+                    && stats.transport_size > 0
+                    && u.idle
+                    && (!enlisted.contains(&u.id) || staging.contains(&u.id))
+            })
+            .collect();
+        if pool.len() < FERRY_SQUAD {
+            return;
+        }
+        // Nearest to the sling first, ties to the lowest id; take what
+        // fits the rack (a machine too big for the remaining room is
+        // passed over for a smaller one behind it).
+        let mut ranked: Vec<(i32, UnitId, u8)> = pool
+            .iter()
+            .map(|u| {
+                (
+                    u.tile.chebyshev(sky.tile),
+                    u.id,
+                    u.kind.stats().transport_size,
+                )
+            })
+            .collect();
+        ranked.sort_unstable();
+        let mut room = sky.kind.stats().transport_capacity;
+        let mut riders = Vec::new();
+        for (_, id, size) in ranked {
+            if size > 0 && size <= room {
+                room -= size;
+                riders.push(id);
+            }
+        }
+        if riders.is_empty() {
+            return;
+        }
+        self.ferry_boarding = riders.clone();
+        intents.push(Intent::Load {
+            transport: sky.id,
+            riders,
+        });
     }
 
     /// The next owed tech rung's price plus the fighting reserve — the
@@ -1009,6 +1239,55 @@ impl UtilityPolicy {
                     anchor,
                 });
                 return;
+            }
+        }
+
+        // Lane mines (dial-gated, Overseer only): with the harvest line
+        // at strength and either a raid felt or the enemy's ground road
+        // known, bury a few cheap Scuttle Charges a few tiles out from
+        // home along the approach. Defense the enemy pays to discover,
+        // never the economy's opening.
+        if dials.mines {
+            let have_fab = obs
+                .my_buildings
+                .iter()
+                .any(|b| b.kind == BuildingKind::Fabricator && b.built);
+            let charges = obs
+                .my_buildings
+                .iter()
+                .filter(|b| b.kind == BuildingKind::ScuttleCharge)
+                .count();
+            let charge_cost = BuildingKind::ScuttleCharge
+                .base_stats()
+                .construction
+                .map(|c| c.cost);
+            if harvesters >= dials.harvester_target as usize
+                && have_fab
+                && charges < MINE_CAP
+                && let Some(cost) = charge_cost
+                && *budget >= cost + TECH_RESERVE
+            {
+                let site = Self::enemy_site(obs, home);
+                let route_known = site.is_some_and(|s| Self::ground_route_known(obs, home, s));
+                if self.raided || route_known {
+                    // Raided blind (no site known), the field centers on
+                    // the map's middle — the only approach there is.
+                    let toward =
+                        site.unwrap_or(TilePos::new(obs.map_width / 2, obs.map_height / 2));
+                    let lean = |from: i32, to: i32| from + (to - from).clamp(-MINE_LEAN, MINE_LEAN);
+                    let focus = TilePos::new(lean(home.x, toward.x), lean(home.y, toward.y));
+                    if let Some(anchor) =
+                        self.placement_near(obs, BuildingKind::ScuttleCharge, focus)
+                    {
+                        *budget -= cost;
+                        self.pending_sites.push(anchor);
+                        intents.push(Intent::Build {
+                            kind: BuildingKind::ScuttleCharge,
+                            anchor,
+                        });
+                        return;
+                    }
+                }
             }
         }
 

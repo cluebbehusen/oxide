@@ -402,6 +402,87 @@ class TestTerminalSemantics:
         assert frame.reward(0) == 0.0
 
 
+class TestEpisodeRecording:
+    def test_a_recording_reset_sends_the_flag_and_default_omits_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        hello = contract_hello()
+        hello["episode_replay"] = True
+        idle_frame = {
+            "done": False,
+            "tick": 0,
+            "seats": [],
+            "effects": [],
+        }
+        proc = _FakeProcess(hello, [idle_frame, idle_frame])
+
+        def fake_popen(*_args: object, **_kwargs: object) -> _FakeProcess:
+            return proc
+
+        monkeypatch.setattr(oxide_gym.subprocess, "Popen", fake_popen)
+        worker = oxide_gym.Worker("fake-driver")
+        assert worker.supports_episode_replay
+        worker.reset(seed=1, record=True)
+        recorded = json.loads(proc.stdin.getvalue().splitlines()[-1])
+        assert recorded["record"] is True
+
+        worker.reset(seed=2)
+        plain = json.loads(proc.stdin.getvalue().splitlines()[-1])
+        assert "record" not in plain, "the wire stays byte-compatible by default"
+
+    def test_recording_requires_the_advertised_capability(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        hello = contract_hello()
+
+        def fake_popen(*_args: object, **_kwargs: object) -> _FakeProcess:
+            return _FakeProcess(hello)
+
+        monkeypatch.setattr(oxide_gym.subprocess, "Popen", fake_popen)
+        worker = oxide_gym.Worker("fake-driver")
+        assert not worker.supports_episode_replay
+        with pytest.raises(RuntimeError, match="episode-replay"):
+            worker.reset(seed=1, record=True)
+
+    def test_the_terminal_frame_exposes_the_replay(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        hello = contract_hello()
+        hello["episode_replay"] = True
+        replay = {
+            "meta": {"sim_version": "0.15.0", "ticks": 2},
+            "setup": {"name": "skirmish"},
+            "commands": [],
+        }
+        proc = _FakeProcess(
+            hello,
+            [
+                {
+                    "done": True,
+                    "truncated": False,
+                    "tick": 2,
+                    "winner": None,
+                    "winners": [],
+                    "alive": [0],
+                    "seats": [],
+                    "replay": replay,
+                },
+            ],
+        )
+
+        def fake_popen(*_args: object, **_kwargs: object) -> _FakeProcess:
+            return proc
+
+        monkeypatch.setattr(oxide_gym.subprocess, "Popen", fake_popen)
+        worker = oxide_gym.Worker("fake-driver")
+        frame = worker.recv()
+        assert frame.done
+        assert frame.replay == replay
+
+        # Nonterminal frames never carry one.
+        assert oxide_gym.Frame(False, 0).replay is None
+
+
 class TestEffectTelemetry:
     def test_successful_effects_are_typed(self) -> None:
         effects = oxide_gym.parse_effects(

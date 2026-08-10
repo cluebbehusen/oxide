@@ -13,6 +13,7 @@
 //! Determinism holds the whole way down: same seed and same actions
 //! replay the same match, which is what makes rollouts auditable.
 
+use crate::runner::GameReplay;
 use anyhow::{Context, Result, bail};
 use oxide_sim::bot::{
     ACTION_COUNT, ACTION_HEADS, Action, ActionPlan, Brain, CONDITION_NAMES, CONDITIONING_COUNT,
@@ -23,7 +24,8 @@ use oxide_sim::bot::{
 use oxide_sim::scenario::{Scenario, TeamRole};
 use oxide_sim::state::GameResult;
 use oxide_sim::{
-    BuildingKind, Command, Event, Faction, PlayerCommand, PlayerId, State, UnitRepairSource,
+    BuildingKind, Command, Event, Faction, PlayerCommand, PlayerId, SIM_VERSION, State,
+    UnitRepairSource,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Write};
@@ -223,6 +225,12 @@ enum Request {
         /// Omission and all-zero rows preserve the historical gym doctrine.
         #[serde(default)]
         profile_facets: Option<Vec<[u32; PROFILE_CONDITION_COUNT]>>,
+        /// Keep a command log and attach the full replay JSON (the same
+        /// shape `driver run --save-replay` writes) to the terminal
+        /// reply, so a campaign can eyeball mid-training play. Missing
+        /// means false — the wire stays backward-compatible.
+        #[serde(default)]
+        record: bool,
     },
     Step {
         /// One action triple per controlled seat, in `control` order.
@@ -280,6 +288,9 @@ struct Episode {
     opponents: Vec<Brain>,
     max_ticks: u64,
     effects: Vec<SeatEffects>,
+    /// The command log kept for a `record: true` reset — attached to
+    /// the terminal reply as full replay JSON.
+    recorder: Option<GameReplay>,
 }
 
 #[derive(Clone, Copy)]
@@ -287,6 +298,7 @@ struct EpisodeOptions<'a> {
     factions: Option<&'a [Faction]>,
     cadence: u64,
     profile_facets: Option<&'a [[u32; PROFILE_CONDITION_COUNT]]>,
+    record: bool,
 }
 
 impl<'a> EpisodeOptions<'a> {
@@ -295,11 +307,17 @@ impl<'a> EpisodeOptions<'a> {
             factions,
             cadence,
             profile_facets: None,
+            record: false,
         }
     }
 
     fn with_profile_facets(mut self, profile_facets: &'a [[u32; PROFILE_CONDITION_COUNT]]) -> Self {
         self.profile_facets = Some(profile_facets);
+        self
+    }
+
+    fn with_record(mut self, record: bool) -> Self {
+        self.record = record;
         self
     }
 }
@@ -316,6 +334,7 @@ impl Episode {
             factions,
             cadence,
             profile_facets,
+            record,
         } = options;
         let mut scenario = crate::runner::load_scenario(scenario.unwrap_or("skirmish"))?;
         scenario.seed = seed;
@@ -352,6 +371,9 @@ impl Episode {
                 bail!("profile facets must be in 0..=1000");
             }
         }
+        // The recorder captures the scenario AFTER seeding and retint:
+        // rebuilding the replay's setup must reproduce this episode.
+        let recorder = record.then(|| GameReplay::new(SIM_VERSION, scenario.clone()));
         let state = scenario.build().context("scenario build")?;
         let gyms: Vec<GymBot> = control
             .iter()
@@ -384,6 +406,7 @@ impl Episode {
             opponents,
             max_ticks,
             effects,
+            recorder,
         })
     }
 
@@ -485,6 +508,11 @@ impl Episode {
             };
             if matches!(&command.command, Command::RepairUnit { .. }) {
                 effect.repair_unit_commands += 1;
+            }
+        }
+        if let Some(recorder) = &mut self.recorder {
+            for command in commands {
+                recorder.record(self.state.current_tick(), command.clone());
             }
         }
 
@@ -613,7 +641,7 @@ impl Episode {
                     })
                 })
                 .collect();
-            serde_json::json!({
+            let mut reply = serde_json::json!({
                 "done": true,
                 "truncated": truncated,
                 "tick": self.state.current_tick(),
@@ -623,7 +651,13 @@ impl Episode {
                 "seats": seats,
                 "factions": factions,
                 "effects": &self.effects,
-            })
+            });
+            if let Some(recorder) = &mut self.recorder {
+                recorder.meta.ticks = Some(self.state.current_tick());
+                reply["replay"] =
+                    serde_json::to_value(&*recorder).expect("replay serializes to JSON");
+            }
+            reply
         }
     }
 }
@@ -703,6 +737,7 @@ fn hello() -> serde_json::Value {
         "profiled_doctrine": PROFILED_DOCTRINE_VERSION,
         "reset_factions": true,
         "effect_telemetry": true,
+        "episode_replay": true,
     })
 }
 
@@ -729,8 +764,9 @@ pub fn serve() -> Result<()> {
                 factions,
                 cadence,
                 profile_facets,
+                record,
             }) => {
-                let options = EpisodeOptions::new(factions.as_deref(), cadence);
+                let options = EpisodeOptions::new(factions.as_deref(), cadence).with_record(record);
                 let options = match profile_facets.as_deref() {
                     Some(facets) => options.with_profile_facets(facets),
                     None => options,
@@ -1130,6 +1166,7 @@ mod tests {
     fn hello_and_reset_reply_advertise_zeroed_effect_telemetry() {
         let hello = hello();
         assert_eq!(hello["effect_telemetry"], true);
+        assert_eq!(hello["episode_replay"], true);
         assert_eq!(hello["version"], GYM_VERSION);
         assert_eq!(hello["features"], FEATURE_COUNT);
         assert_eq!(hello["actions"], ACTION_COUNT);
@@ -1669,7 +1706,12 @@ mod tests {
         )
         .expect("old reset request");
         match old {
-            Request::Reset { factions, .. } => assert!(factions.is_none()),
+            Request::Reset {
+                factions, record, ..
+            } => {
+                assert!(factions.is_none());
+                assert!(!record, "a reset without the field must not record");
+            }
             _ => panic!("parsed the wrong request"),
         }
 
@@ -1683,6 +1725,64 @@ mod tests {
             }
             _ => panic!("parsed the wrong request"),
         }
+
+        let recorded = serde_json::from_str::<Request>(
+            r#"{"cmd":"reset","seed":1,"control":[0],"max_ticks":4,"record":true}"#,
+        )
+        .expect("recorded reset request");
+        match recorded {
+            Request::Reset { record, .. } => assert!(record),
+            _ => panic!("parsed the wrong request"),
+        }
+    }
+
+    #[test]
+    fn a_recorded_episode_returns_a_replay_that_reproduces() {
+        let mut episode = Episode::new(
+            17,
+            &[0],
+            2,
+            None,
+            EpisodeOptions::new(None, 1).with_record(true),
+        )
+        .expect("recorded skirmish episode");
+        let idle = [
+            Action::Idle as usize,
+            Action::NoConstruction as usize,
+            Action::NoUpgrade as usize,
+            Action::NoOperation as usize,
+        ];
+        while episode.live() {
+            episode.step(&[idle]).expect("idle step");
+        }
+        let reply = episode.reply();
+        assert_eq!(reply["done"], true);
+        let replay: GameReplay = serde_json::from_value(reply["replay"].clone()).expect(
+            "terminal reply carries a \
+                 parseable replay",
+        );
+        replay
+            .validate(Some(SIM_VERSION))
+            .expect("the recording passes replay validation");
+        assert!(
+            !replay.commands.is_empty(),
+            "the Overseer opponent's commands were recorded"
+        );
+        let reproduced =
+            crate::runner::run_replay(&replay, None, false).expect("the recording re-executes");
+        assert_eq!(reproduced.current_tick(), episode.state.current_tick());
+        assert_eq!(
+            reproduced.hash(),
+            episode.state.hash(),
+            "playback must land on the exact episode state"
+        );
+
+        // An unrecorded episode's terminal reply carries no replay.
+        let mut bare = Episode::new(17, &[0], 0, None, EpisodeOptions::new(None, 1))
+            .expect("bare skirmish episode");
+        let reply = bare.reply();
+        assert_eq!(reply["done"], true);
+        assert!(reply.get("replay").is_none());
     }
 
     #[test]

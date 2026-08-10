@@ -510,6 +510,18 @@ impl Executive {
                     }
                 }
                 Intent::Load { transport, riders } => {
+                    // A boarding rider leaves the world at the sling, and
+                    // an army-wide command later this think would replace
+                    // its boarding walk. Strike riders from the bodies
+                    // and claim them, mirroring RepairUnit's rotation.
+                    // (No-op on the gym path: Airlift riders are never
+                    // enlisted and its Load lowers after every other
+                    // unit-claiming intent.)
+                    for army in &mut self.armies {
+                        army.members.retain(|member| !riders.contains(member));
+                    }
+                    self.armies.retain(|army| !army.members.is_empty());
+                    claimed.extend(riders.iter().copied());
                     out.push(PlayerCommand {
                         player: me,
                         command: Command::Load {
