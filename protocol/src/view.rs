@@ -81,6 +81,10 @@ pub struct PlayerView {
     /// Whether this seat has conceded and can no longer issue commands.
     #[serde(default)]
     pub resigned: bool,
+    /// The tick this seat lost its last Foundry and site, if it has
+    /// (free-for-all placement reads from these).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eliminated_at: Option<u64>,
 }
 
 /// One unit, floats-for-reading.
@@ -155,6 +159,10 @@ pub struct BuildingView {
     /// Construction or training progress ticks.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub progress: u32,
+    /// Upgrade-ladder rung (0 = base). Visible in every view: a
+    /// building's tier shows in its silhouette on the ground.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub tier: u8,
 }
 
 /// The world as one seat honestly knows it — the fog-safe counterpart to
@@ -314,6 +322,10 @@ fn default_true() -> bool {
     true
 }
 
+fn is_zero_u8(n: &u8) -> bool {
+    *n == 0
+}
+
 fn is_zero_u32(n: &u32) -> bool {
     *n == 0
 }
@@ -441,6 +453,7 @@ fn player_view(state: &State, index: usize) -> PlayerView {
             .filter(|building| usize::from(building.player.0) == index)
             .count(),
         resigned: player.resigned,
+        eliminated_at: player.eliminated_at,
     }
 }
 
@@ -487,6 +500,7 @@ fn building_view(b: &Building) -> BuildingView {
         focus: b.focus,
         built: b.built,
         progress: b.progress,
+        tier: b.tier,
     }
 }
 
