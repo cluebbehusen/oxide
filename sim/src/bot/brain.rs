@@ -40,8 +40,10 @@ impl Brain {
     }
 
     /// The Overseer: the scripted commander with the whole 0.15 tree
-    /// switched on — the tech-climbing playtest opponent and the
-    /// yardstick the retrained ladder must answer to.
+    /// switched on. Training infrastructure ONLY — it bootstraps the
+    /// gym-v9 retrain as demonstration source, league anchor, and
+    /// yardstick, and is deliberately not reachable from any player
+    /// surface (no scenario field, no wizard dial, no SeatBot arm).
     pub fn overseer(player: PlayerId, scenario_seed: u64) -> Self {
         Self::new(player, scenario_seed, Dials::overseer())
     }

@@ -281,7 +281,6 @@ pub(crate) fn configure_named_pair(scenario: &mut Scenario, levels: [Level; 2]) 
             style: authored.and_then(|config| config.style),
             variant: authored.and_then(|config| config.variant),
             team_role: authored.and_then(|config| config.team_role),
-            overseer: false,
         });
     }
 }

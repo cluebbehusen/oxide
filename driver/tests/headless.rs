@@ -184,7 +184,6 @@ fn all_bots(path: &std::path::Path) -> Scenario {
                 style: None,
                 variant: None,
                 team_role: None,
-                overseer: false,
             });
     }
     scenario

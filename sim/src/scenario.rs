@@ -180,12 +180,6 @@ pub struct BotConfig {
     /// scenario seed deals a named style.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<NamedStyle>,
-    /// Seat the Overseer — the scripted tech-climbing commander — in
-    /// place of the neural ladder. The level and personality fields are
-    /// ignored while this is set; it exists so playtests can face the
-    /// whole 0.15 tree before the ladder retrains onto it.
-    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
-    pub overseer: bool,
     /// Curated variant within `style`, 0..=2. When absent, a dedicated
     /// construction-time stream deals one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -236,8 +230,6 @@ impl<'de> Deserialize<'de> for BotConfig {
             variant: Option<u8>,
             #[serde(default)]
             team_role: Option<TeamRole>,
-            #[serde(default)]
-            overseer: bool,
         }
 
         let fields = Fields::deserialize(deserializer)?;
@@ -247,7 +239,6 @@ impl<'de> Deserialize<'de> for BotConfig {
             style: fields.style,
             variant: fields.variant,
             team_role: fields.team_role,
-            overseer: fields.overseer,
         };
         config.validate().map_err(serde::de::Error::custom)?;
         Ok(config)

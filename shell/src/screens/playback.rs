@@ -488,7 +488,6 @@ mod tests {
                 style: None,
                 variant: None,
                 team_role: None,
-                overseer: false,
             });
         }
         let outcome = oxide_kit::runner::run_scenario(&scenario, 60, true, true).expect("run");

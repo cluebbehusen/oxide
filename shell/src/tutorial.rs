@@ -101,7 +101,6 @@ pub fn tutorial_scenario() -> oxide_sim::Scenario {
             style: None,
             variant: None,
             team_role: None,
-            overseer: false,
         });
     }
     scenario

@@ -1049,7 +1049,6 @@ mod tests {
                 style: None,
                 variant: None,
                 team_role: None,
-                overseer: false,
             }),
         };
         let scenario = Scenario {

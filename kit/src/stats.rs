@@ -288,7 +288,6 @@ mod tests {
                 style: None,
                 variant: None,
                 team_role: None,
-                overseer: false,
             });
         }
         let outcome = runner::run_scenario(&scenario, 600, true, true).unwrap();

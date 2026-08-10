@@ -2312,7 +2312,6 @@ fn an_allied_site_under_fog_refuses_selection() {
             style: None,
             variant: None,
             team_role: None,
-            overseer: false,
         });
     }
     let mut game = Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("ally arena builds");

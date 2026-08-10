@@ -352,15 +352,13 @@ new heavy weapons, THIRTY-FOUR maps in a thumbnail-grid browser
 sectioned by format, per-seat match setup on team maps, building
 salvage as harvester labor, ally inspection with team-color accents,
 touch gestures, menus, a trained neural opponent with four difficulty
-levels and selectable personalities plus the Overseer — a scripted
-commander that climbs the whole new tech tree (flagship maps seat it
-by default), save/resume via replays, and the agent tooling described
-above.
+levels and selectable personalities, save/resume via replays, and the
+agent tooling described above.
 
 Not yet: the neural ladder retrained onto the 0.15 surface (the frozen
-0.14 network remains the default opponent and does not use the new
-tree; the Overseer covers that gap until the coordinated gym-v9
-retrain), island maps whose only routes are air, formations, and the
+0.14 network remains the shipped opponent and does not yet use the new
+tree; the gym-v9 retrain is in progress), island maps whose only
+routes are air, formations, and the
 mobile ports — macroquad makes iOS/Android plausible, and the desktop
 shell already resolves touch gestures, but no mobile build exists. The
 sim freezes at game end; the pause menu's Restart is the rematch.

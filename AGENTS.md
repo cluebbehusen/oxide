@@ -287,9 +287,10 @@ drift, or remove them independently.
 target, a transitional Fabricator roster (it keeps the full 0.14 lists so the
 frozen actor's gates still resolve — the final tree homes the sky at the
 Airworks and the Scuttler at the Foundry), and the Overseer
-(`BotConfig.overseer`), a scripted commander on the shared intent surface
-that plays the whole new tree legally and serves as the retrain era's
-curriculum anchor and yardstick. Cap removal, gym v9, and the from-scratch
+(`Brain::overseer`), a scripted commander on the shared intent surface that
+plays the whole new tree legally. It is training infrastructure only — the
+retrain era's demonstration source, curriculum anchor, and yardstick — and is
+deliberately unreachable from any player-facing surface. Cap removal, gym v9, and the from-scratch
 retrain remain one coordinated change; until it lands, this section is the
 durable decision: do not change the masks or the transitional rosters
 outside that migration.
