@@ -111,6 +111,11 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
             Command::CancelFound { kind, anchor } => {
                 apply_cancel_found(state, pc.player, *kind, *anchor)
             }
+            Command::UpgradeBuilding {
+                units,
+                building,
+                queue,
+            } => apply_upgrade(state, pc.player, &canonical_units(units), *building, *queue),
         };
         if let Err(reason) = outcome {
             events.push(Event::CommandRejected {
@@ -718,7 +723,11 @@ pub(super) fn found_site(
     anchor: TilePos,
     commit_builder: impl FnOnce(&mut State, crate::ids::BuildingId) -> bool,
 ) -> Result<crate::ids::BuildingId, RejectReason> {
-    let cost = kind.stats().construction.ok_or(RejectReason::BadSite)?.cost;
+    let cost = kind
+        .base_stats()
+        .construction
+        .ok_or(RejectReason::BadSite)?
+        .cost;
     if state.player(player).scrap < cost {
         return Err(RejectReason::NotEnoughScrap);
     }
@@ -731,7 +740,7 @@ pub(super) fn found_site(
     // claimed ground.)
     let site = state.place_site(player, kind, anchor);
     let from = state.unit(builder).expect("caller checked").tile();
-    let size = kind.stats().size;
+    let size = kind.base_stats().size;
     let reachable = super::rect_adjacent_tiles(anchor, size)
         .filter(|&t| state.passable(t))
         .any(|t| from == t || super::astar_for(state, from, t).is_some());
@@ -811,7 +820,13 @@ fn apply_cancel(
         if b.built {
             return Err(RejectReason::BadSite);
         }
-        let stats = b.kind.stats();
+        // An upgrading works (tier already lifted, offline) is committed:
+        // cancelling would demolish a standing machine for its site
+        // refund. Only fresh tier-zero sites can be scrapped.
+        if b.tier > 0 {
+            return Err(RejectReason::InvalidTarget);
+        }
+        let stats = b.stats();
         let cost = stats.construction.expect("sites are buildable kinds").cost;
         cost * b.hp / stats.max_hp
     };
@@ -848,7 +863,7 @@ fn apply_repair(
     if b.player != player {
         return Err(RejectReason::NotYourBuilding);
     }
-    if !b.built || b.hp >= b.kind.stats().max_hp {
+    if !b.built || b.hp >= b.stats().max_hp {
         return Err(RejectReason::InvalidTarget);
     }
     let mut landed = 0;
@@ -1052,7 +1067,7 @@ fn apply_train(
         if b.player != player {
             return Err(RejectReason::NotYourBuilding);
         }
-        if !b.built || !b.kind.stats().produces.contains(&kind) {
+        if !b.built || !b.stats().produces.contains(&kind) {
             return Err(RejectReason::CannotProduce);
         }
         // The produces lists carry every faction's variant of a role; the
@@ -1110,7 +1125,7 @@ fn apply_set_rally(
     if b.player != player {
         return Err(RejectReason::NotYourBuilding);
     }
-    if !b.built || b.kind.stats().produces.is_empty() {
+    if !b.built || b.stats().produces.is_empty() {
         return Err(RejectReason::InvalidTarget);
     }
     // Any tile is a legal rally — spawns snap to walkable ground later, and
@@ -1143,7 +1158,7 @@ fn apply_focus_fire(
         }
         let weapon = building
             .kind
-            .stats()
+            .base_stats()
             .weapons
             .first()
             .copied()
@@ -1161,5 +1176,80 @@ fn apply_focus_fire(
     for &id in buildings {
         state.building_mut(id).expect("validated above").focus = Some(target);
     }
+    Ok(())
+}
+
+/// Lifts a completed own building one rung up its ladder: full price
+/// charged now, the works goes offline as a site on the NEW tier's row,
+/// and the accepted harvester crew takes the ordinary Build order — the
+/// whole construction machinery (resume, relief, stacking) serves
+/// upgrades unchanged. There is no cancel: upgrading is committed.
+fn apply_upgrade(
+    state: &mut State,
+    player: PlayerId,
+    units: &[UnitId],
+    building: BuildingId,
+    queue: bool,
+) -> Result<(), RejectReason> {
+    let Some(b) = state.building(building) else {
+        return Err(RejectReason::NotYourBuilding);
+    };
+    if b.player != player {
+        return Err(RejectReason::NotYourBuilding);
+    }
+    if !b.built {
+        return Err(RejectReason::InvalidTarget);
+    }
+    let kind = b.kind;
+    let tier = b.tier;
+    let Some(upgrade) = kind.upgrade_from(tier) else {
+        return Err(RejectReason::InvalidTarget);
+    };
+    let met = upgrade.requires.iter().all(|required| {
+        state
+            .buildings
+            .iter()
+            .any(|owned| owned.player == player && owned.kind == *required && owned.built)
+    });
+    if !met {
+        return Err(RejectReason::MissingPrerequisite);
+    }
+    let crew: Vec<UnitId> = accepted_units(state, player, units)
+        .into_iter()
+        .filter(|id| {
+            state
+                .unit(*id)
+                .is_some_and(|u| u.kind.stats().harvest.is_some())
+        })
+        .collect();
+    if crew.is_empty() {
+        return Err(RejectReason::NoValidUnits);
+    }
+    if state.players[player.0 as usize].scrap < upgrade.cost {
+        return Err(RejectReason::NotEnoughScrap);
+    }
+    // Assign before paying, like Build: a crew whose every queue is full
+    // must reject the whole command with nothing spent.
+    let mut landed = 0;
+    for id in &crew {
+        if let Some(unit) = state.unit_mut(*id)
+            && assign(unit, Order::Build { site: building }, queue)
+        {
+            landed += 1;
+        }
+    }
+    if landed == 0 {
+        return Err(RejectReason::QueueFull);
+    }
+    state.players[player.0 as usize].scrap -= upgrade.cost;
+    let b = state.building_mut(building).expect("validated above");
+    b.tier += 1;
+    b.built = false;
+    b.progress = 0;
+    // The strip ledger is a record against the OLD tier's price basis;
+    // the rebuilt machine starts a clean one (and any crew mid-salvage
+    // finds an unbuilt patient next tick and stands down).
+    b.salvage_drained = 0;
+    b.salvage_credited = 0;
     Ok(())
 }

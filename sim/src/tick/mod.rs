@@ -227,7 +227,7 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
             player: building.player,
             pos: building.center(),
         });
-        let stats = building.kind.stats();
+        let stats = building.stats();
         let price = stats
             .construction
             .map_or(crate::stats::FOUNDRY_WRECK_VALUE, |c| c.cost);
@@ -503,7 +503,7 @@ mod tests {
         let kind = crate::BuildingKind::Turret;
         let anchor = TilePos::new(10, 4);
         let cost = kind
-            .stats()
+            .base_stats()
             .construction
             .expect("turret is constructible")
             .cost;

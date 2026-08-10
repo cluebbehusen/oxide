@@ -113,7 +113,12 @@ fn a_foundry_expansion_needs_a_standing_fabricator() {
     teched.tick(&[build_foundry(builder, TilePos::new(10, 4))]);
     assert_eq!(
         teched.player(PlayerId(0)).scrap,
-        1_000 - BuildingKind::Foundry.stats().construction.unwrap().cost,
+        1_000
+            - BuildingKind::Foundry
+                .base_stats()
+                .construction
+                .unwrap()
+                .cost,
         "the site claims its full price on placement"
     );
     assert!(
@@ -139,7 +144,7 @@ fn a_completed_expansion_produces_and_smelts_its_own_drip() {
         .unwrap()
         .id;
     for _ in 0..BuildingKind::Foundry
-        .stats()
+        .base_stats()
         .construction
         .unwrap()
         .build_ticks

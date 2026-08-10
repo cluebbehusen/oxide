@@ -438,7 +438,7 @@ impl Scenario {
                 .find(|(p, _)| *p == player)
                 .map(|(_, a)| *a)
                 .ok_or(ScenarioError::MissingAnchor(player))?;
-            let (w, h) = BuildingKind::Foundry.stats().size;
+            let (w, h) = BuildingKind::Foundry.base_stats().size;
             let footprint_ok = (0..h)
                 .flat_map(|dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
                 .all(|t| state.passable(t));
@@ -454,7 +454,7 @@ impl Scenario {
         // registers its footprint, so the second's ground reads occupied.
         for (index, spec) in self.buildings.iter().enumerate() {
             let anchor = TilePos::new(spec.x, spec.y);
-            let (w, h) = spec.kind.stats().size;
+            let (w, h) = spec.kind.base_stats().size;
             let footprint_ok = (0..h)
                 .flat_map(|dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
                 .all(|t| state.passable(t));
@@ -620,7 +620,7 @@ mod tests {
             .find(|b| b.kind == BuildingKind::Turret)
             .expect("the authored turret stands");
         assert!(turret.built, "at full strength from tick zero");
-        assert_eq!(turret.hp, BuildingKind::Turret.stats().max_hp);
+        assert_eq!(turret.hp, BuildingKind::Turret.base_stats().max_hp);
 
         // The same anchor twice: the second footprint reads occupied.
         scenario.buildings.push(BuildingSpec {

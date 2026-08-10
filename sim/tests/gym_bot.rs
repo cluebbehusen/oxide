@@ -107,8 +107,8 @@ fn construction_plans_reserve_scrap_and_lower_before_production() {
     assert_eq!(feature("construction_plan"), 5);
     assert_eq!(feature("construction_reserve"), 120);
 
-    scenario.players[0].scrap =
-        BuildingKind::Array.stats().construction.unwrap().cost + UnitKind::Harvester.stats().cost;
+    scenario.players[0].scrap = BuildingKind::Array.base_stats().construction.unwrap().cost
+        + UnitKind::Harvester.stats().cost;
     let funded_state = scenario.build().unwrap();
     let commands = gym.step_plan(
         &funded_state,
@@ -152,7 +152,7 @@ fn selected_maintenance_defers_an_affordable_saved_build() {
     let mut gym = GymBot::new(PlayerId(0));
     gym.step(&low_state, Action::BuildArray);
 
-    scenario.players[0].scrap = BuildingKind::Array.stats().construction.unwrap().cost + 20;
+    scenario.players[0].scrap = BuildingKind::Array.base_stats().construction.unwrap().cost + 20;
     let funded_state = scenario.build().unwrap();
     let mut value = serde_json::to_value(funded_state).unwrap();
     let patient = value["units"]
@@ -502,7 +502,7 @@ fn unpaid_founding_claims_reserve_only_unspent_capital_and_expire() {
     assert_eq!(feature(&decision, "construction_plan"), 0);
     assert_eq!(
         feature(&decision, "construction_reserve"),
-        i64::from(BuildingKind::Turret.stats().construction.unwrap().cost)
+        i64::from(BuildingKind::Turret.base_stats().construction.unwrap().cost)
     );
     assert!(
         !decision.mask[Action::BuildReclaimer as usize],
@@ -869,13 +869,13 @@ fn strategic_features_price_fog_honest_resources_commitments_and_health() {
         .iter_mut()
         .find(|building| building["player"] == 0 && building["kind"] == "repair_bay")
         .unwrap();
-    bay["hp"] = (BuildingKind::RepairBay.stats().max_hp / 2).into();
+    bay["hp"] = (BuildingKind::RepairBay.base_stats().max_hp / 2).into();
     let array = buildings
         .iter_mut()
         .find(|building| building["player"] == 0 && building["kind"] == "array")
         .unwrap();
     array["built"] = false.into();
-    array["hp"] = (BuildingKind::Array.stats().max_hp / 5).into();
+    array["hp"] = (BuildingKind::Array.base_stats().max_hp / 5).into();
     let state: oxide_sim::State = serde_json::from_value(value).unwrap();
 
     let mut gym = GymBot::new(PlayerId(0));
@@ -902,8 +902,20 @@ fn strategic_features_price_fog_honest_resources_commitments_and_health() {
     assert_eq!(feature("my_unit_health_value"), unit_health);
     assert_eq!(
         feature("my_building_health_value"),
-        i64::from(BuildingKind::Bastion.stats().construction.unwrap().cost)
-            + i64::from(BuildingKind::RepairBay.stats().construction.unwrap().cost / 2)
+        i64::from(
+            BuildingKind::Bastion
+                .base_stats()
+                .construction
+                .unwrap()
+                .cost
+        ) + i64::from(
+            BuildingKind::RepairBay
+                .base_stats()
+                .construction
+                .unwrap()
+                .cost
+                / 2
+        )
     );
     assert_eq!(feature("my_bastions_built"), 1);
     assert_eq!(feature("my_repair_bays_built"), 1);
@@ -2199,7 +2211,7 @@ fn recovery_concedes_only_a_critically_wounded_position_under_visible_pressure()
         .buildings()
         .iter()
         .find(|building| building.player == PlayerId(0) && building.kind == BuildingKind::Foundry)
-        .map(|building| (building.id, building.kind.stats().max_hp))
+        .map(|building| (building.id, building.stats().max_hp))
         .unwrap();
     let mut value = serde_json::to_value(state).unwrap();
     value["buildings"]
@@ -2732,8 +2744,12 @@ fn salvage_masks_honestly_and_lowers_cheapest_first() {
         "an exhausted economy may liquidate static defense"
     );
     let my_building_value = d.features[63];
-    let expected = BuildingKind::Turret.stats().construction.unwrap().cost
-        + BuildingKind::Bastion.stats().construction.unwrap().cost;
+    let expected = BuildingKind::Turret.base_stats().construction.unwrap().cost
+        + BuildingKind::Bastion
+            .base_stats()
+            .construction
+            .unwrap()
+            .cost;
     assert_eq!(
         my_building_value,
         i64::from(expected),
@@ -3489,7 +3505,7 @@ fn the_repair_channel_leaves_salvage_targets_alone() {
             .buildings()
             .iter()
             .find(|b| b.kind == BuildingKind::Turret);
-        if turret.is_some_and(|b| b.hp < b.kind.stats().max_hp) {
+        if turret.is_some_and(|b| b.hp < b.stats().max_hp) {
             break;
         }
     }
@@ -3499,7 +3515,7 @@ fn the_repair_channel_leaves_salvage_targets_alone() {
         .find(|b| b.kind == BuildingKind::Turret)
         .expect("still standing");
     assert!(
-        turret.hp < turret.kind.stats().max_hp,
+        turret.hp < turret.stats().max_hp,
         "test premise: the strip left a wound repair would otherwise take"
     );
     let d = gym.decision(&state);

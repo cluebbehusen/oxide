@@ -89,7 +89,7 @@ pub fn garrison_cost(garrison: &Garrison) -> u32 {
 }
 
 fn structure_cost(kind: BuildingKind) -> u32 {
-    kind.stats().construction.map(|c| c.cost).unwrap_or(0)
+    kind.base_stats().construction.map(|c| c.cost).unwrap_or(0)
 }
 
 const ALL_KINDS: [UnitKind; 11] = [
@@ -450,7 +450,7 @@ fn siege_leg(
     let widest = garrison
         .iter()
         .map(|(kind, _)| {
-            let (w, h) = kind.stats().size;
+            let (w, h) = kind.base_stats().size;
             w.max(h)
         })
         .max()
@@ -475,7 +475,7 @@ fn siege_leg(
             let (x, y) = if b_player == 1 {
                 (east_x, east_y)
             } else {
-                let (building_width, building_height) = kind.stats().size;
+                let (building_width, building_height) = kind.base_stats().size;
                 (
                     width - building_width - east_x,
                     height - building_height - east_y,
@@ -591,8 +591,7 @@ fn siege_leg(
             .iter()
             .filter(|b| b.player == PlayerId(player) && b.kind != BuildingKind::Foundry)
             .map(|b| {
-                u64::from(structure_cost(b.kind)) * u64::from(b.hp)
-                    / u64::from(b.kind.stats().max_hp)
+                u64::from(structure_cost(b.kind)) * u64::from(b.hp) / u64::from(b.stats().max_hp)
             })
             .sum();
         units + structures

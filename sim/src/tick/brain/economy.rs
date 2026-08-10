@@ -47,7 +47,10 @@ pub(super) fn build(
         return;
     };
     let (anchor, kind) = (b.anchor, b.kind);
-    let stats = kind.stats();
+    // Tier stats: an upgrading building (tier already bumped, built
+    // false) ramps on the NEW tier's price row; a fresh site's tier is
+    // zero, so this is the ordinary construction row there.
+    let stats = b.stats();
     let size = stats.size;
     let build_ticks = stats
         .construction
@@ -132,7 +135,7 @@ pub(super) fn found(
         unit.advance_queue();
         return;
     }
-    let size = kind.stats().size;
+    let size = kind.base_stats().size;
     let tile = state.unit(id).expect("caller checked").tile();
     let inside = tile.x >= anchor.x
         && tile.x < anchor.x + size.0
@@ -174,14 +177,14 @@ pub(super) fn repair(
     let me = state.unit(id).expect("caller checked").player;
     let Some(b) = state
         .building(building)
-        .filter(|b| b.player == me && b.built && b.hp > 0 && b.hp < b.kind.stats().max_hp)
+        .filter(|b| b.player == me && b.built && b.hp > 0 && b.hp < b.stats().max_hp)
     else {
         // Healed, destroyed, or never a patient: the job is over.
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     };
     let (anchor, kind) = (b.anchor, b.kind);
-    let stats = kind.stats();
+    let stats = kind.base_stats();
     let size = stats.size;
     // The welding rate is the construction ramp — except the Foundry,
     // which keeps its authored ramp and billing basis: repairing the
@@ -507,7 +510,7 @@ pub(super) fn salvage(
         return;
     };
     let (anchor, kind) = (b.anchor, b.kind);
-    let stats = kind.stats();
+    let stats = kind.base_stats();
     let size = stats.size;
     let ramp_ticks = stats
         .construction
@@ -1152,7 +1155,7 @@ fn deliver(
     let drop_offs = drop_offs_by_distance(state, id);
     let at_drop_off = drop_offs.iter().any(|foundry_id| {
         state.building(*foundry_id).is_some_and(|foundry| {
-            tile_adjacent_to_rect(tile, foundry.anchor, foundry.kind.stats().size)
+            tile_adjacent_to_rect(tile, foundry.anchor, foundry.stats().size)
         })
     });
     if at_drop_off {
@@ -1184,7 +1187,7 @@ fn deliver(
     let mut danger_blocked = false;
     for foundry_id in drop_offs {
         let foundry = state.building(foundry_id).expect("collected live drop-off");
-        let (anchor, size) = (foundry.anchor, foundry.kind.stats().size);
+        let (anchor, size) = (foundry.anchor, foundry.stats().size);
         match approach_safe_rect(state, danger, id, anchor, size) {
             SafeApproach::Moving => return,
             SafeApproach::DangerBlocked => danger_blocked = true,
@@ -1222,7 +1225,7 @@ fn retire(state: &mut State, danger: &GroundSalvageDanger, id: UnitId, events: &
         let foundry = state
             .building(*foundry_id)
             .expect("collected live drop-off");
-        tile_adjacent_to_rect(tile, foundry.anchor, foundry.kind.stats().size)
+        tile_adjacent_to_rect(tile, foundry.anchor, foundry.stats().size)
     }) {
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
@@ -1230,7 +1233,7 @@ fn retire(state: &mut State, danger: &GroundSalvageDanger, id: UnitId, events: &
     let mut danger_blocked = false;
     for foundry_id in drop_offs {
         let foundry = state.building(foundry_id).expect("collected live drop-off");
-        let (anchor, size) = (foundry.anchor, foundry.kind.stats().size);
+        let (anchor, size) = (foundry.anchor, foundry.stats().size);
         match approach_safe_rect(state, danger, id, anchor, size) {
             SafeApproach::Moving => return,
             SafeApproach::DangerBlocked => danger_blocked = true,

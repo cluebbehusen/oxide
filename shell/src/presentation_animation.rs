@@ -288,7 +288,7 @@ impl BuildingAnimationFacts {
             .map(|kind| (kind, building.progress, kind.stats().train_ticks));
         let construction_total = building
             .kind
-            .stats()
+            .base_stats()
             .construction
             .map(|stats| stats.build_ticks);
         Self {
@@ -508,7 +508,7 @@ impl AnimationController {
             }
         };
         let weapon =
-            facts.kind.stats().weapons.first().map(|weapon| {
+            facts.kind.base_stats().weapons.first().map(|weapon| {
                 weapon_cycle(facts.cooldown, weapon.cooldown_ticks, clock.tick_fraction)
             });
         BuildingAnimationState {
@@ -714,7 +714,7 @@ fn active_unit_repair(state: &State, unit: &Unit) -> Option<Vec2Fx> {
             (patient.player == unit.player
                 && patient.built
                 && patient.hp > 0
-                && patient.hp < patient.kind.stats().max_hp
+                && patient.hp < patient.stats().max_hp
                 && tile_adjacent_to_building(unit.tile(), patient))
             .then_some(patient.center())
         }),
@@ -762,7 +762,7 @@ fn active_site_construction(state: &State, building: &Building) -> bool {
 }
 
 fn tile_adjacent_to_building(tile: chassis::grid::TilePos, building: &Building) -> bool {
-    let (width, height) = building.kind.stats().size;
+    let (width, height) = building.stats().size;
     let anchor = building.anchor;
     let inside = tile.x >= anchor.x
         && tile.y >= anchor.y
@@ -802,7 +802,10 @@ mod tests {
             kind,
             built: true,
             progress: 0,
-            construction_total: kind.stats().construction.map(|stats| stats.build_ticks),
+            construction_total: kind
+                .base_stats()
+                .construction
+                .map(|stats| stats.build_ticks),
             construction_active: false,
             production: None,
             cooldown: 0,
@@ -1056,6 +1059,7 @@ mod tests {
             rally: None,
             focus: None,
             built: false,
+            tier: 0,
             cooldown: 0,
             salvage_drained: 0,
             salvage_credited: 0,

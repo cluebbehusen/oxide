@@ -179,7 +179,10 @@ fn unit_shot_style(kind: oxide_sim::UnitKind, weapon: usize) -> ShotStyle {
 
 fn defense_shot_style(kind: oxide_sim::BuildingKind) -> ShotStyle {
     debug_assert!(
-        kind.stats().weapons.iter().all(|weapon| !weapon.projectile),
+        kind.base_stats()
+            .weapons
+            .iter()
+            .all(|weapon| !weapon.projectile),
         "real shell weapons must arrive through ShellLaunched"
     );
     match kind {
@@ -210,7 +213,7 @@ fn unit_muzzle_reach(kind: oxide_sim::UnitKind) -> f32 {
 
 fn defense_muzzle_reach(kind: oxide_sim::BuildingKind) -> f32 {
     match kind {
-        oxide_sim::BuildingKind::Bastion => kind.stats().size.0 as f32 * 0.49,
+        oxide_sim::BuildingKind::Bastion => kind.base_stats().size.0 as f32 * 0.49,
         oxide_sim::BuildingKind::FlakTurret => 0.47,
         _ => 0.44,
     }
@@ -497,7 +500,7 @@ impl Game {
                     // deserves the right report and burst.
                     let sound = defense_fire_sound(*kind);
                     let splash = kind
-                        .stats()
+                        .base_stats()
                         .weapons
                         .iter()
                         .find_map(|w| w.splash)
@@ -1020,7 +1023,12 @@ mod tests {
         ];
         let building_shells: Vec<_> = buildings
             .into_iter()
-            .filter(|kind| kind.stats().weapons.iter().any(|weapon| weapon.projectile))
+            .filter(|kind| {
+                kind.base_stats()
+                    .weapons
+                    .iter()
+                    .any(|weapon| weapon.projectile)
+            })
             .collect();
         assert_eq!(building_shells, vec![BuildingKind::Bastion]);
     }

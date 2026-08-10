@@ -337,6 +337,11 @@ pub struct Building {
         skip_serializing_if = "core::clone::Clone::clone"
     )]
     pub built: bool,
+    /// Position on the kind's upgrade ladder (zero = base). Set only by
+    /// a completed [`crate::Command::UpgradeBuilding`]; every stats read
+    /// on a live building follows it through [`Building::stats`].
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub tier: u8,
     /// Ticks until this building may fire again (turrets).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub cooldown: u32,
@@ -363,17 +368,28 @@ fn is_zero_u32(n: &u32) -> bool {
     *n == 0
 }
 
+fn is_zero_u8(n: &u8) -> bool {
+    *n == 0
+}
+
 impl Building {
+    /// This building's stats at its current tier — the accessor every
+    /// live read goes through; [`crate::stats::BuildingKind::base_stats`]
+    /// answers only tier-invariant questions.
+    pub fn stats(&self) -> &'static crate::stats::BuildingStats {
+        self.kind.tier_stats(self.tier)
+    }
+
     /// Iterates the footprint tiles row-major.
     pub fn tiles(&self) -> impl Iterator<Item = TilePos> + use<> {
-        let (w, h) = self.kind.stats().size;
+        let (w, h) = self.stats().size;
         let anchor = self.anchor;
         (0..h).flat_map(move |dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
     }
 
     /// Whether `pos` lies inside the footprint.
     pub fn contains(&self, pos: TilePos) -> bool {
-        let (w, h) = self.kind.stats().size;
+        let (w, h) = self.stats().size;
         pos.x >= self.anchor.x
             && pos.y >= self.anchor.y
             && pos.x < self.anchor.x + w
@@ -382,7 +398,7 @@ impl Building {
 
     /// Center of the footprint in world coordinates.
     pub fn center(&self) -> Vec2Fx {
-        let (w, h) = self.kind.stats().size;
+        let (w, h) = self.stats().size;
         let far = self.anchor.offset(w - 1, h - 1);
         (self.anchor.center() + far.center()) * chassis::fx::HALF
     }
@@ -390,7 +406,7 @@ impl Building {
     /// The point of the footprint rectangle closest to `from` — what range
     /// checks measure against, so big buildings don't get phantom reach.
     pub fn closest_point_to(&self, from: Vec2Fx) -> Vec2Fx {
-        let (w, h) = self.kind.stats().size;
+        let (w, h) = self.stats().size;
         let min = self.anchor.center() - Vec2Fx::new(chassis::fx::HALF, chassis::fx::HALF);
         let max = min + Vec2Fx::new(chassis::fx::Fx::from_num(w), chassis::fx::Fx::from_num(h));
         Vec2Fx::new(from.x.clamp(min.x, max.x), from.y.clamp(min.y, max.y))
@@ -770,7 +786,7 @@ impl State {
             if usize::from(b.player.0) >= players {
                 return Err(E::ForeignBuildingOwner(b.id));
             }
-            let stats = b.kind.stats();
+            let stats = b.stats();
             if b.hp == 0 || b.hp > stats.max_hp {
                 return Err(E::BuildingHpOutOfRange(b.id));
             }
@@ -821,6 +837,9 @@ impl State {
             }
             if !salvage_ledger_coherent(b) {
                 return Err(E::IncoherentSalvageLedger(b.id));
+            }
+            if usize::from(b.tier) >= b.kind.tiers().len() {
+                return Err(E::TierBeyondLadder(b.id));
             }
             if b.salvaged {
                 return Err(E::LiveBuildingMarkedSalvaged(b.id));
@@ -990,7 +1009,7 @@ impl State {
             .map(|building| {
                 building.focus.is_none_or(|target| {
                     building.built
-                        && building.kind.stats().weapons.first().is_some_and(|weapon| {
+                        && building.stats().weapons.first().is_some_and(|weapon| {
                             self.visible_hostile_target_domain(building.player, target)
                                 .is_some_and(|domain| weapon.targets.covers(domain))
                         })
@@ -1121,12 +1140,13 @@ impl State {
             player,
             kind,
             anchor,
-            hp: kind.stats().max_hp,
+            hp: kind.base_stats().max_hp,
             queue: std::collections::VecDeque::new(),
             progress: 0,
             rally: None,
             focus: None,
             built: true,
+            tier: 0,
             cooldown: 0,
             salvage_drained: 0,
             salvage_credited: 0,
@@ -1147,7 +1167,7 @@ impl State {
         let id = self.place_building(player, kind, anchor);
         let b = self.building_mut(id).expect("just placed");
         b.built = false;
-        b.hp = kind.stats().max_hp / 5;
+        b.hp = kind.base_stats().max_hp / 5;
         id
     }
 
@@ -1191,7 +1211,7 @@ impl State {
         kind: BuildingKind,
         anchor: TilePos,
     ) -> Option<PlaceRefusal> {
-        if kind.stats().construction.is_none() {
+        if kind.base_stats().construction.is_none() {
             return Some(PlaceRefusal::NotConstructible);
         }
         if !self.prerequisites_met(player, kind) {
@@ -1205,7 +1225,7 @@ impl State {
         } else {
             // Nothing else may pave over a frame: the ground under a
             // derelict Extractor stays contestable forever.
-            let (w, h) = kind.stats().size;
+            let (w, h) = kind.base_stats().size;
             for dy in 0..h {
                 for dx in 0..w {
                     if self.map.tile_in_extractor_frame(anchor.offset(dx, dy)) {
@@ -1214,7 +1234,7 @@ impl State {
                 }
             }
         }
-        let (w, h) = kind.stats().size;
+        let (w, h) = kind.base_stats().size;
         for dy in 0..h {
             for dx in 0..w {
                 let t = anchor.offset(dx, dy);
@@ -1253,7 +1273,7 @@ impl State {
     /// ghost, and every bot. An unconstructible kind trivially passes
     /// (its own refusal arm answers first).
     pub fn prerequisites_met(&self, player: PlayerId, kind: BuildingKind) -> bool {
-        kind.stats().construction.is_none_or(|construction| {
+        kind.base_stats().construction.is_none_or(|construction| {
             construction.requires.iter().all(|required| {
                 self.buildings.iter().any(|building| {
                     building.player == player
@@ -1302,7 +1322,7 @@ impl State {
         anchor: TilePos,
         units: &[UnitId],
     ) -> Option<PlaceRefusal> {
-        if kind.stats().construction.is_none() {
+        if kind.base_stats().construction.is_none() {
             return Some(PlaceRefusal::NotConstructible);
         }
         if !self.prerequisites_met(player, kind) {
@@ -1316,7 +1336,7 @@ impl State {
         } else {
             // Nothing else may pave over a frame: the ground under a
             // derelict Extractor stays contestable forever.
-            let (w, h) = kind.stats().size;
+            let (w, h) = kind.base_stats().size;
             for dy in 0..h {
                 for dx in 0..w {
                     if self.map.tile_in_extractor_frame(anchor.offset(dx, dy)) {
@@ -1327,7 +1347,7 @@ impl State {
         }
         let vision = self.vision(player);
         let my_team = self.players[player.0 as usize].team;
-        let (w, h) = kind.stats().size;
+        let (w, h) = kind.base_stats().size;
         let covers = |a: TilePos, size: (i32, i32), t: TilePos| {
             t.x >= a.x && t.x < a.x + size.0 && t.y >= a.y && t.y < a.y + size.1
         };
@@ -1353,10 +1373,10 @@ impl State {
                 let ghosted = vision
                     .ghosts()
                     .iter()
-                    .any(|g| covers(g.anchor, g.kind.stats().size, t));
+                    .any(|g| covers(g.anchor, g.kind.base_stats().size, t));
                 let allied_building = self.buildings.iter().any(|b| {
                     self.players[b.player.0 as usize].team == my_team
-                        && covers(b.anchor, b.kind.stats().size, t)
+                        && covers(b.anchor, b.stats().size, t)
                 });
                 if ghosted || allied_building {
                     return Some(PlaceRefusal::Building);
@@ -1373,7 +1393,7 @@ impl State {
                 && std::iter::once(&u.order).chain(u.queue.iter()).any(|o| {
                     matches!(o, Order::Found { kind: k, anchor: a }
                     if (0..h).any(|dy| (0..w).any(|dx| {
-                        covers(*a, k.stats().size, anchor.offset(dx, dy))
+                        covers(*a, k.base_stats().size, anchor.offset(dx, dy))
                     })))
                 })
         });
@@ -1523,7 +1543,7 @@ fn salvage_ledger_coherent(b: &Building) -> bool {
     if b.salvage_drained > SALVAGE_LEDGER_CEILING {
         return false;
     }
-    let stats = b.kind.stats();
+    let stats = b.stats();
     let basis = stats.construction.map_or(0, |c| c.cost);
     let target =
         u64::from(b.salvage_drained) * u64::from(basis) * crate::stats::SALVAGE_REFUND_PERMILLE
@@ -1635,7 +1655,7 @@ mod tests {
             BuildingKind::Reclaimer,
         ];
         for kind in KINDS {
-            let stats = kind.stats();
+            let stats = kind.base_stats();
             let ramp = u64::from(stats.max_hp - stats.max_hp / 5);
             assert!(
                 ramp * (u64::from(PROGRESS_ENVELOPE) + 1) <= u64::from(u32::MAX),
@@ -1817,6 +1837,9 @@ pub enum StateIntegrityError {
     /// stripped from it.
     #[error("building {0} carries an incoherent salvage ledger")]
     IncoherentSalvageLedger(BuildingId),
+    /// A tier index past the kind's upgrade ladder.
+    #[error("building {0} claims a tier its kind's ladder does not reach")]
+    TierBeyondLadder(BuildingId),
     /// A live building carries the transient marker cleanup uses to
     /// distinguish a completed salvage from combat destruction.
     #[error("building {0} is still live but marked salvaged")]

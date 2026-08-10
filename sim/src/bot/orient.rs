@@ -109,7 +109,7 @@ impl Orientation {
             // flips like a building's — the site audit compares it
             // against anchors recorded in oriented space.
             if let Some((kind, anchor)) = u.founding.as_mut() {
-                *anchor = self.anchor(*anchor, kind.stats().size);
+                *anchor = self.anchor(*anchor, kind.base_stats().size);
             }
         }
         for b in o
@@ -119,7 +119,7 @@ impl Orientation {
             .chain(o.enemy_buildings.iter_mut())
         {
             b.anchor = self.anchor(b.anchor, {
-                let (w, h) = b.kind.stats().size;
+                let (w, h) = b.kind.base_stats().size;
                 (w, h)
             });
         }
@@ -164,7 +164,7 @@ impl Orientation {
                 Intent::Build { kind, anchor } => Intent::Build {
                     kind,
                     anchor: self.anchor(anchor, {
-                        let (w, h) = kind.stats().size;
+                        let (w, h) = kind.base_stats().size;
                         (w, h)
                     }),
                 },

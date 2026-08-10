@@ -40,11 +40,22 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
     // Reclaimers trickle first: every built one grinds ambient debris
     // into a scrap each period. Order is building-id order (commutative
     // anyway — the credits are per-player sums).
-    if state.tick.is_multiple_of(crate::stats::RECLAIMER_PERIOD) {
+    for (period, tier) in [
+        (crate::stats::RECLAIMER_PERIOD, 0u8),
+        (crate::stats::REFINERY_PERIOD, 1u8),
+    ] {
+        if !state.tick.is_multiple_of(period) {
+            continue;
+        }
         let credits: Vec<PlayerId> = state
             .buildings
             .iter()
-            .filter(|b| b.built && b.hp > 0 && b.kind == crate::stats::BuildingKind::Reclaimer)
+            .filter(|b| {
+                b.built
+                    && b.hp > 0
+                    && b.kind == crate::stats::BuildingKind::Reclaimer
+                    && b.tier == tier
+            })
             .map(|b| b.player)
             .collect();
         for player in credits {
@@ -179,7 +190,7 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         }
         // Ready — look for a doorstep tile (any in-bounds tile serves a
         // flyer; the ground ring can be walled shut).
-        let (anchor, size, player, rally) = (b.anchor, b.kind.stats().size, b.player, b.rally);
+        let (anchor, size, player, rally) = (b.anchor, b.stats().size, b.player, b.rally);
         let domain = kind.stats().domain;
         let spawn = rect_adjacent_tiles(anchor, size).find(|&t| state.passable_for(domain, t));
         let Some(tile) = spawn else {
@@ -257,7 +268,7 @@ pub(super) fn decay_abandoned_sites(state: &mut State) {
                     && super::tile_adjacent_to_rect(
                         unit.tile(),
                         building.anchor,
-                        building.kind.stats().size,
+                        building.stats().size,
                     )
             })
         })

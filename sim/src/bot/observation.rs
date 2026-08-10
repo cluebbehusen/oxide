@@ -314,7 +314,7 @@ impl Observation {
         // Ghost memories cover ground currently out of sight.
         for ghost in vision.ghosts() {
             let visible_now = {
-                let (w, h) = ghost.kind.stats().size;
+                let (w, h) = ghost.kind.base_stats().size;
                 (0..h)
                     .flat_map(|dy| (0..w).map(move |dx| ghost.anchor.offset(dx, dy)))
                     .any(|t| vision.visible(t))

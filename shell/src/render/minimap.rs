@@ -211,7 +211,7 @@ pub(crate) fn draw_minimap(game: &Game) {
 
     if !omniscient {
         for ghost in vision.ghosts() {
-            let (w, h) = ghost.kind.stats().size;
+            let (w, h) = ghost.kind.base_stats().size;
             let age = memory_age(game, (ghost.anchor.x, ghost.anchor.y));
             // Through the allegiance cue like every live marker: a
             // remembered hostile twin must keep its dark press, or the
@@ -237,7 +237,7 @@ pub(crate) fn draw_minimap(game: &Game) {
         if !seen {
             continue;
         }
-        let (w, h) = building.kind.stats().size;
+        let (w, h) = building.stats().size;
         draw_rectangle(
             rect.x + building.anchor.x as f32 * scale,
             rect.y + building.anchor.y as f32 * scale,

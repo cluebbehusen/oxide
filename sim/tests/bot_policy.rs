@@ -31,7 +31,7 @@ fn a_think_never_plans_past_the_bank() {
             .iter()
             .map(|i| match i {
                 Intent::TrainAt { kind, .. } => kind.stats().cost,
-                Intent::Build { kind, .. } => kind.stats().construction.map_or(0, |c| c.cost),
+                Intent::Build { kind, .. } => kind.base_stats().construction.map_or(0, |c| c.cost),
                 _ => 0,
             })
             .sum();

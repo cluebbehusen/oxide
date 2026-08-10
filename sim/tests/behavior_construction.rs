@@ -17,7 +17,7 @@ fn construction_ramps_and_completes() {
     let builder = state.units()[0].id;
     let anchor = TilePos::new(5, 6);
     let scrap_before = state.player(PlayerId(0)).scrap;
-    let cost = BuildingKind::Turret.stats().construction.unwrap().cost;
+    let cost = BuildingKind::Turret.base_stats().construction.unwrap().cost;
     state.tick(&[cmd(
         0,
         Command::Build {
@@ -38,7 +38,7 @@ fn construction_ramps_and_completes() {
         .id;
     let b = state.building(site).unwrap();
     assert!(!b.built);
-    assert_eq!(b.hp, BuildingKind::Turret.stats().max_hp / 5);
+    assert_eq!(b.hp, BuildingKind::Turret.base_stats().max_hp / 5);
     assert!(!state.passable(anchor), "sites block their footprint");
 
     let events = run_until(&mut state, 600, |_, events| {
@@ -49,7 +49,11 @@ fn construction_ramps_and_completes() {
     assert!(!events.is_empty());
     let b = state.building(site).unwrap();
     assert!(b.built);
-    assert_eq!(b.hp, BuildingKind::Turret.stats().max_hp, "ramped to full");
+    assert_eq!(
+        b.hp,
+        BuildingKind::Turret.base_stats().max_hp,
+        "ramped to full"
+    );
     // Completion is buffered; the builder learns the site is done on the
     // next tick, through the built-site branch.
     state.tick(&[]);
@@ -191,7 +195,7 @@ fn cancel_refunds_by_health_and_damage_burns_it() {
     for _ in 0..120 {
         state.tick(&[]);
     }
-    let stats = BuildingKind::Turret.stats();
+    let stats = BuildingKind::Turret.base_stats();
     let b = state.building(site).unwrap();
     let expected = stats.construction.unwrap().cost * b.hp / stats.max_hp;
     let scrap_before = state.player(PlayerId(0)).scrap;
@@ -954,7 +958,7 @@ fn a_doomed_site_never_comes_online() {
     let (builder, s1, s2, l1, l2, l3) = (ids[0], ids[1], ids[2], ids[3], ids[4], ids[5]);
     let anchor = TilePos::new(9, 5);
     let build_ticks = BuildingKind::Turret
-        .stats()
+        .base_stats()
         .construction
         .unwrap()
         .build_ticks;
@@ -1389,7 +1393,7 @@ fn friendly_machines_make_way_for_foundations() {
             prev[i] = now;
         }
     }
-    let (w, h) = BuildingKind::Fabricator.stats().size;
+    let (w, h) = BuildingKind::Fabricator.base_stats().size;
     let inside =
         |t: TilePos| t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h;
     assert!(
@@ -1493,7 +1497,7 @@ fn an_allied_machine_makes_way_like_your_own() {
         );
         prev = now;
     }
-    let (w, h) = BuildingKind::Fabricator.stats().size;
+    let (w, h) = BuildingKind::Fabricator.base_stats().size;
     let t = state.unit(ally).unwrap().tile();
     assert!(
         !(t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h),
@@ -1605,7 +1609,7 @@ fn a_walled_in_machine_takes_the_instant_deal() {
         state.buildings().iter().any(|b| b.anchor == anchor),
         "the pocketed footprint still accepts the site"
     );
-    let (w, h) = BuildingKind::Fabricator.stats().size;
+    let (w, h) = BuildingKind::Fabricator.base_stats().size;
     let inside =
         |t: TilePos| t.x >= anchor.x && t.x < anchor.x + w && t.y >= anchor.y && t.y < anchor.y + h;
     let t = state.unit(sealed).unwrap().tile();
@@ -1760,7 +1764,7 @@ fn a_deferred_build_founds_on_arrival() {
     run_until(&mut state, 600, |s, _| {
         s.buildings().iter().any(|b| b.anchor == spot)
     });
-    let cost = BuildingKind::Turret.stats().construction.unwrap().cost;
+    let cost = BuildingKind::Turret.base_stats().construction.unwrap().cost;
     assert_eq!(
         state.player(PlayerId(0)).scrap,
         scrap_before - cost + drip_credits(&state),
@@ -2176,7 +2180,7 @@ fn cancelling_a_paid_queued_site_removes_only_its_build_leg() {
         },
     )]);
     let second_site = state.building(second).unwrap();
-    let stats = second_site.kind.stats();
+    let stats = second_site.kind.base_stats();
     let expected_refund = stats.construction.unwrap().cost * second_site.hp / stats.max_hp;
     let scrap_before = state.player(PlayerId(0)).scrap;
 
@@ -2875,7 +2879,7 @@ fn a_broke_founder_stalls_on_arrival() {
     use oxide_sim::event::StallReason;
     use oxide_sim::stats::BuildingKind;
     let mut scenario = arena(vec![unit(0, UnitKind::Harvester, 12, 2)]);
-    let cost = BuildingKind::Turret.stats().construction.unwrap().cost;
+    let cost = BuildingKind::Turret.base_stats().construction.unwrap().cost;
     scenario.players[0].scrap = cost;
     let mut state = scenario.build().unwrap();
     let builder = state.units()[0].id;

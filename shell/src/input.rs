@@ -199,7 +199,7 @@ pub(crate) fn build_defer_needed(
     kind: oxide_sim::BuildingKind,
     anchor: TilePos,
 ) -> bool {
-    let (w, h) = kind.stats().size;
+    let (w, h) = kind.base_stats().size;
     (0..h).any(|dy| (0..w).any(|dx| !game.state.vision(game.human).visible(anchor.offset(dx, dy))))
 }
 
@@ -277,7 +277,7 @@ fn pending_build_projection_for(
         }
         let reserved = claims
             .iter()
-            .filter_map(|(kind, _)| kind.stats().construction.map(|stats| stats.cost))
+            .filter_map(|(kind, _)| kind.base_stats().construction.map(|stats| stats.cost))
             .fold(0_u32, u32::saturating_add);
         let crew: Vec<_> = state
             .units()
@@ -841,12 +841,12 @@ pub fn apply_events(game: &mut Game, input: &mut InputState, events: &[RawEvent]
                 {
                     let world = game.camera.to_world(vec2(x, y));
                     let anchor = TilePos::new(world.x.floor() as i32, world.y.floor() as i32);
-                    let (w, h) = kind.stats().size;
+                    let (w, h) = kind.base_stats().size;
                     let overlaps = stroke
                         .anchors
                         .iter()
                         .any(|a| (a.x - anchor.x).abs() < w && (a.y - anchor.y).abs() < h);
-                    let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
+                    let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
                     let projection = pending_build_projection(game, kind, anchor, true);
                     // The projected bank already reflects every paid
                     // pending command; only surviving deferred claims
@@ -1306,7 +1306,7 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             // phase, with future prices held for surviving deferred
             // claims. A broke click gets the honest toast, not an
             // acknowledgment ping followed by a sim rejection.
-            let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
+            let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
             if projection.funds.available() < cost {
                 game.toast(format!("not enough scrap for a {}", kind.name()));
                 game.sounds_pending
@@ -1498,7 +1498,7 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
             input.build_menu = false;
             input.disarm_click_verbs();
             input.placing = Some(kind);
-            let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
+            let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
             game.toast(format!(
                 "placing {} ({} scrap): click to build, Shift chains, Esc to cancel",
                 kind.name(),

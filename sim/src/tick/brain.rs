@@ -261,7 +261,7 @@ fn resolve_hits(
             let i = match rooms.iter().position(|(id, _)| *id == gain.site) {
                 Some(i) => i,
                 None => {
-                    let room = i64::from(b.kind.stats().max_hp) - i64::from(b.hp);
+                    let room = i64::from(b.stats().max_hp) - i64::from(b.hp);
                     rooms.push((gain.site, room));
                     rooms.len() - 1
                 }
@@ -330,7 +330,7 @@ fn resolve_hits(
         if b.hp == 0 {
             continue; // fire won this tick; every gain and drain forfeits
         }
-        let stats = b.kind.stats();
+        let stats = b.stats();
         let before = b.hp;
         let after = (i64::from(before) + w.gain - w.drain).clamp(0, i64::from(stats.max_hp)) as u32;
         b.hp = after;

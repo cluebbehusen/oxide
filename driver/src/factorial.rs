@@ -309,7 +309,7 @@ pub fn rotate_180(base: &Scenario) -> Result<Scenario> {
     // its rotation lands a footprint in from the rotated corner. That
     // target sits inside the original footprint and is therefore open
     // ground the symmetry check already cleared.
-    let (fw, fh) = BuildingKind::Foundry.stats().size;
+    let (fw, fh) = BuildingKind::Foundry.base_stats().size;
     let (fw, fh) = (fw as usize, fh as usize);
     for (y, row) in rows.iter().enumerate() {
         for (x, &c) in row.iter().enumerate() {
@@ -337,7 +337,7 @@ pub fn rotate_180(base: &Scenario) -> Result<Scenario> {
         unit.y = h - 1 - unit.y;
     }
     for building in &mut out.buildings {
-        let (bw, bh) = building.kind.stats().size;
+        let (bw, bh) = building.kind.base_stats().size;
         building.x = w - building.x - bw;
         building.y = h - building.y - bh;
     }

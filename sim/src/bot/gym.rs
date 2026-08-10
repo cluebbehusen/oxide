@@ -225,7 +225,7 @@ fn recovery_rect_closest_point(anchor: TilePos, size: (i32, i32), from: Vec2Fx) 
 }
 
 fn recovery_building_ground_reach(kind: BuildingKind) -> Option<Fx> {
-    kind.stats()
+    kind.base_stats()
         .weapons
         .iter()
         .filter(|weapon| weapon.targets.covers(Domain::Ground))
@@ -757,11 +757,11 @@ impl GymBot {
         let damaged: Vec<_> = obs
             .my_buildings
             .iter()
-            .filter(|b| b.built && b.hp < b.kind.stats().max_hp)
+            .filter(|b| b.built && b.hp < b.kind.base_stats().max_hp)
             .collect();
         let repair_deficit: i64 = damaged
             .iter()
-            .map(|b| i64::from(b.kind.stats().max_hp - b.hp))
+            .map(|b| i64::from(b.kind.base_stats().max_hp - b.hp))
             .sum();
         let ally_strength: i64 = (obs
             .ally_units
@@ -864,7 +864,9 @@ impl GymBot {
             .my_buildings
             .iter()
             .filter(|b| b.built)
-            .map(|b| feature_price(b.kind) * i64::from(b.hp) / i64::from(b.kind.stats().max_hp))
+            .map(|b| {
+                feature_price(b.kind) * i64::from(b.hp) / i64::from(b.kind.base_stats().max_hp)
+            })
             .sum::<i64>();
         let hostile_fighters_near_home = home.map_or(0, |home| {
             obs.enemy_units
@@ -1068,7 +1070,7 @@ impl GymBot {
             mask[Action::Repair as usize] = free_builder(&obs, &enlisted)
                 && spendable > 0
                 && obs.my_buildings.iter().any(|b| {
-                    b.built && b.hp < b.kind.stats().max_hp && !under_salvage.contains(&b.id)
+                    b.built && b.hp < b.kind.base_stats().max_hp && !under_salvage.contains(&b.id)
                 });
             mask[Action::Salvage as usize] = free_builder(&obs, &enlisted)
                 && obs.scrap < UnitKind::Harvester.stats().cost
@@ -1447,7 +1449,7 @@ impl GymBot {
         // ladder's anchors and must not move.
         let vision = state.vision(self.player);
         let defer_needed = |kind: BuildingKind, anchor: TilePos| {
-            let (w, h) = kind.stats().size;
+            let (w, h) = kind.base_stats().size;
             (0..h).any(|dy| (0..w).any(|dx| !vision.visible(anchor.offset(dx, dy))))
         };
         commands.extend(self.exec.apply_with(
@@ -1508,10 +1510,12 @@ impl GymBot {
                     .my_buildings
                     .iter()
                     .filter(|b| {
-                        b.built && b.hp < b.kind.stats().max_hp && !under_salvage.contains(&b.id)
+                        b.built
+                            && b.hp < b.kind.base_stats().max_hp
+                            && !under_salvage.contains(&b.id)
                     })
                     .map(|b| {
-                        let deficit = b.kind.stats().max_hp - b.hp;
+                        let deficit = b.kind.base_stats().max_hp - b.hp;
                         (std::cmp::Reverse(deficit), b.anchor.y, b.anchor.x, b.id)
                     })
                     .min()
@@ -1666,7 +1670,7 @@ impl GymBot {
 
     fn saved_plan_reserve(&self) -> u32 {
         self.planned_build
-            .and_then(|kind| kind.stats().construction)
+            .and_then(|kind| kind.base_stats().construction)
             .map_or(0, |construction| construction.cost)
     }
 
@@ -1716,7 +1720,7 @@ impl GymBot {
         founding_claims(obs)
             .into_iter()
             .filter(|(kind, anchor)| !self.founding_claim_stale(*kind, *anchor, obs.tick))
-            .filter_map(|(kind, _)| kind.stats().construction)
+            .filter_map(|(kind, _)| kind.base_stats().construction)
             .fold(0u32, |total, construction| {
                 total.saturating_add(construction.cost)
             })
@@ -1877,7 +1881,7 @@ impl GymBot {
         intents: &mut Vec<Intent>,
     ) -> Option<u32> {
         let kind = self.planned_build?;
-        let construction = kind.stats().construction?;
+        let construction = kind.base_stats().construction?;
         if self.unpaid_claim_reserve(obs) > 0
             || obs.scrap < construction.cost
             || !free_builder(obs, enlisted)
@@ -2110,7 +2114,7 @@ impl GymBot {
                 building.built
                     && recovery_building_ground_reach(building.kind).is_some_and(|range| {
                         let reach = range + crate::stats::HARVEST_STATIC_DANGER_MARGIN;
-                        let size = building.kind.stats().size;
+                        let size = building.kind.base_stats().size;
                         recovery_reach_contains(
                             recovery_rect_closest_point(building.anchor, size, tile_point)
                                 .dist_sq(tile_point),
@@ -2304,7 +2308,7 @@ impl GymBot {
         let lower = |this: &mut Self, intents: Vec<Intent>| {
             let vision = state.vision(this.player);
             let defer_needed = |kind: BuildingKind, anchor: TilePos| {
-                let (w, h) = kind.stats().size;
+                let (w, h) = kind.base_stats().size;
                 (0..h).any(|dy| (0..w).any(|dx| !vision.visible(anchor.offset(dx, dy))))
             };
             this.exec.apply_with(
@@ -2653,9 +2657,10 @@ impl GymBot {
                     building: building.id,
                 },
             });
-            if let Some(construction) = building.kind.stats().construction {
-                projected = projected
-                    .saturating_add(construction.cost * building.hp / building.kind.stats().max_hp);
+            if let Some(construction) = building.kind.base_stats().construction {
+                projected = projected.saturating_add(
+                    construction.cost * building.hp / building.kind.base_stats().max_hp,
+                );
             }
         }
         let founders: Vec<UnitId> = obs
@@ -2928,7 +2933,7 @@ impl Point2 {
     }
 
     fn building(anchor: TilePos, kind: BuildingKind) -> Self {
-        let (width, height) = kind.stats().size;
+        let (width, height) = kind.base_stats().size;
         Self {
             x: anchor.x.saturating_mul(2).saturating_add(width),
             y: anchor.y.saturating_mul(2).saturating_add(height),
@@ -3009,7 +3014,7 @@ impl KnownPassability {
             .chain(obs.ally_buildings.iter())
             .chain(obs.enemy_buildings.iter())
         {
-            let (building_width, building_height) = building.kind.stats().size;
+            let (building_width, building_height) = building.kind.base_stats().size;
             for dy in 0..building_height {
                 for dx in 0..building_width {
                     let tile = building.anchor.offset(dx, dy);
@@ -3150,7 +3155,7 @@ impl DefenseBuilderRoutes {
     }
 
     fn travel_to(&self, anchor: TilePos, kind: BuildingKind) -> Option<u32> {
-        let (width, height) = kind.stats().size;
+        let (width, height) = kind.base_stats().size;
         (-1..=width)
             .flat_map(|dx| (-1..=height).map(move |dy| (dx, dy)))
             .filter(|(dx, dy)| !(0..width).contains(dx) || !(0..height).contains(dy))
@@ -3663,7 +3668,7 @@ impl DefenseMetrics {
                     .chain(obs.ally_buildings.iter())
                     .filter(|building| building.built)
                     .map(|building| {
-                        let sight = building.kind.stats().vision.saturating_mul(2);
+                        let sight = building.kind.base_stats().vision.saturating_mul(2);
                         if center.chebyshev(Point2::building(building.anchor, building.kind))
                             <= sight
                         {
@@ -3822,7 +3827,7 @@ fn normalized(value: i64, (low, high): (i64, i64), inverse: bool) -> i64 {
 }
 
 fn defense_reach2(kind: BuildingKind) -> (i32, i32) {
-    kind.stats().weapons.first().map_or((0, 0), |weapon| {
+    kind.base_stats().weapons.first().map_or((0, 0), |weapon| {
         let doubled = chassis::fx::Fx::from_num(2);
         (
             (weapon.minimum_range * doubled).floor().to_num(),
@@ -3861,7 +3866,7 @@ fn defense_foci(obs: &Observation, home: TilePos, kind: BuildingKind) -> Vec<Til
             foci.extend(
                 obs.my_buildings
                     .iter()
-                    .filter(|building| building.built && !building.kind.stats().can_fight())
+                    .filter(|building| building.built && !building.kind.base_stats().can_fight())
                     .take(8)
                     .map(|building| building.anchor),
             );
@@ -3934,7 +3939,7 @@ fn defense_threats(obs: &Observation, kind: BuildingKind) -> Vec<(Point2, i64)> 
                 .filter(|building| {
                     building
                         .kind
-                        .stats()
+                        .base_stats()
                         .weapons
                         .iter()
                         .any(|weapon| weapon.targets.covers(Domain::Ground))
@@ -3960,7 +3965,7 @@ fn feature_price(kind: BuildingKind) -> i64 {
     if kind == BuildingKind::Foundry {
         return 0;
     }
-    kind.stats()
+    kind.base_stats()
         .construction
         .map_or(0, |construction| i64::from(construction.cost))
 }
@@ -3978,6 +3983,8 @@ fn protected_points(obs: &Observation, kind: BuildingKind) -> Vec<(Point2, i64)>
             // Restored income machinery is worth defending like a
             // Reclaimer's weight in works.
             BuildingKind::Extractor => 900,
+            BuildingKind::Airworks => 1_000,
+            BuildingKind::Crucible => 1_400,
         };
         if building.built { base } else { base / 2 }
     };
@@ -4088,10 +4095,13 @@ fn building_cap(kind: BuildingKind) -> usize {
         BuildingKind::Turret | BuildingKind::FlakTurret | BuildingKind::Bastion => 2,
         BuildingKind::Array | BuildingKind::RepairBay => 1,
         BuildingKind::Reclaimer => 2,
-        // The frozen v8 actor predates both kinds; it never plans them.
+        // The frozen v8 actor predates these kinds; it never plans them.
         // These zeros die with the rest of the caps in the gym v9
         // parity migration.
-        BuildingKind::Foundry | BuildingKind::Extractor => 0,
+        BuildingKind::Foundry
+        | BuildingKind::Extractor
+        | BuildingKind::Airworks
+        | BuildingKind::Crucible => 0,
     }
 }
 
@@ -4106,7 +4116,10 @@ fn building_plan_code(kind: BuildingKind) -> i64 {
         BuildingKind::RepairBay => 7,
         // Unplannable under the frozen v8 actor: shares the plan-less
         // code with the Foundry until the v9 feature redesign.
-        BuildingKind::Foundry | BuildingKind::Extractor => 0,
+        BuildingKind::Foundry
+        | BuildingKind::Extractor
+        | BuildingKind::Airworks
+        | BuildingKind::Crucible => 0,
     }
 }
 
@@ -4209,7 +4222,7 @@ fn nearby_salvage(obs: &Observation) -> u32 {
 }
 
 fn affordable_capital(obs: &Observation, kind: BuildingKind, reserve: u32) -> bool {
-    kind.stats()
+    kind.base_stats()
         .construction
         .is_some_and(|construction| obs.scrap >= construction.cost.saturating_add(reserve))
 }
@@ -4327,7 +4340,7 @@ fn recovery_is_conclusive(obs: &Observation, home: TilePos) -> bool {
     let critically_wounded = foundry.hp.saturating_mul(RECOVERY_CONCEDE_HP_DEN)
         <= foundry
             .kind
-            .stats()
+            .base_stats()
             .max_hp
             .saturating_mul(RECOVERY_CONCEDE_HP_NUM);
     let visible_pressure = obs.enemy_units.iter().any(|unit| {
@@ -4383,11 +4396,11 @@ fn useful_recovery_liquidation(obs: &Observation) -> Option<BuildingId> {
             let rank = SALVAGE_PRIORITY
                 .iter()
                 .position(|kind| *kind == building.kind)?;
-            let construction = building.kind.stats().construction?;
+            let construction = building.kind.base_stats().construction?;
             let refund = u64::from(construction.cost)
                 * u64::from(building.hp)
                 * crate::stats::SALVAGE_REFUND_PERMILLE
-                / (1000 * u64::from(building.kind.stats().max_hp));
+                / (1000 * u64::from(building.kind.base_stats().max_hp));
             (u64::from(obs.scrap).saturating_add(refund)
                 >= u64::from(UnitKind::Sentinel.stats().cost))
             .then_some((rank, building.anchor.y, building.anchor.x, building.id))
@@ -4490,7 +4503,7 @@ mod tests {
         assert!(bastion_tile.chebyshev(bastion_anchor) > DANGER_RADIUS);
         let bastion_reach = recovery_building_ground_reach(bastion).unwrap()
             + crate::stats::HARVEST_STATIC_DANGER_MARGIN;
-        let size = bastion.stats().size;
+        let size = bastion.base_stats().size;
         let tile_point = bastion_tile.center();
         assert!(recovery_reach_contains(
             recovery_rect_closest_point(bastion_anchor, size, tile_point).dist_sq(tile_point),

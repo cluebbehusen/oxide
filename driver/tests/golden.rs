@@ -533,7 +533,7 @@ fn showcase_covers_every_rendered_feature() {
         // Anything constructible must show a site form — the Foundry
         // included, now that expansions are buildable.
         assert_eq!(
-            kind.stats().construction.is_some(),
+            kind.base_stats().construction.is_some(),
             state.buildings().iter().any(|b| b.kind == kind && !b.built),
             "{kind:?}'s scaffolding coverage disagrees with whether it can be built"
         );

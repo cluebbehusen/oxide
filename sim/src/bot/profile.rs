@@ -686,7 +686,7 @@ fn mirror_seats(
     map: &Map,
     anchors: &[(PlayerId, TilePos)],
 ) -> Vec<Option<usize>> {
-    let (foundry_w, foundry_h) = BuildingKind::Foundry.stats().size;
+    let (foundry_w, foundry_h) = BuildingKind::Foundry.base_stats().size;
     let mut candidates = vec![None; scenario.players.len()];
     for (player, anchor) in anchors {
         let image = TilePos::new(
@@ -726,7 +726,7 @@ fn resolve_team_roles_from_parts(
         }
     }
 
-    let (foundry_w, foundry_h) = BuildingKind::Foundry.stats().size;
+    let (foundry_w, foundry_h) = BuildingKind::Foundry.base_stats().size;
     let pair_key = |index: usize| {
         let Some(anchor) = anchor_by_seat[index] else {
             return (i32::MAX, i32::MAX, index);

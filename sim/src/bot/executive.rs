@@ -1021,7 +1021,7 @@ pub fn building_strength(b: &super::observation::BuildingObs) -> u64 {
     }
     let dps100: u64 = b
         .kind
-        .stats()
+        .base_stats()
         .weapons
         .iter()
         .filter(|w| w.targets.ground)

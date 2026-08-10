@@ -49,7 +49,7 @@ fn ghost_built_default() -> bool {
 
 impl GhostBuilding {
     fn footprint(&self) -> impl Iterator<Item = TilePos> + use<> {
-        let (w, h) = self.kind.stats().size;
+        let (w, h) = self.kind.base_stats().size;
         let anchor = self.anchor;
         (0..h).flat_map(move |dy| (0..w).map(move |dx| anchor.offset(dx, dy)))
     }
@@ -361,11 +361,11 @@ impl GroundSalvageDanger {
             .iter()
             .filter(|ghost| ghost.built)
             .filter_map(|ghost| {
-                let range = ground_weapon_reach(ghost.kind.stats().weapons)?
+                let range = ground_weapon_reach(ghost.kind.base_stats().weapons)?
                     + crate::stats::HARVEST_STATIC_DANGER_MARGIN;
                 Some(StaticGroundPressure {
                     anchor: ghost.anchor,
-                    size: ghost.kind.stats().size,
+                    size: ghost.kind.base_stats().size,
                     reach_sq: range * range,
                 })
             })
@@ -378,7 +378,7 @@ impl GroundSalvageDanger {
                     &mut building_blocks,
                     state.map.width(),
                     building.anchor,
-                    building.kind.stats().size,
+                    building.stats().size,
                 );
             } else {
                 // A hostile structure placed during this tick's command
@@ -402,7 +402,7 @@ impl GroundSalvageDanger {
                 &mut building_blocks,
                 state.map.width(),
                 ghost.anchor,
-                ghost.kind.stats().size,
+                ghost.kind.base_stats().size,
             );
         }
         for row in &mut building_blocks {
@@ -680,12 +680,12 @@ pub(crate) fn refresh(state: &mut State) {
             .iter()
             .filter(|b| allied(b.player) && b.built)
         {
-            let (w, h) = building.kind.stats().size;
+            let (w, h) = building.stats().size;
             view.stamp_rect(
                 building.anchor,
                 w,
                 h,
-                building.kind.stats().vision,
+                building.stats().vision,
                 &mut coverage,
             );
         }

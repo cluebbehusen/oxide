@@ -57,7 +57,7 @@ fn building_obs(id: u32, player: u8, kind: BuildingKind, x: i32, y: i32) -> Buil
         player: PlayerId(player),
         kind,
         anchor: TilePos::new(x, y),
-        hp: kind.stats().max_hp,
+        hp: kind.base_stats().max_hp,
         built: true,
         seen: true,
     }

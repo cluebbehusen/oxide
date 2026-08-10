@@ -220,6 +220,20 @@ pub enum Command {
         /// The promised top-left footprint tile.
         anchor: TilePos,
     },
+    /// Lifts a completed building one rung up its kind's upgrade ladder.
+    /// The full price is charged now, the works goes offline (a site
+    /// again, on the new tier's row), and the accepted harvester crew
+    /// takes the same Build order ordinary construction uses — resume,
+    /// relief builders, and stacking all behave identically. Upgrades
+    /// cannot be cancelled: the machine is committed until it stands.
+    UpgradeBuilding {
+        /// The working crew (harvesters).
+        units: Vec<UnitId>,
+        /// The building to lift.
+        building: BuildingId,
+        /// Append to order queues instead of replacing.
+        queue: bool,
+    },
 }
 
 /// A command attributed to its issuing player. Ownership checks are made

@@ -76,6 +76,12 @@ pub enum BuildingKind {
     /// the strongest income in the game — and the frame outlives every
     /// destruction, so the ground it stands on is contested forever.
     Extractor,
+    /// Air production hall: every flyer trains here. Committing to the
+    /// sky is a visible, snipeable investment.
+    Airworks,
+    /// The tier-three works: trains the heaviest machines and gates the
+    /// deepest upgrades. Expensive, slow, and worth killing.
+    Crucible,
 }
 
 /// A movement medium. Ground units path and collide on the terrain grid;
@@ -229,6 +235,53 @@ pub struct BuildingStats {
     /// Present iff harvesters can build it. `None` marks the kinds only
     /// scenarios place (the Foundry — win conditions stay authored).
     pub construction: Option<ConstructionStats>,
+}
+
+impl BuildingKind {
+    /// The tier ladder for this kind: index by a building's `tier`.
+    /// Kinds without upgrades ladder alone at tier zero.
+    pub const fn tiers(self) -> &'static [&'static BuildingStats] {
+        match self {
+            BuildingKind::Turret => &[&TURRET, &HEAVY_TURRET, &BULWARK],
+            BuildingKind::FlakTurret => &[&FLAK_TURRET, &BURST_FLAK],
+            BuildingKind::Reclaimer => &[&RECLAIMER, &REFINERY],
+            BuildingKind::Array => &[&ARRAY, &DEEP_ARRAY],
+            BuildingKind::Foundry => &[&FOUNDRY],
+            BuildingKind::Fabricator => &[&FABRICATOR],
+            BuildingKind::Bastion => &[&BASTION],
+            BuildingKind::RepairBay => &[&REPAIR_BAY],
+            BuildingKind::Extractor => &[&EXTRACTOR],
+            BuildingKind::Airworks => &[&AIRWORKS],
+            BuildingKind::Crucible => &[&CRUCIBLE],
+        }
+    }
+
+    /// Stats at `tier`, clamped to the ladder's top so a forged tier
+    /// can never index past the table (the validator refuses it first).
+    pub fn tier_stats(self, tier: u8) -> &'static BuildingStats {
+        let tiers = self.tiers();
+        tiers[(tier as usize).min(tiers.len() - 1)]
+    }
+
+    /// The upgrade that would lift a building at `tier` one rung, if
+    /// the ladder continues: the next tier's construction row.
+    pub fn upgrade_from(self, tier: u8) -> Option<&'static ConstructionStats> {
+        self.tiers()
+            .get(tier as usize + 1)
+            .and_then(|stats| stats.construction.as_ref())
+    }
+
+    /// A display name per tier, so upgraded works read as what they are.
+    pub const fn tier_name(self, tier: u8) -> &'static str {
+        match (self, tier) {
+            (BuildingKind::Turret, 1) => "heavy turret",
+            (BuildingKind::Turret, 2) => "bulwark",
+            (BuildingKind::FlakTurret, 1) => "burst flak",
+            (BuildingKind::Reclaimer, 1) => "refinery",
+            (BuildingKind::Array, 1) => "deep array",
+            _ => self.name(),
+        }
+    }
 }
 
 impl BuildingStats {
@@ -627,7 +680,7 @@ const FOUNDRY: BuildingStats = BuildingStats {
     max_hp: 1600,
     size: (2, 2),
     vision: 8,
-    produces: &[UnitKind::Harvester, UnitKind::Sentinel],
+    produces: &[UnitKind::Harvester, UnitKind::Sentinel, UnitKind::Scuttler],
     weapons: &[],
     // 0.15: buildable — the expansion base and the comeback path. Gated
     // on a Fabricator so a proxy Foundry is a committed tech play, and
@@ -670,6 +723,11 @@ const FABRICATOR: BuildingStats = BuildingStats {
     vision: 6,
     // Both factions' variants are listed; the train gate deals each seat
     // only its own. Order groups the roles for the HUD's slot labels.
+    // 0.15 transition: the final tree homes the sky at the Airworks and
+    // the Scuttler at the Foundry, but the frozen v8 actor can neither
+    // build an Airworks nor re-aim its train gates, so the Fabricator
+    // keeps its 0.14 roster — shared and legal for humans and bots
+    // alike — until the gym v9 retrain closes the overlap.
     produces: &[
         UnitKind::Scuttler,
         UnitKind::Lancer,
@@ -772,6 +830,39 @@ const REPAIR_BAY: BuildingStats = BuildingStats {
     }),
 };
 
+const AIRWORKS: BuildingStats = BuildingStats {
+    max_hp: 500,
+    size: (2, 2),
+    vision: 6,
+    // Both factions' wings are listed; the train gate deals each seat
+    // only its own.
+    produces: &[
+        UnitKind::Buzzard,
+        UnitKind::Darter,
+        UnitKind::Talon,
+        UnitKind::Wisp,
+    ],
+    weapons: &[],
+    construction: Some(ConstructionStats {
+        cost: 200,
+        build_ticks: 350,
+        requires: &[BuildingKind::Fabricator],
+    }),
+};
+
+const CRUCIBLE: BuildingStats = BuildingStats {
+    max_hp: 900,
+    size: (2, 2),
+    vision: 6,
+    produces: &[],
+    weapons: &[],
+    construction: Some(ConstructionStats {
+        cost: 500,
+        build_ticks: 700,
+        requires: &[BuildingKind::Fabricator],
+    }),
+};
+
 const EXTRACTOR: BuildingStats = BuildingStats {
     max_hp: 600,
     size: (2, 2),
@@ -784,6 +875,106 @@ const EXTRACTOR: BuildingStats = BuildingStats {
         cost: 100,
         build_ticks: 300,
         requires: &[],
+    }),
+};
+
+// ---- Upgrade tiers ----------------------------------------------------
+//
+// Each upgradeable kind carries an array of tier structs; a building's
+// `tier` indexes it. A tier's `construction` row is the price of the
+// UPGRADE that produced it (tier 0 keeps the ordinary build price), so
+// repair pricing and refund logic read the tier they are welding.
+// `BuildingStats.upgrade` names the next tier's row where one exists.
+
+const HEAVY_TURRET: BuildingStats = BuildingStats {
+    max_hp: 500,
+    size: (1, 1),
+    vision: 6,
+    produces: &[],
+    weapons: &[WeaponStats {
+        damage: 20,
+        range: Fx::lit("6"),
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 25,
+        targets: DomainMask::GROUND,
+        splash: None,
+        indirect: false,
+        projectile: false,
+    }],
+    construction: Some(ConstructionStats {
+        cost: 150,
+        build_ticks: 300,
+        requires: &[BuildingKind::Fabricator],
+    }),
+};
+
+const BULWARK: BuildingStats = BuildingStats {
+    max_hp: 900,
+    size: (1, 1),
+    vision: 7,
+    produces: &[],
+    weapons: &[WeaponStats {
+        damage: 60,
+        range: Fx::lit("7.5"),
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 50,
+        targets: DomainMask::GROUND,
+        splash: None,
+        indirect: false,
+        projectile: false,
+    }],
+    construction: Some(ConstructionStats {
+        cost: 300,
+        build_ticks: 500,
+        requires: &[BuildingKind::Crucible],
+    }),
+};
+
+const BURST_FLAK: BuildingStats = BuildingStats {
+    max_hp: 400,
+    size: (1, 1),
+    vision: 7,
+    produces: &[],
+    weapons: &[WeaponStats {
+        damage: 12,
+        range: Fx::lit("6"),
+        minimum_range: Fx::ZERO,
+        cooldown_ticks: 10,
+        targets: DomainMask::AIR,
+        splash: Some(Fx::lit("1.5")),
+        indirect: false,
+        projectile: false,
+    }],
+    construction: Some(ConstructionStats {
+        cost: 120,
+        build_ticks: 250,
+        requires: &[BuildingKind::Fabricator],
+    }),
+};
+
+const REFINERY: BuildingStats = BuildingStats {
+    max_hp: 400,
+    size: (1, 1),
+    vision: 4,
+    produces: &[],
+    weapons: &[],
+    construction: Some(ConstructionStats {
+        cost: 150,
+        build_ticks: 300,
+        requires: &[BuildingKind::Fabricator],
+    }),
+};
+
+const DEEP_ARRAY: BuildingStats = BuildingStats {
+    max_hp: 300,
+    size: (1, 1),
+    vision: 11,
+    produces: &[],
+    weapons: &[],
+    construction: Some(ConstructionStats {
+        cost: 150,
+        build_ticks: 300,
+        requires: &[BuildingKind::Fabricator],
     }),
 };
 
@@ -830,11 +1021,16 @@ impl BuildingKind {
             BuildingKind::Reclaimer => "reclaimer",
             BuildingKind::RepairBay => "repair bay",
             BuildingKind::Extractor => "extractor",
+            BuildingKind::Airworks => "airworks",
+            BuildingKind::Crucible => "crucible",
         }
     }
 
-    /// Static stats for this kind.
-    pub const fn stats(self) -> &'static BuildingStats {
+    /// Tier-zero stats for this kind. Most callers want a live
+    /// building's [`crate::state::Building::stats`], which follows the
+    /// upgrade ladder; this base row is for costs, footprints, and
+    /// other tier-invariant questions.
+    pub const fn base_stats(self) -> &'static BuildingStats {
         match self {
             BuildingKind::Foundry => &FOUNDRY,
             BuildingKind::Turret => &TURRET,
@@ -845,6 +1041,8 @@ impl BuildingKind {
             BuildingKind::Reclaimer => &RECLAIMER,
             BuildingKind::RepairBay => &REPAIR_BAY,
             BuildingKind::Extractor => &EXTRACTOR,
+            BuildingKind::Airworks => &AIRWORKS,
+            BuildingKind::Crucible => &CRUCIBLE,
         }
     }
 
@@ -921,6 +1119,10 @@ pub const FOUNDRY_DRIP_PERIOD: u64 = 60;
 /// scripted brain (13/40 -> passing) purely on perfectly-converted
 /// early free scrap — the floor should never be an opening build order.
 pub const FOUNDRY_DRIP_START_TICK: u64 = 2_400;
+
+/// Ticks per scrap ground by a tier-one Reclaimer (the Refinery) — two
+/// and a half times the base drum, the roadmap's "improved Reclaimer".
+pub const REFINERY_PERIOD: u64 = 10;
 
 /// Extractor yield: `(first eligible completed tick, scrap, per ticks)`
 /// rows, later rows superseding earlier ones. The escalation is the

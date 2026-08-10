@@ -352,8 +352,8 @@ fn a_dead_building_splits_its_wreck_across_the_footprint() {
             .iter()
             .any(|e| matches!(e, Event::BuildingDestroyed { .. }))
     });
-    let expected =
-        BuildingKind::Turret.stats().construction.unwrap().cost * WRECK_VALUE_NUM / WRECK_VALUE_DEN;
+    let expected = BuildingKind::Turret.base_stats().construction.unwrap().cost * WRECK_VALUE_NUM
+        / WRECK_VALUE_DEN;
     let found = state.map().wreck_at(anchor);
     assert!(
         found > 0 && found <= expected,
@@ -540,7 +540,7 @@ fn a_full_health_salvage_banks_exactly_its_permille() {
         },
     )]);
     let events = run_until(&mut state, 800, |s, _| s.building(turret).is_none());
-    let stats = BuildingKind::Turret.stats();
+    let stats = BuildingKind::Turret.base_stats();
     let cost = stats.construction.unwrap().cost;
     let refund = u32::try_from(u64::from(cost) * SALVAGE_REFUND_PERMILLE / 1000).unwrap();
     assert_eq!(
@@ -584,7 +584,7 @@ fn an_interrupted_salvage_credits_only_the_hp_it_drained() {
         .unwrap()
         .id;
     let bank_before = state.player(PlayerId(0)).scrap;
-    let stats = BuildingKind::Turret.stats();
+    let stats = BuildingKind::Turret.base_stats();
     state.tick(&[cmd(
         0,
         Command::Salvage {
@@ -641,7 +641,7 @@ fn the_repair_salvage_pump_strictly_loses_scrap() {
         .find(|b| b.kind == BuildingKind::Turret)
         .unwrap()
         .id;
-    let stats = BuildingKind::Turret.stats();
+    let stats = BuildingKind::Turret.base_stats();
     let bank_start = state.player(PlayerId(0)).scrap;
     state.tick(&[cmd(
         0,
@@ -735,7 +735,7 @@ fn fire_finishing_a_salvage_target_wins_and_forfeits_the_rest() {
         state.map().wreck_at(TilePos::new(9, 2)) > 0,
         "fire leaves its wreck"
     );
-    let stats = BuildingKind::Array.stats();
+    let stats = BuildingKind::Array.base_stats();
     let full =
         u32::try_from(u64::from(stats.construction.unwrap().cost) * SALVAGE_REFUND_PERMILLE / 1000)
             .unwrap();
@@ -867,7 +867,7 @@ fn a_salvaged_producer_refunds_its_prepaid_queue_in_full() {
         !state.units().iter().any(|u| u.kind == UnitKind::Lancer),
         "test premise: the teardown outran the training line"
     );
-    let stats = BuildingKind::Fabricator.stats();
+    let stats = BuildingKind::Fabricator.base_stats();
     let refund =
         u32::try_from(u64::from(stats.construction.unwrap().cost) * SALVAGE_REFUND_PERMILLE / 1000)
             .unwrap();
@@ -898,7 +898,7 @@ fn repair_and_salvage_evict_each_other_from_a_target() {
         .find(|b| b.kind == BuildingKind::Turret)
         .unwrap()
         .id;
-    let stats = BuildingKind::Turret.stats();
+    let stats = BuildingKind::Turret.base_stats();
     state.tick(&[cmd(
         0,
         Command::Salvage {
@@ -964,7 +964,7 @@ fn salvage_walks_the_construction_ramp_backward_on_schedule() {
         .find(|b| b.kind == BuildingKind::Turret)
         .unwrap()
         .id;
-    let stats = BuildingKind::Turret.stats();
+    let stats = BuildingKind::Turret.base_stats();
     state.tick(&[cmd(
         0,
         Command::Salvage {
@@ -1058,7 +1058,7 @@ fn eviction_strips_queued_legs_but_spares_the_rest_of_the_program() {
         },
     )]);
     run_until(&mut state, 400, |s, _| {
-        s.building(turret).unwrap().hp < BuildingKind::Turret.stats().max_hp
+        s.building(turret).unwrap().hp < BuildingKind::Turret.base_stats().max_hp
     });
     state.tick(&[cmd(
         0,
@@ -1093,7 +1093,7 @@ fn foundry_repair_bills_against_its_authored_price() {
     scenario.players[0].scrap = 1;
     let state = scenario.build().unwrap();
     let foundry = state.buildings()[0].id;
-    let max_hp = BuildingKind::Foundry.stats().max_hp;
+    let max_hp = BuildingKind::Foundry.base_stats().max_hp;
     let mut value = serde_json::to_value(&state).unwrap();
     for building in value["buildings"].as_array_mut().unwrap() {
         if building["id"] == serde_json::json!(foundry.0) {
@@ -1169,7 +1169,7 @@ fn a_rejected_command_never_evicts_the_working_crew() {
         },
     )]);
     run_until(&mut state, 400, |s, _| {
-        s.building(turret).unwrap().hp < BuildingKind::Turret.stats().max_hp
+        s.building(turret).unwrap().hp < BuildingKind::Turret.base_stats().max_hp
     });
     state.tick(&[cmd(
         0,
@@ -1245,7 +1245,7 @@ fn eviction_reaches_a_looping_programs_rotation() {
         },
     )]);
     run_until(&mut state, 400, |s, _| {
-        s.building(turret).unwrap().hp < BuildingKind::Turret.stats().max_hp
+        s.building(turret).unwrap().hp < BuildingKind::Turret.base_stats().max_hp
     });
     state.tick(&[cmd(
         0,

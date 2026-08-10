@@ -80,7 +80,7 @@ fn shift_click_selects_and_toggles_same_owner_buildings() {
     assert_eq!(own.len(), 2);
     let center = |game: &Game, id| {
         let building = game.state.building(id).unwrap();
-        let size = building.kind.stats().size;
+        let size = building.stats().size;
         game.camera.to_screen(vec2(
             building.anchor.x as f32 + size.0 as f32 * 0.5,
             building.anchor.y as f32 + size.1 as f32 * 0.5,
@@ -317,7 +317,10 @@ fn training_uses_the_first_selected_factory_that_supports_the_slot() {
         .id;
     game.selection.buildings = vec![foundry, fabricator];
 
-    super::orders::train(&mut game, 2);
+    // Slot 4 (the Lancer) lives only on the Fabricator's card list —
+    // slots the Foundry also serves (0.15 added the Scuttler there)
+    // would legitimately land on the first selected producer instead.
+    super::orders::train(&mut game, 4);
 
     assert!(matches!(
         game.pending.as_slice(),
@@ -915,7 +918,7 @@ fn every_build_palette_entry_costs_scrap_to_raise() {
     // ghost the sim can never accept.
     for kind in BUILD_PALETTE {
         let cost = kind
-            .stats()
+            .base_stats()
             .construction
             .unwrap_or_else(|| panic!("{} is in the palette but not constructable", kind.name()))
             .cost;
@@ -1093,10 +1096,7 @@ fn a_shift_click_on_the_wounded_wall_queues_the_weld_not_the_rat() {
         game.state.tick(&[]);
     }
     let wall = game.state.building(foundry).unwrap();
-    assert!(
-        wall.hp < wall.kind.stats().max_hp,
-        "premise: the rat left scars"
-    );
+    assert!(wall.hp < wall.stats().max_hp, "premise: the rat left scars");
     // Click a footprint tile close enough to the rat that the enemy
     // pick would win if radius still outranked footprint.
     let rat_pos = {
@@ -2850,9 +2850,7 @@ fn a_minimap_right_click_sets_every_selected_producer_rally() {
         .state
         .buildings()
         .iter()
-        .filter(|building| {
-            building.player == game.human && !building.kind.stats().produces.is_empty()
-        })
+        .filter(|building| building.player == game.human && !building.stats().produces.is_empty())
         .map(|building| building.id)
         .collect();
     producers.sort_unstable();
@@ -3912,7 +3910,7 @@ fn the_tutorial_survives_its_own_literal_instructions() {
 
     let harvester_cost = UnitKind::Harvester.stats().cost;
     let turret_cost = BUILD_PALETTE[0]
-        .stats()
+        .base_stats()
         .construction
         .expect("palette structures are constructable")
         .cost;
@@ -4160,7 +4158,7 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
     let first = TilePos::new(18, 4);
     let replacement = TilePos::new(19, 4);
     let cost = kind
-        .stats()
+        .base_stats()
         .construction
         .expect("fabricator is constructible")
         .cost;
@@ -4183,7 +4181,7 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
     walk(&mut game, TilePos::new(19, 6));
     for _ in 0..600 {
         if [first, replacement].iter().all(|anchor| {
-            let (w, h) = kind.stats().size;
+            let (w, h) = kind.base_stats().size;
             (0..h).all(|dy| (0..w).all(|dx| game.state.can_see(game.human, anchor.offset(dx, dy))))
         }) {
             break;
@@ -4193,7 +4191,7 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
     walk(&mut game, TilePos::new(7, 5));
     for _ in 0..600 {
         if [first, replacement].iter().all(|anchor| {
-            let (w, h) = kind.stats().size;
+            let (w, h) = kind.base_stats().size;
             (0..h).all(|dy| (0..w).all(|dx| !game.state.can_see(game.human, anchor.offset(dx, dy))))
         }) {
             break;
@@ -4201,7 +4199,7 @@ fn an_undrained_deferred_build_is_replaced_before_preflight() {
         game.state.tick(&[]);
     }
     for anchor in [first, replacement] {
-        let (w, h) = kind.stats().size;
+        let (w, h) = kind.base_stats().size;
         for dy in 0..h {
             for dx in 0..w {
                 let tile = anchor.offset(dx, dy);
@@ -4331,7 +4329,7 @@ fn pending_projection_keeps_sites_but_stop_clears_unpaid_claims() {
     let kind = oxide_sim::BuildingKind::Turret;
     let anchor = TilePos::new(4, 2);
     let cost = kind
-        .stats()
+        .base_stats()
         .construction
         .expect("turret is constructible")
         .cost;
@@ -4438,7 +4436,7 @@ fn a_paid_site_does_not_reserve_its_surviving_deferred_claim_again() {
     let kind = oxide_sim::BuildingKind::Turret;
     let anchor = TilePos::new(10, 4);
     let cost = kind
-        .stats()
+        .base_stats()
         .construction
         .expect("turret is constructible")
         .cost;

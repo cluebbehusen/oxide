@@ -569,10 +569,11 @@ mod tests {
             Command::Advance { .. } => 15,
             Command::FocusFire { .. } => 16,
             Command::CancelFound { .. } => 17,
+            Command::UpgradeBuilding { .. } => 18,
         }
     }
 
-    const COMMAND_VARIANTS: usize = 18;
+    const COMMAND_VARIANTS: usize = 19;
 
     #[test]
     fn an_omitted_screenshot_path_survives_the_roundtrip() {
@@ -782,6 +783,11 @@ mod tests {
             Command::CancelFound {
                 kind: BuildingKind::Array,
                 anchor: TilePos::new(7, 5),
+            },
+            Command::UpgradeBuilding {
+                units: vec![UnitId(4)],
+                building: BuildingId(2),
+                queue: true,
             },
         ];
         assert_every_tag_sampled(

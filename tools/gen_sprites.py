@@ -1603,6 +1603,67 @@ def extractor(faction: str, work: int = 0) -> None:
     finish(img, px, f"extractor_{faction}{suffix}")
 
 
+def airworks(faction: str, work: int = 0) -> None:
+    """2x2 air production hall: two open rotor pads behind a launch
+    apron — the fans are the role feature, spinning while a wing is
+    on the line."""
+    px = 128
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    d.rounded_rectangle([s(6), s(12), s(122), s(116)], radius=s(9), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle([s(12), s(18), s(116), s(110)], radius=s(7), fill=(*IRON, 255))
+    # Launch apron along the south edge with hazard chevrons.
+    d.rectangle([s(16), s(88), s(112), s(106)], fill=(*IRON_DARK, 255))
+    for i in range(5):
+        x0 = 20 + i * 19
+        d.polygon(
+            [(s(x0), s(104)), (s(x0 + 9), s(90)), (s(x0 + 14), s(90)), (s(x0 + 5), s(104))],
+            fill=(*pal["dark"], 255),
+        )
+    # Two rotor pads: recessed rings with three-blade fans.
+    for cx in (40.0, 88.0):
+        d.ellipse([s(cx - 20), s(30), s(cx + 20), s(70)], fill=(12, 10, 10, 255))
+        d.ellipse([s(cx - 17), s(33), s(cx + 17), s(67)], fill=(*IRON_DARK, 255))
+        for blade in range(3):
+            ang = work * math.pi / 6 + blade * math.tau / 3 + (cx == 88.0) * 0.5
+            tip_x = cx + 14 * math.cos(ang)
+            tip_y = 50 + 14 * math.sin(ang)
+            d.line([(s(cx), s(50)), (s(tip_x), s(tip_y))], fill=(*pal["base"], 255), width=s(5))
+        d.ellipse([s(cx - 5), s(45), s(cx + 5), s(55)], fill=(*pal["light"], 255))
+    suffix = "" if work == 0 else f"_work{work}"
+    finish(img, px, f"airworks_{faction}{suffix}")
+
+
+def crucible(faction: str, work: int = 0) -> None:
+    """2x2 tier-three works: a buttressed smelter block around one deep
+    melt core — the glowing eye is the role feature, breathing while the
+    heaviest machines pour."""
+    px = 128
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    d.rounded_rectangle([s(4), s(10), s(124), s(118)], radius=s(10), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle([s(12), s(18), s(116), s(110)], radius=s(8), fill=(*IRON, 255))
+    # Corner buttresses: the mass that says tier three.
+    for bx, by in ((6, 12), (98, 12), (6, 96), (98, 96)):
+        d.rounded_rectangle(
+            [s(bx), s(by), s(bx + 24), s(by + 20)], radius=s(5), fill=(*pal["dark"], 255)
+        )
+        d.rectangle([s(bx + 4), s(by + 4), s(bx + 20), s(by + 8)], fill=(*IRON_LIGHT, 255))
+    # The melt core: concentric heat rings pulsing with the pour.
+    glow = (36, 30, 30) if work == 0 else (
+        (150, 62, 30), (208, 116, 44), (240, 176, 84)
+    )[work - 1]
+    d.ellipse([s(40), s(40), s(88), s(88)], fill=(*IRON_DARK, 255))
+    d.ellipse([s(46), s(46), s(82), s(82)], fill=(*pal["dark"], 255))
+    d.ellipse([s(52), s(52), s(76), s(76)], fill=(*glow, 255))
+    d.ellipse([s(59), s(59), s(69), s(69)], fill=(12, 10, 10, 255) if work == 0 else (*SCRAP_LIGHT, 255))
+    # Feed channels into the core from the four faces.
+    for x0, y0, x1, y1 in ((60, 20, 68, 42), (60, 86, 68, 108), (16, 60, 42, 68), (86, 60, 112, 68)):
+        d.rectangle([s(x0), s(y0), s(x1), s(y1)], fill=(*IRON_DARK, 255))
+    suffix = "" if work == 0 else f"_work{work}"
+    finish(img, px, f"crucible_{faction}{suffix}")
+
+
 def _gear(
     d, cx: float, cy: float, radius: float, teeth: int, turn: float, color
 ) -> None:
@@ -2655,9 +2716,11 @@ BUILDING_STEMS = (
     "array",
     "reclaimer",
     "repair_bay",
-    # 0.15 placeholder ahead of the asset pass: procedural site frames
+    # 0.15 placeholders ahead of the asset pass: procedural site frames
     # only; the finalized construction bank keeps its approved eight.
     "extractor",
+    "airworks",
+    "crucible",
 )
 
 
@@ -2863,6 +2926,12 @@ def generate(output: Path) -> None:
         extractor(faction)
         for work in range(1, 4):
             extractor(faction, work)
+        airworks(faction)
+        for work in range(1, 4):
+            airworks(faction, work)
+        crucible(faction)
+        for work in range(1, 4):
+            crucible(faction, work)
     _install_finalized_sprite_bank()
     _install_finalized_environment_bank()
     for faction in FACTIONS:

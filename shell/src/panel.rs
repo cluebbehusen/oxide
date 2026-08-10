@@ -246,6 +246,10 @@ pub fn building_flavor(kind: BuildingKind) -> &'static str {
         BuildingKind::Extractor => {
             "Restored strip miner: the strongest income in the game, rebuilt only on a derelict frame."
         }
+        BuildingKind::Airworks => "Air production hall: trains every flyer.",
+        BuildingKind::Crucible => {
+            "The tier-three works: trains the heaviest machines and gates the deepest upgrades."
+        }
         BuildingKind::Reclaimer => "Generates 1 scrap every 1.5 seconds.",
         BuildingKind::RepairBay => {
             "Automatically repairs friendly ground units within 4 tiles. Repairs consume scrap."
@@ -309,7 +313,7 @@ pub fn weapon_lines(kind: UnitKind) -> Vec<String> {
 }
 
 fn building_combat_lines(kind: BuildingKind) -> Vec<CombatFact> {
-    let stats = kind.stats();
+    let stats = kind.base_stats();
     let mut lines: Vec<CombatFact> = stats
         .weapons
         .iter()
@@ -463,7 +467,7 @@ fn order_subject(game: &Game, order: &Order) -> Option<(OrderSubject, String, bo
             let b = game.state.building(*site)?;
             let ticks = b
                 .kind
-                .stats()
+                .base_stats()
                 .construction
                 .map(|c| c.build_ticks)
                 .unwrap_or(1)
@@ -478,7 +482,7 @@ fn order_subject(game: &Game, order: &Order) -> Option<(OrderSubject, String, bo
         }
         Order::Repair { building } | Order::Salvage { building } => {
             let b = game.state.building(*building)?;
-            let frac = (b.hp as f32 / b.kind.stats().max_hp.max(1) as f32).clamp(0.0, 1.0);
+            let frac = (b.hp as f32 / b.stats().max_hp.max(1) as f32).clamp(0.0, 1.0);
             Some((
                 OrderSubject::Building(b.kind, faction_of(b.player)),
                 b.kind.name().to_string(),
@@ -666,18 +670,18 @@ fn subject_detail(game: &Game, order: &Order, progress: Option<f32>) -> Option<S
         Order::Build { .. } => Some(format!("{}% raised", pct(progress?))),
         Order::Repair { building } => {
             let b = game.state.building(*building)?;
-            Some(format!("{}/{} hp", b.hp, b.kind.stats().max_hp))
+            Some(format!("{}/{} hp", b.hp, b.stats().max_hp))
         }
         Order::Salvage { building } => {
             let b = game.state.building(*building)?;
-            let cost = b.kind.stats().construction.map(|c| c.cost).unwrap_or(0);
+            let cost = b.stats().construction.map(|c| c.cost).unwrap_or(0);
             let left = u64::from(cost) * oxide_sim::stats::SALVAGE_REFUND_PERMILLE / 1000
                 * u64::from(b.hp)
-                / u64::from(b.kind.stats().max_hp.max(1));
+                / u64::from(b.stats().max_hp.max(1));
             Some(format!(
                 "{}/{} hp | ~{left} scrap left",
                 b.hp,
-                b.kind.stats().max_hp
+                b.stats().max_hp
             ))
         }
         Order::RepairUnit { unit } => {
@@ -734,7 +738,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         }
         let producers: Vec<BuildingId> = selected_buildings
             .iter()
-            .filter(|building| building.built && !building.kind.stats().produces.is_empty())
+            .filter(|building| building.built && !building.stats().produces.is_empty())
             .map(|building| building.id)
             .collect();
         if !producers.is_empty() {
@@ -779,7 +783,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
     }
     if let Some(id) = game.selection.buildings.first().copied() {
         let building = game.state.building(id)?;
-        let stats = building.kind.stats();
+        let stats = building.stats();
         let owner = building.player;
         let mut panel = Panel {
             title: building.kind.name().to_uppercase(),
@@ -1114,7 +1118,7 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         let scrap = game.state.player(game.human).scrap;
         let palette_key = chord(bindings, Action::ToggleBuildPalette);
         for (i, &kind) in crate::input::BUILD_PALETTE.iter().enumerate() {
-            let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
+            let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
             let (enabled, why) = if scrap < cost {
                 (false, Some(format!("needs {cost} scrap")))
             } else {
@@ -1222,7 +1226,11 @@ mod tests {
         game.selection.buildings = vec![foundry];
         let panel = build(&game, &BindingMap::classic()).expect("panel");
         assert_eq!(panel.title, "FOUNDRY");
-        assert_eq!(panel.cards.len(), 3, "two units plus the rally affordance");
+        assert_eq!(
+            panel.cards.len(),
+            4,
+            "three units plus the rally affordance (0.15: the Scuttler trains here)"
+        );
         assert_eq!(panel.cards[0].title, "Set rally");
         assert_eq!(panel.cards[0].action, CardAction::ArmRally);
         assert_eq!(panel.cards[1].hotkey, "1");

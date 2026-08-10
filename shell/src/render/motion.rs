@@ -134,7 +134,7 @@ pub(crate) fn building_frame(kind: BuildingKind, state: BuildingAnimationState) 
         };
     }
 
-    if kind.stats().weapons.is_empty() {
+    if kind.base_stats().weapons.is_empty() {
         let body = match state.activity {
             BuildingActivity::Idle => BuildingBodyFrame::Idle,
             BuildingActivity::Production { cycle, .. } => {

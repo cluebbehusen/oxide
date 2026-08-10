@@ -441,7 +441,7 @@ fn captures_action_driven_animation_states_in_the_real_shell() -> Result<()> {
         )?;
         let events = harness.capture_schedule(
             &format!("08-defense-fire-reload/{}", kind.name().replace(' ', "-")),
-            &combat_capture_schedule(kind.stats().weapons[0].cooldown_ticks),
+            &combat_capture_schedule(kind.base_stats().weapons[0].cooldown_ticks),
         )?;
         assert!(
             events.iter().any(|event| match event {

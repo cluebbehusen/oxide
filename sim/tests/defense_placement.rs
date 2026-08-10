@@ -101,7 +101,7 @@ fn defense_placement_mirrors_between_physical_seats() {
     ] {
         let west = build_anchor(&state, 0, action, kind);
         let east = build_anchor(&state, 1, action, kind);
-        let (width, height) = kind.stats().size;
+        let (width, height) = kind.base_stats().size;
         assert_eq!(
             east,
             TilePos::new(

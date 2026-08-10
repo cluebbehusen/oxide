@@ -585,7 +585,7 @@ impl UtilityPolicy {
             .count();
         if dials.tech {
             let fab_cost = BuildingKind::Fabricator
-                .stats()
+                .base_stats()
                 .construction
                 .map(|c| c.cost);
             let have_fab = obs
@@ -609,7 +609,10 @@ impl UtilityPolicy {
         }
 
         if dials.turret_response && self.raided {
-            let turret_cost = BuildingKind::Turret.stats().construction.map(|c| c.cost);
+            let turret_cost = BuildingKind::Turret
+                .base_stats()
+                .construction
+                .map(|c| c.cost);
             let turrets = obs
                 .my_buildings
                 .iter()
@@ -635,7 +638,7 @@ impl UtilityPolicy {
         // raises flak over the harvest line.
         if dials.aa_response && (self.seen_air || !obs.blips.is_empty()) {
             let flak_cost = BuildingKind::FlakTurret
-                .stats()
+                .base_stats()
                 .construction
                 .map(|c| c.cost);
             let flak = obs
@@ -670,7 +673,10 @@ impl UtilityPolicy {
                 .my_buildings
                 .iter()
                 .any(|b| b.kind == BuildingKind::Array);
-            let array_cost = BuildingKind::Array.stats().construction.map(|c| c.cost);
+            let array_cost = BuildingKind::Array
+                .base_stats()
+                .construction
+                .map(|c| c.cost);
             if have_fab
                 && !have_array
                 && let Some(cost) = array_cost
@@ -702,7 +708,10 @@ impl UtilityPolicy {
                 .iter()
                 .filter(|b| b.kind == BuildingKind::Reclaimer)
                 .count();
-            let rec_cost = BuildingKind::Reclaimer.stats().construction.map(|c| c.cost);
+            let rec_cost = BuildingKind::Reclaimer
+                .base_stats()
+                .construction
+                .map(|c| c.cost);
             if near_home < SALVAGE_LOW
                 && reclaimers < RECLAIMER_CAP
                 && let Some(cost) = rec_cost
@@ -741,7 +750,7 @@ impl UtilityPolicy {
         let patient = obs
             .my_buildings
             .iter()
-            .filter(|b| b.built && b.hp * 10 < b.kind.stats().max_hp * 8)
+            .filter(|b| b.built && b.hp * 10 < b.kind.base_stats().max_hp * 8)
             // A building an own crew is stripping is being LIQUIDATED
             // on purpose — repair and salvage evict each other in the
             // sim, so a repair intent here would re-crew the teardown
@@ -749,7 +758,7 @@ impl UtilityPolicy {
             // filter).
             .filter(|b| !obs.my_units.iter().any(|u| u.salvaging == Some(b.id)))
             .map(|b| {
-                let deficit = b.kind.stats().max_hp - b.hp;
+                let deficit = b.kind.base_stats().max_hp - b.hp;
                 (std::cmp::Reverse(deficit), b.anchor.y, b.anchor.x, b.id)
             })
             .min()
@@ -1176,7 +1185,7 @@ impl UtilityPolicy {
         kind: BuildingKind,
         near: TilePos,
     ) -> Option<TilePos> {
-        let (w, h) = kind.stats().size;
+        let (w, h) = kind.base_stats().size;
         for r in 3i32..=7 {
             for dy in -r..=r {
                 for dx in -r..=r {
@@ -1202,7 +1211,7 @@ impl UtilityPolicy {
         kind: BuildingKind,
         near: TilePos,
     ) -> Vec<TilePos> {
-        let (w, h) = kind.stats().size;
+        let (w, h) = kind.base_stats().size;
         let mut anchors = Vec::new();
         for r in 3i32..=7 {
             for dy in -r..=r {
@@ -1251,7 +1260,7 @@ impl UtilityPolicy {
         }
         let claimed = obs.my_units.iter().any(|unit| {
             unit.founding.is_some_and(|(kind, anchor)| {
-                let (width, height) = kind.stats().size;
+                let (width, height) = kind.base_stats().size;
                 tile.x >= anchor.x
                     && tile.x < anchor.x + width
                     && tile.y >= anchor.y
@@ -1272,7 +1281,7 @@ impl UtilityPolicy {
             return false;
         }
         let covered = |b: &super::observation::BuildingObs| {
-            let (w, h) = b.kind.stats().size;
+            let (w, h) = b.kind.base_stats().size;
             t.x >= b.anchor.x && t.x < b.anchor.x + w && t.y >= b.anchor.y && t.y < b.anchor.y + h
         };
         !obs.my_buildings.iter().any(covered)

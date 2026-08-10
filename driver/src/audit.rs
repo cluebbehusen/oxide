@@ -64,7 +64,7 @@ pub struct MapAudit {
 /// kind joins this list.
 fn longest_reach() -> f64 {
     let bombard = oxide_sim::UnitKind::Bombard.stats().weapons.iter();
-    let bastion = BuildingKind::Bastion.stats().weapons.iter();
+    let bastion = BuildingKind::Bastion.base_stats().weapons.iter();
     bombard
         .chain(bastion)
         .map(|w| w.range.to_num::<f64>())
@@ -194,7 +194,7 @@ fn ground_route(state: &State, from: &[TilePos], to: &[TilePos]) -> Option<usize
 /// detour the sim's air router would actually take.
 fn air_route(state: &State, a: &oxide_sim::Building, b: &oxide_sim::Building) -> Option<f64> {
     let center = |f: &oxide_sim::Building| {
-        let (w, h) = f.kind.stats().size;
+        let (w, h) = f.stats().size;
         (
             f.anchor.x as f64 + w as f64 / 2.0,
             f.anchor.y as f64 + h as f64 / 2.0,
@@ -322,7 +322,7 @@ pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
         steps.push((
             i as u8,
             foundry,
-            doorsteps(&state, foundry.anchor, foundry.kind.stats().size),
+            doorsteps(&state, foundry.anchor, foundry.stats().size),
         ));
     }
 
@@ -366,7 +366,7 @@ pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
                 .iter()
                 .find(|b| b.player.0 == *seat && b.kind == BuildingKind::Foundry)
                 .map(|b| {
-                    let size = b.kind.stats().size;
+                    let size = b.stats().size;
                     (
                         b.anchor.x as f64 + size.0 as f64 / 2.0,
                         b.anchor.y as f64 + size.1 as f64 / 2.0,

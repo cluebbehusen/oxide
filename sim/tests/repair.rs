@@ -126,7 +126,7 @@ fn wounded_turret(
     });
     let hp = state.building(turret).unwrap().hp;
     assert!(
-        hp < BuildingKind::Turret.stats().max_hp,
+        hp < BuildingKind::Turret.base_stats().max_hp,
         "test premise: the raid must leave scars (hp {hp})"
     );
     // Train the welder now that the field is quiet.
@@ -179,11 +179,11 @@ fn harvesters_weld_wounds_shut_for_a_price() {
         },
     )]);
     run_until(&mut state, 600, |s, _| {
-        s.building(turret).unwrap().hp == BuildingKind::Turret.stats().max_hp
+        s.building(turret).unwrap().hp == BuildingKind::Turret.base_stats().max_hp
     });
     let spent = bank_before - state.player(PlayerId(0)).scrap;
     assert!(spent > 0, "welding is never free");
-    let healed = BuildingKind::Turret.stats().max_hp - wounded_hp;
+    let healed = BuildingKind::Turret.base_stats().max_hp - wounded_hp;
     assert!(
         spent < healed,
         "but far cheaper than the damage was worth (spent {spent} for {healed} hp)"
@@ -260,7 +260,7 @@ fn a_rejected_welders_prepaid_coin_comes_back() {
     // The opener welds to exactly one hp short (turret steps are never
     // more than 1 hp per tick: ramp 280 over 300 ticks), then stands
     // down.
-    let max = BuildingKind::Turret.stats().max_hp;
+    let max = BuildingKind::Turret.base_stats().max_hp;
     state.tick(&[cmd(
         0,
         Command::Repair {
@@ -322,7 +322,7 @@ fn a_free_stepping_welder_still_consumes_the_room() {
         .id;
     let midmeter = state.units()[0].id;
     let joiner = state.units()[1].id;
-    let max = BuildingKind::Turret.stats().max_hp;
+    let max = BuildingKind::Turret.base_stats().max_hp;
     let mut value = serde_json::to_value(state).unwrap();
     value["buildings"]
         .as_array_mut()
@@ -392,7 +392,7 @@ fn an_empty_bank_stalls_the_torch() {
     });
     assert_eq!(state.player(PlayerId(0)).scrap, 0, "the last coin burned");
     assert!(
-        state.building(turret).unwrap().hp < BuildingKind::Turret.stats().max_hp,
+        state.building(turret).unwrap().hp < BuildingKind::Turret.base_stats().max_hp,
         "the weld never finished"
     );
     assert_eq!(state.unit(welder).unwrap().order, Order::Idle);
@@ -503,7 +503,13 @@ fn reclaimers_trickle_scrap_forever() {
     );
     // The payback math that keeps it out of opening builds: minutes, not
     // seconds.
-    let cost = u64::from(BuildingKind::Reclaimer.stats().construction.unwrap().cost);
+    let cost = u64::from(
+        BuildingKind::Reclaimer
+            .base_stats()
+            .construction
+            .unwrap()
+            .cost,
+    );
     let payback_ticks = cost * RECLAIMER_PERIOD;
     assert!(
         payback_ticks >= 20 * 60 * 3,
@@ -544,7 +550,7 @@ fn reissued_repairs_still_pay_for_the_welding() {
             state.tick(&[]);
         }
         let b = state.building(turret).unwrap();
-        if b.hp == BuildingKind::Turret.stats().max_hp {
+        if b.hp == BuildingKind::Turret.base_stats().max_hp {
             healed = true;
             break;
         }
@@ -631,7 +637,7 @@ fn the_last_coin_prepays_its_full_scrap_of_welding() {
             .any(|e| matches!(e, Event::OrderStalled { unit, .. } if *unit == welder))
     });
 
-    let stats = BuildingKind::Turret.stats();
+    let stats = BuildingKind::Turret.base_stats();
     let ramp = u64::from(stats.max_hp - stats.max_hp / 5);
     let construction = stats.construction.unwrap();
     let ramp_ticks = u64::from(construction.build_ticks);

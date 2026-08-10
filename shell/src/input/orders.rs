@@ -18,7 +18,7 @@ pub(super) fn selected_producers(game: &Game) -> Vec<oxide_sim::BuildingId> {
             game.state.building(*id).is_some_and(|building| {
                 building.player == game.human
                     && building.built
-                    && !building.kind.stats().produces.is_empty()
+                    && !building.stats().produces.is_empty()
             })
         })
         .collect()
@@ -94,7 +94,7 @@ pub(super) fn digit_action(game: &mut Game, input: &mut InputState, slot: usize)
             input.build_menu = false;
             input.disarm_click_verbs();
             input.placing = Some(kind);
-            let cost = kind.stats().construction.map(|c| c.cost).unwrap_or(0);
+            let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
             game.toast(format!(
                 "placing {} ({} scrap): click to build, Esc to cancel",
                 kind.name(),
@@ -164,7 +164,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
                             && building.built
                             && building
                                 .kind
-                                .stats()
+                                .base_stats()
                                 .weapons
                                 .first()
                                 .is_some_and(|weapon| weapon.targets.covers(domain))
@@ -220,7 +220,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
             game.ping(world, PingKind::Harvest);
             return;
         }
-        if building.hp < building.kind.stats().max_hp {
+        if building.hp < building.stats().max_hp {
             game.issue(Command::Repair {
                 units,
                 building: building.id,
@@ -312,7 +312,7 @@ pub(super) fn train(game: &mut Game, slot: usize) {
         game.state.building(building).and_then(|building| {
             building
                 .kind
-                .stats()
+                .base_stats()
                 .produces
                 .iter()
                 .filter(|k| k.faction().is_none_or(|f| f == faction))

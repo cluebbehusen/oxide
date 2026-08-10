@@ -63,13 +63,14 @@ enum CommandTag {
     Advance,
     FocusFire,
     CancelFound,
+    UpgradeBuilding,
 }
 
 /// The draw pool. Paired with the exhaustive matches below, the array and
 /// the variant list cannot drift apart — the old `next_below(10)` bound
 /// against nine arms is exactly how `Repair`, `Salvage`, and
 /// `CancelTrain` went unfuzzed.
-const COMMAND_TAGS: [CommandTag; 18] = [
+const COMMAND_TAGS: [CommandTag; 19] = [
     CommandTag::Move,
     CommandTag::Attack,
     CommandTag::AttackMove,
@@ -88,6 +89,7 @@ const COMMAND_TAGS: [CommandTag; 18] = [
     CommandTag::Advance,
     CommandTag::FocusFire,
     CommandTag::CancelFound,
+    CommandTag::UpgradeBuilding,
 ];
 
 /// How rarely a drawn [`CommandTag::Surrender`] is kept: one landed
@@ -122,6 +124,7 @@ fn tag_index(tag: CommandTag) -> usize {
         CommandTag::Advance => 15,
         CommandTag::FocusFire => 16,
         CommandTag::CancelFound => 17,
+        CommandTag::UpgradeBuilding => 18,
     }
 }
 
@@ -145,6 +148,7 @@ fn tag_of(command: &Command) -> CommandTag {
         Command::RepairUnit { .. } => CommandTag::RepairUnit,
         Command::Advance { .. } => CommandTag::Advance,
         Command::FocusFire { .. } => CommandTag::FocusFire,
+        Command::UpgradeBuilding { .. } => CommandTag::UpgradeBuilding,
         Command::CancelFound { .. } => CommandTag::CancelFound,
     }
 }
@@ -183,7 +187,7 @@ fn unit_kind_index(kind: UnitKind) -> usize {
 
 /// Every building kind, frame-bound and tech-gated ones included —
 /// hostile input must aim at all of them.
-const BUILDING_KINDS: [BuildingKind; 9] = [
+const BUILDING_KINDS: [BuildingKind; 11] = [
     BuildingKind::Foundry,
     BuildingKind::Turret,
     BuildingKind::Fabricator,
@@ -193,6 +197,8 @@ const BUILDING_KINDS: [BuildingKind; 9] = [
     BuildingKind::Reclaimer,
     BuildingKind::RepairBay,
     BuildingKind::Extractor,
+    BuildingKind::Airworks,
+    BuildingKind::Crucible,
 ];
 
 fn building_kind_index(kind: BuildingKind) -> usize {
@@ -206,6 +212,8 @@ fn building_kind_index(kind: BuildingKind) -> usize {
         BuildingKind::Reclaimer => 6,
         BuildingKind::RepairBay => 7,
         BuildingKind::Extractor => 8,
+        BuildingKind::Airworks => 9,
+        BuildingKind::Crucible => 10,
     }
 }
 
@@ -422,6 +430,11 @@ fn generate(tag: CommandTag, rng: &mut Pcg32, state: &State) -> Command {
         CommandTag::CancelFound => Command::CancelFound {
             kind: BUILDING_KINDS[rng.next_below(BUILDING_KINDS.len() as u32) as usize],
             anchor: anchor(rng, state),
+        },
+        CommandTag::UpgradeBuilding => Command::UpgradeBuilding {
+            units: units(rng, state),
+            building: building_id(rng, state),
+            queue: queue(rng),
         },
     }
 }

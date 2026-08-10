@@ -219,7 +219,7 @@ fn every_map_mirrors_its_paired_seats_entry_by_entry() {
             );
         }
 
-        let (fw, fh) = BuildingKind::Foundry.stats().size;
+        let (fw, fh) = BuildingKind::Foundry.base_stats().size;
         let anchor = |seat: PlayerId| {
             anchors
                 .iter()
@@ -321,7 +321,7 @@ fn every_map_mirrors_its_paired_seats_entry_by_entry() {
                     a.kind, b.kind,
                     "{name}: seat {index}'s structure #{k} differs in kind from its mirror's"
                 );
-                let (bw, bh) = a.kind.stats().size;
+                let (bw, bh) = a.kind.base_stats().size;
                 assert_eq!(
                     (b.x, b.y),
                     (w - bw - a.x, h - bh - a.y),

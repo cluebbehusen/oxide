@@ -261,25 +261,26 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::UnproducibleQueueEntry(_) => 31,
         E::BuildingOutsideEnvelope(_) => 32,
         E::IncoherentSalvageLedger(_) => 33,
-        E::LiveBuildingMarkedSalvaged(_) => 34,
-        E::ForeignShellOwner(_) => 35,
-        E::ShellOutsideEnvelope(_) => 36,
-        E::UnmintedShellShooter(_) => 37,
-        E::ForeignGhostOwner(_) => 38,
-        E::FriendlyGhost(_) => 39,
-        E::GhostOutsideEnvelope(_) => 40,
-        E::UnsortedGhosts(_) => 41,
-        E::ContactOutsideEnvelope(_) => 42,
-        E::UnsortedContacts(_) => 43,
-        E::OverlongSalvageIncidentMemory(_) => 44,
-        E::SalvageIncidentOutsideEnvelope(_) => 45,
-        E::ExpiredSalvageIncident(_) => 46,
-        E::SalvageIncidentExpiryBeyondHorizon(_) => 47,
-        E::UnsortedSalvageIncidents(_) => 48,
+        E::TierBeyondLadder(_) => 34,
+        E::LiveBuildingMarkedSalvaged(_) => 35,
+        E::ForeignShellOwner(_) => 36,
+        E::ShellOutsideEnvelope(_) => 37,
+        E::UnmintedShellShooter(_) => 38,
+        E::ForeignGhostOwner(_) => 39,
+        E::FriendlyGhost(_) => 40,
+        E::GhostOutsideEnvelope(_) => 41,
+        E::UnsortedGhosts(_) => 42,
+        E::ContactOutsideEnvelope(_) => 43,
+        E::UnsortedContacts(_) => 44,
+        E::OverlongSalvageIncidentMemory(_) => 45,
+        E::SalvageIncidentOutsideEnvelope(_) => 46,
+        E::ExpiredSalvageIncident(_) => 47,
+        E::SalvageIncidentExpiryBeyondHorizon(_) => 48,
+        E::UnsortedSalvageIncidents(_) => 49,
     }
 }
 
-const ROWS: usize = 49;
+const ROWS: usize = 50;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -326,6 +327,7 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::UnproducibleQueueEntry(BuildingId(0)),
         E::BuildingOutsideEnvelope(BuildingId(0)),
         E::IncoherentSalvageLedger(BuildingId(0)),
+        E::TierBeyondLadder(BuildingId(0)),
         E::LiveBuildingMarkedSalvaged(BuildingId(0)),
         E::ForeignShellOwner(0),
         E::ShellOutsideEnvelope(0),
@@ -562,7 +564,7 @@ fn every_checklist_row_refuses_its_forgery() {
         ),
         (
             "a Foundry queuing a unit only the Fabricator trains",
-            |d| d["buildings"][0]["queue"] = json!(["scuttler"]),
+            |d| d["buildings"][0]["queue"] = json!(["lancer"]),
             "building b0 queues a unit it could never train",
         ),
         (
@@ -584,6 +586,11 @@ fn every_checklist_row_refuses_its_forgery() {
             "salvage credited against a building nothing stripped",
             |d| d["buildings"][0]["salvage_credited"] = json!(50),
             "building b0 carries an incoherent salvage ledger",
+        ),
+        (
+            "a tier past the kind's ladder",
+            |d| d["buildings"][0]["tier"] = json!(9),
+            "claims a tier its kind's ladder does not reach",
         ),
         (
             "a live building marked as already salvaged",

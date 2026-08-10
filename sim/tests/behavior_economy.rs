@@ -700,13 +700,15 @@ fn deposits_saturate_a_full_bank() {
 
 #[test]
 fn foundry_refuses_kinds_it_cannot_produce() {
+    // 0.15: the Scuttler trains at the Foundry now; the Lancer is the
+    // cheapest kind that still needs the tech hall.
     let mut state = arena(vec![]).build().unwrap();
     let foundry = state.buildings()[0].id;
     let report = state.tick(&[cmd(
         0,
         Command::Train {
             building: foundry,
-            kind: UnitKind::Scuttler,
+            kind: UnitKind::Lancer,
         },
     )]);
     assert!(report.events.iter().any(|e| matches!(
@@ -877,7 +879,7 @@ fn harvesters_deposit_only_at_built_foundries() {
         .iter()
         .find(|b| b.player == PlayerId(0) && b.kind == oxide_sim::BuildingKind::Foundry)
         .unwrap();
-    let (f_anchor, f_size) = (foundry.anchor, foundry.kind.stats().size);
+    let (f_anchor, f_size) = (foundry.anchor, foundry.kind.base_stats().size);
     let mut deposit_tile = None;
     for _ in 0..1200u32 {
         let report = state.tick(&[]);

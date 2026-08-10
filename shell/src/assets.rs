@@ -50,6 +50,8 @@ pub struct Sprites {
     array: [Rect; 3],
     reclaimer: [Rect; 3],
     extractor: [Rect; 3],
+    airworks: [Rect; 3],
+    crucible: [Rect; 3],
     repair_bay: [Rect; 3],
     bastion_action: [[Rect; 3]; 9],
     foundry_work: [[Rect; 3]; 4],
@@ -57,6 +59,8 @@ pub struct Sprites {
     array_work: [[Rect; 3]; 6],
     reclaimer_work: [[Rect; 3]; 3],
     extractor_work: [[Rect; 3]; 3],
+    airworks_work: [[Rect; 3]; 3],
+    crucible_work: [[Rect; 3]; 3],
     repair_bay_work: [[Rect; 3]; 4],
     construction: [[Rect; 3]; SITE_FRAME_COUNT * BUILDING_KIND_COUNT],
     harvester: [Rect; 3],
@@ -320,7 +324,7 @@ const HARVESTER_CARGO_LEVELS: usize = 5;
 const SITE_STAGES: usize = 3;
 const SITE_PHASES: usize = 2;
 const SITE_FRAME_COUNT: usize = SITE_STAGES * SITE_PHASES;
-const BUILDING_KIND_COUNT: usize = 9;
+const BUILDING_KIND_COUNT: usize = 11;
 
 /// One complete Harvester pose at a particular visible cargo level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -355,6 +359,8 @@ fn building_stem(kind: BuildingKind) -> &'static str {
         BuildingKind::Reclaimer => "reclaimer",
         BuildingKind::RepairBay => "repair_bay",
         BuildingKind::Extractor => "extractor",
+        BuildingKind::Airworks => "airworks",
+        BuildingKind::Crucible => "crucible",
     }
 }
 
@@ -369,6 +375,8 @@ fn building_index(kind: BuildingKind) -> usize {
         BuildingKind::Reclaimer => 6,
         BuildingKind::RepairBay => 7,
         BuildingKind::Extractor => 8,
+        BuildingKind::Airworks => 9,
+        BuildingKind::Crucible => 10,
     }
 }
 
@@ -464,7 +472,10 @@ fn building_work_suffixes(kind: BuildingKind) -> &'static [&'static str] {
             &WORK_SUFFIXES_4
         }
         BuildingKind::Array => &WORK_SUFFIXES_6,
-        BuildingKind::Reclaimer | BuildingKind::Extractor => &WORK_SUFFIXES_3,
+        BuildingKind::Reclaimer
+        | BuildingKind::Extractor
+        | BuildingKind::Airworks
+        | BuildingKind::Crucible => &WORK_SUFFIXES_3,
         BuildingKind::Turret | BuildingKind::FlakTurret | BuildingKind::Bastion => &[],
     }
 }
@@ -485,7 +496,7 @@ const ALL_UNIT_KINDS: [UnitKind; 11] = [
     UnitKind::Wisp,
 ];
 
-const ALL_BUILDING_KINDS: [BuildingKind; 9] = [
+const ALL_BUILDING_KINDS: [BuildingKind; 11] = [
     BuildingKind::Foundry,
     BuildingKind::Turret,
     BuildingKind::Fabricator,
@@ -495,16 +506,20 @@ const ALL_BUILDING_KINDS: [BuildingKind; 9] = [
     BuildingKind::Reclaimer,
     BuildingKind::RepairBay,
     BuildingKind::Extractor,
+    BuildingKind::Airworks,
+    BuildingKind::Crucible,
 ];
 
 #[cfg(test)]
-const WORK_BUILDING_KINDS: [BuildingKind; 6] = [
+const WORK_BUILDING_KINDS: [BuildingKind; 8] = [
     BuildingKind::Foundry,
     BuildingKind::Fabricator,
     BuildingKind::Array,
     BuildingKind::Reclaimer,
     BuildingKind::RepairBay,
     BuildingKind::Extractor,
+    BuildingKind::Airworks,
+    BuildingKind::Crucible,
 ];
 
 fn construction_rows(
@@ -700,6 +715,8 @@ impl Sprites {
             array: building(BuildingKind::Array)?,
             reclaimer: building(BuildingKind::Reclaimer)?,
             extractor: building(BuildingKind::Extractor)?,
+            airworks: building(BuildingKind::Airworks)?,
+            crucible: building(BuildingKind::Crucible)?,
             repair_bay: building(BuildingKind::RepairBay)?,
             bastion_action: variant_rows(&rects, "bastion", ACTION_SUFFIXES_9)?,
             foundry_work: variant_rows(&rects, "foundry", WORK_SUFFIXES_4)?,
@@ -707,6 +724,8 @@ impl Sprites {
             array_work: variant_rows(&rects, "array", WORK_SUFFIXES_6)?,
             reclaimer_work: variant_rows(&rects, "reclaimer", WORK_SUFFIXES_3)?,
             extractor_work: variant_rows(&rects, "extractor", WORK_SUFFIXES_3)?,
+            airworks_work: variant_rows(&rects, "airworks", WORK_SUFFIXES_3)?,
+            crucible_work: variant_rows(&rects, "crucible", WORK_SUFFIXES_3)?,
             repair_bay_work: variant_rows(&rects, "repair_bay", WORK_SUFFIXES_4)?,
             construction: construction_rows(&rects)?,
             harvester: unit(UnitKind::Harvester)?,
@@ -910,6 +929,8 @@ impl Sprites {
             oxide_sim::BuildingKind::Reclaimer => &self.reclaimer,
             oxide_sim::BuildingKind::RepairBay => &self.repair_bay,
             oxide_sim::BuildingKind::Extractor => &self.extractor,
+            oxide_sim::BuildingKind::Airworks => &self.airworks,
+            oxide_sim::BuildingKind::Crucible => &self.crucible,
         }
     }
 
@@ -979,6 +1000,8 @@ impl Sprites {
             BuildingKind::Reclaimer => &self.reclaimer_work,
             BuildingKind::RepairBay => &self.repair_bay_work,
             BuildingKind::Extractor => &self.extractor_work,
+            BuildingKind::Airworks => &self.airworks_work,
+            BuildingKind::Crucible => &self.crucible_work,
             _ => return None,
         };
         frame.checked_sub(1).and_then(|index| rows.get(index))

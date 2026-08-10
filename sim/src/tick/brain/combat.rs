@@ -369,7 +369,7 @@ pub(super) fn turret_fire(
         let Some(b) = state.building(id) else {
             continue;
         };
-        let Some(atk) = b.kind.stats().weapons.first() else {
+        let Some(atk) = b.stats().weapons.first() else {
             continue;
         };
         if !b.built || b.hp == 0 {
@@ -1035,7 +1035,7 @@ pub(super) fn attack(
         }
         Target::Building(bid) => {
             let b = state.building(bid).expect("resolved above");
-            let (anchor, size) = (b.anchor, b.kind.stats().size);
+            let (anchor, size) = (b.anchor, b.stats().size);
             if approach_rect(state, id, anchor, size) {
                 Ok(())
             } else {
