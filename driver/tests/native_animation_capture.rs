@@ -880,7 +880,8 @@ fn unit_duel_scenario(attacker: UnitKind) -> Value {
         | UnitKind::Tender
         | UnitKind::Excavator
         | UnitKind::Kestrel
-        | UnitKind::Gnat => unreachable!("the combat roster excludes unarmed machines"),
+        | UnitKind::Gnat
+        | UnitKind::Skyhook => unreachable!("the combat roster excludes unarmed machines"),
     };
     let units = vec![
         unit(0, attacker, 15, 10),

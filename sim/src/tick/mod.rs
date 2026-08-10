@@ -168,7 +168,11 @@ impl State {
             commands::apply(self, commands, &mut events);
             production::run(self, &mut events);
             production::decay_abandoned_sites(self);
-            brain::run(self, &mut index, &mut events);
+            let boardings = brain::run(self, &mut index, &mut events);
+            // Embarkations and landings mutate the unit list, which must
+            // hold still under the brains; they land here, between the
+            // last decision and the first movement.
+            brain::logistics::resolve(self, boardings, &mut events);
             movement::evict_claimed_ground(self);
             let travel = movement::run(self);
             movement::resolve_collisions(self, &travel, &mut index);
@@ -200,6 +204,20 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
         let value =
             unit.kind.stats().cost * crate::stats::WRECK_VALUE_NUM / crate::stats::WRECK_VALUE_DEN;
         deposits.push((unit.tile(), value));
+        // Cargo dies with the airframe, and its price falls at the
+        // crash tile with everything else (a crash over the Pit is
+        // swallowed by the standing wreck rule).
+        for rider in &unit.cargo {
+            events.push(Event::UnitDied {
+                unit: rider.id,
+                kind: rider.kind,
+                player: rider.player,
+                pos: unit.pos,
+            });
+            let value = rider.kind.stats().cost * crate::stats::WRECK_VALUE_NUM
+                / crate::stats::WRECK_VALUE_DEN;
+            deposits.push((unit.tile(), value));
+        }
     }
     state.units.retain(|u| u.hp > 0);
 

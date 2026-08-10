@@ -202,8 +202,9 @@ pub(super) fn run(state: &mut State) -> Vec<Vec2Fx> {
 
 /// Turn-limited flight: the body advances along its heading and only
 /// the heading steers, at most `turn_rate` compass steps per tick.
-/// Waypoints are accepted inside [`crate::stats::BOMBER_ARRIVE`] — a
-/// bounded arc cannot promise an exact center — and a step whose tile
+/// Waypoints are accepted inside the kind's turn-acceptance ring — a
+/// bounded arc cannot promise an exact center, and a ring tighter than
+/// the turn radius is an orbit trap — and a step whose tile
 /// is closed to air (a mesa) is simply not taken: the flier holds
 /// position against the wall while its nose keeps swinging, and next
 /// tick's heading carries it along or away. Pathless means hovering.
@@ -212,7 +213,8 @@ fn steer_turn_limited(
     map: &Map,
     stats: &'static crate::stats::UnitStats,
 ) {
-    let arrive_sq = crate::stats::BOMBER_ARRIVE * crate::stats::BOMBER_ARRIVE;
+    let accept = stats.turn_acceptance();
+    let arrive_sq = accept * accept;
     // Accept every waypoint the arc has already effectively reached.
     loop {
         let Some(path) = &mut unit.path else { return };

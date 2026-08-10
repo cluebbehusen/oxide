@@ -96,6 +96,7 @@ def finish(img: Image.Image, px: int, name: str) -> None:
             "moth",
             "breaker",
             "avalanche",
+            "skyhook",
         )
     ):
         img = rim_light(img)
@@ -1834,6 +1835,29 @@ def sylph(faction: str, move: int = 0, action: int = 0) -> None:
     interceptor_flyer("sylph", faction, move, action)
 
 
+def skyhook(faction: str, move: int = 0) -> None:
+    """Air transport: a heavy-lift X-frame with four sling hardpoints
+    and a hook boom below the rotor hub."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    tilt = (0, -2, 2)[move % 3]
+    # The X-frame arms.
+    for x0, y0, x1, y1 in ((10, 12 + tilt, 30, 30), (34, 30, 54, 12 - tilt),
+                           (10, 52 - tilt, 30, 34), (34, 34, 54, 52 + tilt)):
+        d.line([(s(x0), s(y0)), (s(x1), s(y1))], fill=(*IRON, 255), width=s(6))
+    # Sling hardpoints at the arm tips.
+    for x, y in ((10, 12 + tilt), (54, 12 - tilt), (10, 52 - tilt), (54, 52 + tilt)):
+        d.ellipse([s(x - 4), s(y - 4), s(x + 4), s(y + 4)], fill=(*pal["dark"], 255))
+    # The lift body and hook boom.
+    d.rounded_rectangle([s(22), s(20), s(42), s(46)], radius=s(6), fill=(*pal["base"], 255))
+    d.rectangle([s(30), s(44), s(34), s(56)], fill=(*IRON_DARK, 255))
+    d.ellipse([s(28), s(52), s(36), s(60)], fill=(*IRON_LIGHT, 255))
+    d.ellipse([s(29), s(26), s(35), s(32)], fill=(*pal["light"], 255))
+    suffix = "" if move == 0 else f"_move{move}"
+    finish(img, px, f"skyhook_{faction}{suffix}")
+
+
 def condor(faction: str, move: int = 0, action: int = 0) -> None:
     """Strategic bomber: a broad flying wing around one cavernous bomb
     bay. The action frames swing the bay doors and drop the load."""
@@ -3230,7 +3254,7 @@ def generate(output: Path) -> None:
                 unit_fn(faction, move)
             for act in range(1, 5):
                 unit_fn(faction, 0, act)
-        for unit_fn in (tender, excavator, kestrel, gnat):
+        for unit_fn in (tender, excavator, kestrel, gnat, skyhook):
             unit_fn(faction)
             for move in (1, 2):
                 unit_fn(faction, move)

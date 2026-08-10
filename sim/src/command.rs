@@ -212,8 +212,6 @@ pub enum Command {
     /// because a multi-builder command gives the whole crew one copy of the
     /// same unpaid intent. Paid sites use [`Command::Cancel`] and its refund
     /// rules instead.
-    /// (Last variant by appending discipline: earlier discriminants keep
-    /// their serialized bytes.)
     CancelFound {
         /// The promised structure.
         kind: crate::stats::BuildingKind,
@@ -231,6 +229,31 @@ pub enum Command {
         units: Vec<UnitId>,
         /// The building to lift.
         building: BuildingId,
+        /// Append to order queues instead of replacing.
+        queue: bool,
+    },
+    /// Send ground machines to climb aboard an own transport. Each walks
+    /// within [`crate::stats::LOAD_REACH`] and embarks if room remains;
+    /// a full sling stalls the stragglers where they stand. The sim
+    /// reads `units` as a sorted set.
+    Load {
+        /// The machines to carry (ground, carriable kinds only).
+        units: Vec<UnitId>,
+        /// The carrier.
+        transport: UnitId,
+        /// Append to order queues instead of replacing.
+        queue: bool,
+    },
+    /// Fly a transport to a tile and set every carried machine down on
+    /// open ground around it. Machines that find no open tile within
+    /// [`crate::stats::UNLOAD_SCAN_RADIUS`] stay aboard.
+    /// (Last variant by appending discipline: earlier discriminants keep
+    /// their serialized bytes.)
+    Unload {
+        /// The carrier.
+        transport: UnitId,
+        /// The drop point.
+        at: TilePos,
         /// Append to order queues instead of replacing.
         queue: bool,
     },

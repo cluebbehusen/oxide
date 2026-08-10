@@ -218,7 +218,8 @@ fn unit_preparation_frame(kind: UnitKind, progress: f32) -> usize {
         | UnitKind::Tender
         | UnitKind::Excavator
         | UnitKind::Kestrel
-        | UnitKind::Gnat => 0,
+        | UnitKind::Gnat
+        | UnitKind::Skyhook => 0,
     }
 }
 
@@ -245,7 +246,8 @@ fn unit_attack_frame(kind: UnitKind, attack: AttackPhase) -> usize {
             | UnitKind::Tender
             | UnitKind::Excavator
             | UnitKind::Kestrel
-            | UnitKind::Gnat => 0,
+            | UnitKind::Gnat
+            | UnitKind::Skyhook => 0,
         },
         AttackPhase::Recover { progress, .. } => match kind {
             UnitKind::Lancer | UnitKind::Bombard => 4 + cycle_index(progress, 2),
@@ -268,7 +270,8 @@ fn unit_attack_frame(kind: UnitKind, attack: AttackPhase) -> usize {
             | UnitKind::Tender
             | UnitKind::Excavator
             | UnitKind::Kestrel
-            | UnitKind::Gnat => 0,
+            | UnitKind::Gnat
+            | UnitKind::Skyhook => 0,
         },
     }
 }

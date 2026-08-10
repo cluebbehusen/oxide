@@ -129,6 +129,8 @@ pub struct Sprites {
     avalanche: [Rect; 3],
     avalanche_move: [[Rect; 3]; 2],
     avalanche_action: [[Rect; 3]; 4],
+    skyhook: [Rect; 3],
+    skyhook_move: [[Rect; 3]; 2],
 }
 
 fn faction_index(faction: Faction) -> usize {
@@ -498,7 +500,11 @@ fn unit_action_suffixes(kind: UnitKind) -> &'static [&'static str] {
         | UnitKind::Moth
         | UnitKind::Breaker
         | UnitKind::Avalanche => &ACTION_SUFFIXES_4,
-        UnitKind::Tender | UnitKind::Excavator | UnitKind::Kestrel | UnitKind::Gnat => &[],
+        UnitKind::Tender
+        | UnitKind::Excavator
+        | UnitKind::Kestrel
+        | UnitKind::Gnat
+        | UnitKind::Skyhook => &[],
     }
 }
 
@@ -519,7 +525,7 @@ fn building_work_suffixes(kind: BuildingKind) -> &'static [&'static str] {
 
 /// Every kind the shell must find art for.
 #[cfg(test)]
-const ALL_UNIT_KINDS: [UnitKind; 22] = [
+const ALL_UNIT_KINDS: [UnitKind; 23] = [
     UnitKind::Harvester,
     UnitKind::Sentinel,
     UnitKind::Scuttler,
@@ -542,6 +548,7 @@ const ALL_UNIT_KINDS: [UnitKind; 22] = [
     UnitKind::Moth,
     UnitKind::Breaker,
     UnitKind::Avalanche,
+    UnitKind::Skyhook,
 ];
 
 const ALL_BUILDING_KINDS: [BuildingKind; 11] = [
@@ -654,6 +661,7 @@ fn atlas_keys() -> Vec<String> {
         UnitKind::Moth,
         UnitKind::Breaker,
         UnitKind::Avalanche,
+        UnitKind::Skyhook,
     ] {
         for suffix in MOVE_SUFFIXES {
             keys.extend(variant_keys(unit_stem(kind), suffix));
@@ -869,6 +877,8 @@ impl Sprites {
                 unit_stem(UnitKind::Avalanche),
                 ACTION_SUFFIXES_4,
             )?,
+            skyhook: unit(UnitKind::Skyhook)?,
+            skyhook_move: variant_rows(&rects, unit_stem(UnitKind::Skyhook), MOVE_SUFFIXES)?,
         })
     }
 
@@ -1181,6 +1191,7 @@ impl Sprites {
             UnitKind::Moth => &self.moth_move,
             UnitKind::Breaker => &self.breaker_move,
             UnitKind::Avalanche => &self.avalanche_move,
+            UnitKind::Skyhook => &self.skyhook_move,
         };
         frame
             .checked_sub(1)
@@ -1233,6 +1244,7 @@ impl Sprites {
             UnitKind::Moth => &self.moth,
             UnitKind::Breaker => &self.breaker,
             UnitKind::Avalanche => &self.avalanche,
+            UnitKind::Skyhook => &self.skyhook,
         }
     }
 
@@ -1256,7 +1268,11 @@ impl Sprites {
             UnitKind::Moth => &self.moth_action,
             UnitKind::Breaker => &self.breaker_action,
             UnitKind::Avalanche => &self.avalanche_action,
-            UnitKind::Tender | UnitKind::Excavator | UnitKind::Kestrel | UnitKind::Gnat => {
+            UnitKind::Tender
+            | UnitKind::Excavator
+            | UnitKind::Kestrel
+            | UnitKind::Gnat
+            | UnitKind::Skyhook => {
                 return None;
             }
         };

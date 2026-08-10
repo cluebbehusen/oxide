@@ -385,6 +385,9 @@ fn note_activity(activity: &mut MatchActivity, report: &TickReport) {
             Event::UnitDied { .. } | Event::BuildingDestroyed { .. } => {
                 activity.last_combat_tick = tick;
             }
+            Event::UnitBoarded { .. } | Event::UnitUnloaded { .. } => {
+                activity.last_economy_tick = tick;
+            }
             Event::ShellLanded { .. }
             | Event::UnitRepaired { .. }
             | Event::CommandRejected { .. }

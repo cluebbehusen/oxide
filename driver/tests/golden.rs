@@ -268,6 +268,12 @@ fn showcase_scenario() -> (Scenario, Cast) {
     // spotted for each seat by its annex flak sitting four tiles off.
     let avalanche_w = roster.add(0, UnitKind::Avalanche, 39, 16);
     let avalanche_e = roster.add(1, UnitKind::Avalanche, 44, 16);
+    // The unarmed slings, each with its own flak wounder, two tiles
+    // below the Avalanche exchange (outside its 1.6 splash).
+    let skyhook_w = roster.add(0, UnitKind::Skyhook, 39, 18);
+    let stinger_sling = roster.add(1, UnitKind::Stinger, 40, 18);
+    let flakhound_sling = roster.add(0, UnitKind::Flakhound, 43, 18);
+    let skyhook_e = roster.add(1, UnitKind::Skyhook, 44, 18);
 
     // Seat 0's standing structures: one of every kind the build palette
     // offers, whole. Its Foundry comes from the map anchor.
@@ -338,8 +344,14 @@ fn showcase_scenario() -> (Scenario, Cast) {
             east,
             interloper,
             guns: (gun_west, gun_east),
-            annex_f: vec![condor, flakhound_annex, breaker_w],
-            annex_c: vec![moth, stinger_annex, breaker_e],
+            annex_f: vec![
+                condor,
+                flakhound_annex,
+                breaker_w,
+                skyhook_w,
+                flakhound_sling,
+            ],
+            annex_c: vec![moth, stinger_annex, breaker_e, skyhook_e, stinger_sling],
             avalanches: (avalanche_w, avalanche_e),
         },
     )
@@ -472,6 +484,8 @@ fn opening_orders(cast: &Cast) -> Vec<PlayerCommand> {
         attack(1, cast.annex_c[1], cast.annex_f[0]),
         attack(0, cast.avalanches.0, cast.avalanches.1),
         attack(1, cast.avalanches.1, cast.avalanches.0),
+        attack(0, cast.annex_f[4], cast.annex_c[3]),
+        attack(1, cast.annex_c[4], cast.annex_f[3]),
     ]);
     commands
 }
@@ -487,7 +501,7 @@ fn disengage(cast: &Cast) -> Vec<PlayerCommand> {
         walk(2, vec![cast.interloper], 36, 6),
         walk(0, vec![cast.guns.0], 30, 13),
         walk(1, vec![cast.guns.1], 30, 27),
-        walk(0, cast.annex_f.clone(), 38, 14),
+        walk(0, cast.annex_f.clone(), 32, 15),
         walk(1, cast.annex_c.clone(), 47, 27),
         walk(0, vec![cast.avalanches.0], 10, 10),
         walk(1, vec![cast.avalanches.1], 46, 27),
@@ -521,7 +535,7 @@ fn showcase_state() -> State {
 
 /// Every kind, on every roster that can field it.
 fn every_kind_and_faction() -> impl Iterator<Item = (UnitKind, Faction)> {
-    const KINDS: [UnitKind; 22] = [
+    const KINDS: [UnitKind; 23] = [
         UnitKind::Harvester,
         UnitKind::Sentinel,
         UnitKind::Scuttler,
@@ -544,6 +558,7 @@ fn every_kind_and_faction() -> impl Iterator<Item = (UnitKind, Faction)> {
         UnitKind::Moth,
         UnitKind::Breaker,
         UnitKind::Avalanche,
+        UnitKind::Skyhook,
     ];
     KINDS.into_iter().flat_map(|kind| {
         [Faction::Ferrous, Faction::Cupric]

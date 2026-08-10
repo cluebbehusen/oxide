@@ -72,6 +72,10 @@ pub enum UnitKind {
     /// Tier-three rocket battery: extreme-reach indirect saturation with
     /// a blind ring at its feet. Shared roster.
     Avalanche,
+    /// Air transport: an unarmed lifter with a four-point sling rack.
+    /// Cargo rides sealed — it fights nothing, sees nothing, and dies
+    /// with the airframe. Shared roster.
+    Skyhook,
 }
 
 /// Every building type.
@@ -240,12 +244,32 @@ pub struct UnitStats {
     /// Construction work applied per adjacent tick (1 for everyone but
     /// the Excavator).
     pub build_rate: u32,
+    /// Room this machine occupies aboard a transport. 0 means it can
+    /// never be carried — every flyer, and the transport itself.
+    pub transport_size: u8,
+    /// Total cargo room this machine offers as a carrier. 0 for
+    /// everything that is not a transport.
+    pub transport_capacity: u8,
     /// Maximum compass steps (of 256) this unit may turn per tick.
     /// 0 means turning is free — the unit is not flight-committed. A
     /// nonzero rate makes the unit fly heading-first: it steers on a
     /// bounded arc, attacks on passes, and releases bombs only into its
     /// forward cone.
     pub turn_rate: u8,
+}
+
+impl UnitStats {
+    /// The ring inside which a turn-limited flier accepts a waypoint or
+    /// goal. It is the aircraft's own turn radius
+    /// (`speed * 256 / (2*pi*turn_rate)`, with `256/(2*pi)` as the
+    /// literal `40.75`) plus [`BOMBER_ACCEPT_SLACK`] — anything smaller
+    /// is an orbit the aircraft can fly forever without ever crossing
+    /// the ring. Only meaningful when `turn_rate > 0`.
+    pub fn turn_acceptance(&self) -> Fx {
+        debug_assert!(self.turn_rate > 0);
+        self.speed * Fx::lit("40.75") / Fx::from_num(i64::from(self.turn_rate))
+            + BOMBER_ACCEPT_SLACK
+    }
 }
 
 impl UnitStats {
@@ -388,6 +412,8 @@ pub enum Role {
     Breaker,
     /// Tier-three rocket battery (shared).
     Avalanche,
+    /// The air transport (shared).
+    Skyhook,
     /// Super-harvester (shared).
     Excavator,
     /// Unarmed far-sighted flyer — faction-varied.
@@ -422,6 +448,7 @@ impl Role {
             (Role::Bomber, Faction::Cupric) => UnitKind::Moth,
             (Role::Breaker, _) => UnitKind::Breaker,
             (Role::Avalanche, _) => UnitKind::Avalanche,
+            (Role::Skyhook, _) => UnitKind::Skyhook,
         }
     }
 }
@@ -441,7 +468,8 @@ impl UnitKind {
             | UnitKind::Tender
             | UnitKind::Excavator
             | UnitKind::Breaker
-            | UnitKind::Avalanche => None,
+            | UnitKind::Avalanche
+            | UnitKind::Skyhook => None,
             UnitKind::Flakhound
             | UnitKind::Buzzard
             | UnitKind::Talon
@@ -482,6 +510,7 @@ impl UnitKind {
             UnitKind::Moth => "moth",
             UnitKind::Breaker => "breaker",
             UnitKind::Avalanche => "avalanche",
+            UnitKind::Skyhook => "skyhook",
         }
     }
 
@@ -504,6 +533,7 @@ impl UnitKind {
             UnitKind::Condor | UnitKind::Moth => Role::Bomber,
             UnitKind::Breaker => Role::Breaker,
             UnitKind::Avalanche => Role::Avalanche,
+            UnitKind::Skyhook => Role::Skyhook,
         }
     }
 }
@@ -529,6 +559,8 @@ const HARVESTER: UnitStats = UnitStats {
     requires: &[],
     welder: true,
     build_rate: 1,
+    transport_size: 1,
+    transport_capacity: 0,
     turn_rate: 0,
 };
 
@@ -583,6 +615,8 @@ const SENTINEL: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    transport_size: 1,
+    transport_capacity: 0,
     turn_rate: 0,
 };
 
@@ -610,6 +644,8 @@ const SCUTTLER: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    transport_size: 1,
+    transport_capacity: 0,
     turn_rate: 0,
 };
 
@@ -641,6 +677,8 @@ const LANCER: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    transport_size: 2,
+    transport_capacity: 0,
     turn_rate: 0,
 };
 
@@ -668,6 +706,8 @@ const BOMBARD: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    transport_size: 3,
+    transport_capacity: 0,
     turn_rate: 0,
 };
 
@@ -695,6 +735,8 @@ const FLAKHOUND: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    transport_size: 2,
+    transport_capacity: 0,
     turn_rate: 0,
 };
 
@@ -722,6 +764,8 @@ const STINGER: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    transport_size: 1,
+    transport_capacity: 0,
     turn_rate: 0,
 };
 
@@ -753,6 +797,8 @@ const BUZZARD: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    transport_size: 0,
+    transport_capacity: 0,
     turn_rate: 0,
 };
 
@@ -784,6 +830,8 @@ const DARTER: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    transport_size: 0,
+    transport_capacity: 0,
     turn_rate: 0,
 };
 
@@ -811,6 +859,8 @@ const TALON: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    transport_size: 0,
+    transport_capacity: 0,
     turn_rate: 0,
 };
 
@@ -838,6 +888,8 @@ const WISP: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    transport_size: 0,
+    transport_capacity: 0,
     turn_rate: 0,
 };
 
@@ -865,6 +917,8 @@ const WARDEN: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    transport_size: 2,
+    transport_capacity: 0,
     turn_rate: 0,
 };
 
@@ -882,6 +936,8 @@ const TENDER: UnitStats = UnitStats {
     requires: &[],
     welder: true,
     build_rate: 1,
+    transport_size: 2,
+    transport_capacity: 0,
     turn_rate: 0,
 };
 
@@ -902,6 +958,8 @@ const EXCAVATOR: UnitStats = UnitStats {
     requires: &[BuildingKind::Fabricator],
     welder: true,
     build_rate: 2,
+    transport_size: 2,
+    transport_capacity: 0,
     turn_rate: 0,
 };
 
@@ -919,6 +977,8 @@ const KESTREL: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    transport_size: 0,
+    transport_capacity: 0,
     turn_rate: 0,
 };
 
@@ -936,6 +996,8 @@ const GNAT: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    transport_size: 0,
+    transport_capacity: 0,
     turn_rate: 0,
 };
 
@@ -963,6 +1025,8 @@ const SHRIKE: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    transport_size: 0,
+    transport_capacity: 0,
     turn_rate: 0,
 };
 
@@ -990,6 +1054,8 @@ const SYLPH: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    transport_size: 0,
+    transport_capacity: 0,
     turn_rate: 0,
 };
 
@@ -1017,6 +1083,8 @@ const CONDOR: UnitStats = UnitStats {
     requires: &[BuildingKind::Crucible],
     welder: false,
     build_rate: 1,
+    transport_size: 0,
+    transport_capacity: 0,
     turn_rate: 2, // ~2.2-tile turn radius: every run is a commitment
 };
 
@@ -1044,6 +1112,8 @@ const MOTH: UnitStats = UnitStats {
     requires: &[BuildingKind::Crucible],
     welder: false,
     build_rate: 1,
+    transport_size: 0,
+    transport_capacity: 0,
     turn_rate: 3, // tighter loops than the Condor, weaker punch
 };
 
@@ -1071,6 +1141,8 @@ const BREAKER: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    transport_size: 4,
+    transport_capacity: 0,
     turn_rate: 0,
 };
 
@@ -1098,6 +1170,27 @@ const AVALANCHE: UnitStats = UnitStats {
     requires: &[],
     welder: false,
     build_rate: 1,
+    transport_size: 4,
+    transport_capacity: 0,
+    turn_rate: 0,
+};
+
+const SKYHOOK: UnitStats = UnitStats {
+    max_hp: 200,
+    speed: Fx::lit("0.13"),
+    radius: Fx::lit("0.45"),
+    cost: 250,
+    train_ticks: 400,
+    domain: Domain::Air,
+    weapons: &[],
+    aggro_range: Fx::ZERO,
+    harvest: None,
+    vision: 6,
+    requires: &[],
+    welder: false,
+    build_rate: 1,
+    transport_size: 0,
+    transport_capacity: 4,
     turn_rate: 0,
 };
 
@@ -1284,6 +1377,7 @@ const AIRWORKS: BuildingStats = BuildingStats {
         UnitKind::Sylph,
         UnitKind::Condor,
         UnitKind::Moth,
+        UnitKind::Skyhook,
     ],
     weapons: &[],
     construction: Some(ConstructionStats {
@@ -1450,6 +1544,7 @@ impl UnitKind {
             UnitKind::Moth => &MOTH,
             UnitKind::Breaker => &BREAKER,
             UnitKind::Avalanche => &AVALANCHE,
+            UnitKind::Skyhook => &SKYHOOK,
         }
     }
 
@@ -1571,10 +1666,19 @@ pub const BOMBER_CONE_DOT: Fx = Fx::lit("0.92");
 /// Distance between consecutive bombs of a stick along the flight line.
 pub const BOMB_SALVO_SPACING: Fx = Fx::lit("0.8");
 
-/// Arrival radius for turn-limited fliers: a bounded-turn aircraft can
-/// never promise to cross an exact tile center, so any goal inside this
-/// ring counts as reached.
-pub const BOMBER_ARRIVE: Fx = Fx::lit("0.9");
+/// Acceptance slack added to a turn-limited flier's computed turn
+/// radius: the ring inside which a waypoint or goal counts as reached.
+/// The radius itself must dominate — an acceptance ring smaller than
+/// the turn radius is an orbit trap the aircraft can circle forever.
+pub const BOMBER_ACCEPT_SLACK: Fx = Fx::lit("0.4");
+
+/// How close a boarding machine must stand to its transport before the
+/// sling takes it.
+pub const LOAD_REACH: Fx = Fx::lit("1.5");
+
+/// Ring-scan radius when a transport sets its cargo down: the farthest
+/// tile from the drop point a disgorged machine may appear on.
+pub const UNLOAD_SCAN_RADIUS: i32 = 4;
 
 /// with no income at all. Credit is per Foundry so expansion bases are
 /// worth their keep, but the rate is tuned so income alone never pays

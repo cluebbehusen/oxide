@@ -93,9 +93,10 @@ pub(super) fn walk(state: &mut State, id: UnitId, goal: TilePos, events: &mut Ve
     let tile = unit.tile();
     // A bounded-turn flier cannot promise an exact tile center — the
     // ring the steering integrator accepts is the arrival contract.
-    let arced_in = unit.kind.stats().turn_rate > 0
-        && unit.pos.dist_sq(goal.center())
-            <= crate::stats::BOMBER_ARRIVE * crate::stats::BOMBER_ARRIVE;
+    let arced_in = unit.kind.stats().turn_rate > 0 && {
+        let accept = unit.kind.stats().turn_acceptance();
+        unit.pos.dist_sq(goal.center()) <= accept * accept
+    };
     if tile == goal || arced_in || touching_settled_arrival(state, id, goal) {
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;

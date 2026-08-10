@@ -852,7 +852,7 @@ fn bomber_attack(
         // plain path goal, so steering, arrival, and repath all reuse
         // the ordinary machinery; when it completes (or goes stale) the
         // chase below lines up the next run.
-        let egress = egress_goal(state, pos, heading);
+        let egress = egress_goal(state, pos, heading, stats.turn_acceptance());
         let unit = state.unit_mut(id).expect("caller checked");
         unit.cooldowns[pi] = weapon.cooldown_ticks;
         unit.path = egress.map(|goal| PathFollow {
@@ -870,7 +870,7 @@ fn bomber_attack(
     // point-blank is exactly the stop-and-strafe this chassis forbids.
     if cooldowns[pi] > weapon.cooldown_ticks / 2 {
         if state.unit(id).expect("caller checked").path.is_none()
-            && let Some(goal) = egress_goal(state, pos, heading)
+            && let Some(goal) = egress_goal(state, pos, heading, stats.turn_acceptance())
         {
             let unit = state.unit_mut(id).expect("caller checked");
             unit.path = Some(PathFollow {
@@ -915,20 +915,27 @@ fn bomber_attack(
 }
 
 /// Where a bomber rolls out after a release: straight ahead along its
-/// heading, as far as the map and the mesas allow (shrinking from four
-/// tiles down to one), or `None` when even one tile ahead is closed.
-fn egress_goal(state: &State, pos: Vec2Fx, heading: u8) -> Option<TilePos> {
-    let hv = chassis::compass::dir(heading);
-    for reach in [4i64, 3, 2, 1] {
-        let probe = pos + hv * Fx::from_num(reach);
-        let tile = TilePos::containing(probe);
-        if tile.x >= 0
-            && tile.y >= 0
-            && tile.x < state.map().width()
-            && tile.y < state.map().height()
-            && state.passable_for(Domain::Air, tile)
-        {
-            return Some(tile);
+/// heading when the sky is open, bending up to ninety degrees when a
+/// wall or mesa closes the line. Every candidate must sit beyond the
+/// aircraft's own acceptance ring — a goal inside it completes without
+/// a single tick of flight, which is how a wall-facing bomber once
+/// parked through its whole reload. `None` only in a closed pocket.
+fn egress_goal(state: &State, pos: Vec2Fx, heading: u8, accept: Fx) -> Option<TilePos> {
+    let accept_sq = accept * accept;
+    for offset in [0u8, 32, 224, 64, 192] {
+        let hv = chassis::compass::dir(heading.wrapping_add(offset));
+        for reach in [5i64, 4, 3] {
+            let probe = pos + hv * Fx::from_num(reach);
+            let tile = TilePos::containing(probe);
+            if tile.x >= 0
+                && tile.y >= 0
+                && tile.x < state.map().width()
+                && tile.y < state.map().height()
+                && state.passable_for(Domain::Air, tile)
+                && tile.center().dist_sq(pos) > accept_sq
+            {
+                return Some(tile);
+            }
         }
     }
     None

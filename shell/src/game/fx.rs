@@ -238,9 +238,11 @@ fn unit_fire_sound(kind: oxide_sim::UnitKind) -> SoundKind {
         UnitKind::Sylph => SoundKind::WispFire,
         UnitKind::Condor | UnitKind::Moth | UnitKind::Avalanche => SoundKind::BombardFire,
         UnitKind::Breaker => SoundKind::BastionFire,
-        UnitKind::Tender | UnitKind::Excavator | UnitKind::Kestrel | UnitKind::Gnat => {
-            SoundKind::Laser
-        }
+        UnitKind::Tender
+        | UnitKind::Excavator
+        | UnitKind::Kestrel
+        | UnitKind::Gnat
+        | UnitKind::Skyhook => SoundKind::Laser,
         UnitKind::Harvester => SoundKind::Laser,
     }
 }
@@ -761,6 +763,8 @@ impl Game {
                         oxide_sim::StallReason::GroundTaken => {
                             "that ground was taken before the founder arrived"
                         }
+                        oxide_sim::StallReason::TransportFull => "the transport is full",
+                        oxide_sim::StallReason::NoOpenGround => "no open ground to unload there",
                     });
                     self.fx.push(Effect {
                         kind: EffectKind::Ping {

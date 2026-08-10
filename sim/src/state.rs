@@ -173,11 +173,22 @@ pub enum Order {
     },
     /// Move to a tile without chasing or stopping, taking only
     /// primary-weapon shots that are already in range and visible.
-    /// (Last variant by appending discipline: earlier discriminants
-    /// keep their serialized bytes.)
     Advance {
         /// Destination (always passable — commands snap it).
         goal: TilePos,
+    },
+    /// Walk within [`crate::stats::LOAD_REACH`] of an own transport and
+    /// board it: the machine leaves the world and rides as cargo.
+    Board {
+        /// The carrier to climb onto.
+        transport: crate::ids::UnitId,
+    },
+    /// Fly to a tile and set every carried machine down on open ground
+    /// around it. (Last variant by appending discipline: earlier
+    /// discriminants keep their serialized bytes.)
+    Unload {
+        /// The drop point.
+        at: TilePos,
     },
 }
 
@@ -274,6 +285,12 @@ pub struct Unit {
     /// valid heading, so deserialization needs no extra validation row.
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub heading: u8,
+    /// Machines riding aboard this transport. Cargo lives OUTSIDE the
+    /// world's unit list: nothing can see, target, collide with, or
+    /// command a carried machine, and it contributes no vision. It
+    /// keeps its id (ids are never reused) and dies with the carrier.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cargo: Vec<Unit>,
 }
 
 impl Unit {
@@ -786,6 +803,58 @@ impl State {
                     return Err(E::UnmintedOrderTarget(u.id));
                 }
             }
+            // Cargo is a trusted enclave: nothing in the tick pipeline
+            // re-examines a rider until it is set down, so a forged
+            // save must not smuggle in anything the sling could never
+            // have taken — the wrong carrier, the wrong rider kind, an
+            // overfull hold, live orders, or an aliased id.
+            let stats = u.kind.stats();
+            if !u.cargo.is_empty() && stats.transport_capacity == 0 {
+                return Err(E::CargoOnNonTransport(u.id));
+            }
+            let hold: u32 = u
+                .cargo
+                .iter()
+                .map(|r| u32::from(r.kind.stats().transport_size))
+                .sum();
+            if hold > u32::from(stats.transport_capacity) {
+                return Err(E::CargoBeyondCapacity(u.id));
+            }
+            for rider in &u.cargo {
+                let rstats = rider.kind.stats();
+                if rstats.transport_size == 0 {
+                    return Err(E::UncarriableCargo(u.id));
+                }
+                if rider.hp == 0 || rider.hp > rstats.max_hp {
+                    return Err(E::CargoHpOutOfRange(u.id));
+                }
+                if rider.player != u.player {
+                    return Err(E::CargoOwnerMismatch(u.id));
+                }
+                if rider.order != Order::Idle
+                    || !rider.queue.is_empty()
+                    || rider.path.is_some()
+                    || rider.leash.is_some()
+                    || !rider.cargo.is_empty()
+                {
+                    return Err(E::CargoNotDormant(u.id));
+                }
+                if rider.id.0 >= self.next_unit_id {
+                    return Err(E::StaleUnitCounter);
+                }
+            }
+        }
+        // Every id in the world — walking or riding — is minted once.
+        {
+            let mut ids: Vec<u32> = self
+                .units
+                .iter()
+                .flat_map(|u| std::iter::once(u.id.0).chain(u.cargo.iter().map(|r| r.id.0)))
+                .collect();
+            ids.sort_unstable();
+            if ids.windows(2).any(|w| w[0] == w[1]) {
+                return Err(E::AliasedCargoId);
+            }
         }
 
         for b in &self.buildings {
@@ -1131,6 +1200,7 @@ impl State {
             // fixed so a wing leaving one factory doesn't share one
             // heading forever; any constant would be equally legal.
             heading: (TilePos::containing(pos).x as u8).wrapping_mul(64),
+            cargo: Vec::new(),
         });
         id
     }
@@ -1497,6 +1567,8 @@ fn order_inside_envelope(order: &Order) -> bool {
         }
         Order::Attack { resume, .. } => resume.is_none_or(tile_inside_envelope),
         Order::Found { anchor, .. } => tile_inside_envelope(*anchor),
+        Order::Board { .. } => true,
+        Order::Unload { at } => tile_inside_envelope(*at),
     }
 }
 
@@ -1530,6 +1602,8 @@ fn order_reference(order: &Order) -> Option<Target> {
             Some(Target::Building(*building))
         }
         Order::RepairUnit { unit } => Some(Target::Unit(*unit)),
+        Order::Board { transport } => Some(Target::Unit(*transport)),
+        Order::Unload { .. } => None,
     }
 }
 
@@ -1854,6 +1928,27 @@ pub enum StateIntegrityError {
     /// distinguish a completed salvage from combat destruction.
     #[error("building {0} is still live but marked salvaged")]
     LiveBuildingMarkedSalvaged(BuildingId),
+    /// A machine with no sling claims to carry cargo.
+    #[error("unit {0} carries cargo without being a transport")]
+    CargoOnNonTransport(UnitId),
+    /// A transport's riders total more room than its sling offers.
+    #[error("unit {0} carries more cargo than its sling holds")]
+    CargoBeyondCapacity(UnitId),
+    /// A rider of a kind no sling can take (a flyer, or a transport).
+    #[error("unit {0} carries a rider that can never be carried")]
+    UncarriableCargo(UnitId),
+    /// A rider outside the living hp range.
+    #[error("unit {0} carries a rider with impossible hp")]
+    CargoHpOutOfRange(UnitId),
+    /// A rider owned by someone other than the carrier.
+    #[error("unit {0} carries another player's machine")]
+    CargoOwnerMismatch(UnitId),
+    /// A rider holding live orders, paths, tethers, or its own cargo.
+    #[error("unit {0} carries a rider that is not dormant")]
+    CargoNotDormant(UnitId),
+    /// The same unit id appears twice across the world and every hold.
+    #[error("a unit id is aliased between the world and a cargo hold")]
+    AliasedCargoId,
     /// A shell in flight is owned by a player outside the table.
     #[error("shell {0} is owned by a player outside the table")]
     ForeignShellOwner(usize),

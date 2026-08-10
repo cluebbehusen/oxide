@@ -64,13 +64,15 @@ enum CommandTag {
     FocusFire,
     CancelFound,
     UpgradeBuilding,
+    Load,
+    Unload,
 }
 
 /// The draw pool. Paired with the exhaustive matches below, the array and
 /// the variant list cannot drift apart — the old `next_below(10)` bound
 /// against nine arms is exactly how `Repair`, `Salvage`, and
 /// `CancelTrain` went unfuzzed.
-const COMMAND_TAGS: [CommandTag; 19] = [
+const COMMAND_TAGS: [CommandTag; 21] = [
     CommandTag::Move,
     CommandTag::Attack,
     CommandTag::AttackMove,
@@ -90,6 +92,8 @@ const COMMAND_TAGS: [CommandTag; 19] = [
     CommandTag::FocusFire,
     CommandTag::CancelFound,
     CommandTag::UpgradeBuilding,
+    CommandTag::Load,
+    CommandTag::Unload,
 ];
 
 /// How rarely a drawn [`CommandTag::Surrender`] is kept: one landed
@@ -125,6 +129,8 @@ fn tag_index(tag: CommandTag) -> usize {
         CommandTag::FocusFire => 16,
         CommandTag::CancelFound => 17,
         CommandTag::UpgradeBuilding => 18,
+        CommandTag::Load => 19,
+        CommandTag::Unload => 20,
     }
 }
 
@@ -150,12 +156,14 @@ fn tag_of(command: &Command) -> CommandTag {
         Command::FocusFire { .. } => CommandTag::FocusFire,
         Command::UpgradeBuilding { .. } => CommandTag::UpgradeBuilding,
         Command::CancelFound { .. } => CommandTag::CancelFound,
+        Command::Load { .. } => CommandTag::Load,
+        Command::Unload { .. } => CommandTag::Unload,
     }
 }
 
 /// The whole roster, cross-faction kinds included — `apply_train` owes
 /// every one of them a verdict. Exhaustive by the same rule as the verbs.
-const UNIT_KINDS: [UnitKind; 22] = [
+const UNIT_KINDS: [UnitKind; 23] = [
     UnitKind::Harvester,
     UnitKind::Sentinel,
     UnitKind::Scuttler,
@@ -178,6 +186,7 @@ const UNIT_KINDS: [UnitKind; 22] = [
     UnitKind::Moth,
     UnitKind::Breaker,
     UnitKind::Avalanche,
+    UnitKind::Skyhook,
 ];
 
 fn unit_kind_index(kind: UnitKind) -> usize {
@@ -201,6 +210,7 @@ fn unit_kind_index(kind: UnitKind) -> usize {
         UnitKind::Shrike => 16,
         UnitKind::Sylph => 17,
         UnitKind::Condor => 18,
+        UnitKind::Skyhook => 22,
         UnitKind::Moth => 19,
         UnitKind::Breaker => 20,
         UnitKind::Avalanche => 21,
@@ -456,6 +466,16 @@ fn generate(tag: CommandTag, rng: &mut Pcg32, state: &State) -> Command {
         CommandTag::UpgradeBuilding => Command::UpgradeBuilding {
             units: units(rng, state),
             building: building_id(rng, state),
+            queue: queue(rng),
+        },
+        CommandTag::Load => Command::Load {
+            units: units(rng, state),
+            transport: unit_id(rng, state),
+            queue: queue(rng),
+        },
+        CommandTag::Unload => Command::Unload {
+            transport: unit_id(rng, state),
+            at: tile(rng, state),
             queue: queue(rng),
         },
     }

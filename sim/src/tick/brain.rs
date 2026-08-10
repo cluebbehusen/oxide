@@ -103,7 +103,7 @@ pub(super) fn run(
     state: &mut State,
     index: &mut super::spatial::UnitIndex,
     events: &mut Vec<Event>,
-) {
+) -> logistics::Pending {
     // One index serves every acquisition window this phase: brains
     // decide against the start-of-tick world — positions, hp, and the
     // unit list itself hold still until resolution — so a snapshot
@@ -117,6 +117,7 @@ pub(super) fn run(
     let mut drains: Vec<PendingHpDrain> = Vec::new();
     let mut founds: Vec<PendingFounding> = Vec::new();
     let mut launches: Vec<crate::state::Shell> = Vec::new();
+    let mut logistics_pending = logistics::Pending::default();
     let mut harvest_danger_by_team: Vec<Option<crate::vision::GroundSalvageDanger>> =
         (0..state.players.len()).map(|_| None).collect();
     // Alternate direction by tick parity: sequential phases must not hand
@@ -180,6 +181,12 @@ pub(super) fn run(
             Order::Salvage { building } => salvage(state, id, building, events, &mut drains),
             Order::Found { kind, anchor } => found(state, id, kind, anchor, events, &mut founds),
             Order::RepairUnit { unit } => repair_unit(state, id, unit, events, &mut field_welds),
+            Order::Board { transport } => {
+                logistics::board(state, id, transport, &mut logistics_pending, events)
+            }
+            Order::Unload { at } => {
+                logistics::unload(state, id, at, &mut logistics_pending, events)
+            }
         }
     }
     commit_unit_welds(state, field_welds, events, &mut heals);
@@ -191,11 +198,13 @@ pub(super) fn run(
     state.shells.extend(launches);
     resolve_hits(state, hits, builds, heals, drains, events);
     resolve_founds(state, founds, events);
+    logistics_pending
 }
 
 mod combat;
 mod economy;
 mod locomotion;
+pub(super) mod logistics;
 
 use combat::attack;
 use combat::{MotionSnapshot, advance, land_shells, retaliate, target_standing, turret_fire};

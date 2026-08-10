@@ -540,8 +540,11 @@ fn command_behavior_in(
                         behavior.fighters += 1;
                         behavior.air_units += 1;
                     }
-                    UnitKind::Tender | UnitKind::Excavator | UnitKind::Kestrel | UnitKind::Gnat => {
-                    }
+                    UnitKind::Tender
+                    | UnitKind::Excavator
+                    | UnitKind::Kestrel
+                    | UnitKind::Gnat
+                    | UnitKind::Skyhook => {}
                 },
                 Command::Build { kind, .. } => match kind {
                     BuildingKind::Fabricator | BuildingKind::Reclaimer => {

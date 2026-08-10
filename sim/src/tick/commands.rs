@@ -116,6 +116,22 @@ pub(super) fn apply(state: &mut State, commands: &[PlayerCommand], events: &mut 
                 building,
                 queue,
             } => apply_upgrade(state, pc.player, &canonical_units(units), *building, *queue),
+            Command::Load {
+                units,
+                transport,
+                queue,
+            } => apply_load(
+                state,
+                pc.player,
+                &canonical_units(units),
+                *transport,
+                *queue,
+            ),
+            Command::Unload {
+                transport,
+                at,
+                queue,
+            } => apply_unload(state, pc.player, *transport, *at, *queue),
         };
         if let Err(reason) = outcome {
             events.push(Event::CommandRejected {
@@ -977,6 +993,67 @@ fn apply_repair_unit(
         return Err(RejectReason::QueueFull);
     }
     Ok(())
+}
+
+/// Sends carriable ground machines to climb aboard an own transport.
+/// Capacity is checked at the sling, not here — contents change while
+/// the boarders walk.
+fn apply_load(
+    state: &mut State,
+    player: PlayerId,
+    units: &[UnitId],
+    transport: UnitId,
+    queue: bool,
+) -> Result<(), RejectReason> {
+    let t = state.unit(transport).ok_or(RejectReason::InvalidTarget)?;
+    if t.player != player || t.hp == 0 || t.kind.stats().transport_capacity == 0 {
+        return Err(RejectReason::InvalidTarget);
+    }
+    let mut landed = 0;
+    let mut applied = 0;
+    for &id in units {
+        if id == transport {
+            continue;
+        }
+        if let Some(unit) = state.unit_mut(id)
+            && unit.player == player
+            && unit.hp > 0
+            && unit.kind.stats().transport_size > 0
+        {
+            applied += 1;
+            if assign(unit, Order::Board { transport }, queue) {
+                landed += 1;
+            }
+        }
+    }
+    if applied == 0 {
+        return Err(RejectReason::NoValidUnits);
+    }
+    (landed > 0).then_some(()).ok_or(RejectReason::QueueFull)
+}
+
+/// Flies a transport to a drop point and disgorges there. An empty
+/// sling still flies — the order is a movement with intent.
+fn apply_unload(
+    state: &mut State,
+    player: PlayerId,
+    transport: UnitId,
+    at: TilePos,
+    queue: bool,
+) -> Result<(), RejectReason> {
+    if !in_envelope(state, at) {
+        return Err(RejectReason::OutOfBounds);
+    }
+    let t = state.unit(transport).ok_or(RejectReason::InvalidTarget)?;
+    if t.player != player || t.hp == 0 || t.kind.stats().transport_capacity == 0 {
+        return Err(RejectReason::InvalidTarget);
+    }
+    let unit = state.unit_mut(transport).expect("just seen");
+    if assign(unit, Order::Unload { at }, queue) {
+        Ok(())
+    } else {
+        Err(RejectReason::QueueFull)
+    }
 }
 
 /// The verb a repair/salvage command evicts from its target: the two

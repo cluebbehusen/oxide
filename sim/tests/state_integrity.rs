@@ -263,6 +263,13 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::IncoherentSalvageLedger(_) => 33,
         E::TierBeyondLadder(_) => 34,
         E::LiveBuildingMarkedSalvaged(_) => 35,
+        E::CargoOnNonTransport(_) => 50,
+        E::CargoBeyondCapacity(_) => 51,
+        E::UncarriableCargo(_) => 52,
+        E::CargoHpOutOfRange(_) => 53,
+        E::CargoOwnerMismatch(_) => 54,
+        E::CargoNotDormant(_) => 55,
+        E::AliasedCargoId => 56,
         E::ForeignShellOwner(_) => 36,
         E::ShellOutsideEnvelope(_) => 37,
         E::UnmintedShellShooter(_) => 38,
@@ -280,7 +287,7 @@ fn row_index(e: &StateIntegrityError) -> usize {
     }
 }
 
-const ROWS: usize = 50;
+const ROWS: usize = 57;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -343,12 +350,53 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::ExpiredSalvageIncident(PlayerId(0)),
         E::SalvageIncidentExpiryBeyondHorizon(PlayerId(0)),
         E::UnsortedSalvageIncidents(PlayerId(0)),
+        E::CargoOnNonTransport(UnitId(0)),
+        E::CargoBeyondCapacity(UnitId(0)),
+        E::UncarriableCargo(UnitId(0)),
+        E::CargoHpOutOfRange(UnitId(0)),
+        E::CargoOwnerMismatch(UnitId(0)),
+        E::CargoNotDormant(UnitId(0)),
+        E::AliasedCargoId,
     ]
 }
 
 /// One forgery: what it is called, the single poke that makes it, and
 /// the fragment of the refusal it must earn.
 type Forgery = (&'static str, fn(&mut Value), &'static str);
+
+/// A dormant, well-formed Sentinel rider cut from the enemy Sentinel's
+/// serialized shape: fresh id below the counter, idle, owner seat 0.
+fn well_formed_rider(d: &Value) -> Value {
+    let mut rider = d["units"][2].clone();
+    let next = d["next_unit_id"].as_u64().expect("counter serialized");
+    rider["id"] = json!(next - 1);
+    rider["player"] = json!(0);
+    rider["hp"] = json!(10);
+    rider["order"] = json!({"order": "idle"});
+    rider.as_object_mut().expect("unit is a map").remove("path");
+    rider
+        .as_object_mut()
+        .expect("unit is a map")
+        .remove("leash");
+    rider
+        .as_object_mut()
+        .expect("unit is a map")
+        .remove("queue");
+    rider
+}
+
+/// Rewrites units[0] (the working Harvester) into a plausible Skyhook
+/// so cargo clauses past the transport gate can be probed one at a time.
+fn make_transport(d: &mut Value) {
+    d["units"][0]["kind"] = json!("skyhook");
+    d["units"][0]["hp"] = json!(150);
+    d["units"][0]["order"] = json!({"order": "idle"});
+    d["units"][0]["carrying"] = json!(0);
+    let unit = d["units"][0].as_object_mut().expect("unit is a map");
+    unit.remove("path");
+    unit.remove("leash");
+    unit.remove("queue");
+}
 
 /// Every checklist row, one forgery each. The expectation is the
 /// message fragment the row names its victim with, so a row that stops
@@ -596,6 +644,73 @@ fn every_checklist_row_refuses_its_forgery() {
             "a live building marked as already salvaged",
             |d| d["buildings"][0]["salvaged"] = json!(true),
             "building b0 is still live but marked salvaged",
+        ),
+        (
+            "cargo aboard a machine with no sling",
+            |d| {
+                let rider = well_formed_rider(d);
+                d["units"][0]["cargo"] = json!([rider]);
+            },
+            "carries cargo without being a transport",
+        ),
+        (
+            "a sling packed past its capacity",
+            |d| {
+                let rider = well_formed_rider(d);
+                make_transport(d);
+                d["units"][0]["cargo"] = json!(vec![rider; 5]);
+            },
+            "carries more cargo than its sling holds",
+        ),
+        (
+            "a rider no sling can take",
+            |d| {
+                let mut rider = well_formed_rider(d);
+                rider["kind"] = json!("kestrel");
+                make_transport(d);
+                d["units"][0]["cargo"] = json!([rider]);
+            },
+            "carries a rider that can never be carried",
+        ),
+        (
+            "a dead rider in the hold",
+            |d| {
+                let mut rider = well_formed_rider(d);
+                rider["hp"] = json!(0);
+                make_transport(d);
+                d["units"][0]["cargo"] = json!([rider]);
+            },
+            "carries a rider with impossible hp",
+        ),
+        (
+            "another player's machine in the hold",
+            |d| {
+                let mut rider = well_formed_rider(d);
+                rider["player"] = json!(1);
+                make_transport(d);
+                d["units"][0]["cargo"] = json!([rider]);
+            },
+            "carries another player's machine",
+        ),
+        (
+            "a rider still holding live orders",
+            |d| {
+                let mut rider = well_formed_rider(d);
+                rider["order"] = json!({"order": "move", "goal": {"x": 3, "y": 3}});
+                make_transport(d);
+                d["units"][0]["cargo"] = json!([rider]);
+            },
+            "carries a rider that is not dormant",
+        ),
+        (
+            "a rider whose id walks the world too",
+            |d| {
+                let mut rider = well_formed_rider(d);
+                rider["id"] = d["units"][1]["id"].clone();
+                make_transport(d);
+                d["units"][0]["cargo"] = json!([rider]);
+            },
+            "aliased between the world and a cargo hold",
         ),
         (
             "a shell fired by a seat off the table",

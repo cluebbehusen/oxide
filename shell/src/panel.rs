@@ -236,6 +236,7 @@ pub fn unit_flavor(kind: UnitKind) -> &'static str {
         UnitKind::Moth => "Carpet bomber: lays a stick of six bombs along its run.",
         UnitKind::Breaker => "Tier-three assault walker built to crack fortress lines.",
         UnitKind::Avalanche => "Tier-three rocket battery: extreme reach, blind up close.",
+        UnitKind::Skyhook => "Air transport: carries ground machines across anything.",
     }
 }
 
@@ -549,7 +550,9 @@ fn order_subject(game: &Game, order: &Order) -> Option<(OrderSubject, String, bo
         | Order::Move { .. }
         | Order::Harvest { .. }
         | Order::AttackMove { .. }
-        | Order::Advance { .. } => None,
+        | Order::Advance { .. }
+        | Order::Board { .. }
+        | Order::Unload { .. } => None,
     }
 }
 
@@ -594,6 +597,16 @@ fn order_card(game: &Game, order: &Order, active: bool, own: bool) -> Card {
             VerbIcon::AttackMove,
             "Advance",
             "Moving while the primary weapon fires at targets already in range; never chasing.",
+        ),
+        Order::Board { .. } => (
+            VerbIcon::Move,
+            "Board",
+            "Walking to a transport and climbing aboard.",
+        ),
+        Order::Unload { .. } => (
+            VerbIcon::Move,
+            "Unload",
+            "Flying to a drop point to set every carried machine down.",
         ),
         Order::Salvage { .. } => (
             VerbIcon::Salvage,
