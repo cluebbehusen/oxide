@@ -20,3 +20,5 @@ dist/
 !.claude/skills/
 !.claude/skills/**
 origin-0.15.0.md
+review-0.15.0/
+todo-0.15.0.md
