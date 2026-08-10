@@ -31,7 +31,10 @@ from lineage import content_digest
 
 # Bump when _carve's output distribution changes (sizes, terrain
 # alphabet, densities): cache identity is schema + mode + seed.
-MAPGEN_SCHEMA = 3
+# Schema 4 (0.15): pit channels with land bridges, mesa massifs, and
+# derelict Extractor frames join the draw — the curriculum must
+# exercise the terrain the shipped roster is built on.
+MAPGEN_SCHEMA = 4
 
 DRIVER = "../../target/release/oxide-driver"
 
@@ -139,6 +142,80 @@ def _carve(
                 if 1 < x < w - 2 and 1 < y < h - 2 and grid[y][x] == ".":
                     set_pair(x, y, "^")
 
+    # Pit channels, often: a mirrored ribbon of '~' with deliberate
+    # gaps — land bridges. The air-route relaxation keeps even a
+    # severing draw legal (it becomes an island skirmish), which is
+    # exactly the variety the 0.15 curriculum owes the trainer.
+    if rng.random() < 0.45:
+        cx = int(rng.integers(6, max(7, w - 6)))
+        cy = int(rng.integers(3, h // 2 + 1))
+        dx, dy = [(1, 0), (0, 1), (1, 1), (1, -1)][int(rng.integers(0, 4))]
+        length = int(rng.integers(8, max(9, w // 2)))
+        thickness = int(rng.integers(1, 3))
+        gap_at = {int(g) for g in rng.integers(2, max(3, length - 1), size=2)}
+        for i in range(length):
+            if i in gap_at or i + 1 in gap_at:
+                continue  # the bridge
+            for t in range(-thickness, thickness + 1):
+                x = cx + dx * i + (dy * t)
+                y = cy + dy * i + (dx * t)
+                if 1 < x < w - 2 and 1 < y < h - 2 and grid[y][x] == ".":
+                    if abs(x - ax) + abs(y - ay) < 7:
+                        continue
+                    if abs(x - (mx - 1)) + abs(y - (my - 1)) < 7:
+                        continue
+                    set_pair(x, y, "~")
+
+    # Mesa massifs, sometimes: a filled '^' blob instead of a thin
+    # ridge — the peninsula-and-island silhouette of the 0.15 shelf
+    # maps, in miniature.
+    if rng.random() < 0.25:
+        cx = int(rng.integers(5, w - 5))
+        cy = int(rng.integers(3, h // 2 + 1))
+        radius = int(rng.integers(2, 4))
+        if (
+            abs(cx - ax) + abs(cy - ay) >= 9
+            and abs(cx - (mx - 1)) + abs(cy - (my - 1)) >= 9
+        ):
+            for ddy in range(-radius, radius + 1):
+                for ddx in range(-radius, radius + 1):
+                    if ddx * ddx + ddy * ddy > radius * radius:
+                        continue
+                    x, y = cx + ddx, cy + ddy
+                    if 1 < x < w - 2 and 1 < y < h - 2 and grid[y][x] == ".":
+                        set_pair(x, y, "^")
+
+    # Derelict Extractor frames, often: a mirrored pair of 'E' anchors
+    # on clear 2x2 ground away from both bases. The mirrored anchor
+    # shifts one up-left so the whole footprint, not the byte, is the
+    # 180-degree image (the forge's footprint rule).
+    frame_tiles: set[tuple[int, int]] = set()
+    if rng.random() < 0.5:
+        for _ in range(30):
+            if frame_tiles:
+                break
+            fx = int(rng.integers(3, w - 4))
+            fy = int(rng.integers(2, h // 2 + 1))
+            if abs(fx - ax) + abs(fy - ay) < 8:
+                continue
+            if abs(fx - (mx - 1)) + abs(fy - (my - 1)) < 8:
+                continue
+            gx, gy = w - 2 - fx, h - 2 - fy
+            spots_ok = all(
+                1 < x < w - 1 and 1 < y < h - 1 and grid[y][x] == "."
+                for bx, by in ((fx, fy), (gx, gy))
+                for x in (bx, bx + 1)
+                for y in (by, by + 1)
+            )
+            if not spots_ok:
+                continue
+            grid[fy][fx] = "E"
+            grid[gy][gx] = "E"
+            for bx, by in ((fx, fy), (gx, gy)):
+                for x in (bx, bx + 1):
+                    for y in (by, by + 1):
+                        frame_tiles.add((x, y))
+
     # Scrap: a home cluster near each base (mirrored) plus contested
     # center nodes, rich ones sometimes.
     home_nodes = int(rng.integers(3, 5))
@@ -152,6 +229,8 @@ def _carve(
             1 < x < w - 2
             and 1 < y < h - 2
             and grid[y][x] == "."
+            and (x, y) not in frame_tiles
+            and (w - 1 - x, h - 1 - y) not in frame_tiles
             and abs(dx) + abs(dy) >= 2
         ):
             set_pair(x, y, "s")
@@ -160,7 +239,13 @@ def _carve(
     for _ in range(center_nodes):
         dx, dy = int(rng.integers(-3, 4)), int(rng.integers(-2, 3))
         x, y = w // 2 + dx, h // 2 + dy
-        if 1 < x < w - 2 and 1 < y < h - 2 and grid[y][x] == ".":
+        if (
+            1 < x < w - 2
+            and 1 < y < h - 2
+            and grid[y][x] == "."
+            and (x, y) not in frame_tiles
+            and (w - 1 - x, h - 1 - y) not in frame_tiles
+        ):
             ch = "S" if rng.random() < 0.5 else "s"
             set_pair(x, y, ch)
 
@@ -176,6 +261,8 @@ def _carve(
             1 < x < w - 2
             and 1 < y < h - 2
             and grid[y][x] == "."
+            and (x, y) not in frame_tiles
+            and (w - 1 - x, h - 1 - y) not in frame_tiles
             and not (ax - 1 <= x <= ax + 2 and ay - 1 <= y <= ay + 2)
             and (x, y) not in spots
         ):
