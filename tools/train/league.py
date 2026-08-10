@@ -459,11 +459,18 @@ BUILD_ARRAY_ACTION = 13
 REPAIR_ACTION = 22
 BUILD_BAY_ACTION = 23
 # Successful completions seeded by --structure-bonus. Fabricators have
-# their established tech bonus, Foundries are not constructible, and the
-# Repair Bay belongs to the repair bonus.
+# their established tech bonus and the Repair Bay belongs to the repair
+# bonus. The 0.15 tree rungs join the set: r1 measured PPO grinding the
+# imitation-taught escalation back out (tier-2/3 share 0.141 -> 0.083
+# across the phase) because the win signal alone never pays for the
+# climb — and escalation is what makes a long match dynamic.
 SEEDED_STRUCTURES = (
     "turret",
     "array",
+    "airworks",
+    "crucible",
+    "extractor",
+    "foundry",
 )
 MAX_STRUCTURE_KIND_BONUS = 0.02
 MAX_RECLAIMER_BONUS = 0.02
