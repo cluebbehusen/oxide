@@ -80,11 +80,32 @@ def test_masked_head_loss_retains_masking_and_class_weights() -> None:
 
 
 def test_production_teaches_intent_without_reading_affordability() -> None:
+    # Tier-one wants stay affordability-blind: intent is the lesson and
+    # the lowering owns the bank. The one scout flyer comes first on the
+    # v9 surface (it is the only scout an island map allows), so the
+    # fixture already fields it.
     raw = _raw()
     raw[bc.F["scrap"]] = 0
     raw[bc.F["my_sentinels"]] = 4
+    raw[bc.F["my_scout_flyers"]] = 1
     mask = np.ones(ACTIONS, dtype=bool)
     assert bc.production_teacher("combined", raw, mask) == bc.TRAIN_LANCER
+
+
+def test_tier_wants_wait_for_the_bank() -> None:
+    # The deliberate exception: an unaffordable tier-two want would
+    # label half the corpus with purchases the lowering cannot make.
+    raw = _raw()
+    raw[bc.F["my_sentinels"]] = 4
+    raw[bc.F["my_lancers"]] = 3
+    raw[bc.F["my_bombards"]] = 2
+    raw[bc.F["my_scout_flyers"]] = 1
+    mask = np.ones(ACTIONS, dtype=bool)
+    raw[bc.F["scrap"]] = 0
+    poor = bc.production_teacher("combined", raw, mask)
+    assert poor != bc.TRAIN_WARDEN
+    raw[bc.F["scrap"]] = 300
+    assert bc.production_teacher("combined", raw, mask) == bc.TRAIN_WARDEN
 
 
 def test_an_existing_capital_plan_is_preserved() -> None:
