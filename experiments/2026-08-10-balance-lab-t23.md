@@ -38,3 +38,16 @@ All sim suites, liveness, and map gates green; hashes re-blessed at
 r4 relaunches on the new economics. The verification that matters
 comes from r4: does the policy tech because it wins, with shaping as
 transitional exploration only.
+
+## Post-rebalance league evidence (r4, phase 300 checkpoint)
+
+Aggregate tier share oscillates (0.082 -> 0.117 -> 0.070) but the
+decisive correlation is now positive: across decided large/vast/grand
+probe matches, winners average t23 0.099 vs losers 0.081, and seats
+with t23 > 0.15 split 49-35 in winners' favor. Teching wins after the
+rebalance — the policy under-exploits a pattern it already expresses.
+Also measured: tier share is currently INVERTED by map class (highest
+on quick, lowest on vast), so when-to-tech has not been learned.
+Consolidation levers if r4 ends soft: (a) swap the anchor from the
+lancer-heavy BC prior to the best tier-expressing checkpoint, (b)
+curriculum jobs seeded mid-tech-chain.
