@@ -406,6 +406,7 @@ impl Scenario {
                     recovery_target: 0,
                     recovery_ready: true,
                     resigned: false,
+                    eliminated_at: None,
                 }
             })
             .collect();

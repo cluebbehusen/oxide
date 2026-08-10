@@ -283,6 +283,23 @@ fn victory(state: &mut State, events: &mut Vec<Event>) {
     if state.result.is_some() {
         return;
     }
+    // Stamp each seat's first tick out of the match — resigned, or
+    // holding no Foundry at all (sites count). Recorded once, never
+    // cleared: the FFA scoreboard's placement key.
+    for index in 0..state.players.len() {
+        if state.players[index].eliminated_at.is_some() {
+            continue;
+        }
+        let seat = crate::ids::PlayerId(index as u8);
+        let out = state.players[index].resigned
+            || !state
+                .buildings
+                .iter()
+                .any(|b| b.player == seat && b.kind == crate::stats::BuildingKind::Foundry);
+        if out {
+            state.players[index].eliminated_at = Some(state.tick);
+        }
+    }
     let mut teams: Vec<u8> = state.players.iter().map(|p| p.team).collect();
     teams.sort_unstable();
     teams.dedup();

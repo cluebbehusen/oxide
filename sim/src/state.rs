@@ -66,6 +66,12 @@ pub struct Player {
     /// Defaulted so records that predate the field deserialize.
     #[serde(default)]
     pub resigned: bool,
+    /// The tick this seat first stopped counting — resigned, or holding
+    /// no Foundry at all — recorded once and never cleared. The FFA
+    /// scoreboard's placement key: later elimination places higher.
+    /// Defaulted so records that predate the field deserialize.
+    #[serde(default)]
+    pub eliminated_at: Option<crate::Tick>,
 }
 
 /// How the match ended.
@@ -705,6 +711,13 @@ impl State {
         // wrap that aliases live ids (release).
         if self.tick > TICK_ENVELOPE {
             return Err(E::TickBeyondEnvelope);
+        }
+        for (index, player) in self.players.iter().enumerate() {
+            if player.eliminated_at.is_some_and(|at| at > TICK_ENVELOPE) {
+                return Err(E::EliminationBeyondEnvelope(crate::ids::PlayerId(
+                    index as u8,
+                )));
+            }
         }
         if self.next_unit_id > ID_COUNTER_ENVELOPE || self.next_building_id > ID_COUNTER_ENVELOPE {
             return Err(E::IdCounterBeyondEnvelope);
@@ -1561,6 +1574,7 @@ mod tests {
                 recovery_target: 0,
                 recovery_ready: true,
                 resigned: false,
+                eliminated_at: None,
             }],
             7,
         )
@@ -1736,6 +1750,9 @@ pub enum StateIntegrityError {
     /// increment tolerates.
     #[error("tick beyond the sanity envelope")]
     TickBeyondEnvelope,
+    /// A recorded elimination stamp past the same sanity envelope.
+    #[error("player {0}'s elimination stamp lies beyond the sanity envelope")]
+    EliminationBeyondEnvelope(PlayerId),
     /// An id counter is past the envelope spawning tolerates.
     #[error("an id counter is beyond the sanity envelope")]
     IdCounterBeyondEnvelope,

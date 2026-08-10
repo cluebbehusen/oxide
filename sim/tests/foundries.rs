@@ -239,6 +239,7 @@ fn a_foundry_site_keeps_its_team_alive() {
         .unwrap()
         .retain(|b| b["id"] != serde_json::json!(site.0));
     let mut state: State = serde_json::from_value(value).unwrap();
+    let fell_at = state.current_tick();
     state.tick(&[]);
     assert!(
         matches!(
@@ -246,6 +247,36 @@ fn a_foundry_site_keeps_its_team_alive() {
             Some(oxide_sim::state::GameResult::Victory { team }) if team == state.player(PlayerId(1)).team
         ),
         "no Foundry and no site ends it"
+    );
+    assert_eq!(
+        state.player(PlayerId(0)).eliminated_at,
+        Some(fell_at),
+        "the loser's elimination tick is stamped — the FFA placement key"
+    );
+    assert_eq!(
+        state.player(PlayerId(1)).eliminated_at,
+        None,
+        "survivors carry no stamp"
+    );
+    // The stamp is written once and never moves.
+    for _ in 0..5 {
+        state.tick(&[]);
+    }
+    assert_eq!(state.player(PlayerId(0)).eliminated_at, Some(fell_at));
+}
+
+#[test]
+fn a_surrender_stamps_the_same_elimination_clock() {
+    let mut state = arena(1_000, false, vec![]).build().unwrap();
+    for _ in 0..7 {
+        state.tick(&[]);
+    }
+    let conceded_at = state.current_tick();
+    state.tick(&[cmd(1, Command::Surrender)]);
+    assert_eq!(
+        state.player(PlayerId(1)).eliminated_at,
+        Some(conceded_at),
+        "a concession stamps the seat out on the spot"
     );
 }
 
