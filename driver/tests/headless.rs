@@ -223,8 +223,11 @@ const VAST_LIVENESS_TICKS: u64 = 24_000;
 
 /// The gate's horizon for one map: the pace label picks the leash.
 fn liveness_horizon(scenario: &Scenario) -> u64 {
+    // 0.15 recalibration: the large band now reaches 90 weighted steps
+    // (Long Nine marches 73 before first contact), so large maps share
+    // the long horizon the vast class always had.
     match scenario.meta.as_ref().map(|m| m.pace.as_str()) {
-        Some("vast") => VAST_LIVENESS_TICKS,
+        Some("vast" | "large" | "grand") => VAST_LIVENESS_TICKS,
         _ => LIVENESS_TICKS,
     }
 }
