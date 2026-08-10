@@ -933,14 +933,20 @@ const WISP: UnitStats = UnitStats {
 };
 
 const WARDEN: UnitStats = UnitStats {
-    max_hp: 240,
+    // 0.15 balance lab: at 240hp/24dmg the Lancer didn't counter the
+    // Warden, it deleted it (cost-normalized arena: 0-550 wipe both
+    // seats) while the Lancer also carried 2.6x the damage-per-scrap —
+    // so learned play rationally never left tier one. The line brawler
+    // now trades into massed rails instead of evaporating; the Lancer
+    // keeps the per-cost edge as the dedicated answer.
+    max_hp: 260,
     speed: Fx::lit("0.09"),
     radius: Fx::lit("0.45"),
     cost: 280,
     train_ticks: 400,
     domain: Domain::Ground,
     weapons: &[WeaponStats {
-        damage: 24,
+        damage: 32,
         range: Fx::lit("3"),
         minimum_range: Fx::ZERO,
         cooldown_ticks: 25,
@@ -1166,6 +1172,12 @@ const MOTH: UnitStats = UnitStats {
 };
 
 const BREAKER: UnitStats = UnitStats {
+    // 0.15 balance lab: the tier-crusher coin-flipped cost-equal
+    // Lancer mass (verdict flipped on seat swap) — a 900-scrap unit
+    // behind a Crucible that trades evenly with tier one is a climb
+    // nobody should make. One shell now deletes a rail and its splash
+    // punishes the clump; bombers, artillery, and economy remain the
+    // honest answers.
     max_hp: 900,
     speed: Fx::lit("0.055"),
     radius: Fx::lit("0.55"),
@@ -1173,12 +1185,12 @@ const BREAKER: UnitStats = UnitStats {
     train_ticks: 1200,
     domain: Domain::Ground,
     weapons: &[WeaponStats {
-        damage: 90,
-        range: Fx::lit("4"),
+        damage: 115,
+        range: Fx::lit("4.5"),
         minimum_range: Fx::ZERO,
         cooldown_ticks: 60,
         targets: DomainMask::GROUND,
-        splash: Some(Fx::lit("1.2")),
+        splash: Some(Fx::lit("1.5")),
         indirect: false,
         salvo: 1,
         projectile: false,
@@ -1203,10 +1215,16 @@ const AVALANCHE: UnitStats = UnitStats {
     train_ticks: 900,
     domain: Domain::Ground,
     weapons: &[WeaponStats {
-        damage: 70,
+        // 0.15 balance lab: at 70/140t the superheavy needed TWO
+        // seven-second shots per Bombard and lost the cost-normalized
+        // artillery duel outright (0-800 both seats) — tier-one
+        // artillery obsoleted its own successor. One shell now deletes
+        // a Bombard on the drop; rushes inside the blind ring and the
+        // sky it cannot answer stay lethal.
+        damage: 110,
         range: Fx::lit("14"),        // far past its own eyes: a spotter weapon
         minimum_range: Fx::lit("4"), // blind at its feet — close the gap
-        cooldown_ticks: 140,
+        cooldown_ticks: 120,
         targets: DomainMask::GROUND,
         splash: Some(Fx::lit("1.6")),
         indirect: true,
