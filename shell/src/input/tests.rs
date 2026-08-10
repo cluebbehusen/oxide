@@ -1852,7 +1852,7 @@ fn an_ally_selection_reads_its_orders_but_takes_none() {
 
     // The panel is read-only: no command cards; a single ally shows
     // static combat capability and its order chips.
-    let panel = crate::panel::build(&game, &input.bindings).expect("a panel");
+    let panel = crate::panel::build_with_page(&game, &input.bindings, 0).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on an ally panel");
     assert!(panel.sub.contains("Easy"), "bot difficulty stays visible");
     assert!(
@@ -1910,7 +1910,7 @@ fn a_hostile_selection_inspects_and_leaks_nothing() {
 
     // Static kind-level combat facts are safe to inspect. Command cards
     // and order chips stay absent because order state reveals intent.
-    let panel = crate::panel::build(&game, &input.bindings).expect("a panel");
+    let panel = crate::panel::build_with_page(&game, &input.bindings, 0).expect("a panel");
     assert!(panel.cards.is_empty(), "no verbs on a hostile panel");
     assert!(panel.queue.is_empty(), "no order chips on a hostile panel");
     assert!(panel.sub.contains("Hard"), "enemy difficulty stays visible");
@@ -3142,7 +3142,7 @@ fn the_roster_strip_cuts_a_mixed_selection_both_ways() {
         .map(|u| u.id)
         .collect();
     game.selection.units = mine.clone();
-    let panel = crate::panel::build(&game, &input.bindings).expect("panel");
+    let panel = crate::panel::build_with_page(&game, &input.bindings, 0).expect("panel");
     let strip: Vec<_> = panel
         .roster
         .iter()
@@ -4700,4 +4700,92 @@ fn a_plain_placement_replaces_the_selected_claim_while_shift_preserves_it() {
             ..
         } if anchor == new_spot
     ));
+}
+
+#[test]
+fn the_upgrade_card_drafts_the_nearest_crew() {
+    let mut scenario = oxide_sim::Scenario::skirmish();
+    scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
+        player: 0,
+        kind: oxide_sim::BuildingKind::Turret,
+        x: 9,
+        y: 3,
+    });
+    let mut game =
+        Game::with_viewport(scenario, vec2(1280.0, 800.0)).expect("upgrade fixture builds");
+    let mut input = InputState::new();
+    let turret = game
+        .state
+        .buildings()
+        .iter()
+        .find(|b| b.kind == oxide_sim::BuildingKind::Turret)
+        .unwrap()
+        .id;
+    game.selection.buildings = vec![turret];
+    activate_card(
+        &mut game,
+        &mut input,
+        crate::panel::CardAction::Upgrade(turret),
+    );
+    let staged: Vec<_> = game
+        .pending
+        .iter()
+        .filter_map(|c| match &c.command {
+            oxide_sim::Command::UpgradeBuilding {
+                units, building, ..
+            } => Some((units.clone(), *building)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(staged.len(), 1, "one upgrade command staged");
+    let (units, building) = &staged[0];
+    assert_eq!(*building, turret);
+    assert!(
+        !units.is_empty() && units.len() <= 3,
+        "a small nearby crew is drafted: {units:?}"
+    );
+    for id in units {
+        let u = game.state.unit(*id).expect("crew member lives");
+        assert!(
+            u.kind.stats().harvest.is_some(),
+            "only construction-capable machines are drafted"
+        );
+    }
+}
+
+#[test]
+fn the_build_palette_cycles_through_its_pages() {
+    let mut game = headless_game();
+    let mut input = InputState::new();
+    let worker = game
+        .state
+        .units()
+        .iter()
+        .find(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+        .unwrap()
+        .id;
+    game.selection.units = vec![worker];
+    super::dispatch::dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    assert!(input.build_menu && input.build_page == 0, "opens on page 0");
+    super::dispatch::dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    assert!(
+        input.build_menu && input.build_page == 1,
+        "the second press turns the page"
+    );
+    // A digit now arms the tech page's kind, not the classic one.
+    super::orders::digit_action(&mut game, &mut input, 1);
+    assert_eq!(
+        input.placing,
+        Some(oxide_sim::BuildingKind::Airworks),
+        "digit 2 on page 1 arms the Airworks"
+    );
+    // Reopen and close on the third press.
+    super::dispatch::dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    assert!(
+        input.build_menu && input.build_page == 0,
+        "reopens on page 0"
+    );
+    super::dispatch::dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    super::dispatch::dispatch_action(&mut game, &mut input, Action::ToggleBuildPalette);
+    assert!(!input.build_menu, "the cycle ends closed");
 }

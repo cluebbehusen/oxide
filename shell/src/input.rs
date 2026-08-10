@@ -153,6 +153,8 @@ pub struct InputState {
     pub(crate) rallying: Vec<oxide_sim::BuildingId>,
     /// Whether the build palette is open (`B`; digits pick a structure).
     pub(crate) build_menu: bool,
+    /// Which palette page the open build menu shows (0 or 1).
+    pub(crate) build_page: usize,
     /// This frame's chrome scale (dpi x user), injected by the frame
     /// loop so hit math never queries the window.
     pub(crate) ui: f32,
@@ -335,7 +337,35 @@ pub(crate) const BUILD_PALETTE: [oxide_sim::BuildingKind; 7] = [
     oxide_sim::BuildingKind::Fabricator,
 ];
 
+/// The second palette page: the 0.15 expansion works. The palette key
+/// cycles closed -> page 0 -> page 1 -> closed, and digits pick from
+/// whichever page is open.
+pub(crate) const BUILD_PALETTE_TECH: [oxide_sim::BuildingKind; 7] = [
+    oxide_sim::BuildingKind::Foundry,
+    oxide_sim::BuildingKind::Airworks,
+    oxide_sim::BuildingKind::Crucible,
+    oxide_sim::BuildingKind::Extractor,
+    oxide_sim::BuildingKind::Barricade,
+    oxide_sim::BuildingKind::ScrapDepot,
+    oxide_sim::BuildingKind::ScuttleCharge,
+];
+
+/// The open palette page's kinds.
+pub(crate) fn build_page(page: usize) -> &'static [oxide_sim::BuildingKind; 7] {
+    if page == 0 {
+        &BUILD_PALETTE
+    } else {
+        &BUILD_PALETTE_TECH
+    }
+}
+
 impl InputState {
+    /// The palette page the panel should render: the live page while
+    /// the menu is open, the classic first page otherwise.
+    pub(crate) fn active_build_page(&self) -> usize {
+        if self.build_menu { self.build_page } else { 0 }
+    }
+
     /// Fresh input state.
     pub fn new() -> Self {
         Self {
@@ -355,6 +385,7 @@ impl InputState {
             attacking: false,
             rallying: Vec::new(),
             build_menu: false,
+            build_page: 0,
             ui: 1.0,
             now: 0.0,
             camera_prefs: crate::config::CameraPrefs::default(),
@@ -1522,6 +1553,43 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
         }
         crate::panel::CardAction::CancelFound(kind, anchor) => {
             game.issue(Command::CancelFound { kind, anchor });
+        }
+        crate::panel::CardAction::Upgrade(building) => {
+            // Draft the nearest own construction-capable machines as
+            // the crew — the same convenience a build click gives, so
+            // upgrading never demands a separate selection dance.
+            let Some(target) = game.state.building(building) else {
+                return;
+            };
+            let center = target.center();
+            let mut crew: Vec<(chassis::fx::Fx, oxide_sim::UnitId)> = game
+                .state
+                .units()
+                .iter()
+                .filter(|u| u.player == game.human && u.hp > 0 && u.kind.stats().harvest.is_some())
+                .map(|u| (u.pos.dist_sq(center), u.id))
+                .collect();
+            crew.sort();
+            let units: Vec<oxide_sim::UnitId> =
+                crew.into_iter().take(3).map(|(_, id)| id).collect();
+            if units.is_empty() {
+                return;
+            }
+            game.issue(Command::UpgradeBuilding {
+                units,
+                building,
+                queue: false,
+            });
+        }
+        crate::panel::CardAction::UnloadHere(transport) => {
+            if let Some(t) = game.state.unit(transport) {
+                let at = t.tile();
+                game.issue(Command::Unload {
+                    transport,
+                    at,
+                    queue: false,
+                });
+            }
         }
         crate::panel::CardAction::ClearRally => {
             for building in orders::selected_producers(game) {

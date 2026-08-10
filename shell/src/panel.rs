@@ -93,6 +93,11 @@ pub enum CardAction {
     CancelFound(BuildingKind, chassis::grid::TilePos),
     /// Clear the selected producers' rally points.
     ClearRally,
+    /// Lift a built own building one tier: the shell drafts the nearest
+    /// own construction-capable machines as the crew.
+    Upgrade(BuildingId),
+    /// Set a transport's cargo down around where it hovers.
+    UnloadHere(oxide_sim::UnitId),
     /// Narrow the selection to one kind (Ctrl-click removes it
     /// instead) — the mixed-army type strip.
     FilterKind(UnitKind),
@@ -733,7 +738,9 @@ fn chord(bindings: &BindingMap, action: Action) -> String {
 
 /// Builds the panel for the current selection, or `None` when nothing
 /// warrants one. Pure: reads game + bindings, owns no state.
-pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
+/// Panel construction with the open build-palette page — the shell
+/// passes the live page so the card row matches what digits will do.
+pub fn build_with_page(game: &Game, bindings: &BindingMap, build_page: usize) -> Option<Panel> {
     let faction = game.state.player(game.human).faction;
     let selected_buildings: Vec<_> = game
         .selection
@@ -818,7 +825,11 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
         let stats = building.stats();
         let owner = building.player;
         let mut panel = Panel {
-            title: building.kind.name().to_uppercase(),
+            title: if building.tier > 0 {
+                building.kind.tier_name(building.tier).to_uppercase()
+            } else {
+                building.kind.name().to_uppercase()
+            },
             sub: format!("{}/{} hp", building.hp, stats.max_hp),
             portrait: CardIcon::Building(building.kind),
             faction: game.state.player(owner).faction,
@@ -867,6 +878,46 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             return Some(panel);
         }
         let scrap = game.state.player(game.human).scrap;
+        if let Some(upgrade) = building.kind.upgrade_from(building.tier) {
+            let next = building.kind.tier_name(building.tier + 1);
+            let tech_ok = upgrade.requires.iter().all(|req| {
+                game.state
+                    .buildings()
+                    .iter()
+                    .any(|b| b.player == game.human && b.kind == *req && b.built)
+            });
+            let (enabled, why) = if !tech_ok {
+                let need = upgrade
+                    .requires
+                    .iter()
+                    .map(|k| k.name())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                (false, Some(format!("needs a standing {need}")))
+            } else if scrap < upgrade.cost {
+                (false, Some(format!("needs {} scrap", upgrade.cost)))
+            } else {
+                (true, None)
+            };
+            panel.cards.push(Card {
+                icon: CardIcon::Building(building.kind),
+                title: format!("Upgrade: {next}"),
+                cost: Some(upgrade.cost),
+                hotkey: String::new(),
+                action: CardAction::Upgrade(building.id),
+                enabled,
+                why,
+                desc: vec![
+                    format!(
+                        "Rebuilds this works as a {next} ({} ticks of labor).",
+                        upgrade.build_ticks
+                    ),
+                    "The works goes offline until the crew finishes; upgrades cannot be cancelled."
+                        .into(),
+                ],
+                progress: None,
+            });
+        }
         let queue_full = building.queue.len() >= oxide_sim::stats::QUEUE_CAP;
         if !stats.produces.is_empty() {
             panel.cards.push(Card {
@@ -969,12 +1020,22 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             format!("{} UNITS", units.len())
         },
         sub: if units.len() == 1 {
-            format!(
+            let mut sub = format!(
                 "{}/{} hp | speed {}",
                 first.hp,
                 first.kind.stats().max_hp,
                 unit_speed_label(first.kind)
-            )
+            );
+            let capacity = first.kind.stats().transport_capacity;
+            if capacity > 0 {
+                let held: u8 = first
+                    .cargo
+                    .iter()
+                    .map(|r| r.kind.stats().transport_size)
+                    .sum();
+                sub = format!("{sub} | sling {held}/{capacity}");
+            }
+            sub
         } else {
             let (kinds, extra) = {
                 let mut ks: Vec<UnitKind> = units.iter().map(|u| u.kind).collect();
@@ -1146,10 +1207,29 @@ pub fn build(game: &Game, bindings: &BindingMap) -> Option<Panel> {
             progress: None,
         });
     }
+    // A selected own transport offers its drop verb; the readout in
+    // the sub line shows what the sling holds.
+    if units.len() == 1 && first.player == game.human && first.kind.stats().transport_capacity > 0 {
+        let loaded = !first.cargo.is_empty();
+        panel.cards.push(Card {
+            icon: CardIcon::Verb(VerbIcon::Move),
+            title: "Unload here".into(),
+            cost: None,
+            hotkey: String::new(),
+            action: CardAction::UnloadHere(first.id),
+            enabled: loaded,
+            why: (!loaded).then(|| "the sling is empty".to_string()),
+            desc: vec![
+                "Sets every carried machine down on open ground around the airframe.".into(),
+                "Right-click ground machines onto the transport to load them.".into(),
+            ],
+            progress: None,
+        });
+    }
     if has_builder {
         let scrap = game.state.player(game.human).scrap;
         let palette_key = chord(bindings, Action::ToggleBuildPalette);
-        for (i, &kind) in crate::input::BUILD_PALETTE.iter().enumerate() {
+        for (i, &kind) in crate::input::build_page(build_page).iter().enumerate() {
             let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
             let (enabled, why) = if scrap < cost {
                 (false, Some(format!("needs {cost} scrap")))
@@ -1203,7 +1283,7 @@ mod tests {
     #[test]
     fn nothing_selected_builds_no_panel() {
         let game = game();
-        assert!(build(&game, &BindingMap::classic()).is_none());
+        assert!(build_with_page(&game, &BindingMap::classic(), 0).is_none());
     }
 
     #[test]
@@ -1227,7 +1307,7 @@ mod tests {
             },
         }]);
         game.selection.units = vec![sentinel];
-        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("panel");
         let patrol = panel
             .cards
             .iter()
@@ -1256,7 +1336,7 @@ mod tests {
         let mut game = game();
         let foundry = human_foundry(&game);
         game.selection.buildings = vec![foundry];
-        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("panel");
         assert_eq!(panel.title, "FOUNDRY");
         assert_eq!(
             panel.cards.len(),
@@ -1289,10 +1369,10 @@ mod tests {
                 kind: UnitKind::Harvester,
             },
         }]);
-        let panel = build(&game, &BindingMap::classic()).expect("queued panel");
+        let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("queued panel");
         assert_eq!(panel.queue_label, "queue 5s");
         game.state.tick(&[]);
-        let panel = build(&game, &BindingMap::classic()).expect("progressing panel");
+        let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("progressing panel");
         assert_eq!(panel.queue_label, "queue 4.9s");
     }
 
@@ -1301,7 +1381,7 @@ mod tests {
         let mut game = game();
         let foundry = human_foundry(&game);
         game.selection.buildings = vec![foundry];
-        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("panel");
         assert!(
             panel
                 .cards
@@ -1317,7 +1397,7 @@ mod tests {
                 rally: Some(chassis::grid::TilePos::new(12, 8)),
             },
         }]);
-        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("panel");
         assert!(
             panel
                 .cards
@@ -1349,7 +1429,8 @@ mod tests {
             .map(|building| building.id)
             .collect();
 
-        let panel = build(&game, &BindingMap::classic()).expect("multi-building panel");
+        let panel =
+            build_with_page(&game, &BindingMap::classic(), 0).expect("multi-building panel");
         assert_eq!(panel.title, "2 BUILDINGS");
         assert_eq!(panel.cards.len(), 1);
         assert_eq!(panel.cards[0].title, "Set rallies");
@@ -1375,8 +1456,17 @@ mod tests {
             .id;
         game.selection.buildings = vec![turret];
 
-        let panel = build(&game, &BindingMap::classic()).expect("Turret panel");
-        assert!(panel.cards.is_empty(), "the turret has no command row");
+        let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("Turret panel");
+        // 0.15: the one card a defense DOES carry is its tier upgrade.
+        assert_eq!(
+            panel.cards.len(),
+            1,
+            "the turret's only command is its upgrade"
+        );
+        assert!(
+            matches!(panel.cards[0].action, CardAction::Upgrade(_)),
+            "the turret's card lifts its tier"
+        );
         assert!(
             panel
                 .cards
@@ -1406,7 +1496,7 @@ mod tests {
             }]);
         }
         // 500 - 3x50 = 350: still rich, cards enabled, ghosts armed.
-        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("panel");
         assert!(panel.cards[1].enabled);
         assert_eq!(panel.queue.len(), 3);
         assert_eq!(panel.queue[1].action, CardAction::CancelQueue(foundry, 1));
@@ -1422,7 +1512,7 @@ mod tests {
         }
         let queued = game.state.building(foundry).unwrap().queue.len();
         assert_eq!(queued, oxide_sim::stats::QUEUE_CAP, "the sim capped it");
-        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("panel");
         assert_eq!(
             panel.queue.len(),
             oxide_sim::stats::QUEUE_CAP,
@@ -1456,7 +1546,7 @@ mod tests {
             .expect("starting harvester")
             .id;
         game.selection.units = vec![harvester];
-        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("panel");
         assert_eq!(panel.title, "HARVESTER");
         assert_eq!(panel.cards[0].title, "Stop");
         assert_eq!(panel.cards[1].title, "Run");
@@ -1489,7 +1579,7 @@ mod tests {
                 queue: false,
             },
         }]);
-        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("panel");
         assert_eq!(panel.queue.len(), 1);
         assert_eq!(
             panel.queue[0].action,
@@ -1562,7 +1652,7 @@ mod tests {
         let turret = place(&mut game, harvester, BuildingKind::Turret, false);
         let array = place(&mut game, harvester, BuildingKind::Array, true);
         game.selection.units = vec![harvester];
-        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("panel");
         assert_eq!(panel.queue.len(), 2, "two legs of one program");
         // Two Build chips that no longer look the same: each carries
         // its own works, ghosted while the site is still rising.
@@ -1650,7 +1740,7 @@ mod tests {
         let (mut game, harvester) = builder_game();
         place(&mut game, harvester, BuildingKind::Turret, false);
         game.selection.units = vec![harvester];
-        let own = build(&game, &BindingMap::classic()).expect("panel");
+        let own = build_with_page(&game, &BindingMap::classic(), 0).expect("panel");
         assert!(matches!(own.queue[0].icon, CardIcon::Order { .. }));
         let order = game.state.unit(harvester).expect("builder").order;
         let bare = order_card(&game, &order, true, false);
@@ -1751,15 +1841,21 @@ mod tests {
 
         let mut foundry_game = game();
         foundry_game.selection.buildings = vec![human_foundry(&foundry_game)];
-        assert_panel(&build(&foundry_game, &BindingMap::classic()).expect("Foundry panel"));
+        assert_panel(
+            &build_with_page(&foundry_game, &BindingMap::classic(), 0).expect("Foundry panel"),
+        );
 
         let (mut builder_game, harvester) = builder_game();
         let site = place(&mut builder_game, harvester, BuildingKind::Array, false);
         builder_game.selection.units = vec![harvester];
-        assert_panel(&build(&builder_game, &BindingMap::classic()).expect("Harvester panel"));
+        assert_panel(
+            &build_with_page(&builder_game, &BindingMap::classic(), 0).expect("Harvester panel"),
+        );
         builder_game.selection.units.clear();
         builder_game.selection.buildings = vec![site];
-        assert_panel(&build(&builder_game, &BindingMap::classic()).expect("site panel"));
+        assert_panel(
+            &build_with_page(&builder_game, &BindingMap::classic(), 0).expect("site panel"),
+        );
     }
 
     #[test]
@@ -1806,7 +1902,7 @@ mod tests {
         game.selection.units.clear();
         game.selection.buildings = vec![bastion];
 
-        let panel = build(&game, &BindingMap::classic()).expect("Bastion panel");
+        let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("Bastion panel");
         assert_eq!(panel.title, "BASTION");
         assert!(
             panel.combat.iter().any(|fact| {
@@ -1836,7 +1932,7 @@ mod tests {
             .expect("starting sentinel")
             .id;
         game.selection.units = vec![sentinel];
-        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("panel");
         assert_eq!(
             panel.combat.len(),
             2,
@@ -1875,7 +1971,7 @@ mod tests {
             .expect("starting harvester")
             .id;
         game.selection.units = vec![sentinel, harvester];
-        let panel = build(&game, &BindingMap::classic()).expect("panel");
+        let panel = build_with_page(&game, &BindingMap::classic(), 0).expect("panel");
         assert!(
             panel.combat.is_empty(),
             "mixed selections keep combat detail out of the command band"

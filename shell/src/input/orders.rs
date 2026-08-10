@@ -3,7 +3,7 @@
 //! re-validates everything — this module only shapes intent, and its
 //! fog checks exist so a click cannot *probe* what the player can't see.
 
-use super::{BUILD_PALETTE, InputState, PICK_RADIUS};
+use super::{InputState, PICK_RADIUS};
 use crate::game::{Game, PingKind};
 use chassis::grid::TilePos;
 use macroquad::prelude::{Vec2, vec2};
@@ -91,7 +91,7 @@ fn visible_hostile_target_at(
 /// otherwise the first five are control groups.
 pub(super) fn digit_action(game: &mut Game, input: &mut InputState, slot: usize) {
     if input.build_menu {
-        if let Some(&kind) = BUILD_PALETTE.get(slot) {
+        if let Some(&kind) = crate::input::build_page(input.build_page).get(slot) {
             input.build_menu = false;
             input.disarm_click_verbs();
             input.placing = Some(kind);
@@ -233,6 +233,45 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         // A healthy built own building: fall through (ground order).
     }
 
+    // Carriable ground machines right-clicked onto an own transport
+    // climb aboard — before the hostile check reads the ground under
+    // the hovering airframe.
+    let carriable: Vec<oxide_sim::UnitId> = units
+        .iter()
+        .copied()
+        .filter(|id| {
+            game.state
+                .unit(*id)
+                .is_some_and(|u| u.kind.stats().transport_size > 0)
+        })
+        .collect();
+    if !carriable.is_empty() {
+        let sling = game
+            .state
+            .units()
+            .iter()
+            .filter(|u| {
+                u.player == game.human
+                    && u.hp > 0
+                    && u.kind.stats().transport_capacity > 0
+                    && !game.selection.units.contains(&u.id)
+            })
+            .map(|u| {
+                let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
+                (p.distance(world), u.id)
+            })
+            .filter(|(d, _)| *d <= PICK_RADIUS)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((_, transport)) = sling {
+            game.issue(Command::Load {
+                units: carriable,
+                transport,
+                queue,
+            });
+            game.ping(world, PingKind::Move);
+            return;
+        }
+    }
     // Fog rules what right-click may target: unseen enemies aren't there
     // as far as the player is concerned (the sim enforces this too).
     if let Some((target, at, _)) = visible_hostile_target_at(game, world, tile) {

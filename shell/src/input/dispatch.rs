@@ -60,9 +60,16 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
         Action::TogglePause => game.paused = !game.paused,
         Action::ToggleBuildPalette => {
             if input.build_menu {
-                input.build_menu = false;
+                // Cycle: page 0 -> page 1 -> closed.
+                if input.build_page == 0 {
+                    input.build_page = 1;
+                } else {
+                    input.build_menu = false;
+                    input.build_page = 0;
+                }
                 return;
             }
+            input.build_page = 0;
             let has_builder = game.selection.units.iter().any(|id| {
                 game.state
                     .unit(*id)
