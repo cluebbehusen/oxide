@@ -66,6 +66,8 @@ pub struct PaceRow {
     pub pace: String,
     /// Shortest Foundry-to-Foundry ground route in the audit's weighted
     /// tile-equivalents — the figure the pace bands are gated on.
+    /// Shortest effective route (ground steps, or the air detour on
+    /// island pairs) between hostile Foundries.
     pub ground_route: Option<usize>,
     /// Matches played (one per seed).
     pub matches: u32,
@@ -168,7 +170,7 @@ fn row(path: &str, scenario: &Scenario, sweep: SweepReport) -> Result<PaceRow> {
         .with_context(|| format!("auditing {}", scenario.name))?
         .routes
         .iter()
-        .filter_map(|r| r.ground_steps)
+        .filter_map(|r| r.effective_steps())
         .min();
     Ok(PaceRow {
         scenario: scenario.name.clone(),
@@ -250,7 +252,9 @@ mod tests {
     fn the_slate_rows_every_duel_map_and_admits_full_censoring() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../scenarios");
         let slate = run_pace_sweep(dir, 1, 20, 3_000).unwrap();
-        assert!(slate.per_map.len() >= 10, "the 1v1 roster is present");
+        // Five 1v1 maps survived the 0.15 roster contraction; the new
+        // format slots grow the roster back from here.
+        assert!(slate.per_map.len() >= 5, "the 1v1 roster is present");
         assert_eq!(slate.decided, 0);
         assert_eq!(slate.undecided, slate.matches);
         assert_eq!(slate.matches, slate.per_map.len() as u32);
@@ -266,7 +270,7 @@ mod tests {
             );
             assert!(
                 r.ground_route.is_some(),
-                "{}: shipped maps are connected by ground",
+                "{}: shipped maps are connected by some mover",
                 r.scenario
             );
             assert_eq!(r.sweep.matches.len(), 1);

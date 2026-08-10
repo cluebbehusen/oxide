@@ -513,6 +513,35 @@ impl UtilityPolicy {
                     kind: UnitKind::Warden,
                 });
             }
+            // Once the whole tree stands, a small bomber wing: the
+            // payload that decides sieges — and island wars, where no
+            // crawler ever crosses.
+            {
+                use crate::stats::Role;
+                let bomber_kind = Role::Bomber.unit_for(obs.faction);
+                let airworks = obs
+                    .my_buildings
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, b)| b.kind == BuildingKind::Airworks && b.built)
+                    .min_by_key(|(_, b)| b.id);
+                let crucible_stands = obs
+                    .my_buildings
+                    .iter()
+                    .any(|b| b.kind == BuildingKind::Crucible && b.built);
+                if let Some((qi, airworks)) = airworks
+                    && crucible_stands
+                    && obs.my_queues[qi].len() < 2
+                    && alive(bomber_kind) + queued(bomber_kind) < 2
+                    && *budget >= bomber_kind.stats().cost + TECH_RESERVE
+                {
+                    *budget -= bomber_kind.stats().cost;
+                    intents.push(Intent::TrainAt {
+                        building: airworks.id,
+                        kind: bomber_kind,
+                    });
+                }
+            }
         }
 
         let foundry = obs
@@ -621,12 +650,14 @@ impl UtilityPolicy {
                 });
             } else if dials.air_harass
                 && alive(wing_kind) + queued(wing_kind) < AIR_WING
-                && enemy_harvesters >= 2
+                && (enemy_harvesters >= 2 || !obs.enemy_buildings.is_empty())
                 && *budget >= wing_kind.stats().cost + reserve
                 && let Some((_, airworks)) = airworks_open
             {
-                // A wing for the harvest line — bought only once raiding
-                // has something to eat, and only from a standing Airworks.
+                // A wing for the harvest line — bought once raiding has
+                // something to eat OR the enemy base is known at all
+                // (on an island map the wing IS the reach), and only
+                // from a standing Airworks.
                 *budget -= wing_kind.stats().cost;
                 intents.push(Intent::TrainAt {
                     building: airworks.id,
@@ -640,6 +671,44 @@ impl UtilityPolicy {
                 });
             }
         }
+    }
+
+    /// Whether known ground connects `home` to any tile of the 2x2
+    /// footprint anchored at `anchor`. BFS over tiles not known
+    /// impassable (rock, mesa, pit — `known_rock` carries all three);
+    /// unexplored tiles count open, the same optimism every founding
+    /// walk uses. Runs only when a frame claim is otherwise ready, so
+    /// the flood's cost is paid a handful of times per match.
+    fn ground_reaches(obs: &Observation, home: TilePos, anchor: TilePos) -> bool {
+        let (w, h) = (obs.map_width, obs.map_height);
+        if w <= 0 || h <= 0 {
+            return false;
+        }
+        let idx = |t: TilePos| (t.y * w + t.x) as usize;
+        let target = |t: TilePos| {
+            (anchor.x..anchor.x + 2).contains(&t.x) && (anchor.y..anchor.y + 2).contains(&t.y)
+        };
+        let in_bounds = |t: TilePos| t.x >= 0 && t.y >= 0 && t.x < w && t.y < h;
+        if !in_bounds(home) {
+            return false;
+        }
+        let mut seen = vec![false; (w * h) as usize];
+        let mut open = std::collections::VecDeque::new();
+        seen[idx(home)] = true;
+        open.push_back(home);
+        while let Some(t) = open.pop_front() {
+            if target(t) {
+                return true;
+            }
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let n = t.offset(dx, dy);
+                if in_bounds(n) && !seen[idx(n)] && !obs.known_rock_at(n) {
+                    seen[idx(n)] = true;
+                    open.push_back(n);
+                }
+            }
+        }
+        false
     }
 
     /// The next owed tech rung's price plus the fighting reserve — the
@@ -703,6 +772,12 @@ impl UtilityPolicy {
                     .known_frames
                     .iter()
                     .filter(|f| !claimed(**f))
+                    // A frame no builder can walk to must not be
+                    // claimed: the intent would re-issue forever and
+                    // starve every deeper construction rung (the
+                    // island-map deadlock). Unexplored ground stays
+                    // optimistically open, like every founding walk.
+                    .filter(|f| Self::ground_reaches(obs, home, **f))
                     .min_by_key(|f| (f.chebyshev(home), f.y, f.x))
                     .copied();
                 if let Some(anchor) = frame {
@@ -1123,11 +1198,12 @@ impl UtilityPolicy {
         }
         let picked_now = self.scout.is_none();
         if self.scout.is_none() {
-            // A harvester is the scout of choice: it outruns every
-            // chaser that could kill it, so the peek costs a stretch of
-            // income instead of a body. Pulling one off a node is fine —
-            // the economy channel re-hires it after. Fighters are the
-            // fallback, fastest first.
+            // A scout-role flyer is the scout of choice: unarmed, wide
+            // eyes, and it crosses pits and gulfs no crawler can — on
+            // an island map it is the only machine that can look at
+            // all. A harvester is next (it outruns every chaser, so
+            // the peek costs a stretch of income instead of a body).
+            // Fighters are the fallback.
             self.scout = obs
                 .my_units
                 .iter()
@@ -1138,10 +1214,11 @@ impl UtilityPolicy {
                 .filter(|u| u.kind == UnitKind::Harvester || u.idle)
                 .min_by_key(|u| {
                     let preference = match u.kind {
-                        UnitKind::Harvester => (0, u.carrying),
-                        UnitKind::Scuttler => (1, 0),
-                        UnitKind::Sentinel => (2, 0),
-                        _ => (3, 0),
+                        UnitKind::Kestrel | UnitKind::Gnat => (0, 0),
+                        UnitKind::Harvester => (1, u.carrying),
+                        UnitKind::Scuttler => (2, 0),
+                        UnitKind::Sentinel => (3, 0),
+                        _ => (4, 0),
                     };
                     (preference, u.id)
                 })

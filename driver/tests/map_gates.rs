@@ -61,7 +61,10 @@ fn every_map_carries_complete_metadata() {
             );
         }
         assert!(
-            matches!(meta.pace.as_str(), "quick" | "standard" | "large" | "vast"),
+            matches!(
+                meta.pace.as_str(),
+                "quick" | "standard" | "large" | "vast" | "grand"
+            ),
             "{name}: pace '{}' is not a recognized label",
             meta.pace
         );
@@ -78,22 +81,25 @@ fn every_map_carries_complete_metadata() {
 
 #[test]
 fn routes_connect_and_pace_labels_hold() {
-    // Route bands per pace label, in ground BFS steps between Foundry
-    // doorsteps. Disjoint on purpose: an overlapping band gates nothing.
+    // Route bands per pace label, in effective steps between Foundry
+    // doorsteps: ground BFS steps, or the air detour on island pairs
+    // that no ground route serves (the sim's connectivity gate already
+    // guarantees SOME mover connects every pair). Disjoint on purpose:
+    // an overlapping band gates nothing.
     for (name, scenario) in shipped() {
         let report = audit(&scenario).expect("audit builds");
         let meta = scenario.meta.as_ref().unwrap();
         let pace = meta.pace.clone();
         let metric = meta.symmetry == "metric";
         assert!(!report.routes.is_empty(), "{name}: no hostile pair routed");
-        let mut min_ground = usize::MAX;
+        let mut min_effective = usize::MAX;
         for route in &report.routes {
-            let ground = route
-                .ground_steps
-                .unwrap_or_else(|| panic!("{name}: ground sealed"));
             route
                 .air_tiles
                 .unwrap_or_else(|| panic!("{name}: sky sealed"));
+            let effective = route
+                .effective_steps()
+                .unwrap_or_else(|| panic!("{name}: no mover routes the pair"));
             // Bands in weighted tile-equivalents (the sim's own 14/10
             // diagonal costs) — recalibrated when the audit stopped
             // counting hops. Disjoint on purpose.
@@ -109,21 +115,21 @@ fn routes_connect_and_pace_labels_hold() {
                 "grand" => 151..=400,
                 other => panic!("{name}: unknown pace '{other}'"),
             };
-            min_ground = min_ground.min(ground);
+            min_effective = min_effective.min(effective);
             if metric {
                 // A free-for-all ring spans near and far neighbors by
                 // construction; the pace label is the FIRST-contact
                 // clock, so the floor binds every pair and the band
                 // binds the nearest one (checked after the loop).
                 assert!(
-                    ground >= *band.start(),
-                    "{name}: pace '{pace}' floor {} broken by a {ground}-step pair",
+                    effective >= *band.start(),
+                    "{name}: pace '{pace}' floor {} broken by a {effective}-step pair",
                     band.start()
                 );
             } else {
                 assert!(
-                    band.contains(&ground),
-                    "{name}: pace '{pace}' promises {band:?} ground steps, measured {ground}"
+                    band.contains(&effective),
+                    "{name}: pace '{pace}' promises {band:?} effective steps, measured {effective}"
                 );
             }
         }
@@ -137,8 +143,8 @@ fn routes_connect_and_pace_labels_hold() {
                 other => panic!("{name}: unknown pace '{other}'"),
             };
             assert!(
-                band.contains(&min_ground),
-                "{name}: pace '{pace}' promises first contact in {band:?}, measured {min_ground}"
+                band.contains(&min_effective),
+                "{name}: pace '{pace}' promises first contact in {band:?}, measured {min_effective}"
             );
         }
     }

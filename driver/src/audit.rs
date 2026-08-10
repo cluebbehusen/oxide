@@ -20,7 +20,9 @@ pub struct SeatAudit {
     pub reachable_tiles: usize,
     /// Straight-line distance to the nearest scrap node, in tiles.
     pub nearest_scrap: f64,
-    /// Shortest ground route to any enemy Foundry doorstep, in steps.
+    /// Shortest route to any enemy Foundry by the cheapest mover:
+    /// ground steps, or the air detour (rounded up) when no ground
+    /// route exists — the island case.
     pub nearest_enemy_route: Option<usize>,
     /// Straight-line distance to the nearest derelict extractor frame,
     /// in tiles; None on maps without frames.
@@ -41,6 +43,17 @@ pub struct RouteAudit {
     /// The longest artillery reach as a fraction of the ground route —
     /// past ~0.5 the map is a siege range, not a battlefield.
     pub artillery_pressure: Option<f64>,
+}
+
+impl RouteAudit {
+    /// The distance the cheapest mover actually pays: ground steps
+    /// when a ground route exists, else the air detour rounded up.
+    /// `None` never survives a built scenario — the sim's connectivity
+    /// gate refuses a pair no mover can reach.
+    pub fn effective_steps(&self) -> Option<usize> {
+        self.ground_steps
+            .or_else(|| self.air_tiles.map(|tiles| tiles.ceil() as usize))
+    }
 }
 
 /// Everything the audit measures for one scenario.
@@ -343,7 +356,8 @@ pub fn audit(scenario: &Scenario) -> Result<MapAudit> {
             let ground_steps = ground_route(&state, &steps[i].2, &steps[j].2);
             let air_tiles = air_route(&state, steps[i].1, steps[j].1);
             let artillery_pressure = ground_steps.map(|s| reach / s.max(1) as f64);
-            for (seat, slot) in [(i, ground_steps), (j, ground_steps)] {
+            let effective = ground_steps.or_else(|| air_tiles.map(|tiles| tiles.ceil() as usize));
+            for (seat, slot) in [(i, effective), (j, effective)] {
                 nearest_enemy[seat] = match (nearest_enemy[seat], slot) {
                     (Some(cur), Some(new)) => Some(cur.min(new)),
                     (None, new) => new,
