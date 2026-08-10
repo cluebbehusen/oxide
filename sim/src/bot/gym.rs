@@ -3975,6 +3975,9 @@ fn protected_points(obs: &Observation, kind: BuildingKind) -> Vec<(Point2, i64)>
             BuildingKind::Array => 700,
             BuildingKind::Bastion => 450,
             BuildingKind::Turret | BuildingKind::FlakTurret => 350,
+            // Restored income machinery is worth defending like a
+            // Reclaimer's weight in works.
+            BuildingKind::Extractor => 900,
         };
         if building.built { base } else { base / 2 }
     };
@@ -4085,7 +4088,10 @@ fn building_cap(kind: BuildingKind) -> usize {
         BuildingKind::Turret | BuildingKind::FlakTurret | BuildingKind::Bastion => 2,
         BuildingKind::Array | BuildingKind::RepairBay => 1,
         BuildingKind::Reclaimer => 2,
-        BuildingKind::Foundry => 0,
+        // The frozen v8 actor predates both kinds; it never plans them.
+        // These zeros die with the rest of the caps in the gym v9
+        // parity migration.
+        BuildingKind::Foundry | BuildingKind::Extractor => 0,
     }
 }
 
@@ -4098,7 +4104,9 @@ fn building_plan_code(kind: BuildingKind) -> i64 {
         BuildingKind::Array => 5,
         BuildingKind::Reclaimer => 6,
         BuildingKind::RepairBay => 7,
-        BuildingKind::Foundry => 0,
+        // Unplannable under the frozen v8 actor: shares the plan-less
+        // code with the Foundry until the v9 feature redesign.
+        BuildingKind::Foundry | BuildingKind::Extractor => 0,
     }
 }
 

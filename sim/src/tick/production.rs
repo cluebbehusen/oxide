@@ -53,12 +53,48 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         }
     }
 
-    // The transparent income floor: every standing Foundry smelts a slow
-    // trickle from tick zero, per works rather than per player, so
-    // expansion bases earn their keep — while the rate keeps income
-    // alone from ever paying for one. A living seat always has a way
-    // back into the game, even with every node exhausted and camped.
     let completed_ticks = state.tick.saturating_add(1);
+    // Restored Extractors grind the deep seams on the escalating
+    // schedule — the visible late-game pressure rule. The applicable
+    // row is the last whose start the clock has passed.
+    let (_, amount, period) = crate::stats::EXTRACTOR_YIELD_SCHEDULE
+        .iter()
+        .rev()
+        .find(|(from, ..)| completed_ticks >= *from)
+        .expect("the schedule's first row starts at zero");
+    if completed_ticks.is_multiple_of(*period) {
+        let credits: Vec<(PlayerId, u32)> = state
+            .players
+            .iter()
+            .enumerate()
+            .map(|(index, _)| PlayerId(index as u8))
+            .filter(|player| !state.player(*player).resigned)
+            .map(|player| {
+                let extractors = state
+                    .buildings
+                    .iter()
+                    .filter(|building| {
+                        building.player == player
+                            && building.hp > 0
+                            && building.built
+                            && building.kind == crate::stats::BuildingKind::Extractor
+                    })
+                    .count() as u32;
+                (player, extractors)
+            })
+            .filter(|(_, extractors)| *extractors > 0)
+            .collect();
+        for (player, extractors) in credits {
+            let bank = &mut state.player_mut(player).scrap;
+            *bank = bank.saturating_add(extractors.saturating_mul(*amount));
+        }
+    }
+
+    // The transparent income floor: every standing Foundry smelts a slow
+    // trickle per works rather than per player, so expansion bases earn
+    // their keep — while the rate keeps income alone from ever paying
+    // for one. A living seat always has a way back into the game, even
+    // with every node exhausted and camped.
     if completed_ticks >= crate::stats::FOUNDRY_DRIP_START_TICK
         && completed_ticks.is_multiple_of(crate::stats::FOUNDRY_DRIP_PERIOD)
     {

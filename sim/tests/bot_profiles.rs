@@ -539,7 +539,7 @@ fn command_behavior_in(
                     | BuildingKind::Bastion
                     | BuildingKind::Array
                     | BuildingKind::RepairBay => behavior.fortification_builds += 1,
-                    BuildingKind::Foundry => {}
+                    BuildingKind::Foundry | BuildingKind::Extractor => {}
                 },
                 _ => {}
             }

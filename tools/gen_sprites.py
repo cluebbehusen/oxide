@@ -1560,6 +1560,49 @@ def reclaimer(faction: str, work: int = 0) -> None:
     finish(img, px, f"reclaimer_{faction}{suffix}")
 
 
+def extractor(faction: str, work: int = 0) -> None:
+    """2x2 restored strip miner: a bucket-wheel on a gantry cut, feeding
+    a conveyor spine into an ore-stained discharge hall. The wheel is the
+    role feature — income machinery you can read across the map."""
+    px = 128
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    # Machine deck and discharge hall along the east side.
+    d.rounded_rectangle([s(8), s(14), s(122), s(116)], radius=s(9), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle([s(14), s(20), s(116), s(110)], radius=s(7), fill=(*IRON, 255))
+    d.rectangle([s(80), s(26), s(112), s(104)], fill=(*pal["dark"], 255))
+    d.rectangle([s(86), s(32), s(106), s(98)], fill=(*IRON_DARK, 255))
+    # Ore bunker glow inside the hall: amber layers of ground seam.
+    d.rectangle([s(88), s(74), s(104), s(96)], fill=(*SCRAP_DARK, 255))
+    d.rectangle([s(90), s(80), s(102), s(94)], fill=(*SCRAP, 255))
+    # Conveyor spine from wheel pit to hall, chunks advancing per frame.
+    d.rectangle([s(48), s(58), s(84), s(70)], fill=(*IRON_DARK, 255))
+    d.rectangle([s(50), s(60), s(82), s(68)], fill=(*pal["dark"], 255))
+    for lump in range(3):
+        lx = 52 + ((lump * 11 + work * 4) % 30)
+        d.ellipse([s(lx), s(61), s(lx + 6), s(67)], fill=(*SCRAP_LIGHT, 255))
+    # The wheel pit: a dark cut the buckets dig from.
+    d.ellipse([s(14), s(38), s(58), s(90)], fill=(12, 10, 10, 255))
+    # The bucket wheel itself, phase-advanced per work frame.
+    cx, cy, radius = 36.0, 64.0, 20.0
+    d.ellipse(
+        [s(cx - radius), s(cy - radius), s(cx + radius), s(cy + radius)],
+        fill=(*pal["base"], 255),
+    )
+    d.ellipse([s(cx - 7), s(cy - 7), s(cx + 7), s(cy + 7)], fill=(*pal["dark"], 255))
+    for bucket in range(8):
+        ang = work * math.pi / 8 + bucket * math.tau / 8
+        bx = cx + (radius - 2) * math.cos(ang)
+        by = cy + (radius - 2) * math.sin(ang)
+        d.rectangle([s(bx - 3), s(by - 3), s(bx + 3), s(by + 3)], fill=(*IRON_LIGHT, 255))
+        d.rectangle([s(bx - 1), s(by - 1), s(bx + 1), s(by + 1)], fill=(*SCRAP, 255))
+    # Gantry arm over the wheel.
+    d.rectangle([s(30), s(30), s(42), s(44)], fill=(*IRON_DARK, 255))
+    d.rectangle([s(33), s(24), s(39), s(34)], fill=(*pal["light"], 255))
+    suffix = "" if work == 0 else f"_work{work}"
+    finish(img, px, f"extractor_{faction}{suffix}")
+
+
 def _gear(
     d, cx: float, cy: float, radius: float, teeth: int, turn: float, color
 ) -> None:
@@ -2612,6 +2655,9 @@ BUILDING_STEMS = (
     "array",
     "reclaimer",
     "repair_bay",
+    # 0.15 placeholder ahead of the asset pass: procedural site frames
+    # only; the finalized construction bank keeps its approved eight.
+    "extractor",
 )
 
 
@@ -2814,6 +2860,9 @@ def generate(output: Path) -> None:
         repair_bay(faction)
         for work in range(1, 4):
             repair_bay(faction, work)
+        extractor(faction)
+        for work in range(1, 4):
+            extractor(faction, work)
     _install_finalized_sprite_bank()
     _install_finalized_environment_bank()
     for faction in FACTIONS:

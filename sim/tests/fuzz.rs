@@ -181,8 +181,9 @@ fn unit_kind_index(kind: UnitKind) -> usize {
     }
 }
 
-/// Every building kind, the unbuildable Foundry included.
-const BUILDING_KINDS: [BuildingKind; 8] = [
+/// Every building kind, frame-bound and tech-gated ones included —
+/// hostile input must aim at all of them.
+const BUILDING_KINDS: [BuildingKind; 9] = [
     BuildingKind::Foundry,
     BuildingKind::Turret,
     BuildingKind::Fabricator,
@@ -191,6 +192,7 @@ const BUILDING_KINDS: [BuildingKind; 8] = [
     BuildingKind::Array,
     BuildingKind::Reclaimer,
     BuildingKind::RepairBay,
+    BuildingKind::Extractor,
 ];
 
 fn building_kind_index(kind: BuildingKind) -> usize {
@@ -203,6 +205,7 @@ fn building_kind_index(kind: BuildingKind) -> usize {
         BuildingKind::Array => 5,
         BuildingKind::Reclaimer => 6,
         BuildingKind::RepairBay => 7,
+        BuildingKind::Extractor => 8,
     }
 }
 

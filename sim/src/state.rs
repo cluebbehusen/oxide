@@ -1184,6 +1184,23 @@ impl State {
         if !self.prerequisites_met(player, kind) {
             return Some(PlaceRefusal::Prerequisite);
         }
+        if kind == BuildingKind::Extractor {
+            // The machine exists only where the old rush left its frame.
+            if !self.map.is_extractor_frame(anchor) {
+                return Some(PlaceRefusal::FrameRequired);
+            }
+        } else {
+            // Nothing else may pave over a frame: the ground under a
+            // derelict Extractor stays contestable forever.
+            let (w, h) = kind.stats().size;
+            for dy in 0..h {
+                for dx in 0..w {
+                    if self.map.tile_in_extractor_frame(anchor.offset(dx, dy)) {
+                        return Some(PlaceRefusal::FrameBlocked);
+                    }
+                }
+            }
+        }
         let (w, h) = kind.stats().size;
         for dy in 0..h {
             for dx in 0..w {
@@ -1277,6 +1294,23 @@ impl State {
         }
         if !self.prerequisites_met(player, kind) {
             return Some(PlaceRefusal::Prerequisite);
+        }
+        if kind == BuildingKind::Extractor {
+            // The machine exists only where the old rush left its frame.
+            if !self.map.is_extractor_frame(anchor) {
+                return Some(PlaceRefusal::FrameRequired);
+            }
+        } else {
+            // Nothing else may pave over a frame: the ground under a
+            // derelict Extractor stays contestable forever.
+            let (w, h) = kind.stats().size;
+            for dy in 0..h {
+                for dx in 0..w {
+                    if self.map.tile_in_extractor_frame(anchor.offset(dx, dy)) {
+                        return Some(PlaceRefusal::FrameBlocked);
+                    }
+                }
+            }
         }
         let vision = self.vision(player);
         let my_team = self.players[player.0 as usize].team;
@@ -1502,6 +1536,11 @@ pub enum PlaceRefusal {
     Unit,
     /// The owner has not completed the kind's required tech buildings.
     Prerequisite,
+    /// An Extractor rebuilds only on a map-authored derelict frame.
+    FrameRequired,
+    /// The footprint overlaps a derelict frame, which no other kind may
+    /// pave over.
+    FrameBlocked,
 }
 
 #[cfg(test)]

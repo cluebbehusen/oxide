@@ -49,12 +49,14 @@ pub struct Sprites {
     bastion: [Rect; 3],
     array: [Rect; 3],
     reclaimer: [Rect; 3],
+    extractor: [Rect; 3],
     repair_bay: [Rect; 3],
     bastion_action: [[Rect; 3]; 9],
     foundry_work: [[Rect; 3]; 4],
     fabricator_work: [[Rect; 3]; 4],
     array_work: [[Rect; 3]; 6],
     reclaimer_work: [[Rect; 3]; 3],
+    extractor_work: [[Rect; 3]; 3],
     repair_bay_work: [[Rect; 3]; 4],
     construction: [[Rect; 3]; SITE_FRAME_COUNT * BUILDING_KIND_COUNT],
     harvester: [Rect; 3],
@@ -318,7 +320,7 @@ const HARVESTER_CARGO_LEVELS: usize = 5;
 const SITE_STAGES: usize = 3;
 const SITE_PHASES: usize = 2;
 const SITE_FRAME_COUNT: usize = SITE_STAGES * SITE_PHASES;
-const BUILDING_KIND_COUNT: usize = 8;
+const BUILDING_KIND_COUNT: usize = 9;
 
 /// One complete Harvester pose at a particular visible cargo level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -352,6 +354,7 @@ fn building_stem(kind: BuildingKind) -> &'static str {
         BuildingKind::Array => "array",
         BuildingKind::Reclaimer => "reclaimer",
         BuildingKind::RepairBay => "repair_bay",
+        BuildingKind::Extractor => "extractor",
     }
 }
 
@@ -365,6 +368,7 @@ fn building_index(kind: BuildingKind) -> usize {
         BuildingKind::Array => 5,
         BuildingKind::Reclaimer => 6,
         BuildingKind::RepairBay => 7,
+        BuildingKind::Extractor => 8,
     }
 }
 
@@ -460,7 +464,7 @@ fn building_work_suffixes(kind: BuildingKind) -> &'static [&'static str] {
             &WORK_SUFFIXES_4
         }
         BuildingKind::Array => &WORK_SUFFIXES_6,
-        BuildingKind::Reclaimer => &WORK_SUFFIXES_3,
+        BuildingKind::Reclaimer | BuildingKind::Extractor => &WORK_SUFFIXES_3,
         BuildingKind::Turret | BuildingKind::FlakTurret | BuildingKind::Bastion => &[],
     }
 }
@@ -481,7 +485,7 @@ const ALL_UNIT_KINDS: [UnitKind; 11] = [
     UnitKind::Wisp,
 ];
 
-const ALL_BUILDING_KINDS: [BuildingKind; 8] = [
+const ALL_BUILDING_KINDS: [BuildingKind; 9] = [
     BuildingKind::Foundry,
     BuildingKind::Turret,
     BuildingKind::Fabricator,
@@ -490,15 +494,17 @@ const ALL_BUILDING_KINDS: [BuildingKind; 8] = [
     BuildingKind::Array,
     BuildingKind::Reclaimer,
     BuildingKind::RepairBay,
+    BuildingKind::Extractor,
 ];
 
 #[cfg(test)]
-const WORK_BUILDING_KINDS: [BuildingKind; 5] = [
+const WORK_BUILDING_KINDS: [BuildingKind; 6] = [
     BuildingKind::Foundry,
     BuildingKind::Fabricator,
     BuildingKind::Array,
     BuildingKind::Reclaimer,
     BuildingKind::RepairBay,
+    BuildingKind::Extractor,
 ];
 
 fn construction_rows(
@@ -693,12 +699,14 @@ impl Sprites {
             bastion: building(BuildingKind::Bastion)?,
             array: building(BuildingKind::Array)?,
             reclaimer: building(BuildingKind::Reclaimer)?,
+            extractor: building(BuildingKind::Extractor)?,
             repair_bay: building(BuildingKind::RepairBay)?,
             bastion_action: variant_rows(&rects, "bastion", ACTION_SUFFIXES_9)?,
             foundry_work: variant_rows(&rects, "foundry", WORK_SUFFIXES_4)?,
             fabricator_work: variant_rows(&rects, "fabricator", WORK_SUFFIXES_4)?,
             array_work: variant_rows(&rects, "array", WORK_SUFFIXES_6)?,
             reclaimer_work: variant_rows(&rects, "reclaimer", WORK_SUFFIXES_3)?,
+            extractor_work: variant_rows(&rects, "extractor", WORK_SUFFIXES_3)?,
             repair_bay_work: variant_rows(&rects, "repair_bay", WORK_SUFFIXES_4)?,
             construction: construction_rows(&rects)?,
             harvester: unit(UnitKind::Harvester)?,
@@ -901,6 +909,7 @@ impl Sprites {
             oxide_sim::BuildingKind::Array => &self.array,
             oxide_sim::BuildingKind::Reclaimer => &self.reclaimer,
             oxide_sim::BuildingKind::RepairBay => &self.repair_bay,
+            oxide_sim::BuildingKind::Extractor => &self.extractor,
         }
     }
 
@@ -969,6 +978,7 @@ impl Sprites {
             BuildingKind::Array => &self.array_work,
             BuildingKind::Reclaimer => &self.reclaimer_work,
             BuildingKind::RepairBay => &self.repair_bay_work,
+            BuildingKind::Extractor => &self.extractor_work,
             _ => return None,
         };
         frame.checked_sub(1).and_then(|index| rows.get(index))

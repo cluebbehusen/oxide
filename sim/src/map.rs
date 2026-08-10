@@ -123,6 +123,10 @@ pub enum MapError {
     /// The same player digit appeared twice.
     #[error("duplicate foundry anchor for player {0}")]
     DuplicateAnchor(PlayerId),
+    /// An extractor frame's 2x2 footprint runs off the map or overlaps
+    /// non-ground terrain.
+    #[error("extractor frame at {0:?} needs a clear 2x2 ground footprint")]
+    BadFrame(TilePos),
 }
 
 /// The playfield. Owns terrain and scrap amounts; buildings and units live
@@ -130,6 +134,12 @@ pub enum MapError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Map {
     grid: Grid<Tile>,
+    /// Anchors of derelict Extractor frames ('E'): 2x2 footprints where
+    /// — and only where — an Extractor can be rebuilt. The frame is part
+    /// of the map and outlives every machine restored on it; the tiles
+    /// beneath are plain ground and block nothing while unclaimed.
+    #[serde(default)]
+    extractor_frames: Vec<TilePos>,
 }
 
 impl Map {
@@ -148,6 +158,7 @@ impl Map {
         }
         let mut cells = Vec::with_capacity(rows.len() * expected);
         let mut anchors: Vec<(PlayerId, TilePos)> = Vec::new();
+        let mut extractor_frames: Vec<TilePos> = Vec::new();
 
         for (y, row) in rows.iter().enumerate() {
             let row = row.as_ref();
@@ -192,6 +203,15 @@ impl Map {
                         wreck: 0,
                         cosmetic: 0,
                     },
+                    'E' => {
+                        extractor_frames.push(pos);
+                        Tile {
+                            terrain: Terrain::Ground,
+                            scrap: 0,
+                            wreck: 0,
+                            cosmetic: 0,
+                        }
+                    }
                     's' => Tile {
                         terrain: Terrain::Ground,
                         scrap: SCRAP_NODE_AMOUNT,
@@ -229,18 +249,56 @@ impl Map {
             }
         }
         anchors.sort_by_key(|(p, _)| *p);
-        Ok((
-            Self {
-                grid: Grid::from_cells(expected as i32, rows.len() as i32, cells),
-            },
-            anchors,
-        ))
+        let map = Self {
+            grid: Grid::from_cells(expected as i32, rows.len() as i32, cells),
+            extractor_frames,
+        };
+        for &frame in &map.extractor_frames {
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    let tile = frame.offset(dx, dy);
+                    if !map
+                        .tile(tile)
+                        .is_some_and(|t| t.terrain == Terrain::Ground && t.scrap == 0)
+                    {
+                        return Err(MapError::BadFrame(frame));
+                    }
+                }
+            }
+        }
+        Ok((map, anchors))
     }
 
     /// Whether the deserialized grid holds together (see
     /// [`chassis::grid::Grid::is_consistent`]).
     pub fn is_consistent(&self) -> bool {
         self.grid.is_consistent()
+            && self.extractor_frames.iter().all(|frame| {
+                (0..2).all(|dy| {
+                    (0..2).all(|dx| {
+                        self.tile(frame.offset(dx, dy))
+                            .is_some_and(|t| t.terrain == Terrain::Ground)
+                    })
+                })
+            })
+    }
+
+    /// Anchors of derelict Extractor frames, in authored (row-major)
+    /// order.
+    pub fn extractor_frames(&self) -> &[TilePos] {
+        &self.extractor_frames
+    }
+
+    /// Whether `anchor` is exactly a derelict frame's anchor.
+    pub fn is_extractor_frame(&self, anchor: TilePos) -> bool {
+        self.extractor_frames.contains(&anchor)
+    }
+
+    /// Whether `tile` lies under any frame's 2x2 footprint.
+    pub fn tile_in_extractor_frame(&self, tile: TilePos) -> bool {
+        self.extractor_frames.iter().any(|frame| {
+            tile.x >= frame.x && tile.x < frame.x + 2 && tile.y >= frame.y && tile.y < frame.y + 2
+        })
     }
 
     /// Map width in tiles.
@@ -344,17 +402,21 @@ impl Map {
     pub fn ascii_rows(&self) -> Vec<String> {
         let mut rows = vec![String::with_capacity(self.width() as usize); self.height() as usize];
         for (pos, tile) in self.grid.iter() {
-            let c = match (tile.terrain, tile.scrap) {
-                (Terrain::Rock, _) => '#',
-                (Terrain::Peak, _) => '^',
-                (Terrain::Pit, _) => '~',
-                // Render-only: wrecks are never authored, so `w` stays out
-                // of the parse legend.
-                (Terrain::Ground, 0) if tile.wreck > 0 => 'w',
-                (Terrain::Ground, 0) if tile.cosmetic == 1 => ',',
-                (Terrain::Ground, 0) => '.',
-                (Terrain::Ground, s) if s > SCRAP_NODE_AMOUNT => 'S',
-                (Terrain::Ground, _) => 's',
+            let c = if self.extractor_frames.contains(&pos) {
+                'E'
+            } else {
+                match (tile.terrain, tile.scrap) {
+                    (Terrain::Rock, _) => '#',
+                    (Terrain::Peak, _) => '^',
+                    (Terrain::Pit, _) => '~',
+                    // Render-only: wrecks are never authored, so `w` stays
+                    // out of the parse legend.
+                    (Terrain::Ground, 0) if tile.wreck > 0 => 'w',
+                    (Terrain::Ground, 0) if tile.cosmetic == 1 => ',',
+                    (Terrain::Ground, 0) => '.',
+                    (Terrain::Ground, s) if s > SCRAP_NODE_AMOUNT => 'S',
+                    (Terrain::Ground, _) => 's',
+                }
             };
             rows[pos.y as usize].push(c);
         }

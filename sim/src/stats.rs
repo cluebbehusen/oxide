@@ -71,6 +71,11 @@ pub enum BuildingKind {
     /// ground and air alike — inside its ring, billed per hp from the
     /// owner's bank at repair pricing.
     RepairBay,
+    /// A restored strip-mining machine from the old rush. Rebuilt only
+    /// on a map-authored derelict frame, it grinds the deep seams for
+    /// the strongest income in the game — and the frame outlives every
+    /// destruction, so the ground it stands on is contested forever.
+    Extractor,
 }
 
 /// A movement medium. Ground units path and collide on the terrain grid;
@@ -767,6 +772,21 @@ const REPAIR_BAY: BuildingStats = BuildingStats {
     }),
 };
 
+const EXTRACTOR: BuildingStats = BuildingStats {
+    max_hp: 600,
+    size: (2, 2),
+    vision: 4,
+    produces: &[],
+    weapons: &[],
+    // Cheap to restore, brutal to hold: the price buys the strongest
+    // income in the game on ground everyone can read from the map.
+    construction: Some(ConstructionStats {
+        cost: 100,
+        build_ticks: 300,
+        requires: &[],
+    }),
+};
+
 impl UnitKind {
     /// Static stats for this kind.
     pub const fn stats(self) -> &'static UnitStats {
@@ -809,6 +829,7 @@ impl BuildingKind {
             BuildingKind::Array => "array",
             BuildingKind::Reclaimer => "reclaimer",
             BuildingKind::RepairBay => "repair bay",
+            BuildingKind::Extractor => "extractor",
         }
     }
 
@@ -823,6 +844,7 @@ impl BuildingKind {
             BuildingKind::Array => &ARRAY,
             BuildingKind::Reclaimer => &RECLAIMER,
             BuildingKind::RepairBay => &REPAIR_BAY,
+            BuildingKind::Extractor => &EXTRACTOR,
         }
     }
 
@@ -899,6 +921,15 @@ pub const FOUNDRY_DRIP_PERIOD: u64 = 60;
 /// scripted brain (13/40 -> passing) purely on perfectly-converted
 /// early free scrap — the floor should never be an opening build order.
 pub const FOUNDRY_DRIP_START_TICK: u64 = 2_400;
+
+/// Extractor yield: `(first eligible completed tick, scrap, per ticks)`
+/// rows, later rows superseding earlier ones. The escalation is the
+/// visible late-game pressure rule: map control compounds, so turtling
+/// on the drip against a seat holding restored Extractors is a legible
+/// death spiral rather than a stalemate. Base 120 scrap/min, +50% from
+/// ten minutes, doubled from twenty.
+pub const EXTRACTOR_YIELD_SCHEDULE: [(u64, u32, u64); 3] =
+    [(0, 1, 10), (12_000, 3, 20), (24_000, 2, 10)];
 
 /// Ticks between decay steps on an unattended construction site (one hp
 /// per step, applied while no own harvest-capable machine stands beside

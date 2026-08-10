@@ -1293,6 +1293,10 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
                     }
                     PlaceRefusal::NotConstructible => "that can't be built",
                     PlaceRefusal::Prerequisite => "can't build that yet: needs its tech building",
+                    PlaceRefusal::FrameRequired => "an extractor rebuilds only on a derelict frame",
+                    PlaceRefusal::FrameBlocked => {
+                        "can't build there: that ground belongs to a derelict frame"
+                    }
                 });
                 game.sounds_pending
                     .push((crate::game::SoundKind::Denied, None));

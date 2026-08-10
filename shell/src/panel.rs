@@ -243,6 +243,9 @@ pub fn building_flavor(kind: BuildingKind) -> &'static str {
         BuildingKind::Array => {
             "Reveals terrain within 9 tiles and detects hostile units within 16."
         }
+        BuildingKind::Extractor => {
+            "Restored strip miner: the strongest income in the game, rebuilt only on a derelict frame."
+        }
         BuildingKind::Reclaimer => "Generates 1 scrap every 1.5 seconds.",
         BuildingKind::RepairBay => {
             "Automatically repairs friendly ground units within 4 tiles. Repairs consume scrap."
