@@ -85,8 +85,10 @@ ridge doors carry the fight sideways — then opens one setup screen
 for every map size: pick your chair from the seat cards (grouped
 under team headings when the map has teams) and tune every
 opponent's difficulty (**Easy, Medium, Hard, Expert**), personality
-(**turtle, balanced, aggressive**, or let the map decide), and
-faction in place beside a who-is-where preview. Start is
+(**turtle, balanced, aggressive**, or let the map decide), faction,
+and team in place beside a who-is-where preview — the team dial
+turns any map into a free-for-all or any grouping you can imagine
+(only everyone-on-one-team is refused; nobody to fight). Start is
 preselected, so Enter-Enter from the map grid still launches the
 classic matchup — and the chips can now arrange what the old quick
 questions never could: a mirror match, or your seat on the other

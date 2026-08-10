@@ -20,7 +20,7 @@ use oxide_protocol::{Key, MouseButton, RawEvent};
 use oxide_sim::Scenario;
 use std::path::PathBuf;
 
-use crate::theme::{SURFACE_MENU, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE};
+use crate::theme::{SURFACE_MENU, TEXT_DANGER, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_TITLE};
 
 /// One seat's dials in the draft.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -30,8 +30,14 @@ pub struct SeatPlan {
     /// Personality row (feeds [`personality_style`]).
     pub personality_choice: usize,
     /// Faction chip (feeds [`faction_override`]): 0 keeps the map's
-    /// authored roster. The one dial the human's own card carries too.
+    /// authored roster. A dial the human's own card carries too.
     pub faction_choice: usize,
+    /// Team chip (feeds [`team_override`]): 0 is FFA — the seat stands
+    /// alone — and `k` is Team `k`. [`NewMatchDraft::set_scenario`]
+    /// seeds it from the map's authored teams, so the bare default is
+    /// only right for maps that author none. Carried on every card,
+    /// the human's included: teams regroup seats, never retint them.
+    pub team_choice: usize,
 }
 
 impl Default for SeatPlan {
@@ -40,6 +46,7 @@ impl Default for SeatPlan {
             level_choice: 1, // Medium is the fair default
             personality_choice: 0,
             faction_choice: 0, // the authored roster
+            team_choice: 0,    // FFA; set_scenario seeds authored teams
         }
     }
 }
@@ -52,6 +59,70 @@ pub fn faction_override(choice: usize) -> Option<oxide_sim::Faction> {
         2 => Some(oxide_sim::Faction::Cupric),
         _ => None,
     }
+}
+
+/// The scenario team a chip value writes onto its seat: `None` (FFA)
+/// puts the seat on its own team; `Team k` becomes the 0-based id the
+/// sim densifies by first appearance at build.
+pub fn team_override(choice: usize) -> Option<u8> {
+    choice.checked_sub(1).map(|team| team as u8)
+}
+
+/// The team chip's display label, aligned with [`team_override`].
+pub fn team_chip_label(choice: usize) -> String {
+    match choice {
+        0 => "FFA".to_string(),
+        k => format!("Team {k}"),
+    }
+}
+
+/// The team chip a seat opens on: its authored team shown as the
+/// dense first-appearance ordinal (`Team 1`, `Team 2`, ...) — the same
+/// normalization the sim applies at build — or FFA when the seat
+/// authors none.
+fn default_team_choice(scenario: &Scenario, seat: usize) -> usize {
+    let Some(team) = scenario.players.get(seat).and_then(|p| p.team) else {
+        return 0;
+    };
+    let mut seen: Vec<u8> = Vec::new();
+    for player in &scenario.players {
+        if let Some(t) = player.team
+            && !seen.contains(&t)
+        {
+            seen.push(t);
+        }
+    }
+    seen.iter().position(|t| *t == team).map_or(0, |i| i + 1)
+}
+
+/// Fresh per-seat plans for a map: every dial at its default, the team
+/// chips seeded from the authored teams.
+fn authored_seat_plans(scenario: &Scenario) -> Vec<SeatPlan> {
+    (0..scenario.players.len())
+        .map(|seat| SeatPlan {
+            team_choice: default_team_choice(scenario, seat),
+            ..SeatPlan::default()
+        })
+        .collect()
+}
+
+/// Whether the draft groups every seat onto one team — the sim's
+/// `OneTeam` build refusal (nobody to fight), caught here so Start can
+/// say why instead of failing the launch. All-FFA is the opposite
+/// extreme and always legal: every seat stands alone.
+fn draft_one_team(draft: &NewMatchDraft) -> bool {
+    let Some(scenario) = draft.scenario.as_deref() else {
+        return false;
+    };
+    let n = scenario.players.len();
+    if n < 2 {
+        return false;
+    }
+    let mut choices = (0..n).map(|i| draft.seats.get(i).map_or(0, |p| p.team_choice));
+    let Some(first) = choices.next() else {
+        return false;
+    };
+    first != 0 && choices.all(|c| c == first)
 }
 
 /// The faction a seat will actually run: its chip override, or the
@@ -113,11 +184,16 @@ impl NewMatchDraft {
     pub fn set_scenario(&mut self, scenario: Scenario, path: Option<PathBuf>) {
         let same_map = self.scenario.is_some() && self.scenario_path == path;
         let count = scenario.players.len();
+        let defaults = authored_seat_plans(&scenario);
         if same_map {
-            self.seats.resize(count, SeatPlan::default());
+            if self.seats.len() < count {
+                self.seats.extend_from_slice(&defaults[self.seats.len()..]);
+            } else {
+                self.seats.truncate(count);
+            }
             self.seat_choice = self.seat_choice.min(count.saturating_sub(1));
         } else {
-            self.seats = vec![SeatPlan::default(); count];
+            self.seats = defaults;
             self.seat_choice = 0;
         }
         self.scenario = Some(Box::new(scenario));
@@ -175,9 +251,10 @@ pub struct Wizard {
     /// then the Start button.
     pub setup_sel: usize,
     /// Which cell of the selected seat card the cursor is on: 0 the
-    /// seat itself, 1 its difficulty dial, 2 its personality dial.
-    /// Sticky across rows — walking the roster on a dial column edits
-    /// in bulk. Rows without dials clamp to 0.
+    /// seat itself, then its chips left to right — 1 difficulty, 2
+    /// personality, 3 faction, 4 team. Sticky across rows — walking
+    /// the roster on a dial column edits in bulk. Rows where the cell
+    /// is dead clamp to 0.
     pub setup_cell: usize,
     /// Setup zone armed by a press: (row, cell); activation on
     /// release inside the same zone.
@@ -230,11 +307,11 @@ pub struct SetupLayout {
     pub headings: Vec<(String, Rect)>,
     /// One card rect per DISPLAY position (see [`seat_display_order`]).
     pub seats: Vec<Rect>,
-    /// Per card, the four interactive zones: the seat itself, its
-    /// difficulty chip, its personality chip, its faction chip. The
-    /// human's own card keeps only seat and faction — the AI dials'
-    /// rects are zero-sized there.
-    pub cells: Vec<[Rect; 4]>,
+    /// Per card, the five interactive zones: the seat itself, its
+    /// difficulty chip, its personality chip, its faction chip, its
+    /// team chip. The human's own card keeps only seat, faction, and
+    /// team — the AI dials' rects are zero-sized there.
+    pub cells: Vec<[Rect; 5]>,
     /// The Start button.
     pub start: Rect,
     /// Where the map preview draws.
@@ -294,7 +371,7 @@ pub fn setup_layout(scenario: &Scenario, seat_choice: usize, view: Vec2, ui: f32
     let mut headings = Vec::new();
     let mut seats = vec![Rect::new(0.0, 0.0, 0.0, 0.0); n];
     let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
-    let mut cells = vec![[zero; 4]; n];
+    let mut cells = vec![[zero; 5]; n];
     let mut y = top;
     let mut last_team: Option<u16> = None;
     for (pos, &seat) in order.iter().enumerate() {
@@ -311,33 +388,35 @@ pub fn setup_layout(scenario: &Scenario, seat_choice: usize, view: Vec2, ui: f32
         let card = Rect::new(left_x, y, left_w, card_h);
         seats[pos] = card;
         // The inline dial chips, right-aligned; the seat zone is the
-        // rest of the card. Every card carries the faction chip —
-        // the human's own card carries ONLY that. The seat zone keeps
-        // a guaranteed share: at narrow widths the three fixed-width
-        // chips once summed past the whole card, driving the zone to
-        // negative width — nothing left to click to take a chair.
-        // Chips scale into what the zone leaves; their text fits
-        // itself at draw.
+        // rest of the card. Every card carries the faction and team
+        // chips — the human's own card carries ONLY those. The seat
+        // zone keeps a guaranteed share: at narrow widths the
+        // fixed-width chips once summed past the whole card, driving
+        // the zone to negative width — nothing left to click to take
+        // a chair. Chips scale into what the zone leaves; their text
+        // fits itself at draw.
         let pad = 8.0 * ui;
         let seat_min = (card.w * 0.34).max(96.0 * ui).min(card.w * 0.55);
-        let chip_scale =
-            ((card.w - pad - seat_min) / ((78.0 + 118.0 + 82.0 + 16.0) * ui)).clamp(0.3, 1.0);
+        let chip_scale = ((card.w - pad - seat_min) / ((78.0 + 118.0 + 82.0 + 64.0 + 24.0) * ui))
+            .clamp(0.3, 1.0);
+        let team_w = 64.0 * ui * chip_scale;
         let fac_w = 82.0 * ui * chip_scale;
         let pers_w = 118.0 * ui * chip_scale;
         let diff_w = 78.0 * ui * chip_scale;
         // Proportional, so a squeezed card keeps its chips inside.
         let chip_h = (card_h * 0.72).clamp(10.0, 40.0 * ui);
         let cy = y + (card_h - chip_h) * 0.5;
-        let fac = Rect::new(card.x + card.w - fac_w - pad, cy, fac_w, chip_h);
+        let cpad = pad * chip_scale;
+        let team = Rect::new(card.x + card.w - team_w - pad, cy, team_w, chip_h);
+        let fac = Rect::new(team.x - fac_w - cpad, cy, fac_w, chip_h);
         if seat != seat_choice {
-            let cpad = pad * chip_scale;
             let pers = Rect::new(fac.x - pers_w - cpad, cy, pers_w, chip_h);
             let diff = Rect::new(pers.x - diff_w - cpad, cy, diff_w, chip_h);
             let seat_zone = Rect::new(card.x, y, diff.x - card.x, card_h);
-            cells[pos] = [seat_zone, diff, pers, fac];
+            cells[pos] = [seat_zone, diff, pers, fac, team];
         } else {
             let seat_zone = Rect::new(card.x, y, fac.x - card.x, card_h);
-            cells[pos] = [seat_zone, zero, zero, fac];
+            cells[pos] = [seat_zone, zero, zero, fac, team];
         }
         y += card_h + gap;
     }
@@ -495,9 +574,10 @@ impl Wizard {
 
     /// The setup screen's input: Up/Down walk the seat cards and the
     /// Start button; Left/Right walk a card's cells (seat, difficulty,
-    /// personality — the cell column is sticky, so walking the roster
-    /// on a dial edits in bulk); Enter takes the seat or cycles the
-    /// dial under the cursor; clicks hit each zone directly.
+    /// personality, faction, team — the cell column is sticky, so
+    /// walking the roster on a dial edits in bulk); Enter takes the
+    /// seat or cycles the dial under the cursor; clicks hit each zone
+    /// directly.
     fn update_setup(
         &mut self,
         events: &[RawEvent],
@@ -554,10 +634,10 @@ impl Wizard {
                 }
                 RawEvent::KeyDown { key: Key::Right } => {
                     let mut c = self.setup_cell + 1;
-                    while c <= 3 && !cell_live(self.setup_sel, c) {
+                    while c <= 4 && !cell_live(self.setup_sel, c) {
                         c += 1;
                     }
-                    if c <= 3 && cell_live(self.setup_sel, c) {
+                    if c <= 4 && cell_live(self.setup_sel, c) {
                         self.setup_cell = c;
                     }
                 }
@@ -602,10 +682,19 @@ impl Wizard {
             }
         }
         if let Some((row, cell)) = activate {
-            sounds.push((SoundKind::Click, None));
             if row == start_index {
+                // The sim refuses an all-one-team match (`OneTeam`:
+                // nobody to fight, no way to win). Start reads
+                // disabled and refuses here so the reason shows
+                // inline instead of a failed-launch notice.
+                if draft_one_team(draft) {
+                    sounds.push((SoundKind::Denied, None));
+                    return None;
+                }
+                sounds.push((SoundKind::Click, None));
                 return Some(Out::Launch);
             }
+            sounds.push((SoundKind::Click, None));
             let seat = order[row];
             match cell {
                 // Seat choice never permutes seats — teams and dials
@@ -620,9 +709,16 @@ impl Wizard {
                     plan.personality_choice =
                         (plan.personality_choice + 1) % PERSONALITY_ITEMS.len();
                 }
-                _ => {
+                3 => {
                     let plan = &mut draft.seats[seat];
                     plan.faction_choice = (plan.faction_choice + 1) % FACTION_CHIP_ITEMS.len();
+                }
+                _ => {
+                    // FFA, then every team up to the seat count
+                    // (start_index is the full roster's length),
+                    // wrapping back to FFA.
+                    let plan = &mut draft.seats[seat];
+                    plan.team_choice = (plan.team_choice + 1) % (start_index + 1);
                 }
             }
         }
@@ -738,12 +834,14 @@ impl Wizard {
             }
             // The inline dials: boxed value chips; the cursor's cell
             // wears the accent. The human's own card shows only its
-            // faction chip.
+            // faction and team chips.
             let plan = draft.seats[seat];
+            let team_label = team_chip_label(plan.team_choice);
             let labels = [
                 DIFFICULTY_ITEMS[plan.level_choice],
                 PERSONALITY_ITEMS[plan.personality_choice],
                 FACTION_CHIP_ITEMS[plan.faction_choice],
+                team_label.as_str(),
             ];
             for (ci, label) in labels.iter().enumerate() {
                 let chip = layout.cells[pos][ci + 1];
@@ -803,7 +901,10 @@ impl Wizard {
                 );
             }
         }
-        // Start button.
+        // Start button. An all-one-team draft cannot launch (the
+        // sim's OneTeam refusal), so the button reads disabled and
+        // the hint line below carries the reason.
+        let one_team = draft_one_team(draft);
         let start_selected = self.setup_sel == layout.seats.len();
         draw_rectangle(
             layout.start.x,
@@ -818,7 +919,9 @@ impl Wizard {
             layout.start.w,
             layout.start.h,
             if start_selected { 3.0 } else { 1.5 },
-            if start_selected {
+            if one_team {
+                Color::new(0.6, 0.6, 0.65, 0.4)
+            } else if start_selected {
                 TEXT_TITLE
             } else {
                 TEXT_SECONDARY
@@ -831,7 +934,7 @@ impl Wizard {
             layout.start.x + (layout.start.w - ldims.width) * 0.5,
             layout.start.y + layout.start.h * 0.66,
             20.0 * ui,
-            if start_selected {
+            if !one_team && start_selected {
                 TEXT_PRIMARY
             } else {
                 TEXT_SECONDARY
@@ -875,7 +978,9 @@ impl Wizard {
         }
 
         let on_dial = self.setup_sel < order.len() && self.setup_cell > 0;
-        let hint = if self.setup_sel == order.len() {
+        let hint = if one_team {
+            "every seat is on one team, nobody to fight - regroup a TEAM dial - Esc back"
+        } else if self.setup_sel == order.len() {
             "Enter starts the match - Esc back"
         } else if on_dial {
             "Enter cycles the dial - Left/Right move - Esc back"
@@ -888,7 +993,11 @@ impl Wizard {
             (view.x - hdims.width) * 0.5,
             view.y - 20.0 * ui,
             16.0 * ui,
-            TEXT_SECONDARY,
+            if one_team {
+                TEXT_DANGER
+            } else {
+                TEXT_SECONDARY
+            },
         );
     }
 
@@ -921,21 +1030,24 @@ impl Wizard {
                             .map(|seat| {
                                 let name = effective_name(sc, draft, seat);
                                 let plan = draft.seats[seat];
+                                let team = team_chip_label(plan.team_choice);
                                 if seat == draft.seat_choice {
                                     format!(
-                                        "{}. {} (you) | {}",
+                                        "{}. {} (you) | {} | {}",
                                         seat + 1,
                                         name,
-                                        FACTION_CHIP_ITEMS[plan.faction_choice]
+                                        FACTION_CHIP_ITEMS[plan.faction_choice],
+                                        team
                                     )
                                 } else {
                                     format!(
-                                        "{}. {} | {} | {} | {}",
+                                        "{}. {} | {} | {} | {} | {}",
                                         seat + 1,
                                         name,
                                         DIFFICULTY_ITEMS[plan.level_choice],
                                         PERSONALITY_ITEMS[plan.personality_choice],
-                                        FACTION_CHIP_ITEMS[plan.faction_choice]
+                                        FACTION_CHIP_ITEMS[plan.faction_choice],
+                                        team
                                     )
                                 }
                             })
@@ -1046,6 +1158,138 @@ mod tests {
         draft.set_scenario(Scenario::skirmish(), None);
         assert_eq!(draft.seat_choice, 0, "new map: the chair resets");
         assert!(draft.seats.iter().all(|p| *p == SeatPlan::default()));
+    }
+
+    #[test]
+    fn the_team_chip_defaults_follow_the_authored_teams() {
+        let team = Scenario::load(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../scenarios/trident-plateau.json"
+        ))
+        .expect("shipped map");
+        let mut draft = NewMatchDraft::default();
+        draft.set_scenario(team.clone(), None);
+        let choices: Vec<usize> = draft.seats.iter().map(|p| p.team_choice).collect();
+        assert_eq!(
+            choices,
+            vec![1, 1, 1, 2, 2, 2],
+            "authored teams open as Team 1 / Team 2"
+        );
+
+        // Sparse authored ids still label densely by first appearance,
+        // and an omitted seat opens as FFA — the same normalization the
+        // sim applies at build.
+        let mut sparse = team;
+        sparse.players[0].team = Some(9);
+        sparse.players[1].team = Some(9);
+        sparse.players[2].team = None;
+        let mut draft = NewMatchDraft::default();
+        draft.set_scenario(sparse, None);
+        let choices: Vec<usize> = draft.seats.iter().map(|p| p.team_choice).collect();
+        assert_eq!(choices, vec![1, 1, 0, 2, 2, 2]);
+
+        let mut draft = NewMatchDraft::default();
+        draft.set_scenario(Scenario::skirmish(), None);
+        assert!(
+            draft.seats.iter().all(|p| p.team_choice == 0),
+            "a map without authored teams opens as FFA"
+        );
+    }
+
+    #[test]
+    fn the_team_chip_cycles_through_ffa_and_every_team() {
+        let mut draft = NewMatchDraft::default();
+        let mut w = Wizard::open(&draft);
+        pick_first_map(&mut w, &mut draft); // a duel: FFA, Team 1, Team 2
+        let order = seat_display_order(draft.scenario.as_deref().unwrap());
+
+        // Your own card carries the team chip: Right skips the dead AI
+        // dials, lands the faction chip, then the team chip.
+        drive(&mut w, &mut draft, Key::Home);
+        drive(&mut w, &mut draft, Key::Right);
+        drive(&mut w, &mut draft, Key::Right);
+        assert_eq!(w.setup_cell, 4, "the team chip is the last cell");
+        drive(&mut w, &mut draft, Key::Enter);
+        assert_eq!(
+            draft.seats[draft.seat_choice].team_choice, 1,
+            "FFA cycles to Team 1"
+        );
+        drive(&mut w, &mut draft, Key::Enter);
+        assert_eq!(draft.seats[draft.seat_choice].team_choice, 2);
+        drive(&mut w, &mut draft, Key::Enter);
+        assert_eq!(
+            draft.seats[draft.seat_choice].team_choice, 0,
+            "past the seat count wraps back to FFA"
+        );
+        assert_eq!(
+            w.step,
+            Step::Setup,
+            "cycling a chip never leaves the screen"
+        );
+
+        // The sticky column carries the team cell onto an AI card.
+        drive(&mut w, &mut draft, Key::Down);
+        drive(&mut w, &mut draft, Key::Enter);
+        assert_eq!(draft.seats[order[1]].team_choice, 1);
+    }
+
+    #[test]
+    fn a_stale_team_choice_never_carries_across_maps() {
+        // Same shape as the stale-seat guard: re-entering the SAME map
+        // keeps the dial, a different map re-derives the authored
+        // defaults — a Team 5 dialed on an 8-seat map must not ride
+        // into a duel that has no Team 5.
+        let team = Scenario::load(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../scenarios/compass-grand.json"
+        ))
+        .expect("shipped map");
+        let path = Some(PathBuf::from("compass-grand.json"));
+        let mut draft = NewMatchDraft::default();
+        draft.set_scenario(team.clone(), path.clone());
+        assert_eq!(
+            draft.seats[7].team_choice, 2,
+            "defaults follow the authored teams"
+        );
+        draft.seats[7].team_choice = 5;
+        draft.set_scenario(team, path);
+        assert_eq!(
+            draft.seats[7].team_choice, 5,
+            "same map: the team dial survives Back"
+        );
+        draft.set_scenario(Scenario::skirmish(), None);
+        assert!(
+            draft.seats.iter().all(|p| p.team_choice == 0),
+            "new map: every team dial back to that map's default"
+        );
+    }
+
+    #[test]
+    fn an_all_one_team_draft_disables_start() {
+        let mut draft = NewMatchDraft::default();
+        let mut w = Wizard::open(&draft);
+        pick_first_map(&mut w, &mut draft);
+        for plan in &mut draft.seats {
+            plan.team_choice = 1;
+        }
+        drive(&mut w, &mut draft, Key::End);
+        let mut mouse = vec2(0.0, 0.0);
+        let mut sounds = Vec::new();
+        let out = w
+            .update(&press(Key::Enter), &mut mouse, &mut draft, &mut sounds)
+            .expect("update");
+        assert_eq!(out, Out::Stay, "one team, nobody to fight: Start refuses");
+        assert_eq!(w.step, Step::Setup, "the screen stays put");
+        assert!(
+            sounds.contains(&(SoundKind::Denied, None)),
+            "the refusal is audible, not silent"
+        );
+        draft.seats[0].team_choice = 0;
+        assert_eq!(
+            drive(&mut w, &mut draft, Key::Enter),
+            Out::Launch,
+            "freeing one seat re-arms Start"
+        );
     }
 
     #[test]
@@ -1295,6 +1539,10 @@ mod tests {
             } else {
                 assert!(cells[1].w > 0.0 && cells[2].w > 0.0, "AI cards carry dials");
             }
+            assert!(
+                cells[3].w > 0.0 && cells[4].w > 0.0,
+                "every card carries the faction and team chips"
+            );
         }
     }
 
@@ -1325,10 +1573,15 @@ mod tests {
         let mut w = Wizard::open(&draft);
         w.step = Step::Setup;
         let (_, items, _) = w.ui_surface(&draft);
-        assert_eq!(items[0], "1. Cupric (you) | Cupric");
+        assert_eq!(items[0], "1. Cupric (you) | Cupric | FFA");
         assert!(
             items[1].starts_with("2. Ferrous | "),
             "the AI row leads with the effective name: {}",
+            items[1]
+        );
+        assert!(
+            items[1].ends_with(" | FFA"),
+            "the AI row ends with the team dial: {}",
             items[1]
         );
     }

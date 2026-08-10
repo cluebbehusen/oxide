@@ -171,6 +171,16 @@ fn launch(draft: &NewMatchDraft) -> Result<Game> {
             scenario.retint_seat(i, faction);
         }
     }
+    // Per-seat team chips (the setup screen's): teams regroup seats
+    // without touching factions — an FFA chip drops the seat onto its
+    // own team, and the sim densifies chosen ids by first appearance
+    // at build. The scenario carries the choice, so saves and replays
+    // reproduce the grouping with no extra plumbing. An all-one-team
+    // draft fails the build (OneTeam) like any other launch error;
+    // the wizard refuses it earlier with the reason inline.
+    for (i, plan) in draft.seats.iter().enumerate() {
+        scenario.players[i].team = screens::wizard::team_override(plan.team_choice);
+    }
     // Duels run through the same per-seat chips as every other map:
     // Auto keeps the authored roster (even seats Ferrous, odd Cupric —
     // the classic matchup), and a chip override is how a mirror match
@@ -1968,6 +1978,61 @@ mod tests {
             players[0].name, players[1].name,
             "ordinals keep names unique"
         );
+    }
+
+    #[test]
+    fn launch_writes_the_chosen_teams_into_the_scenario() {
+        // Untouched dials reproduce the authored grouping — the
+        // scenario (and so every save and replay) carries the teams.
+        let draft = team_draft(); // trident-plateau: teams 0,0,0 / 1,1,1
+        let game = launch(&draft).expect("launches");
+        let teams: Vec<Option<u8>> = game.scenario.players.iter().map(|p| p.team).collect();
+        assert_eq!(
+            teams,
+            vec![Some(0), Some(0), Some(0), Some(1), Some(1), Some(1)],
+            "defaults launch the map as authored"
+        );
+
+        // Re-dialed seats regroup: FFA drops the seat onto its own
+        // team, a moved seat joins its new one — factions untouched.
+        let mut draft = team_draft();
+        let authored: Vec<_> = draft
+            .scenario
+            .as_deref()
+            .unwrap()
+            .players
+            .iter()
+            .map(|p| p.faction)
+            .collect();
+        draft.seats[0].team_choice = 0; // FFA
+        draft.seats[3].team_choice = 1; // crosses to Team 1
+        let game = launch(&draft).expect("launches");
+        let players = &game.scenario.players;
+        assert_eq!(players[0].team, None, "the FFA seat drops its team");
+        assert_eq!(players[3].team, Some(0), "the moved seat joined Team 1");
+        assert_eq!(players[1].team, Some(0));
+        let launched: Vec<_> = players.iter().map(|p| p.faction).collect();
+        assert_eq!(launched, authored, "the team dial never retints a seat");
+        // The sim's dense normalization sees the regrouping: the FFA
+        // seat stands alone against everyone.
+        let alone = game.state.player(oxide_sim::PlayerId(0)).team;
+        assert!(
+            (1..players.len())
+                .all(|i| game.state.player(oxide_sim::PlayerId(i as u8)).team != alone),
+            "an FFA seat shares a team with no one"
+        );
+    }
+
+    #[test]
+    fn an_all_one_team_draft_fails_the_launch_instead_of_the_process() {
+        // The wizard refuses this at Start; launch stays the backstop
+        // and surfaces the sim's OneTeam build error as a menu notice,
+        // never a crash.
+        let mut draft = team_draft();
+        for plan in &mut draft.seats {
+            plan.team_choice = 1;
+        }
+        assert!(launch(&draft).is_err(), "one team can never launch");
     }
 
     #[test]
