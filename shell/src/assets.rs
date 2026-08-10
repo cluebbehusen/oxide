@@ -24,6 +24,12 @@ pub struct Sprites {
     pit_edges: [Rect; 32],
     /// The derelict 2x2 Extractor frame bed, drawn on unclaimed frames.
     extractor_frame: Rect,
+    /// Tier hulls, keyed by (kind, tier-1) through [`Sprites::building_tiered`].
+    turret_t1: [Rect; 3],
+    turret_t2: [Rect; 3],
+    flak_turret_t1: [Rect; 3],
+    reclaimer_t1: [Rect; 3],
+    array_t1: [Rect; 3],
     turret_barrel: [Rect; 3],
     flak_mount: [Rect; 3],
     bastion_mount: [Rect; 3],
@@ -679,6 +685,15 @@ fn atlas_keys() -> Vec<String> {
         .map(|key| (*key).to_string())
         .collect();
     keys.extend(variant_keys(TURRET_BARREL_STEM, ""));
+    for stem in [
+        "turret_t1",
+        "turret_t2",
+        "flak_turret_t1",
+        "reclaimer_t1",
+        "array_t1",
+    ] {
+        keys.extend(variant_keys(stem, ""));
+    }
     keys.extend(variant_keys(FLAK_MOUNT_STEM, ""));
     keys.extend(variant_keys(BASTION_MOUNT_STEM, ""));
     for suffix in ACTION_SUFFIXES_4 {
@@ -824,6 +839,11 @@ impl Sprites {
             peak_barriers: pick(&rects, PEAK_BARRIER_KEYS)?,
             pit_edges: pick(&rects, PIT_EDGE_KEYS)?,
             extractor_frame,
+            turret_t1: variant_row(&rects, "turret_t1", "")?,
+            turret_t2: variant_row(&rects, "turret_t2", "")?,
+            flak_turret_t1: variant_row(&rects, "flak_turret_t1", "")?,
+            reclaimer_t1: variant_row(&rects, "reclaimer_t1", "")?,
+            array_t1: variant_row(&rects, "array_t1", "")?,
             turret_barrel: variant_row(&rects, TURRET_BARREL_STEM, "")?,
             flak_mount: variant_row(&rects, FLAK_MOUNT_STEM, "")?,
             bastion_mount: variant_row(&rects, BASTION_MOUNT_STEM, "")?,
@@ -1125,6 +1145,36 @@ impl Sprites {
 
     pub fn building(&self, kind: oxide_sim::BuildingKind, faction: Faction) -> Rect {
         self.building_row(kind)[faction_index(faction)]
+    }
+
+    /// A tier's hull row, when the ladder rung has authored art;
+    /// otherwise the base hull carries every rung.
+    fn tier_row(&self, kind: BuildingKind, tier: u8) -> Option<&[Rect; 3]> {
+        match (kind, tier) {
+            (BuildingKind::Turret, 1) => Some(&self.turret_t1),
+            (BuildingKind::Turret, 2) => Some(&self.turret_t2),
+            (BuildingKind::FlakTurret, 1) => Some(&self.flak_turret_t1),
+            (BuildingKind::Reclaimer, 1) => Some(&self.reclaimer_t1),
+            (BuildingKind::Array, 1) => Some(&self.array_t1),
+            _ => None,
+        }
+    }
+
+    /// The hull for a building at its upgrade-ladder rung.
+    pub fn building_tiered(
+        &self,
+        kind: oxide_sim::BuildingKind,
+        tier: u8,
+        faction: Faction,
+    ) -> Rect {
+        self.tier_row(kind, tier)
+            .unwrap_or_else(|| self.building_row(kind))[faction_index(faction)]
+    }
+
+    /// The allegiance mask matched to [`Self::building_tiered`].
+    pub fn building_tiered_accent(&self, kind: oxide_sim::BuildingKind, tier: u8) -> Rect {
+        self.tier_row(kind, tier)
+            .unwrap_or_else(|| self.building_row(kind))[ACCENT]
     }
 
     /// The allegiance-accent mask over a building's faction-colored

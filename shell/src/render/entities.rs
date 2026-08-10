@@ -487,8 +487,8 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
         let frame = super::motion::building_frame(building.kind, animation);
         let (source, accent_source) = match frame.body {
             super::motion::BuildingBodyFrame::Idle => (
-                sprites.building(building.kind, faction),
-                sprites.building_accent(building.kind),
+                sprites.building_tiered(building.kind, building.tier, faction),
+                sprites.building_tiered_accent(building.kind, building.tier),
             ),
             super::motion::BuildingBodyFrame::Work(work) => (
                 sprites.building_working(building.kind, faction, work + 1),

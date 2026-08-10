@@ -779,6 +779,68 @@ def turret(faction: str) -> None:
     finish(img, px, f"turret_{faction}")
 
 
+def turret_t1(faction: str) -> None:
+    """Heavy Turret hull (tier 1): the same swivel base under twin
+    armored ammo drums — visibly more gun feeding the same mount."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    d.rounded_rectangle([s(3), s(3), s(61), s(61)], radius=s(9), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle([s(7), s(7), s(57), s(57)], radius=s(7), fill=(*IRON, 255))
+    for bx, by in ((11, 11), (53, 11), (11, 53), (53, 53)):
+        d.ellipse([s(bx - 3), s(by - 3), s(bx + 3), s(by + 3)], fill=(*IRON_DARK, 255))
+    # Twin ammo drums flank the ring: the tier's role feature.
+    for x in (6, 46):
+        d.rounded_rectangle([s(x), s(22), s(x + 12), s(42)], radius=s(3), fill=(*pal["dark"], 255))
+        d.rectangle([s(x + 2), s(26), s(x + 10), s(30)], fill=(*IRON_LIGHT, 255))
+    d.ellipse([s(16), s(16), s(48), s(48)], fill=(*pal["dark"], 255))
+    d.ellipse([s(19), s(19), s(45), s(45)], fill=(*pal["base"], 255))
+    d.ellipse([s(27), s(27), s(37), s(37)], fill=(*pal["light"], 255))
+    finish(img, px, f"turret_t1_{faction}")
+
+
+def turret_t2(faction: str) -> None:
+    """Bulwark hull (tier 2): a full octagonal casemate with hazard
+    chevrons — the top of the ladder, unmistakably a fortress."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    oct_pts = [(20, 2), (44, 2), (62, 20), (62, 44), (44, 62), (20, 62), (2, 44), (2, 20)]
+    d.polygon([(s(x), s(y)) for x, y in oct_pts], fill=(*IRON_DARK, 255))
+    inner = [(22, 7), (42, 7), (57, 22), (57, 42), (42, 57), (22, 57), (7, 42), (7, 22)]
+    d.polygon([(s(x), s(y)) for x, y in inner], fill=(*IRON, 255))
+    # Hazard chevrons on the north face.
+    for i, x in enumerate(range(22, 44, 7)):
+        color = (SCRAP if i % 2 == 0 else IRON_DARK)
+        d.polygon([(s(x), s(7)), (s(x + 5), s(7)), (s(x + 8), s(12)), (s(x + 3), s(12))],
+                  fill=(*color, 255))
+    d.ellipse([s(14), s(14), s(50), s(50)], fill=(*pal["dark"], 255))
+    d.ellipse([s(18), s(18), s(46), s(46)], fill=(*pal["base"], 255))
+    d.ellipse([s(26), s(26), s(38), s(38)], fill=(*pal["light"], 255))
+    for bx, by in ((10, 32), (54, 32), (32, 54)):
+        d.ellipse([s(bx - 2), s(by - 2), s(bx + 2), s(by + 2)], fill=(*BONE, 220))
+    finish(img, px, f"turret_t2_{faction}")
+
+
+def flak_turret_t1(faction: str) -> None:
+    """Burst Flak hull (tier 1): quad launcher boxes around the mount
+    ring — a sky-saturation battery instead of one gun."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    d.rounded_rectangle([s(5), s(5), s(59), s(59)], radius=s(8), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle([s(9), s(9), s(55), s(55)], radius=s(6), fill=(*IRON, 255))
+    # Quad rack boxes at the diagonals: the tier's role feature.
+    for x, y in ((8, 8), (42, 8), (8, 42), (42, 42)):
+        d.rounded_rectangle([s(x), s(y), s(x + 14), s(y + 14)], radius=s(2), fill=(*pal["dark"], 255))
+        for cx in (x + 4, x + 10):
+            for cy in (y + 4, y + 10):
+                d.ellipse([s(cx - 2), s(cy - 2), s(cx + 2), s(cy + 2)], fill=(12, 10, 10, 255))
+    d.ellipse([s(22), s(22), s(42), s(42)], fill=(*pal["base"], 255))
+    d.ellipse([s(28), s(28), s(36), s(36)], fill=(*pal["light"], 255))
+    finish(img, px, f"flak_turret_t1_{faction}")
+
+
 def turret_barrel(faction: str) -> None:
     """The turret's gun, authored pointing up with its pivot at the
     canvas center — the renderer rotates it onto the last victim."""
@@ -1563,6 +1625,29 @@ def bastion_mount(faction: str) -> None:
     finish(img, px, f"bastion_mount_{faction}")
 
 
+def array_t1(faction: str) -> None:
+    """Deep Array hull (tier 1): the mast doubled, a wider dish on guy
+    wires — eyes that reach past every gun in the game."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    d.rounded_rectangle([s(6), s(6), s(58), s(58)], radius=s(7), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle([s(10), s(10), s(54), s(54)], radius=s(5), fill=(*IRON, 255))
+    # Guy wires to the corners: the taller mast needs them.
+    for cx, cy in ((8, 8), (56, 8), (8, 56), (56, 56)):
+        d.line([(s(32), s(32)), (s(cx), s(cy))], fill=(*IRON_LIGHT, 190), width=SS)
+        d.ellipse([s(cx - 2), s(cy - 2), s(cx + 2), s(cy + 2)], fill=(*IRON_DARK, 255))
+    # The wide dish, nearly the whole tile.
+    d.ellipse([s(10), s(8), s(56), s(54)], fill=(*pal["dark"], 255))
+    d.ellipse([s(15), s(13), s(51), s(49)], fill=(*pal["base"], 255))
+    d.ellipse([s(21), s(19), s(45), s(43)], fill=(*pal["dark"], 255))
+    d.ellipse([s(29), s(27), s(37), s(35)], fill=(*pal["light"], 255))
+    # The feed boom.
+    d.line([(s(33), s(31)), (s(48), s(16))], fill=(*IRON_LIGHT, 255), width=s(2))
+    d.ellipse([s(45), s(13), s(51), s(19)], fill=(*BONE, 235))
+    finish(img, px, f"array_t1_{faction}")
+
+
 def array(faction: str, work: int = 0) -> None:
     """1x1 radar mast: a lattice tower under a wide dish — the eyes that
     make long guns matter."""
@@ -1598,6 +1683,31 @@ def array(faction: str, work: int = 0) -> None:
     d.ellipse([s(31), s(29), s(37), s(35)], fill=(*BONE, 255))
     suffix = "" if work == 0 else f"_work{work}"
     finish(img, px, f"array_{faction}{suffix}")
+
+
+def reclaimer_t1(faction: str) -> None:
+    """Refinery hull (tier 1): the grinder grown a cracking stack and a
+    second hopper — the drip become an industry."""
+    px = 64
+    pal = FACTIONS[faction]
+    img, d = canvas(px)
+    d.rounded_rectangle([s(3), s(6), s(61), s(58)], radius=s(7), fill=(*IRON_DARK, 255))
+    d.rounded_rectangle([s(7), s(10), s(57), s(54)], radius=s(5), fill=(*IRON, 255))
+    # Twin intake hoppers.
+    for x in (10, 34):
+        d.polygon([(s(x), s(10)), (s(x + 20), s(10)), (s(x + 15), s(24)), (s(x + 5), s(24))],
+                  fill=(*pal["dark"], 255))
+        d.polygon([(s(x + 3), s(12)), (s(x + 17), s(12)), (s(x + 13), s(20)), (s(x + 7), s(20))],
+                  fill=(12, 10, 10, 255))
+    # The cracking stack: the tier's role feature, leaning industrial.
+    d.rectangle([s(46), s(26), s(56), s(52)], fill=(*IRON_DARK, 255))
+    d.rectangle([s(48), s(28), s(54), s(34)], fill=(*SCRAP_LIGHT, 235))
+    # Main drum.
+    d.ellipse([s(12), s(26), s(42), s(50)], fill=(*pal["base"], 255))
+    d.ellipse([s(22), s(33), s(32), s(43)], fill=(*pal["light"], 255))
+    # Amber-stained chute.
+    d.rectangle([s(20), s(50), s(36), s(56)], fill=(96, 74, 34, 255))
+    finish(img, px, f"reclaimer_t1_{faction}")
 
 
 def reclaimer(faction: str, work: int = 0) -> None:
@@ -3396,6 +3506,11 @@ def generate(output: Path) -> None:
         for work in range(1, 4):
             fabricator(faction, work)
         flak_turret(faction)
+        turret_t1(faction)
+        turret_t2(faction)
+        flak_turret_t1(faction)
+        reclaimer_t1(faction)
+        array_t1(faction)
         flak_mount(faction)
         bastion(faction)
         bastion_mount(faction)
