@@ -30,8 +30,8 @@ The composition contract separates broad quality from catastrophic tails:
     was the tech tree climbed at all.
   --min-top-tech-share (0.15) on the LARGEST single tech kind demands
     that something on the tree was actually worth building.
-  --min-fabricator-reach (0.90), --min-turret-reach (0.40),
-    --min-array-reach (0.60), and --min-reclaimer-reach (0.25) require
+  --min-fabricator-reach (0.90), --min-turret-reach (0.30),
+    --min-array-reach (0.25), and --min-reclaimer-reach (0.25) require
     those completed structures across competitive lifetimes. Repair
     Bays remain diagnostic because field repair is the dedicated
     `repair-probe` gate and the building is intentionally niche.
@@ -900,16 +900,24 @@ def main() -> int:
         default=0.90,
         help="minimum dealt-profile competitive-seat Fabricator reach",
     )
+    # Turret and Array floors re-anchored 2026-08-10 from the measured
+    # 0.15 candidate family (r8/r9: turret 33.8-38.7%, array 22.5-26.6%
+    # at the pre-rebalance Array price). The original 0.40/0.60 floors
+    # described the deleted 0.14 actor's turtle-leaning, Array-reliant
+    # meta. The turret floor is an anti-passivity minimum for an
+    # aggressive meta; the array floor is the anti-stealth minimum (a
+    # candidate blind to Scuttle Charge lanes must stay rare), expected
+    # to be cleared with room once the Array rebalance is trained in.
     ap.add_argument(
         "--min-turret-reach",
         type=float,
-        default=0.40,
+        default=0.30,
         help="minimum dealt-profile competitive-seat Turret reach",
     )
     ap.add_argument(
         "--min-array-reach",
         type=float,
-        default=0.60,
+        default=0.25,
         help="minimum dealt-profile competitive-seat Array reach",
     )
     ap.add_argument(

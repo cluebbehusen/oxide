@@ -616,7 +616,7 @@ fn completed_opening_commitments_do_not_relock_after_losses() {
 fn saved_capital_and_tactical_reconciliation_outrank_profile_openings() {
     let air = facets(0, 800, 0, 0);
     let mut scenario = Scenario::skirmish();
-    scenario.players[0].scrap = 100;
+    scenario.players[0].scrap = 60;
     add_harvesters(&mut scenario, 5);
     add_home_screen(&mut scenario);
     let state = scenario.build().unwrap();

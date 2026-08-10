@@ -1402,13 +1402,19 @@ const BASTION: BuildingStats = BuildingStats {
 };
 
 const ARRAY: BuildingStats = BuildingStats {
+    // 0.15 balance lab: at 120 scrap the mast was dominated by the
+    // 60-scrap scout flyer (mobile, vision 10, identifies what it
+    // sees); candidates trained against the mine-laying yardstick won
+    // 80% while abandoning radar entirely. Priced against the scout's
+    // benchmark the mast sells what the flyer cannot: a permanent
+    // sentry that never needs a pilot's attention.
     max_hp: 250,
     size: (1, 1),
     vision: 9, // the inner ring: true sight
     produces: &[],
     weapons: &[],
     construction: Some(ConstructionStats {
-        cost: 120,
+        cost: 90,
         build_ticks: 300,
         requires: &[],
     }),
@@ -1760,8 +1766,11 @@ pub const WRECK_DECAY_TICKS: u64 = 300;
 
 /// Outer detection ring of the Array, in tiles: hostile units inside it
 /// but out of true sight appear as blips — a tile, no kind, no owner.
-/// Blips never satisfy targeted-attack visibility.
-pub const RADAR_DETECT_RADIUS: i32 = 16;
+/// Blips never satisfy targeted-attack visibility. Widened from 16 in
+/// the 0.15 balance lab so one mast covers a whole approach corridor:
+/// the ring is the product scouts cannot replicate, standing early
+/// warning that outlives any patrol.
+pub const RADAR_DETECT_RADIUS: i32 = 20;
 
 /// Shell flight speed in tiles per tick. A full-range 9.5-tile lob takes
 /// about 32 ticks: path-aware aim catches a straight commitment, while a

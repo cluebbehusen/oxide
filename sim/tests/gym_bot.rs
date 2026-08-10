@@ -77,13 +77,13 @@ fn production_intentions_are_visible_before_affordability() {
 #[test]
 fn construction_plans_reserve_scrap_and_lower_before_production() {
     let mut scenario = Scenario::skirmish();
-    scenario.players[0].scrap = 100;
+    scenario.players[0].scrap = 60;
     let low_state = scenario.build().unwrap();
     let mut gym = GymBot::new(PlayerId(0));
     let decision = gym.decision(&low_state);
     assert!(
         decision.mask[Action::BuildArray as usize],
-        "a feasible build can be selected before its 120-scrap price is banked"
+        "a feasible build can be selected before its 90-scrap price is banked"
     );
     let commands = gym.step_plan(
         &low_state,
@@ -99,7 +99,7 @@ fn construction_plans_reserve_scrap_and_lower_before_production() {
             command.command,
             Command::Build { .. } | Command::Train { .. }
         )),
-        "the saved 100 scrap cannot leak into a cheaper unit"
+        "the saved 60 scrap cannot leak into a cheaper unit"
     );
     let decision = gym.decision(&low_state);
     let feature = |name: &str| {
@@ -110,7 +110,7 @@ fn construction_plans_reserve_scrap_and_lower_before_production() {
         decision.features[index]
     };
     assert_eq!(feature("construction_plan"), 5);
-    assert_eq!(feature("construction_reserve"), 120);
+    assert_eq!(feature("construction_reserve"), 90);
 
     scenario.players[0].scrap = BuildingKind::Array.base_stats().construction.unwrap().cost
         + UnitKind::Harvester.stats().cost;
@@ -210,7 +210,7 @@ fn selected_maintenance_defers_an_affordable_saved_build() {
 #[test]
 fn stale_unfunded_plans_cancel_and_release_the_economy() {
     let mut scenario = Scenario::skirmish();
-    scenario.players[0].scrap = 100;
+    scenario.players[0].scrap = 60;
     let state = scenario.build().unwrap();
     let mut gym = GymBot::new(PlayerId(0));
     gym.step(&state, Action::BuildArray);
@@ -223,7 +223,7 @@ fn stale_unfunded_plans_cancel_and_release_the_economy() {
         decision.features[index]
     };
     assert_eq!(feature(&reserved, "construction_plan"), 5);
-    assert_eq!(feature(&reserved, "construction_reserve"), 120);
+    assert_eq!(feature(&reserved, "construction_reserve"), 90);
 
     let mut value = serde_json::to_value(&state).unwrap();
     value["tick"] = CONSTRUCTION_PLAN_TIMEOUT_TICKS.into();
@@ -250,14 +250,14 @@ fn stale_unfunded_plans_cancel_and_release_the_economy() {
                 ..
             }
         )),
-        "expiry releases the formerly reserved 100 scrap"
+        "expiry releases the formerly reserved 60 scrap"
     );
 }
 
 #[test]
 fn a_saved_construction_plan_cannot_be_kept_young_by_switching_kinds() {
     let mut scenario = Scenario::skirmish();
-    scenario.players[0].scrap = 100;
+    scenario.players[0].scrap = 60;
     let state = scenario.build().unwrap();
     let mut gym = GymBot::new(PlayerId(0));
     gym.step(&state, Action::BuildArray);
@@ -831,7 +831,7 @@ fn strategic_features_price_fog_honest_resources_commitments_and_health() {
         feature("queued_unit_value"),
         i64::from(UnitKind::Sentinel.stats().cost)
     );
-    assert_eq!(feature("construction_site_value"), 120);
+    assert_eq!(feature("construction_site_value"), 90);
     let unit_health = 3 * i64::from(UnitKind::Harvester.stats().cost)
         + i64::from(UnitKind::Sentinel.stats().cost) / 2;
     assert_eq!(feature("my_unit_health_value"), unit_health);

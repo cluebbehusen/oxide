@@ -669,30 +669,31 @@ fn building_a_footprint_over_rock_is_rejected_as_a_bad_site() {
 
 #[test]
 fn radar_detects_at_the_ring_and_goes_quiet_one_tile_beyond() {
-    // The Array's detection ring is 16 tiles, measured in squared distance
-    // from the anchor: a hostile tile at exactly 16 (dx 16, dy 0 -> 256) is
-    // a blip; one tile deeper (dx 16, dy 1 -> 257) is past the ring and
-    // invisible. Two idle enemy harvesters straddle that edge, both far
-    // outside any friendly true sight.
+    // The Array's detection ring is RADAR_DETECT_RADIUS (20) tiles,
+    // measured in squared distance from the anchor: a hostile tile at
+    // exactly 20 (dx 20, dy 0 -> 400) is a blip; one tile deeper (dx 20,
+    // dy 1 -> 401) is past the ring and invisible. Two idle enemy
+    // harvesters straddle that edge, both far outside any friendly true
+    // sight.
     let scenario = Scenario {
         name: "radar-edge".into(),
         seed: 42,
         map: vec![
-            "######################".into(),
-            "#1...................#".into(),
-            "#....................#".into(),
-            "#....................#".into(),
-            "#....................#".into(),
-            "#....................#".into(),
-            "#................2...#".into(),
-            "#....................#".into(),
-            "######################".into(),
+            "############################".into(),
+            "#1.........................#".into(),
+            "#..........................#".into(),
+            "#..........................#".into(),
+            "#..........................#".into(),
+            "#..........................#".into(),
+            "#................2.........#".into(),
+            "#..........................#".into(),
+            "############################".into(),
         ],
         players: players(),
         units: vec![
             unit(0, UnitKind::Harvester, 4, 2),  // builder
-            unit(1, UnitKind::Harvester, 20, 4), // on the ring: dx16 dy0
-            unit(1, UnitKind::Harvester, 20, 5), // one deeper: dx16 dy1
+            unit(1, UnitKind::Harvester, 24, 4), // on the ring: dx20 dy0
+            unit(1, UnitKind::Harvester, 24, 5), // one deeper: dx20 dy1
         ],
         buildings: Vec::new(),
         meta: None,
