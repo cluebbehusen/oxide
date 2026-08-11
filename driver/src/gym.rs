@@ -236,6 +236,10 @@ enum Request {
         /// One action triple per controlled seat, in `control` order.
         actions: Vec<[usize; 4]>,
     },
+    /// Cumulative wall-time counters for this server process: where a
+    /// training rollout's driver-side time actually goes. Diagnostics
+    /// only — wall clocks never touch the simulation.
+    Stats,
     Quit,
 }
 
@@ -291,6 +295,9 @@ struct Episode {
     /// The command log kept for a `record: true` reset — attached to
     /// the terminal reply as full replay JSON.
     recorder: Option<GameReplay>,
+    /// Diagnostics-only wall time spent inside the in-process
+    /// opponents' thinking, a sub-slice of the serve loop's sim time.
+    opponent_ns: u128,
 }
 
 #[derive(Clone, Copy)]
@@ -407,6 +414,7 @@ impl Episode {
             max_ticks,
             effects,
             recorder,
+            opponent_ns: 0,
         })
     }
 
@@ -544,15 +552,19 @@ impl Episode {
             commands
                 .extend(self.gyms[idx].step_plan(&self.state, ActionPlan::from_indices(*action)));
         }
+        let started = std::time::Instant::now();
         for op in self.opponents.iter_mut() {
             commands.extend(op.act(&self.state));
         }
+        self.opponent_ns += started.elapsed().as_nanos();
         self.tick_with_effects(&commands);
         while self.live() && !self.state.current_tick().is_multiple_of(self.cadence()) {
             let mut commands = Vec::new();
+            let started = std::time::Instant::now();
             for op in self.opponents.iter_mut() {
                 commands.extend(op.act(&self.state));
             }
+            self.opponent_ns += started.elapsed().as_nanos();
             self.tick_with_effects(&commands);
         }
         Ok(())
@@ -738,6 +750,7 @@ fn hello() -> serde_json::Value {
         "reset_factions": true,
         "effect_telemetry": true,
         "episode_replay": true,
+        "timing_stats": true,
     })
 }
 
@@ -748,6 +761,20 @@ pub fn serve() -> Result<()> {
     let mut out = stdout.lock();
     writeln!(out, "{}", hello())?;
     out.flush()?;
+
+    // Diagnostics-only wall clocks: where driver-side rollout time
+    // goes. `sim` is state ticking plus the in-process Overseer and
+    // gym executives; `reply` is observation building plus JSON
+    // construction; `write` is the pipe. The simulation itself never
+    // reads a clock.
+    let mut sim_ns: u128 = 0;
+    let mut reply_ns: u128 = 0;
+    let mut write_ns: u128 = 0;
+    let mut reset_ns: u128 = 0;
+    let mut opponent_ns_retired: u128 = 0;
+    let mut ticks: u64 = 0;
+    let mut decisions: u64 = 0;
+    let mut resets: u64 = 0;
 
     let mut episode: Option<Episode> = None;
     for line in stdin.lock().lines() {
@@ -771,28 +798,65 @@ pub fn serve() -> Result<()> {
                     Some(facets) => options.with_profile_facets(facets),
                     None => options,
                 };
+                let started = std::time::Instant::now();
                 match Episode::new(seed, &control, max_ticks, scenario.as_deref(), options) {
                     Ok(mut e) => {
+                        reset_ns += started.elapsed().as_nanos();
+                        resets += 1;
+                        let started = std::time::Instant::now();
                         let reply = e.reply();
-                        episode = Some(e);
+                        reply_ns += started.elapsed().as_nanos();
+                        if let Some(retired) = episode.replace(e) {
+                            opponent_ns_retired += retired.opponent_ns;
+                        }
                         reply
                     }
                     Err(err) => serde_json::json!({ "error": format!("{err:#}") }),
                 }
             }
             Ok(Request::Step { actions }) => match episode.as_mut() {
-                Some(e) if e.live() => match e.step(&actions) {
-                    Ok(()) => e.reply(),
-                    Err(err) => serde_json::json!({ "error": format!("{err:#}") }),
-                },
+                Some(e) if e.live() => {
+                    let before = e.state.current_tick();
+                    let started = std::time::Instant::now();
+                    match e.step(&actions) {
+                        Ok(()) => {
+                            sim_ns += started.elapsed().as_nanos();
+                            ticks += e.state.current_tick() - before;
+                            decisions += 1;
+                            let started = std::time::Instant::now();
+                            let reply = e.reply();
+                            reply_ns += started.elapsed().as_nanos();
+                            reply
+                        }
+                        Err(err) => serde_json::json!({ "error": format!("{err:#}") }),
+                    }
+                }
                 Some(_) => serde_json::json!({ "error": "episode is over; reset first" }),
                 None => serde_json::json!({ "error": "no episode; reset first" }),
             },
+            Ok(Request::Stats) => {
+                let opponent_ns =
+                    opponent_ns_retired + episode.as_ref().map_or(0, |e| e.opponent_ns);
+                serde_json::json!({
+                    "stats": {
+                        "sim_us": (sim_ns / 1_000) as u64,
+                        "opponent_us": (opponent_ns / 1_000) as u64,
+                        "reply_us": (reply_ns / 1_000) as u64,
+                        "write_us": (write_ns / 1_000) as u64,
+                        "reset_us": (reset_ns / 1_000) as u64,
+                        "ticks": ticks,
+                        "decisions": decisions,
+                        "resets": resets,
+                    }
+                })
+            }
             Ok(Request::Quit) => break,
             Err(err) => serde_json::json!({ "error": format!("bad request: {err}") }),
         };
+        let started = std::time::Instant::now();
         writeln!(out, "{reply}")?;
         out.flush()?;
+        write_ns += started.elapsed().as_nanos();
     }
     Ok(())
 }

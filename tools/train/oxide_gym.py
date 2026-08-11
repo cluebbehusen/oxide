@@ -17,6 +17,7 @@ changing the v9 tensor shape.
 import contextlib
 import json
 import subprocess
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -701,6 +702,13 @@ class Worker:
         self._supports_reset_factions = hello.get("reset_factions") is True
         self._supports_effect_telemetry = hello.get("effect_telemetry") is True
         self._supports_episode_replay = hello.get("episode_replay") is True
+        self._supports_timing_stats = hello.get("timing_stats") is True
+        # Client-side wall-time counters, the wire half of the rollout
+        # time split (the driver half arrives via ``timing_stats``).
+        self.time_wait = 0.0
+        self.time_parse = 0.0
+        self.time_send = 0.0
+        self.bytes_received = 0
 
     def named_condition(
         self,
@@ -733,11 +741,18 @@ class Worker:
         before collecting from any turns N blocking round-trips into N
         concurrent simulations. The pipelined loops in league.py exist
         because of this split."""
+        started = time.perf_counter()
         self._stdin.write(json.dumps(request) + "\n")
+        self.time_send += time.perf_counter() - started
 
     def recv(self) -> Frame:
         """Blocks for the reply to the outstanding request."""
-        reply = json.loads(self._stdout.readline())
+        started = time.perf_counter()
+        line = self._stdout.readline()
+        waited = time.perf_counter()
+        self.time_wait += waited - started
+        self.bytes_received += len(line)
+        reply = json.loads(line)
         if "error" in reply:
             raise RuntimeError(reply["error"])
         self.factions = validate_reported_factions(
@@ -763,6 +778,7 @@ class Worker:
             for s in reply.get("seats", []):
                 seat, view = self._seat_view(s)
                 frame.seats[seat] = view
+            self.time_parse += time.perf_counter() - waited
             return frame
         frame = Frame(
             False,
@@ -773,7 +789,31 @@ class Worker:
         for s in reply["seats"]:
             seat, view = self._seat_view(s)
             frame.seats[seat] = view
+        self.time_parse += time.perf_counter() - waited
         return frame
+
+    @property
+    def supports_timing_stats(self) -> bool:
+        """Whether the driver answers the ``stats`` timing request."""
+        return self._supports_timing_stats
+
+    def timing_stats(self) -> dict:
+        """One merged rollout time split: the driver's cumulative
+        wall-time counters plus this client's wire counters. Call it
+        between episodes — the driver is a strict read-compute-reply
+        loop, so the request must not race an outstanding step."""
+        if not self._supports_timing_stats:
+            raise RuntimeError("gym driver does not advertise timing stats")
+        self._stdin.write(json.dumps({"cmd": "stats"}) + "\n")
+        reply = json.loads(self._stdout.readline())
+        if "error" in reply:
+            raise RuntimeError(reply["error"])
+        merged = dict(reply["stats"])
+        merged["client_wait_us"] = int(self.time_wait * 1e6)
+        merged["client_parse_us"] = int(self.time_parse * 1e6)
+        merged["client_send_us"] = int(self.time_send * 1e6)
+        merged["client_bytes_received"] = self.bytes_received
+        return merged
 
     def _seat_view(self, reply: dict) -> tuple[int, SeatView]:
         """Builds one seat row and makes its condition faction honest."""
