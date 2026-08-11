@@ -30,5 +30,11 @@ oxide-kit = { path = "kit" }
 opt-level = 1
 debug = "line-tables-only"
 
+# Release keeps line tables permanently: sampling profilers stay usable
+# without env-toggled rebuilds, and a toggle invalidates the entire
+# release fingerprint set — the artifact churn that inflates target/.
+[profile.release]
+debug = "line-tables-only"
+
 [profile.dev.package."*"]
 opt-level = 3

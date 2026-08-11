@@ -107,13 +107,44 @@ def run_league(
     coefficient = config["production_entropy_coef"]
     if coefficient > 0.0:
         command.extend(["--production-entropy-coef", str(coefficient)])
+    run_dir = pathlib.Path("runs") / name
+    finished = phase_checkpoint(run_dir, updates)
+    if finished is not None:
+        print(f"    reusing completed phase {name}")
+        return finished
+    if run_dir.exists():
+        crashed = run_dir.with_name(f"{run_dir.name}.crashed")
+        suffix = 0
+        while crashed.exists():
+            suffix += 1
+            crashed = run_dir.with_name(f"{run_dir.name}.crashed{suffix}")
+        run_dir.rename(crashed)
+        print(f"    moved partial phase aside: {crashed}")
     with log.open("w") as sink:
         subprocess.run(command, check=True, stdout=sink, stderr=subprocess.STDOUT)
-    pool = pathlib.Path("runs") / name / "pool"
-    checkpoints = sorted(pool.glob("ckpt-*.pt"))
+    checkpoints = sorted((run_dir / "pool").glob("ckpt-*.pt"))
     if not checkpoints:
         raise RuntimeError(f"{name}: league finished without pool checkpoints")
     return checkpoints[-1]
+
+
+def phase_checkpoint(run_dir: pathlib.Path, updates: int) -> pathlib.Path | None:
+    """The final pool checkpoint of an already-completed phase, or None.
+
+    Crash resilience: a relaunched autopilot reuses every member phase
+    that already trained to its target update instead of re-spending
+    the compute. The phase log's last row is the completion witness."""
+    log_path = run_dir / "log.jsonl"
+    checkpoints = sorted((run_dir / "pool").glob("ckpt-*.pt"))
+    if not checkpoints or not log_path.exists():
+        return None
+    try:
+        last = json.loads(log_path.read_text().splitlines()[-1])
+    except ValueError, IndexError:
+        return None
+    if last.get("phase_update") == updates:
+        return checkpoints[-1]
+    return None
 
 
 def run_battery(candidate: pathlib.Path, driver: str, cup_seeds: int) -> dict:
