@@ -1,5 +1,5 @@
 {
-  "sim_version": "0.15.0",
+  "sim_version": "0.15.1",
   "hashes": {
     "basalt-spine": "0xb5762f195129d155",
     "benchwork": "0x1c79492cf78efa47",
@@ -15,7 +15,7 @@
     "gantry-row": "0x54ced97a472a6516",
     "gatework-array": "0xfeb4702d9fb96749",
     "haulage-spiral": "0x3a5035fc486b3638",
-    "open-quarry": "0xd9baa41aca4138b8",
+    "open-quarry": "0xd34bcf0f532951d9",
     "overburden": "0xd20a79f772a21f90",
     "paired-claims": "0xdf371483a06a6463",
     "parallel-works": "0x6aae14c73d8543a8",
@@ -24,13 +24,13 @@
     "salvage-triangle": "0x426d1562c6cf11bd",
     "scramble-basin": "0xcabd047e00a5acdd",
     "severance": "0x720c825a48da26fd",
-    "skirmish": "0xe48305fa04f8e389",
+    "skirmish": "0x8a4c994c62eb6e3f",
     "skyhook-anchorage": "0x1ceb979664053942",
     "subsidence": "0x5a9f9ad2f95eb18b",
     "terminal-basin": "0x2c1476f3a107db1e",
     "the-deep-cut": "0x228ed1146a3b177f",
     "three-shifts": "0x16fc9cc0a33672d6",
     "trident-plateau": "0x777130cdd3d2601d",
-    "twin-forges": "0x3e8ae7b15ed59ab0"
+    "twin-forges": "0xee194a75ccd8437e"
   }
 }

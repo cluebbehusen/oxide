@@ -644,6 +644,57 @@ type SourceScore = (i32, usize, Reverse<u32>, i32, u8, i32, i32);
 /// full path-length by threat-count scan.
 const HARVEST_DANGER_LOOKAHEAD: usize = 8;
 
+/// The near slice of the lookahead that always reacts immediately: a
+/// threat inside the first three route tiles replans this tick, exactly
+/// as it always did. Only a flag beyond this zone — a rumor four to
+/// eight tiles out that a hovering enemy re-raises every tick — defers
+/// to the staggered replan window below.
+const HARVEST_DANGER_REACT_ZONE: usize = 3;
+
+/// A worker whose retained route fails the danger lookahead only in
+/// the FAR zone does not re-plan every tick while the threat lingers —
+/// that thrashed a full multi-candidate A* per worker per tick and
+/// jittered the fleet between near-equal detours. Far-zone replans
+/// stagger on this period, keyed by unit id so a fleet never re-plans
+/// in unison; near-zone threats never wait.
+const HARVEST_REPLAN_PERIOD: u64 = 4;
+
+/// Whether this is the tick on which `id` may re-plan a retained route
+/// the danger lookahead has flagged beyond the react zone.
+fn danger_replan_window(state: &State, id: UnitId) -> bool {
+    (state.tick + u64::from(id.0)) % HARVEST_REPLAN_PERIOD == 0
+}
+
+/// Whether the retained route may be kept this tick: clear routes and
+/// off-window far-zone rumors keep it; near-zone threats and on-window
+/// far-zone flags surrender it for a replan.
+fn keep_flagged_route(
+    state: &State,
+    id: UnitId,
+    path: &PathFollow,
+    safe: impl FnMut(TilePos) -> bool,
+) -> bool {
+    match first_flagged_waypoint(path, safe) {
+        None => true,
+        Some(index) => index >= HARVEST_DANGER_REACT_ZONE && !danger_replan_window(state, id),
+    }
+}
+
+/// Index (relative to the walker's next waypoint) of the first
+/// lookahead tile `safe` rejects, or `None` for a clear near segment.
+/// The scan touches at most [`HARVEST_DANGER_LOOKAHEAD`] tiles however
+/// long the route is.
+fn first_flagged_waypoint(
+    path: &PathFollow,
+    mut safe: impl FnMut(TilePos) -> bool,
+) -> Option<usize> {
+    path.waypoints
+        .iter()
+        .skip(path.next as usize)
+        .take(HARVEST_DANGER_LOOKAHEAD)
+        .position(|waypoint| !safe(*waypoint))
+}
+
 /// Salvage knowledge follows the same freeze-frame rule the shell and
 /// fog-honest bots use: live amounts only on visible ground, remembered
 /// amounts everywhere else.
@@ -764,7 +815,9 @@ fn approach_source(
     let from = unit.tile();
     let keep = unit.path.as_ref().is_some_and(|path| {
         goal_matches(path.goal)
-            && near_route_is_safe(path, |waypoint| danger.route_safe_from(from, waypoint))
+            && keep_flagged_route(state, id, path, |waypoint| {
+                danger.route_safe_from(from, waypoint)
+            })
     });
     if keep {
         return true;
@@ -780,15 +833,6 @@ fn approach_source(
         next: 0,
     });
     true
-}
-
-fn near_route_is_safe(path: &PathFollow, mut safe: impl FnMut(TilePos) -> bool) -> bool {
-    path.waypoints
-        .iter()
-        .skip(path.next as usize)
-        .take(HARVEST_DANGER_LOOKAHEAD)
-        .copied()
-        .all(&mut safe)
 }
 
 /// Honor the source the commander actually named while preferring a route
@@ -810,7 +854,7 @@ fn approach_authoritative_source(
         SourceKind::Scrap => tile_adjacent_to_rect(goal, source.pos, (1, 1)),
     };
     if let Some(path) = unit.path.as_ref().filter(|path| goal_matches(path.goal)) {
-        let near_route_is_clear = near_route_is_safe(path, |waypoint| {
+        let near_route_is_clear = keep_flagged_route(state, id, path, |waypoint| {
             known_ground_passable(state, danger, player, waypoint)
                 && danger.route_safe_from(from, waypoint)
         });
@@ -1015,7 +1059,7 @@ fn approach_safe_rect(
         .path
         .as_ref()
         .filter(|path| tile_adjacent_to_rect(path.goal, anchor, size))
-        && near_route_is_safe(path, |waypoint| {
+        && keep_flagged_route(state, id, path, |waypoint| {
             known_ground_passable(state, danger, player, waypoint)
                 && danger.route_safe_from(from, waypoint)
         })
@@ -1499,10 +1543,13 @@ mod harvest_zone_tests {
             next: 3,
         };
         let checks = Cell::new(0);
-        assert!(near_route_is_safe(&path, |_| {
-            checks.set(checks.get() + 1);
-            true
-        }));
+        assert!(
+            first_flagged_waypoint(&path, |_| {
+                checks.set(checks.get() + 1);
+                true
+            })
+            .is_none()
+        );
         assert_eq!(
             checks.get(),
             HARVEST_DANGER_LOOKAHEAD,
