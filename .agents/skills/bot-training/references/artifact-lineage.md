@@ -4,18 +4,44 @@ Read this file only when migrating, continuing, comparing, or replacing the
 shipped policy. Treat repository code and artifact digests as canonical if this
 snapshot ever disagrees with the live tree.
 
-## Current state: no shipped artifact
+## Current state: the promoted 0.15 actor
 
-The frozen 0.14 actor was deleted with the rest of the legacy bots in the
-0.15 migration, along with its embed (`sim/src/bot/ladder_weights.json`),
-its bot-only masks (per-kind building caps, private two-item queue
-threshold, Fabricator screen gate), the `legacy_surface` bridge flag, and
-`widen.py`'s v8-to-v9 arm. Bot seats are inert until the from-scratch gym-v9
-campaign promotes an actor through the complete native-Q12 battery.
+The shipped artifact (`sim/src/bot/ladder_weights.json`) is the r17
+candidate of the from-scratch gym-v9 campaign, promoted 2026-08-10 on the
+complete native-Q12 battery.
 
-The 0.15 campaign trains from scratch on the parity-clean v9 surface (107
-features, 12 conditions, 43 actions, four heads), bootstrapped by Overseer
-demonstrations — not by any checkpoint below.
+- Contract: gym v9 — 107 named features, 12 named conditions, 43 actions
+  across four policy heads. Parity-clean by construction: the mask encodes
+  shared legality only.
+- Gameplay digest: `320706eb6eb5882e`.
+- Content-addressed training lineage:
+  `sha256:12f69dd13ac584f563c0be16059e9bdf518bd92c12edf3c9613103a21acd05cd`
+  (phase `style-distillation`).
+- Provenance chain: BC prior on the four v9-surface teachers (77,404
+  samples) -> PPO league phases r1-r10 (economy/tree consolidation, Array
+  rebalance, faction-deal rush hardening; peak checkpoint
+  r10-consolidation ckpt-01975) -> r11 production-entropy diversity polish
+  (endpoint ckpt-02035) -> r13 lock-in (ckpt-02075, the trunk) -> r14
+  profile-columns-only style-bonus phase (ckpt-02155) -> r17
+  named-condition teacher distillation into the five profile columns
+  (construction head cloned from the fortify teacher only). The trunk and
+  raw-aggression path are byte-identical to r13-02075, proven by the
+  battery's parent-match gate.
+- Promotion battery (all raw reports under `tools/train/runs/`,
+  experiments under `experiments/2026-08-10-*.md`): neural-cup 90% vs the
+  Overseer over 120 games (54F/54C), faction pairs 90/80/90/80 for
+  ff/cc/fc/cf; rush canary 51% (known residual: the trunk carries
+  profile-specific rush softness — fortress-family personalities lose to
+  the expert all-in while 7/9 personalities hold; shared by every
+  candidate in the family); complete fun gate (rhythm, growth, reach,
+  spam floors, all under expert-execution probes); profile behavior gates
+  (diversity, team-role liveness, style semantics 7/7 on all four
+  signatures); deterministic full-match replay; repair probe 8/8; Level
+  ladder ordered 15/28/36/40 wins on the freshly recalibrated rungs
+  (Easy 900‰/34t, Medium 800‰/48t, Hard 650‰/34t, Expert 0‰/34t).
+
+The campaign trained from scratch on the parity-clean v9 surface,
+bootstrapped by Overseer demonstrations — not by any checkpoint below.
 
 ## Historical lineage (deleted actors, for provenance only)
 

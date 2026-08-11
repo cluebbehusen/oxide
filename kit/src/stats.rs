@@ -235,10 +235,9 @@ mod tests {
     use oxide_sim::Scenario;
 
     /// Plays `scenario` with the Overseer driving every bot seat and
-    /// records the run — the activity fixture bot seats provided before
-    /// they went inert awaiting the retrained actor. `opening` commands
-    /// are injected (and recorded) on the first tick, ahead of the
-    /// bots' own.
+    /// records the run — a scripted, deterministic activity fixture.
+    /// `opening` commands are injected (and recorded) on the first
+    /// tick, ahead of the bots' own.
     fn record_overseer_match(
         scenario: &Scenario,
         ticks: u64,
@@ -283,9 +282,7 @@ mod tests {
     #[test]
     fn a_claimed_billion_ticks_is_an_error_not_a_hang() {
         let mut scenario = Scenario::skirmish();
-        for p in scenario.players.iter_mut() {
-            p.bot = true;
-        }
+        crate::bench::all_bots(&mut scenario);
         let outcome = runner::run_scenario(&scenario, 60, true, true).unwrap();
         let mut replay = outcome.replay.unwrap();
         replay.meta.ticks = Some(1_000_000_000);
@@ -295,9 +292,7 @@ mod tests {
     #[test]
     fn the_final_state_is_always_sampled() {
         let mut scenario = Scenario::skirmish();
-        for p in scenario.players.iter_mut() {
-            p.bot = true;
-        }
+        crate::bench::all_bots(&mut scenario);
         // 100 ticks with stride 41: without the closing sample the last
         // column would sit at tick 82 and closing numbers would be stale.
         let outcome = runner::run_scenario(&scenario, 100, true, true).unwrap();

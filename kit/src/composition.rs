@@ -184,9 +184,9 @@ pub struct MatchComposition {
 /// the honest "what was this army made of" number.
 ///
 /// The Overseer — the scripted QA anchor — plays every `bot`-flagged
-/// seat: bot seats proper are inert until the retrained actor ships,
-/// and this is balance-probe's default sampler, so it must produce
-/// real matches in the meantime.
+/// seat. This is balance-probe's default sampler by design: probing
+/// the fixed scripted commander isolates world and balance movement
+/// from policy movement, which `--weights` measures instead.
 pub fn sample_match(
     scenario: &Scenario,
     max_ticks: u64,

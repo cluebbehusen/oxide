@@ -8,9 +8,10 @@
 //! and hash fixtures like any other command source. The quantized
 //! network is a slightly different player than the float one that
 //! trained (12 fractional bits), so promotion tournaments run against
-//! *this* bot, not the torch checkpoint. No artifact ships embedded
-//! today: the frozen 0.14 ladder is deleted, and the retrained v9
-//! actor loads from a file until promotion embeds it.
+//! *this* bot, not the torch checkpoint. The shipped artifact is the
+//! promoted 0.15 actor embedded as `ladder_weights.json`; see
+//! `.agents/skills/bot-training/references/artifact-lineage.md` for
+//! its provenance and the battery it passed.
 
 use super::gym::{
     ACTION_COUNT, ACTION_HEADS, ActionPlan, Decision, FEATURE_COUNT, GYM_VERSION, GymBot,
@@ -442,6 +443,19 @@ pub struct QuantNet {
 }
 
 impl QuantNet {
+    /// The embedded ladder network (parsed once, shared).
+    ///
+    /// # Panics
+    /// If the embedded artifact doesn't match this build's gym
+    /// contract — a build error surfaced at first use, caught by tests.
+    pub fn ladder() -> &'static QuantNet {
+        static NET: std::sync::OnceLock<QuantNet> = std::sync::OnceLock::new();
+        NET.get_or_init(|| {
+            QuantNet::from_json(include_str!("ladder_weights.json"))
+                .expect("embedded ladder weights match the gym contract")
+        })
+    }
+
     /// Parses an exported artifact, refusing version, shape, or
     /// magnitude drift. The magnitude ceilings are what make the
     /// integer kernel total: see the numeric contract above.
@@ -865,6 +879,25 @@ impl NeuralBot {
             blunder_permille: blunder,
             rng: Pcg32::new(scenario_seed, stream),
         }
+    }
+
+    /// The shipped ladder wrapper for one construction-time named profile.
+    ///
+    /// Unlike the raw-aggression constructors, this carries the resolved
+    /// style, variant, and team-role facets into the learned condition.
+    pub fn ladder_resolved(
+        player: PlayerId,
+        scenario_seed: u64,
+        profile: ResolvedBotProfile,
+        faction: Faction,
+    ) -> Self {
+        Self::ladder_resolved_with_net(
+            player,
+            scenario_seed,
+            profile,
+            faction,
+            QuantNet::ladder().clone(),
+        )
     }
 
     /// Applies one resolved named profile to an arbitrary candidate actor.

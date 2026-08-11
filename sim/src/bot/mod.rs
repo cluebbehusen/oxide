@@ -72,12 +72,29 @@ impl SeatBot {
 
 /// Every bot a scenario asks for, honoring each seat's `bot_config`.
 ///
-/// The legacy actors are deleted and the retrained artifact has not
-/// shipped, so this validates the scenario's bot profiles and then
-/// seats nothing: bot seats are inert until promotion restores the
-/// construction here.
+/// The promoted 0.15 actor is the only commander. A configured bot
+/// seat resolves its named profile and drives the embedded ladder
+/// network; a `bot` seat WITHOUT a config seats no commander at all —
+/// an empty chair, not an error, because scenario JSON is loadable
+/// content and the wizard and every shipped map always write configs.
 pub fn seat_bots(scenario: &crate::Scenario) -> Vec<SeatBot> {
-    resolve_bot_profiles(scenario)
+    let profiles = resolve_bot_profiles(scenario)
         .expect("a scenario's bot profiles validate before its bots are seated");
-    Vec::new()
+    scenario
+        .players
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.bot)
+        .filter_map(|(i, p)| {
+            let player = crate::ids::PlayerId(i as u8);
+            profiles[i].map(|profile| {
+                SeatBot::Neural(Box::new(NeuralBot::ladder_resolved(
+                    player,
+                    scenario.seed,
+                    profile,
+                    p.faction,
+                )))
+            })
+        })
+        .collect()
 }

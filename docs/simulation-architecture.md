@@ -198,8 +198,9 @@ its remaining machines continue as autonomous remnants.
 Bots live outside `State::tick`. A bot reads a state-derived observation and
 emits ordinary `PlayerCommand` values, which the shell or runner records before
 the simulation sees them. Neural seats use the fog-honest observation path and
-deterministic quantized inference; until the gym-v9 retrain promotes an
-artifact, `seat_bots` seats nothing and bot seats are inert. The Overseer
+deterministic quantized inference: `seat_bots` seats the embedded promoted
+artifact (`sim/src/bot/ladder_weights.json`) for every configured bot seat,
+resolved through the seat's named profile and Level handicaps. The Overseer
 (`Brain::overseer`) is the only scripted commander — training and QA
 infrastructure, never player-facing. Read-only playback runs no bot because
 the recorded command stream is already the match.

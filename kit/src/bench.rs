@@ -139,9 +139,9 @@ pub fn engage(state: &mut oxide_sim::State) {
 /// Flags EVERY chair as a configured bot seat. Scenario benches claim
 /// the heaviest honest shape — all seats thinking — but shipped
 /// playable maps author a human seat (`bot: false`) that would
-/// otherwise sit idle. The configs are harness data: bot seats proper
-/// are inert until the retrained actor ships, so a bench pairs this
-/// with [`overseer_bots`] to actually field a mind per chair.
+/// otherwise sit idle. The configs are harness data: a bench pairs
+/// this with [`overseer_bots`] when it wants the fixed scripted
+/// commander rather than the shipped actor's dealt personalities.
 pub fn all_bots(scenario: &mut Scenario) {
     for player in &mut scenario.players {
         player.bot = true;
@@ -156,9 +156,9 @@ pub fn all_bots(scenario: &mut Scenario) {
 }
 
 /// The Overseer — the scripted QA anchor — in every `bot`-flagged
-/// chair, seeded from the scenario. This is the command source benches
-/// and probes drive directly while bot seats stay inert awaiting the
-/// retrained actor.
+/// chair, seeded from the scenario. Benches and probes drive this
+/// command source directly when determinism anchoring or
+/// policy-independent measurement is the point.
 pub fn overseer_bots(scenario: &Scenario) -> Vec<oxide_sim::bot::Brain> {
     scenario
         .players
@@ -188,9 +188,10 @@ mod tests {
                 .all(|p| p.bot && p.bot_config.is_some()),
             "a scenario bench must field a mind in every chair"
         );
-        assert!(
-            oxide_sim::bot::seat_bots(&scenario).is_empty(),
-            "bot seats stay inert until the retrained actor ships"
+        assert_eq!(
+            oxide_sim::bot::seat_bots(&scenario).len(),
+            scenario.players.iter().filter(|p| p.bot).count(),
+            "the shipped actor fields every configured bot seat"
         );
         let mut bots = overseer_bots(&scenario);
         assert_eq!(bots.len(), scenario.players.len());

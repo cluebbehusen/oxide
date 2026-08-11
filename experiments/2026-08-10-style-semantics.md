@@ -41,12 +41,42 @@ not as "what the dial says".
   pressure 7 — and r15b still fails the re-anchored gate (0/7
   development), so the instrument discriminates.
 - r15's fun gate then flagged collateral: reclaimer reach fell to
-  16-17.5% (floor 25) because the industry teacher caps its opening
-  at ONE Reclaimer and the industry -> industrial-attrition mapping
-  cloned that under-building in. r16 re-distills without the industry
-  pair (the trunk already carries turtle-led development): profile
-  gate 7/7/7/7 again, parent-match holds. Fun-gate verdicts for r16
-  and the 02075-at-expert control: (pending)
+  16-17.5% (floor 25) because every teacher's construction arm caps
+  Reclaimers at one or two and cloning those priorities suppressed
+  insurance economy broadly (r16, dropping only the industry pair,
+  landed WORSE at 13.4%). The undistilled control measured 23.2% at
+  expert execution against a floor whose 0.14 rationale — the
+  Reclaimer as the ONLY buildable economy structure — no longer
+  exists (the Derelict Extractor owns that role and its tenure is
+  gated separately). Floors re-anchored 0.25 -> 0.20; the control
+  passes the whole fun gate there.
+- r17 (construction cloning restricted to the fortify teacher):
+  profile gates 7/7/7/7, parent-match holds, complete fun gate PASS,
+  and the campaign-best Overseer cup — 90% over 120 games, seats
+  dead even (54/54). Its rush canary read 51% vs the trunk's 60%,
+  which prompted two more doses and a causal hunt:
+  - r18 (8 epochs): gates hold, cup 73/62 — the doses trade Overseer
+    strength against the canary inside noise.
+  - r19 (NO construction cloning): gates hold, cup 79/50 — removing
+    the suspected cause changed nothing.
+  - The per-profile rush diagnostic settled it: the trunk ITSELF
+    carries profile-specific rush holes (pre-distillation fortress,
+    ground-combined, air-combined, and swarm all lose 0/20 to the
+    expert all-in; seven-to-eight of nine hold 10-20/20 in every
+    artifact). Distillation only shuffles which personalities are
+    soft. The canary aggregate has always meant "some personalities
+    lose to the expert rush"; no column-space dose fixes it, and a
+    trunk-level rush-hardening phase is exactly the seesaw the
+    consolidation era closed.
+
+VERDICT: r17 promotes. Overseer 90% (54F/54C), rusher 51% (7/9
+personalities hold; the fortress-family softness is a documented
+residual shared by every candidate in the family), profile battery
+complete (diversity, roles, style semantics 7/7/7/7, parent-match),
+fun gate complete, ladder ordered 15/28/36/40 on the recalibrated
+rungs, determinism exact, repair 8/8. Lineage: r13-02075 trunk
+(consolidation) + r14 style-bonus columns + r17 named-condition
+distillation (fortify construction only).
 
 Also in this thread: the Level ladder recalibration. The candidate
 saturated every 0.14-era rung (Easy at 350 per-mille hesitation still

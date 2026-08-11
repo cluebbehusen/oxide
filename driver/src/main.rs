@@ -29,8 +29,7 @@ enum Cmd {
         /// Ticks to simulate.
         #[arg(long, default_value_t = 2000)]
         ticks: u64,
-        /// Let scenario-flagged bots play (bot seats are inert until the
-        /// retrained actor ships).
+        /// Let scenario-flagged bots play, driven by the shipped actor.
         #[arg(long)]
         bots: bool,
         /// Record and save a replay here.
@@ -81,8 +80,8 @@ enum Cmd {
         /// Ticks to simulate first.
         #[arg(long, default_value_t = 0)]
         ticks: u64,
-        /// Let scenario-flagged bots play during those ticks (bot seats
-        /// are inert until the retrained actor ships).
+        /// Let scenario-flagged bots play during those ticks, driven by
+        /// the shipped actor.
         #[arg(long)]
         bots: bool,
         /// Output PNG path.

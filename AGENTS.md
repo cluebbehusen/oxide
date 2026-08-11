@@ -273,24 +273,26 @@ pathological, fix shared balance or training rather than concealing it from the
 bot. Difficulty can degrade execution; personality can alter preferences;
 neither changes the strategy surface.
 
-### 0.15 status: no shipped actor yet
+### 0.15 status: the promoted actor ships
 
-The frozen 0.14 actor and every legacy bot — its bot-only masks, the
-scripted difficulty tiers, and the classic rule cascade — are deleted.
-The gym v9 surface is parity-clean by construction: the mask encodes
-shared legality only. Until the from-scratch retrain promotes an
-actor, bot seats are inert (`seat_bots` seats nothing); 0.14.0 on git
-is the playable build. `BotConfig` (level, personality) remains
-authored scenario data the promoted actor will consume.
+The shipped opponent is the r17 artifact of the from-scratch gym-v9
+campaign, embedded at `sim/src/bot/ladder_weights.json` and seated by
+`seat_bots` for every configured bot seat. The gym v9 surface is
+parity-clean by construction: the mask encodes shared legality only.
+`BotConfig` (level, personality) is the authored scenario data it
+consumes; the Level ladder's execution handicaps were re-measured for
+this actor with the `ladder_handicap_sweep` instrument. Provenance,
+battery results, and known residuals live in
+`.agents/skills/bot-training/references/artifact-lineage.md`.
 
-The Overseer (`Brain::overseer`) is the only scripted commander: the
-retrain era's demonstration source, curriculum anchor, and evaluation
-yardstick, and the anchor for liveness, determinism, and hash gates.
-It is training and QA infrastructure only, deliberately unreachable
-from any player-facing surface (no scenario field, no wizard dial, no
-`SeatBot` arm). Keep it that way.
+The Overseer (`Brain::overseer`) remains the only scripted commander:
+demonstration source, curriculum anchor, evaluation yardstick, and the
+anchor for liveness, determinism, and hash gates. It is training and
+QA infrastructure only, deliberately unreachable from any player-facing
+surface (no scenario field, no wizard dial, no `SeatBot` arm). Keep it
+that way.
 
-A candidate actor must pass the complete native-Q12, faction/seat,
+A replacement actor must pass the complete native-Q12, faction/seat,
 composition, profile, liveness, ladder, and determinism battery before
 promotion. Never bless a new actor merely because it runs. See
 `.agents/skills/bot-training/SKILL.md` for the gym contract, training

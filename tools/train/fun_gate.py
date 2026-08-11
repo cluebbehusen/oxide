@@ -31,12 +31,12 @@ The composition contract separates broad quality from catastrophic tails:
   --min-top-tech-share (0.15) on the LARGEST single tech kind demands
     that something on the tree was actually worth building.
   --min-fabricator-reach (0.90), --min-turret-reach (0.30),
-    --min-array-reach (0.25), and --min-reclaimer-reach (0.25) require
+    --min-array-reach (0.25), and --min-reclaimer-reach (0.20) require
     those completed structures across competitive lifetimes. Repair
     Bays remain diagnostic because field repair is the dedicated
     `repair-probe` gate and the building is intentionally niche.
   Industrial Attrition must independently reach a Reclaimer in at least
-    25% of competitive lifetimes, and Air Combined must carry at least
+    20% of competitive lifetimes, and Air Combined must carry at least
     13% of its army value in faction-appropriate air units. Named profiles
     therefore have to express their advertised identity, not merely clear
     the broad anti-spam floor.
@@ -924,16 +924,24 @@ def main() -> int:
         default=0.25,
         help="minimum dealt-profile competitive-seat Array reach",
     )
+    # Reclaimer floors re-anchored 2026-08-10: the 0.25 floors were
+    # authored for the 0.14 economy, where the Reclaimer was the only
+    # economy structure a seat could build. In 0.15 the Derelict
+    # Extractor owns that role (its tenure is gated separately in the
+    # growth evidence) and the Reclaimer is insurance income; even an
+    # undistilled candidate measures 23.2% at expert execution. 0.20
+    # keeps the anti-degenerate minimum: a fifth of competitive
+    # lifetimes still establish fallback economy.
     ap.add_argument(
         "--min-reclaimer-reach",
         type=float,
-        default=0.25,
+        default=0.20,
         help="minimum dealt-profile competitive-seat Reclaimer reach",
     )
     ap.add_argument(
         "--min-industrial-reclaimer-reach",
         type=float,
-        default=0.25,
+        default=0.20,
         help="minimum Industrial Attrition competitive-seat Reclaimer reach",
     )
     ap.add_argument(

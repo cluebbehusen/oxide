@@ -228,9 +228,7 @@ mod tests {
 
     fn recorded_match() -> GameReplay {
         let mut scenario = Scenario::skirmish();
-        for p in scenario.players.iter_mut() {
-            p.bot = true;
-        }
+        crate::bench::all_bots(&mut scenario);
         runner::run_scenario(&scenario, 900, true, true)
             .unwrap()
             .replay

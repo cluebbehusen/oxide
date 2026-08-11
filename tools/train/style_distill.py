@@ -45,16 +45,26 @@ from oxide_gym import (
 )
 
 TEACHER_PROFILES: dict[str, list[tuple[str, int]]] = {
-    # No industry -> turtle/industrial-attrition pair: the industry
-    # teacher caps its opening at one Reclaimer, and cloning that onto
-    # the industrial profile taught it to under-build the economy the
-    # fun gate demands of it. The trunk already carries turtle-led
-    # development; distillation only needs to instill the signatures
-    # PPO washed out — fortress walls and pressure aggression.
+    # No industry -> turtle/industrial-attrition pair: the trunk
+    # already carries turtle-led development; distillation only needs
+    # the signatures PPO washed out — fortress walls and army-style
+    # aggression.
     "fortify": [("turtle", 0)],
     "combined": [("balanced", 0), ("balanced", 1)],
     "pressure": [("aggressive", 0), ("aggressive", 1), ("aggressive", 2)],
 }
+
+# Which strategies may teach the construction head. Empty by
+# measurement: the trunk already expresses contested fortification
+# (turtle out-walls both army styles under Overseer contact) and the
+# gate probes it there, while any construction cloning breaks real
+# behavior — every teacher caps Reclaimers at one or two (reclaimer
+# reach fell 23% -> 13-16% when cloned broadly), and a facet column
+# is state-blind, so cloning the fortify teacher's walls taught the
+# fortress to open turret-first without its screen and lose 0/20 to
+# the expert rush. Only the trained heads carry semantics the trunk
+# lacks: mobile pressure through production and operations.
+CONSTRUCTION_TEACHERS: frozenset[str] = frozenset()
 
 
 def main() -> None:
@@ -84,6 +94,7 @@ def main() -> None:
     obs_all: list[np.ndarray] = []
     mask_all: list[np.ndarray] = []
     act_all: list[tuple[int, int, int, int]] = []
+    construction_ok: list[bool] = []
     wins = 0
     episodes = 0
     try:
@@ -121,6 +132,7 @@ def main() -> None:
                     obs_all.append(observed)
                     mask_all.append(np.asarray(view.mask))
                     act_all.append(plan)
+                    construction_ok.append(strategy in CONSTRUCTION_TEACHERS)
                     frame = worker.step({seat: plan})
                 episodes += 1
                 if frame.reward(seat) > 0:
@@ -149,6 +161,7 @@ def main() -> None:
         for name, parameter in policy.named_parameters()
     }
 
+    construction_allowed = torch.as_tensor(construction_ok)
     n = len(act_all)
     for epoch in range(args.epochs):
         perm = torch.randperm(n)
@@ -158,11 +171,19 @@ def main() -> None:
             logits, _ = policy(obs[mb], mask[mb])
             losses = []
             for head_index, head in enumerate(ACTION_HEADS):
+                rows = mb
+                head_logits = logits
+                if head_index == 1:
+                    keep = construction_allowed[mb]
+                    if not bool(keep.any().item()):
+                        continue
+                    rows = mb[keep]
+                    head_logits = logits[keep]
                 indices = torch.as_tensor(head)
                 losses.append(
                     masked_head_cross_entropy(
-                        logits.index_select(-1, indices),
-                        local_targets[head_index][mb],
+                        head_logits.index_select(-1, indices),
+                        local_targets[head_index][rows],
                         class_weights[head_index],
                         head_index,
                     )

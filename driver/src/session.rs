@@ -84,8 +84,7 @@ impl Session {
         // them *watch* the session back: act() runs against every tick
         // and its outputs are discarded — the recorded commands are the
         // truth. The resumed session then continues exactly as the
-        // unsaved one would have. (Bot seats are inert until the
-        // retrained actor ships, so today this loop drives no one.)
+        // unsaved one would have.
         let mut bots = seat_bots(&scenario);
         let mut cursor = replay.cursor();
         for _ in 0..total {

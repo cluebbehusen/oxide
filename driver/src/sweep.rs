@@ -5,8 +5,8 @@
 //!
 //! Both seats play [`Brain::overseer`], the scripted QA anchor, so any
 //! lean the sweep reports is the map or the engine — the two command
-//! sources are the same commander. Bot seats proper are inert until the
-//! retrained actor ships; this instrument measures the world, not a
+//! sources are the same commander. The shipped neural actor is
+//! deliberately absent: this instrument measures the world, not a
 //! policy.
 
 use anyhow::{Context, Result};
