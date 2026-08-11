@@ -357,10 +357,7 @@ touch gestures, menus, a trained neural opponent with four difficulty
 levels and selectable personalities, save/resume via replays, and the
 agent tooling described above.
 
-Not yet: the neural ladder retrained onto the 0.15 surface (the frozen
-0.14 network remains the shipped opponent and does not yet use the new
-tree; the gym-v9 retrain is in progress), island maps whose only
-routes are air, formations, and the
+Not yet: formations, and the
 mobile ports — macroquad makes iOS/Android plausible, and the desktop
 shell already resolves touch gestures, but no mobile build exists. The
 sim freezes at game end; the pause menu's Restart is the rematch.
