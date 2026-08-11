@@ -2,8 +2,8 @@
 
 use chassis::hash::state_hash;
 use oxide_sim::bot::{
-    Level, NAMED_VARIANT_COUNT, NeuralBot, PROFILE_CONDITION_NAMES, PROFILE_TEAM_ROLES, QuantNet,
-    resolve_bot_profiles,
+    Brain, Level, NAMED_VARIANT_COUNT, NeuralBot, PROFILE_CONDITION_NAMES, PROFILE_TEAM_ROLES,
+    QuantNet, resolve_bot_profiles,
 };
 use oxide_sim::scenario::{BotConfig, NamedStyle, Scenario, TeamRole};
 use oxide_sim::{BuildingKind, Command, Faction, PlayerCommand, PlayerId, UnitKind};
@@ -409,28 +409,45 @@ struct CommandBehavior {
     fortification_builds: usize,
 }
 
-fn command_behavior(
+#[allow(clippy::too_many_arguments)]
+fn command_behavior_in(
     net: &QuantNet,
+    scenario: Scenario,
+    player: PlayerId,
     style: NamedStyle,
     variant: u8,
     role: TeamRole,
     seed: u64,
     ticks: u64,
 ) -> CommandBehavior {
-    command_behavior_in(
-        net,
-        Scenario::skirmish(),
-        PlayerId(1),
-        style,
-        variant,
-        role,
-        seed,
-        ticks,
+    command_behavior_run(
+        net, scenario, player, style, variant, role, seed, ticks, false,
+    )
+}
+
+/// The same trace with the Overseer commanding the opposite seat. The
+/// 0.15 actor's fortification and force are threat-responsive — in an
+/// opponentless vacuum it develops instead of walling, which is correct
+/// play — so the style signatures that only exist under contact are
+/// measured under contact.
+#[allow(clippy::too_many_arguments)]
+fn command_behavior_contested(
+    net: &QuantNet,
+    scenario: Scenario,
+    player: PlayerId,
+    style: NamedStyle,
+    variant: u8,
+    role: TeamRole,
+    seed: u64,
+    ticks: u64,
+) -> CommandBehavior {
+    command_behavior_run(
+        net, scenario, player, style, variant, role, seed, ticks, true,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn command_behavior_in(
+fn command_behavior_run(
     net: &QuantNet,
     mut scenario: Scenario,
     player: PlayerId,
@@ -439,6 +456,7 @@ fn command_behavior_in(
     role: TeamRole,
     seed: u64,
     ticks: u64,
+    contested: bool,
 ) -> CommandBehavior {
     scenario.seed = seed;
     scenario.players[usize::from(player.0)].bot_config = Some(BotConfig {
@@ -458,6 +476,7 @@ fn command_behavior_in(
         scenario.players[usize::from(player.0)].faction,
         net.clone(),
     );
+    let mut opponent = contested.then(|| Brain::overseer(PlayerId(1 - player.0), seed));
     let mut behavior = CommandBehavior::default();
     let mut trace: Vec<(u64, Vec<PlayerCommand>)> = Vec::new();
     for _ in 0..ticks {
@@ -524,7 +543,11 @@ fn command_behavior_in(
                 _ => {}
             }
         }
-        state.tick(&commands);
+        let mut all = commands;
+        if let Some(opponent) = opponent.as_mut() {
+            all.extend(opponent.act(&state));
+        }
+        state.tick(&all);
     }
     behavior.trace_hash = state_hash(&trace);
     behavior
@@ -633,7 +656,12 @@ impl FamilyBehavior {
     }
 }
 
-fn family_behavior_cohort(net: &QuantNet) -> Vec<[FamilyBehavior; NamedStyle::ALL.len()]> {
+fn family_behavior_cohort(
+    net: &QuantNet,
+    ticks: u64,
+    contested: bool,
+    variants: u8,
+) -> Vec<[FamilyBehavior; NamedStyle::ALL.len()]> {
     std::thread::scope(|scope| {
         let handles: Vec<_> = PROFILE_BEHAVIOR_SEEDS
             .into_iter()
@@ -641,14 +669,21 @@ fn family_behavior_cohort(net: &QuantNet) -> Vec<[FamilyBehavior; NamedStyle::AL
                 scope.spawn(move || {
                     NamedStyle::ALL.map(|style| {
                         let mut family = FamilyBehavior::default();
-                        for variant in 0..NAMED_VARIANT_COUNT {
-                            family.add(command_behavior(
+                        for variant in 0..variants {
+                            let probe = if contested {
+                                command_behavior_contested
+                            } else {
+                                command_behavior_in
+                            };
+                            family.add(probe(
                                 net,
+                                Scenario::skirmish(),
+                                PlayerId(1),
                                 style,
                                 variant,
                                 TeamRole::Generalist,
                                 seed,
-                                4_000,
+                                ticks,
                             ));
                         }
                         family
@@ -664,12 +699,27 @@ fn family_behavior_cohort(net: &QuantNet) -> Vec<[FamilyBehavior; NamedStyle::AL
 }
 
 fn assert_style_family_separation(net: &QuantNet) {
-    let first = family_behavior_cohort(net);
-    let second = family_behavior_cohort(net);
+    // Development and mobile pressure are opening-legible: a turtle
+    // out-develops and an aggressive seat out-raids inside the first
+    // 4,000 ticks even with nobody to fight, and every variant carries
+    // the lean, so the opening cohort sums the whole family.
+    // Fortification and force are different on both axes for the 0.15
+    // actor. They are threat-responsive — in an opponentless vacuum
+    // every style correctly develops instead of walling — so they are
+    // measured under Overseer contact across a contested horizon. And
+    // they are flagship-variant identities, not family means: the
+    // curated decks deliberately cross-cut (counterbattery is a siege
+    // turtle, air-combined fields no ground line), so summing variants
+    // cancels exactly the contrast the gate exists to protect. (The
+    // 0.14-era instrument read all four signatures from opponentless
+    // opening family sums; that actor fortified unconditionally.)
+    let first = family_behavior_cohort(net, 4_000, false, NAMED_VARIANT_COUNT);
+    let second = family_behavior_cohort(net, 4_000, false, NAMED_VARIANT_COUNT);
     assert_eq!(
         first, second,
         "style-family command metrics must be deterministic"
     );
+    let contact = family_behavior_cohort(net, 12_000, true, 1);
 
     let mut development = 0;
     let mut fortification = 0;
@@ -681,16 +731,26 @@ fn assert_style_family_separation(net: &QuantNet) {
             turtle.development() > balanced.development()
                 && turtle.development() > aggressive.development(),
         );
-        fortification += usize::from(
-            turtle.fortification_builds > balanced.fortification_builds
-                && balanced.fortification_builds > aggressive.fortification_builds,
-        );
-        force += usize::from(
-            aggressive.fighters > balanced.fighters && balanced.fighters > turtle.fighters,
-        );
         mobile_pressure += usize::from(
             aggressive.mobile_pressure() > balanced.mobile_pressure()
                 && balanced.mobile_pressure() > turtle.mobile_pressure(),
+        );
+    }
+    // Both contact signatures are end-led, the same shape the
+    // development gate has always used: fortification belongs to the
+    // turtle and force belongs to the army styles, while the
+    // balanced-versus-aggressive ordering lives in mobile pressure —
+    // the two army flagships rightly saturate production and neither
+    // walls, so a strict middle rung there measures ties, not
+    // identity.
+    for row in &contact {
+        let [turtle, balanced, aggressive] = row;
+        fortification += usize::from(
+            turtle.fortification_builds > balanced.fortification_builds
+                && turtle.fortification_builds > aggressive.fortification_builds,
+        );
+        force += usize::from(
+            aggressive.fighters > turtle.fighters && balanced.fighters > turtle.fighters,
         );
     }
     let required = PROFILE_PAIR_DIVERGENCE_MIN;

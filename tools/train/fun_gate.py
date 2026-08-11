@@ -763,7 +763,11 @@ def main() -> int:
         default="../../scenarios",
         help="shipped scenario directory",
     )
-    ap.add_argument("--level", default="medium", help="neural difficulty level")
+    # Expert since the 0.15 handicap recalibration: the gate judges the
+    # policy's game quality, and the lower rungs now carry execution
+    # handicaps severe enough (Medium: 800 per-mille hesitation) that a
+    # non-expert probe would measure hesitation noise instead.
+    ap.add_argument("--level", default="expert", help="neural difficulty level")
     ap.add_argument(
         "--max-finish-latency",
         type=int,

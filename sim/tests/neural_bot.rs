@@ -431,6 +431,89 @@ fn yardstick_with_net(level: Level, net: &QuantNet) -> (u32, u64) {
     })
 }
 
+/// The yardstick slate under explicit execution handicaps instead of a
+/// named rung — the recalibration sweep's measuring arm.
+fn yardstick_with_execution(hesitation: u32, cadence: u64, net: &QuantNet) -> (u32, u64) {
+    let mut matches = Vec::new();
+    for aggression in RAW_AGGRESSION_CENTERS {
+        for seed in YARDSTICK_SEEDS {
+            for seat in [0u8, 1] {
+                matches.push((seed, seat, aggression));
+            }
+        }
+    }
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = matches
+            .into_iter()
+            .map(|(seed, seat, aggression)| {
+                let net = net.clone();
+                scope.spawn(move || {
+                    let mut sc = Scenario::skirmish();
+                    sc.seed = seed;
+                    let mut state = sc.build().unwrap();
+                    let faction = sc.players[seat as usize].faction;
+                    let mut bot = NeuralBot::ladder_with_net_at_execution(
+                        PlayerId(seat),
+                        seed,
+                        Some(aggression),
+                        faction,
+                        net,
+                        hesitation,
+                        cadence,
+                    );
+                    let mut opp = Brain::overseer(PlayerId(1 - seat), seed);
+                    let horizon = 40_000u32;
+                    let mut end = u64::from(horizon);
+                    for t in 0..horizon {
+                        let mut commands = bot.act(&state);
+                        commands.extend(opp.act(&state));
+                        state.tick(&commands);
+                        if state.result().is_some() {
+                            end = u64::from(t);
+                            break;
+                        }
+                    }
+                    let won = matches!(state.result(), Some(GameResult::Victory { .. }))
+                        && state.winners().contains(&PlayerId(seat));
+                    if won {
+                        (1u32, end)
+                    } else {
+                        (0u32, u64::from(horizon))
+                    }
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("a sweep match panicked"))
+            .fold((0u32, 0u64), |(w, t), (dw, dt)| (w + dw, t + dt))
+    })
+}
+
+/// Prints the (hesitation, cadence) strength landscape for a candidate
+/// so `Level`'s handicaps can be re-pinned from measurement. Run with
+/// OXIDE_SWEEP_WEIGHTS=/path/to/artifact.json — promotion tooling
+/// does; CI has no weights and skips via ignore.
+#[test]
+#[ignore = "recalibration instrument: set OXIDE_SWEEP_WEIGHTS to an exported artifact"]
+fn ladder_handicap_sweep() {
+    let path = std::env::var("OXIDE_SWEEP_WEIGHTS").expect("set OXIDE_SWEEP_WEIGHTS");
+    let json = std::fs::read_to_string(&path).unwrap();
+    let net = QuantNet::from_json(&json).unwrap();
+    let max = 40u32;
+    println!("\nLADDER HANDICAP SWEEP  ·  skirmish  ·  {max} matches/cell  ·  40k horizon");
+    println!(
+        "{:>12} {:>8} {:>8} {:>12}",
+        "hesitation", "cadence", "wins", "tick total"
+    );
+    for hesitation in [0u32, 200, 350, 500, 650, 800, 900] {
+        for cadence in [34u64, 48, 64, 88, 112] {
+            let (wins, ticks) = yardstick_with_execution(hesitation, cadence, &net);
+            println!("{hesitation:>12} {cadence:>8} {wins:>8} {ticks:>12}");
+        }
+    }
+}
+
 #[test]
 #[ignore = "candidate gate: set OXIDE_LADDER_WEIGHTS to an exported artifact"]
 fn candidate_orders_against_the_overseer_yardstick() {

@@ -125,34 +125,35 @@ impl Level {
     /// profile API's legacy zero sentinel, this is an exact rate: Expert
     /// therefore represents zero hesitation rather than deriving it from
     /// the policy-conditioning skill.
+    ///
+    /// Re-measured for the 0.15 actor with the ladder handicap sweep:
+    /// the retrained policy holds 33-40/40 on the Overseer yardstick
+    /// everywhere below 650 per mille (the 0.14 rungs at 350/190/5 all
+    /// saturated), and its strength falls off a cliff between 800 and
+    /// 900. Hesitation is the ladder's real lever; the rungs sit at
+    /// 15/28/36/40 wins with strictly falling tick totals.
     pub fn hesitation_permille(self) -> u32 {
         match self {
-            Level::Easy => 350,
-            Level::Medium => 190,
-            Level::Hard => 5,
+            Level::Easy => 900,
+            Level::Medium => 800,
+            Level::Hard => 650,
             Level::Expert => 0,
         }
     }
 
     /// How often this level thinks, in ticks — the second execution
-    /// handicap. These exact values were measured for the deleted 0.14
-    /// actor (slower neural mirrors can turtle into an advantage and
-    /// hide an inverted ladder, so gates measured rather than assumed);
-    /// the retrained actor owes its own calibration sweep.
+    /// handicap. Measured for the 0.15 actor: the cadence response
+    /// saturates past 64 ticks (identical slates), and 34 is both the
+    /// strongest and fastest-finishing full-strength point (the 0.14
+    /// actor's 37 is slower without being safer). Medium alone thinks
+    /// at 48 — under its 800-per-mille hesitation the slower clock
+    /// separates it from Hard by 8 wins instead of 3.
     pub fn cadence(self) -> u64 {
         match self {
-            Level::Easy => 56,
-            // Re-metered after ladder policy conditioning was decoupled
-            // from difficulty. At 36, Medium stays strictly between Easy
-            // and Hard on both the pinned two-style yardstick and a
-            // disjoint-seed holdout; 26 collapses that holdout margin.
-            Level::Medium => 36,
-            // Defense placement moved both upper-rung optima. The cadence
-            // response is discontinuous: 34 with Hard's small hesitation and
-            // 37 without it keep the pinned slate, a disjoint holdout, and the
-            // canonical-profile cup ordered without sacrificing decisiveness.
+            Level::Easy => 34,
+            Level::Medium => 48,
             Level::Hard => 34,
-            Level::Expert => 37,
+            Level::Expert => 34,
         }
     }
 }
@@ -1036,6 +1037,35 @@ impl NeuralBot {
             Some(level.hesitation_permille()),
             scenario_seed,
             stream,
+        )
+    }
+
+    /// The raw zero-facet ladder wrapper with both execution handicaps
+    /// explicit. Promotion's handicap-recalibration sweep measures a
+    /// candidate across the (hesitation, cadence) plane under exactly
+    /// the shipped ladder conditioning; [`Level`] then pins the
+    /// measured rungs.
+    pub fn ladder_with_net_at_execution(
+        player: PlayerId,
+        scenario_seed: u64,
+        aggression: Option<u32>,
+        faction: Faction,
+        net: QuantNet,
+        hesitation_permille: u32,
+        cadence: u64,
+    ) -> Self {
+        let aggression = aggression.unwrap_or_else(|| deal_aggression(scenario_seed, player));
+        Self::profile(
+            player,
+            cadence,
+            net,
+            ladder_policy_skill(aggression),
+            aggression,
+            faction,
+            ProfileFacets::ZERO,
+            Some(hesitation_permille),
+            scenario_seed,
+            DECISION_STREAM_BASE + u64::from(player.0),
         )
     }
 
