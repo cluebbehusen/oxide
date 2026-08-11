@@ -1060,13 +1060,26 @@ fn known_rect_route(
     if near > 1 {
         candidates[..near].rotate_left(id.0 as usize % near);
     }
-    candidates.into_iter().find_map(|goal| {
-        danger
-            .find_route(from, goal, |tile| {
-                known_ground_passable(state, danger, player, tile)
-                    && (!avoid_danger || danger.route_safe_from(from, tile))
-            })
-            .map(|waypoints| (goal, waypoints))
+    // The passability predicate is candidate-independent, so one failed
+    // search that exhausted the walkable component has already decided
+    // every remaining doorstep — skipping them returns the identical
+    // None without re-flooding up to the expansion cap per candidate.
+    let mut reachability = None;
+    candidates.iter().enumerate().find_map(|(rank, &goal)| {
+        if reachability
+            .as_ref()
+            .is_some_and(|reachable: &Vec<bool>| !reachable[rank])
+        {
+            return None;
+        }
+        let route = danger.find_route(from, goal, |tile| {
+            known_ground_passable(state, danger, player, tile)
+                && (!avoid_danger || danger.route_safe_from(from, tile))
+        });
+        if route.is_none() && reachability.is_none() {
+            reachability = danger.last_route_reachability(&candidates, false);
+        }
+        route.map(|waypoints| (goal, waypoints))
     })
 }
 

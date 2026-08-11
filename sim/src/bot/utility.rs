@@ -805,7 +805,11 @@ impl UtilityPolicy {
     /// The nearest known enemy building no KNOWN ground road reaches —
     /// the island war's objective — or `None` while every known site
     /// has a walked road. Candidates are tried nearest-first by
-    /// (manhattan, y, x).
+    /// (manhattan, y, x). One flood of home's known-road component
+    /// answers every candidate: per-site reachability from a fixed
+    /// origin is component membership, and the per-site BFS this
+    /// replaces re-walked the same component once per known enemy
+    /// building on any connected map.
     fn island_target(obs: &Observation, home: TilePos) -> Option<TilePos> {
         let mut sites: Vec<(i32, i32, i32)> = obs
             .enemy_buildings
@@ -813,10 +817,56 @@ impl UtilityPolicy {
             .map(|b| (b.anchor.manhattan(home), b.anchor.y, b.anchor.x))
             .collect();
         sites.sort_unstable();
+        if sites.is_empty() {
+            return None;
+        }
+        let (w, h) = (obs.map_width, obs.map_height);
+        let component =
+            Self::ground_component(obs, home, |t| obs.explored(t) && !obs.known_rock_at(t));
+        let footprint_reached = |anchor: TilePos| {
+            component.as_ref().is_some_and(|seen| {
+                (anchor.y..anchor.y + 2).any(|y| {
+                    (anchor.x..anchor.x + 2).any(|x| {
+                        (0..w).contains(&x) && (0..h).contains(&y) && seen[(y * w + x) as usize]
+                    })
+                })
+            })
+        };
         sites
             .into_iter()
             .map(|(_, y, x)| TilePos::new(x, y))
-            .find(|anchor| !Self::ground_route_known(obs, home, *anchor))
+            .find(|anchor| !footprint_reached(*anchor))
+    }
+
+    /// Home's full walkable component under `enter`, as a seen-tile
+    /// grid — the membership form of [`Self::ground_flood`], flooded to
+    /// exhaustion. `None` when the map is degenerate or `home` is out
+    /// of bounds, where the per-target flood reports nothing reachable.
+    fn ground_component(
+        obs: &Observation,
+        home: TilePos,
+        enter: impl Fn(TilePos) -> bool,
+    ) -> Option<Vec<bool>> {
+        let (w, h) = (obs.map_width, obs.map_height);
+        if w <= 0 || h <= 0 || home.x < 0 || home.y < 0 || home.x >= w || home.y >= h {
+            return None;
+        }
+        let idx = |t: TilePos| (t.y * w + t.x) as usize;
+        let in_bounds = |t: TilePos| t.x >= 0 && t.y >= 0 && t.x < w && t.y < h;
+        let mut seen = vec![false; (w * h) as usize];
+        let mut open = std::collections::VecDeque::new();
+        seen[idx(home)] = true;
+        open.push_back(home);
+        while let Some(t) = open.pop_front() {
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let n = t.offset(dx, dy);
+                if in_bounds(n) && !seen[idx(n)] && enter(n) {
+                    seen[idx(n)] = true;
+                    open.push_back(n);
+                }
+            }
+        }
+        Some(seen)
     }
 
     /// A drop point beside the enemy base, from the target side's own

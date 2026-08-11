@@ -322,6 +322,13 @@ pub(crate) struct GroundSalvageDanger {
     height: i32,
     contacts: Vec<TilePos>,
     incidents: Vec<TilePos>,
+    /// Tiles within the incident danger radius of any incident. The
+    /// incident rule depends on the mover's origin, so its verdict
+    /// cannot live in a per-tile cache — but a tile outside every ring
+    /// is safe regardless of origin, and this stamp lets the per-route
+    /// A* skip the incident scan on the overwhelming majority of
+    /// expansions.
+    incident_near: Vec<bool>,
     mobile: Vec<MobileGroundPressure>,
     statics: Vec<StaticGroundPressure>,
     building_blocks: Vec<Vec<(i32, i32)>>,
@@ -409,16 +416,28 @@ impl GroundSalvageDanger {
             merge_spans(row);
         }
         let cell_count = (state.map.width() as usize) * (state.map.height() as usize);
+        let incidents: Vec<TilePos> = vision
+            .salvage_incidents()
+            .iter()
+            .filter(|incident| incident.expires_at > state.tick)
+            .map(|incident| incident.tile)
+            .collect();
+        let (width, height) = (state.map.width(), state.map.height());
+        let mut incident_near = vec![false; cell_count];
+        let radius = crate::stats::HARVEST_INCIDENT_DANGER_RADIUS;
+        for incident in &incidents {
+            for y in (incident.y - radius).max(0)..=(incident.y + radius).min(height - 1) {
+                for x in (incident.x - radius).max(0)..=(incident.x + radius).min(width - 1) {
+                    incident_near[(y * width + x) as usize] = true;
+                }
+            }
+        }
         Self {
-            width: state.map.width(),
-            height: state.map.height(),
+            width,
+            height,
             contacts: vision.contacts().to_vec(),
-            incidents: vision
-                .salvage_incidents()
-                .iter()
-                .filter(|incident| incident.expires_at > state.tick)
-                .map(|incident| incident.tile)
-                .collect(),
+            incidents,
+            incident_near,
             mobile,
             statics,
             building_blocks,
@@ -446,6 +465,10 @@ impl GroundSalvageDanger {
             self.compute_observed_contains(tile)
         }) {
             return false;
+        }
+        let in_bounds = (0..self.width).contains(&tile.x) && (0..self.height).contains(&tile.y);
+        if in_bounds && !self.incident_near[(tile.y * self.width + tile.x) as usize] {
+            return true;
         }
         !self.incidents.iter().any(|incident| {
             let next_distance = incident.chebyshev(tile);
