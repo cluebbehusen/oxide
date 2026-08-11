@@ -636,12 +636,12 @@ pub(super) fn acquire_target(
         .buildings
         .iter()
         .filter(|b| state.hostile(me, b.player) && b.hp > 0)
-        // An undetected buried charge must never be auto-attacked: the
-        // machine would be shooting at something its owner cannot know
-        // exists — the stealth leaking through the guns.
-        .filter(|b| state.building_apparent(me, b))
-        .filter(|b| !needs_shared_sight || b.tiles().any(|tile| state.can_see(me, tile)))
-        .map(|b| (pos.dist_sq(b.closest_point_to(pos)), b.id))
+        .map(|b| (pos.dist_sq(b.closest_point_to(pos)), b))
+        // Range gates run before the knowledge gates: distance is a
+        // clamp and a multiply, while apparency for a buried charge
+        // scans every friendly scout and radar mast — the filters
+        // commute, so the pick is unchanged and the scan only ever
+        // runs for structures actually inside acquisition range.
         .filter(|(d, _)| {
             *d <= aggro_sq
                 && stats.weapons.iter().any(|weapon| {
@@ -649,6 +649,12 @@ pub(super) fn acquire_target(
                         && *d >= weapon.minimum_range * weapon.minimum_range
                 })
         })
+        // An undetected buried charge must never be auto-attacked: the
+        // machine would be shooting at something its owner cannot know
+        // exists — the stealth leaking through the guns.
+        .filter(|(_, b)| state.building_apparent(me, b))
+        .filter(|(_, b)| !needs_shared_sight || b.tiles().any(|tile| state.can_see(me, tile)))
+        .map(|(d, b)| (d, b.id))
         .min()
         .map(|(_, bid)| Target::Building(bid))
 }
