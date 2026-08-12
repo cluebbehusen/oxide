@@ -127,28 +127,30 @@ impl Level {
     /// therefore represents zero hesitation rather than deriving it from
     /// the policy-conditioning skill.
     ///
-    /// Re-measured for the 0.15 actor with the ladder handicap sweep:
-    /// the retrained policy holds 33-40/40 on the Overseer yardstick
-    /// everywhere below 650 per mille (the 0.14 rungs at 350/190/5 all
-    /// saturated), and its strength falls off a cliff between 800 and
-    /// 900. Hesitation is the ladder's real lever; the rungs sit at
-    /// 15/28/36/40 wins with strictly falling tick totals.
+    /// Re-measured for the 0.15.2 actor with the ladder handicap
+    /// sweep: the auto-2 champion holds 39-40/40 on the Overseer
+    /// yardstick everywhere below 650 per mille (the previous actor's
+    /// Hard rung saturated outright), and strength still cliffs
+    /// between 800 and 900. Hesitation stays the ladder's real lever;
+    /// the rungs sit at 16/29/37/40 wins with strictly falling tick
+    /// totals. Hard and Medium now share a hesitation rate and differ
+    /// on the clock below.
     pub fn hesitation_permille(self) -> u32 {
         match self {
             Level::Easy => 900,
             Level::Medium => 800,
-            Level::Hard => 650,
+            Level::Hard => 800,
             Level::Expert => 0,
         }
     }
 
     /// How often this level thinks, in ticks — the second execution
-    /// handicap. Measured for the 0.15 actor: the cadence response
+    /// handicap. Measured for the 0.15 actors: the cadence response
     /// saturates past 64 ticks (identical slates), and 34 is both the
-    /// strongest and fastest-finishing full-strength point (the 0.14
-    /// actor's 37 is slower without being safer). Medium alone thinks
-    /// at 48 — under its 800-per-mille hesitation the slower clock
-    /// separates it from Hard by 8 wins instead of 3.
+    /// strongest and fastest-finishing full-strength point. Medium
+    /// alone thinks at 48 — at the shared 800-per-mille hesitation the
+    /// slower clock is exactly what separates it from Hard (29 wins
+    /// against 37 on the champion's slate).
     pub fn cadence(self) -> u64 {
         match self {
             Level::Easy => 34,
