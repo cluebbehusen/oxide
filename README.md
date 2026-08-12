@@ -123,8 +123,10 @@ condition; the **Fabricator** unlocks everything advanced including
 the air wing; **Turrets** hold ground; **Flak Turrets** hold sky;
 the **Bastion** is artillery in a fortress shell — full reach needs a
 spotter; the **Array** is radar (true sight in close, unidentified
-blips out to its ring); the **Reclaimer** grinds an early long-war scrap
-trickle; the **Repair Bay** is a field
+blips out to its ring) and standing anti-stealth cover, sweeping
+buried charges nearby — the **Deep Array** upgrade sweeps the whole
+ring; the **Reclaimer** grinds an early long-war scrap trickle;
+the **Repair Bay** is a field
 workshop — an unarmed ring that welds your wounded machines, ground
 and air alike, billed per hp from your bank at the same rate a
 harvester's torch charges. After a very long war, every surviving
@@ -341,8 +343,9 @@ with kill-all-Foundries elimination, derelict Extractor frames restored
 for escalating contested income, in-place building upgrades (Heavy
 Turret, Bulwark, Burst Flak, Refinery, Deep Array — each wearing its
 own hull), buried Scuttle Charges as the game's only stealth (detected
-by scouts and Deep Arrays, cleared honestly by saturation fire),
-Barricade walls and Scrap Depot drop-offs, bottomless-pit terrain that
+by scouts and by Array masts on a two-tier ring, cleared honestly by
+saturation fire), Barricade walls and Scrap Depot drop-offs,
+bottomless-pit terrain that
 blocks ground while air passes over, wreck salvage and repair welding,
 team games from 2v2 to 4v4 with shared sight plus the first shipped
 free-for-alls (3-, 5-, and 6-way on a measured-fairness gate class),

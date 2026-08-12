@@ -126,7 +126,7 @@ pub enum BuildingKind {
     /// production, sight, or victory weight.
     ScrapDepot,
     /// A buried demolition charge — the game's only stealth. Invisible
-    /// to enemies until a scout flies close or a Deep Array's ring
+    /// to enemies until a scout flies close or an Array's detection ring
     /// covers it; detonates under hostile ground machines.
     ScuttleCharge,
 }
@@ -1832,8 +1832,23 @@ pub const CHARGE_BLAST_RADIUS: Fx = Fx::lit("1.5");
 /// its team.
 pub const CHARGE_SCOUT_DETECT_RADIUS: i32 = 4;
 
+/// A built base-tier Array reveals buried charges inside this closer
+/// ring (euclidean, like radar contacts). Detection is two-tiered: the
+/// base mast is fixed anti-stealth infrastructure covering the ground it
+/// stands on, the Deep Array upgrade buys the wide ring below, and scout
+/// flyers remain the mobile channel that goes where no mast stands.
+///
+/// Priced in 0.15.2 by the same razor that repriced the mast itself: the
+/// 0.15.1 harvester replan stagger cut how much a blip is worth to a
+/// working economy, and fine-tuned policies answered by shedding arrays
+/// monotonically — a seeded recovery run drove reach down rather than
+/// back up. Standing detection is the mast's one product the stagger
+/// cannot touch, so it carries more of the building's worth.
+pub const CHARGE_BASE_ARRAY_DETECT_RADIUS: i32 = 12;
+
 /// A built Deep Array (Array tier 1) reveals buried charges anywhere
-/// inside its radar ring (euclidean, like radar contacts).
+/// inside its radar ring (euclidean, like radar contacts) — the wide
+/// ring the upgrade pays for, over the base mast's close one.
 pub const CHARGE_ARRAY_DETECT_RADIUS: i32 = 22;
 
 /// A Sapper reaching contact with its ordered target detonates: this

@@ -1189,7 +1189,11 @@ impl State {
     /// enemy [`BuildingKind::is_stealthy`] charge, which must be
     /// actively detected: an allied scout-role flyer within
     /// [`crate::stats::CHARGE_SCOUT_DETECT_RADIUS`] tiles, or an allied
-    /// built Deep Array (Array tier 1+) whose radar ring covers it.
+    /// built Array whose detection ring covers it —
+    /// [`crate::stats::CHARGE_BASE_ARRAY_DETECT_RADIUS`] at base tier,
+    /// widening to [`crate::stats::CHARGE_ARRAY_DETECT_RADIUS`] once the
+    /// mast is upgraded to a Deep Array (tier 1+). A mast still under
+    /// construction sees nothing.
     /// Every fog-honest surface — ghosts, targeting, views, rendering —
     /// must consult this before showing a hostile building.
     pub fn building_apparent(&self, viewer: PlayerId, building: &Building) -> bool {
@@ -1207,14 +1211,15 @@ impl State {
         if scouted {
             return true;
         }
-        let r = crate::stats::CHARGE_ARRAY_DETECT_RADIUS;
+        let deep_r = crate::stats::CHARGE_ARRAY_DETECT_RADIUS;
+        let base_r = crate::stats::CHARGE_BASE_ARRAY_DETECT_RADIUS;
         self.buildings.iter().any(|b| {
             b.hp > 0
                 && b.built
-                && b.tier >= 1
                 && b.kind == BuildingKind::Array
                 && !self.hostile(viewer, b.player)
                 && {
+                    let r = if b.tier >= 1 { deep_r } else { base_r };
                     let (dx, dy) = (anchor.x - b.anchor.x, anchor.y - b.anchor.y);
                     dx * dx + dy * dy <= r * r
                 }

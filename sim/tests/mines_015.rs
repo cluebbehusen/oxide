@@ -5,8 +5,10 @@
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
-use oxide_sim::stats::BuildingKind;
-use oxide_sim::{Command, Event, Faction, PlayerCommand, PlayerId, Scenario, Target, UnitKind};
+use oxide_sim::stats::{BuildingKind, CHARGE_ARRAY_DETECT_RADIUS, CHARGE_BASE_ARRAY_DETECT_RADIUS};
+use oxide_sim::{
+    Command, Event, Faction, PlayerCommand, PlayerId, Scenario, State, Target, UnitKind,
+};
 
 fn players(scrap: u32) -> Vec<PlayerSpec> {
     vec![
@@ -53,6 +55,25 @@ fn open_map() -> Vec<String> {
         "#...................2..#".into(),
         "#......................#".into(),
         "########################".into(),
+    ]
+}
+
+/// A 40x12 floor: both detection rings — the base mast's 12 and the Deep
+/// Array's 22 — fit end to end along row 4, clear of either Foundry.
+fn radar_map() -> Vec<String> {
+    vec![
+        "########################################".into(),
+        "#1.....................................#".into(),
+        "#......................................#".into(),
+        "#......................................#".into(),
+        "#......................................#".into(),
+        "#......................................#".into(),
+        "#......................................#".into(),
+        "#......................................#".into(),
+        "#......................................#".into(),
+        "#...................................2..#".into(),
+        "#......................................#".into(),
+        "########################################".into(),
     ]
 }
 
@@ -161,6 +182,197 @@ fn a_charge_is_invisible_until_scouted() {
         "a detected mine is a legal target: {:?}",
         report.events
     );
+}
+
+/// Whether seat `viewer` is allowed to know about the building anchored
+/// here — the one stealth authority, asked directly.
+fn apparent(state: &State, viewer: u8, anchor: TilePos) -> bool {
+    let building = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == anchor)
+        .expect("a building stands on that anchor");
+    state.building_apparent(PlayerId(viewer), building)
+}
+
+/// The charge anchors seat `viewer` actually remembers.
+fn charge_ghosts(state: &State, viewer: u8) -> Vec<TilePos> {
+    state
+        .vision(PlayerId(viewer))
+        .ghosts()
+        .iter()
+        .filter(|g| g.kind == BuildingKind::ScuttleCharge)
+        .map(|g| g.anchor)
+        .collect()
+}
+
+#[test]
+fn the_base_mast_sweeps_its_own_ring_for_charges() {
+    // A standing mast is anti-stealth infrastructure at close range: one
+    // charge exactly on the base ring, one a tile past it, and an unarmed
+    // spotter holding plain sight of both tiles. The mast's own sight of
+    // 9 reaches neither, so detection is doing all the work.
+    let mast = TilePos::new(5, 4);
+    let inside = TilePos::new(mast.x + CHARGE_BASE_ARRAY_DETECT_RADIUS, mast.y);
+    let outside = TilePos::new(inside.x + 1, mast.y);
+    let mut state = arena(
+        radar_map(),
+        vec![unit(0, UnitKind::Harvester, outside.x + 2, mast.y)],
+        vec![
+            building(0, BuildingKind::Array, mast.x, mast.y),
+            building(1, BuildingKind::ScuttleCharge, inside.x, inside.y),
+            building(1, BuildingKind::ScuttleCharge, outside.x, outside.y),
+        ],
+    )
+    .build()
+    .unwrap();
+    state.tick(&[]);
+    assert!(
+        apparent(&state, 0, inside),
+        "the base ring reaches exactly {CHARGE_BASE_ARRAY_DETECT_RADIUS} tiles"
+    );
+    assert!(
+        !apparent(&state, 0, outside),
+        "and stops one tile past it, sight of the ground notwithstanding"
+    );
+    assert_eq!(
+        charge_ghosts(&state, 0),
+        vec![inside],
+        "only the detected mine becomes honest knowledge"
+    );
+}
+
+#[test]
+fn a_mast_under_construction_detects_nothing() {
+    // A pile of parts has no sensors — the same rule that keeps sites
+    // out of the vision pass.
+    let mast = TilePos::new(5, 4);
+    let charge = TilePos::new(mast.x + CHARGE_BASE_ARRAY_DETECT_RADIUS, mast.y);
+    let mut state = arena(
+        radar_map(),
+        vec![
+            unit(0, UnitKind::Harvester, 3, 8),
+            unit(0, UnitKind::Harvester, charge.x + 3, mast.y),
+        ],
+        vec![building(1, BuildingKind::ScuttleCharge, charge.x, charge.y)],
+    )
+    .build()
+    .unwrap();
+    let builder = state.units()[0].id;
+    state.tick(&[cmd(
+        0,
+        Command::Build {
+            units: vec![builder],
+            kind: BuildingKind::Array,
+            anchor: mast,
+            queue: false,
+            defer: false,
+        },
+    )]);
+    assert!(
+        state
+            .buildings()
+            .iter()
+            .any(|b| b.anchor == mast && !b.built),
+        "the site is claimed at once, unfinished"
+    );
+    assert!(
+        !apparent(&state, 0, charge),
+        "an unfinished mast sweeps nothing"
+    );
+    assert!(charge_ghosts(&state, 0).is_empty());
+
+    for _ in 0..1_200 {
+        state.tick(&[]);
+        if state
+            .buildings()
+            .iter()
+            .any(|b| b.anchor == mast && b.built)
+        {
+            break;
+        }
+    }
+    assert!(
+        state
+            .buildings()
+            .iter()
+            .any(|b| b.anchor == mast && b.built),
+        "the mast never finished"
+    );
+    assert!(
+        apparent(&state, 0, charge),
+        "and the finished mast sweeps the very ground its site could not"
+    );
+}
+
+#[test]
+fn the_deep_array_upgrade_buys_the_wide_ring() {
+    // The upgrade's product is reach: the same mine, unchanged, sits
+    // past the base ring and inside the deep one.
+    let mast = TilePos::new(5, 4);
+    let far = TilePos::new(mast.x + CHARGE_ARRAY_DETECT_RADIUS, mast.y);
+    let mut state = arena(
+        radar_map(),
+        vec![
+            unit(0, UnitKind::Harvester, 6, 6),
+            unit(0, UnitKind::Harvester, far.x + 2, mast.y),
+        ],
+        vec![
+            building(0, BuildingKind::Array, mast.x, mast.y),
+            building(0, BuildingKind::Fabricator, 2, 7),
+            building(1, BuildingKind::ScuttleCharge, far.x, far.y),
+        ],
+    )
+    .build()
+    .unwrap();
+    let builder = state.units()[0].id;
+    let mast_id = state
+        .buildings()
+        .iter()
+        .find(|b| b.anchor == mast)
+        .expect("the mast stands")
+        .id;
+    state.tick(&[]);
+    assert!(
+        !apparent(&state, 0, far),
+        "{CHARGE_ARRAY_DETECT_RADIUS} tiles is past the base mast's reach"
+    );
+
+    state.tick(&[cmd(
+        0,
+        Command::UpgradeBuilding {
+            units: vec![builder],
+            building: mast_id,
+            queue: false,
+        },
+    )]);
+    {
+        let b = state
+            .building(mast_id)
+            .expect("the works survives its own site");
+        assert_eq!((b.built, b.tier), (false, 1), "offline as a tier-1 site");
+    }
+    assert!(
+        !apparent(&state, 0, far),
+        "a works taken offline detects nothing at either tier"
+    );
+
+    for _ in 0..2_000 {
+        state.tick(&[]);
+        if state.building(mast_id).is_some_and(|b| b.built) {
+            break;
+        }
+    }
+    let b = state.building(mast_id).expect("the mast survives");
+    assert!(
+        b.built && b.tier == 1,
+        "the mast stood back up as a Deep Array"
+    );
+    assert!(
+        apparent(&state, 0, far),
+        "the deep ring covers ground the base mast never could"
+    );
+    assert_eq!(charge_ghosts(&state, 0), vec![far]);
 }
 
 #[test]
