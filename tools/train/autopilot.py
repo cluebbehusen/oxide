@@ -257,6 +257,7 @@ def main() -> None:
         config = SEED_CONFIG if index == 0 else perturb(SEED_CONFIG, rng)
         members.append({"config": config, "ckpt": args.initialize_from})
 
+    best_overall = None
     for generation in range(args.generations):
         results = []
         for index, member in enumerate(members):
@@ -290,6 +291,11 @@ def main() -> None:
             )
 
         ranked = sorted(results, key=lambda row: fitness(row["scores"]), reverse=True)
+        leader = ranked[0]
+        if best_overall is None or fitness(leader["scores"]) > fitness(
+            best_overall[1]["scores"]
+        ):
+            best_overall = (generation, leader)
         with journal.open("a") as sink:
             sink.write(json.dumps({"generation": generation, "ranked": ranked}) + "\n")
         print(f"=== generation {generation} ranking:")
@@ -308,12 +314,18 @@ def main() -> None:
                 {"config": perturb(parent["config"], rng), "ckpt": parent["ckpt"]}
             )
 
-    best = ranked[0]
+    # The final generation is not necessarily the best one — auto-1
+    # measured a dose curve whose last generation was its worst. The
+    # campaign product is the best candidate across ALL generations.
+    best_generation, best = best_overall or (0, ranked[0])
     print("=== autopilot complete")
     best_scores = best["scores"]
-    print(f"best: {best_scores.get('candidate')} · fitness {fitness(best_scores)}")
+    print(
+        f"best: generation {best_generation} · "
+        f"{best_scores.get('candidate')} · fitness {fitness(best_scores)}"
+    )
     print(f"journal: {journal}")
-    if not best["scores"].get("fun_gate_pass"):
+    if not best_scores.get("fun_gate_pass"):
         print(
             "NOTE: no candidate passed the fun gate — "
             "review WARN lines before continuing"
