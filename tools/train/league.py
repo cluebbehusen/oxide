@@ -67,8 +67,8 @@ from mapgen import generate as _generate
 from models import (
     checkpoint_critic_ready,
     factorized_greedy,
-    factorized_joint_log_prob,
     factorized_sample,
+    factorized_sample_with_log_prob,
     load_policy,
     make_policy,
     save_policy,
@@ -283,6 +283,15 @@ class ProfileCurriculum:
 # Per-update phase clocks, drained into every log entry — optimization
 # without a stable meter is guessing. Keys: env_sec (worker RPC),
 # policy_sec (learner forward passes), mapgen_sec, reset_sec, resets.
+#
+# The collector's own Python is metered at the same grain, because the
+# worker RPC clock hides it: a driver that answers instantly still bills
+# its reply's decode to env_sec. wire_wait_sec / wire_parse_sec /
+# wire_send_sec decompose env_sec into the blocking read, the reply
+# decode (JSON plus the numpy seat views), and the request write;
+# obs_sec, lane_sec, act_sec, opp_sec, and frame_sec meter the rollout
+# loop's own stacking, trajectory appends, action assembly, opponent
+# minds, and per-frame bookkeeping.
 TEL: Counter = Counter()
 
 
@@ -1233,6 +1242,29 @@ class Lane:
         self.last_pot = 0.0
 
 
+# Pool checkpoints are written once and never rewritten, so one frozen
+# copy per path serves every past lane that draws it: repeated draws skip
+# the load, and lanes holding the same draw share one opponent forward.
+# The bound keeps a long campaign's growing pool from pinning every
+# checkpoint it ever wrote in memory.
+POOL_POLICY_CACHE_SIZE = 16
+_POOL_POLICIES: dict[tuple[str, str], nn.Module] = {}
+
+
+def load_pool_policy(path: str, device: str) -> nn.Module:
+    """Returns the shared frozen policy for one pool checkpoint."""
+    key = (path, device)
+    cached = _POOL_POLICIES.get(key)
+    if cached is not None:
+        return cached
+    policy, _blob = load_policy(path, device)
+    policy.eval()
+    while len(_POOL_POLICIES) >= POOL_POLICY_CACHE_SIZE:
+        _POOL_POLICIES.pop(next(iter(_POOL_POLICIES)))
+    _POOL_POLICIES[key] = policy
+    return policy
+
+
 class Job:
     """One worker's permanent role. Roles are fixed for the run — the
     lane geometry must never change, because episodes span many rollouts
@@ -1513,9 +1545,7 @@ class Job:
             pool = sorted(self.pool_dir.glob("ckpt-*.pt"))
             if pool:
                 pick = pool[int(self.rng.integers(len(pool)))]
-                past, _ = load_policy(str(pick), self.device)
-                past.eval()
-                self.past = past
+                self.past = load_pool_policy(str(pick), self.device)
             else:
                 self.past = None  # empty pool: play the rusher instead
         all_conds = dict(self.conditions)
@@ -1555,28 +1585,84 @@ class Job:
             if seat in corrected:
                 self.conditions[seat] = corrected[seat]
 
-    def opponent_action(self, policy_device: str) -> dict[int, ActionPlan]:
-        """Actions for locally-driven seats (empty for worker-driven roles)."""
+    def opponent_policy(self) -> nn.Module | None:
+        """The frozen network driving this job's opponent seat, if any.
+
+        ``None`` covers every seat the collector answers without torch:
+        worker-driven roles, the scripted rush teacher, and a past lane
+        that drew an empty pool and fell back to the rusher.
+        """
+        if self.opp_seat is None or self.kind == "rusher":
+            return None
+        return self.past
+
+    def scripted_opponent_action(self) -> dict[int, ActionPlan]:
+        """The rush teacher's plan for a locally-driven opponent seat."""
         if self.opp_seat is None:
             return {}
         view = self.view.seats[self.opp_seat]
-        if self.kind == "rusher" or self.past is None:
-            return {self.opp_seat: rusher(view.raw, view.mask, self.view.tick)}
-        policy, device = self.past, policy_device
+        return {self.opp_seat: rusher(view.raw, view.mask, self.view.tick)}
+
+    def opponent_view(self) -> SeatView:
+        """The locally-driven opponent seat's live observation."""
+        if self.opp_seat is None:
+            raise RuntimeError("job has no locally-driven opponent seat")
+        return self.view.seats[self.opp_seat]
+
+    def opponent_action(self, policy_device: str) -> dict[int, ActionPlan]:
+        """Actions for locally-driven seats (empty for worker-driven roles)."""
+        return opponent_actions([self], policy_device)[0]
+
+
+def opponent_actions(jobs: list[Job], device: str) -> list[dict[int, ActionPlan]]:
+    """One opponent-action dict per job, batched by policy identity.
+
+    Jobs whose opponent seat runs the same frozen policy object share a
+    single forward — a pool checkpoint loads once per path, so every past
+    lane holding that draw joins one batch. Scripted opponents never
+    touch torch. Grouping is keyed by object identity but visited in job
+    order, so both the batch's row order and the group order stay
+    deterministic.
+
+    Batching moves how many rows one ``factorized_sample`` draws at a
+    time, so the torch random stream is consumed in a different order
+    than the old per-job forwards consumed it: league runs from before
+    this change do not reproduce decision for decision. The per-seat
+    sampling distribution is unchanged, so this is a lineage boundary
+    between campaigns rather than a change of opponent behavior.
+    """
+    plans: list[dict[int, ActionPlan]] = [{} for _ in jobs]
+    groups: dict[int, tuple[nn.Module, list[int]]] = {}
+    for index, job in enumerate(jobs):
+        policy = job.opponent_policy()
+        if policy is None:
+            plans[index] = job.scripted_opponent_action()
+            continue
+        groups.setdefault(id(policy), (policy, []))[1].append(index)
+    for policy, members in groups.values():
+        views = [jobs[index].opponent_view() for index in members]
+        obs = np.stack([view.obs for view in views])
+        mask = np.stack([view.mask for view in views])
         with torch.no_grad():
             logits, _ = policy(
-                torch.as_tensor(view.obs[None], device=device),
-                torch.as_tensor(view.mask[None], device=device),
+                torch.as_tensor(obs, device=device),
+                torch.as_tensor(mask, device=device),
             )
-            plan = factorized_sample(logits)[0].cpu()
-        return {
-            self.opp_seat: (
-                int(plan[0]),
-                int(plan[1]),
-                int(plan[2]),
-                int(plan[3]),
-            )
-        }
+            sampled = factorized_sample(logits).cpu()
+        for row, index in enumerate(members):
+            seat = jobs[index].opp_seat
+            if seat is None:
+                raise RuntimeError("a learned opponent job lost its opponent seat")
+            plan = sampled[row]
+            plans[index] = {
+                seat: (
+                    int(plan[0]),
+                    int(plan[1]),
+                    int(plan[2]),
+                    int(plan[3]),
+                )
+            }
+    return plans
 
 
 def learner_lanes_for_kind(kind: str) -> int:
@@ -1763,6 +1849,23 @@ def validate_profile_column_mode(
         raise ValueError("--profile-columns-only requires checkpoint initialization")
 
 
+def wire_clocks(jobs: list[Job]) -> tuple[float, float, float]:
+    """Summed client-side wire clocks over each job's distinct worker.
+
+    The workers are stepped one at a time from this process, so summing
+    their counters stays comparable with the rollout's own wall clock.
+    Scripted test doubles carry no counters and read as zero.
+    """
+    workers: dict[int, Worker] = {}
+    for job in jobs:
+        workers.setdefault(id(job.worker), job.worker)
+    return (
+        sum(getattr(worker, "time_wait", 0.0) for worker in workers.values()),
+        sum(getattr(worker, "time_parse", 0.0) for worker in workers.values()),
+        sum(getattr(worker, "time_send", 0.0) for worker in workers.values()),
+    )
+
+
 def rollout(
     policy: nn.Module,
     jobs: list[Job],
@@ -1796,40 +1899,44 @@ def rollout(
 
     active = {id(job) for job in jobs}
     limit = steps if collection == "windows" else episode_max_steps
+    wire_started = wire_clocks(jobs)
     for _ in range(limit):
         if collection == "episodes" and not active:
             break
         step_jobs = [job for job in jobs if id(job) in active]
-        views = []
-        keys = []
-        live = []
-        for j in step_jobs:
-            for s in j.learner_seats:
-                v = j.seat_view(s)
-                views.append(v)
-                keys.append((id(j), s))
-                live.append(s not in j.dead)
-        obs = np.stack([v.obs for v in views])
-        mask = np.stack([v.mask for v in views])
+        with timed("obs_sec"):
+            views = []
+            keys = []
+            live = []
+            for j in step_jobs:
+                for s in j.learner_seats:
+                    v = j.seat_view(s)
+                    views.append(v)
+                    keys.append((id(j), s))
+                    live.append(s not in j.dead)
+            obs = np.stack([v.obs for v in views])
+            mask = np.stack([v.mask for v in views])
         with timed("policy_sec"), torch.no_grad():
             logits, value = policy(
                 torch.as_tensor(obs, device=device),
                 torch.as_tensor(mask, device=device),
             )
-            action = factorized_sample(logits)
-            logp = factorized_joint_log_prob(logits, action).cpu().numpy()
+            # One distribution build serves both the draw and its score.
+            action, logp_t = factorized_sample_with_log_prob(logits)
+            logp = logp_t.cpu().numpy()
         logits_np = logits.cpu().numpy()
         action = action.cpu().numpy()
         value = value.cpu().numpy()
 
-        for k, key in enumerate(keys):
-            lane = lanes[key]
-            lane.obs.append(obs[k])
-            lane.mask.append(mask[k])
-            lane.act.append(action[k])
-            lane.logp.append(logp[k])
-            lane.val.append(value[k])
-            lane.valid.append(live[k])
+        with timed("lane_sec"):
+            for k, key in enumerate(keys):
+                lane = lanes[key]
+                lane.obs.append(obs[k])
+                lane.mask.append(mask[k])
+                lane.act.append(action[k])
+                lane.logp.append(logp[k])
+                lane.val.append(value[k])
+                lane.valid.append(live[k])
 
         row = {key: k for k, key in enumerate(keys)}
         # Pipelined env step: every job's actions — opponent minds
@@ -1839,37 +1946,40 @@ def rollout(
         # concurrently instead of one at a time; the batch is
         # bit-identical to the serial loop because nothing about a
         # job's step depends on another job's reply.
+        with timed("opp_sec"):
+            opponent_plans = opponent_actions(step_jobs, device)
         all_acts = []
-        for j in step_jobs:
+        for j, opponent_plan in zip(step_jobs, opponent_plans, strict=True):
             acts = {}
-            for s in j.learner_seats:
-                if s in j.dead:
-                    continue  # a frozen lane sends nothing to the sim
-                k = row[(id(j), s)]
-                intended: ActionPlan = (
-                    int(action[k, 0]),
-                    int(action[k, 1]),
-                    int(action[k, 2]),
-                    int(action[k, 3]),
-                )
-                acts[s] = maybe_blunder(
-                    intended,
-                    logits_np[k],
-                    mask[k],
-                    j.episode_dials[s].execution.hesitation_permille,
-                    j.rng,
-                )
-                if acts[s][1] == SALVAGE_ACTION:
-                    TEL["salvage_action_samples"] += 1
-                elif acts[s][1] == BUILD_TURRET_ACTION:
-                    TEL["turret_action_samples"] += 1
-                elif acts[s][1] == BUILD_ARRAY_ACTION:
-                    TEL["array_action_samples"] += 1
-                elif acts[s][1] == REPAIR_ACTION:
-                    TEL["repair_action_samples"] += 1
-                elif acts[s][1] == BUILD_BAY_ACTION:
-                    TEL["bay_action_samples"] += 1
-            acts.update(j.opponent_action(device))
+            with timed("act_sec"):
+                for s in j.learner_seats:
+                    if s in j.dead:
+                        continue  # a frozen lane sends nothing to the sim
+                    k = row[(id(j), s)]
+                    intended: ActionPlan = (
+                        int(action[k, 0]),
+                        int(action[k, 1]),
+                        int(action[k, 2]),
+                        int(action[k, 3]),
+                    )
+                    acts[s] = maybe_blunder(
+                        intended,
+                        logits_np[k],
+                        mask[k],
+                        j.episode_dials[s].execution.hesitation_permille,
+                        j.rng,
+                    )
+                    if acts[s][1] == SALVAGE_ACTION:
+                        TEL["salvage_action_samples"] += 1
+                    elif acts[s][1] == BUILD_TURRET_ACTION:
+                        TEL["turret_action_samples"] += 1
+                    elif acts[s][1] == BUILD_ARRAY_ACTION:
+                        TEL["array_action_samples"] += 1
+                    elif acts[s][1] == REPAIR_ACTION:
+                        TEL["repair_action_samples"] += 1
+                    elif acts[s][1] == BUILD_BAY_ACTION:
+                        TEL["bay_action_samples"] += 1
+            acts.update(opponent_plan)
             all_acts.append(acts)
         with timed("env_sec"):
             for j, acts in zip(step_jobs, all_acts, strict=True):
@@ -1877,6 +1987,9 @@ def rollout(
         for j in step_jobs:
             with timed("env_sec"):
                 frame = j.worker.recv()
+            # frame_sec closes at the end of this body; a truncated
+            # episode's bootstrap forward inside it also bills policy_sec.
+            frame_started = time.perf_counter()
             for s, effects in frame.effects.items():
                 if s not in j.learner_seats:
                     continue
@@ -2033,6 +2146,12 @@ def rollout(
                     lane.done.append(False)
                     lane.last_pot = pot
                 j.frame = frame
+            TEL["frame_sec"] += time.perf_counter() - frame_started
+
+    wire_wait, wire_parse, wire_send = wire_clocks(jobs)
+    TEL["wire_wait_sec"] += wire_wait - wire_started[0]
+    TEL["wire_parse_sec"] += wire_parse - wire_started[1]
+    TEL["wire_send_sec"] += wire_send - wire_started[2]
 
     ordered = list(lanes.values())
     if collection == "episodes":

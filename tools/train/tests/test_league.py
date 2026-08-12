@@ -26,6 +26,7 @@ from league import (
     DEFAULT_VALUE_WARMUP,
     FAB_BUILT,
     MAX_STYLE_BONUS,
+    POOL_POLICY_CACHE_SIZE,
     SHAPE_GAMMA,
     SHAPE_K,
     SHIPPED_AGGRESSION_DISTRIBUTION,
@@ -54,7 +55,9 @@ from league import (
     expand_faction_pair,
     faction_knob,
     generated_map_families,
+    load_pool_policy,
     maybe_blunder,
+    opponent_actions,
     parse_aggression_mix,
     parse_faction_mix,
     parse_map_mix,
@@ -91,6 +94,7 @@ from models import (
     factorized_greedy,
     factorized_joint_log_prob,
     make_policy,
+    save_policy,
 )
 from oxide_gym import (
     ACTION_HEADS,
@@ -1252,6 +1256,113 @@ class TestPastOpponentAndInitialization:
         monkeypatch.setattr(torch.distributions.Categorical, "sample", fake_sample)
         assert job.opponent_action("cpu") == {1: (1, 9, 40, 16)}
         assert sampled == [True, True, True, True]
+
+    def test_lanes_sharing_a_policy_take_one_batched_forward(self) -> None:
+        # The collector's cost per decision is dispatch, not arithmetic:
+        # past lanes holding the same frozen checkpoint must ride one
+        # forward, and a scripted opponent must not reach torch at all.
+        inner = make_policy("mlp")
+        inner.eval()
+        batches: list[int] = []
+
+        class Counting(torch.nn.Module):
+            def forward(
+                self,
+                obs: torch.Tensor,
+                mask: torch.Tensor,
+            ) -> tuple[torch.Tensor, torch.Tensor]:
+                batches.append(int(obs.shape[0]))
+                return inner(obs, mask)
+
+        shared = Counting()
+
+        def job(kind: str, seat: int) -> Job:
+            made = Job(
+                cast("Worker", _ScriptedWorker([])),
+                kind,
+                seat,
+                pathlib.Path("."),
+                np.random.default_rng(0),
+                "cpu",
+            )
+            made.frame = Frame(False, 0, seats={0: _view(0.1), 1: _view(0.2)})
+            return made
+
+        first, second, scripted = job("past", 0), job("past", 1), job("rusher", 0)
+        first.past = shared
+        second.past = shared
+
+        plans = opponent_actions([first, second, scripted], "cpu")
+
+        assert batches == [2]
+        assert list(plans[0]) == [1]
+        assert list(plans[1]) == [0]
+        assert list(plans[2]) == [1]
+
+    def test_separate_policies_keep_separate_forwards(self) -> None:
+        jobs = []
+        for seat in (0, 1):
+            made = Job(
+                cast("Worker", _ScriptedWorker([])),
+                "past",
+                seat,
+                pathlib.Path("."),
+                np.random.default_rng(0),
+                "cpu",
+            )
+            made.past = make_policy("mlp")
+            made.past.eval()
+            made.frame = Frame(False, 0, seats={0: _view(0.1), 1: _view(0.2)})
+            jobs.append(made)
+
+        plans = opponent_actions(jobs, "cpu")
+
+        assert [list(plan) for plan in plans] == [[1], [0]]
+
+    def test_an_empty_pool_lane_answers_with_the_rush_teacher(self) -> None:
+        made = Job(
+            cast("Worker", _ScriptedWorker([])),
+            "past",
+            0,
+            pathlib.Path("."),
+            np.random.default_rng(0),
+            "cpu",
+        )
+        made.frame = Frame(False, 0, seats={0: _view(0.1), 1: _view(0.2)})
+
+        assert made.opponent_policy() is None
+        assert opponent_actions([made], "cpu") == [made.scripted_opponent_action()]
+
+    def test_one_pool_checkpoint_loads_once_for_every_lane(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        # Sharing the loaded object is what lets two lanes that drew the
+        # same checkpoint batch their forwards together.
+        checkpoint = tmp_path / "ckpt-00025.pt"
+        save_policy(make_policy("mlp"), "mlp", checkpoint)
+
+        first = load_pool_policy(str(checkpoint), "cpu")
+        second = load_pool_policy(str(checkpoint), "cpu")
+
+        assert first is second
+        assert not first.training
+
+    def test_the_pool_cache_stays_bounded(self, tmp_path: pathlib.Path) -> None:
+        # A campaign keeps writing pool checkpoints; the oldest draw is
+        # dropped rather than pinned for the rest of the run.
+        checkpoints = []
+        for index in range(POOL_POLICY_CACHE_SIZE + 1):
+            checkpoint = tmp_path / f"ckpt-{index:05d}.pt"
+            save_policy(make_policy("mlp"), "mlp", checkpoint)
+            checkpoints.append(str(checkpoint))
+        oldest = load_pool_policy(checkpoints[0], "cpu")
+        for checkpoint in checkpoints[1:]:
+            load_pool_policy(checkpoint, "cpu")
+
+        assert load_pool_policy(checkpoints[0], "cpu") is not oldest
+        assert load_pool_policy(checkpoints[-1], "cpu") is load_pool_policy(
+            checkpoints[-1], "cpu"
+        )
 
     def test_initialization_provenance_distinguishes_reconstructed_critics(
         self,
