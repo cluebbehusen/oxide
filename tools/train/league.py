@@ -42,6 +42,8 @@ import argparse
 import contextlib
 import dataclasses
 import json
+import multiprocessing
+import os
 import pathlib
 import subprocess
 import sys
@@ -53,6 +55,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
+    from multiprocessing.connection import Connection
 
 import numpy as np
 import torch
@@ -1690,29 +1693,43 @@ def allocate_role_counts(mix: dict[str, float], workers: int) -> dict[str, int]:
     return {kind: int(count) for kind, count in zip(kinds, counts, strict=True)}
 
 
-def realized_learner_row_mix(
-    jobs: list[Job],
+def lane_kinds_for_layout(layout: list[tuple[str, int]]) -> list[str]:
+    """One opponent kind per learner lane column, in global lane order."""
+    return [kind for kind, _seat in layout for _ in range(learner_lanes_for_kind(kind))]
+
+
+def realized_row_mix_from_lane_kinds(
+    lane_kinds: list[str],
     valid: np.ndarray | None = None,
 ) -> dict[str, float]:
     """Reports assigned lane shares, or actual valid training-row shares."""
-    expected_columns = sum(len(job.learner_seats) for job in jobs)
-    if valid is not None and (valid.ndim != 2 or valid.shape[1] != expected_columns):
+    if valid is not None and (valid.ndim != 2 or valid.shape[1] != len(lane_kinds)):
         raise ValueError(
             "valid rollout mask must have one column per learner lane, got "
-            f"{valid.shape} for {expected_columns} lanes"
+            f"{valid.shape} for {len(lane_kinds)} lanes"
         )
     rows: Counter[str] = Counter()
-    column = 0
-    for job in jobs:
-        for _seat in job.learner_seats:
-            rows[job.kind] += (
-                1 if valid is None else int(np.count_nonzero(valid[:, column]))
-            )
-            column += 1
+    for column, kind in enumerate(lane_kinds):
+        rows[kind] += 1 if valid is None else int(np.count_nonzero(valid[:, column]))
     total = sum(rows.values())
     if total == 0:
         return {}
     return {kind: rows[kind] / total for kind in sorted(rows)}
+
+
+def realized_learner_row_mix(
+    jobs: list[Job],
+    valid: np.ndarray | None = None,
+) -> dict[str, float]:
+    """Reports assigned lane shares, or actual valid training-row shares.
+
+    The lane layout is read from live jobs; the sharded-collection
+    learner reads the layout it planned instead, through
+    :func:`realized_row_mix_from_lane_kinds`, because its jobs live in
+    the collector processes.
+    """
+    lane_kinds = [job.kind for job in jobs for _seat in job.learner_seats]
+    return realized_row_mix_from_lane_kinds(lane_kinds, valid)
 
 
 def assign_roles(
@@ -1735,10 +1752,6 @@ def assign_roles(
     weight. Counts are largest-remainder allocations after dividing
     each requested weight by its learner-lane multiplicity.
     """
-    kinds = list(mix)
-    role_counts = allocate_role_counts(mix, len(workers))
-    jobs = []
-    i = 0
     # One independent stream per job, spawned deterministically from
     # the master: with a SHARED generator, pipelined stepping reordered
     # draws whenever an episode reset interleaved differently than the
@@ -1746,31 +1759,46 @@ def assign_roles(
     # streams make the draw order a per-job fact, immune to completion
     # order.
     streams = rng.spawn(len(workers))
-    for kind in kinds:
-        count = role_counts[kind]
+    return [
+        Job(
+            worker,
+            kind,
+            seat,
+            pool_dir,
+            stream,
+            device,
+            maps,
+            map_mix,
+            faction_mix,
+            aggression_range,
+            aggression_mix,
+            map_driver,
+        )
+        for worker, (kind, seat), stream in zip(
+            workers,
+            role_layout(mix, len(workers)),
+            streams,
+            strict=True,
+        )
+    ]
+
+
+def role_layout(mix: dict[str, float], workers: int) -> list[tuple[str, int]]:
+    """The fixed (kind, seat) role of every global job index.
+
+    Shared by the in-process trainer and the sharded collectors, so a
+    collector rebuilds exactly the jobs the single process would have
+    built at the same global indices.
+    """
+    role_counts = allocate_role_counts(mix, workers)
+    layout: list[tuple[str, int]] = []
+    for kind in mix:
         # team2 alternates its single learner between the two west
         # chairs (k % 2 -> seat 0 or 2 inside the Job), everything else
         # keeps its established seat arithmetic.
         seats = 4 if kind in ("ffa", "team") else 2
-        for k in range(count):
-            jobs.append(
-                Job(
-                    workers[i],
-                    kind,
-                    k % seats,
-                    pool_dir,
-                    streams[i],
-                    device,
-                    maps,
-                    map_mix,
-                    faction_mix,
-                    aggression_range,
-                    aggression_mix,
-                    map_driver,
-                )
-            )
-            i += 1
-    return jobs
+        layout.extend((kind, k % seats) for k in range(role_counts[kind]))
+    return layout
 
 
 def q12_initialization_provenance(blob: dict | None) -> bool:
@@ -2291,6 +2319,397 @@ def evaluate(
     return wins / games if games else 0.0
 
 
+# Sharded rollout collection. ``--collectors N`` (N > 1) splits the
+# fixed job list into N contiguous shards, each served by a spawned
+# collector process that owns its shard's gym workers, past-policy
+# cache, map warmer, and telemetry counters. The learner broadcasts the
+# current policy weights each update, every collector runs the
+# unchanged ``rollout`` over its shard, and the learner reassembles the
+# shards in fixed shard order, so the batch's lane columns sit exactly
+# where the single process would put them.
+#
+# The determinism story, precisely: within a fixed N every stream is
+# seeded — job RNG streams by global job index, episode seeds by the
+# shard's arithmetic progression, and each collector's torch generator
+# from (torch seed base, collector index, update index) before every
+# rollout — so a rerun with the same N reproduces bit for bit. Across
+# different N the torch sampling streams and the seed partition are
+# consumed in a different order than the single-process stream, so
+# trajectories do NOT reproduce N=1 decision for decision. Like the
+# batched opponent forward, the collector count is a lineage boundary
+# recorded in the run's hyperparameters, not a change of any per-seat
+# sampling distribution.
+
+
+def shard_job_indices(workers: int, collectors: int) -> list[tuple[int, ...]]:
+    """Contiguous, deterministic partition of the global job indices.
+
+    Contiguity keeps the assembled lane order identical to the
+    single-process job order; earlier shards absorb the remainder, so
+    shard sizes differ by at most one and every shard owns a job.
+    """
+    if workers <= 0:
+        raise ValueError("sharding requires at least one worker")
+    if not 1 <= collectors <= workers:
+        raise ValueError(
+            f"collectors must be between 1 and {workers} workers, got {collectors}"
+        )
+    base, extra = divmod(workers, collectors)
+    shards = []
+    start = 0
+    for shard in range(collectors):
+        count = base + (1 if shard < extra else 0)
+        shards.append(tuple(range(start, start + count)))
+        start += count
+    return shards
+
+
+def shard_seed(base: int, shard: int, shards: int, index: int) -> int:
+    """The shard's ``index``-th episode seed.
+
+    Collector ``c`` of ``N`` walks ``base + c, base + c + N, ...``, so
+    the collectors partition the exact seed sequence the in-process
+    trainer walks (``base, base + 1, ...``) with no overlap, and a
+    single shard degenerates to that original sequence.
+    """
+    if shards <= 0 or not 0 <= shard < shards:
+        raise ValueError(f"shard must be in 0..{shards - 1}, got {shard}")
+    if index < 0:
+        raise ValueError(f"seed index must be non-negative, got {index}")
+    return base + shard + shards * index
+
+
+def collector_torch_seed(base: int, shard: int, update: int) -> int:
+    """One well-mixed torch seed per (collector, update) pair."""
+    if base < 0 or shard < 0 or update < 0:
+        raise ValueError("torch seed components must be non-negative")
+    sequence = np.random.SeedSequence((base, shard, update))
+    return int(sequence.generate_state(1, dtype=np.uint64)[0])
+
+
+@dataclass(frozen=True)
+class CollectorConfig:
+    """Everything one collector needs to rebuild its shard of jobs."""
+
+    shard: int
+    shards: int
+    shard_indices: tuple[int, ...]
+    total_workers: int
+    driver: str
+    device: str
+    arch: str
+    mix: dict[str, float]
+    pool_dir: str
+    maps: str
+    map_mix: dict[str, float] | None
+    faction_mix: dict[str, float] | None
+    aggression_range: tuple[int, int] | None
+    aggression_mix: AggressionDistribution | None
+    map_driver: str
+    collection: str
+    steps: int
+    episode_max_steps: int
+    seed_base: int
+    job_stream_seed: int
+    torch_seed_base: int
+    style_coefficient: float
+    require_effect_telemetry: bool
+    warm_families: tuple[str, ...]
+
+
+def _collector_serve(
+    connection: Connection,
+    config: CollectorConfig,
+    workers: list[Worker],
+) -> None:
+    """Answers rollout and evaluation requests for one shard of jobs."""
+    if config.require_effect_telemetry and any(
+        not worker.supports_effect_telemetry for worker in workers
+    ):
+        connection.send(
+            (
+                "error",
+                "effect-seeded training requires a gym driver that advertises "
+                "effect_telemetry",
+            )
+        )
+        return
+    layout = role_layout(config.mix, config.total_workers)
+    streams = np.random.default_rng(config.job_stream_seed).spawn(config.total_workers)
+    jobs = [
+        Job(
+            worker,
+            layout[index][0],
+            layout[index][1],
+            pathlib.Path(config.pool_dir),
+            streams[index],
+            config.device,
+            config.maps,
+            config.map_mix,
+            config.faction_mix,
+            config.aggression_range,
+            config.aggression_mix,
+            config.map_driver,
+        )
+        for worker, index in zip(workers, config.shard_indices, strict=True)
+    ]
+    policy = make_policy(config.arch)
+    consumed = [-1]
+
+    def seed_stream() -> Iterator[int]:
+        index = 0
+        while True:
+            consumed[0] = index
+            yield shard_seed(config.seed_base, config.shard, config.shards, index)
+            index += 1
+
+    seeds = seed_stream()
+    if config.warm_families:
+        # The same daemon warmer the in-process path runs, walking only
+        # this shard's arithmetic seed progression.
+        def warm() -> None:
+            warmed = 0
+            while True:
+                target = consumed[0] + 1 + 2 * len(jobs)
+                while warmed < target:
+                    warmed = max(warmed, consumed[0] + 1)
+                    warm_generated_maps(
+                        shard_seed(
+                            config.seed_base,
+                            config.shard,
+                            config.shards,
+                            warmed,
+                        ),
+                        config.warm_families,
+                        config.driver,
+                    )
+                    warmed += 1
+                time.sleep(0.25)
+
+        threading.Thread(
+            target=warm,
+            daemon=True,
+            name=f"map-warmer-{config.shard}",
+        ).start()
+    connection.send(("ready", config.shard))
+    while True:
+        message = connection.recv()
+        request = message[0]
+        if request == "rollout":
+            _, update, state, bonuses = message
+            policy.load_state_dict(state)
+            torch.manual_seed(
+                collector_torch_seed(config.torch_seed_base, config.shard, update)
+            )
+            TEL.clear()
+            batch, last_val, finals = rollout(
+                policy,
+                jobs,
+                seeds,
+                config.steps,
+                config.device,
+                style_coefficient=config.style_coefficient,
+                collection=config.collection,
+                episode_max_steps=config.episode_max_steps,
+                **bonuses,
+            )
+            connection.send(("batch", batch, last_val, finals, dict(TEL)))
+        elif request == "eval":
+            _, state, opponents = message
+            policy.load_state_dict(state)
+            results = {
+                opponent: evaluate(policy, workers, config.device, opponent)
+                for opponent in opponents
+            }
+            # Evaluation borrowed this shard's workers; the standing
+            # episodes are gone. Fresh ones start next rollout.
+            for job in jobs:
+                job.frame = None
+            connection.send(("eval", results))
+        elif request == "close":
+            return
+        else:
+            raise RuntimeError(f"unknown collector request {request!r}")
+
+
+def collector_main(connection: Connection, config: CollectorConfig) -> None:
+    """One spawned collector process's entry point.
+
+    Module-level state (TEL, the pool-policy cache) is process-local by
+    construction — exactly the per-collector state the shard needs.
+    Torch threads are capped at one because N collectors of tiny
+    forwards oversubscribe cores long before a single forward benefits
+    from intra-op parallelism.
+    """
+    torch.set_num_threads(1)
+    workers: list[Worker] = []
+    try:
+        workers = [Worker(config.driver) for _ in config.shard_indices]
+        _collector_serve(connection, config, workers)
+    except EOFError:
+        pass  # the learner is gone; exit quietly
+    except Exception as err:
+        with contextlib.suppress(OSError):
+            connection.send(("error", f"{type(err).__name__}: {err}"))
+        raise
+    finally:
+        for worker in workers:
+            with contextlib.suppress(Exception):
+                worker.close()
+
+
+def _extend_episode_lanes(
+    batch: tuple[np.ndarray, ...],
+    width: int,
+) -> tuple[np.ndarray, ...]:
+    """Pads one episode shard's lanes to the assembled width.
+
+    The rows follow the in-process episode collector's own padding
+    convention: frozen observations, actions, log-probabilities, and
+    values, zero reward, done, and invalid — GAE-safe rows that train
+    nothing.
+    """
+    obs, mask, act, logp, val, rew, done, valid = batch
+    pad = width - obs.shape[0]
+    if pad < 0:
+        raise ValueError("cannot shrink a shard to the assembled width")
+    if pad == 0:
+        return batch
+
+    def frozen(array: np.ndarray) -> np.ndarray:
+        return np.concatenate([array, np.repeat(array[-1:], pad, axis=0)])
+
+    return (
+        frozen(obs),
+        frozen(mask),
+        frozen(act),
+        frozen(logp),
+        frozen(val),
+        np.concatenate([rew, np.zeros((pad, *rew.shape[1:]), dtype=rew.dtype)]),
+        np.concatenate([done, np.ones((pad, *done.shape[1:]), dtype=done.dtype)]),
+        np.concatenate([valid, np.zeros((pad, *valid.shape[1:]), dtype=valid.dtype)]),
+    )
+
+
+def assemble_shard_batches(
+    shards: list[tuple[tuple[np.ndarray, ...], np.ndarray, list[float]]],
+    collection: str,
+) -> tuple[tuple[np.ndarray, ...], np.ndarray, list[float]]:
+    """Concatenates collector shards along the lane axis in shard order.
+
+    Shard order is the fixed contiguous partition of the global job
+    list, so the assembled lane columns sit exactly where the
+    single-process rollout would put them. Fixed-window shards must
+    agree on width; episode shards each stop at their own slowest
+    episode, so shorter shards extend with the standard frozen padding
+    before concatenation.
+    """
+    if not shards:
+        raise ValueError("assembly requires at least one shard")
+    widths = sorted({batch[0].shape[0] for batch, _last_val, _finals in shards})
+    if collection == "windows" and len(widths) != 1:
+        raise ValueError(f"fixed-window shards disagree on width: {widths}")
+    width = widths[-1]
+    padded = [
+        _extend_episode_lanes(batch, width) for batch, _last_val, _finals in shards
+    ]
+    batch = tuple(
+        np.concatenate([shard[part] for shard in padded], axis=1) for part in range(8)
+    )
+    last_val = np.concatenate([last_val for _batch, last_val, _finals in shards])
+    finals = [final for _batch, _last_val, finals in shards for final in finals]
+    return batch, last_val, finals
+
+
+class CollectorPool:
+    """The learner's handle on N spawned rollout collectors.
+
+    Spawn — never fork — is the start method that coexists safely with
+    torch on macOS. Traffic is strict request/reply per collector, so a
+    pipe never carries two payloads in the same direction at once.
+    """
+
+    def __init__(self, configs: list[CollectorConfig]) -> None:
+        context = multiprocessing.get_context("spawn")
+        self.connections: list[Connection] = []
+        self.processes = []
+        for config in configs:
+            parent, child = context.Pipe()
+            process = context.Process(
+                target=collector_main,
+                args=(child, config),
+                daemon=True,
+                name=f"collector-{config.shard}",
+            )
+            process.start()
+            child.close()
+            self.connections.append(parent)
+            self.processes.append(process)
+        for connection in self.connections:
+            self._expect(connection, "ready")
+
+    @staticmethod
+    def _expect(connection: Connection, expected: str) -> tuple:
+        try:
+            reply = connection.recv()
+        except EOFError as err:
+            raise RuntimeError("a rollout collector died mid-run") from err
+        if reply[0] == "error":
+            raise RuntimeError(f"rollout collector failed: {reply[1]}")
+        if reply[0] != expected:
+            raise RuntimeError(
+                f"rollout collector sent {reply[0]!r}, expected {expected!r}"
+            )
+        return reply
+
+    def rollout(
+        self,
+        update: int,
+        state: dict[str, torch.Tensor],
+        bonuses: dict[str, float],
+        collection: str,
+    ) -> tuple[tuple[np.ndarray, ...], np.ndarray, list[float], Counter]:
+        """Runs one sharded collection pass and reassembles the shards."""
+        for connection in self.connections:
+            connection.send(("rollout", update, state, bonuses))
+        shards = []
+        telemetry: Counter = Counter()
+        for connection in self.connections:
+            _, batch, last_val, finals, shard_telemetry = self._expect(
+                connection, "batch"
+            )
+            shards.append((batch, last_val, finals))
+            telemetry.update(shard_telemetry)
+        batch, last_val, finals = assemble_shard_batches(shards, collection)
+        return batch, last_val, finals, telemetry
+
+    def evaluate(
+        self,
+        state: dict[str, torch.Tensor],
+        opponents: tuple[str, ...],
+    ) -> dict[str, float]:
+        """Runs the greedy fixed suite on the first collector's workers.
+
+        Greedy evaluation draws nothing from torch's generator, and its
+        outcomes do not depend on how games chunk across workers, so
+        one shard's workers answer for the whole pool.
+        """
+        connection = self.connections[0]
+        connection.send(("eval", state, opponents))
+        return self._expect(connection, "eval")[1]
+
+    def close(self) -> None:
+        for connection in self.connections:
+            with contextlib.suppress(OSError):
+                connection.send(("close",))
+        for process in self.processes:
+            process.join(timeout=30)
+            if process.is_alive():
+                process.terminate()
+        for connection in self.connections:
+            connection.close()
+
+
 def probe_canary(payload: dict) -> dict:
     """One canary row from a `balance-probe --out` payload:
     decisiveness, both value- and body-weighted mix readings, and unit
@@ -2417,6 +2836,16 @@ def main() -> None:
         help="mlp | wide (ignored with checkpoint initialization)",
     )
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument(
+        "--collectors",
+        type=int,
+        default=1,
+        help="rollout collector processes; 1 collects in-process (the "
+        "established path), N>1 shards the job list across N spawned "
+        "collector processes — a recorded lineage boundary: a fixed N "
+        "reproduces exactly, but trajectories differ from the N=1 "
+        "torch sampling stream",
+    )
     ap.add_argument("--steps", type=int, default=384)
     ap.add_argument(
         "--collection",
@@ -2618,6 +3047,7 @@ def main() -> None:
             args.initialize_from is not None or args.resume is not None,
             args.profile_column,
         )
+        shard_job_indices(args.workers, args.collectors)
     except ValueError as err:
         ap.error(str(err))
 
@@ -2679,6 +3109,7 @@ def main() -> None:
             "anchor_decay": args.anchor_decay,
             "arch": arch,
             "collection": args.collection,
+            "collectors": args.collectors,
             "entropy_coefficient": args.entropy_coef,
             "eval_every": args.eval_every,
             "execution_profiles": [
@@ -2746,16 +3177,24 @@ def main() -> None:
         pool_dir = claim_fresh_run_directory(run_dir)
     except RuntimeError as err:
         ap.error(str(err))
-    workers = [Worker(args.driver) for _ in range(args.workers)]
-    if (args.repair_bonus or args.reclaimer_bonus or args.structure_bonus) and any(
-        not worker.supports_effect_telemetry for worker in workers
-    ):
-        for worker in workers:
-            worker.close()
-        raise RuntimeError(
-            "effect-seeded training requires a gym driver that advertises "
-            "effect_telemetry"
-        )
+    require_effect_telemetry = bool(
+        args.repair_bonus or args.reclaimer_bonus or args.structure_bonus
+    )
+    layout = role_layout(mix, args.workers)
+    lane_kinds = lane_kinds_for_layout(layout)
+    workers: list[Worker] = []
+    collectors: CollectorPool | None = None
+    if args.collectors == 1:
+        workers = [Worker(args.driver) for _ in range(args.workers)]
+        if require_effect_telemetry and any(
+            not worker.supports_effect_telemetry for worker in workers
+        ):
+            for worker in workers:
+                worker.close()
+            raise RuntimeError(
+                "effect-seeded training requires a gym driver that advertises "
+                "effect_telemetry"
+            )
     rng = np.random.default_rng(0)
     optimizer_rng = np.random.default_rng(1)
 
@@ -2773,7 +3212,44 @@ def main() -> None:
     seeds = seed_stream()
 
     warm_families = generated_map_families(map_mix, mix)
-    if warm_families:
+    if args.collectors > 1:
+        # Collector processes own their shard's workers, jobs, seed
+        # progression, past-policy cache, and map warmer; the learner
+        # keeps the optimizer, checkpoint cadence, journal, and probes.
+        collectors = CollectorPool(
+            [
+                CollectorConfig(
+                    shard=shard,
+                    shards=args.collectors,
+                    shard_indices=indices,
+                    total_workers=args.workers,
+                    driver=args.driver,
+                    device=device,
+                    arch=arch,
+                    mix=mix,
+                    pool_dir=str(pool_dir),
+                    maps=args.maps,
+                    map_mix=map_mix,
+                    faction_mix=faction_mix,
+                    aggression_range=aggression_range,
+                    aggression_mix=args.aggression_mix,
+                    map_driver=args.driver,
+                    collection=args.collection,
+                    steps=args.steps,
+                    episode_max_steps=MAX_EPISODE_DECISIONS,
+                    seed_base=50_000,
+                    job_stream_seed=0,
+                    torch_seed_base=0,
+                    style_coefficient=args.style_coef,
+                    require_effect_telemetry=require_effect_telemetry,
+                    warm_families=warm_families,
+                )
+                for shard, indices in enumerate(
+                    shard_job_indices(args.workers, args.collectors)
+                )
+            ]
+        )
+    elif warm_families:
         # Cold-cache map generation costs a driver subprocess per map
         # (~34% of an update when the cache is empty). A daemon warmer
         # stays a few seeds ahead of the cursor across every active
@@ -2794,20 +3270,24 @@ def main() -> None:
     log = (run_dir / "log.jsonl").open("x")
 
     try:
-        jobs = assign_roles(
-            workers,
-            mix,
-            pool_dir,
-            rng,
-            device,
-            args.maps,
-            map_mix,
-            faction_mix,
-            aggression_range,
-            args.aggression_mix,
-            args.driver,
+        jobs = (
+            []
+            if collectors is not None
+            else assign_roles(
+                workers,
+                mix,
+                pool_dir,
+                rng,
+                device,
+                args.maps,
+                map_mix,
+                faction_mix,
+                aggression_range,
+                args.aggression_mix,
+                args.driver,
+            )
         )
-        allocated_learner_row_mix = realized_learner_row_mix(jobs)
+        allocated_learner_row_mix = realized_row_mix_from_lane_kinds(lane_kinds)
         for update in range(start_update + 1, start_update + args.updates + 1):
             t0 = time.time()
             phase_update = update - start_update
@@ -2852,24 +3332,44 @@ def main() -> None:
                 reward_update,
                 args.tech_anneal or args.updates,
             )
-            batch, last_val, finals = rollout(
-                policy,
-                jobs,
-                seeds,
-                args.steps,
-                device,
-                tech_bonus=tb,
-                mix_bonus=mb,
-                salvage_bonus=sb,
-                repair_bonus=rb,
-                reclaimer_bonus=eb,
-                structure_bonus=ub,
-                style_coefficient=args.style_coef,
-                collection=args.collection,
-            )
+            if collectors is not None:
+                weights = {
+                    key: value.detach().cpu()
+                    for key, value in policy.state_dict().items()
+                }
+                batch, last_val, finals, shard_telemetry = collectors.rollout(
+                    update,
+                    weights,
+                    {
+                        "tech_bonus": tb,
+                        "mix_bonus": mb,
+                        "salvage_bonus": sb,
+                        "repair_bonus": rb,
+                        "reclaimer_bonus": eb,
+                        "structure_bonus": ub,
+                    },
+                    args.collection,
+                )
+                TEL.update(shard_telemetry)
+            else:
+                batch, last_val, finals = rollout(
+                    policy,
+                    jobs,
+                    seeds,
+                    args.steps,
+                    device,
+                    tech_bonus=tb,
+                    mix_bonus=mb,
+                    salvage_bonus=sb,
+                    repair_bonus=rb,
+                    reclaimer_bonus=eb,
+                    structure_bonus=ub,
+                    style_coefficient=args.style_coef,
+                    collection=args.collection,
+                )
             rollout_sec = time.time() - t0
             obs_b, mask_b, act_b, logp_b, val_b, rew_b, done_b, valid_b = batch
-            learner_row_mix = realized_learner_row_mix(jobs, valid_b)
+            learner_row_mix = realized_row_mix_from_lane_kinds(lane_kinds, valid_b)
             adv, ret = gae(
                 rew_b,
                 done_b,
@@ -2921,7 +3421,7 @@ def main() -> None:
                 "update": update,
                 "phase_update": phase_update,
                 "lineage_id": run_lineage["lineage_id"],
-                "kinds": sorted(j.kind for j in jobs),
+                "kinds": sorted(kind for kind, _seat in layout),
                 "collection": args.collection,
                 "allocated_learner_row_mix": allocated_learner_row_mix,
                 "learner_row_mix": learner_row_mix,
@@ -3025,27 +3525,45 @@ def main() -> None:
                 phase_interval_due(update, start_update, args.pool_every)
                 or final_update
             ):
-                save_policy(
-                    policy,
-                    arch,
-                    pool_dir / f"ckpt-{update:05d}.pt",
-                    checkpoint_metadata(
-                        run_lineage,
-                        {
-                            "critic_ready": critic_ready,
-                            "gym_version": GYM_VERSION,
-                            "update": update,
-                        },
-                    ),
+                pool_path = pool_dir / f"ckpt-{update:05d}.pt"
+                pool_metadata = checkpoint_metadata(
+                    run_lineage,
+                    {
+                        "critic_ready": critic_ready,
+                        "gym_version": GYM_VERSION,
+                        "update": update,
+                    },
                 )
+                if collectors is None:
+                    save_policy(policy, arch, pool_path, pool_metadata)
+                else:
+                    # Collector processes glob the pool between resets;
+                    # a torn torch.save must never be visible under a
+                    # name their ckpt-*.pt glob matches.
+                    staging = pool_path.with_name(pool_path.name + ".tmp")
+                    save_policy(policy, arch, staging, pool_metadata)
+                    os.replace(staging, pool_path)
             if (
                 phase_interval_due(update, start_update, args.eval_every)
                 or final_update
             ):
-                entry["eval"] = {
-                    op: round(evaluate(policy, workers, device, op), 3)
-                    for op in ("overseer", "rusher")
-                }
+                if collectors is not None:
+                    weights = {
+                        key: value.detach().cpu()
+                        for key, value in policy.state_dict().items()
+                    }
+                    entry["eval"] = {
+                        opponent: round(score, 3)
+                        for opponent, score in collectors.evaluate(
+                            weights,
+                            ("overseer", "rusher"),
+                        ).items()
+                    }
+                else:
+                    entry["eval"] = {
+                        op: round(evaluate(policy, workers, device, op), 3)
+                        for op in ("overseer", "rusher")
+                    }
                 save_policy(
                     policy,
                     arch,
@@ -3094,6 +3612,8 @@ def main() -> None:
     finally:
         for w in workers:
             w.close()
+        if collectors is not None:
+            collectors.close()
 
 
 if __name__ == "__main__":
