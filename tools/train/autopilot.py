@@ -148,7 +148,20 @@ def phase_checkpoint(run_dir: pathlib.Path, updates: int) -> pathlib.Path | None
 
 
 def run_battery(candidate: pathlib.Path, driver: str, cup_seeds: int) -> dict:
-    """Export-side scoring: cup fitness plus the fun-gate constraint."""
+    """Export-side scoring: cup fitness plus the fun-gate constraint.
+
+    Scores persist beside the candidate so a crash-resumed autopilot
+    reuses them; the whole battery is deterministic per candidate, so
+    a cached verdict is the verdict."""
+    memo = candidate.with_suffix(".scores.json")
+    if memo.exists():
+        try:
+            cached = json.loads(memo.read_text())
+        except ValueError:
+            cached = None
+        if isinstance(cached, dict) and cached.get("cup_seeds") == cup_seeds:
+            print(f"    reusing battery scores for {candidate.name}")
+            return cached
     exported = candidate.with_suffix(".json")
     subprocess.run(
         [sys.executable, "export.py", "--ckpt", str(candidate), "--out", str(exported)],
@@ -183,14 +196,20 @@ def run_battery(candidate: pathlib.Path, driver: str, cup_seeds: int) -> dict:
     scores["fun_gate_failures"] = [
         line.strip() for line in gate.stdout.splitlines() if "FUN GATE FAIL" in line
     ]
+    scores["cup_seeds"] = cup_seeds
+    memo.write_text(json.dumps(scores))
     return scores
 
 
 def fitness(scores: dict) -> tuple:
-    """Constraint first, then combined cup wins. A gate failure can
-    never outrank a pass whatever its cup says."""
+    """Constraint first, then fewest gate failures, then combined cup
+    wins. A gate failure can never outrank a pass whatever its cup
+    says — and while a whole generation sits in the fine-tune dip
+    with nothing passing, selection pressure points at gate recovery
+    before raw strength."""
     return (
         scores.get("fun_gate_pass", False),
+        -len(scores.get("fun_gate_failures", ())),
         scores.get("overseer_wins", 0) + scores.get("rusher_wins", 0),
         scores.get("overseer_wins", 0),
     )
