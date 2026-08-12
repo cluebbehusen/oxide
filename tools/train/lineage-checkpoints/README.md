@@ -14,3 +14,6 @@ from-scratch restart).
 Rejected runs, pool checkpoints, and experiments stay out of the
 repository; only artifacts a shipped actor's lineage depends on
 belong here.
+
+- `auto2-g1m3.pt` — the float parent of the 0.15.2 shipped actor
+  (digest `21d1018489498a8e`), the auto-2 autopilot champion.

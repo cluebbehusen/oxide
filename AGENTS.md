@@ -275,13 +275,14 @@ neither changes the strategy surface.
 
 ### 0.15 status: the promoted actor ships
 
-The shipped opponent is the r17 artifact of the from-scratch gym-v9
-campaign, embedded at `sim/src/bot/ladder_weights.json` and seated by
-`seat_bots` for every configured bot seat. The gym v9 surface is
-parity-clean by construction: the mask encodes shared legality only.
-`BotConfig` (level, personality) is the authored scenario data it
-consumes; the Level ladder's execution handicaps were re-measured for
-this actor with the `ladder_handicap_sweep` instrument. Provenance,
+The shipped opponent is the auto-2 autopilot champion (0.15.2 rules:
+harvester replan stagger, base-Array charge detection), embedded at
+`sim/src/bot/ladder_weights.json` and seated by `seat_bots` for every
+configured bot seat. The gym v9 surface is parity-clean by
+construction: the mask encodes shared legality only. `BotConfig`
+(level, personality) is the authored scenario data it consumes; the
+Level ladder's execution handicaps are re-measured for each promoted
+actor with the `ladder_handicap_sweep` instrument. Provenance,
 battery results, and known residuals live in
 `.agents/skills/bot-training/references/artifact-lineage.md`.
 
