@@ -41,6 +41,14 @@ The composition contract separates broad quality from catastrophic tails:
     therefore have to express their advertised identity, not merely clear
     the broad anti-spam floor.
 
+Two schema-10 tables print for the dealt profile without gating it: the
+per-kind reach every unit and building was produced at, and the share of
+the competitive scrap bill each kind consumed. They generalize what the
+four authored structure floors sample — a kind nothing ever builds is
+invisible in a share table — and they show the money that never takes a
+body-time sample. Both are diagnostic on purpose: a floor drawn before
+the campaign measures the distribution is a guess, not a contract.
+
 Composition judgment reads the competitive-lifetime combat fields from
 `driver balance-probe --out`. Every seat contributes while it is
 non-resigned and holds a completed Foundry, including a loser's whole
@@ -90,12 +98,13 @@ AIR_KINDS = {
     "wisp",
 }
 
-# The exact `--out` payload shape this gate reads. Schema 8 identifies
+# The exact `--out` payload shape this gate reads. Schema 10 identifies
 # explicitly selected named styles and variants alongside the legacy
-# aggression component and carries no scripted-tier dial; accepting
-# another schema risks silently judging a raw zero-facet profile while
-# labeling it as a shipped personality.
-EXPECTED_SCHEMA = 9
+# aggression component, carries no scripted-tier dial, and adds the
+# per-kind reach and scrap-destination tables; accepting another schema
+# risks silently judging a raw zero-facet profile while labeling it as
+# a shipped personality.
+EXPECTED_SCHEMA = 10
 DEFAULT_STALE_CAP_TICKS = 2_000
 MIN_PROMOTION_SEEDS = 3
 
@@ -249,7 +258,7 @@ def combat_tail_rates(
     """Measures catastrophic competitive lifetimes from raw seat arrays.
 
     Aggregate quantiles hide the exact number of bad seats and small
-    cohorts make nearest-rank p10/p90 jump sharply. The raw schema-8 arrays
+    cohorts make nearest-rank p10/p90 jump sharply. The raw per-seat arrays
     let the gate state its real contract as rates. Seats with no competitive
     combat mix are skipped, exactly as ``Aggregate.combat_seats`` skips them.
     """
@@ -517,7 +526,7 @@ def run_probe(
     ticks: int,
     profile: ProbeProfile,
 ) -> dict:
-    """Runs one profile and returns its schema-8 JSON payload."""
+    """Runs one profile and returns its schema-10 JSON payload."""
     with tempfile.TemporaryDirectory(prefix="oxide-fun-gate-") as directory:
         out = pathlib.Path(directory) / "probe.json"
         command = [
@@ -743,12 +752,71 @@ def print_profile(
         )
 
 
+def ranked(shares: dict[str, float]) -> list[tuple[str, float]]:
+    """Biggest first, name-ordered within a tie so two runs of the same
+    payload print the same page."""
+    return sorted(shares.items(), key=lambda kv: (-float(kv[1]), kv[0]))
+
+
+def print_per_map_diagnostics(payload: dict) -> None:
+    """The same two schema-10 tables sliced by map cohort, compacted to
+    the three biggest spenders and the never-built kinds per map — the
+    full tables live in the record for anything deeper. Diagnostic like
+    the overall tables: map identity is where balance problems hide
+    (an island map with no Skyhook spend tells a story no aggregate
+    can), but no floor is drawn here."""
+    cohorts = (payload.get("cohorts") or {}).get("map") or {}
+    if not cohorts:
+        return
+    print("diagnostic (not gated) — per-map spend leaders and blind spots:")
+    for name in sorted(cohorts):
+        cohort = cohorts[name]
+        spend = cohort.get("competitive_spend_share") or {}
+        reach = cohort.get("competitive_kind_reach") or {}
+        leaders = ", ".join(
+            f"{kind} {float(share) * 100:.0f}%" for kind, share in ranked(spend)[:3]
+        )
+        unbuilt = [kind for kind, share in sorted(reach.items()) if float(share) == 0.0]
+        blind = f" · never built: {', '.join(unbuilt)}" if unbuilt else ""
+        print(f"  {name:<20} {leaders}{blind}")
+
+
+def print_kind_diagnostics(overall: dict) -> None:
+    """Prints the two schema-10 per-kind tables.
+
+    Reach answers a question no share table can: a kind built once and a
+    kind never built are both a share near zero, and only one of those
+    is a design problem. Scrap destination answers the other one — a
+    presence-weighted share never sees the money spent on defenses,
+    tech, and expansion, because those never take a body-time sample.
+
+    Strictly diagnostic. The four authored structure floors remain the
+    only reach contract; a floor drawn over this whole distribution
+    before the campaign has measured it would be a guess.
+    """
+    reach = overall.get("competitive_kind_reach") or {}
+    spend = overall.get("competitive_spend_share") or {}
+    total = int(overall.get("competitive_spend_total", 0))
+    print("diagnostic (not gated) — kind reach over competitive lifetimes:")
+    for kind, share in ranked(reach) or [("(none reported)", 0.0)]:
+        print(f"  {kind:<16} {float(share) * 100:5.1f}%")
+    print(f"diagnostic (not gated) — scrap destination of {total} scrap:")
+    for kind, share in ranked(spend) or [("(none reported)", 0.0)]:
+        print(f"  {kind:<16} {float(share) * 100:5.1f}%")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Gate a neural artifact on dealt and named-profile composition.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     ap.add_argument("--weights", required=True, help="candidate Q12 weights JSON")
+    ap.add_argument(
+        "--per-map",
+        action="store_true",
+        help="also print the dealt profile's spend leaders and never-built "
+        "kinds per map cohort",
+    )
     ap.add_argument(
         "--baseline-weights",
         help="optional pinned artifact for a same-map/seed regression envelope",
@@ -1019,6 +1087,12 @@ def main() -> int:
                 )
             )
             print_profile(profile.label, overall, tails, health, args)
+            if profile.label == "dealt":
+                # One slate's worth is enough for a diagnostic; the
+                # named specialists deliberately skew these tables.
+                print_kind_diagnostics(overall)
+                if args.per_map:
+                    print_per_map_diagnostics(payload)
             all_failures.extend(f"{profile.label}: {failure}" for failure in failures)
 
         if args.baseline_weights:

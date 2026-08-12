@@ -94,6 +94,19 @@ def cohort(
             "array": 0.70,
             "reclaimer": 0.30,
         },
+        "competitive_kind_reach": {
+            "sentinel": 1.0,
+            "fabricator": 1.0,
+            "turret": 0.50,
+            "barricade": 0.05,
+        },
+        "competitive_spend_share": {
+            "sentinel": 0.55,
+            "fabricator": 0.30,
+            "turret": 0.14,
+            "barricade": 0.01,
+        },
+        "competitive_spend_total": 1_234_567,
     }
 
 
@@ -300,7 +313,7 @@ def good_payload(
             "reclaimer": 0.30 if style == "turtle" and variant == 1 else 0.0,
         }
     return {
-        "schema": 9,
+        "schema": 10,
         "seeds": seeds,
         "dials": {
             "style": style,
@@ -634,6 +647,38 @@ def test_main_runs_dealt_and_two_named_composition_profiles(
     assert output.count("composition-only") == 2
     assert "inactive 1" in output
     assert "fun gate: open" in output
+    # The per-kind tables print once, for the dealt slate only, and say
+    # plainly that nothing here gates.
+    assert output.count("kind reach over competitive lifetimes") == 1
+    assert output.count("scrap destination of 1234567 scrap") == 1
+    assert output.count("diagnostic (not gated)") == 2
+
+
+def test_kind_diagnostics_rank_by_share_and_survive_an_empty_table(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert fun_gate.ranked({"a": 0.1, "b": 0.3, "c": 0.3}) == [
+        ("b", 0.3),
+        ("c", 0.3),
+        ("a", 0.1),
+    ]
+
+    fun_gate.print_kind_diagnostics(cohort(GOOD_SHARES))
+    lines = capsys.readouterr().out.splitlines()
+    reach = lines.index(
+        "diagnostic (not gated) — kind reach over competitive lifetimes:"
+    )
+    assert [line.split()[0] for line in lines[reach + 1 : reach + 5]] == [
+        "fabricator",
+        "sentinel",
+        "turret",
+        "barricade",
+    ]
+
+    # A cohort whose probe never spent anything must still print rather
+    # than raise: an empty table is the finding.
+    fun_gate.print_kind_diagnostics({})
+    assert capsys.readouterr().out.count("(none reported)") == 2
 
 
 def test_main_rejects_a_probe_with_no_competitive_combat(

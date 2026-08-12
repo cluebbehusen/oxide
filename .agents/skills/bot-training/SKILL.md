@@ -134,6 +134,10 @@ Also run the candidate under the dealt profile, Turtle variant 1, and Balanced
 variant 1; cover every faction and physical seat; inspect competitive-lifetime
 value and body-time composition, structure reach, unhealthy caps, decisiveness,
 repair behavior, profile identity, FFA/team behavior, and seat/geometry effects.
+The probe also reports per-kind reach over competitive lifetimes and each
+kind's share of the scrap bill. Both are diagnostic — no floor gates them —
+and they are the readings that catch a kind nothing ever builds and money
+sunk where no body-time share can see it.
 Use `sweep`, `sweep-factorial`, `pace-sweep`, `matchup`, and
 `tools/train/fun_gate.py` when their axis is affected. Compare candidates on
 the same maps, seeds, ticks, factions, profiles, and schema; the Overseer is

@@ -335,6 +335,20 @@ pub fn balance_probe(
         println!("  {kind:<12} {mean:>5.2} · {:>5.1}%", reach * 100.0);
     }
 
+    // Two readings the share tables structurally cannot give. Reach:
+    // a kind built once and a kind never built both show up as a share
+    // near zero, and only one of those is a design problem. Scrap
+    // destination: presence-weighted shares never see the money that
+    // went into defenses, tech, and expansion, because those never
+    // take a body-time sample.
+    println!("\ncompetitive-lifetime kind reach (diagnostic):");
+    print_ranked(&overall.competitive_kind_reach);
+    println!(
+        "\nscrap destination share of {} scrap (diagnostic):",
+        overall.competitive_spend_total
+    );
+    print_ranked(&overall.competitive_spend_share);
+
     // Promotion judges every seat's competitive lifetime. Losing seats
     // keep their pre-defeat history; the sampler stops their combat
     // clock once they resign or lose their completed Foundry.
@@ -373,9 +387,11 @@ pub fn balance_probe(
 
     if let Some(path) = out {
         let payload = serde_json::json!({
-            // Bumped whenever a consumer (tools/train/fun_gate.py) would
-            // need to read this file differently.
-            "schema": 9,
+            // Bumped whenever a consumer (tools/train/fun_gate.py,
+            // tools/train/league.py) would need to read this file
+            // differently. Schema 10 adds the per-kind competitive
+            // reach and scrap-destination tables to every cohort.
+            "schema": 10,
             "level": format!("{level:?}"),
             "artifact": artifact,
             "digest": digest,
@@ -404,6 +420,16 @@ pub fn balance_probe(
         println!("\nraw record: {path}");
     }
     Ok(())
+}
+
+/// A share table biggest first, name-ordered within a tie so two runs
+/// of the same record print the same page.
+fn print_ranked(shares: &std::collections::BTreeMap<String, f64>) {
+    let mut rows: Vec<(&String, &f64)> = shares.iter().collect();
+    rows.sort_by(|a, b| b.1.total_cmp(a.1).then_with(|| a.0.cmp(b.0)));
+    for (kind, share) in rows {
+        println!("  {kind:<14} {:>5.1}%", share * 100.0);
+    }
 }
 
 fn style_slug(style: NamedStyle) -> &'static str {
@@ -670,7 +696,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
         std::fs::remove_file(&out).ok();
 
-        assert_eq!(payload["schema"], 9);
+        assert_eq!(payload["schema"], 10);
         assert_eq!(payload["profile"], "ladder");
         assert_eq!(payload["dials"]["style"], "balanced");
         assert_eq!(payload["dials"]["variant"], 1);
@@ -702,7 +728,7 @@ mod tests {
         let payload: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
         std::fs::remove_file(&out).ok();
-        assert_eq!(payload["schema"], 9);
+        assert_eq!(payload["schema"], 10);
         // One match per shipped map: the roster is mid-rework for 0.15,
         // so the floor tracks the roster instead of pinning a count.
         let shipped = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../scenarios"))
@@ -735,6 +761,36 @@ mod tests {
         assert!(payload["overall"]["seat_combat_count_entropy"]["p10"].is_number());
         assert!(payload["overall"]["seat_combat_count_dominance"]["p90"].is_number());
         assert!(payload["overall"]["competitive_seats_with_building"].is_object());
+        // Schema 10: per-kind reach and scrap destination, on every
+        // cohort the gate can read, plus the raw per-seat rows they
+        // fold out of.
+        for cohort in [&payload["overall"], &payload["decided"]] {
+            assert!(cohort["competitive_kind_reach"].is_object());
+            assert!(cohort["competitive_spend_share"].is_object());
+            assert!(cohort["competitive_spend_total"].is_u64());
+        }
+        let reach = payload["overall"]["competitive_kind_reach"]
+            .as_object()
+            .expect("reach is a kind-keyed table");
+        assert!(
+            reach.values().all(|share| share
+                .as_f64()
+                .is_some_and(|share| (0.0..=1.0).contains(&share))),
+            "reach is a fraction of competitive lifetimes"
+        );
+        let spend: f64 = payload["overall"]["competitive_spend_share"]
+            .as_object()
+            .expect("spend share is a kind-keyed table")
+            .values()
+            .filter_map(serde_json::Value::as_f64)
+            .sum();
+        assert!(
+            payload["overall"]["competitive_spend_total"]
+                .as_u64()
+                .is_some_and(|total| total == 0)
+                || (spend - 1.0).abs() < 1e-9,
+            "a non-empty scrap bill divides into shares that sum to one"
+        );
         assert!(payload["dials"]["aggression"].is_null());
         assert!(payload["dials"]["style"].is_null());
         assert!(payload["dials"]["variant"].is_null());
@@ -806,5 +862,33 @@ mod tests {
         }
         assert!(first["seats"][0]["harvester"].is_number());
         assert!(first["combat_seats"][0]["harvester"].is_null());
+        // The per-seat rows the cohort tables fold: reach is a sorted
+        // name array, spend a sorted name -> scrap map. 40 ticks buys
+        // nothing, so both are legitimately empty here — the shape is
+        // what this test pins.
+        for seat in first["competitive_kind_reach"]
+            .as_array()
+            .expect("reach is reported per seat")
+        {
+            let kinds: Vec<&str> = seat
+                .as_array()
+                .expect("one seat's reach is an array")
+                .iter()
+                .map(|kind| kind.as_str().expect("kinds are canonical names"))
+                .collect();
+            assert!(
+                kinds.windows(2).all(|pair| pair[0] < pair[1]),
+                "reach names are sorted and distinct"
+            );
+        }
+        for seat in first["competitive_spend"]
+            .as_array()
+            .expect("spend is reported per seat")
+        {
+            assert!(
+                seat.as_object()
+                    .is_some_and(|kinds| kinds.values().all(serde_json::Value::is_u64))
+            );
+        }
     }
 }

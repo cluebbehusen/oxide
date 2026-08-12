@@ -2212,10 +2212,11 @@ def probe_canary(payload: dict) -> dict:
     }
 
 
-# Schema 8 drops the deleted scripted-tier dial from the probe payload
-# while keeping the competitive-lifetime combat metrics beside the
-# preserved all-unit diagnostics.
-PROBE_SCHEMA = 9
+# Schema 10 adds the per-kind competitive reach and scrap-destination
+# tables beside the competitive-lifetime combat metrics and the
+# preserved all-unit diagnostics. The canary reads none of them yet;
+# the pin exists so a driver/loop mismatch fails loudly.
+PROBE_SCHEMA = 10
 
 
 def composition_probe(
