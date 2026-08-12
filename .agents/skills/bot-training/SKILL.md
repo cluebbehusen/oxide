@@ -108,6 +108,28 @@ uv run revive.py --initialize-from runs/parent.json --actions 3,8 \
   --promote-actions 3 --out runs/revived.pt
 ```
 
+For fine-tuning an existing artifact across a rules change, prefer the
+training autopilot over hand-titrated league rounds — population-based
+search over the opponent mix, map mix, and production-entropy knobs,
+with the fun gate as a hard constraint and failure-count-first fitness:
+
+```sh
+uv run autopilot.py --name auto-N \
+  --initialize-from lineage-checkpoints/<champion-parent>.pt \
+  --seed-config runs/<champion-config>.json \
+  --population 4 --updates 60 --generations 2 --cup-seeds 30
+```
+
+Seed it with the incumbent champion's config (recorded in the
+campaign's experiments log and in the artifact lineage reference),
+review its WARN lines between generations rather than
+searching past a systematic defect, and keep balance constants, gate
+floors, and reward shaping out of the search — those are design
+decisions. It resumes after a crash; battery scores persist beside
+each member checkpoint. The champion still owes the complete
+promotion battery below; the autopilot's cup is a filter, not a
+verdict.
+
 ## Evaluate the shipping artifact
 
 Export first, then measure native Q12 inference. A torch-side tournament is a
