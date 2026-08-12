@@ -242,6 +242,11 @@ def main() -> None:
     ap.add_argument("--cup-seeds", type=int, default=30)
     ap.add_argument("--perturb-seed", type=int, default=0, help="mutation rng seed")
     ap.add_argument(
+        "--seed-config",
+        help="JSON file with the founder config (mix, map_mix, "
+        "production_entropy_coef); omission uses the built-in default",
+    )
+    ap.add_argument(
         "--driver",
         default=os.environ.get("OXIDE_DRIVER_BIN", "../../target/release/oxide-driver"),
     )
@@ -252,9 +257,15 @@ def main() -> None:
     root.mkdir(parents=True, exist_ok=True)
     journal = root / "generations.jsonl"
 
+    seed_config = SEED_CONFIG
+    if args.seed_config:
+        seed_config = json.loads(pathlib.Path(args.seed_config).read_text())
+        missing = {"mix", "map_mix", "production_entropy_coef"} - set(seed_config)
+        if missing:
+            raise SystemExit(f"seed config missing fields: {sorted(missing)}")
     members = []
     for index in range(args.population):
-        config = SEED_CONFIG if index == 0 else perturb(SEED_CONFIG, rng)
+        config = seed_config if index == 0 else perturb(seed_config, rng)
         members.append({"config": config, "ckpt": args.initialize_from})
 
     best_overall = None
