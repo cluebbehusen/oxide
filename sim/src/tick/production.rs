@@ -101,40 +101,12 @@ pub(super) fn run(state: &mut State, events: &mut Vec<Event>) {
         }
     }
 
-    // The transparent income floor: every standing Foundry smelts a slow
-    // trickle per works rather than per player, so expansion bases earn
-    // their keep — while the rate keeps income alone from ever paying
-    // for one. A living seat always has a way back into the game, even
-    // with every node exhausted and camped.
-    if completed_ticks >= crate::stats::FOUNDRY_DRIP_START_TICK
-        && completed_ticks.is_multiple_of(crate::stats::FOUNDRY_DRIP_PERIOD)
-    {
-        let credits: Vec<(PlayerId, u32)> = state
-            .players
-            .iter()
-            .enumerate()
-            .map(|(index, _)| PlayerId(index as u8))
-            .filter(|player| !state.player(*player).resigned)
-            .map(|player| {
-                let foundries = state
-                    .buildings
-                    .iter()
-                    .filter(|building| {
-                        building.player == player
-                            && building.hp > 0
-                            && building.built
-                            && building.kind == crate::stats::BuildingKind::Foundry
-                    })
-                    .count() as u32;
-                (player, foundries)
-            })
-            .filter(|(_, foundries)| *foundries > 0)
-            .collect();
-        for (player, foundries) in credits {
-            let bank = &mut state.player_mut(player).scrap;
-            *bank = bank.saturating_add(foundries);
-        }
-    }
+    // 0.15.3: the Foundry drip is gone. Passive smelting paid every
+    // standing base a trickle regardless of play, and the measured
+    // meta never expanded anyway (0.6% expansion reach) — income now
+    // comes only from worked salvage, Reclaimers, and contested
+    // Extractors, so map economy is the whole economy. The targeted
+    // recovery allowance below remains the anti-lockout floor.
 
     // External income closes the captured deficit without creating new
     // emergency headroom. Spending, cancelling, or losing the package

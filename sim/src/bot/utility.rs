@@ -163,6 +163,26 @@ pub struct UtilityPolicy {
     dead_nodes: Vec<TilePos>,
     /// Harvester count at the last think; a drop means raiders.
     harvesters_seen: usize,
+    /// Bank reading at the last think and the last tick it grew — the
+    /// starvation clock behind the desperation endgame. A bank that has
+    /// not grown in eighty seconds is a dead economy whatever its
+    /// level: rich seats freeze too, hoarding a reserve no income will
+    /// ever top up.
+    bank_seen: u32,
+    bank_grew_at: u64,
+    desperate: bool,
+    /// Under desperation, two different route questions about home's
+    /// mirror — the blind guess at the enemy base a symmetric quarry
+    /// offers. Marching may trust optimism (`desperate_march`, the
+    /// flood where unexplored counts open): a blind march explores,
+    /// and on a connected map it finds the war. Liquidating the
+    /// capital fund must not (`desperate_road`, walked tiles only):
+    /// optimism survives any unexplored gulf forever, and a seat that
+    /// releases its savings on that hope buys infantry against a
+    /// strait until the map dies. No known road means island war —
+    /// protect the fund and climb to the sky.
+    desperate_march: bool,
+    desperate_road: bool,
     /// Set when a harvester died on this watch; cleared when a turret
     /// stands (not when the command is emitted — commands can bounce).
     raided: bool,
@@ -215,6 +235,15 @@ impl UtilityPolicy {
         enlisted: &[UnitId],
     ) -> Vec<Intent> {
         let mut intents = Vec::new();
+        if obs.scrap > self.bank_seen || obs.tick == 0 {
+            self.bank_grew_at = obs.tick;
+        }
+        self.bank_seen = obs.scrap;
+        // The clock must undercut the liveness gate's stall patience
+        // (roughly two thousand ticks): desperation is the designed
+        // answer to an economic freeze, so it has to fire before the
+        // freeze detector calls the game dead between pushes.
+        self.desperate = obs.tick.saturating_sub(self.bank_grew_at) > 1_600;
         let mut budget = obs.scrap;
 
         let Some(home) = obs
@@ -226,6 +255,14 @@ impl UtilityPolicy {
             return intents; // eliminated: nothing left to decide
         };
         let home_tile = home.anchor;
+        let mirror_site = TilePos::new(
+            obs.map_width - 1 - home_tile.x,
+            obs.map_height - 1 - home_tile.y,
+        );
+        if self.desperate {
+            self.desperate_march = Self::ground_reaches(obs, home_tile, mirror_site);
+            self.desperate_road = Self::ground_route_known(obs, home_tile, mirror_site);
+        }
 
         self.audit_harvests(obs);
         self.audit_sites(obs);
@@ -499,7 +536,14 @@ impl UtilityPolicy {
                 stats.domain == Domain::Ground && stats.can_fight()
             })
             .count();
-        let capital = if screen < 3 {
+        // A desperate economy with a road to march releases the capital
+        // fund: saving for the next tech rung is saving for a purchase
+        // no income will ever complete, while the freed bank buys the
+        // bodies that end the game now. Island desperation keeps the
+        // fund — with no ground road, the tech chain to the sky is the
+        // only road left, and spending its savings on infantry is how
+        // forty-seven fighters end up staring at a gulf forever.
+        let capital = if screen < 3 || (self.desperate && self.desperate_road) {
             0
         } else {
             Self::capital_reserve(dials, obs)
@@ -526,7 +570,8 @@ impl UtilityPolicy {
                 .filter(|(_, b)| b.kind == BuildingKind::Airworks && b.built)
                 .min_by_key(|(_, b)| b.id);
             if let Some((qi, airworks)) = airworks
-                && Self::island_target(obs, home).is_some()
+                && (Self::island_target(obs, home).is_some()
+                    || (self.desperate && !self.desperate_road))
             {
                 let price = UnitKind::Skyhook.stats().cost + TECH_RESERVE;
                 if *budget >= price && obs.my_queues[qi].len() < 2 {
@@ -925,7 +970,13 @@ impl UtilityPolicy {
             self.ferry_boarding.clear();
             return;
         };
-        let Some(target) = Self::island_target(obs, home) else {
+        let Some(target) = Self::island_target(obs, home).or_else(|| {
+            // Blind island desperation presumes the enemy at home's
+            // mirror: the ferry flies at the one guess a symmetric
+            // quarry offers, and contact does the rest.
+            (self.desperate && !self.desperate_road)
+                .then(|| TilePos::new(obs.map_width - 1 - home.x, obs.map_height - 1 - home.y))
+        }) else {
             return;
         };
         // Riders gone from the field are aboard or dead; riders idle
@@ -1091,9 +1142,11 @@ impl UtilityPolicy {
                     // A frame no builder can walk to must not be
                     // claimed: the intent would re-issue forever and
                     // starve every deeper construction rung (the
-                    // island-map deadlock). Unexplored ground stays
-                    // optimistically open, like every founding walk.
-                    .filter(|f| Self::ground_reaches(obs, home, **f))
+                    // island-map deadlock). The road must be KNOWN —
+                    // the optimistic flood survives any unexplored
+                    // gulf, and a cross-strait frame it admits eats
+                    // every construction think until the map dies.
+                    .filter(|f| Self::ground_route_known(obs, home, **f))
                     .min_by_key(|f| (f.chebyshev(home), f.y, f.x))
                     .copied();
                 if let Some(anchor) = frame {
@@ -1137,7 +1190,7 @@ impl UtilityPolicy {
                         foundries
                             .iter()
                             .all(|f| f.chebyshev(*tile) > EXPANSION_RADIUS)
-                            && Self::ground_reaches(obs, home, *tile)
+                            && Self::ground_route_known(obs, home, *tile)
                     })
                     .min_by_key(|tile| {
                         let frontier = foundries
@@ -1792,8 +1845,24 @@ impl UtilityPolicy {
         // forever for an edge neither can get, and a fair fight taken
         // late beats a stalemate never resolved.
         let patience = (obs.tick / 4000).min(4);
-        let (margin_num, margin_den) = (8 - patience, 4u64);
-        let gate_open = army_strength * margin_den >= enemy_strength.max(floor) * margin_num;
+        // 0.15.3 desperation: with the Foundry drip gone, a starved
+        // economy can freeze against a frozen army gate — harvesters
+        // hide from a contested midfield, the bank never grows, and
+        // the push waits for an edge no income will ever buy. "Nothing
+        // has come in for a long time and the bank is empty" is the
+        // honest starvation signal: fog memory makes "no income
+        // possible" unknowable, because a turtled seat remembers
+        // salvage it will never dare work. The margin drops to an even
+        // fight and the blind-mass floor to one sentinel's worth, so
+        // scarcity ends games instead of freezing them.
+        let desperate = self.desperate;
+        let (margin_num, margin_den) = if desperate {
+            (4, 4u64)
+        } else {
+            (8 - patience, 4u64)
+        };
+        let commit_floor = if desperate { sentinel_worth } else { floor };
+        let gate_open = army_strength * margin_den >= enemy_strength.max(commit_floor) * margin_num;
 
         let members = staging_army.map(|a| a.members.len()).unwrap_or(0);
         let target_size = if gate_open {
@@ -1807,11 +1876,23 @@ impl UtilityPolicy {
         });
 
         // Commit: numbers met and the fight is expected to be unfair —
-        // in our favor.
+        // in our favor. A desperate seat commits whatever stands: the
+        // draft will never grow, and when the enemy was never even
+        // found (a broke seat cannot afford scouts), the march heads
+        // for home's mirror — the one guess a symmetric quarry always
+        // offers — and lets contact do the rest.
         if let Some(army) = staging_army
-            && army.members.len() >= dials.army_size as usize
+            && (army.members.len() >= dials.army_size as usize
+                || (desperate && !army.members.is_empty()))
             && gate_open
-            && let Some(target) = enemy_site
+            && let Some(target) = enemy_site.or_else(|| {
+                (desperate && self.desperate_march).then(|| {
+                    self.passable_near(
+                        obs,
+                        TilePos::new(obs.map_width - 1 - home.x, obs.map_height - 1 - home.y),
+                    )
+                })
+            })
         {
             intents.push(Intent::PushArmy {
                 army: army.id,

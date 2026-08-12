@@ -972,7 +972,10 @@ const TENDER: UnitStats = UnitStats {
     max_hp: 150,
     speed: Fx::lit("0.11"),
     radius: Fx::lit("0.38"),
-    cost: 180,
+    // 0.15.3 balance lab: 0.2% reach at 180 — the mobile welder lost
+    // every pricing comparison to the static Repair Bay and to simply
+    // rebuilding. Priced as a line attachment, not an investment.
+    cost: 130,
     train_ticks: 300,
     domain: Domain::Ground,
     weapons: &[],
@@ -1297,14 +1300,16 @@ const FOUNDRY: BuildingStats = BuildingStats {
     ],
     weapons: &[],
     // 0.15: buildable — the expansion base and the comeback path. Gated
-    // on a Fabricator so a proxy Foundry is a committed tech play, and
-    // priced so its income drip alone never pays for it (~20 minutes;
-    // production, drop-off reach, and survivability are the reasons to
-    // build one). Victory counts sites too, so a dying main can be
+    // on a Fabricator so a proxy Foundry is a committed tech play.
+    // 0.15.3 balance lab: with the passive drip removed a Foundry is a
+    // pure production, drop-off, and survivability purchase — and at
+    // 400/800t the measured meta bought one in 0.6% of competitive
+    // lifetimes. Priced to be a real mid-game decision instead of a
+    // luxury; victory counts sites too, so a dying main can be
     // answered by ground already claimed.
     construction: Some(ConstructionStats {
-        cost: 400,
-        build_ticks: 800,
+        cost: 300,
+        build_ticks: 600,
         requires: &[BuildingKind::Fabricator],
     }),
 };
@@ -1394,8 +1399,10 @@ const BASTION: BuildingStats = BuildingStats {
         salvo: 1,
         projectile: true,
     }],
+    // 0.15.3 balance lab: 2.8% reach — the fortress gun competes with
+    // a 200-scrap mobile Bombard and was losing on price alone.
     construction: Some(ConstructionStats {
-        cost: 250,
+        cost: 210,
         build_ticks: 500,
         requires: &[],
     }),
@@ -1479,9 +1486,14 @@ const CRUCIBLE: BuildingStats = BuildingStats {
     vision: 6,
     produces: &[UnitKind::Breaker, UnitKind::Avalanche],
     weapons: &[],
+    // 0.15.3 balance lab: the whole tier-three era hid behind this
+    // gate — 7.6% Crucible reach at expert execution meant Breakers,
+    // Avalanches, and bombers barely existed in the shipped meta, and
+    // buffing the units behind an unbuilt gate moved nothing. The gate
+    // itself cheapens instead.
     construction: Some(ConstructionStats {
-        cost: 500,
-        build_ticks: 700,
+        cost: 400,
+        build_ticks: 550,
         requires: &[BuildingKind::Fabricator],
     }),
 };
@@ -1865,28 +1877,6 @@ pub const SAPPER_BLAST_RADIUS: Fx = Fx::lit("1.5");
 /// How close the Sapper must press to its target before the charge
 /// fires (measured to the target's closest point).
 pub const SAPPER_CONTACT_RANGE: Fx = Fx::lit("0.9");
-
-/// Ticks per scrap smelted by each standing, completed Foundry — the
-/// transparent income floor.
-///
-/// This is the economy's guarantee: exhausted nodes, lost Reclaimers,
-/// and camped salvage can make progress slow, but never leave a seat
-/// with no income at all. Credit is per Foundry so expansion bases are
-/// worth their keep, but the rate is tuned so income alone never pays
-/// for one (20/min against a 400 cost: production, drop-off reach,
-/// and survivability are the reasons to expand). Watched in training
-/// telemetry for foundry-farm degeneracy; the fallback design is a
-/// flat per-player floor at this same period.
-pub const FOUNDRY_DRIP_PERIOD: u64 = 60;
-
-/// First completed tick eligible for the drip: a two-minute warm-up.
-/// The floor exists for mid- and late-game lockouts; openings stay
-/// exactly as tuned without it. Measured (against the since-deleted
-/// 0.14 scripted bots): a from-tick-zero drip handed an omniscient
-/// anchor a decisive edge over a fog-honest brain (13/40 -> passing)
-/// purely on perfectly-converted
-/// early free scrap — the floor should never be an opening build order.
-pub const FOUNDRY_DRIP_START_TICK: u64 = 2_400;
 
 /// Ticks per scrap ground by a tier-one Reclaimer (the Refinery) — two
 /// and a half times the base drum, the roadmap's "improved Reclaimer".

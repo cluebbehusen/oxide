@@ -498,21 +498,12 @@ fn standing(player: u8, kind: BuildingKind, x: i32, y: i32) -> BuildingSpec {
     BuildingSpec { player, kind, x, y }
 }
 
-/// Foundry drip credits earned between `from_tick` and `state`'s current
-/// tick by a single-Foundry seat — exact-bank assertions add this so
-/// salvage/repair accounting and the always-on floor stay separately
-/// verifiable.
-fn drips_between(from_tick: u64, state: &oxide_sim::State) -> u32 {
-    let period = oxide_sim::stats::FOUNDRY_DRIP_PERIOD;
-    let start = oxide_sim::stats::FOUNDRY_DRIP_START_TICK;
-    let credits_by = |tick: u64| {
-        if tick < start {
-            0
-        } else {
-            tick / period - (start / period - 1)
-        }
-    };
-    u32::try_from(credits_by(state.current_tick()) - credits_by(from_tick)).unwrap()
+/// Foundry drip credits between two ticks: zero since 0.15.3 removed
+/// passive smelting. The helper stays so every exact-bank assertion
+/// still names the term it once carried — and so a future income
+/// floor knows exactly which assertions to revisit.
+fn drips_between(_from_tick: u64, _state: &oxide_sim::State) -> u32 {
+    0
 }
 
 #[test]
@@ -1116,10 +1107,6 @@ fn foundry_repair_bills_against_its_authored_price() {
             .iter()
             .any(|e| matches!(e, Event::OrderStalled { unit, .. } if *unit == welder))
     });
-    assert!(
-        state.current_tick() < oxide_sim::stats::FOUNDRY_DRIP_START_TICK,
-        "test premise: the weld and its stall fit before the first drip credit"
-    );
     assert_eq!(state.player(PlayerId(0)).scrap, 0, "the coin was spent");
     let healed = state.building(foundry).unwrap().hp - hp_before;
     let ramp = u64::from(max_hp - max_hp / 5);

@@ -514,16 +514,18 @@ impl State {
             return false;
         }
 
-        let reclaimer = self.buildings.iter().any(|building| {
+        // 0.15.3: no Foundry drip. Passive income exists only through a
+        // standing income structure — a Reclaimer's grind or a restored
+        // Extractor's yield.
+        self.buildings.iter().any(|building| {
             building.player == player
                 && building.hp > 0
                 && building.built
-                && building.kind == BuildingKind::Reclaimer
-        });
-        // The Foundry drip runs from tick zero, so any seat that passed
-        // the completed-Foundry check above always has passive income.
-        let _ = reclaimer;
-        true
+                && matches!(
+                    building.kind,
+                    BuildingKind::Reclaimer | BuildingKind::Extractor
+                )
+        })
     }
 
     /// Whether a living Foundry owns neither a live Harvester nor a prepaid

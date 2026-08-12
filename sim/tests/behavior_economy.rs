@@ -111,20 +111,11 @@ fn train_costs_scrap_and_spawns_after_build_time() {
     )));
 }
 
-/// Foundry drip credits a single-Foundry seat has earned by `state`'s
-/// current tick — recovery-flow assertions add or subtract this so the
-/// always-on floor and the finite fast flows stay separately testable.
-fn drip_credits(state: &oxide_sim::State) -> u32 {
-    let period = oxide_sim::stats::FOUNDRY_DRIP_PERIOD;
-    let start = oxide_sim::stats::FOUNDRY_DRIP_START_TICK;
-    let credits_by = |tick: u64| {
-        if tick < start {
-            0
-        } else {
-            tick / period - (start / period - 1)
-        }
-    };
-    u32::try_from(credits_by(state.current_tick())).unwrap()
+/// Foundry drip credits by `state`'s current tick: zero since 0.15.3
+/// removed passive smelting. Kept so the recovery-flow assertions
+/// still name the term they once separated from the fast flows.
+fn drip_credits(_state: &oxide_sim::State) -> u32 {
+    0
 }
 
 #[test]
@@ -203,7 +194,7 @@ fn spending_the_recovery_package_does_not_refill_the_entitlement() {
     // by exactly the drip credits that land in the window (zero inside
     // the warm-up).
     let credits_at_settle = drip_credits(&state);
-    for _ in 0..3 * oxide_sim::stats::FOUNDRY_DRIP_PERIOD {
+    for _ in 0..180 {
         state.tick(&[]);
     }
     assert_eq!(
@@ -212,8 +203,9 @@ fn spending_the_recovery_package_does_not_refill_the_entitlement() {
         "after the package is spent, income is the drip alone"
     );
     assert!(
-        state.recovery_income_active(PlayerId(0)),
-        "the drip is the always-on floor, so a Foundry seat always reports passive income"
+        !state.recovery_income_active(PlayerId(0)),
+        "with the drip gone, a bare Foundry seat has no passive income to report — \
+         only a built Reclaimer or Extractor answers for recovery"
     );
 }
 
@@ -360,7 +352,7 @@ fn a_prepaid_worker_death_preserves_only_the_unspent_recovery_remainder() {
     // bank grows by exactly the drip credits that land in the window
     // (zero inside the warm-up).
     let credits_at_settle = drip_credits(&state);
-    for _ in 0..3 * oxide_sim::stats::FOUNDRY_DRIP_PERIOD {
+    for _ in 0..180 {
         state.tick(&[]);
     }
     assert_eq!(
@@ -420,37 +412,24 @@ fn a_real_harvester_deposit_rearms_one_future_recovery_cycle() {
 }
 
 #[test]
-fn every_standing_foundry_smelts_the_drip_after_the_warmup() {
-    use oxide_sim::stats::{FOUNDRY_DRIP_PERIOD, FOUNDRY_DRIP_START_TICK};
-    // The floor waits out its authored warm-up (openings stay exactly as
-    // tuned without free income), then credits one scrap per period per
-    // standing Foundry.
+fn standing_foundries_smelt_nothing() {
+    // 0.15.3: passive smelting is gone. A live seat with a standing
+    // Foundry and no workers banks nothing however long it stands —
+    // income is worked salvage, Reclaimers, and Extractors only.
     let mut live = arena(vec![unit(0, UnitKind::Harvester, 3, 2)]);
     live.players[0].scrap = 0;
     let mut live = live.build().unwrap();
-    for _ in 0..FOUNDRY_DRIP_START_TICK - 1 {
+    for _ in 0..2_600 {
         live.tick(&[]);
     }
     assert_eq!(
         live.player(PlayerId(0)).scrap,
         0,
-        "no credit lands inside the warm-up"
+        "no passive income from a standing Foundry"
     );
-    live.tick(&[]);
-    assert_eq!(
-        live.player(PlayerId(0)).scrap,
-        1,
-        "the first credit lands the moment the warm-up ends"
-    );
-    for _ in 0..FOUNDRY_DRIP_PERIOD - 1 {
-        live.tick(&[]);
-    }
-    assert_eq!(live.player(PlayerId(0)).scrap, 1);
-    live.tick(&[]);
-    assert_eq!(live.player(PlayerId(0)).scrap, 2);
 
     // A queued prepaid replacement suppresses the fast recovery flow,
-    // never the drip.
+    // and with the drip gone nothing else can refill the bank.
     let mut queued = arena(Vec::new());
     queued.players[0].scrap = UnitKind::Harvester.stats().cost;
     let mut queued = queued.build().unwrap();
@@ -468,39 +447,28 @@ fn every_standing_foundry_smelts_the_drip_after_the_warmup() {
         },
     )]);
     assert_eq!(queued.player(PlayerId(0)).scrap, 0);
-    while queued.current_tick() < FOUNDRY_DRIP_START_TICK - 1 {
+    for _ in 0..2_600 {
         queued.tick(&[]);
     }
     assert_eq!(
         queued.player(PlayerId(0)).scrap,
         0,
-        "a prepaid Harvester suppresses fast recovery through the warm-up"
-    );
-    queued.tick(&[]);
-    assert_eq!(
-        queued.player(PlayerId(0)).scrap,
-        1,
-        "the queued replacement does not suppress the drip"
+        "a prepaid Harvester suppresses fast recovery and no drip exists to leak past it"
     );
 
     let mut resigned = arena(Vec::new());
     resigned.players[0].scrap = 0;
     let mut resigned = resigned.build().unwrap();
     resigned.tick(&[cmd(0, Command::Surrender)]);
-    assert_eq!(
-        resigned.player(PlayerId(0)).scrap,
-        0,
-        "a conceded seat cannot bank a comeback"
-    );
     let mut value = serde_json::to_value(resigned).unwrap();
-    value["tick"] = (FOUNDRY_DRIP_START_TICK - 1).into();
+    value["tick"] = serde_json::json!(2_600);
     value["result"] = serde_json::Value::Null;
     let mut resigned: oxide_sim::State = serde_json::from_value(value).unwrap();
     resigned.tick(&[]);
     assert_eq!(
         resigned.player(PlayerId(0)).scrap,
         0,
-        "the drip never credits a resigned seat"
+        "a conceded seat cannot bank a comeback"
     );
 }
 

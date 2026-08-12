@@ -1,12 +1,12 @@
 //! Buildable Foundries: the 0.15 expansion base. Construction sits
 //! behind the Fabricator tech gate, sites count for survival exactly
-//! like standing works, abandoned scaffolds rust away, and every
-//! completed Foundry smelts the transparent drip.
+//! like standing works, abandoned scaffolds rust away, and — since
+//! 0.15.3 — no Foundry smelts passive income.
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
 use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
-use oxide_sim::stats::{BuildingKind, FOUNDRY_DRIP_PERIOD, FOUNDRY_DRIP_START_TICK};
+use oxide_sim::stats::BuildingKind;
 use oxide_sim::{Command, Event, Faction, PlayerCommand, PlayerId, Scenario, State, UnitKind};
 
 fn players(scrap: u32) -> Vec<PlayerSpec> {
@@ -179,23 +179,22 @@ fn a_completed_expansion_produces_and_smelts_its_own_drip() {
         bank - UnitKind::Harvester.stats().cost
     );
 
-    // Two standing Foundries smelt two per period once the warm-up ends.
+    // 0.15.3: standing Foundries smelt nothing. Two completed works
+    // across what was once the drip warm-up boundary leave the bank
+    // untouched — income is worked salvage, Reclaimers, and
+    // Extractors, never a standing building.
     let mut value = serde_json::to_value(&state).unwrap();
-    value["tick"] = serde_json::json!(FOUNDRY_DRIP_START_TICK - 1);
+    value["tick"] = serde_json::json!(2_400);
     let mut state: State = serde_json::from_value(value).unwrap();
     let bank = state.player(PlayerId(0)).scrap;
-    state.tick(&[]);
-    assert_eq!(
-        state.player(PlayerId(0)).scrap,
-        bank + 2,
-        "each completed Foundry smelts its own drip credit"
-    );
-    for _ in 0..FOUNDRY_DRIP_PERIOD - 1 {
+    for _ in 0..120 {
         state.tick(&[]);
     }
-    assert_eq!(state.player(PlayerId(0)).scrap, bank + 2);
-    state.tick(&[]);
-    assert_eq!(state.player(PlayerId(0)).scrap, bank + 4);
+    assert_eq!(
+        state.player(PlayerId(0)).scrap,
+        bank,
+        "no passive income from standing Foundries"
+    );
 }
 
 #[test]

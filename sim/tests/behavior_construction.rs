@@ -1689,20 +1689,11 @@ fn a_fresh_placement_commits_the_whole_crew() {
 /// nothing and places nothing at accept, hands the founder
 /// [`Order::Found`], and founds — site, payment, Build order — only
 /// when the founder stands beside ground it can see again.
-/// Foundry drip credits a single-Foundry seat has earned by `state`'s
-/// current tick — exact-bank assertions add this so passive income and
-/// spend accounting stay separately verifiable.
-fn drip_credits(state: &oxide_sim::State) -> u32 {
-    let period = oxide_sim::stats::FOUNDRY_DRIP_PERIOD;
-    let start = oxide_sim::stats::FOUNDRY_DRIP_START_TICK;
-    let credits_by = |tick: u64| {
-        if tick < start {
-            0
-        } else {
-            tick / period - (start / period - 1)
-        }
-    };
-    u32::try_from(credits_by(state.current_tick())).unwrap()
+/// Foundry drip credits by `state`'s current tick: zero since 0.15.3
+/// removed passive smelting. Kept so exact-bank assertions still name
+/// the term they once carried.
+fn drip_credits(_state: &oxide_sim::State) -> u32 {
+    0
 }
 
 #[test]

@@ -129,7 +129,7 @@ fn defense_stats_name_three_distinct_jobs() {
     );
     assert_eq!(bastion.weapons[0].cooldown_ticks, 90);
     assert_eq!(bastion.weapons[0].splash, Some(chassis::fx::Fx::lit("1.3")));
-    assert_eq!(bastion.construction.unwrap().cost, 250);
+    assert_eq!(bastion.construction.unwrap().cost, 210);
     assert_eq!(bastion.construction.unwrap().build_ticks, 500);
 }
 
