@@ -126,6 +126,16 @@ impl Orientation {
         for (pos, _) in o.known_scrap.iter_mut().chain(o.known_wrecks.iter_mut()) {
             *pos = self.tile(*pos);
         }
+        // Frames are 2x2 footprints, so their anchors flip like a
+        // building's, not like a tile — the same rule founding promises
+        // use above. This field was the one positional collection
+        // observe() forgot: flipped seats mixed world-space frame
+        // anchors with oriented everything else, aimed Extractor
+        // claims at mirror-image tiles holding no frame, and fed the
+        // policy a seat-dependent nearest-frame feature.
+        for f in o.known_frames.iter_mut() {
+            *f = self.anchor(*f, (2, 2));
+        }
         for pos in o
             .known_rock
             .iter_mut()
@@ -136,6 +146,7 @@ impl Orientation {
             *pos = self.tile(*pos);
         }
         o.known_scrap.sort_by_key(|(p, _)| (p.y, p.x));
+        o.known_frames.sort_by_key(|p| (p.y, p.x));
         o.known_wrecks.sort_by_key(|(p, _)| (p.y, p.x));
         o.known_rock.sort_by_key(|p| (p.y, p.x));
         o.known_peaks.sort_by_key(|p| (p.y, p.x));

@@ -861,6 +861,24 @@ pub fn serve() -> Result<()> {
     Ok(())
 }
 
+/// One sampled cup match's scoring row: (won, draw, capped, active
+/// cap). Scored by seat membership, not team id — a team number only
+/// coincides with the seat index on default-team maps. `winners` is
+/// empty for BOTH a mutual-destruction draw and an undecided tick
+/// cap (kit reports a cap as `capped` with no result), so a draw is
+/// only claimed when the match actually ended: conflating the two
+/// once inflated every cup's draw column by its censoring rate.
+fn cup_outcome(
+    winners: &[u8],
+    seat: u8,
+    capped: bool,
+    recent_activity: bool,
+) -> (bool, bool, bool, bool) {
+    let won = winners.contains(&seat);
+    let draw = winners.is_empty() && !capped;
+    (won, draw, capped, capped && recent_activity)
+}
+
 /// Runs the promotion tournament for a quantized artifact: the
 /// Overseer plus the rush canary, `seeds` seeds x both seats, printed
 /// as JSON lines. This measures the shipped integer bot — the float
@@ -976,16 +994,13 @@ pub fn neural_cup(
                 state.tick(&commands)
             })
             .context("sampling cup match")?;
-            // Score by seat membership, not team id — a team number
-            // only coincides with the seat index on default-team maps.
-            let won = sampled.winners.contains(&seat);
-            let draw = sampled.winners.is_empty();
             let recent = |tick| sampled.ticks.saturating_sub(tick) <= 2_000;
-            let active_cap = sampled.capped
-                && (recent(sampled.activity.last_combat_tick)
-                    || recent(sampled.activity.last_economy_tick)
-                    || recent(sampled.last_progress_tick));
-            Ok((won, draw, sampled.capped, active_cap, sampled.ticks))
+            let recent_activity = recent(sampled.activity.last_combat_tick)
+                || recent(sampled.activity.last_economy_tick)
+                || recent(sampled.last_progress_tick);
+            let (won, draw, capped, active_cap) =
+                cup_outcome(&sampled.winners, seat, sampled.capped, recent_activity);
+            Ok((won, draw, capped, active_cap, sampled.ticks))
         };
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
@@ -1931,5 +1946,37 @@ mod tests {
                 .contains("factions must name exactly 2 seats, got 1"),
             "{err:#}"
         );
+    }
+}
+
+#[cfg(test)]
+mod cup_outcome_tests {
+    use super::cup_outcome;
+
+    #[test]
+    fn a_tick_capped_game_is_not_a_draw() {
+        // winners is empty on a cap too; only a finished match with no
+        // victor is a draw. The old accounting inflated draw columns
+        // by exactly the censoring rate.
+        let (won, draw, capped, active) = cup_outcome(&[], 0, true, false);
+        assert!(!won && !draw && capped && !active);
+    }
+
+    #[test]
+    fn a_mutual_destruction_is_a_draw() {
+        let (won, draw, capped, active) = cup_outcome(&[], 0, false, false);
+        assert!(!won && draw && !capped && !active);
+    }
+
+    #[test]
+    fn seat_membership_scores_the_win() {
+        assert!(cup_outcome(&[1], 1, false, false).0);
+        assert!(!cup_outcome(&[1], 0, false, false).0);
+    }
+
+    #[test]
+    fn an_active_cap_needs_recent_activity() {
+        assert!(cup_outcome(&[], 0, true, true).3);
+        assert!(!cup_outcome(&[], 0, false, true).3);
     }
 }

@@ -89,7 +89,37 @@ fn full_obs() -> Observation {
     obs.known_peaks = vec![TilePos::new(11, 6)];
     obs.known_wrecks = vec![(TilePos::new(9, 9), 30)];
     obs.blips = vec![TilePos::new(15, 2), TilePos::new(16, 11)];
+    obs.known_frames = vec![TilePos::new(13, 7), TilePos::new(3, 8)];
+    obs.incoming_shells = vec![TilePos::new(7, 7)];
+    obs.my_shells = 2;
     obs
+}
+
+#[test]
+fn frames_flip_like_footprints_not_tiles() {
+    // The involution below is satisfied by an untransformed field
+    // trivially (flipping nothing twice is nothing), which is exactly
+    // how the forgotten known_frames shipped: this one-way check pins
+    // the transform itself. A frame is a 2x2, so its anchor image is
+    // the building rule, offset by the footprint — not the tile rule.
+    let obs = full_obs();
+    let orientation = Orientation::for_home(&obs, TilePos::new(20, 10));
+    assert!(!orientation.is_identity());
+    let flipped = orientation.observe(&obs);
+    let mut expected: Vec<TilePos> = obs
+        .known_frames
+        .iter()
+        .map(|f| orientation.anchor(*f, (2, 2)))
+        .collect();
+    expected.sort_by_key(|p| (p.y, p.x));
+    assert_eq!(flipped.known_frames, expected);
+    assert!(
+        flipped
+            .known_frames
+            .windows(2)
+            .all(|w| { (w[0].y, w[0].x) <= (w[1].y, w[1].x) }),
+        "oriented frames keep the canonical order"
+    );
 }
 
 #[test]
