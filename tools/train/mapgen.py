@@ -56,7 +56,15 @@ def _carve(
     # aims matches at tens of minutes, and the curriculum has to teach
     # marches that long or the ladder never fights them well.
     roll = rng.random()
-    if pace == "grand":
+    if pace == "island":
+        # The severed-quarry curriculum: a guaranteed gulf needs room
+        # for two whole economies and an air war, so islands draw only
+        # the two big classes, like the grand pool.
+        if roll < 0.40:
+            w, h = int(rng.integers(50, 64)), int(rng.integers(30, 40))
+        else:
+            w, h = int(rng.integers(84, 108)), int(rng.integers(48, 64))
+    elif pace == "grand":
         # The pacing curriculum: only the two big classes (large 40%,
         # vast 60%). Round 7 proved teching evaporates when the reward
         # anneals on a mostly-small draw — games end before a
@@ -75,10 +83,15 @@ def _carve(
         w, h = int(rng.integers(50, 64)), int(rng.integers(30, 40))
     else:
         w, h = int(rng.integers(84, 108)), int(rng.integers(48, 64))
-    if players == 4:
-        # Four bases need more floor: widen the draw a class.
-        w, h = int(w * 1.3), int(h * 1.3)
-        return _carve4(rng, seed, w, h, teams)
+    if players in (4, 8):
+        # Four bases need more floor: widen the draw a class. Eight
+        # need another, and a floor besides — two anchors must stack
+        # in every quadrant with their own clusters between them.
+        scale = 1.3 if players == 4 else 1.6
+        w, h = int(w * scale), int(h * scale)
+        if players == 8:
+            w, h = max(w, 48), max(h, 40)
+        return _carve4(rng, seed, w, h, teams, players)
     grid = [["." for _ in range(w)] for _ in range(h)]
 
     def mirror(x: int, y: int) -> tuple[int, int]:
@@ -185,6 +198,20 @@ def _carve(
                     if 1 < x < w - 2 and 1 < y < h - 2 and grid[y][x] == ".":
                         set_pair(x, y, "^")
 
+    # The island gulf: an unbroken pit band across the full width,
+    # rows chosen symmetric under the 180-degree mirror, stamped over
+    # bare ground only. Rock and ridge cells inside the band already
+    # block ground, so the strait stays sealed; everything placed
+    # after this point (frames, scrap, units) self-avoids the pit by
+    # its own bare-ground checks. The occasional bridged '~' ribbon
+    # above draws islands by accident; this arm draws them on purpose.
+    if pace == "island":
+        half = int(rng.integers(1, 3))
+        for y in range((h - 1) // 2 - half, h // 2 + half + 1):
+            for x in range(1, w - 1):
+                if grid[y][x] == ".":
+                    grid[y][x] = "~"
+
     # Derelict Extractor frames, often: a mirrored pair of 'E' anchors
     # on clear 2x2 ground away from both bases. The mirrored anchor
     # shifts one up-left so the whole footprint, not the byte, is the
@@ -287,13 +314,19 @@ def _carve(
 
 
 def _carve4(
-    rng: np.random.Generator, seed: int, w: int, h: int, teams: bool = False
+    rng: np.random.Generator,
+    seed: int,
+    w: int,
+    h: int,
+    teams: bool = False,
+    players: int = 4,
 ) -> dict:
-    """Four-player maps by double mirroring: author the top-left
-    quadrant, reflect across both axes — every corner seat plays the
-    same quadrant. Anchor characters 1-4; spawn lists are emitted in
+    """Four- and eight-player maps by double mirroring: author the
+    top-left quadrant, reflect across both axes — every corner seat
+    plays the same quadrant. Eight players stack a second anchor in
+    each quadrant. Anchor characters 1-8; spawn lists are emitted in
     the same reflected order per seat. With `teams`, the west column
-    (seats 0, 2) faces the east column (seats 1, 3) — reflection makes
+    (even seats) faces the east column (odd seats) — reflection makes
     the pairing fair from every corner."""
     grid = [["." for _ in range(w)] for _ in range(h)]
 
@@ -314,18 +347,23 @@ def _carve4(
     for y in range(h):
         set_all(0, y, "#")
 
+    groups = players // 4
     ax = int(rng.integers(3, max(4, w // 4)))
-    ay = int(rng.integers(3, max(4, h // 4)))
+    anchor_rows = [int(rng.integers(3, max(4, h // 4)))]
+    if groups == 2:
+        anchor_rows.append(int(rng.integers(h // 4 + 3, max(h // 4 + 4, h // 2 - 4))))
     # Anchors are top-left of a 2x2, so each reflected image shifts.
-    grid[ay][ax] = "1"
-    grid[ay][w - 2 - ax] = "2"
-    grid[h - 2 - ay][ax] = "3"
-    grid[h - 2 - ay][w - 2 - ax] = "4"
+    for group, row in enumerate(anchor_rows):
+        base = 4 * group
+        grid[row][ax] = str(base + 1)
+        grid[row][w - 2 - ax] = str(base + 2)
+        grid[h - 2 - row][ax] = str(base + 3)
+        grid[h - 2 - row][w - 2 - ax] = str(base + 4)
 
     for _ in range(int(rng.integers(2, 5))):
         cx = int(rng.integers(2, w // 2))
         cy = int(rng.integers(2, h // 2))
-        if abs(cx - ax) + abs(cy - ay) < 6:
+        if min(abs(cx - ax) + abs(cy - row) for row in anchor_rows) < 6:
             continue
         for _ in range(int(rng.integers(3, 9))):
             dx, dy = int(rng.integers(-2, 3)), int(rng.integers(-1, 2))
@@ -338,63 +376,73 @@ def _carve4(
     if rng.random() < 0.4:
         cx = int(rng.integers(4, w // 2))
         cy = int(rng.integers(3, h // 2))
-        if abs(cx - ax) + abs(cy - ay) >= 8:
+        if min(abs(cx - ax) + abs(cy - row) for row in anchor_rows) >= 8:
             dx, dy = [(1, 0), (0, 1), (1, 1)][int(rng.integers(0, 3))]
             for i in range(int(rng.integers(3, 7))):
                 x, y = cx + dx * i, cy + dy * i
                 if 1 < x < w - 2 and 1 < y < h - 2 and grid[y][x] == ".":
                     set_all(x, y, "^")
 
-    placed = 0
-    for _ in range(40):
-        if placed >= 3:
-            break
-        dx, dy = int(rng.integers(-4, 5)), int(rng.integers(-4, 5))
-        x, y = ax + 1 + dx, ay + 1 + dy
-        if (
-            1 < x < w - 2
-            and 1 < y < h - 2
-            and grid[y][x] == "."
-            and abs(dx) + abs(dy) >= 2
-        ):
-            set_all(x, y, "s")
-            placed += 1
-    cx, cy = w // 2, h // 2
-    if grid[cy][cx] == ".":
-        set_all(cx, cy, "S")
-
-    spots = []
-    for _ in range(60):
-        if len(spots) >= 4:
-            break
-        dx, dy = int(rng.integers(-3, 5)), int(rng.integers(-3, 5))
-        x, y = ax + 1 + dx, ay + 1 + dy
-        if (
-            1 < x < w // 2 - 1
-            and 1 < y < h // 2 - 1
-            and grid[y][x] == "."
-            and not (ax - 1 <= x <= ax + 2 and ay - 1 <= y <= ay + 2)
-            and (x, y) not in spots
-        ):
-            spots.append((x, y))
-    kinds = ["harvester", "harvester", "harvester", "sentinel"]
     units = []
-    for player in range(4):
-        for (x, y), kind in zip(spots, kinds, strict=False):
-            ix, iy = images(x, y)[player]
-            units.append({"player": player, "kind": kind, "x": ix, "y": iy})
+    kinds = ["harvester", "harvester", "harvester", "sentinel"]
+    for group, row in enumerate(anchor_rows):
+        placed = 0
+        for _ in range(40):
+            if placed >= 3:
+                break
+            dx, dy = int(rng.integers(-4, 5)), int(rng.integers(-4, 5))
+            x, y = ax + 1 + dx, row + 1 + dy
+            if (
+                1 < x < w - 2
+                and 1 < y < h - 2
+                and grid[y][x] == "."
+                and abs(dx) + abs(dy) >= 2
+            ):
+                set_all(x, y, "s")
+                placed += 1
+        if group == 0:
+            cx, cy = w // 2, h // 2
+            if grid[cy][cx] == ".":
+                set_all(cx, cy, "S")
+        spots = []
+        for _ in range(60):
+            if len(spots) >= 4:
+                break
+            dx, dy = int(rng.integers(-3, 5)), int(rng.integers(-3, 5))
+            x, y = ax + 1 + dx, row + 1 + dy
+            if (
+                1 < x < w // 2 - 1
+                and 1 < y < h // 2 - 1
+                and grid[y][x] == "."
+                and not (ax - 1 <= x <= ax + 2 and row - 1 <= y <= row + 2)
+                and (x, y) not in spots
+            ):
+                spots.append((x, y))
+        for corner in range(4):
+            player = 4 * group + corner
+            for (x, y), kind in zip(spots, kinds, strict=False):
+                ix, iy = images(x, y)[corner]
+                units.append({"player": player, "kind": kind, "x": ix, "y": iy})
 
-    factions = ["ferrous", "cupric", "ferrous", "cupric"]
-    # Seats reflect across x for 1|2 and 3|4, so west = seats 0, 2.
-    team_of = [0, 1, 0, 1] if teams else [None] * 4
+    # Corner order is TL, TR, BL, BR per group, so west = even seats.
     players_spec = []
-    for p in range(4):
-        spec = {"name": f"Seat{p}", "faction": factions[p], "scrap": 150, "bot": False}
-        if team_of[p] is not None:
-            spec["team"] = team_of[p]
+    for p in range(players):
+        corner = p % 4
+        spec = {
+            "name": f"Seat{p}",
+            "faction": "ferrous" if corner in (0, 2) else "cupric",
+            "scrap": 150,
+            "bot": False,
+        }
+        if teams:
+            spec["team"] = 0 if corner in (0, 2) else 1
         players_spec.append(spec)
+    if teams:
+        shape = f"{players // 2}v{players // 2}"
+    else:
+        shape = str(players)
     return {
-        "name": f"generated{'2v2' if teams else '4'}-{seed}",
+        "name": f"generated{shape}-{seed}",
         "seed": seed,
         "map": ["".join(row) for row in grid],
         "players": players_spec,
@@ -410,7 +458,11 @@ def cache_name(seed: int, players: int, teams: bool, pace: str | None) -> str:
     small-class maps whose seeds matched), and the pace bias joined the
     key when a shared directory could hand a grand request the plain
     map cached under the same seed."""
-    tag = "2v2" if teams else (str(players) if players != 2 else "")
+    tag = (
+        f"{players // 2}v{players // 2}"
+        if teams
+        else (str(players) if players != 2 else "")
+    )
     pace_tag = f"-{pace}" if pace else ""
     return f"gen{tag}{pace_tag}-s{MAPGEN_SCHEMA}-{seed}.json"
 

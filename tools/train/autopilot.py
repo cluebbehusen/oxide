@@ -4,8 +4,11 @@ the weights that survive the battery.
 Each generation trains every population member for a fixed number of
 league updates from its own checkpoint, exports the result, and scores
 it on the same instruments promotion uses: the native neural-cup is
-the fitness, and the fun gate is a hard constraint (a candidate that
-fails it can win nothing). The bottom half of the population is then
+the fitness, and the fun gate and the profile style-signature gate
+are hard constraints (a candidate that fails either can win
+nothing — auto-3 proved PPO can silently erode trunk-expressed
+personality behavior that only promotion day would otherwise catch).
+The bottom half of the population is then
 replaced by perturbed clones of the top half and the loop continues.
 
 The knobs the autopilot explores are exactly the ones the 0.15
@@ -35,11 +38,12 @@ import json
 import os
 import pathlib
 import random
+import shutil
 import subprocess
 import sys
 
 MIX_KEYS = ("self", "past", "overseer", "rusher", "ffa", "team")
-MAP_KEYS = ("fixed", "random", "grand")
+MAP_KEYS = ("fixed", "random", "grand", "island")
 
 SEED_CONFIG = {
     "mix": {
@@ -50,7 +54,7 @@ SEED_CONFIG = {
         "ffa": 0.10,
         "team": 0.15,
     },
-    "map_mix": {"fixed": 0.35, "random": 0.30, "grand": 0.35},
+    "map_mix": {"fixed": 0.32, "random": 0.27, "grand": 0.31, "island": 0.10},
     "production_entropy_coef": 0.0,
 }
 
@@ -61,6 +65,8 @@ def perturb(config: dict, rng: random.Random) -> dict:
     out = json.loads(json.dumps(config))
     for key_set, field in ((MIX_KEYS, "mix"), (MAP_KEYS, "map_mix")):
         weights = out[field]
+        for key in key_set:
+            weights.setdefault(key, 0.02)
         for key in rng.sample(key_set, k=2 if field == "mix" else 1):
             weights[key] = max(0.02, weights[key] * rng.uniform(0.7, 1.4))
         total = sum(weights.values())
@@ -159,7 +165,11 @@ def run_battery(candidate: pathlib.Path, driver: str, cup_seeds: int) -> dict:
             cached = json.loads(memo.read_text())
         except ValueError:
             cached = None
-        if isinstance(cached, dict) and cached.get("cup_seeds") == cup_seeds:
+        if (
+            isinstance(cached, dict)
+            and cached.get("cup_seeds") == cup_seeds
+            and "style_gate_pass" in cached
+        ):
             print(f"    reusing battery scores for {candidate.name}")
             return cached
     exported = candidate.with_suffix(".json")
@@ -196,20 +206,65 @@ def run_battery(candidate: pathlib.Path, driver: str, cup_seeds: int) -> dict:
     scores["fun_gate_failures"] = [
         line.strip() for line in gate.stdout.splitlines() if "FUN GATE FAIL" in line
     ]
+    style = subprocess.run(
+        [
+            shutil.which("cargo") or "cargo",
+            "test",
+            "--release",
+            "-p",
+            "oxide-sim",
+            "--test",
+            "bot_profiles",
+            "candidate_profile_behavior_gates",
+            "--locked",
+            "--",
+            "--ignored",
+            "--nocapture",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=pathlib.Path(__file__).resolve().parent.parent.parent,
+        env={**os.environ, "OXIDE_PROFILE_WEIGHTS": str(exported.resolve())},
+    )
+    scores["style_gate_pass"] = style.returncode == 0
+    scores["style_gate_failures"] = style_failures(style.stdout)
     scores["cup_seeds"] = cup_seeds
     memo.write_text(json.dumps(scores))
     return scores
 
 
+def style_failures(report: str) -> list[str]:
+    """Failure lines from the profile signature gate's output.
+
+    The signature summary names every family with its held-seed count
+    (the gate demands at least 4/7); a run that dies earlier, on an
+    identity-divergence assert, yields its panic line instead."""
+    lines = [raw.strip() for raw in report.splitlines()]
+    for line in lines:
+        if line.startswith("style-family signatures"):
+            _, _, counts = line.partition(":")
+            failures = []
+            for cell in counts.split(","):
+                name, _, held = cell.strip().rpartition(" ")
+                if held.isdigit() and int(held) < 4:
+                    failures.append(f"STYLE GATE FAIL: {name} held {held}/7 seeds")
+            return failures
+    return [line for line in lines if "must hold" in line or "panicked" in line][
+        :1
+    ] or ["STYLE GATE FAIL: gate did not reach the signature summary"]
+
+
 def fitness(scores: dict) -> tuple:
-    """Constraint first, then fewest gate failures, then combined cup
+    """Constraints first, then fewest gate failures, then combined cup
     wins. A gate failure can never outrank a pass whatever its cup
     says — and while a whole generation sits in the fine-tune dip
     with nothing passing, selection pressure points at gate recovery
     before raw strength."""
     return (
-        scores.get("fun_gate_pass", False),
-        -len(scores.get("fun_gate_failures", ())),
+        scores.get("fun_gate_pass", False) and scores.get("style_gate_pass", False),
+        -len(scores.get("fun_gate_failures", ()))
+        - len(scores.get("style_gate_failures", ())),
         scores.get("overseer_wins", 0) + scores.get("rusher_wins", 0),
         scores.get("overseer_wins", 0),
     )
@@ -223,6 +278,9 @@ def warn_anomalies(member: str, scores: dict) -> None:
             print(f"WARN {member}: lopsided {opponent} seat split {seats}")
     if not scores.get("fun_gate_pass", False):
         for failure in scores.get("fun_gate_failures", []):
+            print(f"WARN {member}: {failure}")
+    if not scores.get("style_gate_pass", False):
+        for failure in scores.get("style_gate_failures", []):
             print(f"WARN {member}: {failure}")
 
 
@@ -299,6 +357,7 @@ def main() -> None:
                 f"    overseer {overseer}"
                 f" · rusher {scores.get('rusher_wins')}/{scores.get('rusher_games')}"
                 f" · fun gate {'PASS' if scores.get('fun_gate_pass') else 'FAIL'}"
+                f" · style gate {'PASS' if scores.get('style_gate_pass') else 'FAIL'}"
             )
 
         ranked = sorted(results, key=lambda row: fitness(row["scores"]), reverse=True)
@@ -312,8 +371,12 @@ def main() -> None:
         print(f"=== generation {generation} ranking:")
         for row in ranked:
             scores = row["scores"]
-            verdict = "PASS" if scores.get("fun_gate_pass") else "FAIL"
-            print(f"    m{row['member']}: gate {verdict} · cup {fitness(scores)[1]}")
+            fun = "PASS" if scores.get("fun_gate_pass") else "FAIL"
+            style = "PASS" if scores.get("style_gate_pass") else "FAIL"
+            print(
+                f"    m{row['member']}: fun {fun} · style {style}"
+                f" · failures {-fitness(scores)[1]}"
+            )
 
         survivors = ranked[: max(1, len(ranked) // 2)]
         members = []

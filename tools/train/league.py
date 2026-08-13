@@ -95,7 +95,7 @@ from oxide_gym import (
 )
 from ppo import TRAIN_GAMMA, gae, ppo_update
 
-MAP_FAMILIES = ("fixed", "random", "grand")
+MAP_FAMILIES = ("fixed", "random", "grand", "island")
 FACTION_PAIRS = ("ff", "fc", "cf", "cc")
 OPPONENT_KINDS = (
     "self",
@@ -960,7 +960,9 @@ def generated_map_families(
 ) -> tuple[str, ...]:
     """Generated cache families that active jobs can request."""
     families = [
-        family for family in ("random", "grand") if map_mix.get(family, 0.0) > 0.0
+        family
+        for family in ("random", "grand", "island")
+        if map_mix.get(family, 0.0) > 0.0
     ]
     if opponent_mix.get("ffa", 0.0) > 0.0:
         families.append("ffa")
@@ -1028,6 +1030,20 @@ def warm_generated_maps(
                 players=4,
                 teams=True,
                 driver=driver,
+            )
+            _generate(
+                seed % 100_000,
+                cache_dir("oxide-maps-train4v4"),
+                players=8,
+                teams=True,
+                driver=driver,
+            )
+        elif family == "island":
+            _generate(
+                seed % 100_000,
+                cache_dir("oxide-maps-train-island"),
+                driver=driver,
+                pace="island",
             )
         else:
             raise ValueError(f"cannot warm unknown generated map family {family!r}")
@@ -1340,16 +1356,22 @@ class Job:
             self.learner_seats = [0, 1]
             self.opp_seat = None
         elif kind == "team":
-            # 2v2: the west column (seats 0 and 2 by the mapgen
+            # Team lanes: the west column (even seats by the mapgen
             # convention) learns as one team against the Overseer.
-            self.learner_seats = [0, 2]
+            # The shape is job-scoped — lane geometry must never
+            # change mid-run — and 4v4 stays the minority draw: eight
+            # bases price a rollout well above four.
+            self.team_players = 8 if float(rng.random()) < 0.30 else 4
+            self.learner_seats = list(range(0, self.team_players, 2))
             self.opp_seat = None
         elif kind == "team2":
-            # 2v2 beside a scripted ally: the learner holds one west
-            # chair, the Overseer drives its teammate (and both foes) —
-            # the robustness half of team training, so the policy
-            # learns to fight NEXT TO conventions it doesn't share.
-            self.learner_seats = [seat * 2]  # 0 or 2, the west chairs
+            # A west chair beside scripted allies: the learner holds
+            # one seat, the Overseer drives its teammates and every
+            # foe — the robustness half of team training, so the
+            # policy learns to fight NEXT TO conventions it doesn't
+            # share.
+            self.team_players = 8 if float(rng.random()) < 0.30 else 4
+            self.learner_seats = [seat * 2]  # a west chair
             self.opp_seat = None
         elif kind in ("overseer", "ffa"):
             self.learner_seats = [seat]
@@ -1430,7 +1452,11 @@ class Job:
         self.mix_count = {
             seat: [0.0] * len(ARMY_FEATURES) for seat in self.learner_seats
         }
-        seats = 4 if self.kind in ("ffa", "team", "team2") else 2
+        seats = (
+            self.team_players
+            if self.kind in ("team", "team2")
+            else (4 if self.kind == "ffa" else 2)
+        )
         pair = sample_faction_pair(self.rng, self.faction_mix)
         self.faction_code = expand_faction_pair(pair, seats)
         faction_knobs = {
@@ -1485,6 +1511,15 @@ class Job:
                 cache_dir("oxide-maps-train"),
                 driver=self.map_driver,
             )
+        elif self.map_family == "island":
+            # The severed-quarry curriculum: a guaranteed gulf on a
+            # 1v1 lane, where the only road to the enemy is the sky.
+            scenario = generate(
+                seed % 100_000,
+                cache_dir("oxide-maps-train-island"),
+                driver=self.map_driver,
+                pace="island",
+            )
         elif self.map_family == "grand":
             # The pacing curriculum: 1v1 lanes on the big classes only,
             # where the shipped tens-of-minutes game lives. The ffa and
@@ -1516,10 +1551,15 @@ class Job:
             return
         if self.kind in ("team", "team2"):
             self.map_family = "team"
+            shape_dir = (
+                "oxide-maps-train2v2"
+                if self.team_players == 4
+                else "oxide-maps-train4v4"
+            )
             scenario = generate(
                 seed % 100_000,
-                cache_dir("oxide-maps-train2v2"),
-                players=4,
+                cache_dir(shape_dir),
+                players=self.team_players,
                 teams=True,
                 driver=self.map_driver,
             )

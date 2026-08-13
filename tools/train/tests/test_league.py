@@ -632,18 +632,20 @@ class TestMapMix:
         monkeypatch.setattr(league, "_generate", fake_generate)
         monkeypatch.setattr(league, "cache_dir", lambda name: name)
         families = generated_map_families(
-            parse_map_mix("fixed=.25,random=.25,grand=.50"),
+            parse_map_mix("fixed=.25,random=.20,grand=.40,island=.15"),
             {"self": 0.5, "ffa": 0.2, "team2": 0.3},
         )
-        assert families == ("random", "grand", "ffa", "team")
+        assert families == ("random", "grand", "island", "ffa", "team")
 
         warm_generated_maps(100_007, families, "candidate-driver")
 
         assert calls == [
             (7, "oxide-maps-train", 2, False, "candidate-driver", None),
             (7, "oxide-maps-train-grand", 2, False, "candidate-driver", "grand"),
+            (7, "oxide-maps-train-island", 2, False, "candidate-driver", "island"),
             (7, "oxide-maps-train4", 4, False, "candidate-driver", None),
             (7, "oxide-maps-train2v2", 4, True, "candidate-driver", None),
+            (7, "oxide-maps-train4v4", 8, True, "candidate-driver", None),
         ]
 
     def test_lineage_covers_every_consumed_world_source(

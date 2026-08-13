@@ -56,8 +56,10 @@ class TestCacheName:
             cache_name(7, 4, False, None),
             cache_name(7, 4, True, None),
             cache_name(8, 2, False, None),
+            cache_name(7, 2, False, "island"),
+            cache_name(7, 8, True, None),
         }
-        assert len(names) == 5, f"cache identities collided: {sorted(names)}"
+        assert len(names) == 7, f"cache identities collided: {sorted(names)}"
 
 
 def test_cached_maps_are_bound_to_generator_and_validator_content(
@@ -97,3 +99,75 @@ def test_cached_maps_are_bound_to_generator_and_validator_content(
     )
     assert second_path != first_path
     assert validations == [str(first_driver), str(first_driver), str(second_driver)]
+
+
+class TestIslandPace:
+    def test_island_draws_only_the_big_classes(self) -> None:
+        # A guaranteed gulf needs room for two whole economies and an
+        # air war on each side of it.
+        for seed in range(30):
+            w, h = dims(_carve(seed, pace="island"))
+            assert w >= 50 and h >= 30, f"seed {seed}: {w}x{h} is not a big class"
+
+    def test_the_gulf_severs_every_ground_route(self) -> None:
+        # The family exists to TEACH the severed war; a single bridged
+        # draw would leak ground rushes back into the island lessons.
+        from collections import deque
+
+        for seed in range(30):
+            grid = _carve(seed, pace="island")["map"]
+            w, h = len(grid[0]), len(grid)
+            blocked = set("#^~")
+            seen = [[False] * w for _ in range(h)]
+            queue = deque()
+            for x in range(w):
+                if grid[0][x] not in blocked:
+                    seen[0][x] = True
+                    queue.append((0, x))
+            while queue:
+                y, x = queue.popleft()
+                for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    ny, nx = y + dy, x + dx
+                    if (
+                        0 <= ny < h
+                        and 0 <= nx < w
+                        and not seen[ny][nx]
+                        and grid[ny][nx] not in blocked
+                    ):
+                        seen[ny][nx] = True
+                        queue.append((ny, nx))
+            crossed = any(seen[h - 1][x] or seen[h - 2][x] for x in range(w))
+            assert not crossed, f"seed {seed}: a ground route survived the gulf"
+
+    def test_island_is_deterministic_per_seed(self) -> None:
+        for seed in (0, 7, 31):
+            assert _carve(seed, pace="island") == _carve(seed, pace="island")
+
+
+class TestEightPlayers:
+    def test_anchors_teams_and_factions(self) -> None:
+        for seed in range(20):
+            m = _carve(seed, players=8, teams=True)
+            chars = "".join(m["map"])
+            for anchor in "12345678":
+                assert chars.count(anchor) == 1, f"seed {seed}: anchor {anchor}"
+            assert [p["team"] for p in m["players"]] == [0, 1] * 4
+            assert [p["faction"] for p in m["players"]] == ["ferrous", "cupric"] * 4
+            assert len({p["name"] for p in m["players"]}) == 8
+
+    def test_every_seat_spawns_its_units(self) -> None:
+        for seed in range(20):
+            m = _carve(seed, players=8, teams=True)
+            by_player: dict[int, int] = {}
+            for unit in m["units"]:
+                by_player[unit["player"]] = by_player.get(unit["player"], 0) + 1
+            assert set(by_player) == set(range(8)), f"seed {seed}: {sorted(by_player)}"
+            assert len(set(by_player.values())) == 1, f"seed {seed}: uneven spawns"
+
+    def test_the_four_player_draw_is_untouched(self) -> None:
+        # The 2v2 and 4-FFA caches predate the eight-player arm; their
+        # seeds must keep reconstructing byte-identical maps.
+        for seed in (3, 11, 19):
+            assert _carve(seed, players=4, teams=True) == _carve(
+                seed, players=4, teams=True
+            )
