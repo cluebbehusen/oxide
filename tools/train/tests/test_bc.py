@@ -214,3 +214,89 @@ def test_a_second_schedule_pass_rotates_each_exact_map_cell() -> None:
                     and assigned_map == map_index
                 }
                 assert len(pairs) == 2
+
+
+def _capital_ready(strategy: str) -> tuple[list[int], np.ndarray]:
+    # Clears the economy gate (harvesters and screen) with the tree
+    # standing, no plan, and no live site — the state the audit found
+    # every per-strategy capital branch untested in. The expansion
+    # Foundry arm outranks the capital ladder, so its action is masked
+    # off exactly as the lowering does when no anchor fits.
+    raw = _raw()
+    raw[bc.F["my_harvesters"]] = 5
+    raw[bc.F["my_strength"]] = 150
+    raw[bc.F["fab_built"]] = 1
+    raw[bc.F["tick"]] = 6_000
+    mask = np.ones(ACTIONS, dtype=bool)
+    # The deep-tech prefix (Airworks, Crucible, expansion Foundry,
+    # Extractor) outranks the capital ladder; masked off exactly as
+    # the lowering does when no anchor or prerequisite fits.
+    for action in (
+        bc.BUILD_AIRWORKS,
+        bc.BUILD_CRUCIBLE,
+        bc.BUILD_FOUNDRY,
+        bc.BUILD_EXTRACTOR,
+    ):
+        mask[action] = False
+    _ = strategy
+    return raw, mask
+
+
+def test_each_strategy_leads_with_its_own_capital_pick() -> None:
+    for strategy in ("fortify", "industry", "combined"):
+        raw, mask = _capital_ready(strategy)
+        assert bc.construction_teacher(strategy, raw, mask) == bc.BUILD_TURRET
+    raw, mask = _capital_ready("pressure")
+    assert bc.construction_teacher("pressure", raw, mask) == bc.BUILD_ARRAY, (
+        "pressure builds eyes before walls"
+    )
+
+
+def test_the_economy_gate_holds_each_strategy_to_its_screen() -> None:
+    for strategy, floor in (
+        ("fortify", 100),
+        ("industry", 90),
+        ("combined", 100),
+        ("pressure", 80),
+    ):
+        raw, mask = _capital_ready(strategy)
+        raw[bc.F["my_strength"]] = floor - 1
+        assert bc.construction_teacher(strategy, raw, mask) == bc.NO_CONSTRUCTION, (
+            f"{strategy} must hold below its screen floor"
+        )
+
+
+def test_strategies_walk_their_candidate_ladders_in_order() -> None:
+    fortify, mask = _capital_ready("fortify")
+    fortify[bc.F["my_turrets_built"]] = 2
+    assert bc.construction_teacher("fortify", fortify, mask) == bc.BUILD_ARRAY
+    fortify[bc.F["my_arrays_built"]] = 1
+    assert bc.construction_teacher("fortify", fortify, mask) == bc.BUILD_FLAK
+
+    industry, _ = _capital_ready("industry")
+    industry[bc.F["my_turrets_built"]] = 1
+    industry[bc.F["near_home_salvage_value"]] = 100
+    assert bc.construction_teacher("industry", industry, mask) == bc.BUILD_RECLAIMER
+
+    pressure, _ = _capital_ready("pressure")
+    pressure[bc.F["my_arrays_built"]] = 1
+    assert bc.construction_teacher("pressure", pressure, mask) == bc.NO_CONSTRUCTION, (
+        "an unthreatened pressure seat banks for the push"
+    )
+    pressure[bc.F["blip_count"]] = 2
+    assert bc.construction_teacher("pressure", pressure, mask) == bc.BUILD_TURRET, (
+        "a threatened pressure seat answers with the one turret"
+    )
+
+
+def test_a_broke_and_barren_seat_salvages() -> None:
+    raw, mask = _capital_ready("fortify")
+    raw[bc.F["my_turrets_built"]] = 2
+    raw[bc.F["my_arrays_built"]] = 1
+    raw[bc.F["my_flak_built"]] = 1
+    raw[bc.F["my_bastions_built"]] = 1
+    raw[bc.F["my_repair_bays_built"]] = 1
+    raw[bc.F["near_home_salvage_value"]] = 900
+    raw[bc.F["known_salvage_value"]] = 0
+    raw[bc.F["scrap"]] = 20
+    assert bc.construction_teacher("fortify", raw, mask) == bc.SALVAGE

@@ -288,7 +288,7 @@ pub enum ScenarioError {
     #[error(transparent)]
     Map(#[from] MapError),
     /// Player count must be 1..=8.
-    #[error("scenario needs 1 to 8 players, got {0}")]
+    #[error("scenario needs 1 to 16 players, got {0}")]
     PlayerCount(usize),
     /// A player has no Foundry anchor on the map.
     #[error("no map anchor for player {0}")]
@@ -589,6 +589,50 @@ mod tests {
         scenario.retint_seat(1, Faction::Ferrous);
         assert_eq!(scenario.players[1].name, name);
         scenario.build().expect("a retinted scenario still builds");
+    }
+
+    #[test]
+    fn player_count_bounds_are_enforced_and_named() {
+        let mut scenario = Scenario::skirmish();
+        scenario.players.clear();
+        let empty = scenario.build();
+        assert!(matches!(empty, Err(ScenarioError::PlayerCount(0))));
+
+        let mut crowded = Scenario::skirmish();
+        while crowded.players.len() < 17 {
+            crowded.players.push(crowded.players[0].clone());
+        }
+        let err = crowded.build().expect_err("seventeen seats must refuse");
+        assert!(matches!(err, ScenarioError::PlayerCount(17)));
+        assert!(
+            err.to_string().contains("1 to 16"),
+            "the message must name the real bound, got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_blocked_foundry_footprint_is_an_error() {
+        // The anchor byte sits on open ground but its 2x2 footprint
+        // reaches into border rock: the scenario must refuse rather
+        // than stand a Foundry inside a wall.
+        let mut scenario = Scenario::skirmish();
+        let last = scenario.map.len() - 2;
+        let row = scenario.map[last].clone();
+        let inner = row.trim_matches('#').len() + row.len() - row.trim_start_matches('#').len() - 1;
+        let _ = inner;
+        // Move player 0's anchor to the last interior column, so the
+        // footprint's second column lands on the border.
+        for line in scenario.map.iter_mut() {
+            *line = line.replace('1', ".");
+        }
+        let width = scenario.map[1].len();
+        let mut edge_row: Vec<char> = scenario.map[1].chars().collect();
+        edge_row[width - 2] = '1';
+        scenario.map[1] = edge_row.into_iter().collect();
+        assert!(matches!(
+            scenario.build(),
+            Err(ScenarioError::BadFootprint(PlayerId(0), _))
+        ));
     }
 
     #[test]

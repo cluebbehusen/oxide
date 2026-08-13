@@ -667,6 +667,96 @@ mod tests {
     }
 
     #[test]
+    fn manual_override_dials_build_the_exact_raw_bot() {
+        // The audit found the raw/manual branch of candidate_bot dead
+        // in tests: every closure inside it (dealt aggression, ladder
+        // cadence, ladder skill fallbacks) was unexecuted, so a probe
+        // asked for exact raw dials could silently measure a different
+        // commander than the one it reports.
+        let scenario = oxide_sim::Scenario::skirmish();
+        let net = QuantNet::from_json(include_str!("../tests/fixtures/tiny_policy_v9.json"))
+            .expect("the committed fixture artifact parses");
+        let player = oxide_sim::PlayerId(0);
+        let faction = scenario.players[0].faction;
+        let profile = oxide_sim::bot::ResolvedBotProfile {
+            level: Level::Medium,
+            style: None,
+            variant: None,
+            aggression: 500,
+            team_role: TeamRole::Generalist,
+            facets: oxide_sim::bot::ProfileFacets::ZERO,
+        };
+
+        let dials = ProbeDials {
+            skill: Some(700),
+            aggression: Some(550),
+            blunder: Some(0),
+            cadence: Some(11),
+            ..empty_dials()
+        };
+        let mut actual = candidate_bot(
+            &dials,
+            Level::Medium,
+            player,
+            scenario.seed,
+            profile,
+            faction,
+            net.clone(),
+        );
+        let mut expected = NeuralBot::with_profile_hesitation(
+            player,
+            11,
+            net.clone(),
+            700,
+            550,
+            faction,
+            Some(0),
+            scenario.seed,
+        );
+        let mut state = scenario.build().unwrap();
+        for _ in 0..200 {
+            let actual_commands = actual.act(&state);
+            let expected_commands = expected.act(&state);
+            assert_eq!(actual_commands, expected_commands);
+            state.tick(&expected_commands);
+        }
+
+        // The fallback closures: a lone skill override trips the manual
+        // branch and leaves aggression to the seat's dealt hand, with
+        // cadence from the ladder level's own number.
+        let sparse = ProbeDials {
+            skill: Some(700),
+            ..empty_dials()
+        };
+        let mut sparse_actual = candidate_bot(
+            &sparse,
+            Level::Medium,
+            player,
+            scenario.seed,
+            profile,
+            faction,
+            net.clone(),
+        );
+        let mut sparse_expected = NeuralBot::with_profile_hesitation(
+            player,
+            Level::Medium.cadence(),
+            net,
+            700,
+            oxide_sim::bot::deal_aggression(scenario.seed, player),
+            faction,
+            None,
+            scenario.seed,
+        );
+        let mut state = scenario.build().unwrap();
+        for _ in 0..200 {
+            let actual_commands = sparse_actual.act(&state);
+            let expected_commands = sparse_expected.act(&state);
+            assert_eq!(actual_commands, expected_commands);
+            state.tick(&expected_commands);
+        }
+    }
+
+    #[test]
     fn candidate_probe_accepts_the_scenario_resolved_named_profile_slate() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../scenarios");
         let weights = concat!(

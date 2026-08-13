@@ -4873,6 +4873,26 @@ fn useful_recovery_liquidation(obs: &Observation) -> Option<BuildingId> {
 mod tests {
     use super::*;
 
+    /// ACTION_COUNT and the per-head index arrays are hand-maintained;
+    /// the audit found nothing pinning them to each other. A head that
+    /// drops or doubles an index silently corrupts every mask row and
+    /// the trained policy's output space.
+    #[test]
+    fn action_heads_partition_the_action_space_exactly() {
+        let mut seen: Vec<usize> = ACTION_HEADS.iter().copied().flatten().copied().collect();
+        assert_eq!(
+            seen.len(),
+            ACTION_COUNT,
+            "heads must cover every action once"
+        );
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            (0..ACTION_COUNT).collect::<Vec<_>>(),
+            "heads must partition 0..ACTION_COUNT with no gaps or doubles"
+        );
+    }
+
     #[test]
     fn recovery_adopts_rear_held_screens_instead_of_deadlocking() {
         // The 0.14 replay shape: a broken economy (no harvesters), a

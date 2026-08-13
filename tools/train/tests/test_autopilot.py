@@ -5,7 +5,12 @@ these cover the autopilot's reading of its output and the promise that
 a style failure can never outrank a clean pass, whatever the cup says.
 """
 
-from autopilot import fitness, style_failures
+import json
+import subprocess
+
+import pytest
+
+from autopilot import fitness, phase_checkpoint, run_battery, style_failures
 
 SUMMARY_OK = (
     "Turtle: 3 unique vectors [...]\n"
@@ -71,3 +76,100 @@ def test_both_gates_are_required() -> None:
     assert not fitness(fun_only)[0]
     assert not fitness(style_only)[0]
     assert fitness(both)[0]
+
+
+class TestCrashResume:
+    """The two resume shortcuts the audit measured at zero execution.
+
+    A wrong reuse silently trains the next generation from the wrong
+    parent (or skips a battery that should re-run), so each witness
+    condition gets a direct row.
+    """
+
+    _seq = 0
+
+    @classmethod
+    def _run_dir(cls, tmp_path, last_row: str | None, checkpoints: int = 1):
+        cls._seq += 1
+        run_dir = tmp_path / f"g0m{cls._seq}"
+        (run_dir / "pool").mkdir(parents=True)
+        for index in range(checkpoints):
+            (run_dir / "pool" / f"ckpt-{index:06}.pt").write_bytes(b"weights")
+        if last_row is not None:
+            (run_dir / "log.jsonl").write_text(last_row)
+        return run_dir
+
+    def test_a_completed_phase_reuses_its_final_checkpoint(self, tmp_path) -> None:
+        run_dir = self._run_dir(
+            tmp_path, '{"phase_update": 59}\n{"phase_update": 60}\n', checkpoints=3
+        )
+        assert phase_checkpoint(run_dir, 60) == run_dir / "pool" / "ckpt-000002.pt"
+
+    def test_an_incomplete_phase_retrains(self, tmp_path) -> None:
+        run_dir = self._run_dir(tmp_path, '{"phase_update": 59}\n')
+        assert phase_checkpoint(run_dir, 60) is None
+
+    def test_a_corrupt_or_missing_log_retrains(self, tmp_path) -> None:
+        assert phase_checkpoint(self._run_dir(tmp_path, "not json\n"), 60) is None
+        assert phase_checkpoint(self._run_dir(tmp_path, None), 60) is None
+        assert phase_checkpoint(self._run_dir(tmp_path, ""), 60) is None
+
+    def test_missing_checkpoints_retrain_even_when_the_log_says_done(
+        self, tmp_path
+    ) -> None:
+        run_dir = self._run_dir(tmp_path, '{"phase_update": 60}\n', checkpoints=0)
+        assert phase_checkpoint(run_dir, 60) is None
+
+
+class TestBatteryMemo:
+    def test_a_matching_memo_is_reused_verbatim(self, tmp_path, monkeypatch) -> None:
+        candidate = tmp_path / "ckpt-000060.pt"
+        candidate.write_bytes(b"weights")
+        memo = {
+            "candidate": "x.json",
+            "cup_seeds": 30,
+            "fun_gate_pass": True,
+            "fun_gate_failures": [],
+            "style_gate_pass": True,
+            "style_gate_failures": [],
+        }
+        candidate.with_suffix(".scores.json").write_text(json.dumps(memo))
+        # Any subprocess call would mean the memo was NOT trusted.
+        monkeypatch.setattr(
+            subprocess, "run", lambda *a, **k: pytest.fail("battery re-ran")
+        )
+        assert run_battery(candidate, "driver", 30) == memo
+
+    @pytest.mark.parametrize(
+        "stale",
+        [
+            {"cup_seeds": 10},  # different slate
+            {"drop": "style_gate_pass"},  # pre-style-gate memo
+        ],
+    )
+    def test_a_stale_memo_is_not_trusted(self, tmp_path, monkeypatch, stale) -> None:
+        candidate = tmp_path / "ckpt-000060.pt"
+        candidate.write_bytes(b"weights")
+        memo = {
+            "candidate": "x.json",
+            "cup_seeds": 30,
+            "fun_gate_pass": True,
+            "fun_gate_failures": [],
+            "style_gate_pass": True,
+            "style_gate_failures": [],
+        }
+        if "drop" in stale:
+            memo.pop(stale["drop"])
+        else:
+            memo.update(stale)
+        candidate.with_suffix(".scores.json").write_text(json.dumps(memo))
+        calls = []
+
+        def fake_run(*args, **kwargs):
+            calls.append(args)
+            raise RuntimeError("battery correctly re-running; stop here")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        with pytest.raises(RuntimeError, match="correctly re-running"):
+            run_battery(candidate, "driver", 30)
+        assert calls, "the stale memo must trigger a fresh battery"

@@ -70,7 +70,9 @@ def wilson(wins: int, games: int, z: float = 1.96) -> tuple[float, float]:
     denom = 1 + z * z / games
     center = (p + z * z / (2 * games)) / denom
     half = z * math.sqrt(p * (1 - p) / games + z * z / (4 * games * games)) / denom
-    return (center - half, center + half)
+    # Clamped: at the boundaries the arithmetic can shed a few ulps
+    # below zero or above one, and a probability interval must not.
+    return (max(0.0, center - half), min(1.0, center + half))
 
 
 def play(

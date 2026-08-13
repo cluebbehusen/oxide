@@ -577,3 +577,74 @@ fn candidate_raw_aggression_path_matches_parent_exactly() {
         }
     }
 }
+
+#[test]
+fn the_shipped_artifact_carries_verified_provenance() {
+    // QuantNet::from_json treats lineage as optional so bridge and
+    // test artifacts stay cheap — but the SHIPPED weights must never
+    // lose theirs, or the balance evidence loses its provenance chain.
+    let raw = include_str!("../src/bot/ladder_weights.json");
+    let artifact: serde_json::Value = serde_json::from_str(raw).unwrap();
+    let lineage = artifact
+        .get("lineage")
+        .expect("the shipped artifact must carry lineage")
+        .as_object()
+        .expect("lineage is an object");
+    for field in ["lineage_id", "schema", "phase", "inputs"] {
+        assert!(lineage.contains_key(field), "lineage must carry {field}");
+    }
+    let inputs = lineage["inputs"].as_object().expect("inputs is an object");
+    assert!(
+        !inputs.is_empty(),
+        "provenance without inputs is a label, not a chain"
+    );
+    let id = lineage["lineage_id"]
+        .as_str()
+        .expect("lineage_id is a string");
+    assert!(
+        id.starts_with("sha256:") && id.len() == "sha256:".len() + 64,
+        "lineage_id must be a content digest"
+    );
+}
+
+/// FNV-1a over the fixture's logits for the fixed probe vector below.
+/// Bless deliberately: movement here means the integer kernel itself
+/// changed, which owes a gym-version bump and a retrained artifact.
+const PINNED_Q12_FINGERPRINT: u64 = 10024313760013662231;
+
+#[test]
+fn the_q12_forward_pass_matches_its_pinned_golden() {
+    // The audit found no numeric golden anywhere in Rust for the
+    // integer kernel: feature scaling, the affine shift-add, and the
+    // tanh LUT interpolation were pinned only by full-match hashes,
+    // which name a drift without localizing it. Three fixed vectors
+    // through the committed fixture artifact localize it to the layer.
+    let raw = include_str!("../../driver/tests/fixtures/tiny_policy_v9.json");
+    let net = QuantNet::from_json(raw).expect("the fixture artifact parses");
+
+    let mut features = [0i64; FEATURE_COUNT];
+    for (index, feature) in features.iter_mut().enumerate() {
+        *feature = ((index as i64 * 37) % 4096) - 2048;
+    }
+    let knobs: Vec<i64> = (0..net.conditioning())
+        .map(|k| (k as i64 * 250) % 1001)
+        .collect();
+    let logits = net.logits(&features, &knobs);
+    let fingerprint = logits.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, &v| {
+        (hash ^ (v as u64)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+    assert_eq!(
+        fingerprint,
+        PINNED_Q12_FINGERPRINT,
+        "the Q12 kernel drifted: logits head {:?}",
+        &logits[..4.min(logits.len())]
+    );
+
+    let saturated = [i64::MAX; FEATURE_COUNT];
+    let extreme = net.logits(&saturated, &knobs);
+    assert_eq!(
+        extreme.len(),
+        logits.len(),
+        "saturation must not panic or truncate"
+    );
+}

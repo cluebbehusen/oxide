@@ -90,12 +90,30 @@ pub fn run_sweep(
         Ok(m)
     })?;
 
+    let (victories, draws, undecided, seat_wins, median_decision_tick) = tally_outcomes(&matches);
+    Ok(SweepReport {
+        scenario: base.name.clone(),
+        seeds,
+        max_ticks,
+        victories,
+        draws,
+        undecided,
+        seat_wins,
+        median_decision_tick,
+        matches,
+    })
+}
+
+/// Folds match outcomes into the report counters. Draws count as
+/// decisions for the median — a mutual Foundry death decided the game
+/// on that tick — while undecided caps stay out of the tick pool.
+fn tally_outcomes(matches: &[SweepMatch]) -> (u32, u32, u32, [u32; 2], Option<u64>) {
     let mut victories = 0u32;
     let mut draws = 0u32;
     let mut undecided = 0u32;
     let mut seat_wins = [0u32; 2];
     let mut decision_ticks: Vec<u64> = Vec::new();
-    for m in &matches {
+    for m in matches {
         match m.outcome {
             SweepOutcome::Victory { seat } => {
                 victories += 1;
@@ -110,18 +128,8 @@ pub fn run_sweep(
         }
     }
     decision_ticks.sort_unstable();
-    Ok(SweepReport {
-        scenario: base.name.clone(),
-        seeds,
-        max_ticks,
-        victories,
-        draws,
-        undecided,
-        seat_wins,
-        median_decision_tick: (!decision_ticks.is_empty())
-            .then(|| decision_ticks[decision_ticks.len() / 2]),
-        matches,
-    })
+    let median = (!decision_ticks.is_empty()).then(|| decision_ticks[decision_ticks.len() / 2]);
+    (victories, draws, undecided, seat_wins, median)
 }
 
 /// Runs the sweep, prints the verdict, and optionally lands the raw
@@ -203,6 +211,37 @@ pub(crate) fn quantile(sorted: &[u64], num: usize, den: usize) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The audit found the fold only ever ran all-undecided: no test
+    /// produced a victory, so the counters, seat attribution, and the
+    /// median were one refactor from silently misreporting.
+    #[test]
+    fn the_outcome_fold_counts_attributes_and_medians() {
+        let m = |seed: u64, ticks: u64, outcome| SweepMatch {
+            seed,
+            ticks,
+            outcome,
+        };
+        let matches = vec![
+            m(1, 300, SweepOutcome::Victory { seat: 0 }),
+            m(2, 100, SweepOutcome::Victory { seat: 0 }),
+            m(3, 400, SweepOutcome::Victory { seat: 1 }),
+            m(4, 250, SweepOutcome::Draw),
+            m(5, 999, SweepOutcome::Undecided),
+        ];
+        let (victories, draws, undecided, seat_wins, median) = tally_outcomes(&matches);
+        assert_eq!(victories, 3);
+        assert_eq!(draws, 1);
+        assert_eq!(undecided, 1);
+        assert_eq!(seat_wins, [2, 1]);
+        // Decision ticks sorted: 100, 250, 300, 400 -> median index 2.
+        assert_eq!(
+            median,
+            Some(300),
+            "the draw's tick joins the pool; the cap's does not"
+        );
+        assert_eq!(tally_outcomes(&[]).4, None);
+    }
 
     /// Two seeds and a cap far too small to decide: the plumbing must
     /// account for every job in seed order.

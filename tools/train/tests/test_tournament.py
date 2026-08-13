@@ -135,3 +135,60 @@ def test_tournament_default_consumes_named_profile_and_specialist_role() -> None
     # The wire requires conditions to name exactly the controlled
     # seats; the scripted opponent's seat carries none.
     assert set(worker.conditions) == {0}
+
+
+class OutcomeWorker(OneStepWorker):
+    """OneStepWorker with a scriptable terminal frame."""
+
+    def __init__(self, terminal: Frame) -> None:
+        super().__init__()
+        self.terminal = terminal
+
+    def step(self, actions: dict[int, ActionPlan]) -> Frame:
+        self.actions = actions
+        return self.terminal
+
+
+def _outcome(terminal: Frame) -> bool | None:
+    won, _ticks = tournament.play(
+        FixedPolicy(),
+        OutcomeWorker(terminal),
+        "overseer",
+        seed=7,
+        seat=0,
+        condition=(1000, 550),
+        hesitation_permille=0,
+        cadence=28,
+    )
+    return won
+
+
+def test_every_terminal_shape_classifies_correctly() -> None:
+    # The audit measured play()'s legacy-winner, elimination, and
+    # true-draw tails at zero execution: every prior test ended with
+    # winners=[0]. Each terminal shape the wire can report gets a row.
+    assert _outcome(Frame(done=True, tick=9, winners=[1], alive=[1])) is False
+    assert _outcome(Frame(done=True, tick=9, winner=0, alive=[0])) is True
+    assert _outcome(Frame(done=True, tick=9, winner=1, alive=[1])) is False
+    assert _outcome(Frame(done=True, tick=9, alive=[1])) is False, (
+        "an eliminated learner lost even though the game outlived it"
+    )
+    assert _outcome(Frame(done=True, tick=9, alive=[0])) is None, (
+        "a tick-cap with the learner standing is a draw, not a loss"
+    )
+
+
+def test_wilson_brackets_and_tightens() -> None:
+    lo, hi = tournament.wilson(0, 0)
+    assert (lo, hi) == (0.0, 1.0), "no evidence spans the whole interval"
+    lo, hi = tournament.wilson(0, 20)
+    assert lo == 0.0 and 0.0 < hi < 0.35
+    lo, hi = tournament.wilson(20, 20)
+    assert hi == 1.0 and 0.65 < lo < 1.0
+    lo, hi = tournament.wilson(12, 20)
+    assert lo < 12 / 20 < hi
+    narrow = tournament.wilson(120, 200)
+    wide = tournament.wilson(12, 20)
+    assert narrow[1] - narrow[0] < wide[1] - wide[0], (
+        "more games at the same rate must tighten the interval"
+    )

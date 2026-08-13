@@ -761,6 +761,116 @@ pub fn factorial_report(
 mod tests {
     use super::*;
 
+    fn synthetic(factions: [&str; 2], outcome: SweepOutcome, ticks: u64) -> FactorialMatch {
+        FactorialMatch {
+            seed: 7,
+            cell: vec![0],
+            levels: vec!["roster:base".into()],
+            factions: [factions[0].into(), factions[1].into()],
+            ticks,
+            outcome,
+            hash: 0,
+        }
+    }
+
+    /// The audit measured every `.then(...)` in the record builders at
+    /// zero execution: no test ever produced a victory, so win rates,
+    /// intervals, and quartiles were unverifiable. Hand-built matches
+    /// exercise the full response surface without a simulation.
+    #[test]
+    fn level_records_compute_rates_intervals_and_quartiles() {
+        let matches = vec![
+            synthetic(
+                ["ferrous", "cupric"],
+                SweepOutcome::Victory { seat: 0 },
+                100,
+            ),
+            synthetic(
+                ["ferrous", "cupric"],
+                SweepOutcome::Victory { seat: 0 },
+                200,
+            ),
+            synthetic(
+                ["ferrous", "cupric"],
+                SweepOutcome::Victory { seat: 0 },
+                300,
+            ),
+            synthetic(
+                ["ferrous", "cupric"],
+                SweepOutcome::Victory { seat: 1 },
+                400,
+            ),
+            synthetic(["ferrous", "cupric"], SweepOutcome::Draw, 250),
+            synthetic(["ferrous", "cupric"], SweepOutcome::Undecided, 999),
+        ];
+        let refs: Vec<&FactorialMatch> = matches.iter().collect();
+        let record = level_record("roster:base", &refs);
+        assert_eq!(record.matches, 6);
+        assert_eq!(record.victories, 4);
+        assert_eq!(record.draws, 1);
+        assert_eq!(record.undecided, 1);
+        assert_eq!(record.seat_wins, [3, 1]);
+        assert_eq!(record.seat0_win_rate, Some(0.75));
+        let [lo, hi] = record.wilson.expect("victories imply an interval");
+        assert!(lo < 0.75 && 0.75 < hi);
+        assert!((0.0..=1.0).contains(&lo) && (0.0..=1.0).contains(&hi));
+        let quartiles = record
+            .decision_ticks
+            .expect("decided matches imply quartiles");
+        assert!(quartiles.p25 <= quartiles.median && quartiles.median <= quartiles.p75);
+
+        let empty = level_record("roster:base", &[]);
+        assert_eq!(empty.seat0_win_rate, None);
+        assert_eq!(empty.wilson, None);
+        assert!(empty.decision_ticks.is_none());
+    }
+
+    /// Roster attribution is by the WINNING seat's faction, not the
+    /// seat index — a CF cell's seat-0 win is a Cupric win.
+    #[test]
+    fn roster_records_attribute_wins_to_factions_not_seats() {
+        let matches = vec![
+            synthetic(
+                ["ferrous", "cupric"],
+                SweepOutcome::Victory { seat: 0 },
+                100,
+            ),
+            synthetic(
+                ["ferrous", "cupric"],
+                SweepOutcome::Victory { seat: 1 },
+                100,
+            ),
+            synthetic(
+                ["cupric", "ferrous"],
+                SweepOutcome::Victory { seat: 0 },
+                100,
+            ),
+            synthetic(
+                ["ferrous", "ferrous"],
+                SweepOutcome::Victory { seat: 0 },
+                100,
+            ),
+            synthetic(["ferrous", "cupric"], SweepOutcome::Draw, 100),
+        ];
+        let record = roster_record(&matches).expect("cross-faction victories exist");
+        assert_eq!(record.ferrous_wins, 1, "only the FC seat-0 win is Ferrous");
+        assert_eq!(
+            record.cupric_wins, 2,
+            "the FC seat-1 and CF seat-0 wins are Cupric"
+        );
+        assert_eq!(record.ferrous_win_rate, 1.0 / 3.0);
+
+        assert!(
+            roster_record(&[synthetic(
+                ["ferrous", "ferrous"],
+                SweepOutcome::Victory { seat: 0 },
+                100
+            )])
+            .is_none(),
+            "mirror matches carry no roster signal"
+        );
+    }
+
     /// Rotating twice is the identity — the transform that would
     /// silently hand the seats different worlds is exactly the one a
     /// fairness verdict cannot survive.
