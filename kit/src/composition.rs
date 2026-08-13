@@ -1247,7 +1247,7 @@ mod tests {
                 },
                 SeatEconomy {
                     resigned: false,
-                    recovery_income_active: false,
+                    recovery_income_active: true,
                     bank_scrap: 150,
                     living_harvesters: 3,
                     queued_harvesters: 0,
@@ -1302,12 +1302,12 @@ mod tests {
         })
         .expect("samples");
         assert!(
-            !m.final_economy.seats[0].recovery_income_active,
-            "0.15.3: a stranded seat without income structures reports no passive income"
+            m.final_economy.seats[0].recovery_income_active,
+            "a stranded seat with a living Foundry has fast automatic recovery"
         );
         assert!(
-            !m.final_economy.seats[1].recovery_income_active,
-            "with the Foundry drip gone, a bare Foundry seat reports no passive income"
+            m.final_economy.seats[1].recovery_income_active,
+            "the Foundry drip means every unresigned Foundry seat reports passive income"
         );
     }
 
@@ -1349,18 +1349,14 @@ mod tests {
 
     #[test]
     fn passive_bank_income_alone_does_not_excuse_a_stall() {
-        // 0.15.3: the Foundry drip is gone, so the passive-income case
-        // is a standing Reclaimer — the bank grows without any worked
-        // economy, and the activity clock must not move for it.
-        let mut scenario = Scenario::skirmish();
-        scenario.buildings.push(oxide_sim::scenario::BuildingSpec {
-            player: 0,
-            kind: oxide_sim::BuildingKind::Reclaimer,
-            x: 4,
-            y: 6,
-        });
-        let m = sample_driven(&scenario, 2_400, 20, |state| state.tick(&[]))
-            .expect("samples the Reclaimer's grind");
+        let scenario = Scenario::skirmish();
+        let m = sample_driven(
+            &scenario,
+            oxide_sim::stats::FOUNDRY_DRIP_START_TICK,
+            20,
+            |state| state.tick(&[]),
+        )
+        .expect("samples the Foundry's drip credit");
         assert_eq!(m.activity.last_economy_tick, 0);
         assert_eq!(m.activity.deliveries, 0);
         assert_eq!(m.activity.units_trained, 0);
@@ -1368,8 +1364,8 @@ mod tests {
             m.final_economy
                 .seats
                 .iter()
-                .any(|seat| seat.recovery_income_active),
-            "the Rust economy reports standing passive income without Python constants"
+                .all(|seat| seat.recovery_income_active),
+            "the Rust economy reports the Foundry drip without Python constants"
         );
     }
 

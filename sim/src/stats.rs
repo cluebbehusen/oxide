@@ -1775,6 +1775,28 @@ pub const SHELL_SPEED: Fx = Fx::lit("0.30");
 /// a stalemate valve, never an opening.
 pub const RECLAIMER_PERIOD: u64 = 24;
 
+/// Ticks per scrap smelted by each standing, completed Foundry — the
+/// transparent income floor.
+///
+/// This is the economy's guarantee: exhausted nodes, lost Reclaimers,
+/// and camped salvage can make progress slow, but never leave a seat
+/// with no income at all. Credit is per Foundry so expansion bases are
+/// worth their keep, but the rate is tuned so income alone never pays
+/// for one (20/min against a 300 cost: production, drop-off reach,
+/// and survivability are the reasons to expand). Watched in training
+/// telemetry for foundry-farm degeneracy; the fallback design is a
+/// flat per-player floor at this same period.
+pub const FOUNDRY_DRIP_PERIOD: u64 = 60;
+
+/// First completed tick eligible for the drip: a two-minute warm-up.
+/// The floor exists for mid- and late-game lockouts; openings stay
+/// exactly as tuned without it. Measured (against the since-deleted
+/// 0.14 scripted bots): a from-tick-zero drip handed an omniscient
+/// anchor a decisive edge over a fog-honest brain (13/40 -> passing)
+/// purely on perfectly-converted
+/// early free scrap — the floor should never be an opening build order.
+pub const FOUNDRY_DRIP_START_TICK: u64 = 2_400;
+
 /// Ticks per emergency scrap credited by a surviving Foundry after its
 /// owner's last Harvester is gone. Each real deposit arms one finite
 /// recovery entitlement; spending or cancelling that package cannot refill
