@@ -779,7 +779,7 @@ mod tests {
     /// exercise the full response surface without a simulation.
     #[test]
     fn level_records_compute_rates_intervals_and_quartiles() {
-        let matches = vec![
+        let matches = [
             synthetic(
                 ["ferrous", "cupric"],
                 SweepOutcome::Victory { seat: 0 },
