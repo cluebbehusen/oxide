@@ -55,6 +55,8 @@ from league import (
     expand_faction_pair,
     faction_knob,
     generated_map_families,
+    lane_kinds_for_layout,
+    learner_lanes_for_kind,
     load_pool_policy,
     maybe_blunder,
     opponent_actions,
@@ -82,6 +84,7 @@ from league import (
     sample_map_family,
     style_alignment,
     style_bonus,
+    team_players_for_kind,
     tech_bonus_at,
     training_world_inputs,
     unit_interval,
@@ -568,6 +571,40 @@ class TestMaybeBlunder:
         )
 
         assert seen == [350, 190]
+
+
+class TestTeamShapes:
+    def test_the_shape_is_the_kind(self) -> None:
+        assert team_players_for_kind("team") == 4
+        assert team_players_for_kind("team2") == 4
+        assert team_players_for_kind("team4") == 8
+
+    def test_lane_kinds_follow_the_kind_shapes(self) -> None:
+        # The g1m2 crash: a 4v4 team job contributes four learner
+        # lanes, and the parent's lane accounting must know it without
+        # holding the Job objects (collectors build them elsewhere).
+        # Making the shape the KIND keeps the geometry a pure function
+        # of the layout.
+        layout = [
+            ("team", 0),
+            ("self", 0),
+            ("team4", 0),
+            ("team2", 1),
+            ("past", 0),
+        ]
+        lanes = lane_kinds_for_layout(layout)
+        assert lanes == (
+            ["team", "team"]
+            + ["self", "self"]
+            + ["team4", "team4", "team4", "team4"]
+            + ["team2"]
+            + ["past"]
+        )
+
+    def test_allocation_divides_by_exact_lanes(self) -> None:
+        assert learner_lanes_for_kind("team") == 2
+        assert learner_lanes_for_kind("team4") == 4
+        assert learner_lanes_for_kind("team2") == 1
 
 
 class TestMapMix:

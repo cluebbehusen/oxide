@@ -42,17 +42,18 @@ import shutil
 import subprocess
 import sys
 
-MIX_KEYS = ("self", "past", "overseer", "rusher", "ffa", "team")
+MIX_KEYS = ("self", "past", "overseer", "rusher", "ffa", "team", "team4")
 MAP_KEYS = ("fixed", "random", "grand", "island")
 
 SEED_CONFIG = {
     "mix": {
-        "self": 0.20,
+        "self": 0.19,
         "past": 0.10,
-        "overseer": 0.25,
-        "rusher": 0.20,
+        "overseer": 0.24,
+        "rusher": 0.19,
         "ffa": 0.10,
-        "team": 0.15,
+        "team": 0.06,
+        "team4": 0.12,
     },
     "map_mix": {"fixed": 0.32, "random": 0.27, "grand": 0.31, "island": 0.10},
     "production_entropy_coef": 0.0,
@@ -228,7 +229,9 @@ def run_battery(candidate: pathlib.Path, driver: str, cup_seeds: int) -> dict:
         env={**os.environ, "OXIDE_PROFILE_WEIGHTS": str(exported.resolve())},
     )
     scores["style_gate_pass"] = style.returncode == 0
-    scores["style_gate_failures"] = style_failures(style.stdout)
+    # The test harness routes --nocapture output to stderr when its
+    # streams are piped separately; the verdict lines live in both.
+    scores["style_gate_failures"] = style_failures(style.stdout + "\n" + style.stderr)
     scores["cup_seeds"] = cup_seeds
     memo.write_text(json.dumps(scores))
     return scores

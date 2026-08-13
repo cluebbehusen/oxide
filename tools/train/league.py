@@ -105,6 +105,7 @@ OPPONENT_KINDS = (
     "ffa",
     "team",
     "team2",
+    "team4",
 )
 type AggressionDistribution = tuple[tuple[int, int, float], ...]
 
@@ -966,7 +967,7 @@ def generated_map_families(
     ]
     if opponent_mix.get("ffa", 0.0) > 0.0:
         families.append("ffa")
-    if any(opponent_mix.get(kind, 0.0) > 0.0 for kind in ("team", "team2")):
+    if any(opponent_mix.get(kind, 0.0) > 0.0 for kind in ("team", "team2", "team4")):
         families.append("team")
     return tuple(families)
 
@@ -1355,13 +1356,12 @@ class Job:
         if kind == "self":
             self.learner_seats = [0, 1]
             self.opp_seat = None
-        elif kind == "team":
+        elif kind in ("team", "team4"):
             # Team lanes: the west column (even seats by the mapgen
             # convention) learns as one team against the Overseer.
-            # The shape is job-scoped — lane geometry must never
-            # change mid-run — and 4v4 stays the minority draw: eight
-            # bases price a rollout well above four.
-            self.team_players = 8 if float(rng.random()) < 0.30 else 4
+            # The shape IS the kind — team seats four, team4 eight —
+            # so lane geometry follows from the layout alone.
+            self.team_players = team_players_for_kind(kind)
             self.learner_seats = list(range(0, self.team_players, 2))
             self.opp_seat = None
         elif kind == "team2":
@@ -1370,7 +1370,7 @@ class Job:
             # foe — the robustness half of team training, so the
             # policy learns to fight NEXT TO conventions it doesn't
             # share.
-            self.team_players = 8 if float(rng.random()) < 0.30 else 4
+            self.team_players = team_players_for_kind(kind)
             self.learner_seats = [seat * 2]  # a west chair
             self.opp_seat = None
         elif kind in ("overseer", "ffa"):
@@ -1454,7 +1454,7 @@ class Job:
         }
         seats = (
             self.team_players
-            if self.kind in ("team", "team2")
+            if self.kind in ("team", "team2", "team4")
             else (4 if self.kind == "ffa" else 2)
         )
         pair = sample_faction_pair(self.rng, self.faction_mix)
@@ -1466,7 +1466,7 @@ class Job:
         learner_factions = {seat: faction_knobs[seat] for seat in self.learner_seats}
         self.episode_dials = self.profile_curriculum.sample(
             learner_factions,
-            specialize_roles=self.kind in ("team", "team2"),
+            specialize_roles=self.kind in ("team", "team2", "team4"),
         )
         if self.kind == "rusher":
             # The rush canary gates promotion at EXPERT execution: a
@@ -1503,7 +1503,7 @@ class Job:
             )
             TEL[f"profile_{policy}_{dials.execution.name}"] += 1
         scenario = None
-        if self.kind not in ("ffa", "team", "team2"):
+        if self.kind not in ("ffa", "team", "team2", "team4"):
             self.map_family = sample_map_family(self.rng, self.map_mix)
         if self.map_family == "random":
             scenario = generate(
@@ -1549,7 +1549,7 @@ class Job:
             )
             self._sync_worker_conditions()
             return
-        if self.kind in ("team", "team2"):
+        if self.kind in ("team", "team2", "team4"):
             self.map_family = "team"
             shape_dir = (
                 "oxide-maps-train2v2"
@@ -1709,8 +1709,21 @@ def opponent_actions(jobs: list[Job], device: str) -> list[dict[int, ActionPlan]
 
 
 def learner_lanes_for_kind(kind: str) -> int:
-    """Learner trajectory columns contributed by one job of this kind."""
+    """Learner trajectory columns contributed by one job of this kind.
+
+    The team family's shape is the KIND — team is 2v2, team4 is 4v4 —
+    so lane geometry is exact from the layout alone, and the parent,
+    the in-process trainer, and every sharded collector agree without
+    sharing an rng stream (lane geometry is job-scoped and must never
+    change mid-run)."""
+    if kind == "team4":
+        return 4
     return 2 if kind in ("self", "team") else 1
+
+
+def team_players_for_kind(kind: str) -> int:
+    """Scenario seats for a team-family job of this kind."""
+    return 8 if kind == "team4" else 4
 
 
 def allocate_role_counts(mix: dict[str, float], workers: int) -> dict[str, int]:
