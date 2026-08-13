@@ -456,12 +456,22 @@ pub struct State {
     pub(crate) result: Option<GameResult>,
     next_unit_id: u32,
     next_building_id: u32,
+    /// Derived: one flag per tile, set while a non-stealthy building
+    /// covers it. Never serialized — rebuilt on assembly and load, and
+    /// maintained at the placement/removal funnels — so wire bytes and
+    /// state hashes are exactly what they were before the cache
+    /// existed. Route searches ask "is this tile blocked" thousands of
+    /// times per tick; the linear building scan this replaces was the
+    /// hottest pair of functions in match profiles.
+    #[serde(skip)]
+    building_occupancy: Vec<u8>,
 }
 
 impl State {
     /// Assembles a state from parts; [`crate::Scenario::build`] is the public
     /// entry point.
     pub(crate) fn assemble(map: Map, players: Vec<Player>, seed: u64) -> Self {
+        let (map_width, map_height) = (map.width().max(0), map.height().max(0));
         let vision = players
             .iter()
             .map(|_| crate::vision::Vision::new(map.width(), map.height()))
@@ -478,6 +488,7 @@ impl State {
             result: None,
             next_unit_id: 0,
             next_building_id: 0,
+            building_occupancy: vec![0; (map_width as usize) * (map_height as usize)],
         }
     }
 
@@ -1158,11 +1169,62 @@ impl State {
     /// pathfinding routing around it would leak its position through
     /// movement — the stealth would tell on itself.
     pub fn passable(&self, pos: TilePos) -> bool {
-        self.map.terrain_passable(pos)
-            && !self
-                .buildings
-                .iter()
-                .any(|b| b.contains(pos) && !b.kind.is_stealthy())
+        self.map.terrain_passable(pos) && !self.building_blocks(pos)
+    }
+
+    /// Whether a non-stealthy building covers `pos`, by the derived
+    /// occupancy grid. Equivalent to scanning every building's
+    /// footprint; the grid is maintained at the single placement
+    /// funnel and every removal site.
+    fn building_blocks(&self, pos: TilePos) -> bool {
+        let width = self.map.width();
+        if pos.x < 0 || pos.y < 0 || pos.x >= width || pos.y >= self.map.height() {
+            return false;
+        }
+        let idx = (pos.y as usize) * (width as usize) + (pos.x as usize);
+        self.building_occupancy.get(idx).copied().unwrap_or(0) != 0
+    }
+
+    /// Marks or clears one building's footprint in the occupancy grid.
+    /// Stealthy kinds never mark: a buried charge blocks nothing.
+    pub(crate) fn stamp_building_occupancy(&mut self, building_index: usize, present: bool) {
+        let b = &self.buildings[building_index];
+        if b.kind.is_stealthy() {
+            return;
+        }
+        let (anchor, kind) = (b.anchor, b.kind);
+        let width = self.map.width();
+        let height = self.map.height();
+        let (w, h) = kind.base_stats().size;
+        for dy in 0..h {
+            for dx in 0..w {
+                // Checked: this runs on deserialized bytes BEFORE the
+                // trust boundary rejects them, so a forged anchor near
+                // i32::MAX must fall out of bounds, not overflow.
+                let (Some(x), Some(y)) = (anchor.x.checked_add(dx), anchor.y.checked_add(dy))
+                else {
+                    continue;
+                };
+                if x < 0 || y < 0 || x >= width || y >= height {
+                    continue;
+                }
+                let idx = (y as usize) * (width as usize) + (x as usize);
+                if let Some(cell) = self.building_occupancy.get_mut(idx) {
+                    *cell = u8::from(present);
+                }
+            }
+        }
+    }
+
+    /// Rebuilds the whole occupancy grid from the building list — the
+    /// deserialization path's one-shot recovery of derived state.
+    pub(crate) fn rebuild_building_occupancy(&mut self) {
+        let cells = (self.map.width().max(0) as usize) * (self.map.height().max(0) as usize);
+        self.building_occupancy.clear();
+        self.building_occupancy.resize(cells, 0);
+        for index in 0..self.buildings.len() {
+            self.stamp_building_occupancy(index, true);
+        }
     }
 
     /// Whether a unit of the given movement domain may stand on `pos`.
@@ -1276,6 +1338,7 @@ impl State {
             salvage_credited: 0,
             salvaged: false,
         });
+        self.stamp_building_occupancy(self.buildings.len() - 1, true);
         id
     }
 
@@ -1304,6 +1367,9 @@ impl State {
             self.next_building_id,
             "only the newest site retracts"
         );
+        if let Some(index) = self.buildings.iter().position(|b| b.id == id) {
+            self.stamp_building_occupancy(index, false);
+        }
         self.buildings.retain(|b| b.id != id);
         self.next_building_id = id.0;
     }
@@ -2104,6 +2170,7 @@ impl From<StateWire> for State {
             next_building_id,
         } = w;
         State {
+            building_occupancy: Vec::new(),
             tick,
             rng,
             map,
@@ -2121,7 +2188,8 @@ impl From<StateWire> for State {
 
 impl<'de> Deserialize<'de> for State {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let state: State = StateWire::deserialize(deserializer)?.into();
+        let mut state: State = StateWire::deserialize(deserializer)?.into();
+        state.rebuild_building_occupancy();
         state
             .validate_invariants()
             .map_err(serde::de::Error::custom)?;

@@ -314,6 +314,11 @@ fn cleanup(state: &mut State, events: &mut Vec<Event>) {
             deposits.push((tile, value / tiles));
         }
     }
+    for index in 0..state.buildings.len() {
+        if state.buildings[index].hp == 0 {
+            state.stamp_building_occupancy(index, false);
+        }
+    }
     state.buildings.retain(|b| b.hp > 0);
     for (player, prepaid) in queue_refunds {
         let bank = &mut state.player_mut(player).scrap;

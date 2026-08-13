@@ -877,6 +877,9 @@ fn apply_cancel(
     };
     let bank = &mut state.player_mut(player).scrap;
     *bank = bank.saturating_add(refund);
+    if let Some(index) = state.buildings.iter().position(|b| b.id == building) {
+        state.stamp_building_occupancy(index, false);
+    }
     state.buildings.retain(|b| b.id != building);
     for unit in state.units.iter_mut().filter(|unit| unit.player == player) {
         unit.queue

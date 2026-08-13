@@ -610,18 +610,16 @@ impl QuantNet {
         a + (((b - a) * frac) >> 7)
     }
 
-    fn affine(w: &[Vec<i32>], b: &[i32], input: &[i64]) -> Vec<i64> {
-        w.iter()
-            .zip(b)
-            .map(|(row, bias)| {
-                let acc: i64 = row
-                    .iter()
-                    .zip(input)
-                    .map(|(wi, xi)| i64::from(*wi) * xi)
-                    .sum();
-                (acc >> Q) + i64::from(*bias)
-            })
-            .collect()
+    fn affine_into(w: &[Vec<i32>], b: &[i32], input: &[i64], out: &mut Vec<i64>) {
+        out.clear();
+        out.extend(w.iter().zip(b).map(|(row, bias)| {
+            let acc: i64 = row
+                .iter()
+                .zip(input)
+                .map(|(wi, xi)| i64::from(*wi) * xi)
+                .sum();
+            (acc >> Q) + i64::from(*bias)
+        }));
     }
 
     /// Number of conditioning knobs this artifact expects.
@@ -629,35 +627,73 @@ impl QuantNet {
         self.conditioning
     }
 
-    /// Q12 logits for gym features plus conditioning knobs (in 0..=1000;
-    /// empty for unconditioned artifacts).
-    pub fn logits(&self, features: &[i64; FEATURE_COUNT], knobs: &[i64]) -> Vec<i64> {
+    /// Q12 logits for gym features plus conditioning knobs, written
+    /// into `scratch` (the result lands in `scratch.front`). One
+    /// forward pass allocates nothing once the buffers have reached
+    /// the widest layer — inference runs thousands of times per
+    /// second across matches and the gym, and per-layer vectors were
+    /// measurable in match profiles.
+    fn logits_into(
+        &self,
+        features: &[i64; FEATURE_COUNT],
+        knobs: &[i64],
+        scratch: &mut InferenceScratch,
+    ) {
         // The two saturations that close the kernel's overflow class:
         // an observation is a number the sim computed, not one the
         // artifact's contract covers, so it is held inside the
         // envelope the accumulator bound was derived for. Neither can
         // bind on a reachable observation — MAX_ACT is 262144.0 once
         // normalized, five orders past any feature the gym reports.
-        let mut act: Vec<i64> = features
-            .iter()
-            .chain(knobs.iter().take(self.conditioning))
-            .zip(&self.recips)
-            .map(|(&f, r)| ((f.clamp(-MAX_FEATURE, MAX_FEATURE) * r) >> Q).clamp(-MAX_ACT, MAX_ACT))
-            .collect();
+        let act = &mut scratch.front;
+        act.clear();
+        act.extend(
+            features
+                .iter()
+                .chain(knobs.iter().take(self.conditioning))
+                .zip(&self.recips)
+                .map(|(&f, r)| {
+                    ((f.clamp(-MAX_FEATURE, MAX_FEATURE) * r) >> Q).clamp(-MAX_ACT, MAX_ACT)
+                }),
+        );
         act.resize(self.recips.len(), 0);
         for (w, b) in &self.layers {
-            act = Self::affine(w, b, &act)
-                .into_iter()
-                .map(|x| self.tanh(x))
-                .collect();
+            Self::affine_into(w, b, &scratch.front, &mut scratch.back);
+            for x in &mut scratch.back {
+                *x = self.tanh(*x);
+            }
+            std::mem::swap(&mut scratch.front, &mut scratch.back);
         }
-        Self::affine(&self.head.0, &self.head.1, &act)
+        Self::affine_into(
+            &self.head.0,
+            &self.head.1,
+            &scratch.front,
+            &mut scratch.back,
+        );
+        std::mem::swap(&mut scratch.front, &mut scratch.back);
     }
 
-    /// Greedy masked action plan: one highest-logit legal choice per
-    /// head, ties to the first action in that head's declared order.
-    pub fn act(&self, decision: &Decision, knobs: &[i64]) -> ActionPlan {
-        let logits = self.logits(&decision.features, knobs);
+    /// Q12 logits for gym features plus conditioning knobs (in 0..=1000;
+    /// empty for unconditioned artifacts). Allocating convenience over
+    /// [`Self::act_with`]'s scratch path; instruments and tests use it,
+    /// match loops should not.
+    pub fn logits(&self, features: &[i64; FEATURE_COUNT], knobs: &[i64]) -> Vec<i64> {
+        let mut scratch = InferenceScratch::default();
+        self.logits_into(features, knobs, &mut scratch);
+        scratch.front
+    }
+
+    /// Greedy masked action plan through caller-owned scratch: one
+    /// highest-logit legal choice per head, ties to the first action
+    /// in that head's declared order.
+    pub fn act_with(
+        &self,
+        decision: &Decision,
+        knobs: &[i64],
+        scratch: &mut InferenceScratch,
+    ) -> ActionPlan {
+        self.logits_into(&decision.features, knobs, scratch);
+        let logits = &scratch.front;
         let mut choices = ActionPlan::default().indices();
         for (head_index, head) in ACTION_HEADS.iter().enumerate() {
             let mut best: Option<(i64, usize)> = None;
@@ -672,6 +708,22 @@ impl QuantNet {
         }
         ActionPlan::from_indices(choices)
     }
+
+    /// Greedy masked action plan with one-shot scratch — the
+    /// allocating convenience for tests and one-off calls.
+    pub fn act(&self, decision: &Decision, knobs: &[i64]) -> ActionPlan {
+        let mut scratch = InferenceScratch::default();
+        self.act_with(decision, knobs, &mut scratch)
+    }
+}
+
+/// Reusable forward-pass buffers for [`QuantNet`] inference. Owned by
+/// whoever runs decisions in a loop (one per bot); the buffers grow to
+/// the widest layer once and never allocate again.
+#[derive(Debug, Clone, Default)]
+pub struct InferenceScratch {
+    front: Vec<i64>,
+    back: Vec<i64>,
 }
 
 fn profile_knobs(
@@ -755,6 +807,7 @@ pub struct NeuralBot {
     knobs: Vec<i64>,
     blunder_permille: u32,
     rng: Pcg32,
+    scratch: InferenceScratch,
 }
 
 impl NeuralBot {
@@ -880,6 +933,7 @@ impl NeuralBot {
             knobs: profile_knobs(skill, aggression, faction, facets).to_vec(),
             blunder_permille: blunder,
             rng: Pcg32::new(scenario_seed, stream),
+            scratch: InferenceScratch::default(),
         }
     }
 
@@ -1135,7 +1189,7 @@ impl NeuralBot {
             return Vec::new();
         }
         let decision = self.gym.decision(state);
-        let mut plan = self.net.act(&decision, &self.knobs);
+        let mut plan = self.net.act_with(&decision, &self.knobs, &mut self.scratch);
         if self.blunder_permille > 0 && self.rng.next_below(1000) < self.blunder_permille {
             // A blunder is HESITATION — the commander lets a decision
             // window pass — not a wrong action. The 0.10 campaign
