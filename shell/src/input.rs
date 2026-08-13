@@ -340,18 +340,17 @@ pub(crate) const BUILD_PALETTE: [oxide_sim::BuildingKind; 7] = [
 /// The second palette page: the 0.15 expansion works. The palette key
 /// cycles closed -> page 0 -> page 1 -> closed, and digits pick from
 /// whichever page is open.
-pub(crate) const BUILD_PALETTE_TECH: [oxide_sim::BuildingKind; 7] = [
+pub(crate) const BUILD_PALETTE_TECH: [oxide_sim::BuildingKind; 6] = [
     oxide_sim::BuildingKind::Foundry,
     oxide_sim::BuildingKind::Airworks,
     oxide_sim::BuildingKind::Crucible,
     oxide_sim::BuildingKind::Extractor,
     oxide_sim::BuildingKind::Barricade,
-    oxide_sim::BuildingKind::ScrapDepot,
     oxide_sim::BuildingKind::ScuttleCharge,
 ];
 
 /// The open palette page's kinds.
-pub(crate) fn build_page(page: usize) -> &'static [oxide_sim::BuildingKind; 7] {
+pub(crate) fn build_page(page: usize) -> &'static [oxide_sim::BuildingKind] {
     if page == 0 {
         &BUILD_PALETTE
     } else {

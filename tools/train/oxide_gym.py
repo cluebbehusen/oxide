@@ -40,7 +40,6 @@ type BuildingName = Literal[
     "airworks",
     "crucible",
     "barricade",
-    "scrap_depot",
     "scuttle_charge",
 ]
 BUILDING_NAMES = frozenset(
@@ -57,7 +56,6 @@ BUILDING_NAMES = frozenset(
         "airworks",
         "crucible",
         "barricade",
-        "scrap_depot",
         "scuttle_charge",
     }
 )

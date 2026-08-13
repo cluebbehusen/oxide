@@ -1889,24 +1889,6 @@ def barricade(faction: str) -> None:
     finish(img, px, f"barricade_{faction}")
 
 
-def scrap_depot(faction: str) -> None:
-    """A bare drop-off pad: a ringed apron with corner posts and the
-    faction's chevron painted across the deck."""
-    px = 64
-    pal = FACTIONS[faction]
-    img, d = canvas(px)
-    d.rounded_rectangle([s(6), s(6), s(58), s(58)], radius=s(6), fill=(*IRON_DARK, 255))
-    d.rounded_rectangle([s(10), s(10), s(54), s(54)], radius=s(5), fill=(*IRON, 255))
-    for x, y in ((8, 8), (48, 8), (8, 48), (48, 48)):
-        d.rectangle([s(x), s(y), s(x + 8), s(y + 8)], fill=(*pal["dark"], 255))
-    d.polygon(
-        [(s(18), s(40)), (s(32), s(24)), (s(46), s(40)), (s(40), s(40)),
-         (s(32), s(31)), (s(24), s(40))],
-        fill=(*pal["base"], 255),
-    )
-    d.ellipse([s(29), s(44), s(35), s(50)], fill=(*SCRAP_LIGHT, 255))
-    finish(img, px, f"scrap_depot_{faction}")
-
 
 def scuttle_charge(faction: str) -> None:
     """The buried charge: a low disc almost flush with the ground, a
@@ -3312,7 +3294,6 @@ BUILDING_STEMS = (
     "airworks",
     "crucible",
     "barricade",
-    "scrap_depot",
     "scuttle_charge",
 )
 
@@ -3543,7 +3524,6 @@ def generate(output: Path) -> None:
         for work in range(1, 4):
             crucible(faction, work)
         barricade(faction)
-        scrap_depot(faction)
         scuttle_charge(faction)
     _install_finalized_sprite_bank()
     _install_finalized_environment_bank()

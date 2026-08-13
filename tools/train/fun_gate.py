@@ -223,7 +223,6 @@ def fun_rhythm(matches: list[dict]) -> dict:
         for seat_buildings in m.get("competitive_buildings", []):
             expansion_seats += 1
             extra = max(0, int(seat_buildings.get("foundry", 0)) - 1)
-            extra += int(seat_buildings.get("scrap_depot", 0))
             if extra > 0:
                 expansions += 1
         for seat_shares in m.get("combat_seats", []):

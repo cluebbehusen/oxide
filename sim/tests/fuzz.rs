@@ -221,7 +221,7 @@ fn unit_kind_index(kind: UnitKind) -> usize {
 
 /// Every building kind, frame-bound and tech-gated ones included —
 /// hostile input must aim at all of them.
-const BUILDING_KINDS: [BuildingKind; 14] = [
+const BUILDING_KINDS: [BuildingKind; 13] = [
     BuildingKind::Foundry,
     BuildingKind::Turret,
     BuildingKind::Fabricator,
@@ -234,7 +234,6 @@ const BUILDING_KINDS: [BuildingKind; 14] = [
     BuildingKind::Airworks,
     BuildingKind::Crucible,
     BuildingKind::Barricade,
-    BuildingKind::ScrapDepot,
     BuildingKind::ScuttleCharge,
 ];
 
@@ -252,8 +251,7 @@ fn building_kind_index(kind: BuildingKind) -> usize {
         BuildingKind::Airworks => 9,
         BuildingKind::Crucible => 10,
         BuildingKind::Barricade => 11,
-        BuildingKind::ScrapDepot => 12,
-        BuildingKind::ScuttleCharge => 13,
+        BuildingKind::ScuttleCharge => 12,
     }
 }
 

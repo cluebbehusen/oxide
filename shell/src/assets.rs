@@ -63,7 +63,6 @@ pub struct Sprites {
     airworks: [Rect; 3],
     crucible: [Rect; 3],
     barricade: [Rect; 3],
-    scrap_depot: [Rect; 3],
     scuttle_charge: [Rect; 3],
     repair_bay: [Rect; 3],
     bastion_action: [[Rect; 3]; 9],
@@ -409,7 +408,7 @@ const HARVESTER_CARGO_LEVELS: usize = 5;
 const SITE_STAGES: usize = 3;
 const SITE_PHASES: usize = 2;
 const SITE_FRAME_COUNT: usize = SITE_STAGES * SITE_PHASES;
-const BUILDING_KIND_COUNT: usize = 14;
+const BUILDING_KIND_COUNT: usize = 13;
 
 /// One complete Harvester pose at a particular visible cargo level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -447,7 +446,6 @@ fn building_stem(kind: BuildingKind) -> &'static str {
         BuildingKind::Airworks => "airworks",
         BuildingKind::Crucible => "crucible",
         BuildingKind::Barricade => "barricade",
-        BuildingKind::ScrapDepot => "scrap_depot",
         BuildingKind::ScuttleCharge => "scuttle_charge",
     }
 }
@@ -466,8 +464,7 @@ fn building_index(kind: BuildingKind) -> usize {
         BuildingKind::Airworks => 9,
         BuildingKind::Crucible => 10,
         BuildingKind::Barricade => 11,
-        BuildingKind::ScrapDepot => 12,
-        BuildingKind::ScuttleCharge => 13,
+        BuildingKind::ScuttleCharge => 12,
     }
 }
 
@@ -584,7 +581,6 @@ fn building_work_suffixes(kind: BuildingKind) -> &'static [&'static str] {
         | BuildingKind::FlakTurret
         | BuildingKind::Bastion
         | BuildingKind::Barricade
-        | BuildingKind::ScrapDepot
         | BuildingKind::ScuttleCharge => &[],
     }
 }
@@ -618,7 +614,7 @@ const ALL_UNIT_KINDS: [UnitKind; 24] = [
     UnitKind::Sapper,
 ];
 
-const ALL_BUILDING_KINDS: [BuildingKind; 14] = [
+const ALL_BUILDING_KINDS: [BuildingKind; 13] = [
     BuildingKind::Foundry,
     BuildingKind::Turret,
     BuildingKind::Fabricator,
@@ -631,7 +627,6 @@ const ALL_BUILDING_KINDS: [BuildingKind; 14] = [
     BuildingKind::Airworks,
     BuildingKind::Crucible,
     BuildingKind::Barricade,
-    BuildingKind::ScrapDepot,
     BuildingKind::ScuttleCharge,
 ];
 
@@ -874,7 +869,6 @@ impl Sprites {
             airworks: building(BuildingKind::Airworks)?,
             crucible: building(BuildingKind::Crucible)?,
             barricade: building(BuildingKind::Barricade)?,
-            scrap_depot: building(BuildingKind::ScrapDepot)?,
             scuttle_charge: building(BuildingKind::ScuttleCharge)?,
             repair_bay: building(BuildingKind::RepairBay)?,
             bastion_action: variant_rows(&rects, "bastion", ACTION_SUFFIXES_9)?,
@@ -1138,7 +1132,6 @@ impl Sprites {
             oxide_sim::BuildingKind::Airworks => &self.airworks,
             oxide_sim::BuildingKind::Crucible => &self.crucible,
             oxide_sim::BuildingKind::Barricade => &self.barricade,
-            oxide_sim::BuildingKind::ScrapDepot => &self.scrap_depot,
             oxide_sim::BuildingKind::ScuttleCharge => &self.scuttle_charge,
         }
     }

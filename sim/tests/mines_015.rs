@@ -1,6 +1,5 @@
 //! The 0.15 field kit: buried Scuttle Charges (the game's only
-//! stealth), the Sapper's one-way demolition, Barricade walls, and the
-//! Scrap Depot drop-off.
+//! stealth), the Sapper's one-way demolition, and Barricade walls.
 
 use chassis::grid::TilePos;
 use oxide_sim::command::RejectReason;
@@ -534,56 +533,6 @@ fn the_sapper_cracks_the_wall_and_is_consumed() {
         bystander_hp < UnitKind::Scuttler.stats().max_hp,
         "the adjacent machine takes the splash"
     );
-}
-
-#[test]
-fn the_depot_is_a_real_drop_off() {
-    // Node and depot sit far from the Foundry: a fast first deposit
-    // proves the pad accepts scrap.
-    let map = vec![
-        "########################".into(),
-        "#1.....................#".into(),
-        "#......................#".into(),
-        "#..................s...#".into(),
-        "#......................#".into(),
-        "#......................#".into(),
-        "#......................#".into(),
-        "#...................2..#".into(),
-        "#......................#".into(),
-        "########################".into(),
-    ];
-    let mut state = arena(
-        map,
-        vec![unit(0, UnitKind::Harvester, 18, 4)],
-        vec![building(0, BuildingKind::ScrapDepot, 16, 3)],
-    )
-    .build()
-    .unwrap();
-    let worker = state.units()[0].id;
-    state.tick(&[]);
-    state.tick(&[cmd(
-        0,
-        Command::Harvest {
-            units: vec![worker],
-            node: TilePos::new(19, 3),
-            queue: false,
-        },
-    )]);
-    for tick in 0..400u32 {
-        let report = state.tick(&[]);
-        if report
-            .events
-            .iter()
-            .any(|e| matches!(e, Event::ScrapDeposited { .. }))
-        {
-            assert!(
-                tick < 250,
-                "a depot beside the node must beat the cross-map haul (deposited at {tick})"
-            );
-            return;
-        }
-    }
-    panic!("no deposit ever landed at the depot");
 }
 
 #[test]

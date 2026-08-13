@@ -537,7 +537,6 @@ fn command_behavior_run(
                     | BuildingKind::Airworks
                     | BuildingKind::Crucible
                     | BuildingKind::Barricade
-                    | BuildingKind::ScrapDepot
                     | BuildingKind::ScuttleCharge => {}
                 },
                 _ => {}

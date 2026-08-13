@@ -4446,7 +4446,6 @@ fn protected_points(obs: &Observation, kind: BuildingKind) -> Vec<(Point2, i64)>
             // Field fortifications and buried charges are positions,
             // not assets.
             BuildingKind::Barricade | BuildingKind::ScuttleCharge => 100,
-            BuildingKind::ScrapDepot => 300,
         };
         if building.built { base } else { base / 2 }
     };
@@ -4569,7 +4568,8 @@ fn building_plan_code(kind: BuildingKind) -> i64 {
         // Never planned through the construction head today; distinct
         // codes anyway so a future plan cannot alias "no plan".
         BuildingKind::Barricade => 12,
-        BuildingKind::ScrapDepot => 13,
+        // 13 was the removed ScrapDepot; the gap is permanent so no
+        // future kind can alias a code an old trace may carry.
         BuildingKind::ScuttleCharge => 14,
     }
 }

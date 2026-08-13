@@ -122,9 +122,6 @@ pub enum BuildingKind {
     /// A cheap standing wall segment: blocks ground movement and
     /// nothing else. Terrain you can buy.
     Barricade,
-    /// A bare scrap drop-off pad: shortens haul lines without granting
-    /// production, sight, or victory weight.
-    ScrapDepot,
     /// A buried demolition charge — the game's only stealth. Invisible
     /// to enemies until a scout flies close or an Array's detection ring
     /// covers it; detonates under hostile ground machines.
@@ -347,7 +344,6 @@ impl BuildingKind {
             BuildingKind::Airworks => &[&AIRWORKS],
             BuildingKind::Crucible => &[&CRUCIBLE],
             BuildingKind::Barricade => &[&BARRICADE],
-            BuildingKind::ScrapDepot => &[&SCRAP_DEPOT],
             BuildingKind::ScuttleCharge => &[&SCUTTLE_CHARGE],
         }
     }
@@ -1511,19 +1507,6 @@ const BARRICADE: BuildingStats = BuildingStats {
     }),
 };
 
-const SCRAP_DEPOT: BuildingStats = BuildingStats {
-    max_hp: 300,
-    size: (1, 1),
-    vision: 3,
-    produces: &[],
-    weapons: &[],
-    construction: Some(ConstructionStats {
-        cost: 80,
-        build_ticks: 200,
-        requires: &[],
-    }),
-};
-
 const SCUTTLE_CHARGE: BuildingStats = BuildingStats {
     max_hp: 20,
     size: (1, 1),
@@ -1714,7 +1697,6 @@ impl BuildingKind {
             BuildingKind::Airworks => "airworks",
             BuildingKind::Crucible => "crucible",
             BuildingKind::Barricade => "barricade",
-            BuildingKind::ScrapDepot => "scrap depot",
             BuildingKind::ScuttleCharge => "scuttle charge",
         }
     }
@@ -1737,7 +1719,6 @@ impl BuildingKind {
             BuildingKind::Airworks => &AIRWORKS,
             BuildingKind::Crucible => &CRUCIBLE,
             BuildingKind::Barricade => &BARRICADE,
-            BuildingKind::ScrapDepot => &SCRAP_DEPOT,
             BuildingKind::ScuttleCharge => &SCUTTLE_CHARGE,
         }
     }
@@ -1746,7 +1727,7 @@ impl BuildingKind {
     /// every drop-off decision consults — deliveries, retirement homes,
     /// and route planning alike.
     pub const fn is_drop_off(self) -> bool {
-        matches!(self, BuildingKind::Foundry | BuildingKind::ScrapDepot)
+        matches!(self, BuildingKind::Foundry)
     }
 
     /// Whether this kind hides from enemies until actively detected

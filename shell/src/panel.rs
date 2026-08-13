@@ -271,7 +271,6 @@ pub fn building_flavor(kind: BuildingKind) -> &'static str {
             "The tier-three works: trains the heaviest machines and gates the deepest upgrades."
         }
         BuildingKind::Barricade => "Standing wall segment: blocks ground movement.",
-        BuildingKind::ScrapDepot => "Bare scrap drop-off pad: shortens haul lines.",
         BuildingKind::ScuttleCharge => {
             "Buried charge: hidden from enemies until scouted; detonates under hostile machines."
         }

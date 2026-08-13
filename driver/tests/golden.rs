@@ -347,12 +347,6 @@ fn showcase_scenario() -> (Scenario, Cast) {
             x: 25,
             y: 2,
         },
-        BuildingSpec {
-            player: 0,
-            kind: BuildingKind::ScrapDepot,
-            x: 27,
-            y: 2,
-        },
         // The owner sees its own buried charge; the omniscient CPU
         // renderer draws it regardless.
         BuildingSpec {
@@ -464,22 +458,19 @@ fn yard_orders(cast: &Cast) -> Vec<PlayerCommand> {
 /// The western field kit, founded by a crew harvester and then
 /// abandoned with the same shrug as the eastern yard.
 fn field_kit_orders(cast: &Cast) -> Vec<PlayerCommand> {
-    [
-        (BuildingKind::Barricade, 2, 10),
-        (BuildingKind::ScrapDepot, 4, 10),
-    ]
-    .into_iter()
-    .map(|(kind, x, y)| PlayerCommand {
-        player: PlayerId(0),
-        command: Command::Build {
-            units: vec![cast.crew[2]],
-            kind,
-            anchor: TilePos::new(x, y),
-            queue: false,
-            defer: false,
-        },
-    })
-    .collect()
+    [(BuildingKind::Barricade, 2, 10)]
+        .into_iter()
+        .map(|(kind, x, y)| PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Build {
+                units: vec![cast.crew[2]],
+                kind,
+                anchor: TilePos::new(x, y),
+                queue: false,
+                defer: false,
+            },
+        })
+        .collect()
 }
 
 /// The opening orders: dig, found, and pair every machine off against one
@@ -722,7 +713,6 @@ fn showcase_covers_every_rendered_feature() {
         BuildingKind::Reclaimer,
         BuildingKind::RepairBay,
         BuildingKind::Barricade,
-        BuildingKind::ScrapDepot,
         BuildingKind::ScuttleCharge,
     ] {
         assert!(
