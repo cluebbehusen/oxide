@@ -1014,24 +1014,33 @@ fn known_ground_passable(
     player: PlayerId,
     tile: TilePos,
 ) -> bool {
-    let vision = state.vision(player);
-    let Some(ground) = state
-        .map
-        .tile(tile)
-        .map(|cell| cell.terrain == crate::map::Terrain::Ground)
-    else {
-        return false;
-    };
-    if !ground {
-        return false;
-    }
-    if vision.visible(tile) {
-        return state.map.scrap_at(tile) == 0 && !danger.known_building_blocked(tile);
-    }
-    if vision.remembered_scrap(tile) > 0 {
-        return false;
-    }
-    !danger.known_building_blocked(tile)
+    // Memoized in the phase snapshot: terrain never mutates, fog
+    // knowledge and building spans are frozen for the phase, and the
+    // one input a phase can still change — a visible node's live
+    // scrap draining to zero — is declared volatile so that tile
+    // re-evaluates per probe instead of pinning a stale verdict.
+    danger.known_ground_cached(tile, || {
+        let vision = state.vision(player);
+        let Some(ground) = state
+            .map
+            .tile(tile)
+            .map(|cell| cell.terrain == crate::map::Terrain::Ground)
+        else {
+            return (false, false);
+        };
+        if !ground {
+            return (false, false);
+        }
+        if vision.visible(tile) {
+            let live_scrap = state.map.scrap_at(tile);
+            let open = live_scrap == 0 && !danger.known_building_blocked(tile);
+            return (open, live_scrap > 0);
+        }
+        if vision.remembered_scrap(tile) > 0 {
+            return (false, false);
+        }
+        (!danger.known_building_blocked(tile), false)
+    })
 }
 
 /// One worker's drop-off scan: after any same-pass flood exhausts the

@@ -338,21 +338,35 @@ pub fn astar_with_scratch(
             }
         };
 
+        // The cardinal verdicts double as the diagonals' corner-cut
+        // companions, so record them once instead of re-asking the
+        // predicate: 16 probe calls per expansion become at most 8,
+        // and harvest predicates are the profile's hottest stack.
+        // Slots are derived from the offset's sign, not CARDINALS'
+        // order, so reordering that constant cannot flip the rule.
+        let mut cardinal_open = [false; 4]; // [+x, -x, +y, -y]
         for (dx, dy) in CARDINALS {
             let next = current.offset(dx, dy);
             if in_bounds(next) && passable(next) {
+                let slot = if dy == 0 {
+                    usize::from(dx < 0)
+                } else {
+                    2 + usize::from(dy < 0)
+                };
+                cardinal_open[slot] = true;
                 visit(next, STRAIGHT_COST, open);
             }
         }
         for (dx, dy) in DIAGONALS {
-            let next = current.offset(dx, dy);
-            // No corner cutting: both cardinal companions must be open.
-            if in_bounds(next)
-                && passable(next)
-                && passable(current.offset(dx, 0))
-                && passable(current.offset(0, dy))
-            {
-                visit(next, DIAGONAL_COST, open);
+            // No corner cutting: both cardinal companions must be
+            // open. An out-of-bounds companion shares an axis with an
+            // out-of-bounds `next`, so its recorded `false` agrees
+            // with what a direct probe would have said.
+            if cardinal_open[usize::from(dx < 0)] && cardinal_open[2 + usize::from(dy < 0)] {
+                let next = current.offset(dx, dy);
+                if in_bounds(next) && passable(next) {
+                    visit(next, DIAGONAL_COST, open);
+                }
             }
         }
     }

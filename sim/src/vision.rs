@@ -314,6 +314,15 @@ struct StaticGroundPressure {
     reach_sq: Fx,
 }
 
+/// A memoized known-ground verdict: unknown until first probe, then
+/// pinned for the phase unless the probe declared it volatile.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GroundVerdict {
+    Unknown,
+    Open,
+    Blocked,
+}
+
 /// One player's immutable, fog-honest salvage-danger snapshot for the
 /// brain phase. Capturing once makes every A* predicate a walk over compact
 /// threat records instead of repeatedly rescanning the full game state.
@@ -334,6 +343,12 @@ pub(crate) struct GroundSalvageDanger {
     building_blocks: Vec<Vec<(i32, i32)>>,
     cache: RefCell<Vec<Option<bool>>>,
     observed_cache: RefCell<Vec<Option<bool>>>,
+    /// Per-tile memo for the brain phase's known-ground passability
+    /// probe — the match profile's hottest stack. One arm of that
+    /// probe stays volatile (a visible tile whose live scrap can
+    /// deplete mid-phase), so entries carry a tri-state and volatile
+    /// verdicts are returned without being stored.
+    ground_cache: RefCell<Vec<GroundVerdict>>,
     path_scratch: RefCell<AstarScratch>,
 }
 
@@ -443,6 +458,7 @@ impl GroundSalvageDanger {
             building_blocks,
             cache: RefCell::new(vec![None; cell_count]),
             observed_cache: RefCell::new(vec![None; cell_count]),
+            ground_cache: RefCell::new(vec![GroundVerdict::Unknown; cell_count]),
             path_scratch: RefCell::new(AstarScratch::default()),
         }
     }
@@ -574,6 +590,38 @@ impl GroundSalvageDanger {
             rect_closest_point(pressure.anchor, pressure.size, source_point).dist_sq(source_point)
                 <= pressure.reach_sq
         })
+    }
+}
+
+impl GroundSalvageDanger {
+    /// Serves the known-ground probe through the per-tile memo. The
+    /// closure returns `(open, volatile)`; volatile verdicts are
+    /// handed back but never stored, so a visible scrap tile whose
+    /// node can deplete mid-phase re-evaluates on every probe while
+    /// everything else pays the full walk exactly once.
+    pub(crate) fn known_ground_cached(
+        &self,
+        tile: TilePos,
+        compute: impl FnOnce() -> (bool, bool),
+    ) -> bool {
+        if tile.x < 0 || tile.y < 0 || tile.x >= self.width || tile.y >= self.height {
+            return compute().0;
+        }
+        let index = (tile.y as usize) * (self.width as usize) + tile.x as usize;
+        match self.ground_cache.borrow()[index] {
+            GroundVerdict::Open => return true,
+            GroundVerdict::Blocked => return false,
+            GroundVerdict::Unknown => {}
+        }
+        let (open, volatile) = compute();
+        if !volatile {
+            self.ground_cache.borrow_mut()[index] = if open {
+                GroundVerdict::Open
+            } else {
+                GroundVerdict::Blocked
+            };
+        }
+        open
     }
 }
 
