@@ -34,7 +34,7 @@ fn arena() -> Scenario {
             "#..................#".into(),
             "#....s.............#".into(),
             "#..................#".into(),
-            "#..................#".into(),
+            "#.........E........#".into(),
             "#..................#".into(),
             "#..................#".into(),
             "#................2.#".into(),
@@ -444,10 +444,30 @@ fn every_checklist_row_refuses_its_forgery() {
             "map grid dimensions disagree with its cells",
         ),
         (
+            "an extractor frame parked on a scrap node",
+            |d| {
+                // Parse would refuse this shape outright; the wire
+                // must too, or restoration and harvesting stack on
+                // one tile. Plant scrap under the first frame anchor.
+                let frame = d["map"]["extractor_frames"][0].clone();
+                let (x, y) = (
+                    frame["x"].as_i64().unwrap() as usize,
+                    frame["y"].as_i64().unwrap() as usize,
+                );
+                let width = d["map"]["grid"]["width"].as_u64().unwrap() as usize;
+                d["map"]["grid"]["cells"][y * width + x]["scrap"] = json!(40);
+            },
+            "map grid dimensions disagree with its cells",
+        ),
+        (
             "a map wider than the supported maximum",
             |d| {
                 let cell = d["map"]["grid"]["cells"][0].clone();
                 d["map"]["grid"] = json!({"width": 300, "height": 1, "cells": vec![cell; 300]});
+                // A coherent forgery: frames from the real map would
+                // trip the consistency gate first and mask the size
+                // gate this row exists to prove.
+                d["map"]["extractor_frames"] = json!([]);
             },
             "the supported maximum is 256 per side",
         ),
@@ -1159,4 +1179,27 @@ fn a_dangling_order_target_is_not_a_forgery() {
     run(&mut state, 5);
     state.validate_invariants().expect("still coherent");
     assert!(state.unit(UnitId(live)).is_some());
+}
+
+#[test]
+fn parse_refuses_a_map_beyond_the_edge_bound() {
+    use oxide_sim::map::{MAX_MAP_EDGE, Map, MapError};
+
+    let wide = vec!["#".repeat(MAX_MAP_EDGE + 1)];
+    assert!(matches!(
+        Map::parse(&wide),
+        Err(MapError::TooLarge { width, height: 1 }) if width == MAX_MAP_EDGE + 1
+    ));
+
+    let tall: Vec<String> = std::iter::repeat_n("#".to_string(), MAX_MAP_EDGE + 1).collect();
+    assert!(matches!(
+        Map::parse(&tall),
+        Err(MapError::TooLarge { width: 1, height }) if height == MAX_MAP_EDGE + 1
+    ));
+
+    let square: Vec<String> = std::iter::repeat_n("#".repeat(MAX_MAP_EDGE), MAX_MAP_EDGE).collect();
+    assert!(
+        Map::parse(&square).is_ok(),
+        "the bound is inclusive: exactly the maximum still parses"
+    );
 }

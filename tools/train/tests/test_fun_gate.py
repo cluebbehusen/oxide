@@ -929,3 +929,46 @@ def test_main_rejects_a_baseline_with_a_different_seed_slate(
 
     assert fun_gate.main() == 1
     assert "exact map/seed slate" in capsys.readouterr().out
+
+
+def test_main_reports_measured_failures_and_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The audit measured main()'s failure aggregation and reporting
+    # block at zero execution: every prior main() test fed it a passing
+    # payload. Feed the dealt profile sentinel spam instead and pin the
+    # whole refusal path — the per-profile prefix on each failure line
+    # and the nonzero exit the autopilot's hard constraint keys on.
+    def fake_run(
+        argv: list[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        profile = requested_profile(argv)
+        out = pathlib.Path(argv[argv.index("--out") + 1])
+        payload = good_payload(
+            style=profile.style,
+            variant=profile.variant,
+            aggression=None,
+        )
+        if profile.label == "dealt":
+            # The verdict reads the overall cohort tables, so the spam
+            # goes there — the same shape the sentinel-spam unit tests
+            # prove fails every floor.
+            payload["overall"].update(
+                cohort(
+                    {"sentinel": 1.0},
+                    diagnostic_shares={"sentinel": 0.55, "harvester": 0.45},
+                )
+            )
+        out.write_text(json.dumps(payload))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(fun_gate.subprocess, "run", fake_run)
+    monkeypatch.setattr(sys, "argv", ["fun_gate.py", "--weights", "candidate.json"])
+
+    assert fun_gate.main() == 1
+    out = capsys.readouterr().out
+    assert "FUN GATE FAIL: dealt: " in out, "failures carry their profile label"
+    assert "mix entropy" in out
+    assert "fun gate: open" not in out, "a failing gate must not also open"

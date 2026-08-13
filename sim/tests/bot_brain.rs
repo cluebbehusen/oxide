@@ -406,3 +406,140 @@ fn wounded_members_rejoin_after_full_repair() {
         "a fully healed veteran returns to the draft pool"
     );
 }
+
+/// A three-seat arena: seats 1 and 2 duel deep in seat 0's fog, so any
+/// artillery echo reaching seat 0's observation is a leak, not sight.
+fn artillery_arena(observer_units: Vec<UnitSpec>) -> Scenario {
+    let mut units = observer_units;
+    units.push(UnitSpec {
+        player: 1,
+        kind: UnitKind::Bombard,
+        x: 13,
+        y: 9,
+    });
+    units.push(UnitSpec {
+        player: 2,
+        kind: UnitKind::Harvester,
+        x: 20,
+        y: 9,
+    });
+    Scenario {
+        name: "artillery-fog-arena".into(),
+        seed: 42,
+        map: vec![
+            "########################".into(),
+            "#1.....................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#......................#".into(),
+            "#..............2.......#".into(),
+            "#......................#".into(),
+            "#....................3.#".into(),
+            "#......................#".into(),
+            "########################".into(),
+        ],
+        players: (0..3)
+            .map(|seat| PlayerSpec {
+                name: format!("Seat{seat}"),
+                faction: if seat % 2 == 0 {
+                    Faction::Ferrous
+                } else {
+                    Faction::Cupric
+                },
+                team: None,
+                scrap: 500,
+                bot: false,
+                bot_config: None,
+            })
+            .collect(),
+        units,
+        buildings: Vec::new(),
+        meta: None,
+    }
+}
+
+#[test]
+fn artillery_in_fog_cannot_touch_a_fog_honest_observation() {
+    // The incoming_shells filter is the only thing separating this
+    // field from an omniscient read of every shell in flight; a
+    // mutation test proved the old fog suite never exercised it (no
+    // test ever fired a weapon). Control and variant differ only by a
+    // bombardment entirely inside seat 0's fog.
+    let scenario = artillery_arena(vec![unit(0, UnitKind::Harvester, 4, 2)]);
+    let mut control = scenario.build().unwrap();
+    let mut variant = scenario.build().unwrap();
+    let bombard = variant.units()[1].id;
+    let target = variant.units()[2].id;
+
+    variant.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: vec![bombard],
+            target: oxide_sim::Target::Unit(target),
+            queue: false,
+        },
+    )]);
+    control.tick(&[]);
+    let mut shells_flew = false;
+    for _ in 0..60u32 {
+        variant.tick(&[]);
+        control.tick(&[]);
+        shells_flew |= !variant.shells().is_empty();
+        let a = serde_json::to_string(&Observation::fog_honest(&control, PlayerId(0))).unwrap();
+        let b = serde_json::to_string(&Observation::fog_honest(&variant, PlayerId(0))).unwrap();
+        assert_eq!(a, b, "fog-honest observation echoed artillery in fog");
+    }
+    assert!(shells_flew, "test premise: shells actually flew");
+    assert_ne!(
+        control.hash(),
+        variant.hash(),
+        "test premise: the worlds actually diverged"
+    );
+}
+
+#[test]
+fn a_watched_bombardment_reports_its_impact_tiles() {
+    // The positive half: with the impact inside seat 0's vision, the
+    // observation names exactly the hostile impact tiles, canonically
+    // ordered, and my_shells counts only the viewer's own fire.
+    let scenario = artillery_arena(vec![unit(0, UnitKind::Harvester, 19, 8)]);
+    let mut state = scenario.build().unwrap();
+    let bombard = state.units()[1].id;
+    let target = state.units()[2].id;
+
+    state.tick(&[cmd(
+        1,
+        Command::Attack {
+            units: vec![bombard],
+            target: oxide_sim::Target::Unit(target),
+            queue: false,
+        },
+    )]);
+    let mut asserted = false;
+    for _ in 0..60u32 {
+        state.tick(&[]);
+        if state.shells().is_empty() {
+            continue;
+        }
+        let obs = Observation::fog_honest(&state, PlayerId(0));
+        let vision = state.vision(PlayerId(0));
+        let mut expected: Vec<TilePos> = state
+            .shells()
+            .iter()
+            .filter(|s| s.player != PlayerId(0))
+            .map(|s| TilePos::containing(s.impact))
+            .filter(|t| vision.visible(*t))
+            .collect();
+        expected.sort_by_key(|p| (p.y, p.x));
+        if expected.is_empty() {
+            continue;
+        }
+        assert_eq!(obs.incoming_shells, expected);
+        assert_eq!(obs.my_shells, 0, "seat 0 fired nothing");
+        asserted = true;
+    }
+    assert!(asserted, "test premise: a visible impact was observed");
+}

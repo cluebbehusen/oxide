@@ -282,8 +282,13 @@ impl Map {
             && self.extractor_frames.iter().all(|frame| {
                 (0..2).all(|dy| {
                     (0..2).all(|dx| {
+                        // The full parse-side contract, not a subset:
+                        // a frame tile is bare ground. A deserialized
+                        // frame on a scrap node would let restoration
+                        // and harvesting stack on one tile — a shape
+                        // parse refuses and loading must refuse too.
                         self.tile(frame.offset(dx, dy))
-                            .is_some_and(|t| t.terrain == Terrain::Ground)
+                            .is_some_and(|t| t.terrain == Terrain::Ground && t.scrap == 0)
                     })
                 })
             })

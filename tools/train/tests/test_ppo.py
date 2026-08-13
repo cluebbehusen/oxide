@@ -356,3 +356,97 @@ class TestProductionEntropy:
         assert torch.equal(policy.pi.weight[other_rows], output_before[other_rows])
         assert torch.equal(policy.pi.bias[other_rows], bias_before[other_rows])
         assert stats["production_ent"] > 0.0
+
+
+class TestGuards:
+    def _batch(self, policy, rows: int = 128, seed: int = 5):
+        rng = np.random.default_rng(seed)
+        obs = rng.normal(size=(rows, NET_FEATURES)).astype(np.float32)
+        mask = np.ones((rows, ACTIONS), dtype=bool)
+        with torch.no_grad():
+            logits, _ = policy(torch.as_tensor(obs), torch.as_tensor(mask))
+            actions = factorized_sample(logits)
+            logp = factorized_joint_log_prob(logits, actions)
+        return (
+            obs,
+            mask,
+            actions.numpy(),
+            logp.numpy(),
+            rng.normal(size=rows).astype(np.float32),
+            rng.normal(size=rows).astype(np.float32),
+        )
+
+    def test_the_kl_stop_halts_a_runaway_update(self) -> None:
+        # The guard the coverage audit measured at zero: with a
+        # microscopic budget the first minibatch's divergence trips it,
+        # and the surviving policy stays closer to its start than an
+        # unguarded twin after the same epochs.
+        torch.manual_seed(23)
+        guarded = make_policy("mlp")
+        unguarded = make_policy("mlp")
+        unguarded.load_state_dict(guarded.state_dict())
+        start = {k: v.detach().clone() for k, v in guarded.state_dict().items()}
+        batch = self._batch(guarded)
+
+        stats = ppo_update(
+            guarded,
+            torch.optim.Adam(guarded.parameters(), lr=5e-2),
+            batch,
+            "cpu",
+            epochs=8,
+            minibatch=32,
+            kl_stop=1e-9,
+        )
+        ppo_update(
+            unguarded,
+            torch.optim.Adam(unguarded.parameters(), lr=5e-2),
+            batch,
+            "cpu",
+            epochs=8,
+            minibatch=32,
+            kl_stop=0.0,
+        )
+        assert "kl" in stats, "the stop records the divergence it saw"
+        drift = lambda policy: sum(  # noqa: E731
+            (policy.state_dict()[k] - start[k]).abs().sum().item() for k in start
+        )
+        assert drift(guarded) < drift(unguarded), (
+            "the guard must leave the policy nearer its start"
+        )
+
+    def test_the_anchor_tether_holds_the_policy_near_its_reference(self) -> None:
+        # The dormant regularizer the audit surfaced: a frozen anchor
+        # with a heavy coefficient must keep the updated policy closer
+        # to the anchor (in its own KL) than the same update without it.
+        torch.manual_seed(29)
+        anchor = make_policy("mlp")
+        tethered = make_policy("mlp")
+        free = make_policy("mlp")
+        tethered.load_state_dict(anchor.state_dict())
+        free.load_state_dict(anchor.state_dict())
+        batch = self._batch(anchor)
+        obs_t = torch.as_tensor(batch[0])
+        mask_t = torch.as_tensor(batch[1])
+
+        for policy, coef in ((tethered, 50.0), (free, 0.0)):
+            ppo_update(
+                policy,
+                torch.optim.Adam(policy.parameters(), lr=5e-2),
+                batch,
+                "cpu",
+                epochs=6,
+                minibatch=32,
+                kl_stop=0.0,
+                anchor=anchor if coef else None,
+                anchor_coef=coef,
+            )
+
+        with torch.no_grad():
+            a_logits, _ = anchor(obs_t, mask_t)
+            t_logits, _ = tethered(obs_t, mask_t)
+            f_logits, _ = free(obs_t, mask_t)
+            tether_kl = factorized_kl(a_logits, t_logits).mean().item()
+            free_kl = factorized_kl(a_logits, f_logits).mean().item()
+        assert tether_kl < free_kl, (
+            f"anchored KL {tether_kl:.4f} must undercut unanchored {free_kl:.4f}"
+        )
