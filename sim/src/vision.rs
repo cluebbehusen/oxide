@@ -19,7 +19,7 @@ use chassis::fx::{Fx, HALF, Vec2Fx};
 use chassis::grid::{CARDINALS, Grid, TilePos};
 use chassis::path::AstarScratch;
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 /// A remembered enemy building: what its ground looked like the last time
 /// this player saw it. Ghosts are beliefs, not facts — the building may be
@@ -352,13 +352,22 @@ struct StaticGroundPressure {
 /// builder's bulk-read unit.
 pub(crate) type VisionRows<'a> = (&'a [bool], &'a [bool], &'a [u32], &'a [u32]);
 
-/// A memoized known-ground verdict: unknown until first probe, then
-/// pinned for the phase unless the probe declared it volatile.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum GroundVerdict {
-    Unknown,
-    Open,
-    Blocked,
+/// Memo-lane bits for [`GroundSalvageDanger::lanes`].
+mod lane {
+    /// Tile sits inside some incident danger ring (stamped at capture).
+    pub const INCIDENT_NEAR: u8 = 1 << 0;
+    /// The contains verdict has been computed.
+    pub const CONTAINS_SET: u8 = 1 << 1;
+    /// The memoized contains verdict.
+    pub const CONTAINS: u8 = 1 << 2;
+    /// The observed-contains verdict has been computed.
+    pub const OBSERVED_SET: u8 = 1 << 3;
+    /// The memoized observed-contains verdict.
+    pub const OBSERVED: u8 = 1 << 4;
+    /// The known-ground verdict has been computed.
+    pub const GROUND_SET: u8 = 1 << 5;
+    /// The memoized known-ground verdict.
+    pub const GROUND: u8 = 1 << 6;
 }
 
 /// One player's immutable, fog-honest salvage-danger snapshot for the
@@ -369,24 +378,19 @@ pub(crate) struct GroundSalvageDanger {
     height: i32,
     contacts: Vec<TilePos>,
     incidents: Vec<TilePos>,
-    /// Tiles within the incident danger radius of any incident. The
-    /// incident rule depends on the mover's origin, so its verdict
-    /// cannot live in a per-tile cache — but a tile outside every ring
-    /// is safe regardless of origin, and this stamp lets the per-route
-    /// A* skip the incident scan on the overwhelming majority of
-    /// expansions.
-    incident_near: Vec<bool>,
     mobile: Vec<MobileGroundPressure>,
     statics: Vec<StaticGroundPressure>,
     building_blocks: Vec<Vec<(i32, i32)>>,
-    cache: RefCell<Vec<Option<bool>>>,
-    observed_cache: RefCell<Vec<Option<bool>>>,
-    /// Per-tile memo for the brain phase's known-ground passability
-    /// probe — the match profile's hottest stack. One arm of that
-    /// probe stays volatile (a visible tile whose live scrap can
-    /// deplete mid-phase), so entries carry a tri-state and volatile
-    /// verdicts are returned without being stored.
-    ground_cache: RefCell<Vec<GroundVerdict>>,
+    /// One byte of memo lanes per tile, replacing three separate
+    /// tables and their RefCell borrow bookkeeping — the A*
+    /// predicates probe these once per neighbor, and a `Cell` read is
+    /// a plain load. The incident-near stamp is set at capture (the
+    /// incident rule depends on the mover's origin, so only the
+    /// outside-every-ring case caches); the contains and observed
+    /// verdicts memoize on first probe; known-ground memoizes except
+    /// its volatile arm (a visible tile with live scrap), which is
+    /// served uncached exactly as before.
+    lanes: Vec<Cell<u8>>,
     path_scratch: RefCell<AstarScratch>,
 }
 
@@ -476,12 +480,15 @@ impl GroundSalvageDanger {
             .map(|incident| incident.tile)
             .collect();
         let (width, height) = (state.map.width(), state.map.height());
-        let mut incident_near = vec![false; cell_count];
+        let lanes: Vec<Cell<u8>> = std::iter::repeat_with(|| Cell::new(0))
+            .take(cell_count)
+            .collect();
         let radius = crate::stats::HARVEST_INCIDENT_DANGER_RADIUS;
         for incident in &incidents {
             for y in (incident.y - radius).max(0)..=(incident.y + radius).min(height - 1) {
                 for x in (incident.x - radius).max(0)..=(incident.x + radius).min(width - 1) {
-                    incident_near[(y * width + x) as usize] = true;
+                    let cell = &lanes[(y * width + x) as usize];
+                    cell.set(cell.get() | lane::INCIDENT_NEAR);
                 }
             }
         }
@@ -490,13 +497,10 @@ impl GroundSalvageDanger {
             height,
             contacts: vision.contacts().to_vec(),
             incidents,
-            incident_near,
             mobile,
             statics,
             building_blocks,
-            cache: RefCell::new(vec![None; cell_count]),
-            observed_cache: RefCell::new(vec![None; cell_count]),
-            ground_cache: RefCell::new(vec![GroundVerdict::Unknown; cell_count]),
+            lanes,
             path_scratch: RefCell::new(AstarScratch::default()),
         }
     }
@@ -504,7 +508,7 @@ impl GroundSalvageDanger {
     /// Whether this snapshot marks one tile as too dangerous for
     /// autonomous salvage work.
     pub(crate) fn contains(&self, source: TilePos) -> bool {
-        cached_tile_predicate(&self.cache, self.width, self.height, source, || {
+        self.lane_memo(source, lane::CONTAINS_SET, lane::CONTAINS, || {
             self.compute_contains(source)
         })
     }
@@ -515,13 +519,26 @@ impl GroundSalvageDanger {
     /// move laterally or outward, but never closer to that impact; a worker
     /// outside cannot enter it.
     pub(crate) fn route_safe_from(&self, from: TilePos, tile: TilePos) -> bool {
-        if cached_tile_predicate(&self.observed_cache, self.width, self.height, tile, || {
+        // One bounds test and one byte load serve both the observed
+        // memo and the incident-near stamp.
+        let index = self.lane_index(tile);
+        let bits = index.map(|i| self.lanes[i].get()).unwrap_or(0);
+        let observed = if let Some(i) = index {
+            if bits & lane::OBSERVED_SET != 0 {
+                bits & lane::OBSERVED != 0
+            } else {
+                let value = self.compute_observed_contains(tile);
+                let cell = &self.lanes[i];
+                cell.set(cell.get() | lane::OBSERVED_SET | if value { lane::OBSERVED } else { 0 });
+                value
+            }
+        } else {
             self.compute_observed_contains(tile)
-        }) {
+        };
+        if observed {
             return false;
         }
-        let in_bounds = (0..self.width).contains(&tile.x) && (0..self.height).contains(&tile.y);
-        if in_bounds && !self.incident_near[(tile.y * self.width + tile.x) as usize] {
+        if index.is_some() && bits & lane::INCIDENT_NEAR == 0 {
             return true;
         }
         !self.incidents.iter().any(|incident| {
@@ -642,45 +659,42 @@ impl GroundSalvageDanger {
         tile: TilePos,
         compute: impl FnOnce() -> (bool, bool),
     ) -> bool {
-        if tile.x < 0 || tile.y < 0 || tile.x >= self.width || tile.y >= self.height {
+        let Some(index) = self.lane_index(tile) else {
             return compute().0;
-        }
-        let index = (tile.y as usize) * (self.width as usize) + tile.x as usize;
-        match self.ground_cache.borrow()[index] {
-            GroundVerdict::Open => return true,
-            GroundVerdict::Blocked => return false,
-            GroundVerdict::Unknown => {}
+        };
+        let cell = &self.lanes[index];
+        let bits = cell.get();
+        if bits & lane::GROUND_SET != 0 {
+            return bits & lane::GROUND != 0;
         }
         let (open, volatile) = compute();
         if !volatile {
-            self.ground_cache.borrow_mut()[index] = if open {
-                GroundVerdict::Open
-            } else {
-                GroundVerdict::Blocked
-            };
+            cell.set(bits | lane::GROUND_SET | if open { lane::GROUND } else { 0 });
         }
         open
     }
-}
 
-fn cached_tile_predicate(
-    cache: &RefCell<Vec<Option<bool>>>,
-    width: i32,
-    height: i32,
-    tile: TilePos,
-    compute: impl FnOnce() -> bool,
-) -> bool {
-    if tile.x < 0 || tile.y < 0 || tile.x >= width || tile.y >= height {
-        return compute();
+    /// The packed index of an in-bounds tile.
+    fn lane_index(&self, tile: TilePos) -> Option<usize> {
+        ((0..self.width).contains(&tile.x) && (0..self.height).contains(&tile.y))
+            .then(|| (tile.y as usize) * (self.width as usize) + tile.x as usize)
     }
-    let index = (tile.y as usize) * (width as usize) + tile.x as usize;
-    let cached = cache.borrow()[index];
-    if let Some(value) = cached {
-        return value;
+
+    /// Serves one boolean verdict through its memo lane pair; out of
+    /// bounds computes uncached, like the tables it replaces.
+    fn lane_memo(&self, tile: TilePos, set: u8, value: u8, compute: impl FnOnce() -> bool) -> bool {
+        let Some(index) = self.lane_index(tile) else {
+            return compute();
+        };
+        let cell = &self.lanes[index];
+        let bits = cell.get();
+        if bits & set != 0 {
+            return bits & value != 0;
+        }
+        let verdict = compute();
+        cell.set(bits | set | if verdict { value } else { 0 });
+        verdict
     }
-    let value = compute();
-    cache.borrow_mut()[index] = Some(value);
-    value
 }
 
 fn stamp_blocked_rect(

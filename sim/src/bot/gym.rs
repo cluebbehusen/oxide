@@ -1668,8 +1668,13 @@ impl GymBot {
             plan.operation = finish;
         }
 
+        // One defense probe serves this whole think: the feasibility
+        // check and the anchor search below run the same full-map
+        // route flood, and rebuilding it per question was the
+        // construction think's dominant cost.
+        let mut defense_probe = None;
         if let Some(kind) = plan.construction.building()
-            && self.can_plan_build(&obs, &enlisted, home, kind, &mut None)
+            && self.can_plan_build(&obs, &enlisted, home, kind, &mut defense_probe)
         {
             self.set_planned_build(kind, obs.tick);
         }
@@ -1714,7 +1719,7 @@ impl GymBot {
         let build_spend = if maintenance_selected {
             None
         } else {
-            self.try_planned_build(&obs, &enlisted, home, &mut intents)
+            self.try_planned_build(&obs, &enlisted, home, &mut intents, &mut defense_probe)
         };
         let reserve = self
             .unpaid_claim_reserve(&obs)
@@ -2268,10 +2273,11 @@ impl GymBot {
         enlisted: &[UnitId],
         home: TilePos,
         kind: BuildingKind,
+        defense_probe: &mut Option<(KnownPassability, DefenseBuilderRoutes)>,
     ) -> Option<TilePos> {
         match kind {
             BuildingKind::Turret | BuildingKind::FlakTurret | BuildingKind::Bastion => {
-                self.defense_anchor(obs, enlisted, home, kind)
+                self.defense_anchor(obs, enlisted, home, kind, defense_probe)
             }
             BuildingKind::Foundry => self
                 .expansion_focus(obs)
@@ -2286,6 +2292,7 @@ impl GymBot {
         enlisted: &[UnitId],
         home: TilePos,
         kind: BuildingKind,
+        defense_probe: &mut Option<(KnownPassability, DefenseBuilderRoutes)>,
     ) -> Option<TilePos> {
         let mut foci = defense_foci(obs, home, kind);
         foci.sort_unstable_by_key(|tile| (tile.y, tile.x));
@@ -2298,7 +2305,17 @@ impl GymBot {
         candidates.sort_unstable_by_key(|anchor| (anchor.y, anchor.x));
         candidates.dedup();
         let traffic = DefenseTraffic::measure(obs, home, kind);
-        let builders = DefenseBuilderRoutes::measure(obs, enlisted, &traffic.passability);
+        // The feasibility probe already ran this full-map Dijkstra
+        // for the same observation and enlisted set; its routes are
+        // value-identical to ones built from the traffic's own
+        // passability grid (both derive from the same observation),
+        // so the anchor search reuses them instead of flooding again.
+        let (_, builders) = defense_probe.get_or_insert_with(|| {
+            let passability = KnownPassability::from_observation(obs);
+            let builders = DefenseBuilderRoutes::measure(obs, enlisted, &passability);
+            (passability, builders)
+        });
+        let builders = &*builders;
         candidates.retain(|anchor| builders.travel_to(*anchor, kind).is_some());
         if candidates.is_empty() {
             candidates = self.policy.placements_near(obs, kind, home);
@@ -2310,7 +2327,7 @@ impl GymBot {
         let metrics: Vec<_> = candidates
             .iter()
             .copied()
-            .map(|anchor| DefenseMetrics::measure(obs, home, kind, anchor, &traffic, &builders))
+            .map(|anchor| DefenseMetrics::measure(obs, home, kind, anchor, &traffic, builders))
             .collect();
         let bounds = DefenseBounds::from_metrics(&metrics);
         candidates
@@ -2334,6 +2351,7 @@ impl GymBot {
         enlisted: &[crate::ids::UnitId],
         home: TilePos,
         intents: &mut Vec<Intent>,
+        defense_probe: &mut Option<(KnownPassability, DefenseBuilderRoutes)>,
     ) -> Option<u32> {
         let kind = self.planned_build?;
         let construction = kind.base_stats().construction?;
@@ -2343,7 +2361,7 @@ impl GymBot {
         {
             return None;
         }
-        let anchor = self.build_anchor(obs, enlisted, home, kind)?;
+        let anchor = self.build_anchor(obs, enlisted, home, kind, defense_probe)?;
         self.policy.note_pending_site(anchor);
         intents.push(Intent::Build { kind, anchor });
         self.clear_planned_build();
