@@ -357,32 +357,41 @@ impl Observation {
             .sort_by_key(|b| (b.anchor.y, b.anchor.x, b.player));
         // Remembered salvage: what this player last saw, everywhere. Rock
         // is static, so explored is knowledge enough.
-        for (pos, tile) in state.map().iter() {
-            obs.explored.push(vision.explored(pos));
-            let amount = if vision.visible(pos) {
-                state.map().scrap_at(pos)
-            } else {
-                vision.remembered_scrap(pos)
-            };
-            if amount > 0 {
-                obs.known_scrap.push((pos, amount));
+        // Row slices, the way vision::refresh itself walks: the point
+        // accessors re-tested the same fog bits up to seven times per
+        // tile, and the per-tile frame test rescanned the frame list
+        // for every cell — the frames get their own single pass below.
+        for y in 0..state.map().height() {
+            let (visible, explored, scrap_mem, wreck_mem) = vision.rows(y).expect("row in range");
+            let tiles = state.map().grid().row(y).expect("row in range");
+            for (x, tile) in tiles.iter().enumerate() {
+                let pos = TilePos::new(x as i32, y);
+                let seen = visible[x];
+                let known = explored[x];
+                obs.explored.push(known);
+                let amount = if seen { tile.scrap } else { scrap_mem[x] };
+                if amount > 0 {
+                    obs.known_scrap.push((pos, amount));
+                }
+                let wreck = if seen { tile.wreck } else { wreck_mem[x] };
+                if wreck > 0 {
+                    obs.known_wrecks.push((pos, wreck));
+                }
+                if known {
+                    if tile.terrain.blocks_ground() {
+                        obs.known_rock.push(pos);
+                    }
+                    if tile.terrain.blocks_air() {
+                        obs.known_peaks.push(pos);
+                    }
+                }
             }
-            let wreck = if vision.visible(pos) {
-                state.map().wreck_at(pos)
-            } else {
-                vision.remembered_wreck(pos)
-            };
-            if wreck > 0 {
-                obs.known_wrecks.push((pos, wreck));
-            }
-            if state.map().is_extractor_frame(pos) && vision.explored(pos) {
-                obs.known_frames.push(pos);
-            }
-            if tile.terrain.blocks_ground() && vision.explored(pos) {
-                obs.known_rock.push(pos);
-            }
-            if tile.terrain.blocks_air() && vision.explored(pos) {
-                obs.known_peaks.push(pos);
+        }
+        // Frames are authored in row-major order, the same order the
+        // per-tile walk produced them in.
+        for frame in state.map().extractor_frames() {
+            if vision.explored(*frame) {
+                obs.known_frames.push(*frame);
             }
         }
         // Blips ride through untouched: tiles only, by construction.

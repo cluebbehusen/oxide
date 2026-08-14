@@ -160,6 +160,18 @@ impl<T> Grid<T> {
         self.cells[base + x0 as usize..=base + x1 as usize].fill(value);
     }
 
+    /// Copies `other` into `self`, reusing this grid's allocation when
+    /// capacities allow — `Vec::clone_from` keeps the buffer where a
+    /// plain clone-assign reallocates. Dimensions follow the source.
+    pub fn copy_from(&mut self, other: &Grid<T>)
+    where
+        T: Clone,
+    {
+        self.width = other.width;
+        self.height = other.height;
+        self.cells.clone_from(&other.cells);
+    }
+
     /// Row `y` as a slice, or `None` out of range — the bulk-read
     /// counterpart of [`Grid::fill_row_span`].
     pub fn row(&self, y: i32) -> Option<&[T]> {

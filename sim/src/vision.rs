@@ -210,14 +210,49 @@ impl Vision {
         self.explored.get(pos).copied().unwrap_or(false)
     }
 
+    /// Copies `src` into `self` byte-for-byte while reusing this
+    /// view's grid and vector allocations — the team-sight shortcut
+    /// clones a whole view per teammate per tick, and a plain
+    /// clone-assign reallocated four map-sized grids each time. The
+    /// exhaustive destructure makes a future field a compile error
+    /// here instead of silently stale team sight.
+    pub(crate) fn copy_from(&mut self, src: &Vision) {
+        let Vision {
+            visible,
+            explored,
+            ghosts,
+            remembered_scrap,
+            remembered_wreck,
+            contacts,
+            salvage_incidents,
+        } = self;
+        visible.copy_from(&src.visible);
+        explored.copy_from(&src.explored);
+        ghosts.clone_from(&src.ghosts);
+        remembered_scrap.copy_from(&src.remembered_scrap);
+        remembered_wreck.copy_from(&src.remembered_wreck);
+        contacts.clone_from(&src.contacts);
+        salvage_incidents.clone_from(&src.salvage_incidents);
+    }
+
+    /// Row slices for the observation builder's full-map walk — the
+    /// same sequential access `refresh` itself uses, instead of four
+    /// bounds-checked point lookups per tile.
+    pub(crate) fn rows(&self, y: i32) -> Option<VisionRows<'_>> {
+        Some((
+            self.visible.row(y)?,
+            self.explored.row(y)?,
+            self.remembered_scrap.row(y)?,
+            self.remembered_wreck.row(y)?,
+        ))
+    }
+
     fn stamp_disc(&mut self, center: TilePos, radius: i32, coverage: &mut RowCoverage) {
         let spans = disc_spans(radius);
         for dy in -radius..=radius {
             let span = spans[dy.unsigned_abs() as usize];
             let y = center.y + dy;
             self.visible
-                .fill_row_span(y, center.x - span, center.x + span, true);
-            self.explored
                 .fill_row_span(y, center.x - span, center.x + span, true);
             coverage.cover(y, center.x - span, center.x + span);
         }
@@ -241,8 +276,6 @@ impl Vision {
             let span = spans[vdist as usize];
             let y = anchor.y + dy;
             self.visible
-                .fill_row_span(y, anchor.x - span, anchor.x + (w - 1) + span, true);
-            self.explored
                 .fill_row_span(y, anchor.x - span, anchor.x + (w - 1) + span, true);
             coverage.cover(y, anchor.x - span, anchor.x + (w - 1) + span);
         }
@@ -313,6 +346,11 @@ struct StaticGroundPressure {
     size: (i32, i32),
     reach_sq: Fx,
 }
+
+/// One row of a view's four per-tile grids, in (visible, explored,
+/// remembered scrap, remembered wreck) order — the observation
+/// builder's bulk-read unit.
+pub(crate) type VisionRows<'a> = (&'a [bool], &'a [bool], &'a [u32], &'a [u32]);
 
 /// A memoized known-ground verdict: unknown until first probe, then
 /// pinned for the phase unless the probe declared it volatile.
@@ -732,7 +770,8 @@ pub(crate) fn refresh(state: &mut State) {
         // a byte-for-byte clone — half the refresh on team maps.
         if let Some(src) = (0..index).find(|&j| state.players[j].team == state.players[index].team)
         {
-            vision[index] = vision[src].clone();
+            let (head, tail) = vision.split_at_mut(index);
+            tail[0].copy_from(&head[src]);
             continue;
         }
         let view = &mut vision[index];
@@ -805,8 +844,14 @@ pub(crate) fn refresh(state: &mut State) {
             let tiles = &state.map.grid().row(y).expect("row in range")[x0..=x1];
             let scrap = &mut view.remembered_scrap.row_mut(y).expect("row in range")[x0..=x1];
             let wreck = &mut view.remembered_wreck.row_mut(y).expect("row in range")[x0..=x1];
+            let explored = &mut view.explored.row_mut(y).expect("row in range")[x0..=x1];
             for (x, (&seen, tile)) in visible.iter().zip(tiles).enumerate() {
                 if seen {
+                    // Explored accumulates here instead of in the sight
+                    // stamps: the stamps wrote the same spans to two
+                    // grids per row, and this walk already touches
+                    // every newly visible cell exactly once.
+                    explored[x] = true;
                     scrap[x] = tile.scrap;
                     wreck[x] = tile.wreck;
                 }

@@ -610,13 +610,13 @@ impl QuantNet {
         a + (((b - a) * frac) >> 7)
     }
 
-    fn affine_into(w: &[Vec<i32>], b: &[i32], input: &[i64], out: &mut Vec<i64>) {
+    fn affine_into(w: &[Vec<i32>], b: &[i32], input: &[i32], out: &mut Vec<i64>) {
         out.clear();
         out.extend(w.iter().zip(b).map(|(row, bias)| {
             let acc: i64 = row
                 .iter()
                 .zip(input)
-                .map(|(wi, xi)| i64::from(*wi) * xi)
+                .map(|(wi, xi)| i64::from(*wi) * i64::from(*xi))
                 .sum();
             (acc >> Q) + i64::from(*bias)
         }));
@@ -645,6 +645,12 @@ impl QuantNet {
         // envelope the accumulator bound was derived for. Neither can
         // bind on a reachable observation — MAX_ACT is 262144.0 once
         // normalized, five orders past any feature the gym reports.
+        //
+        // Activations live as i32 — every value is clamp- or
+        // tanh-bounded well inside it — so the accumulator's multiply
+        // is a widening i32*i32 -> i64, which the target has a single
+        // instruction for. The pinned Q12 golden proves the
+        // arithmetic is unchanged.
         let act = &mut scratch.front;
         act.clear();
         act.extend(
@@ -653,24 +659,19 @@ impl QuantNet {
                 .chain(knobs.iter().take(self.conditioning))
                 .zip(&self.recips)
                 .map(|(&f, r)| {
-                    ((f.clamp(-MAX_FEATURE, MAX_FEATURE) * r) >> Q).clamp(-MAX_ACT, MAX_ACT)
+                    ((f.clamp(-MAX_FEATURE, MAX_FEATURE) * r) >> Q).clamp(-MAX_ACT, MAX_ACT) as i32
                 }),
         );
         act.resize(self.recips.len(), 0);
         for (w, b) in &self.layers {
-            Self::affine_into(w, b, &scratch.front, &mut scratch.back);
-            for x in &mut scratch.back {
-                *x = self.tanh(*x);
-            }
+            Self::affine_into(w, b, &scratch.front, &mut scratch.raw);
+            scratch.back.clear();
+            scratch
+                .back
+                .extend(scratch.raw.iter().map(|&x| self.tanh(x) as i32));
             std::mem::swap(&mut scratch.front, &mut scratch.back);
         }
-        Self::affine_into(
-            &self.head.0,
-            &self.head.1,
-            &scratch.front,
-            &mut scratch.back,
-        );
-        std::mem::swap(&mut scratch.front, &mut scratch.back);
+        Self::affine_into(&self.head.0, &self.head.1, &scratch.front, &mut scratch.raw);
     }
 
     /// Q12 logits for gym features plus conditioning knobs (in 0..=1000;
@@ -680,7 +681,7 @@ impl QuantNet {
     pub fn logits(&self, features: &[i64; FEATURE_COUNT], knobs: &[i64]) -> Vec<i64> {
         let mut scratch = InferenceScratch::default();
         self.logits_into(features, knobs, &mut scratch);
-        scratch.front
+        scratch.raw
     }
 
     /// Greedy masked action plan through caller-owned scratch: one
@@ -693,7 +694,7 @@ impl QuantNet {
         scratch: &mut InferenceScratch,
     ) -> ActionPlan {
         self.logits_into(&decision.features, knobs, scratch);
-        let logits = &scratch.front;
+        let logits = &scratch.raw;
         let mut choices = ActionPlan::default().indices();
         for (head_index, head) in ACTION_HEADS.iter().enumerate() {
             let mut best: Option<(i64, usize)> = None;
@@ -722,8 +723,9 @@ impl QuantNet {
 /// the widest layer once and never allocate again.
 #[derive(Debug, Clone, Default)]
 pub struct InferenceScratch {
-    front: Vec<i64>,
-    back: Vec<i64>,
+    front: Vec<i32>,
+    back: Vec<i32>,
+    raw: Vec<i64>,
 }
 
 fn profile_knobs(

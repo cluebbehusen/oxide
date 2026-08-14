@@ -2587,13 +2587,11 @@ impl GymBot {
                     danger.chebyshev(tile) <= crate::stats::HARVEST_INCIDENT_DANGER_RADIUS
                 })
         };
-        let known_scrap = |tile: TilePos| {
-            obs.known_scrap
-                .iter()
-                .any(|(known, amount)| *known == tile && *amount > 0)
-        };
-        let passable =
-            |tile: TilePos| passability.route_open(tile) && !known_scrap(tile) && !dangerous(tile);
+        // route_open already excludes every known-scrap tile at
+        // construction (from_observation zeroes them), so a separate
+        // scan of known_scrap per probe re-tested a condition the
+        // grid encodes.
+        let passable = |tile: TilePos| passability.route_open(tile) && !dangerous(tile);
         if observed_path.is_some_and(|path| {
             path.waypoints
                 .iter()
