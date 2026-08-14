@@ -1633,9 +1633,52 @@ fn frozen_map_refuses(request: &Request) -> bool {
 /// screenshots, the overlay), answered for the screen the window shows,
 /// or live-mutating (commands, loads, saves), refused wholesale while
 /// the viewer owns the screen.
+/// Which session a request addresses, and whether it is allowed to —
+/// decided before any state is touched. The Playback pick is the
+/// load-bearing row: a regression there aims a viewer-bound
+/// `AdvanceTicks` at the hidden live match, which advances silently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Route {
+    /// The final battlefield is frozen; time and session verbs bounce.
+    RefuseFrozen,
+    /// A shared verb, dispatched to the playback viewer.
+    SharedToViewer,
+    /// A shared verb, dispatched to the live session.
+    SharedToLive,
+    /// A local mutating verb while the read-only viewer owns the screen.
+    RefuseViewer,
+    /// A locally-answered verb against the app's own state.
+    Local,
+}
+
+/// The routing decision for one request. `shared` is whether the
+/// protocol's shared dispatch handles this verb — the caller learns it
+/// from `dispatch_shared` itself, so this function cannot drift from
+/// the trait's coverage; what it owns is the ORDER: frozen-map refusal
+/// first, then the session pick for shared verbs, then the viewer's
+/// read-only guard for everything local.
+fn route(playback: bool, final_map: bool, request: &Request, shared: bool) -> Route {
+    if final_map && frozen_map_refuses(request) {
+        return Route::RefuseFrozen;
+    }
+    if shared {
+        return if playback {
+            Route::SharedToViewer
+        } else {
+            Route::SharedToLive
+        };
+    }
+    if playback && viewer_refuses(request) {
+        return Route::RefuseViewer;
+    }
+    Route::Local
+}
+
 fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen, ui_view: &UiView) {
     let IncomingRequest { id, request, reply } = incoming;
-    if matches!(&*screen, Screen::FinalMap(_)) && frozen_map_refuses(&request) {
+    let playback = matches!(&*screen, Screen::Playback(_));
+    let final_map = matches!(&*screen, Screen::FinalMap(_));
+    if route(playback, final_map, &request, false) == Route::RefuseFrozen {
         reply
             .send(ResponseEnvelope::err(
                 id,
@@ -1679,7 +1722,7 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
     }
     // The viewer is read-only: refusing beats acknowledging a request
     // that would silently mutate the hidden match.
-    if matches!(&*screen, Screen::Playback(_)) && viewer_refuses(&request) {
+    if route(playback, final_map, &request, false) == Route::RefuseViewer {
         let refusal = "the viewer is read-only; leave playback first".to_string();
         reply.send(ResponseEnvelope::err(id, refusal)).ok();
         return;
@@ -1847,6 +1890,38 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The routing table, row by row: frozen-map precedence, the
+    /// viewer-vs-live session pick for shared verbs, and the viewer's
+    /// read-only guard for local ones. Every QA session reads the
+    /// world through this decision.
+    #[test]
+    fn requests_route_by_screen_and_kind() {
+        let advance = Request::AdvanceTicks { ticks: 8 };
+        let send = Request::SendCommand {
+            player: oxide_sim::PlayerId(0),
+            command: oxide_sim::Command::Surrender,
+        };
+        let camera = Request::QueryCamera;
+
+        // Shared verbs go to whichever session owns the screen.
+        assert_eq!(route(true, false, &advance, true), Route::SharedToViewer);
+        assert_eq!(route(false, false, &advance, true), Route::SharedToLive);
+
+        // The frozen final map outranks everything it names, shared
+        // or not — time may not advance behind a frozen battlefield.
+        assert_eq!(route(false, true, &advance, true), Route::RefuseFrozen);
+        assert_eq!(route(false, true, &send, false), Route::RefuseFrozen);
+        assert_eq!(route(false, true, &camera, false), Route::Local);
+
+        // The read-only viewer bounces local mutation and answers
+        // local reads.
+        assert_eq!(route(true, false, &send, false), Route::RefuseViewer);
+        assert_eq!(route(true, false, &camera, false), Route::Local);
+
+        // The live screen answers everything else locally.
+        assert_eq!(route(false, false, &send, false), Route::Local);
+    }
 
     #[test]
     fn every_authored_weapon_report_raises_combat_pressure() {

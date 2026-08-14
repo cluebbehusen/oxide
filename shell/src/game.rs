@@ -817,6 +817,42 @@ impl oxide_protocol::DebugSession for Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The resume guarantee the hash check alone cannot see: the
+    /// watch-back loop replays every re-executed tick through the
+    /// seat bots so they rebuild their cross-tick memory (RNG streams,
+    /// raid memory, blacklists). Deleting that loop keeps the resume
+    /// hash identical — the recorded commands carry it — and only the
+    /// FUTURE diverges, which is exactly what this pins.
+    #[test]
+    fn a_resumed_session_plays_the_same_future_as_an_unsaved_one() {
+        // Seat 0 stays human (a session wants exactly one), seat 1
+        // is the shipped bot whose memory the watch-back rebuilds.
+        let mut scenario = oxide_sim::Scenario::skirmish();
+        oxide_kit::bench::all_bots(&mut scenario);
+        scenario.players[0].bot = false;
+        scenario.players[0].bot_config = None;
+        let mut original = Game::new(scenario).expect("game builds");
+        original.advance_ticks(600);
+
+        let mut snapshot = original.recorder.clone();
+        snapshot.meta.ticks = Some(600);
+        let mut resumed = Game::from_replay(snapshot).expect("the snapshot resumes");
+        assert_eq!(
+            original.hash_hex(),
+            resumed.hash_hex(),
+            "premise: the resume point itself matches"
+        );
+
+        original.advance_ticks(1_000);
+        resumed.advance_ticks(1_000);
+        assert_eq!(
+            original.hash_hex(),
+            resumed.hash_hex(),
+            "a resumed session's future diverged from the unsaved one — \
+             bot memory was not rebuilt by the watch-back"
+        );
+    }
     use oxide_sim::{Command, Scenario, UnitKind};
 
     #[test]

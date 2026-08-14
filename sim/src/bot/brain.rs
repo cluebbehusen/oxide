@@ -24,6 +24,12 @@ pub struct Brain {
     dials: Dials,
     policy: UtilityPolicy,
     exec: Executive,
+    /// The seat's frame of reference, latched at the first act and
+    /// kept for the match — the policy's bot-local tile memory
+    /// (blacklists, pending sites, scout rotation) lives in oriented
+    /// space, and a mid-game flip when the home Foundry changes would
+    /// silently mirror all of it.
+    orientation: Option<Orientation>,
 }
 
 impl Brain {
@@ -40,6 +46,7 @@ impl Brain {
             dials,
             policy: UtilityPolicy::new(),
             exec: Executive::default(),
+            orientation: None,
         }
     }
 
@@ -95,7 +102,9 @@ impl Brain {
         // The policy thinks in seat-oriented space (see [`Orientation`]):
         // the same logic runs for both seats, so its compass-flavored
         // tie-breaks cannot systematically favor either one.
-        let orientation = Orientation::for_home(&obs, rear);
+        let orientation = *self
+            .orientation
+            .get_or_insert_with(|| Orientation::for_home(&obs, rear));
         let oriented = orientation.observe(&obs);
         let armies: Vec<_> = self
             .exec

@@ -627,6 +627,14 @@ struct ProfileDoctrineProgress {
 pub struct GymBot {
     player: PlayerId,
     dials: Dials,
+    /// The seat's frame of reference, latched at the first decision
+    /// and kept for the match. Recomputing it per think anchored on
+    /// whichever Foundry currently holds the lowest id — so losing
+    /// the home while an expansion stood flipped the frame mid-game
+    /// and silently mirrored every oriented cross-tick memory
+    /// (recovery assignments, founding claims). Mirror seats latch
+    /// mirrored frames, so seat symmetry is untouched.
+    orientation: Option<Orientation>,
     /// Construction-time named strategy. Zero is the raw research path and
     /// must leave the decision surface byte-for-byte unchanged.
     profile_facets: ProfileFacets,
@@ -704,6 +712,7 @@ impl GymBot {
                 cadence: cadence.clamp(4, 64),
                 ..Dials::full()
             },
+            orientation: None,
             profile_facets,
             profile_progress: ProfileDoctrineProgress::default(),
             policy: UtilityPolicy::new(),
@@ -2721,9 +2730,16 @@ impl GymBot {
         if sources.is_empty() || safe.is_some() {
             return if queued_harvester {
                 RecoveryPosture::Saving
-            } else if obs.scrap >= UnitKind::Harvester.stats().cost {
+            } else if obs.scrap >= UnitKind::Harvester.stats().cost
+                && open_foundry(obs, 1).is_some()
+            {
                 RecoveryPosture::QueueHarvester
             } else {
+                // Affordable but nowhere to queue it: every Foundry
+                // slot is full, so the honest posture is to wait —
+                // advertising TrainHarvester here made the forced
+                // recovery mask promise an action the lowering could
+                // not perform, and the seat idled a think instead.
                 RecoveryPosture::Saving
             };
         }
@@ -2735,7 +2751,9 @@ impl GymBot {
         if live_screen {
             if queued_harvester {
                 RecoveryPosture::Saving
-            } else if obs.scrap >= UnitKind::Harvester.stats().cost {
+            } else if obs.scrap >= UnitKind::Harvester.stats().cost
+                && open_foundry(obs, 1).is_some()
+            {
                 RecoveryPosture::QueueHarvester
             } else {
                 RecoveryPosture::Saving
@@ -3327,16 +3345,29 @@ impl GymBot {
         self.seen_pos = Some(TilePos::new((sx / n) as i32, (sy / n) as i32));
     }
 
-    fn observe(&self, state: &State) -> (Observation, Orientation) {
+    /// The latched frame of reference, for tests and debug surfaces.
+    pub fn latched_orientation(&self) -> Option<Orientation> {
+        self.orientation
+    }
+
+    fn observe(&mut self, state: &State) -> (Observation, Orientation) {
         let obs = Observation::fog_honest(state, self.player);
-        let home = obs
-            .my_buildings
-            .iter()
-            .filter(|b| b.kind == BuildingKind::Foundry)
-            .min_by_key(|b| b.id)
-            .map(|b| b.anchor)
-            .unwrap_or(TilePos::new(0, 0));
-        let orientation = Orientation::for_home(&obs, home);
+        let orientation = *self.orientation.get_or_insert_with(|| {
+            // Built Foundries first — the same rule home_tile uses, so
+            // the frame and every distance agree — then any site, so a
+            // seat born rebuilding still latches something real.
+            let foundry = |built_only: bool| {
+                obs.my_buildings
+                    .iter()
+                    .filter(|b| b.kind == BuildingKind::Foundry && (!built_only || b.built))
+                    .min_by_key(|b| b.id)
+                    .map(|b| b.anchor)
+            };
+            let home = foundry(true)
+                .or_else(|| foundry(false))
+                .unwrap_or(TilePos::new(0, 0));
+            Orientation::for_home(&obs, home)
+        });
         (obs, orientation)
     }
 }

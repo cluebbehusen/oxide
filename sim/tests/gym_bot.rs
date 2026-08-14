@@ -3338,3 +3338,262 @@ fn the_repair_channel_leaves_salvage_targets_alone() {
         "a building under own salvage is not a patient"
     );
 }
+
+#[test]
+fn the_orientation_survives_losing_the_home_foundry() {
+    // Recomputing the frame per think anchored on whichever Foundry
+    // held the lowest id: when the home fell while an expansion stood
+    // across the midline, the frame flipped mid-game and every
+    // oriented cross-tick memory silently mirrored. The frame is
+    // latched at the first decision now; losing the home must not
+    // move it.
+    use oxide_sim::Faction;
+    use oxide_sim::bot::ProfileFacets;
+    use oxide_sim::scenario::{BuildingSpec, PlayerSpec, UnitSpec};
+
+    let scenario = Scenario {
+        name: "orientation-latch".into(),
+        seed: 13,
+        map: vec![
+            "############################".into(),
+            "#1......................ss.#".into(),
+            "#..........................#".into(),
+            "#..........................#".into(),
+            "#.......................2..#".into(),
+            "#..........................#".into(),
+            "############################".into(),
+        ],
+        players: vec![
+            PlayerSpec {
+                name: "Latch".into(),
+                faction: Faction::Ferrous,
+                team: None,
+                scrap: 500,
+                bot: false,
+                bot_config: None,
+            },
+            PlayerSpec {
+                name: "Wrecker".into(),
+                faction: Faction::Cupric,
+                team: None,
+                scrap: 500,
+                bot: false,
+                bot_config: None,
+            },
+        ],
+        units: (0..6)
+            .map(|i| UnitSpec {
+                player: 1,
+                kind: UnitKind::Sentinel,
+                x: 4 + i,
+                y: 3,
+            })
+            .collect(),
+        buildings: vec![BuildingSpec {
+            // The expansion in the east half: after the home falls it
+            // becomes the lowest-id Foundry and, unlatched, would
+            // flip the seat's frame of reference.
+            player: 0,
+            kind: BuildingKind::Foundry,
+            x: 20,
+            y: 2,
+        }],
+        meta: None,
+    };
+    let mut state = scenario.build().unwrap();
+    let mut bot = GymBot::with_profile_facets(PlayerId(0), 8, ProfileFacets::ZERO);
+
+    let _ = bot.decision(&state);
+    let latched = bot
+        .latched_orientation()
+        .expect("the first decision latches");
+
+    let home = state
+        .buildings()
+        .iter()
+        .find(|b| b.player == PlayerId(0) && b.anchor == chassis::grid::TilePos::new(1, 1))
+        .expect("the authored home stands")
+        .id;
+    let raiders: Vec<_> = state
+        .units()
+        .iter()
+        .filter(|u| u.player == PlayerId(1))
+        .map(|u| u.id)
+        .collect();
+    state.tick(&[oxide_sim::command::PlayerCommand {
+        player: PlayerId(1),
+        command: Command::Attack {
+            units: raiders,
+            target: oxide_sim::Target::Building(home),
+            queue: false,
+        },
+    }]);
+    for _ in 0..6_000u32 {
+        state.tick(&[]);
+        if state.building(home).is_none() {
+            break;
+        }
+    }
+    assert!(
+        state.building(home).is_none(),
+        "test premise: the home Foundry actually fell"
+    );
+    assert!(
+        state
+            .buildings()
+            .iter()
+            .any(|b| b.player == PlayerId(0) && b.kind == BuildingKind::Foundry),
+        "test premise: the expansion still stands"
+    );
+
+    let _ = bot.decision(&state);
+    assert_eq!(
+        bot.latched_orientation(),
+        Some(latched),
+        "losing the home flipped the seat's frame of reference"
+    );
+}
+
+#[test]
+fn a_starving_seat_with_full_queues_is_not_promised_a_harvester() {
+    // The forced recovery mask once advertised TrainHarvester whenever
+    // scrap covered the cost, even with every Foundry slot full — the
+    // lowering then queued nothing and the seat idled a think. The
+    // posture now requires an open slot, so the mask stays honest.
+    use oxide_sim::Faction;
+    use oxide_sim::bot::ProfileFacets;
+    use oxide_sim::scenario::PlayerSpec;
+
+    let scenario = Scenario {
+        name: "full-queue-recovery".into(),
+        seed: 17,
+        map: vec![
+            "####################".into(),
+            "#1........s........#".into(),
+            "#................2.#".into(),
+            "#..................#".into(),
+            "####################".into(),
+        ],
+        players: vec![
+            PlayerSpec {
+                name: "Starving".into(),
+                faction: Faction::Ferrous,
+                team: None,
+                scrap: 900,
+                bot: false,
+                bot_config: None,
+            },
+            PlayerSpec {
+                name: "Bystander".into(),
+                faction: Faction::Cupric,
+                team: None,
+                scrap: 150,
+                bot: false,
+                bot_config: None,
+            },
+        ],
+        units: Vec::new(),
+        buildings: Vec::new(),
+        meta: None,
+    };
+    let mut state = scenario.build().unwrap();
+    let foundry = state
+        .buildings()
+        .iter()
+        .find(|b| b.player == PlayerId(0))
+        .unwrap()
+        .id;
+    // Stuff the queue to its cap with fighters.
+    for _ in 0..8 {
+        state.tick(&[oxide_sim::command::PlayerCommand {
+            player: PlayerId(0),
+            command: Command::Train {
+                building: foundry,
+                kind: UnitKind::Sentinel,
+            },
+        }]);
+    }
+    let queued = state.building(foundry).unwrap().queue.len();
+    assert!(
+        queued >= 2,
+        "test premise: the queue actually filled ({queued})"
+    );
+
+    let mut bot = GymBot::with_profile_facets(PlayerId(0), 8, ProfileFacets::ZERO);
+    let decision = bot.decision(&state);
+    if decision.mask[Action::TrainHarvester as usize] {
+        // If the mask advertises it, the lowering must actually queue
+        // one — the conformance contract for this action.
+        let plan = ActionPlan {
+            production: Action::TrainHarvester,
+            ..Default::default()
+        };
+        let commands = bot.step_plan(&state, plan);
+        assert!(
+            commands.iter().any(|c| matches!(
+                c.command,
+                Command::Train {
+                    kind: UnitKind::Harvester,
+                    ..
+                }
+            )),
+            "the mask promised a harvester the lowering never queued"
+        );
+    }
+}
+
+#[test]
+fn every_masked_legal_production_action_lowers_without_rejection() {
+    // AGENTS.md's "the mask encodes shared legality only," asserted
+    // directly: over a real match, any production action the mask
+    // marks legal must lower to commands the sim accepts. A masked
+    // promise the lowering breaks poisons training data and starves
+    // real decisions.
+    use oxide_sim::bot::{PRODUCTION_ACTIONS, ProfileFacets};
+    use oxide_sim::event::Event;
+
+    let scenario = Scenario::skirmish();
+    let mut state = scenario.build().unwrap();
+    let mut driver_bot = GymBot::with_profile_facets(PlayerId(0), 8, ProfileFacets::ZERO);
+    let mut opponent = Brain::overseer(PlayerId(1), scenario.seed);
+
+    let mut probed = 0u32;
+    for tick in 0..4_000u32 {
+        if tick % 400 == 0 {
+            let decision = driver_bot.decision(&state);
+            for &action in PRODUCTION_ACTIONS.iter() {
+                if !decision.mask[action] {
+                    continue;
+                }
+                let mut probe_bot = driver_bot.clone();
+                let mut probe_state = state.clone();
+                let plan = ActionPlan {
+                    production: Action::from_index(action),
+                    ..Default::default()
+                };
+                let commands = probe_bot.step_plan(&probe_state, plan);
+                let report = probe_state.tick(&commands);
+                let rejected: Vec<_> = report
+                    .events
+                    .iter()
+                    .filter(|e| matches!(e, Event::CommandRejected { player, .. } if *player == PlayerId(0)))
+                    .collect();
+                assert!(
+                    rejected.is_empty(),
+                    "tick {tick}: masked-legal action {action} was rejected: {rejected:?}"
+                );
+                probed += 1;
+            }
+        }
+        let mut commands = driver_bot.step_plan(&state, ActionPlan::default());
+        commands.extend(opponent.act(&state));
+        state.tick(&commands);
+        if state.result().is_some() {
+            break;
+        }
+    }
+    assert!(
+        probed > 20,
+        "test premise: the sweep actually probed ({probed})"
+    );
+}
