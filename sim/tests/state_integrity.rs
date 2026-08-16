@@ -284,10 +284,13 @@ fn row_index(e: &StateIntegrityError) -> usize {
         E::ExpiredSalvageIncident(_) => 47,
         E::SalvageIncidentExpiryBeyondHorizon(_) => 48,
         E::UnsortedSalvageIncidents(_) => 49,
+        E::EliminationInTheFuture(_) => 57,
+        E::CargoProgressOutOfRange(_) => 58,
+        E::CargoCooldownOutOfRange(_) => 59,
     }
 }
 
-const ROWS: usize = 57;
+const ROWS: usize = 60;
 
 /// One rendered message per row, with the entity ids the forgeries
 /// provoke (everything targets seat p0 and entity 0). A fixture's
@@ -357,6 +360,9 @@ fn row_examples() -> Vec<StateIntegrityError> {
         E::CargoOwnerMismatch(UnitId(0)),
         E::CargoNotDormant(UnitId(0)),
         E::AliasedCargoId,
+        E::EliminationInTheFuture(PlayerId(0)),
+        E::CargoProgressOutOfRange(UnitId(0)),
+        E::CargoCooldownOutOfRange(UnitId(0)),
     ]
 }
 
@@ -701,6 +707,44 @@ fn every_checklist_row_refuses_its_forgery() {
                 d["units"][0]["cargo"] = json!([rider]);
             },
             "carries a rider with impossible hp",
+        ),
+        (
+            "an elimination stamped later than the present",
+            |d| {
+                d["players"][0]["eliminated_at"] = json!(1_000_000);
+            },
+            "elimination stamp lies in the future",
+        ),
+        (
+            "a rider smuggling an impossible progress meter",
+            |d| {
+                let mut rider = well_formed_rider(d);
+                rider["progress"] = json!(4_000_000_000u32);
+                make_transport(d);
+                d["units"][0]["cargo"] = json!([rider]);
+            },
+            "carries a rider with an impossible progress meter",
+        ),
+        (
+            "a rider smuggling an oversized weapon cooldown",
+            |d| {
+                let mut rider = well_formed_rider(d);
+                rider["cooldowns"] = json!([4_000_000_000u32, 0]);
+                make_transport(d);
+                d["units"][0]["cargo"] = json!([rider]);
+            },
+            "carries a rider with impossible weapon cooldowns",
+        ),
+        (
+            "extractor frames out of canonical order",
+            |d| {
+                // A duplicated anchor is the smallest ordering forgery:
+                // fog views copy this list as canon and the gym counts
+                // it, so one semantic map must not get two shapes.
+                let frame = d["map"]["extractor_frames"][0].clone();
+                d["map"]["extractor_frames"] = json!([frame.clone(), frame]);
+            },
+            "map grid dimensions disagree with its cells",
         ),
         (
             "another player's machine in the hold",

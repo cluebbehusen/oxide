@@ -8,7 +8,7 @@ use super::select::{cycle_idle_worker, idle_harvesters};
 use crate::action::Action;
 use crate::game::Game;
 use macroquad::prelude::{Vec2, vec2};
-use oxide_sim::{Command, UnitKind};
+use oxide_sim::Command;
 
 pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: Action) {
     match action {
@@ -73,7 +73,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
             let has_builder = game.selection.units.iter().any(|id| {
                 game.state
                     .unit(*id)
-                    .is_some_and(|u| u.kind == UnitKind::Harvester && u.player == game.human)
+                    .is_some_and(|u| u.kind.stats().harvest.is_some() && u.player == game.human)
             });
             if has_builder {
                 input.build_menu = true;
@@ -91,7 +91,7 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                     .state
                     .units()
                     .iter()
-                    .filter(|u| u.player == game.human && u.kind == UnitKind::Harvester)
+                    .filter(|u| u.player == game.human && u.kind.stats().harvest.is_some())
                     .filter(|u| idle.is_empty() || idle.contains(&u.id))
                     .min_by_key(|u| {
                         let t = u.tile();
@@ -190,17 +190,17 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 game.toast("salvage cancelled");
                 return;
             }
-            let has_harvester = game.selection.units.iter().any(|id| {
+            let has_worker = game.selection.units.iter().any(|id| {
                 game.state
                     .unit(*id)
-                    .is_some_and(|u| u.kind == UnitKind::Harvester && u.player == game.human)
+                    .is_some_and(|u| u.kind.stats().harvest.is_some() && u.player == game.human)
             });
-            if has_harvester {
+            if has_worker {
                 input.disarm_click_verbs();
                 input.salvaging = true;
                 game.toast("salvage: click an own building to strip it, Esc to cancel");
             } else {
-                game.toast("no harvester to salvage with");
+                game.toast("no worker to salvage with");
             }
         }
         Action::RepairUnit => {
@@ -210,17 +210,17 @@ pub(super) fn dispatch_action(game: &mut Game, input: &mut InputState, action: A
                 game.toast("weld cancelled");
                 return;
             }
-            let has_harvester = game.selection.units.iter().any(|id| {
+            let has_welder = game.selection.units.iter().any(|id| {
                 game.state
                     .unit(*id)
-                    .is_some_and(|u| u.kind == UnitKind::Harvester && u.player == game.human)
+                    .is_some_and(|u| u.kind.stats().welder && u.player == game.human)
             });
-            if has_harvester {
+            if has_welder {
                 input.disarm_click_verbs();
                 input.repairing = true;
                 game.toast("weld: click a damaged own unit, Esc to cancel");
             } else {
-                game.toast("no harvester to weld with");
+                game.toast("no welder in hand");
             }
         }
         Action::Run => {

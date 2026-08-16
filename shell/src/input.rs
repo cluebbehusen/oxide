@@ -1446,12 +1446,13 @@ fn armed_click(game: &mut Game, input: &mut InputState, p: Vec2) -> bool {
             // ping — refuse honestly at arm time instead.
             let has_other_welder = game.selection.units.iter().any(|id| {
                 *id != target
-                    && game.state.unit(*id).is_some_and(|u| {
-                        u.kind == oxide_sim::UnitKind::Harvester && u.player == game.human
-                    })
+                    && game
+                        .state
+                        .unit(*id)
+                        .is_some_and(|u| u.kind.stats().welder && u.player == game.human)
             });
             if !has_other_welder {
-                game.toast("weld needs another harvester in hand");
+                game.toast("weld needs another welder in hand");
                 game.sounds_pending
                     .push((crate::game::SoundKind::Denied, None));
                 return true;
@@ -1572,6 +1573,9 @@ fn activate_card(game: &mut Game, input: &mut InputState, action: crate::panel::
             let units: Vec<oxide_sim::UnitId> =
                 crew.into_iter().take(3).map(|(_, id)| id).collect();
             if units.is_empty() {
+                game.toast("the upgrade needs a harvest-capable crew");
+                game.sounds_pending
+                    .push((crate::game::SoundKind::Denied, None));
                 return;
             }
             game.issue(Command::UpgradeBuilding {
@@ -1644,10 +1648,12 @@ pub fn update_touch(game: &mut Game, input: &mut InputState) {
     let on_entity = game.state.units().iter().any(|u| {
         let p = vec2(u.pos.x.to_num::<f32>(), u.pos.y.to_num::<f32>());
         p.distance(world) <= PICK_RADIUS && (u.player == game.human || sees(u.tile()))
-    }) || game
-        .state
-        .building_at(tile)
-        .is_some_and(|b| b.player == game.human || sees(tile));
+    }) || game.state.building_at(tile).is_some_and(|b| {
+        // Same rule as fog, for stealth: an undetected buried charge
+        // must not flip a rally into a select, or taps would scan for
+        // occupancy the fog view denies.
+        b.player == game.human || (sees(tile) && game.state.building_apparent(game.human, b))
+    });
     if on_entity && game.selection.units.is_empty() {
         select::click_select(game, tp.at, false, input.ui);
     } else {

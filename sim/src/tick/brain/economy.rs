@@ -192,8 +192,10 @@ pub(super) fn repair(
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     };
-    let (anchor, kind) = (b.anchor, b.kind);
-    let stats = kind.base_stats();
+    let (anchor, kind, tier) = (b.anchor, b.kind, b.tier);
+    // The active tier's row: a Bulwark's weld ramp, ceiling, and billing
+    // basis are the Bulwark's, not the base Turret's.
+    let stats = kind.tier_stats(tier);
     let size = stats.size;
     // The welding rate is the construction ramp — except the Foundry,
     // which keeps its authored ramp and billing basis: repairing the
@@ -518,8 +520,10 @@ pub(super) fn salvage(
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     };
-    let (anchor, kind) = (b.anchor, b.kind);
-    let stats = kind.base_stats();
+    let (anchor, kind, tier) = (b.anchor, b.kind, b.tier);
+    // Strip on the active tier's construction clock: dismantling a
+    // Refinery is undoing the Refinery's build, not the Reclaimer's.
+    let stats = kind.tier_stats(tier);
     let size = stats.size;
     let ramp_ticks = stats
         .construction

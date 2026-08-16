@@ -1510,7 +1510,7 @@ impl UtilityPolicy {
         let patient = obs
             .my_buildings
             .iter()
-            .filter(|b| b.built && b.hp * 10 < b.kind.base_stats().max_hp * 8)
+            .filter(|b| b.built && b.hp * 10 < b.kind.tier_stats(b.tier).max_hp * 8)
             // A building an own crew is stripping is being LIQUIDATED
             // on purpose — repair and salvage evict each other in the
             // sim, so a repair intent here would re-crew the teardown
@@ -1518,7 +1518,7 @@ impl UtilityPolicy {
             // filter).
             .filter(|b| !obs.my_units.iter().any(|u| u.salvaging == Some(b.id)))
             .map(|b| {
-                let deficit = b.kind.base_stats().max_hp - b.hp;
+                let deficit = b.kind.tier_stats(b.tier).max_hp - b.hp;
                 (std::cmp::Reverse(deficit), b.anchor.y, b.anchor.x, b.id)
             })
             .min()

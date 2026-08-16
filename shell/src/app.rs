@@ -436,6 +436,11 @@ fn raises_combat_music(kind: SoundKind) -> bool {
             | SoundKind::WispFire
             | SoundKind::BastionFire
             | SoundKind::FlakTurretFire
+            | SoundKind::WardenFire
+            | SoundKind::BreakerFire
+            | SoundKind::AvalancheFire
+            | SoundKind::BombRelease
+            | SoundKind::DemolitionBoom
     )
 }
 
@@ -1940,6 +1945,11 @@ mod tests {
             SoundKind::BastionFire,
             SoundKind::FlakTurretFire,
             SoundKind::ArtilleryLaunch,
+            SoundKind::WardenFire,
+            SoundKind::BreakerFire,
+            SoundKind::AvalancheFire,
+            SoundKind::BombRelease,
+            SoundKind::DemolitionBoom,
         ] {
             assert!(
                 raises_combat_music(kind),

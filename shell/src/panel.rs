@@ -336,8 +336,8 @@ pub fn weapon_lines(kind: UnitKind) -> Vec<String> {
     kind.stats().weapons.iter().map(weapon_line).collect()
 }
 
-fn building_combat_lines(kind: BuildingKind) -> Vec<CombatFact> {
-    let stats = kind.base_stats();
+fn building_combat_lines(kind: BuildingKind, tier: u8) -> Vec<CombatFact> {
+    let stats = kind.tier_stats(tier);
     let mut lines: Vec<CombatFact> = stats
         .weapons
         .iter()
@@ -489,8 +489,7 @@ fn order_subject(game: &Game, order: &Order) -> Option<(OrderSubject, String, bo
         Order::Build { site } => {
             let b = game.state.building(*site)?;
             let ticks = b
-                .kind
-                .base_stats()
+                .stats()
                 .construction
                 .map(|c| c.build_ticks)
                 .unwrap_or(1)
@@ -831,7 +830,7 @@ pub fn build_with_page(game: &Game, bindings: &BindingMap, build_page: usize) ->
             sub: format!("{}/{} hp", building.hp, stats.max_hp),
             portrait: CardIcon::Building(building.kind),
             faction: game.state.player(owner).faction,
-            combat: building_combat_lines(building.kind),
+            combat: building_combat_lines(building.kind, building.tier),
             roster: Vec::new(),
             cards: Vec::new(),
             queue: Vec::new(),
@@ -861,6 +860,23 @@ pub fn build_with_page(game: &Game, bindings: &BindingMap, build_page: usize) ->
             return Some(panel);
         }
         if !building.built {
+            // A committed upgrade is not a scrappable site: the sim
+            // refuses to demolish it, so the card must not offer to.
+            if building.tier > 0 {
+                panel.sub = format!("upgrading | {}", panel.sub);
+                panel.cards.push(Card {
+                    icon: CardIcon::Verb(VerbIcon::Cancel),
+                    title: "Upgrading".into(),
+                    cost: None,
+                    hotkey: String::new(),
+                    action: CardAction::None,
+                    enabled: false,
+                    why: Some("upgrades cannot be cancelled".into()),
+                    desc: vec!["The works returns to service when the crew finishes.".into()],
+                    progress: None,
+                });
+                return Some(panel);
+            }
             panel.sub = format!("under construction | {}", panel.sub);
             panel.cards.push(Card {
                 icon: CardIcon::Verb(VerbIcon::Cancel),
@@ -884,6 +900,10 @@ pub fn build_with_page(game: &Game, bindings: &BindingMap, build_page: usize) ->
                     .iter()
                     .any(|b| b.player == game.human && b.kind == *req && b.built)
             });
+            let crew_available =
+                game.state.units().iter().any(|u| {
+                    u.player == game.human && u.hp > 0 && u.kind.stats().harvest.is_some()
+                });
             let (enabled, why) = if !tech_ok {
                 let need = upgrade
                     .requires
@@ -894,6 +914,10 @@ pub fn build_with_page(game: &Game, bindings: &BindingMap, build_page: usize) ->
                 (false, Some(format!("needs a standing {need}")))
             } else if scrap < upgrade.cost {
                 (false, Some(format!("needs {} scrap", upgrade.cost)))
+            } else if !crew_available {
+                // Activation drafts the nearest harvest-capable crew;
+                // with none alive the click would silently do nothing.
+                (false, Some("needs a harvest-capable crew".to_string()))
             } else {
                 (true, None)
             };
@@ -957,8 +981,20 @@ pub fn build_with_page(game: &Game, bindings: &BindingMap, build_page: usize) ->
             .enumerate()
         {
             let cost = kind.stats().cost;
+            // The tech gate the sim enforces at training time: an
+            // enabled card whose click answers MissingPrerequisite is
+            // a lie the disabled reason should have told instead.
+            let missing_tech = kind.stats().requires.iter().find(|req| {
+                !game
+                    .state
+                    .buildings()
+                    .iter()
+                    .any(|b| b.player == game.human && b.kind == **req && b.built)
+            });
             let (enabled, why) = if queue_full {
                 (false, Some("queue is full".to_string()))
+            } else if let Some(req) = missing_tech {
+                (false, Some(format!("needs a standing {}", req.name())))
             } else if scrap < cost {
                 (false, Some(format!("needs {cost} scrap")))
             } else {
@@ -1010,7 +1046,7 @@ pub fn build_with_page(game: &Game, bindings: &BindingMap, build_page: usize) ->
     let subject_id = subject_unit(game)?;
     let first = units.iter().find(|u| u.id == subject_id)?;
     let owner = first.player;
-    let has_builder = units.iter().any(|u| u.kind == UnitKind::Harvester);
+    let has_builder = units.iter().any(|u| u.kind.stats().harvest.is_some());
     let mut panel = Panel {
         title: if units.len() == 1 {
             first.kind.name().to_uppercase()
@@ -1025,7 +1061,9 @@ pub fn build_with_page(game: &Game, bindings: &BindingMap, build_page: usize) ->
                 unit_speed_label(first.kind)
             );
             let capacity = first.kind.stats().transport_capacity;
-            if capacity > 0 {
+            // A hostile sling's load is intelligence the fog view
+            // redacts from bots; the panel owes the player no more.
+            if capacity > 0 && !game.state.hostile(game.human, owner) {
                 let held: u8 = first
                     .cargo
                     .iter()
@@ -1229,7 +1267,20 @@ pub fn build_with_page(game: &Game, bindings: &BindingMap, build_page: usize) ->
         let palette_key = chord(bindings, Action::ToggleBuildPalette);
         for (i, &kind) in crate::input::build_page(build_page).iter().enumerate() {
             let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
-            let (enabled, why) = if scrap < cost {
+            // The same construction tech gate placement enforces: an
+            // enabled card would only arm a ghost the sim refuses.
+            let (enabled, why) = if !game.state.prerequisites_met(game.human, kind) {
+                let need = kind
+                    .base_stats()
+                    .construction
+                    .map(|c| c.requires)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|k| k.name())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                (false, Some(format!("needs a standing {need}")))
+            } else if scrap < cost {
                 (false, Some(format!("needs {cost} scrap")))
             } else {
                 (true, None)
@@ -1827,7 +1878,7 @@ mod tests {
         }
         for kind in buildings {
             assert!(supported(building_flavor(kind)), "{} flavor", kind.name());
-            for fact in building_combat_lines(kind) {
+            for fact in building_combat_lines(kind, 0) {
                 assert!(
                     supported(&fact.text),
                     "{} combat: {}",
@@ -1858,7 +1909,7 @@ mod tests {
 
     #[test]
     fn combat_facts_use_semantic_icons_instead_of_explaining_line_styles() {
-        let bastion = building_combat_lines(BuildingKind::Bastion);
+        let bastion = building_combat_lines(BuildingKind::Bastion, 0);
         assert!(
             bastion.iter().any(|fact| {
                 fact.icon == CombatIcon::Weapon && fact.text.contains("2.5-9.5 tiles")

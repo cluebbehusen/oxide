@@ -290,7 +290,12 @@ impl FogView {
                 .buildings()
                 .iter()
                 .filter(|b| {
-                    !state.hostile(player, b.player) || b.tiles().any(|t| vision.visible(t))
+                    // Sight of the ground is not knowledge of a buried
+                    // charge: the stealth rule gates this view exactly
+                    // as it gates targeting and ghosts.
+                    !state.hostile(player, b.player)
+                        || (b.tiles().any(|t| vision.visible(t))
+                            && state.building_apparent(player, b))
                 })
                 .map(|b| {
                     if state.hostile(player, b.player) {

@@ -9,7 +9,7 @@
 use crate::game::Game;
 use chassis::grid::TilePos;
 use macroquad::prelude::{Vec2, vec2};
-use oxide_sim::{UnitId, UnitKind};
+use oxide_sim::UnitId;
 
 /// Own harvesters with nothing to do, in id order — the cycle key and
 /// the HUD badge both read this.
@@ -19,7 +19,7 @@ pub fn idle_harvesters(game: &Game) -> Vec<UnitId> {
         .iter()
         .filter(|u| {
             u.player == game.human
-                && u.kind == UnitKind::Harvester
+                && u.kind.stats().harvest.is_some()
                 && u.order == oxide_sim::Order::Idle
         })
         .map(|u| u.id)

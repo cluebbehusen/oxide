@@ -279,6 +279,13 @@ impl Map {
     /// [`chassis::grid::Grid::is_consistent`]).
     pub fn is_consistent(&self) -> bool {
         self.grid.is_consistent()
+            // Frames are a canonical row-major list: fog views copy it
+            // in order and the gym counts it, so a reordered or
+            // duplicated list would give one semantic map two hashes.
+            && self
+                .extractor_frames
+                .windows(2)
+                .all(|pair| (pair[0].y, pair[0].x) < (pair[1].y, pair[1].x))
             && self.extractor_frames.iter().all(|frame| {
                 (0..2).all(|dy| {
                     (0..2).all(|dx| {

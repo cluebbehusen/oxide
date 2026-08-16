@@ -1358,7 +1358,9 @@ impl GymBot {
             mask[Action::Repair as usize] = free_builder(&obs, &enlisted)
                 && spendable > 0
                 && obs.my_buildings.iter().any(|b| {
-                    b.built && b.hp < b.kind.base_stats().max_hp && !under_salvage.contains(&b.id)
+                    b.built
+                        && b.hp < b.kind.tier_stats(b.tier).max_hp
+                        && !under_salvage.contains(&b.id)
                 });
             mask[Action::Salvage as usize] = free_builder(&obs, &enlisted)
                 && obs.scrap < UnitKind::Harvester.stats().cost
@@ -1897,11 +1899,11 @@ impl GymBot {
                     .iter()
                     .filter(|b| {
                         b.built
-                            && b.hp < b.kind.base_stats().max_hp
+                            && b.hp < b.kind.tier_stats(b.tier).max_hp
                             && !under_salvage.contains(&b.id)
                     })
                     .map(|b| {
-                        let deficit = b.kind.base_stats().max_hp - b.hp;
+                        let deficit = b.kind.tier_stats(b.tier).max_hp - b.hp;
                         (std::cmp::Reverse(deficit), b.anchor.y, b.anchor.x, b.id)
                     })
                     .min()
@@ -3148,7 +3150,14 @@ impl GymBot {
             }
         }
 
-        for building in obs.my_buildings.iter().filter(|building| !building.built) {
+        // Only fresh tier-zero sites are cancellable: the sim refuses to
+        // demolish a committed upgrade, so counting its refund here would
+        // budget recovery purchases against scrap that never arrives.
+        for building in obs
+            .my_buildings
+            .iter()
+            .filter(|building| !building.built && building.tier == 0)
+        {
             commands.push(PlayerCommand {
                 player: self.player,
                 command: Command::Cancel {

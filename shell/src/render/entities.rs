@@ -490,9 +490,16 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
                 sprites.building_tiered(building.kind, building.tier, faction),
                 sprites.building_tiered_accent(building.kind, building.tier),
             ),
-            super::motion::BuildingBodyFrame::Work(work) => (
+            super::motion::BuildingBodyFrame::Work(work) if building.tier == 0 => (
                 sprites.building_working(building.kind, faction, work + 1),
                 sprites.building_working_accent(building.kind, work + 1),
+            ),
+            // The atlas carries work rows only for base hulls; an
+            // upgraded works keeps its tier identity rather than
+            // animating as its old self forever.
+            super::motion::BuildingBodyFrame::Work(_) => (
+                sprites.building_tiered(building.kind, building.tier, faction),
+                sprites.building_tiered_accent(building.kind, building.tier),
             ),
             super::motion::BuildingBodyFrame::Construction { stage, phase } => (
                 sprites.construction(building.kind, faction, stage, phase),
@@ -544,8 +551,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
         if !building.built {
             // Construction progress in bone, distinct from training amber.
             let ticks = building
-                .kind
-                .base_stats()
+                .stats()
                 .construction
                 .map(|c| c.build_ticks)
                 .unwrap_or(1);
@@ -586,8 +592,7 @@ pub(crate) fn draw_buildings(game: &Game, sprites: &Sprites) {
             building.hp < max_hp
         } else {
             let ticks = building
-                .kind
-                .base_stats()
+                .stats()
                 .construction
                 .map(|c| c.build_ticks)
                 .unwrap_or(1);
@@ -1287,9 +1292,10 @@ fn rounded_footprint_path(min: Vec2, max: Vec2, radius: f32) -> Vec<Vec2> {
 fn visit_building_ranges(
     anchor: Vec2,
     kind: oxide_sim::BuildingKind,
+    tier: u8,
     mut visit: impl FnMut(BuildingRange),
 ) {
-    let stats = kind.base_stats();
+    let stats = kind.tier_stats(tier);
     let size = vec2(stats.size.0 as f32, stats.size.1 as f32);
     let center = anchor + size * 0.5;
     if let Some(weapon) = stats.weapons.first() {
@@ -1441,8 +1447,8 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
             );
         }
     };
-    let building_rings = |anchor: Vec2, kind: oxide_sim::BuildingKind| {
-        visit_building_ranges(anchor, kind, |range| {
+    let building_rings = |anchor: Vec2, kind: oxide_sim::BuildingKind, tier: u8| {
+        visit_building_ranges(anchor, kind, tier, |range| {
             let color = match range.kind {
                 BuildingRangeKind::Weapon => weapon_color,
                 BuildingRangeKind::DeadZone => dead_zone_color,
@@ -1491,6 +1497,7 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
                 building_rings(
                     vec2(building.anchor.x as f32, building.anchor.y as f32),
                     building.kind,
+                    building.tier,
                 );
             }
         }
@@ -1500,7 +1507,7 @@ pub(crate) fn draw_range_rings(game: &Game, input: &InputState) {
     if let Some(kind) = input.placing {
         let world = game.camera.to_world(input.mouse);
         let anchor = vec2(world.x.floor(), world.y.floor());
-        building_rings(anchor, kind);
+        building_rings(anchor, kind, 0);
     }
 }
 
@@ -1657,7 +1664,7 @@ mod tests {
     fn repair_bay_uses_the_exact_footprint_offset_aura() {
         let anchor = vec2(10.0, 20.0);
         let mut ranges = Vec::new();
-        visit_building_ranges(anchor, oxide_sim::BuildingKind::RepairBay, |range| {
+        visit_building_ranges(anchor, oxide_sim::BuildingKind::RepairBay, 0, |range| {
             ranges.push(range);
         });
 
@@ -1690,7 +1697,7 @@ mod tests {
         let anchor = vec2(10.0, 20.0);
         let kind = oxide_sim::BuildingKind::Turret;
         let mut ranges = Vec::new();
-        visit_building_ranges(anchor, kind, |range| ranges.push(range));
+        visit_building_ranges(anchor, kind, 0, |range| ranges.push(range));
 
         let weapon = ranges
             .iter()
@@ -1717,7 +1724,7 @@ mod tests {
         let anchor = vec2(10.0, 20.0);
         let kind = oxide_sim::BuildingKind::Bastion;
         let mut ranges = Vec::new();
-        visit_building_ranges(anchor, kind, |range| ranges.push(range));
+        visit_building_ranges(anchor, kind, 0, |range| ranges.push(range));
 
         let dead_zone = ranges
             .iter()

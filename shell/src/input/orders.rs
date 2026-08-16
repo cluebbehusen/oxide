@@ -7,7 +7,7 @@ use super::{InputState, PICK_RADIUS};
 use crate::game::{Game, PingKind};
 use chassis::grid::TilePos;
 use macroquad::prelude::{Vec2, vec2};
-use oxide_sim::{Command, Target, UnitId, UnitKind};
+use oxide_sim::{Command, Target, UnitId};
 
 pub(super) fn selected_producers(game: &Game) -> Vec<oxide_sim::BuildingId> {
     game.selection
@@ -191,10 +191,14 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         return;
     }
     let units = game.selection.units.clone();
+    // The click routes toward build and repair work, so any machine
+    // the sim would crew qualifies: workers carry the labor, welders
+    // carry the torch.
     let has_harvester = units.iter().any(|id| {
-        game.state
-            .unit(*id)
-            .is_some_and(|u| u.kind == UnitKind::Harvester)
+        game.state.unit(*id).is_some_and(|u| {
+            let stats = u.kind.stats();
+            stats.harvest.is_some() || stats.welder
+        })
     });
 
     // Own-FOOTPRINT hits outrank enemy-RADIUS hits: a raider gnawing a

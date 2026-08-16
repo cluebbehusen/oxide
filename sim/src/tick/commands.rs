@@ -1058,6 +1058,19 @@ fn apply_unload(
     if t.player != player || t.hp == 0 || t.kind.stats().transport_capacity == 0 {
         return Err(RejectReason::InvalidTarget);
     }
+    // Lower the destination through the same goal snap every air route
+    // takes. Storing a raw peak (or off-map) goal would leave the order
+    // pointing at ground the flyer can never occupy: routing snaps the
+    // flight, arrival never matches the order, and the transport orbits
+    // its endpoint without unloading.
+    let domain = t.kind.stats().domain;
+    let at = if state.passable_for(domain, at) {
+        at
+    } else if domain == crate::stats::Domain::Air {
+        super::snap_air_goal(state, at).ok_or(RejectReason::OutOfBounds)?
+    } else {
+        return Err(RejectReason::OutOfBounds);
+    };
     let unit = state.unit_mut(transport).expect("just seen");
     if assign(unit, Order::Unload { at }, queue) {
         Ok(())
@@ -1364,9 +1377,24 @@ fn apply_upgrade(
     }
     state.players[player.0 as usize].scrap -= upgrade.cost;
     let b = state.building_mut(building).expect("validated above");
+    let old_max = b.stats().max_hp;
     b.tier += 1;
     b.built = false;
     b.progress = 0;
+    // The commitment re-founds the machine as a fresh site of the new
+    // tier: hp restarts at the new tier's construction floor, scaled by
+    // the old hull's condition, so an undamaged input completes exactly
+    // at the new maximum and battle damage carries through the rebuild.
+    // Retaining the old hp would double-count it against the new ramp —
+    // a full base hull would cap out mid-construction while a wounded
+    // one finished short of maximum.
+    let start_hp = b.stats().max_hp / 5;
+    b.hp = (b.hp.saturating_mul(start_hp) / old_max.max(1)).max(1);
+    // Combat state is the old machine's, and the offline site neither
+    // fires nor cools: a stale cooldown can exceed the new tier's
+    // ceiling and a focus on an unbuilt works fails validation.
+    b.cooldown = 0;
+    b.focus = None;
     // The strip ledger is a record against the OLD tier's price basis;
     // the rebuilt machine starts a clean one (and any crew mid-salvage
     // finds an unbuilt patient next tick and stands down).

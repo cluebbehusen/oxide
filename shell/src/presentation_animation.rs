@@ -268,6 +268,7 @@ pub(crate) struct BuildingAnimationState {
 pub(crate) struct BuildingAnimationFacts {
     id: BuildingId,
     kind: BuildingKind,
+    tier: u8,
     built: bool,
     progress: u32,
     construction_total: Option<u32>,
@@ -286,14 +287,14 @@ impl BuildingAnimationFacts {
             .and_then(|()| building.queue.front().copied())
             .filter(|kind| building.progress < kind.stats().train_ticks)
             .map(|kind| (kind, building.progress, kind.stats().train_ticks));
-        let construction_total = building
-            .kind
-            .base_stats()
-            .construction
-            .map(|stats| stats.build_ticks);
+        // The active tier's clock: a committed upgrade rebuilds on the
+        // NEW tier's labor budget, and a base denominator would show the
+        // scaffold complete early.
+        let construction_total = building.stats().construction.map(|stats| stats.build_ticks);
         Self {
             id: building.id,
             kind: building.kind,
+            tier: building.tier,
             built: building.built,
             progress: building.progress,
             construction_total,
@@ -507,10 +508,12 @@ impl AnimationController {
                 _ => BuildingActivity::Idle,
             }
         };
-        let weapon =
-            facts.kind.base_stats().weapons.first().map(|weapon| {
-                weapon_cycle(facts.cooldown, weapon.cooldown_ticks, clock.tick_fraction)
-            });
+        let weapon = facts
+            .kind
+            .tier_stats(facts.tier)
+            .weapons
+            .first()
+            .map(|weapon| weapon_cycle(facts.cooldown, weapon.cooldown_ticks, clock.tick_fraction));
         BuildingAnimationState {
             construction,
             activity,
@@ -825,6 +828,7 @@ mod tests {
         BuildingAnimationFacts {
             id: BuildingId(9),
             kind,
+            tier: 0,
             built: true,
             progress: 0,
             construction_total: kind

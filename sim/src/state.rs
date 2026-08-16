@@ -762,6 +762,12 @@ impl State {
                     index as u8,
                 )));
             }
+            // Victory treats the stamp as immutable history, so a stamp
+            // later than the present would flow to placement and views
+            // as an elimination that never happened.
+            if player.eliminated_at.is_some_and(|at| at > self.tick) {
+                return Err(E::EliminationInTheFuture(crate::ids::PlayerId(index as u8)));
+            }
         }
         if self.next_unit_id > ID_COUNTER_ENVELOPE || self.next_building_id > ID_COUNTER_ENVELOPE {
             return Err(E::IdCounterBeyondEnvelope);
@@ -843,6 +849,21 @@ impl State {
                     || !rider.cargo.is_empty()
                 {
                     return Err(E::CargoNotDormant(u.id));
+                }
+                // Unloading inserts the rider back into the world
+                // as-is, so its scalars must satisfy every bound a
+                // walking unit satisfies — a smuggled oversized
+                // cooldown would silence a weapon for its whole life.
+                if rider.progress > PROGRESS_ENVELOPE {
+                    return Err(E::CargoProgressOutOfRange(u.id));
+                }
+                if rider.cooldowns.iter().enumerate().any(|(i, cd)| {
+                    *cd > rstats
+                        .weapons
+                        .get(i)
+                        .map_or(0, |weapon| weapon.cooldown_ticks)
+                }) {
+                    return Err(E::CargoCooldownOutOfRange(u.id));
                 }
                 if rider.id.0 >= self.next_unit_id {
                     return Err(E::StaleUnitCounter);
@@ -1395,6 +1416,12 @@ impl State {
     /// toast's vocabulary. The first blocking reason in footprint scan
     /// order wins; every check is fog-safe by construction (it reads
     /// only what `player` currently sees, exactly like the predicate).
+    ///
+    /// One deliberate exception: occupancy reads TRUE occupancy, hidden
+    /// charges included, because this is the final word on actual
+    /// ground claims and the sim cannot let two buildings share ground
+    /// whatever the issuer knows. The intent path stays fog-honest
+    /// instead; a claim over a hidden charge dies here, at arrival.
     pub fn place_refusal(
         &self,
         player: PlayerId,
@@ -1548,7 +1575,15 @@ impl State {
                     if !self.map.terrain_passable(t) {
                         return Some(PlaceRefusal::Terrain);
                     }
-                    if self.building_at(t).is_some() {
+                    // The intent verdict reads only what the issuer
+                    // knows: an undetected buried charge is not
+                    // knowledge, so it neither reds a preview ghost nor
+                    // refuses the intent — the claim dies honestly at
+                    // arrival, where truth re-proves the ground.
+                    if self
+                        .building_at(t)
+                        .is_some_and(|b| self.building_apparent(player, b))
+                    {
                         return Some(PlaceRefusal::Building);
                     }
                     continue;
@@ -1967,6 +2002,9 @@ pub enum StateIntegrityError {
     /// A recorded elimination stamp past the same sanity envelope.
     #[error("player {0}'s elimination stamp lies beyond the sanity envelope")]
     EliminationBeyondEnvelope(PlayerId),
+    /// A recorded elimination stamp later than the state's own tick.
+    #[error("player {0}'s elimination stamp lies in the future")]
+    EliminationInTheFuture(PlayerId),
     /// An id counter is past the envelope spawning tolerates.
     #[error("an id counter is beyond the sanity envelope")]
     IdCounterBeyondEnvelope,
@@ -2056,6 +2094,13 @@ pub enum StateIntegrityError {
     /// A rider holding live orders, paths, tethers, or its own cargo.
     #[error("unit {0} carries a rider that is not dormant")]
     CargoNotDormant(UnitId),
+    /// A rider whose progress meter exceeds the envelope walking units
+    /// are held to.
+    #[error("unit {0} carries a rider with an impossible progress meter")]
+    CargoProgressOutOfRange(UnitId),
+    /// A rider whose weapon cooldowns exceed its own weapon table.
+    #[error("unit {0} carries a rider with impossible weapon cooldowns")]
+    CargoCooldownOutOfRange(UnitId),
     /// The same unit id appears twice across the world and every hold.
     #[error("a unit id is aliased between the world and a cargo hold")]
     AliasedCargoId,

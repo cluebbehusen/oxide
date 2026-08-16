@@ -168,7 +168,10 @@ pub(in crate::tick) fn resolve(state: &mut State, mut pending: Pending, events: 
         let capacity = carrier.kind.stats().transport_capacity;
         let held = cargo_load(carrier);
         let carrier_pos = carrier.pos;
-        let Some(rider) = state.unit(rider_id) else {
+        // hp > 0 mirrors the carrier filter above: a rider dealt lethal
+        // damage this same tick must die in cleanup, not be entombed in
+        // the sling as a zero-hp corpse the death pass can no longer see.
+        let Some(rider) = state.unit(rider_id).filter(|r| r.hp > 0) else {
             continue;
         };
         // Two boarders can clear the same last slot in one decision

@@ -32,7 +32,11 @@ use serde::{Deserialize, Serialize};
 /// v7: terrain knowledge gained the required `known_peaks` subset and
 /// exact explored mask so defense roles can distinguish mountain barriers
 /// from flyable rock without proposing foundations in unknown ground.
-pub const OBSERVATION_VERSION: u32 = 7;
+/// v8: the 0.15 tree's accumulated shape — `UnitObs` gained `cargo`,
+/// `BuildingObs` gained `tier` (now honest for every live sighting),
+/// and the observation itself gained `known_frames`, `my_shells`, and
+/// `incoming_shells`. Stamped late: v7 recordings predate these fields.
+pub const OBSERVATION_VERSION: u32 = 8;
 
 /// One unit as a bot sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,7 +241,7 @@ impl Observation {
                     hp: b.hp,
                     built: b.built,
                     seen: true,
-                    tier: 0,
+                    tier: b.tier,
                 });
             } else {
                 obs.enemy_buildings.push(BuildingObs {
@@ -248,7 +252,7 @@ impl Observation {
                     hp: b.hp,
                     built: b.built,
                     seen: true,
-                    tier: 0,
+                    tier: b.tier,
                 });
             }
         }
@@ -314,7 +318,7 @@ impl Observation {
                     hp: b.hp,
                     built: b.built,
                     seen: true,
-                    tier: 0,
+                    tier: b.tier,
                 });
             } else if b.tiles().any(|t| vision.visible(t)) && state.building_apparent(me, b) {
                 obs.enemy_buildings.push(BuildingObs {
@@ -325,7 +329,7 @@ impl Observation {
                     hp: b.hp,
                     built: b.built,
                     seen: true,
-                    tier: 0,
+                    tier: b.tier,
                 });
             }
         }
