@@ -716,14 +716,26 @@ fn every_checklist_row_refuses_its_forgery() {
             "elimination stamp lies in the future",
         ),
         (
-            "a rider smuggling an impossible progress meter",
+            "a rider smuggling a progress meter boarding zeroes",
             |d| {
                 let mut rider = well_formed_rider(d);
-                rider["progress"] = json!(4_000_000_000u32);
+                // The smallest possible forgery: boarding resets the
+                // meter, so even one tick of progress is unreachable.
+                rider["progress"] = json!(1);
                 make_transport(d);
                 d["units"][0]["cargo"] = json!([rider]);
             },
             "carries a rider with an impossible progress meter",
+        ),
+        (
+            "a rider still armed with a looping program",
+            |d| {
+                let mut rider = well_formed_rider(d);
+                rider["looping"] = json!(true);
+                make_transport(d);
+                d["units"][0]["cargo"] = json!([rider]);
+            },
+            "carries a rider that is not dormant",
         ),
         (
             "a rider smuggling an oversized weapon cooldown",

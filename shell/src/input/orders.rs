@@ -191,41 +191,46 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
         return;
     }
     let units = game.selection.units.clone();
-    // The click routes toward build and repair work, so any machine
-    // the sim would crew qualifies: workers carry the labor, welders
-    // carry the torch.
-    let has_harvester = units.iter().any(|id| {
-        game.state.unit(*id).is_some_and(|u| {
-            let stats = u.kind.stats();
-            stats.harvest.is_some() || stats.welder
-        })
+    // Each verb crews by its own capability, mirroring the sim's crew
+    // filters exactly: workers (harvest kit) carry build and harvest
+    // labor, welders carry the torch. A coarser union here would stage
+    // commands the sim rejects with an empty crew.
+    let has_worker = units.iter().any(|id| {
+        game.state
+            .unit(*id)
+            .is_some_and(|u| u.kind.stats().harvest.is_some())
     });
+    let has_welder = units
+        .iter()
+        .any(|id| game.state.unit(*id).is_some_and(|u| u.kind.stats().welder));
 
     // Own-FOOTPRINT hits outrank enemy-RADIUS hits: a raider gnawing a
     // wall sits inside the pick radius of a click on that wall, and the
     // click's plain meaning is the building under the cursor, not the
     // rat beside it. No visibility condition on own targets — ownership
     // cannot probe fog, and own buildings always draw.
-    if has_harvester
+    if (has_worker || has_welder)
         && let Some(building) = game.state.building_at(tile)
         && building.player == game.human
     {
         if !building.built {
-            // Resume the site: the sim commits every accepted
-            // harvester (builders stack). Send the building's own
-            // anchor and kind — the cursor may be on any footprint
-            // tile of a 2x2.
-            game.issue(Command::Build {
-                units,
-                kind: building.kind,
-                anchor: building.anchor,
-                queue,
-                defer: false,
-            });
-            game.ping(world, PingKind::Harvest);
-            return;
-        }
-        if building.hp < building.stats().max_hp {
+            if has_worker {
+                // Resume the site: the sim commits every accepted
+                // worker (builders stack). Send the building's own
+                // anchor and kind — the cursor may be on any footprint
+                // tile of a 2x2.
+                game.issue(Command::Build {
+                    units,
+                    kind: building.kind,
+                    anchor: building.anchor,
+                    queue,
+                    defer: false,
+                });
+                game.ping(world, PingKind::Harvest);
+                return;
+            }
+            // Welders alone cannot lay construction: fall through.
+        } else if building.hp < building.stats().max_hp && has_welder {
             game.issue(Command::Repair {
                 units,
                 building: building.id,
@@ -234,7 +239,8 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
             game.ping(world, PingKind::Harvest);
             return;
         }
-        // A healthy built own building: fall through (ground order).
+        // A healthy built own building — or a site without a worker, or
+        // a wound without a torch — falls through to the ground order.
     }
 
     // Carriable ground machines right-clicked onto an own transport
@@ -293,7 +299,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     // never for a machine in the current selection, so ordering a
     // group that contains its own wounded still reads as a move. The
     // armed verb (the Weld card) reaches those.
-    if has_harvester {
+    if has_welder {
         let patient = game
             .state
             .units()
@@ -325,7 +331,7 @@ pub(super) fn context_order(game: &mut Game, screen: Vec2, queue: bool) {
     // probing fog with right-clicks must not reveal hidden scrap. Wreck
     // memory counts the same as node memory.
     if (game.my_vision().remembered_scrap(tile) > 0 || game.my_vision().remembered_wreck(tile) > 0)
-        && has_harvester
+        && has_worker
     {
         game.issue(Command::Harvest {
             units,

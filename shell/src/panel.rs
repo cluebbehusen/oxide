@@ -1047,6 +1047,7 @@ pub fn build_with_page(game: &Game, bindings: &BindingMap, build_page: usize) ->
     let first = units.iter().find(|u| u.id == subject_id)?;
     let owner = first.player;
     let has_builder = units.iter().any(|u| u.kind.stats().harvest.is_some());
+    let has_welder = units.iter().any(|u| u.kind.stats().welder);
     let mut panel = Panel {
         title: if units.len() == 1 {
             first.kind.name().to_uppercase()
@@ -1227,7 +1228,9 @@ pub fn build_with_page(game: &Game, bindings: &BindingMap, build_page: usize) ->
             progress: None,
         });
     }
-    if has_builder {
+    // The torch decides the Weld card, not the harvest kit: the Tender
+    // welds without ever gathering.
+    if has_welder {
         panel.cards.push(Card {
             icon: CardIcon::Verb(VerbIcon::Repair),
             title: "Weld".into(),

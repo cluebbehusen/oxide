@@ -842,21 +842,28 @@ impl State {
                 if rider.player != u.player {
                     return Err(E::CargoOwnerMismatch(u.id));
                 }
+                // Dormancy is exactly what boarding normalizes: order,
+                // queue, looping, path, leash, settled, and cargo all
+                // reset at the sling door, so any survivor is forged.
                 if rider.order != Order::Idle
                     || !rider.queue.is_empty()
+                    || rider.looping
                     || rider.path.is_some()
                     || rider.leash.is_some()
+                    || rider.settled != 0
                     || !rider.cargo.is_empty()
                 {
                     return Err(E::CargoNotDormant(u.id));
                 }
-                // Unloading inserts the rider back into the world
-                // as-is, so its scalars must satisfy every bound a
-                // walking unit satisfies — a smuggled oversized
-                // cooldown would silence a weapon for its whole life.
-                if rider.progress > PROGRESS_ENVELOPE {
+                // Boarding zeroes the progress meter too; any nonzero
+                // value is unreachable, not merely oversized.
+                if rider.progress != 0 {
                     return Err(E::CargoProgressOutOfRange(u.id));
                 }
+                // Cooldowns are the one scalar boarding does NOT reset —
+                // a machine slung mid-cooldown keeps it frozen — so the
+                // bound is the walking unit's weapon table, and a
+                // smuggled oversize would silence a weapon for its life.
                 if rider.cooldowns.iter().enumerate().any(|(i, cd)| {
                     *cd > rstats
                         .weapons
