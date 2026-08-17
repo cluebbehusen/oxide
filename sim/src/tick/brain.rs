@@ -192,6 +192,7 @@ pub(super) fn run(
     commit_unit_welds(state, field_welds, events, &mut heals);
     turret_fire(state, &motion, events, &mut hits, &mut launches);
     repair_bay_aura(state, &mut heals);
+    crucible_smelter(state);
     // Arrivals join this tick's volley; launches land on later ticks
     // (flight is at least one tick), so ordering here cannot matter.
     land_shells(state, &mut hits, events);
@@ -548,6 +549,60 @@ fn repair_bay_aura(state: &mut State, heals: &mut Vec<PendingUnitHeal>) {
                 paid: due as u32,
                 source: crate::event::UnitRepairSource::RepairBay { building: bay },
             });
+        }
+    }
+}
+
+/// The Crucible's smelter: each pulse, every built Crucible melts one
+/// wreck unit within its ring into one scrap for its owner. Fuel is
+/// unowned battlefield debris, so no fog or ownership question arises —
+/// the works eats what the war left where it stands. Crucibles work in
+/// id order and each takes the first wreck in row-major scan order
+/// inside its reach, so the same scattered field always melts in the
+/// same sequence.
+fn crucible_smelter(state: &mut State) {
+    use crate::stats::BuildingKind;
+    use chassis::grid::TilePos;
+    if !state
+        .current_tick()
+        .is_multiple_of(crate::stats::CRUCIBLE_SMELT_PERIOD)
+    {
+        return;
+    }
+    let crucibles: Vec<crate::ids::BuildingId> = state
+        .buildings
+        .iter()
+        .filter(|b| b.built && b.hp > 0 && b.kind == BuildingKind::Crucible)
+        .map(|b| b.id)
+        .collect();
+    let radius = crate::stats::CRUCIBLE_SMELT_RADIUS;
+    for id in crucibles {
+        let Some(b) = state.building(id) else {
+            continue;
+        };
+        let owner = b.player;
+        let anchor = b.anchor;
+        let (w, h) = b.stats().size;
+        let reach = radius.to_num::<i32>() + 1;
+        let mut fuel = None;
+        'scan: for y in (anchor.y - reach)..(anchor.y + h + reach) {
+            for x in (anchor.x - reach)..(anchor.x + w + reach) {
+                let tile = TilePos::new(x, y);
+                if state.map.wreck_at(tile) == 0 {
+                    continue;
+                }
+                let center = tile.center();
+                if b.closest_point_to(center).dist_sq(center) <= radius * radius {
+                    fuel = Some(tile);
+                    break 'scan;
+                }
+            }
+        }
+        if let Some(tile) = fuel
+            && state.map.extract_wreck(tile).is_some()
+        {
+            let bank = &mut state.player_mut(owner).scrap;
+            *bank = bank.saturating_add(1);
         }
     }
 }

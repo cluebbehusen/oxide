@@ -313,3 +313,48 @@ fn a_refinery_grinds_faster_than_its_reclaimer() {
         "a refinery out-earns the reclaimer clock ({earned} vs base {base_rate})"
     );
 }
+
+#[test]
+fn the_deep_array_waits_for_the_crucible_too() {
+    // Both deepest rungs sit behind the forge gate: the Array's wide
+    // detection ring joins the Bulwark there.
+    let mut scenario = arena(2_000, false, false);
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Array,
+        x: 14,
+        y: 3,
+    });
+    let mut state = scenario.build().unwrap();
+    let array = find(&state, BuildingKind::Array);
+    let builder = state.units()[0].id;
+
+    let report = state.tick(&[upgrade(builder, array)]);
+    assert!(
+        report.events.iter().any(|e| matches!(
+            e,
+            Event::CommandRejected {
+                reason: RejectReason::MissingPrerequisite,
+                ..
+            }
+        )),
+        "the Deep Array waits for the Crucible"
+    );
+    assert_eq!(state.building(array).unwrap().tier, 0, "nothing moved");
+
+    let mut scenario = arena(2_000, true, false);
+    scenario.buildings.push(BuildingSpec {
+        player: 0,
+        kind: BuildingKind::Array,
+        x: 14,
+        y: 3,
+    });
+    let mut state = scenario.build().unwrap();
+    let array = find(&state, BuildingKind::Array);
+    let builder = state.units()[0].id;
+    state.tick(&[upgrade(builder, array)]);
+    run_until_built(&mut state, array, 2_000);
+    let b = state.building(array).unwrap();
+    assert_eq!(b.tier, 1);
+    assert_eq!(b.kind.tier_name(b.tier), "deep array");
+}

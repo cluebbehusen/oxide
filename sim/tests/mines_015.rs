@@ -319,6 +319,8 @@ fn the_deep_array_upgrade_buys_the_wide_ring() {
         vec![
             building(0, BuildingKind::Array, mast.x, mast.y),
             building(0, BuildingKind::Fabricator, 2, 7),
+            // The forge gate: the wide ring sits behind the Crucible.
+            building(0, BuildingKind::Crucible, 5, 7),
             building(1, BuildingKind::ScuttleCharge, far.x, far.y),
         ],
     )

@@ -1634,7 +1634,11 @@ const DEEP_ARRAY: BuildingStats = BuildingStats {
     construction: Some(ConstructionStats {
         cost: 150,
         build_ticks: 300,
-        requires: &[BuildingKind::Fabricator],
+        // The forge gate: both deepest rungs (this and the Bulwark)
+        // stand behind the Crucible, which itself requires the
+        // Fabricator — the smelter's immediate utility is what makes
+        // that climb pay before its first tier-three unit.
+        requires: &[BuildingKind::Crucible],
     }),
 };
 
@@ -1949,6 +1953,20 @@ pub const REPAIR_BAY_RADIUS: Fx = Fx::lit("4.0");
 /// fire; its value is breadth (every wounded machine in the ring heals
 /// at once) and never needing a harvester's torch time.
 pub const REPAIR_BAY_PERIOD: u64 = 8;
+
+/// Reach of the Crucible's smelter, in tiles from the nearest point of
+/// its footprint. Wider than the Repair Bay's base ring: the smelter's
+/// fuel is battlefield debris, so the works wants to stand near where
+/// fights happened, not huddle at home.
+pub const CRUCIBLE_SMELT_RADIUS: Fx = Fx::lit("6.0");
+
+/// Ticks between smelter pulses; each pulse melts one wreck unit into
+/// one scrap. 1 / 40 sits below a dedicated harvester working the same
+/// field and near the Foundry drip's order of magnitude — the point is
+/// that a standing Crucible pays for itself over a mid-game's debris,
+/// not that it replaces the harvest line. This is the amortization
+/// that makes the tier-three climb a purchase instead of dead spend.
+pub const CRUCIBLE_SMELT_PERIOD: u64 = 40;
 
 /// Hp each aura pulse offers each patient in the ring.
 pub const REPAIR_BAY_STEP: u32 = 1;
