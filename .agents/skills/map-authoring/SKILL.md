@@ -104,3 +104,59 @@ that lanes, corners, pressure, or economy are interesting.
 If an intended map edit moves a hash fixture, follow the root version-and-bless
 contract. Inspect changed goldens and hashes before staging. Additions and
 removals must still leave the complete shipped-map sweep green.
+
+## Stage drafts outside the shipped pool
+
+Never author a draft directly in `scenarios/` — the shipped-map gates,
+hash fixtures, and bless sweeps read that directory, so an unblessed
+draft pollutes fixtures the moment anything blesses. Drafts live in
+`map-drafts/` until the user approves them.
+
+Present drafts for review with the review page, then open (or send)
+the single self-contained HTML it writes:
+
+```sh
+uv run tools/map_review.py            # renders + audits + mirror probe
+uv run tools/map_review.py --no-probe # skip the slow mirror probe
+open map-review/index.html
+```
+
+Blessing a draft is explicit and user-driven: move its JSON into
+`scenarios/`, re-run the map gates and headless sweep, bless the hash
+fixture row, and commit. The review page presents; it never promotes.
+
+Seat a real opponent in every draft: `"bot": true` alone seats nobody —
+the actor requires `"bot_config": {"level": ...}`, and a draft without
+it plays its liveness runs against an idle seat.
+
+## Measured design lessons (0.15 pool health pass)
+
+- The opening economy must not starve before the first push outward:
+  give each start enough near pods to fund the opening, and
+  stepping-stone clusters toward the far ring. Lean near economies
+  produced 40k-tick mutual stalls between full-strength mirrors.
+- A dominant central prize is what buys perturbation robustness. On
+  maps whose mid-game war is worth more than an opening tempo nudge,
+  a forced early Turret flips nothing; on open maps without one it
+  flipped every baseline (subsidence, basalt-spine, the-deep-cut).
+  Measure with the turret control probe and read the flip counts:
+
+  ```sh
+  cargo run -q -p oxide-driver --release -- viability-probe \
+      --weights sim/src/bot/ladder_weights.json \
+      --scenario map-drafts/<draft>.json --action turret --quota 1
+  ```
+
+- Every decisive expert mirror in the pool is a fixed-seat sweep (one
+  chair wins every seed; which chair varies by map). Do not gate on
+  seed-varying winners — it does not exist. Gate on decisive mirrors
+  plus perturbation robustness, and read the probe's baseline seat
+  split as information, not a pass/fail.
+- Acreage is not openness: a similar-sized map can block nearly half
+  of all builder thinks (cinder-steppe) while another expresses every
+  structure. Leave genuine room to build along the routes players
+  actually take.
+- The `grand` pace class (151-400 effective steps) exists for island
+  wars and campaign-length maps; `~` gulf severs ground while air and
+  fire cross, and the route gate accepts air-only hostile pairs. Maps
+  above vast scale belong there.
