@@ -646,8 +646,14 @@ impl FamilyBehavior {
         self.fortification_builds += behavior.fortification_builds;
     }
 
+    /// Development is the build column alone. The metric once summed
+    /// harvesters in, but Balanced out-harvests Turtle by style, so the
+    /// term only ever masked the lead this family exists to measure —
+    /// the drip restore turned a one-point margin into a tie and failed
+    /// a champion whose build lead had actually widened. Builds-only is
+    /// decisive under both rule eras (10-4-4 no-drip, 11-6-3 drip).
     fn development(&self) -> usize {
-        self.harvesters + self.development_builds
+        self.development_builds
     }
 
     fn mobile_pressure(&self) -> usize {
