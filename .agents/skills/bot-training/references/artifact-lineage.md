@@ -4,12 +4,51 @@ Read this file only when migrating, continuing, comparing, or replacing the
 shipped policy. Treat repository code and artifact digests as canonical if this
 snapshot ever disagrees with the live tree.
 
-## Current state: the auto-2 champion (0.15.2)
+## Current state: the es-1 evolution champion (0.15.5)
 
-The shipped artifact (`sim/src/bot/ladder_weights.json`) is the auto-2
-autopilot campaign's champion, promoted 2026-08-12 on the complete
-native-Q12 battery under the 0.15.2 rules (harvester replan stagger +
-base-Array charge detection).
+The shipped artifact (`sim/src/bot/ladder_weights.json`) is the es-1
+weight-space evolution run's best confirmed center, promoted 2026-08-17
+on the complete native-Q12 battery under the 0.15.4 rules (the review
+sweep's tier honesty, upgrade integrity, and stealth apparency fixes).
+
+- Contract: gym v9 — unchanged 107 features, 12 conditions, 43 actions.
+- Gameplay digest: `bc5327d144255bde`.
+- Content-addressed training lineage:
+  `sha256:6e83f9a6fa01cb1735258655544b7d39976ec03b3d8775525fbff52edd89ff9d`.
+- Provenance: the auto-2 champion (below) evolved in place by
+  `tools/train/es.py` (run es-1: 483 generations, 123 accepted steps,
+  antithetic integer mutations on the Q12 artifact itself, fitness
+  from the native neural-cup on paired seeds, the style gate inside
+  the loop as a per-generation trust region). No float checkpoint
+  exists on the promotion path — the evolved artifact IS the training
+  product; `runs/night2/es1-exact.pt` is its dequantized recovery.
+  experiments/2026-08-16-es-bakeoff.md carries the full curve.
+- Promotion battery: neural-cup vs the Overseer 90% mixed, faction
+  pairs 90/93/90/85 for ff/cc/fc/cf; rush canary 78% mixed with the
+  faction split as the documented residual — 80/78% with Ferrous west
+  but 57/58% for cc/cf (the anti-rush patch, the run's entire gain,
+  is stronger played Ferrous). Zero caps across all 300 cup games.
+  Fun gate open; style signatures 7/7/7/7 under the builds-only
+  development metric (recalibrated 2026-08-16 after the drip restore
+  turned the aggregate metric's one-point margin into a tie — the
+  builds column is decisive under both rule eras); balance probe
+  clean across all 31 shipped maps; repair probe 8/8; ladder handicap
+  sweep 15/30/37/40 on the unchanged rungs (gains are anti-rush, not
+  yardstick strength — no re-pin). Known residuals: the twelve
+  costless-unused kinds stand (the viability oracle's verdict — a
+  facet-keyed teaching mechanism is proven but unintegrated, see
+  experiments/2026-08-17-doctrine-teach.md), and the Cupric-side rush
+  gap above. The parent-exact-match gate is inapplicable to evolved
+  weights, exactly as it was to the auto-2 fine-tune; this record is
+  its replacement. Candidate yardstick rungs 19/29/33/40 with strict
+  monotonicity both ways.
+
+## Historical: the auto-2 champion (0.15.2)
+
+The prior shipped artifact was the auto-2 autopilot campaign's
+champion, promoted 2026-08-12 on the complete native-Q12 battery under
+the 0.15.2 rules (harvester replan stagger + base-Array charge
+detection).
 
 - Contract: gym v9 — 107 named features, 12 named conditions, 43
   actions across four heads. Parity-clean by construction.

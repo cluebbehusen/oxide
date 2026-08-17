@@ -3,7 +3,7 @@ resolver = "3"
 members = ["chassis", "sim", "protocol", "kit", "shell", "driver"]
 
 [workspace.package]
-version = "0.15.4"
+version = "0.15.5"
 edition = "2024"
 rust-version = "1.93"
 publish = false

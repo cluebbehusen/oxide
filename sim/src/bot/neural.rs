@@ -135,6 +135,11 @@ impl Level {
     /// the rungs sit at 16/29/37/40 wins with strictly falling tick
     /// totals. Hard and Medium now share a hesitation rate and differ
     /// on the clock below.
+    ///
+    /// The 0.15.5 evolution champion re-measures at 15/30/37/40 on the
+    /// same sweep with tick totals still strictly falling — its gains
+    /// over the prior actor are anti-rush, not yardstick strength, so
+    /// every rung carries over unchanged.
     pub fn hesitation_permille(self) -> u32 {
         match self {
             Level::Easy => 900,

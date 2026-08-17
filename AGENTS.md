@@ -275,10 +275,10 @@ neither changes the strategy surface.
 
 ### 0.15 status: the promoted actor ships
 
-The shipped opponent is the auto-2 autopilot champion (0.15.2 rules:
-harvester replan stagger, base-Array charge detection), embedded at
-`sim/src/bot/ladder_weights.json` and seated by `seat_bots` for every
-configured bot seat. The gym v9 surface is parity-clean by
+The shipped opponent is the es-1 evolution champion (promoted under
+the 0.15.4 rules; its predecessor was the auto-2 autopilot champion),
+embedded at `sim/src/bot/ladder_weights.json` and seated by
+`seat_bots` for every configured bot seat. The gym v9 surface is parity-clean by
 construction: the mask encodes shared legality only. `BotConfig`
 (level, personality) is the authored scenario data it consumes; the
 Level ladder's execution handicaps are re-measured for each promoted
