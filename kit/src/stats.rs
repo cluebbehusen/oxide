@@ -7,6 +7,7 @@ use crate::GameReplay;
 use anyhow::{Context, Result};
 use oxide_sim::{Event, PlayerId, State};
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 /// One player's sampled series and totals.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -17,6 +18,10 @@ pub struct PlayerStats {
     pub scrap: Vec<u32>,
     /// Standing army value (sum of living units' costs) per sample.
     pub army_value: Vec<u32>,
+    /// Living units by kind name at each sample point — the
+    /// composition timeline a viewer can band-chart. BTreeMap keys keep
+    /// the serialization deterministic.
+    pub kinds: Vec<BTreeMap<&'static str, u16>>,
     /// Scrap brought home by Harvesters across the whole match.
     pub scrap_collected: u32,
     /// Units completed across the whole match.
@@ -105,6 +110,7 @@ fn blank_players(seats: usize) -> Vec<PlayerStats> {
             seat: seat as u8,
             scrap: Vec::new(),
             army_value: Vec::new(),
+            kinds: Vec::new(),
             scrap_collected: 0,
             units_trained: 0,
             buildings_completed: 0,
@@ -119,14 +125,18 @@ fn sample(state: &State, stats: &mut [PlayerStats], ticks: &mut Vec<u64>) {
     ticks.push(state.current_tick());
     for (seat, entry) in stats.iter_mut().enumerate() {
         entry.scrap.push(state.players()[seat].scrap);
-        entry.army_value.push(
-            state
-                .units()
-                .iter()
-                .filter(|unit| unit.player == PlayerId(seat as u8))
-                .map(|unit| unit.kind.stats().cost)
-                .sum(),
-        );
+        let mut value = 0u32;
+        let mut counts: BTreeMap<&'static str, u16> = BTreeMap::new();
+        for unit in state
+            .units()
+            .iter()
+            .filter(|unit| unit.player == PlayerId(seat as u8))
+        {
+            value = value.saturating_add(unit.kind.stats().cost);
+            *counts.entry(unit.kind.name()).or_default() += 1;
+        }
+        entry.army_value.push(value);
+        entry.kinds.push(counts);
     }
 }
 
@@ -172,6 +182,10 @@ fn thin_samples(stats: &mut MatchStats, every: u64) {
     for player in &mut stats.players {
         player.scrap = keep.iter().map(|index| player.scrap[*index]).collect();
         player.army_value = keep.iter().map(|index| player.army_value[*index]).collect();
+        player.kinds = keep
+            .iter()
+            .map(|index| player.kinds[*index].clone())
+            .collect();
     }
 }
 
