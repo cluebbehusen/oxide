@@ -42,6 +42,13 @@ pub struct PlaybackSession {
     pub seeking: Option<u64>,
     /// A held press is scrubbing the timeline.
     pub scrubbing: bool,
+    /// The composition timeline overlay is showing.
+    pub show_stats: bool,
+    /// Match statistics, computed from the record on first toggle —
+    /// one deterministic re-execution, paid only when asked for.
+    pub stats: Option<oxide_kit::stats::MatchStats>,
+    /// The pristine record, kept for that deferred computation.
+    replay: GameReplay,
 }
 
 impl PlaybackSession {
@@ -52,6 +59,7 @@ impl PlaybackSession {
 
     pub fn from_replay(replay: GameReplay) -> Result<Self> {
         let scenario = replay.setup.clone();
+        let record = replay.clone();
         let engine = oxide_kit::playback::Playback::load(replay)?;
         // The spectator door: an all-bot record (driver benchmark,
         // bot-vs-bot spectacle) is a perfectly watchable replay.
@@ -70,7 +78,21 @@ impl PlaybackSession {
             return_to: ReturnTo::Home,
             seeking: None,
             scrubbing: false,
+            show_stats: false,
+            stats: None,
+            replay: record,
         })
+    }
+
+    /// Toggles the composition overlay, computing the sampled series
+    /// from the record on first use. Sampling stride targets ~240
+    /// columns so the band chart stays legible at any match length.
+    fn toggle_stats(&mut self) {
+        self.show_stats = !self.show_stats;
+        if self.show_stats && self.stats.is_none() {
+            let every = (self.engine.total() / 240).max(50);
+            self.stats = oxide_kit::stats::compute(&self.replay, every).ok();
+        }
     }
 
     fn sync_render_clock(&mut self) {
@@ -135,6 +157,11 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2) {
         1.2 * s,
         Color::new(0.45, 0.45, 0.52, 0.8),
     );
+    if pb.show_stats
+        && let Some(stats) = &pb.stats
+    {
+        composition_band(pb, stats, bar, s);
+    }
     if let Some(target) = pb.seeking {
         // Mid-seek the transport numbers would lie (the state is
         // sprinting through the record); show honest progress instead.
@@ -153,7 +180,7 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2) {
         return;
     }
     let full = format!(
-        "PLAYBACK  {} / {}  |  {}x{}  |  Space pause | PgUp/PgDn seek | Home/End | 1-5 speed | Esc leave",
+        "PLAYBACK  {} / {}  |  {}x{}  |  Space pause | PgUp/PgDn seek | Home/End | 1-8 speed | S stats | Esc leave",
         pb.engine.position(),
         pb.engine.total(),
         pb.speed,
@@ -183,6 +210,115 @@ pub fn playback_hud(pb: &PlaybackSession, viewport: Vec2) {
         Color::from_rgba(15, 15, 19, 220),
     );
     draw_text(&line, x, y, size, crate::theme::TEXT_PRIMARY);
+}
+
+/// Distinct band colors; the ninth is the gray "other" fold.
+const BAND_COLORS: [Color; 9] = [
+    Color::new(0.85, 0.45, 0.25, 0.95),
+    Color::new(0.35, 0.65, 0.75, 0.95),
+    Color::new(0.75, 0.70, 0.30, 0.95),
+    Color::new(0.50, 0.75, 0.40, 0.95),
+    Color::new(0.70, 0.45, 0.75, 0.95),
+    Color::new(0.40, 0.50, 0.85, 0.95),
+    Color::new(0.85, 0.60, 0.55, 0.95),
+    Color::new(0.45, 0.75, 0.65, 0.95),
+    Color::new(0.55, 0.55, 0.55, 0.95),
+];
+
+/// The composition timeline: a stacked share-of-army band per sample
+/// column, all seats pooled, top kinds named and the tail folded into
+/// gray. Rides above the scrub bar and carries a cursor tied to the
+/// transport position.
+fn composition_band(
+    pb: &PlaybackSession,
+    stats: &oxide_kit::stats::MatchStats,
+    bar: macroquad::prelude::Rect,
+    s: f32,
+) {
+    use std::collections::BTreeMap;
+    let columns = stats.sample_ticks.len();
+    if columns == 0 {
+        return;
+    }
+    // Pool seats per column, and rank kinds by their peak pooled count.
+    let mut pooled: Vec<BTreeMap<&'static str, u32>> = vec![BTreeMap::new(); columns];
+    let mut peak: BTreeMap<&'static str, u32> = BTreeMap::new();
+    for player in &stats.players {
+        for (column, counts) in player.kinds.iter().enumerate() {
+            for (kind, count) in counts {
+                let entry = pooled[column].entry(kind).or_default();
+                *entry += u32::from(*count);
+                let best = peak.entry(kind).or_default();
+                *best = (*best).max(*entry);
+            }
+        }
+    }
+    let mut ranked: Vec<(&'static str, u32)> = peak.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    let named: Vec<&'static str> = ranked.iter().take(8).map(|(kind, _)| *kind).collect();
+
+    let band = macroquad::prelude::Rect::new(bar.x, bar.y - 96.0 * s, bar.w, 72.0 * s);
+    draw_rectangle(
+        band.x,
+        band.y,
+        band.w,
+        band.h,
+        Color::from_rgba(15, 15, 18, 220),
+    );
+    let column_w = band.w / columns as f32;
+    for (column, counts) in pooled.iter().enumerate() {
+        let total: u32 = counts.values().sum();
+        if total == 0 {
+            continue;
+        }
+        let x = band.x + column_w * column as f32;
+        let mut y = band.y + band.h;
+        let mut share = |count: u32, color: Color| {
+            let h = band.h * count as f32 / total as f32;
+            y -= h;
+            draw_rectangle(x, y, column_w + 0.5, h, color);
+        };
+        let mut other = 0u32;
+        let mut named_counts: Vec<(usize, u32)> = Vec::new();
+        for (kind, count) in counts {
+            match named.iter().position(|n| n == kind) {
+                Some(index) => named_counts.push((index, *count)),
+                None => other += count,
+            }
+        }
+        named_counts.sort_by_key(|(index, _)| *index);
+        for (index, count) in named_counts {
+            share(count, BAND_COLORS[index]);
+        }
+        if other > 0 {
+            share(other, BAND_COLORS[8]);
+        }
+    }
+    // Transport cursor.
+    let frac = pb.engine.position() as f32 / pb.engine.total().max(1) as f32;
+    draw_rectangle(
+        band.x + band.w * frac - 1.0 * s,
+        band.y,
+        2.0 * s,
+        band.h,
+        Color::new(0.95, 0.95, 0.95, 0.9),
+    );
+    // Legend across the top edge.
+    let mut x = band.x + 4.0 * s;
+    let size = 13.0 * s;
+    for (index, kind) in named.iter().enumerate() {
+        let label = format!("{kind} ");
+        draw_text(&label, x, band.y - 4.0 * s, size, BAND_COLORS[index]);
+        x += measure_text(&label, None, size as u16, 1.0).width + 6.0 * s;
+    }
+    draw_rectangle_lines(
+        band.x,
+        band.y,
+        band.w,
+        band.h,
+        1.2 * s,
+        Color::new(0.45, 0.45, 0.52, 0.8),
+    );
 }
 
 impl PlaybackSession {
@@ -270,6 +406,10 @@ impl PlaybackSession {
                     Key::Num3 => self.speed = 2.0,
                     Key::Num4 => self.speed = 4.0,
                     Key::Num5 => self.speed = 8.0,
+                    Key::Num6 => self.speed = 16.0,
+                    Key::Num7 => self.speed = 32.0,
+                    Key::Num8 => self.speed = 64.0,
+                    Key::S => self.toggle_stats(),
                     Key::Up => self.held[0] = true,
                     Key::Down => self.held[1] = true,
                     Key::Left => self.held[2] = true,
@@ -509,6 +649,9 @@ mod tests {
             (Key::Num3, 2.0),
             (Key::Num4, 4.0),
             (Key::Num5, 8.0),
+            (Key::Num6, 16.0),
+            (Key::Num7, 32.0),
+            (Key::Num8, 64.0),
         ] {
             key(&mut pb, key_code);
             assert!(
