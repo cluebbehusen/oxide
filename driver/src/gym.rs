@@ -382,13 +382,17 @@ impl Episode {
         // rebuilding the replay's setup must reproduce this episode.
         let recorder = record.then(|| GameReplay::new(SIM_VERSION, scenario.clone()));
         let state = scenario.build().context("scenario build")?;
+        let anchors: Vec<chassis::grid::TilePos> = scenario
+            .start_anchors()
+            .map(|list| list.into_iter().map(|(_, tile)| tile).collect())
+            .unwrap_or_default();
         let gyms: Vec<GymBot> = control
             .iter()
             .enumerate()
             .map(|(index, seat)| {
                 let facets =
                     profile_facets.map_or([0; PROFILE_CONDITION_COUNT], |rows| rows[index]);
-                if facets == [0; PROFILE_CONDITION_COUNT] {
+                let mut bot = if facets == [0; PROFILE_CONDITION_COUNT] {
                     GymBot::with_cadence(PlayerId(*seat), cadence)
                 } else {
                     GymBot::with_profile_facets(
@@ -396,7 +400,9 @@ impl Episode {
                         cadence,
                         ProfileFacets::from_conditions(facets),
                     )
-                }
+                };
+                bot.set_start_anchors(anchors.clone());
+                bot
             })
             .collect();
         let opponents: Vec<Brain> = (0..players)

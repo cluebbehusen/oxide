@@ -356,6 +356,15 @@ impl Scenario {
         }
     }
 
+    /// The map's authored Foundry start anchors, seat order. Public
+    /// map data — the same knowledge a player has from picking the
+    /// map — so a fog-honest bot may know where every base BEGINS
+    /// while fog still governs what stands there now.
+    pub fn start_anchors(&self) -> Result<Vec<(crate::ids::PlayerId, TilePos)>, ScenarioError> {
+        let (_, anchors) = Map::parse(&self.map)?;
+        Ok(anchors)
+    }
+
     /// Validates the scenario and constructs the initial [`State`].
     ///
     /// Building the same scenario twice yields bit-identical states (a test

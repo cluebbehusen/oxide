@@ -154,6 +154,22 @@ impl Dials {
 /// Channel-based scripted policy. Its memory is bot-local and legitimate
 /// (a bot is a command source, not sim state): harvest blacklists, raid
 /// memory, and the scout rotation.
+/// Caller-supplied search aids for the scouting routine: units
+/// explicitly released for scout duty (the gym offers its staged army)
+/// and pre-oriented start anchors — public map knowledge of where
+/// enemy bases began. The scripted Brain passes both empty and keeps
+/// its historical behavior byte for byte.
+#[derive(Clone, Copy, Default)]
+pub struct ScoutAids<'a> {
+    /// Enlisted units released for scout duty.
+    pub extra: &'a [UnitId],
+    /// Pre-oriented enemy start anchors.
+    pub anchors: &'a [TilePos],
+}
+
+/// Channel-based scripted policy. Its memory is bot-local and legitimate
+/// (a bot is a command source, not sim state): harvest blacklists, raid
+/// memory, and the scout rotation.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UtilityPolicy {
     /// Harvest assignments from the last think — a unit idle again right
@@ -289,7 +305,14 @@ impl UtilityPolicy {
             .filter(|u| u.kind == UnitKind::Harvester)
             .count();
         if dials.scouting && harvesters >= dials.harvester_target as usize {
-            self.scouting(obs, home_tile, enlisted, &[], false, &mut intents);
+            self.scouting(
+                obs,
+                home_tile,
+                enlisted,
+                ScoutAids::default(),
+                false,
+                &mut intents,
+            );
         }
         // The ferry gathers before the army channel so its Load claims
         // riders ahead of the draft (intents lower in order).
@@ -1636,14 +1659,11 @@ impl UtilityPolicy {
         obs: &Observation,
         home: TilePos,
         enlisted: &[UnitId],
-        // Enlisted units the caller explicitly releases for scout duty
-        // (the gym path offers its staged army; the executive strikes a
-        // dispatched scout from the body). The scripted Brain passes
-        // none and keeps its historical behavior byte for byte.
-        extra: &[UnitId],
+        aids: ScoutAids<'_>,
         force: bool,
         intents: &mut Vec<Intent>,
     ) {
+        let ScoutAids { extra, anchors } = aids;
         /// How far short of the objective a scout stops — inside a
         /// harvester's vision (6), and close enough to aggro (5) that
         /// the peek must rely on the scout's legs, not its armor.
@@ -1758,7 +1778,23 @@ impl UtilityPolicy {
         // without churning anyone already on a leg.
         if force && known_base.is_none() {
             let (w, h) = (obs.map_width, obs.map_height);
-            // Hunt the darkness first: score a coarse grid by
+            // Check where the enemy STARTED before hunting darkness: a
+            // player knows every base's birthplace from the map screen
+            // and looks there first. Only unexplored anchors qualify —
+            // an explored, empty birthplace teaches nothing twice.
+            let unexplored_anchors: Vec<TilePos> = anchors
+                .iter()
+                .copied()
+                .filter(|anchor| {
+                    let index = (anchor.y * w + anchor.x) as usize;
+                    anchor.x >= 0
+                        && anchor.y >= 0
+                        && anchor.x < w
+                        && anchor.y < h
+                        && !obs.explored.get(index).copied().unwrap_or(true)
+                })
+                .collect();
+            // Hunt the darkness second: score a coarse grid by
             // unexplored tiles (the minimap's black, the same read a
             // player makes) and send each searcher at the darkest
             // cell. A remnant that rebuilt inside old, unwatched
@@ -1807,11 +1843,16 @@ impl UtilityPolicy {
                 .take(SEARCH_PARTY_SIZE)
                 .collect();
             for (index, unit) in party.into_iter().enumerate() {
-                let to = match cells.get(index % cells.len().max(1)) {
-                    Some((_, cy, cx)) if !cells.is_empty() => {
-                        TilePos::new(cx * cell_w + cell_w / 2, cy * cell_h + cell_h / 2)
+                let to = if let Some(anchor) = unexplored_anchors.get(index) {
+                    *anchor
+                } else {
+                    let past_anchors = index - unexplored_anchors.len().min(index);
+                    match cells.get(past_anchors % cells.len().max(1)) {
+                        Some((_, cy, cx)) if !cells.is_empty() => {
+                            TilePos::new(cx * cell_w + cell_w / 2, cy * cell_h + cell_h / 2)
+                        }
+                        _ => legs[(unit.0 as usize) % legs.len()],
                     }
-                    _ => legs[(unit.0 as usize) % legs.len()],
                 };
                 intents.push(Intent::Scout {
                     unit,

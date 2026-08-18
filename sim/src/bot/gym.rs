@@ -732,6 +732,11 @@ pub struct GymBot {
     /// Tick a fruitless recovery save first stalled; cleared whenever
     /// recovery deactivates or makes progress.
     recovery_saving_since: Option<u64>,
+    /// Enemy Foundry START anchors from the scenario — public map
+    /// data, the same prior a player has from picking the map. Fog
+    /// still governs what stands there now; these only tell the
+    /// search where bases BEGAN. World-space; oriented at use.
+    start_anchors: Vec<TilePos>,
     /// Set for the single think after the finish lock's patience
     /// expires: the finishing doctrine may recall even a routed push on
     /// that think, because a march that outlived the lock is stuck
@@ -803,7 +808,15 @@ impl GymBot {
             finish_lock_since: None,
             finish_lock_released: false,
             recovery_saving_since: None,
+            start_anchors: Vec::new(),
         }
+    }
+
+    /// Installs the scenario's authored start anchors (all seats;
+    /// the bot's own is filtered at use). Public map knowledge — see
+    /// the field's contract.
+    pub fn set_start_anchors(&mut self, anchors: Vec<TilePos>) {
+        self.start_anchors = anchors;
     }
 
     /// The think cadence (ticks between decisions).
@@ -1704,6 +1717,23 @@ impl GymBot {
         }
     }
 
+    /// The scenario's start anchors in the bot's oriented frame, own
+    /// base excluded, unexplored-first ordering left to the caller.
+    fn oriented_start_anchors(&self, obs: &Observation) -> Vec<TilePos> {
+        let Some(orientation) = &self.orientation else {
+            return Vec::new();
+        };
+        self.start_anchors
+            .iter()
+            .map(|anchor| orientation.tile(*anchor))
+            .filter(|anchor| {
+                !obs.my_buildings
+                    .iter()
+                    .any(|b| b.kind == BuildingKind::Foundry && b.anchor == *anchor)
+            })
+            .collect()
+    }
+
     /// Whether any rock-free route joins `home` to `site` over the
     /// terrain this seat has actually seen. Cached per site and
     /// re-proved only when new rock is discovered.
@@ -2329,8 +2359,18 @@ impl GymBot {
             }
             Action::Scout => {
                 let staged: Vec<UnitId> = staging.map(|a| a.members.clone()).unwrap_or_default();
-                self.policy
-                    .scouting(obs, home, enlisted, &staged, true, intents);
+                let anchors = self.oriented_start_anchors(obs);
+                self.policy.scouting(
+                    obs,
+                    home,
+                    enlisted,
+                    super::utility::ScoutAids {
+                        extra: &staged,
+                        anchors: &anchors,
+                    },
+                    true,
+                    intents,
+                );
             }
             _ => {}
         }

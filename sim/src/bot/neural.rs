@@ -944,6 +944,12 @@ impl NeuralBot {
         }
     }
 
+    /// Installs the scenario's authored start anchors — public map
+    /// knowledge the search consults before sweeping darkness.
+    pub fn set_start_anchors(&mut self, anchors: Vec<chassis::grid::TilePos>) {
+        self.gym.set_start_anchors(anchors);
+    }
+
     /// The shipped ladder wrapper for one construction-time named profile.
     ///
     /// Unlike the raw-aggression constructors, this carries the resolved

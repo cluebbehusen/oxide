@@ -80,6 +80,12 @@ impl SeatBot {
 pub fn seat_bots(scenario: &crate::Scenario) -> Vec<SeatBot> {
     let profiles = resolve_bot_profiles(scenario)
         .expect("a scenario's bot profiles validate before its bots are seated");
+    // Public map knowledge: where every base starts. The same prior a
+    // player takes from the map screen; fog still governs the present.
+    let anchors: Vec<chassis::grid::TilePos> = scenario
+        .start_anchors()
+        .map(|list| list.into_iter().map(|(_, tile)| tile).collect())
+        .unwrap_or_default();
     scenario
         .players
         .iter()
@@ -88,12 +94,9 @@ pub fn seat_bots(scenario: &crate::Scenario) -> Vec<SeatBot> {
         .filter_map(|(i, p)| {
             let player = crate::ids::PlayerId(i as u8);
             profiles[i].map(|profile| {
-                SeatBot::Neural(Box::new(NeuralBot::ladder_resolved(
-                    player,
-                    scenario.seed,
-                    profile,
-                    p.faction,
-                )))
+                let mut bot = NeuralBot::ladder_resolved(player, scenario.seed, profile, p.faction);
+                bot.set_start_anchors(anchors.clone());
+                SeatBot::Neural(Box::new(bot))
             })
         })
         .collect()
