@@ -66,3 +66,12 @@ def test_z_passive_giant_fires_even_when_the_game_decided() -> None:
     fighter.ops = Counter({"idle": 700, "push": 300})
     healthy = GameTrace("m", 0, 1, 78_000, {1: fighter})
     assert "PASSIVE_GIANT" not in screens(healthy)
+
+
+def test_z_dead_seats_never_read_as_frozen_or_starved() -> None:
+    corpse = trace(tail_n=40, tail_width=160, tail_harv=400, tail_idle_harv=400)
+    corpse.alive = False
+    game = GameTrace("m", 0, None, 160_000, {3: corpse})
+    named = screens(game)
+    assert "FROZEN_MENU" not in named
+    assert "ECONOMY_STARVED" not in named

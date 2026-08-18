@@ -146,6 +146,7 @@ class SeatTrace:
     tail_idle_harv: int = 0
     tail_legal: Counter = field(default_factory=Counter)
     max_mine: int = 0
+    alive: bool = True
     site_known_at: int | None = None
     max_foundries: int = 0
     last_narrowed: str | None = None
@@ -169,6 +170,8 @@ def screen_game(game: GameTrace) -> list[dict]:
     where = {"map": game.map_name, "seed": game.seed}
     undecided = game.winner is None
     for seat, t in game.seats.items():
+        if not t.alive:
+            continue
         tn = max(t.tail_n, 1)
         idle_share = t.tail_idle / tn
         mine = t.tail_mine // tn
@@ -382,6 +385,9 @@ def play(
                 t.tail_idle_harv += int(view.raw[F["idle_harvesters"]])
             acts[seat] = plan
         frame = worker.step(acts)
+    survivors = set(frame.alive or [])
+    for seat, t in seats.items():
+        t.alive = seat in survivors
     if record_dir is not None and frame.replay is not None:
         record_dir.mkdir(parents=True, exist_ok=True)
         out = record_dir / f"audit-{scenario.stem}-s{seed}.json"
