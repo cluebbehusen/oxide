@@ -144,6 +144,8 @@ class SeatTrace:
     tail_scrap: int = 0
     tail_harv: int = 0
     tail_idle_harv: int = 0
+    tail_legal: Counter = field(default_factory=Counter)
+    max_mine: int = 0
     site_known_at: int | None = None
     max_foundries: int = 0
     last_narrowed: str | None = None
@@ -183,7 +185,11 @@ def screen_game(game: GameTrace) -> list[dict]:
                     "screen": "IDLE_DOMINANT",
                     "seat": seat,
                     "evidence": f"tail strength {mine} vs seen {seen}, "
-                    f"idle {idle_share:.0%} of {t.tail_n} decisions",
+                    f"idle {idle_share:.0%} of {t.tail_n} decisions; legal ["
+                    + ", ".join(
+                        f"{k} {v * 100 // tn}%" for k, v in t.tail_legal.most_common()
+                    )
+                    + "]",
                     **where,
                 }
             )
@@ -222,12 +228,40 @@ def screen_game(game: GameTrace) -> list[dict]:
                     **where,
                 }
             )
-        if undecided and game.tick >= DISCOVERY_DEADLINE and t.site_known_at is None:
+        # tail_n > 0 keeps eliminated seats out: the dead cannot scout.
+        if (
+            undecided
+            and game.tick >= DISCOVERY_DEADLINE
+            and t.site_known_at is None
+            and t.tail_n > 0
+        ):
             findings.append(
                 {
                     "screen": "DISCOVERY_FAIL",
                     "seat": seat,
                     "evidence": f"no enemy foundry known by tick {game.tick}",
+                    **where,
+                }
+            )
+    for seat, t in game.seats.items():
+        # Runs decided or not: a horde that never attacks is a defect
+        # even when it "wins" — measured as a 259-unit army shoved into
+        # the enemy base by collision physics, which the outcome-gated
+        # screens waved through as a healthy victory.
+        offensive = t.ops["push"] + t.ops["raid"] + t.ops["lift"]
+        if (
+            t.decisions >= 300
+            and t.max_mine >= 300
+            and offensive * 100 < t.decisions
+            and t.ops["idle"] * 100 >= t.decisions * 85
+        ):
+            findings.append(
+                {
+                    "screen": "PASSIVE_GIANT",
+                    "seat": seat,
+                    "evidence": f"peak strength {t.max_mine}, "
+                    f"{offensive} offensive orders in {t.decisions} "
+                    f"decisions, idle {t.ops['idle'] * 100 // t.decisions}%",
                     **where,
                 }
             )
@@ -266,6 +300,7 @@ def play(
     seat_count: int,
     seed: int,
     ticks: int,
+    record_dir: pathlib.Path | None = None,
 ) -> GameTrace:
     catalog = worker.profile_catalog
     control = tuple(range(seat_count))
@@ -286,6 +321,7 @@ def play(
         conditions=conds,
         factions=factions,
         cadence=28,
+        record=record_dir is not None,
     )
     seats = {s: SeatTrace() for s in control}
     while not frame.done:
@@ -313,10 +349,15 @@ def play(
             t.max_foundries = max(
                 t.max_foundries, int(view.raw[F["my_foundries_built"]])
             )
+            t.max_mine = max(t.max_mine, int(view.raw[F["my_strength"]]))
             ops_open = [a for a in OP_HEAD if view.mask[a]]
             if len(ops_open) == 1:
                 name = OP_NAMES.get(ops_open[0], str(ops_open[0]))
-                if t.last_narrowed is not None and t.last_narrowed != name:
+                # Only a push<->recall flip counts as thrash: the ferry
+                # alternates lift legs by design, and a change of
+                # narrowed verb is otherwise just the doctrine moving
+                # through its phases.
+                if {t.last_narrowed, name} == {"push", "recall"}:
                     t.alternations += 1
                 t.last_narrowed = name
             else:
@@ -324,6 +365,15 @@ def play(
             if frame.tick > TAIL_START:
                 t.tail_n += 1
                 t.tail_idle += int(plan[3] == 25)
+                for action, name in (
+                    (18, "push"),
+                    (17, "form"),
+                    (19, "recall"),
+                    (20, "scout"),
+                    (41, "lift"),
+                ):
+                    if view.mask[action]:
+                        t.tail_legal[name] += 1
                 t.tail_width += int(view.mask.sum())
                 t.tail_mine += int(view.raw[F["my_strength"]])
                 t.tail_seen += int(view.raw[F["seen_strength"]])
@@ -332,6 +382,11 @@ def play(
                 t.tail_idle_harv += int(view.raw[F["idle_harvesters"]])
             acts[seat] = plan
         frame = worker.step(acts)
+    if record_dir is not None and frame.replay is not None:
+        record_dir.mkdir(parents=True, exist_ok=True)
+        out = record_dir / f"audit-{scenario.stem}-s{seed}.json"
+        out.write_text(json.dumps(frame.replay))
+        print(f"  replay: {out}")
     return GameTrace(
         map_name=scenario.stem,
         seed=seed,
@@ -389,6 +444,12 @@ def main() -> None:
     )
     ap.add_argument("--seeds", type=int, default=1, help="games per map")
     ap.add_argument("--ticks", type=int, default=40_000)
+    ap.add_argument(
+        "--save-replays",
+        default=None,
+        help="directory to write full replays of every audited game, "
+        "ready for the shell's replay viewer",
+    )
     args = ap.parse_args()
 
     actor, _ = load_policy(args.weights)
@@ -440,7 +501,17 @@ def main() -> None:
             if seat_count < 2:
                 continue
             for seed in range(args.seeds):
-                game = play(worker, actor, path, seat_count, seed, horizon)
+                game = play(
+                    worker,
+                    actor,
+                    path,
+                    seat_count,
+                    seed,
+                    horizon,
+                    record_dir=pathlib.Path(args.save_replays)
+                    if args.save_replays
+                    else None,
+                )
                 game.mode = mode
                 games.append(game)
                 new = screen_game(game)

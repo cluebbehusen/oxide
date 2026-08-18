@@ -1,5 +1,7 @@
 """The auditor's pure anomaly screens."""
 
+from collections import Counter
+
 from audit import GameTrace, SeatTrace, screen_game
 
 
@@ -53,3 +55,14 @@ def test_discovery_fail_only_when_never_known() -> None:
     sighted = trace(tail_n=10, site_known_at=5_000)
     game = GameTrace("m", 0, None, 40_000, {0: sighted})
     assert "DISCOVERY_FAIL" not in screens(game)
+
+
+def test_z_passive_giant_fires_even_when_the_game_decided() -> None:
+    giant = trace(decisions=1000, max_mine=1200)
+    giant.ops = Counter({"idle": 950, "scout": 45, "push": 5})
+    decided = GameTrace("m", 0, 1, 78_000, {1: giant})
+    assert "PASSIVE_GIANT" in screens(decided)
+    fighter = trace(decisions=1000, max_mine=1200)
+    fighter.ops = Counter({"idle": 700, "push": 300})
+    healthy = GameTrace("m", 0, 1, 78_000, {1: fighter})
+    assert "PASSIVE_GIANT" not in screens(healthy)
