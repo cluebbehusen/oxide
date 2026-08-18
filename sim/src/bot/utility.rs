@@ -1648,6 +1648,9 @@ impl UtilityPolicy {
         /// harvester's vision (6), and close enough to aggro (5) that
         /// the peek must rely on the scout's legs, not its armor.
         const STANDOFF: i32 = 5;
+        /// Fighters a forced, target-less scout press may fan out at
+        /// once beyond the primary peeker.
+        const SEARCH_PARTY_SIZE: usize = 6;
 
         let known_base = obs
             .enemy_buildings
@@ -1744,6 +1747,78 @@ impl UtilityPolicy {
             unit: scout,
             to: self.passable_near(obs, to),
         });
+
+        // The search party: with every enemy site lost, one peeker
+        // cannot sweep a big map before the game rots — measured as
+        // 250-unit seats idling for forty thousand ticks over a hiding
+        // remnant. A forced scout (the gym path; the scripted Brain
+        // never forces) fans idle fighters out over the sweep legs,
+        // exactly as a player would fan a search. Walking scouts are
+        // not idle, so each press tops the party back up to strength
+        // without churning anyone already on a leg.
+        if force && known_base.is_none() {
+            let (w, h) = (obs.map_width, obs.map_height);
+            // Hunt the darkness first: score a coarse grid by
+            // unexplored tiles (the minimap's black, the same read a
+            // player makes) and send each searcher at the darkest
+            // cell. A remnant that rebuilt inside old, unwatched
+            // exploration falls back to the fixed legs.
+            const GRID: i32 = 8;
+            let cell_w = (w / GRID).max(1);
+            let cell_h = (h / GRID).max(1);
+            let mut cells: Vec<(usize, i32, i32)> = Vec::new();
+            for cy in 0..GRID.min(h) {
+                for cx in 0..GRID.min(w) {
+                    let mut unexplored = 0usize;
+                    for y in (cy * cell_h)..((cy + 1) * cell_h).min(h) {
+                        for x in (cx * cell_w)..((cx + 1) * cell_w).min(w) {
+                            let index = (y * w + x) as usize;
+                            if !obs.explored.get(index).copied().unwrap_or(false) {
+                                unexplored += 1;
+                            }
+                        }
+                    }
+                    if unexplored > 0 {
+                        cells.push((unexplored, cy, cx));
+                    }
+                }
+            }
+            cells.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+            let legs = [
+                standoff(home, TilePos::new(w - 1 - home.x, h - 1 - home.y)),
+                TilePos::new(w / 2, h / 2),
+                TilePos::new(3, 3),
+                TilePos::new(w - 4, 3),
+                TilePos::new(3, h - 4),
+                TilePos::new(w - 4, h - 4),
+            ];
+            let party: Vec<UnitId> = obs
+                .my_units
+                .iter()
+                .filter(|u| {
+                    u.id != scout
+                        && u.idle
+                        && u.site.is_none()
+                        && u.founding.is_none()
+                        && u.kind.stats().can_fight()
+                        && (!enlisted.contains(&u.id) || extra.contains(&u.id))
+                })
+                .map(|u| u.id)
+                .take(SEARCH_PARTY_SIZE)
+                .collect();
+            for (index, unit) in party.into_iter().enumerate() {
+                let to = match cells.get(index % cells.len().max(1)) {
+                    Some((_, cy, cx)) if !cells.is_empty() => {
+                        TilePos::new(cx * cell_w + cell_w / 2, cy * cell_h + cell_h / 2)
+                    }
+                    _ => legs[(unit.0 as usize) % legs.len()],
+                };
+                intents.push(Intent::Scout {
+                    unit,
+                    to: self.passable_near(obs, to),
+                });
+            }
+        }
     }
 
     /// Army channel: an intruder near home turns every army on it;

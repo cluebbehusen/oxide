@@ -219,6 +219,10 @@ const RECOVERY_SCREEN_SIZE: u32 = 1;
 const RECOVERY_SECURE_RADIUS: i32 = 3;
 /// A rejected or stalled worker hold is retried on a bounded cadence.
 const RECOVERY_HOLD_RETRY_TICKS: u64 = 120;
+/// Consecutive ticks a broken economy may save fruitlessly (income
+/// dead, replacement unaffordable) before it liquidates a rear
+/// building to fund the fleet instead of idling forever.
+const RECOVERY_SAVING_PATIENCE: u64 = 1_200;
 /// A critically wounded, undefended Foundry under visible pressure cannot
 /// plausibly wait out the public fallback-income clock.
 const RECOVERY_CONCEDE_HP_NUM: u32 = 1;
@@ -244,6 +248,12 @@ const FINISH_DOMINANCE_FACTOR: i64 = 2;
 /// protected army will never convert (a cross-seal engagement, a
 /// straggler that cannot arrive).
 const FINISH_LOCK_PATIENCE: u64 = 2_000;
+/// Idle share of the harvester fleet (numerator/denominator) at which
+/// the expansion doctrine reads the economy as starving where it
+/// stands. Idle here is the sim's own verdict — a harvester with any
+/// job, including the walk between jobs, does not count.
+const EXPANSION_IDLE_NUM: usize = 2;
+const EXPANSION_IDLE_DEN: usize = 3;
 /// Finishing needs a real body, not one expensive machine that happens to
 /// score highly in the strength estimate.
 const FINISH_MIN_FIGHTERS: usize = 5;
@@ -311,6 +321,7 @@ fn recovery_building_ground_reach(kind: BuildingKind) -> Option<Fx> {
 enum RecoveryPosture {
     Inactive,
     Saving,
+    Salvage,
     QueueHarvester,
     QueuePackage,
     Prospect,
@@ -699,6 +710,14 @@ pub struct GymBot {
     /// current consecutive streak; a lock that outlives its patience is
     /// a standoff, not a finish, and yields to the doctrines.
     finish_lock_since: Option<u64>,
+    /// Tick a fruitless recovery save first stalled; cleared whenever
+    /// recovery deactivates or makes progress.
+    recovery_saving_since: Option<u64>,
+    /// Set for the single think after the finish lock's patience
+    /// expires: the finishing doctrine may recall even a routed push on
+    /// that think, because a march that outlived the lock is stuck
+    /// regardless of what the route map claims.
+    finish_lock_released: bool,
 }
 
 /// What the world looks like at a decision point.
@@ -763,6 +782,8 @@ impl GymBot {
             recovery_liquidation: None,
             island_route_cache: None,
             finish_lock_since: None,
+            finish_lock_released: false,
+            recovery_saving_since: None,
         }
     }
 
@@ -1477,6 +1498,7 @@ impl GymBot {
             mask.fill(false);
             let action = match recovery {
                 RecoveryPosture::QueueHarvester => Action::TrainHarvester,
+                RecoveryPosture::Salvage => Action::Salvage,
                 RecoveryPosture::Inactive
                 | RecoveryPosture::Saving
                 | RecoveryPosture::QueuePackage
@@ -1486,7 +1508,13 @@ impl GymBot {
                 | RecoveryPosture::Concede => Action::Idle,
             };
             mask[action as usize] = true;
-            mask[Action::NoConstruction as usize] = true;
+            if action == Action::Salvage {
+                // Salvage lives in the construction head; the
+                // production head still needs its no-op.
+                mask[Action::Idle as usize] = true;
+            } else {
+                mask[Action::NoConstruction as usize] = true;
+            }
             mask[Action::NoOperation as usize] = true;
             mask[Action::NoUpgrade as usize] = true;
         } else if !tactical_reconciliation {
@@ -1508,6 +1536,7 @@ impl GymBot {
                 &push_targets,
                 &mut mask,
             );
+            apply_expansion_doctrine(&obs, &mut mask);
             if home_intruder.is_none() {
                 self.apply_profile_doctrine(&obs, &mut mask);
             }
@@ -1533,6 +1562,9 @@ impl GymBot {
         push_targets: &[TilePos],
         mask: &mut [bool; ACTION_COUNT],
     ) {
+        // Consumed every think regardless of which arm fires: the
+        // release is a one-think dispensation, never a standing state.
+        let lock_released = std::mem::take(&mut self.finish_lock_released);
         if obs.tick <= FINISH_WAKE_TICK {
             return;
         }
@@ -1568,9 +1600,10 @@ impl GymBot {
         } else if mask[Action::FormArmy as usize] {
             narrow_head(mask, &OPERATION_ACTIONS, Action::FormArmy);
         } else if mask[Action::Recall as usize]
-            && push_targets
-                .iter()
-                .any(|target| !self.known_ground_route(obs, home, *target))
+            && (lock_released
+                || push_targets
+                    .iter()
+                    .any(|target| !self.known_ground_route(obs, home, *target)))
         {
             // Recall only a WEDGED push (no known ground route to its
             // target): bring the body home to staging so a later think
@@ -2864,6 +2897,30 @@ impl GymBot {
         })
     }
 
+    /// Saving, unless the save has stalled past its patience with a
+    /// liquidatable rear building available: an income-dead emergency
+    /// funds the replacement fleet by salvaging instead of waiting on
+    /// a bank that cannot grow. Measured before this existed, such
+    /// seats idled at a four-wide mask to the time cap.
+    fn recovery_saving_with_patience(&mut self, obs: &Observation) -> RecoveryPosture {
+        let since = *self.recovery_saving_since.get_or_insert(obs.tick);
+        let liquidatable = obs
+            .my_buildings
+            .iter()
+            .any(|b| b.built && SALVAGE_PRIORITY.contains(&b.kind));
+        // Stripping needs a harvest-capable machine; a workerless seat
+        // has nothing to send and keeps saving on whatever trickles in.
+        let stripper = obs
+            .my_units
+            .iter()
+            .any(|u| u.kind.stats().harvest.is_some());
+        if liquidatable && stripper && obs.tick.saturating_sub(since) > RECOVERY_SAVING_PATIENCE {
+            RecoveryPosture::Salvage
+        } else {
+            RecoveryPosture::Saving
+        }
+    }
+
     fn recovery_posture(
         &mut self,
         obs: &Observation,
@@ -2877,6 +2934,7 @@ impl GymBot {
             self.recovery_active = false;
             self.recovery_assignment = None;
             self.recovery_target = None;
+            self.recovery_saving_since = None;
             return RecoveryPosture::Inactive;
         }
 
@@ -2969,6 +3027,7 @@ impl GymBot {
             } else if obs.scrap >= UnitKind::Harvester.stats().cost
                 && open_foundry(obs, 1).is_some()
             {
+                self.recovery_saving_since = None;
                 RecoveryPosture::QueueHarvester
             } else {
                 // Affordable but nowhere to queue it: every Foundry
@@ -2976,7 +3035,7 @@ impl GymBot {
                 // advertising TrainHarvester here made the forced
                 // recovery mask promise an action the lowering could
                 // not perform, and the seat idled a think instead.
-                RecoveryPosture::Saving
+                self.recovery_saving_with_patience(obs)
             };
         }
 
@@ -2990,9 +3049,10 @@ impl GymBot {
             } else if obs.scrap >= UnitKind::Harvester.stats().cost
                 && open_foundry(obs, 1).is_some()
             {
+                self.recovery_saving_since = None;
                 RecoveryPosture::QueueHarvester
             } else {
-                RecoveryPosture::Saving
+                self.recovery_saving_with_patience(obs)
             }
         } else if queued_screen {
             RecoveryPosture::QueuePackage
@@ -3034,6 +3094,41 @@ impl GymBot {
 
         match posture {
             RecoveryPosture::Inactive | RecoveryPosture::Saving => {}
+            RecoveryPosture::Salvage => {
+                // Liquidate the cheapest-priority rear building to fund
+                // the replacement fleet; every harvest-capable machine
+                // is offered and the sim keeps only valid strippers.
+                let target = obs
+                    .my_buildings
+                    .iter()
+                    .filter(|b| b.built)
+                    .filter_map(|b| {
+                        SALVAGE_PRIORITY
+                            .iter()
+                            .position(|kind| *kind == b.kind)
+                            .map(|rank| (rank, b.anchor.y, b.anchor.x, b.id))
+                    })
+                    .min()
+                    .map(|(.., id)| id);
+                let strippers: Vec<UnitId> = obs
+                    .my_units
+                    .iter()
+                    .filter(|u| u.kind.stats().harvest.is_some())
+                    .map(|u| u.id)
+                    .collect();
+                if let Some(building) = target
+                    && !strippers.is_empty()
+                {
+                    commands.push(PlayerCommand {
+                        player: self.player,
+                        command: Command::Salvage {
+                            units: strippers,
+                            building,
+                            queue: false,
+                        },
+                    });
+                }
+            }
             RecoveryPosture::Concede => commands.push(PlayerCommand {
                 player: self.player,
                 command: Command::Surrender,
@@ -3473,6 +3568,7 @@ impl GymBot {
                     && obs.tick.saturating_sub(since) > FINISH_LOCK_PATIENCE
                 {
                     self.finish_lock_since = None;
+                    self.finish_lock_released = true;
                     None
                 } else {
                     Some(Action::NoOperation)
@@ -3698,6 +3794,36 @@ fn free_builder(obs: &Observation, enlisted: &[crate::ids::UnitId]) -> bool {
             && u.founding.is_none()
             && !enlisted.contains(&u.id)
     })
+}
+
+/// Narrows construction toward a new claim when the economy is starving
+/// where it stands: past the wake tick, with most of the harvester
+/// fleet idle over exhausted fields, the doctrine presses the known
+/// unclaimed Extractor frame first and an expansion Foundry otherwise.
+/// Whether either is affordable, sited, and crewed stays the mask's
+/// judgment — this only stops "bank the scrap and idle" from being the
+/// default answer to a dead home field, which the audit measured as
+/// entire fleets idle over nothing while banks held 100-350 scrap and
+/// no seat in any long game ever built a second Foundry.
+fn apply_expansion_doctrine(obs: &Observation, mask: &mut [bool; ACTION_COUNT]) {
+    if obs.tick <= FINISH_WAKE_TICK {
+        return;
+    }
+    let (total, idle) = obs
+        .my_units
+        .iter()
+        .filter(|u| u.kind == UnitKind::Harvester)
+        .fold((0usize, 0usize), |(t, i), u| {
+            (t + 1, i + usize::from(u.idle))
+        });
+    if total == 0 || idle * EXPANSION_IDLE_DEN < total * EXPANSION_IDLE_NUM {
+        return;
+    }
+    if mask[Action::BuildExtractor as usize] {
+        narrow_head(mask, &CONSTRUCTION_ACTIONS, Action::BuildExtractor);
+    } else if mask[Action::BuildFoundry as usize] {
+        narrow_head(mask, &CONSTRUCTION_ACTIONS, Action::BuildFoundry);
+    }
 }
 
 fn nearest_home_intruder(obs: &Observation, home: TilePos) -> Option<TilePos> {
