@@ -56,7 +56,12 @@ def _carve(
     # aims matches at tens of minutes, and the curriculum has to teach
     # marches that long or the ladder never fights them well.
     roll = rng.random()
-    if pace == "island":
+    if pace == "colossal":
+        # The audit's huge-field class: at least 200 on a side, far
+        # beyond every shipped map, for measuring whether the game's
+        # problems shrink or grow with room. Not in any training draw.
+        w, h = int(rng.integers(200, 257)), int(rng.integers(200, 257))
+    elif pace == "island":
         # The severed-quarry curriculum: a guaranteed gulf needs room
         # for two whole economies and an air war, so islands draw only
         # the two big classes, like the grand pool.
@@ -87,7 +92,9 @@ def _carve(
         # Four bases need more floor: widen the draw a class. Eight
         # need another, and a floor besides — two anchors must stack
         # in every quadrant with their own clusters between them.
-        scale = 1.3 if players == 4 else 1.6
+        # Colossal fields are already vast beyond every class and skip
+        # the widening.
+        scale = 1.0 if pace == "colossal" else (1.3 if players == 4 else 1.6)
         w, h = int(w * scale), int(h * scale)
         if players == 8:
             w, h = max(w, 48), max(h, 40)
@@ -437,10 +444,7 @@ def _carve4(
         if teams:
             spec["team"] = 0 if corner in (0, 2) else 1
         players_spec.append(spec)
-    if teams:
-        shape = f"{players // 2}v{players // 2}"
-    else:
-        shape = str(players)
+    shape = f"{players // 2}v{players // 2}" if teams else str(players)
     return {
         "name": f"generated{shape}-{seed}",
         "seed": seed,

@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import pathlib
 import subprocess
+from collections import deque
 from typing import TYPE_CHECKING
 
 from mapgen import _carve, cache_name, generate
@@ -107,13 +108,12 @@ class TestIslandPace:
         # air war on each side of it.
         for seed in range(30):
             w, h = dims(_carve(seed, pace="island"))
-            assert w >= 50 and h >= 30, f"seed {seed}: {w}x{h} is not a big class"
+            assert w >= 50, f"seed {seed}: {w}x{h} is not a big class"
+            assert h >= 30, f"seed {seed}: {w}x{h} is not a big class"
 
     def test_the_gulf_severs_every_ground_route(self) -> None:
         # The family exists to TEACH the severed war; a single bridged
         # draw would leak ground rushes back into the island lessons.
-        from collections import deque
-
         for seed in range(30):
             grid = _carve(seed, pace="island")["map"]
             w, h = len(grid[0]), len(grid)
@@ -258,9 +258,9 @@ class TestSymmetryProperties:
             base = by_player[0]
             images = [
                 lambda x, y: (x, y),
-                lambda x, y: (w - 1 - x, y),
-                lambda x, y: (x, h - 1 - y),
-                lambda x, y: (w - 1 - x, h - 1 - y),
+                lambda x, y, w=w: (w - 1 - x, y),
+                lambda x, y, h=h: (x, h - 1 - y),
+                lambda x, y, w=w, h=h: (w - 1 - x, h - 1 - y),
             ]
             for player, image in enumerate(images):
                 for a, b in zip(base, by_player[player], strict=True):

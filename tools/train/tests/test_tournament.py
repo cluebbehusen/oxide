@@ -182,9 +182,11 @@ def test_wilson_brackets_and_tightens() -> None:
     lo, hi = tournament.wilson(0, 0)
     assert (lo, hi) == (0.0, 1.0), "no evidence spans the whole interval"
     lo, hi = tournament.wilson(0, 20)
-    assert lo == 0.0 and 0.0 < hi < 0.35
+    assert lo == 0.0
+    assert 0.0 < hi < 0.35
     lo, hi = tournament.wilson(20, 20)
-    assert hi == 1.0 and 0.65 < lo < 1.0
+    assert hi == 1.0
+    assert 0.65 < lo < 1.0
     lo, hi = tournament.wilson(12, 20)
     assert lo < 12 / 20 < hi
     narrow = tournament.wilson(120, 200)

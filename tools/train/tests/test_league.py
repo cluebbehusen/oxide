@@ -593,13 +593,13 @@ class TestTeamShapes:
             ("past", 0),
         ]
         lanes = lane_kinds_for_layout(layout)
-        assert lanes == (
-            ["team", "team"]
-            + ["self", "self"]
-            + ["team4", "team4", "team4", "team4"]
-            + ["team2"]
-            + ["past"]
-        )
+        assert lanes == [
+            *["team", "team"],
+            *["self", "self"],
+            *["team4", "team4", "team4", "team4"],
+            *["team2"],
+            "past",
+        ]
 
     def test_allocation_divides_by_exact_lanes(self) -> None:
         assert learner_lanes_for_kind("team") == 2

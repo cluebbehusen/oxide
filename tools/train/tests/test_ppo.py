@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from models import (
+    Mlp,
     factorized_entropy,
     factorized_greedy,
     factorized_joint_log_prob,
@@ -359,7 +360,7 @@ class TestProductionEntropy:
 
 
 class TestGuards:
-    def _batch(self, policy, rows: int = 128, seed: int = 5):
+    def _batch(self, policy: Mlp, rows: int = 128, seed: int = 5) -> tuple:
         rng = np.random.default_rng(seed)
         obs = rng.normal(size=(rows, NET_FEATURES)).astype(np.float32)
         mask = np.ones((rows, ACTIONS), dtype=bool)

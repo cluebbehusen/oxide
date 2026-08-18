@@ -7,6 +7,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 from lineage import (
     build_lineage,
     checkpoint_metadata,
@@ -127,7 +130,7 @@ def _valid_manifest() -> dict:
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
-        (lambda m: "not a dict", "must be an object"),
+        (lambda _m: "not a dict", "must be an object"),
         (lambda m: {1: "x", **m}, "keys must be strings"),
         (
             lambda m: {k: v for k, v in m.items() if k != "lineage_id"},
@@ -172,7 +175,9 @@ def _valid_manifest() -> dict:
         (lambda m: {**m, "phase": m["phase"] + "-tampered"}, "does not match"),
     ],
 )
-def test_every_structural_forgery_is_rejected_by_name(mutate, message) -> None:
+def test_every_structural_forgery_is_rejected_by_name(
+    mutate: Callable[[dict], object], message: str
+) -> None:
     # The audit measured every raise in validate_lineage at zero
     # execution: provenance is the training stack's trust boundary, and
     # an unexercised rejection is one refactor away from accepting a

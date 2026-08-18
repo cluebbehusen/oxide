@@ -7,8 +7,12 @@ a style failure can never outrank a clean pass, whatever the cup says.
 
 import json
 import subprocess
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    import pathlib
 
 from autopilot import fitness, phase_checkpoint, run_battery, style_failures
 
@@ -89,7 +93,9 @@ class TestCrashResume:
     _seq = 0
 
     @classmethod
-    def _run_dir(cls, tmp_path, last_row: str | None, checkpoints: int = 1):
+    def _run_dir(
+        cls, tmp_path: pathlib.Path, last_row: str | None, checkpoints: int = 1
+    ) -> pathlib.Path:
         cls._seq += 1
         run_dir = tmp_path / f"g0m{cls._seq}"
         (run_dir / "pool").mkdir(parents=True)
@@ -99,30 +105,34 @@ class TestCrashResume:
             (run_dir / "log.jsonl").write_text(last_row)
         return run_dir
 
-    def test_a_completed_phase_reuses_its_final_checkpoint(self, tmp_path) -> None:
+    def test_a_completed_phase_reuses_its_final_checkpoint(
+        self, tmp_path: pathlib.Path
+    ) -> None:
         run_dir = self._run_dir(
             tmp_path, '{"phase_update": 59}\n{"phase_update": 60}\n', checkpoints=3
         )
         assert phase_checkpoint(run_dir, 60) == run_dir / "pool" / "ckpt-000002.pt"
 
-    def test_an_incomplete_phase_retrains(self, tmp_path) -> None:
+    def test_an_incomplete_phase_retrains(self, tmp_path: pathlib.Path) -> None:
         run_dir = self._run_dir(tmp_path, '{"phase_update": 59}\n')
         assert phase_checkpoint(run_dir, 60) is None
 
-    def test_a_corrupt_or_missing_log_retrains(self, tmp_path) -> None:
+    def test_a_corrupt_or_missing_log_retrains(self, tmp_path: pathlib.Path) -> None:
         assert phase_checkpoint(self._run_dir(tmp_path, "not json\n"), 60) is None
         assert phase_checkpoint(self._run_dir(tmp_path, None), 60) is None
         assert phase_checkpoint(self._run_dir(tmp_path, ""), 60) is None
 
     def test_missing_checkpoints_retrain_even_when_the_log_says_done(
-        self, tmp_path
+        self, tmp_path: pathlib.Path
     ) -> None:
         run_dir = self._run_dir(tmp_path, '{"phase_update": 60}\n', checkpoints=0)
         assert phase_checkpoint(run_dir, 60) is None
 
 
 class TestBatteryMemo:
-    def test_a_matching_memo_is_reused_verbatim(self, tmp_path, monkeypatch) -> None:
+    def test_a_matching_memo_is_reused_verbatim(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         candidate = tmp_path / "ckpt-000060.pt"
         candidate.write_bytes(b"weights")
         memo = {
@@ -136,7 +146,7 @@ class TestBatteryMemo:
         candidate.with_suffix(".scores.json").write_text(json.dumps(memo))
         # Any subprocess call would mean the memo was NOT trusted.
         monkeypatch.setattr(
-            subprocess, "run", lambda *a, **k: pytest.fail("battery re-ran")
+            subprocess, "run", lambda *_args, **_kwargs: pytest.fail("battery re-ran")
         )
         assert run_battery(candidate, "driver", 30) == memo
 
@@ -147,7 +157,9 @@ class TestBatteryMemo:
             {"drop": "style_gate_pass"},  # pre-style-gate memo
         ],
     )
-    def test_a_stale_memo_is_not_trusted(self, tmp_path, monkeypatch, stale) -> None:
+    def test_a_stale_memo_is_not_trusted(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, stale: dict
+    ) -> None:
         candidate = tmp_path / "ckpt-000060.pt"
         candidate.write_bytes(b"weights")
         memo = {
@@ -165,7 +177,7 @@ class TestBatteryMemo:
         candidate.with_suffix(".scores.json").write_text(json.dumps(memo))
         calls = []
 
-        def fake_run(*args, **kwargs):
+        def fake_run(*args: object, **_kwargs: object) -> None:
             calls.append(args)
             raise RuntimeError("battery correctly re-running; stop here")
 
