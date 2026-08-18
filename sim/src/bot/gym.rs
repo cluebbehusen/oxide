@@ -2535,6 +2535,36 @@ impl GymBot {
             BuildingKind::Foundry => self
                 .expansion_focus(obs)
                 .and_then(|focus| self.policy.placement_near(obs, kind, focus)),
+            BuildingKind::Array => {
+                // A mast IS its ring: a second mast inside a standing
+                // ring re-buys coverage the first already paid for
+                // (measured as four adjacent masts watching one
+                // corridor). Prefer the candidate farthest from every
+                // own or allied mast, saturating at one ring radius so
+                // everything beyond a ring ties and the (y, x) order
+                // keeps the pick stable and close to home.
+                let masts: Vec<TilePos> = obs
+                    .my_buildings
+                    .iter()
+                    .chain(obs.ally_buildings.iter())
+                    .filter(|building| building.kind == BuildingKind::Array)
+                    .map(|building| building.anchor)
+                    .collect();
+                self.policy
+                    .placements_near(obs, kind, home)
+                    .into_iter()
+                    .map(|anchor| {
+                        let ring = masts
+                            .iter()
+                            .map(|mast| mast.chebyshev(anchor))
+                            .min()
+                            .unwrap_or(crate::stats::RADAR_DETECT_RADIUS)
+                            .min(crate::stats::RADAR_DETECT_RADIUS);
+                        (std::cmp::Reverse(ring), anchor.y, anchor.x, anchor)
+                    })
+                    .min()
+                    .map(|(.., anchor)| anchor)
+            }
             _ => self.policy.placement_near(obs, kind, home),
         }
     }
@@ -3823,6 +3853,11 @@ fn apply_expansion_doctrine(obs: &Observation, mask: &mut [bool; ACTION_COUNT]) 
         narrow_head(mask, &CONSTRUCTION_ACTIONS, Action::BuildExtractor);
     } else if mask[Action::BuildFoundry as usize] {
         narrow_head(mask, &CONSTRUCTION_ACTIONS, Action::BuildFoundry);
+    } else if mask[Action::BuildReclaimer as usize] {
+        // No frame to claim and no foundry site: the Reclaimer is the
+        // building designed for exactly this moment — "the reason a
+        // match can outlive its scrap patches."
+        narrow_head(mask, &CONSTRUCTION_ACTIONS, Action::BuildReclaimer);
     }
 }
 
