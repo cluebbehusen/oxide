@@ -787,12 +787,15 @@ impl Game {
                         age: 0.0,
                     });
                 }
+                // A spectator inherits a nominal seat but owns no
+                // orders; a bot's private stall feedback must not read
+                // as "your order failed" in the replay viewer.
                 Event::OrderStalled {
                     player,
                     pos,
                     reason,
                     ..
-                } if *player == self.human => {
+                } if *player == self.human && !self.spectate => {
                     // Own-state facts only — a stall reason must never
                     // whisper about what fog hides.
                     self.toast(match reason {
