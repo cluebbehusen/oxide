@@ -724,7 +724,7 @@ fn assert_style_family_separation(net: &QuantNet) {
         first, second,
         "style-family command metrics must be deterministic"
     );
-    let contact = family_behavior_cohort(net, 12_000, true, 1);
+    let contact = family_behavior_cohort(net, oxide_sim::bot::gym::STYLE_CONTACT_HORIZON, true, 1);
 
     let mut development = 0;
     let mut fortification = 0;

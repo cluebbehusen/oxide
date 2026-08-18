@@ -231,23 +231,42 @@ const RECOVERY_HOME_DANGER_RADIUS: i32 = 8;
 /// Transports the island doctrine keeps on the roster before it stops
 /// narrowing production toward them.
 const ISLAND_TRANSPORT_QUOTA: usize = 2;
-/// Tick after which the finishing doctrine may wake. Strictly past both
-/// style-signature windows (the opening cohort ends at 4,000 ticks and
-/// the contact cohort at 12,000), so profile identity is measured on
-/// the policy's own choices and the doctrine only governs the long
-/// games the fun gate's lull and finish-latency readings exist for.
-const FINISH_WAKE_TICK: u64 = 12_000;
+/// The measured-identity horizon: the style gate's contact cohort runs
+/// to this tick, so everything inside it is certified as the policy's
+/// own choices. Doctrines wake strictly beyond it — one constant, one
+/// source, shared with the gate's fixture so the two can never drift
+/// apart silently.
+pub const STYLE_CONTACT_HORIZON: u64 = 12_000;
+/// Tick after which the stall doctrines may wake — the identity
+/// horizon by definition, not an independent number.
+const FINISH_WAKE_TICK: u64 = STYLE_CONTACT_HORIZON;
 /// Material advantage (in the same /100 strength units as the feature
 /// surface) required before the finishing doctrine forces a commitment.
 /// A seat that is even or behind keeps its own counsel — turtles stay
 /// turtles — while a decided game must actually be finished.
 const FINISH_DOMINANCE_FACTOR: i64 = 2;
+/// Floor on the finish lock's patience, for maps small enough that a
+/// crossing takes less time than a real fight.
+const FINISH_LOCK_PATIENCE_FLOOR: u64 = 2_000;
+
 /// Consecutive ticks the finish reconciliation may hold its no-op lock
-/// before it must yield a think to the doctrines: marches and fights
-/// resolve in hundreds of ticks, so a lock this old is a standoff the
-/// protected army will never convert (a cross-seal engagement, a
-/// straggler that cannot arrive).
-const FINISH_LOCK_PATIENCE: u64 = 2_000;
+/// before it must yield a think to the doctrines. Derived, not
+/// authored: one slowest-marcher crossing of the map's long diagonal —
+/// a protected push that has not arrived after crossing the whole map
+/// is a standoff, whatever the map's size. The fixed 2,000-tick
+/// version was measurably wrong on 250-tile colossal fields, where a
+/// single legitimate march consumed the entire patience.
+fn finish_lock_patience(obs: &Observation) -> u64 {
+    let slowest = UnitKind::Avalanche.stats().speed;
+    let span = obs.map_width.saturating_add(obs.map_height).max(1) as u64;
+    let ticks_per_tile = if slowest > Fx::ZERO {
+        (Fx::ONE / slowest).to_num::<u64>().max(1)
+    } else {
+        8
+    };
+    span.saturating_mul(ticks_per_tile)
+        .max(FINISH_LOCK_PATIENCE_FLOOR)
+}
 /// Idle share of the harvester fleet (numerator/denominator) at which
 /// the expansion doctrine reads the economy as starving where it
 /// stands. Idle here is the sim's own verdict — a harvester with any
@@ -3595,7 +3614,7 @@ impl GymBot {
                 // style-signature windows the lock's behavior is part of
                 // the measured identity, and no stall runs that short.
                 if obs.tick > FINISH_WAKE_TICK
-                    && obs.tick.saturating_sub(since) > FINISH_LOCK_PATIENCE
+                    && obs.tick.saturating_sub(since) > finish_lock_patience(obs)
                 {
                     self.finish_lock_since = None;
                     self.finish_lock_released = true;
