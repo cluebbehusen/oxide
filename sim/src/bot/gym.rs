@@ -224,6 +224,26 @@ const RECOVERY_HOLD_RETRY_TICKS: u64 = 120;
 const RECOVERY_CONCEDE_HP_NUM: u32 = 1;
 const RECOVERY_CONCEDE_HP_DEN: u32 = 4;
 const RECOVERY_HOME_DANGER_RADIUS: i32 = 8;
+/// Transports the island doctrine keeps on the roster before it stops
+/// narrowing production toward them.
+const ISLAND_TRANSPORT_QUOTA: usize = 2;
+/// Tick after which the finishing doctrine may wake. Strictly past both
+/// style-signature windows (the opening cohort ends at 4,000 ticks and
+/// the contact cohort at 12,000), so profile identity is measured on
+/// the policy's own choices and the doctrine only governs the long
+/// games the fun gate's lull and finish-latency readings exist for.
+const FINISH_WAKE_TICK: u64 = 12_000;
+/// Material advantage (in the same /100 strength units as the feature
+/// surface) required before the finishing doctrine forces a commitment.
+/// A seat that is even or behind keeps its own counsel — turtles stay
+/// turtles — while a decided game must actually be finished.
+const FINISH_DOMINANCE_FACTOR: i64 = 2;
+/// Consecutive ticks the finish reconciliation may hold its no-op lock
+/// before it must yield a think to the doctrines: marches and fights
+/// resolve in hundreds of ticks, so a lock this old is a standoff the
+/// protected army will never convert (a cross-seal engagement, a
+/// straggler that cannot arrive).
+const FINISH_LOCK_PATIENCE: u64 = 2_000;
 /// Finishing needs a real body, not one expensive machine that happens to
 /// score highly in the strength estimate.
 const FINISH_MIN_FIGHTERS: usize = 5;
@@ -671,6 +691,14 @@ pub struct GymBot {
     recovery_worker_hold: Option<(UnitId, u64)>,
     /// Avoid restarting the same deliberate liquidation every think.
     recovery_liquidation: Option<BuildingId>,
+    /// Ground-reachability verdict for `(home, enemy site)`, stamped
+    /// with the known-rock count: rock knowledge only grows, so a
+    /// stale stamp is exactly a stale verdict.
+    island_route_cache: Option<(TilePos, TilePos, usize, bool)>,
+    /// Tick the finish reconciliation's no-op lock first engaged in the
+    /// current consecutive streak; a lock that outlives its patience is
+    /// a standoff, not a finish, and yields to the doctrines.
+    finish_lock_since: Option<u64>,
 }
 
 /// What the world looks like at a decision point.
@@ -733,6 +761,8 @@ impl GymBot {
             recovery_target: None,
             recovery_worker_hold: None,
             recovery_liquidation: None,
+            island_route_cache: None,
+            finish_lock_since: None,
         }
     }
 
@@ -1340,9 +1370,14 @@ impl GymBot {
                 .my_units
                 .iter()
                 .any(|u| u.kind.stats().transport_capacity > 0 && u.cargo == 0 && u.idle);
+            // The staged army's riders count too: the executive's Load
+            // already strikes boarding riders from army bodies, so a
+            // fully-enlisted island garrison is still liftable cargo.
+            let staged_members: Vec<crate::ids::UnitId> =
+                staging.map(|a| a.members.clone()).unwrap_or_default();
             let liftable_fighters = obs.my_units.iter().any(|u| {
                 u.idle
-                    && !enlisted.contains(&u.id)
+                    && (!enlisted.contains(&u.id) || staged_members.contains(&u.id))
                     && u.kind.stats().transport_size > 0
                     && u.kind.stats().can_fight()
             });
@@ -1394,10 +1429,21 @@ impl GymBot {
             mask[Action::Recall as usize] = armies
                 .iter()
                 .any(|a| matches!(a.state, ArmyState::Pushing | ArmyState::Engaging));
+            // A staged army's members may scout (the executive strikes
+            // a dispatched scout from its army): a fully-enlisted seat
+            // that has lost track of every enemy must still be able to
+            // go looking, exactly as a player would detach one machine.
+            // Staged members skip the idle test — a rally hold is not
+            // a job.
             mask[Action::Scout as usize] = obs.my_units.iter().any(|u| {
-                !enlisted.contains(&u.id)
-                    && u.site.is_none()
-                    && (u.kind == UnitKind::Harvester || (u.idle && u.kind.stats().can_fight()))
+                u.site.is_none()
+                    && if staged_members.contains(&u.id) {
+                        u.kind.stats().can_fight()
+                    } else {
+                        !enlisted.contains(&u.id)
+                            && (u.kind == UnitKind::Harvester
+                                || (u.idle && u.kind.stats().can_fight()))
+                    }
             });
             // Home defense is executive reconciliation, not a strategic
             // preference. Once an armed intruder reaches the economy,
@@ -1418,7 +1464,7 @@ impl GymBot {
                 for action in OPERATION_ACTIONS {
                     mask[action] = action == defense as usize;
                 }
-            } else if let Some(finish) = self.finish_operation(&obs, &armies, h) {
+            } else if let Some(finish) = self.finish_operation_with_patience(&obs, &armies, h) {
                 tactical_reconciliation = true;
                 for action in OPERATION_ACTIONS {
                     mask[action] = action == finish as usize;
@@ -1443,10 +1489,176 @@ impl GymBot {
             mask[Action::NoConstruction as usize] = true;
             mask[Action::NoOperation as usize] = true;
             mask[Action::NoUpgrade as usize] = true;
-        } else if !tactical_reconciliation && home_intruder.is_none() {
-            self.apply_profile_doctrine(&obs, &mut mask);
+        } else if !tactical_reconciliation {
+            // The stall doctrines run whenever no defense reconciliation
+            // actually fired: an unanswerable intruder (no army, no idle
+            // fighters) must not freeze the seat forever. The finite
+            // profile milestones keep the stricter guard.
+            self.apply_island_doctrine(&obs, home, enemy_site, &mut mask);
+            let push_targets: Vec<TilePos> = armies
+                .iter()
+                .filter(|army| army.state == ArmyState::Pushing)
+                .filter_map(|army| army.target)
+                .collect();
+            self.apply_finishing_doctrine(
+                &obs,
+                home,
+                enemy_site,
+                my_strength,
+                &push_targets,
+                &mut mask,
+            );
+            if home_intruder.is_none() {
+                self.apply_profile_doctrine(&obs, &mut mask);
+            }
         }
         Decision { features, mask }
+    }
+
+    /// Narrows the operation head toward the finishing loop the stalled
+    /// endgames never ran: past the wake tick, a seat with no known
+    /// enemy site keeps scouting, and a dominant seat with a known,
+    /// ground-reachable site forms up and commits. Measured before this
+    /// existed, stalled seats chose the idle operation 69-98% of the
+    /// time while Scout and Push sat mask-legal for most of the game.
+    /// The dominance gate keeps profile identity intact: an even or
+    /// losing seat is never forced out of its own strategy, and the
+    /// unreachable-site case belongs to the island doctrine above.
+    fn apply_finishing_doctrine(
+        &mut self,
+        obs: &Observation,
+        home: Option<TilePos>,
+        enemy_site: Option<TilePos>,
+        my_strength: i64,
+        push_targets: &[TilePos],
+        mask: &mut [bool; ACTION_COUNT],
+    ) {
+        if obs.tick <= FINISH_WAKE_TICK {
+            return;
+        }
+        // The lost-track signal is the enemy Foundry, not any remembered
+        // building: a seat that only knows a stray turret still has no
+        // kill target and must keep looking (the scout peeks at known
+        // buildings first, so a remembered ruin guides the search).
+        let foundry_known = obs
+            .enemy_buildings
+            .iter()
+            .any(|b| b.kind == BuildingKind::Foundry);
+        if !foundry_known {
+            if mask[Action::Scout as usize] {
+                narrow_head(mask, &OPERATION_ACTIONS, Action::Scout);
+            }
+            return;
+        }
+        let Some(site) = enemy_site else {
+            return;
+        };
+        let Some(home) = home else {
+            return;
+        };
+        if !self.known_ground_route(obs, home, site) {
+            return;
+        }
+        let seen = (self.seen_strength / 100) as i64;
+        if my_strength < seen.saturating_mul(FINISH_DOMINANCE_FACTOR) {
+            return;
+        }
+        if mask[Action::Push as usize] {
+            narrow_head(mask, &OPERATION_ACTIONS, Action::Push);
+        } else if mask[Action::FormArmy as usize] {
+            narrow_head(mask, &OPERATION_ACTIONS, Action::FormArmy);
+        } else if mask[Action::Recall as usize]
+            && push_targets
+                .iter()
+                .any(|target| !self.known_ground_route(obs, home, *target))
+        {
+            // Recall only a WEDGED push (no known ground route to its
+            // target): bring the body home to staging so a later think
+            // can ferry or re-commit it. A healthy push in flight is
+            // never recalled — narrowing Recall on any absent army
+            // measured as a push/recall oscillator that reset every
+            // march one think after launching it.
+            narrow_head(mask, &OPERATION_ACTIONS, Action::Recall);
+        }
+    }
+
+    /// Narrows choices toward the airlift shuttle when the known enemy
+    /// site has no known ground route from home: the structural island
+    /// war no push can prosecute. This is map geometry, not a
+    /// personality preference, so every profile shares it; defense
+    /// reconciliation still preempts it exactly like the profile
+    /// milestones below, and the profile milestones compose after it
+    /// because they skip any action this narrowing masked off.
+    /// Passability reads known rock only, so the doctrine wakes when
+    /// scouting has actually seen the seal, never from map omniscience.
+    fn apply_island_doctrine(
+        &mut self,
+        obs: &Observation,
+        home: Option<TilePos>,
+        enemy_site: Option<TilePos>,
+        mask: &mut [bool; ACTION_COUNT],
+    ) {
+        let (Some(home), Some(site)) = (home, enemy_site) else {
+            return;
+        };
+        if self.known_ground_route(obs, home, site) {
+            return;
+        }
+        let transports = obs
+            .my_units
+            .iter()
+            .filter(|u| u.kind.stats().transport_capacity > 0)
+            .count();
+        if transports < ISLAND_TRANSPORT_QUOTA {
+            if mask[Action::TrainTransport as usize] {
+                narrow_head(mask, &PRODUCTION_ACTIONS, Action::TrainTransport);
+            } else if mask[Action::BuildAirworks as usize]
+                && !obs
+                    .my_buildings
+                    .iter()
+                    .any(|b| b.kind == BuildingKind::Airworks && b.built)
+            {
+                narrow_head(mask, &CONSTRUCTION_ACTIONS, Action::BuildAirworks);
+            }
+        }
+        if mask[Action::Airlift as usize] {
+            narrow_head(mask, &OPERATION_ACTIONS, Action::Airlift);
+        } else if mask[Action::Recall as usize] {
+            // A ground push cannot cross the seal; bring the army home
+            // to staging so the shuttle has riders to gather.
+            narrow_head(mask, &OPERATION_ACTIONS, Action::Recall);
+        }
+    }
+
+    /// Whether any rock-free route joins `home` to `site` over the
+    /// terrain this seat has actually seen. Cached per site and
+    /// re-proved only when new rock is discovered.
+    fn known_ground_route(&mut self, obs: &Observation, home: TilePos, site: TilePos) -> bool {
+        let stamp = obs.known_rock.len();
+        if let Some((cached_home, cached_site, cached_stamp, verdict)) = self.island_route_cache
+            && cached_home == home
+            && cached_site == site
+            && cached_stamp == stamp
+        {
+            return verdict;
+        }
+        let passability = KnownPassability::from_observation(obs);
+        let passable = |tile: TilePos| {
+            passability
+                .index(tile)
+                .is_some_and(|index| passability.terrain_open[index])
+        };
+        let verdict = chassis::path::astar(
+            obs.map_width,
+            obs.map_height,
+            home,
+            site,
+            passable,
+            crate::stats::PATH_EXPANSION_CAP,
+        )
+        .is_some();
+        self.island_route_cache = Some((home, site, stamp, verdict));
+        verdict
     }
 
     /// Narrows ordinary legal choices around finite, observable profile
@@ -1982,12 +2194,14 @@ impl GymBot {
                     .filter(|u| u.kind.stats().transport_capacity > 0 && u.cargo == 0 && u.idle)
                     .min_by_key(|u| u.id)
                 {
+                    let staged: Vec<UnitId> =
+                        staging.map(|a| a.members.clone()).unwrap_or_default();
                     let mut riders: Vec<(i32, UnitId)> = obs
                         .my_units
                         .iter()
                         .filter(|u| {
                             u.idle
-                                && !enlisted.contains(&u.id)
+                                && (!enlisted.contains(&u.id) || staged.contains(&u.id))
                                 && u.kind.stats().transport_size > 0
                                 && u.kind.stats().can_fight()
                         })
@@ -2026,7 +2240,7 @@ impl GymBot {
                 });
             }
             Action::Push => {
-                let target = nearest_home_intruder(obs, home).or(enemy_site);
+                let target = nearest_standable_intruder(obs, home).or(enemy_site);
                 if let (Some(army), Some(target)) = (staging, target) {
                     intents.push(Intent::PushArmy {
                         army: army.id,
@@ -2039,7 +2253,11 @@ impl GymBot {
                     intents.push(Intent::RecallArmy { army: army.id });
                 }
             }
-            Action::Scout => self.policy.scouting(obs, home, enlisted, true, intents),
+            Action::Scout => {
+                let staged: Vec<UnitId> = staging.map(|a| a.members.clone()).unwrap_or_default();
+                self.policy
+                    .scouting(obs, home, enlisted, &staged, true, intents);
+            }
             _ => {}
         }
     }
@@ -3235,6 +3453,38 @@ impl GymBot {
         }]
     }
 
+    /// [`Self::finish_operation`] with the lock's patience applied: a
+    /// no-op lock held past [`FINISH_LOCK_PATIENCE`] consecutive ticks
+    /// yields one think to the doctrines (typically a Recall for the
+    /// standoff body), then may re-engage on fresh conditions.
+    fn finish_operation_with_patience(
+        &mut self,
+        obs: &Observation,
+        armies: &[super::executive::Army],
+        home: TilePos,
+    ) -> Option<Action> {
+        match self.finish_operation(obs, armies, home) {
+            Some(Action::NoOperation) => {
+                let since = *self.finish_lock_since.get_or_insert(obs.tick);
+                // Releases only past the doctrine wake tick: inside the
+                // style-signature windows the lock's behavior is part of
+                // the measured identity, and no stall runs that short.
+                if obs.tick > FINISH_WAKE_TICK
+                    && obs.tick.saturating_sub(since) > FINISH_LOCK_PATIENCE
+                {
+                    self.finish_lock_since = None;
+                    None
+                } else {
+                    Some(Action::NoOperation)
+                }
+            }
+            other => {
+                self.finish_lock_since = None;
+                other
+            }
+        }
+    }
+
     fn finish_operation(
         &mut self,
         obs: &Observation,
@@ -3295,18 +3545,30 @@ impl GymBot {
         // not freeze a stronger staged or idle reserve behind it.
         // Lock the learned operation head to a no-op: Recall must not
         // interrupt a justified finish, while reissuing Push would reset
-        // paths and weapon opportunities.
-        if armies
+        // paths and weapon opportunities. A push is only a justified
+        // finish while its target is known-ground-reachable: a body
+        // wedged against a seal it can never cross must release the
+        // lock so the island doctrine can recall it and ferry instead
+        // (measured: this lock held dominant seats idle to the time cap
+        // on part-sealed maps).
+        let wedge_free: Vec<bool> = armies
             .iter()
-            .filter(|army| matches!(army.state, ArmyState::Pushing | ArmyState::Engaging))
-            .any(|army| {
-                fighters
+            .map(|army| match army.state {
+                ArmyState::Engaging => true,
+                ArmyState::Pushing => army
+                    .target
+                    .is_none_or(|target| self.known_ground_route(obs, home, target)),
+                _ => false,
+            })
+            .collect();
+        if armies.iter().zip(&wedge_free).any(|(army, justified)| {
+            *justified
+                && fighters
                     .iter()
                     .filter(|unit| army.members.contains(&unit.id))
                     .count()
                     >= FINISH_MIN_FIGHTERS
-            })
-        {
+        }) {
             return Some(Action::NoOperation);
         }
         let staging = armies
@@ -3340,6 +3602,15 @@ impl GymBot {
                 && !self.exec.enlisted().any(|id| id == unit.id)
         }) {
             Some(Action::FormArmy)
+        } else if armies
+            .iter()
+            .zip(&wedge_free)
+            .any(|(army, justified)| army.state == ArmyState::Pushing && !*justified)
+        {
+            // A wedged push and nothing else to commit: hand the head
+            // back to the doctrines so the body can be recalled and
+            // ferried instead of holding the lock to the time cap.
+            None
         } else {
             Some(Action::NoOperation)
         }
@@ -3433,6 +3704,22 @@ fn nearest_home_intruder(obs: &Observation, home: TilePos) -> Option<TilePos> {
     obs.enemy_units
         .iter()
         .filter(|unit| unit.kind.stats().can_fight() && unit.tile.chebyshev(home) <= 12)
+        .map(|unit| (unit.tile.chebyshev(home), unit.tile.y, unit.tile.x, unit.id))
+        .min()
+        .map(|(_, y, x, _)| TilePos::new(x, y))
+}
+
+/// [`nearest_home_intruder`] restricted to tiles a ground army can
+/// stand on: a flyer hovering over rock is a real threat but not a
+/// marchable target — a push aimed at its tile can only wedge there
+/// (measured as a doctrine push/recall oscillator). Only the Push
+/// execution's target choice uses this; masks, the defense arm, and
+/// milestone gating keep the unrestricted read.
+fn nearest_standable_intruder(obs: &Observation, home: TilePos) -> Option<TilePos> {
+    obs.enemy_units
+        .iter()
+        .filter(|unit| unit.kind.stats().can_fight() && unit.tile.chebyshev(home) <= 12)
+        .filter(|unit| !obs.known_rock.contains(&unit.tile))
         .map(|unit| (unit.tile.chebyshev(home), unit.tile.y, unit.tile.x, unit.id))
         .min()
         .map(|(_, y, x, _)| TilePos::new(x, y))

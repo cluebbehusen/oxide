@@ -479,6 +479,13 @@ impl Executive {
                     if rules.scout_honors_claims && claimed.contains(unit) {
                         continue;
                     }
+                    // A dispatched scout leaves its army, mirroring
+                    // Load's rider strike: an army-wide command later
+                    // this think would otherwise replace the scout walk.
+                    for army in &mut self.armies {
+                        army.members.retain(|member| member != unit);
+                    }
+                    self.armies.retain(|army| !army.members.is_empty());
                     claimed.push(*unit);
                     out.push(PlayerCommand {
                         player: me,
@@ -514,9 +521,8 @@ impl Executive {
                     // an army-wide command later this think would replace
                     // its boarding walk. Strike riders from the bodies
                     // and claim them, mirroring RepairUnit's rotation.
-                    // (No-op on the gym path: Airlift riders are never
-                    // enlisted and its Load lowers after every other
-                    // unit-claiming intent.)
+                    // (Live on the gym path too: Airlift may gather the
+                    // staged army's riders for an island crossing.)
                     for army in &mut self.armies {
                         army.members.retain(|member| !riders.contains(member));
                     }

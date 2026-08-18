@@ -289,7 +289,7 @@ impl UtilityPolicy {
             .filter(|u| u.kind == UnitKind::Harvester)
             .count();
         if dials.scouting && harvesters >= dials.harvester_target as usize {
-            self.scouting(obs, home_tile, enlisted, false, &mut intents);
+            self.scouting(obs, home_tile, enlisted, &[], false, &mut intents);
         }
         // The ferry gathers before the army channel so its Load claims
         // riders ahead of the draft (intents lower in order).
@@ -1636,6 +1636,11 @@ impl UtilityPolicy {
         obs: &Observation,
         home: TilePos,
         enlisted: &[UnitId],
+        // Enlisted units the caller explicitly releases for scout duty
+        // (the gym path offers its staged army; the executive strikes a
+        // dispatched scout from the body). The scripted Brain passes
+        // none and keeps its historical behavior byte for byte.
+        extra: &[UnitId],
         force: bool,
         intents: &mut Vec<Intent>,
     ) {
@@ -1682,8 +1687,11 @@ impl UtilityPolicy {
                 // A walking founder (`founding`) is spoken for like a
                 // builder on site: a scout order would replace the
                 // deferred claim's whole program.
-                .filter(|u| !enlisted.contains(&u.id) && u.site.is_none() && u.founding.is_none())
-                .filter(|u| u.kind == UnitKind::Harvester || u.idle)
+                .filter(|u| u.site.is_none() && u.founding.is_none())
+                .filter(|u| {
+                    extra.contains(&u.id)
+                        || (!enlisted.contains(&u.id) && (u.kind == UnitKind::Harvester || u.idle))
+                })
                 .min_by_key(|u| {
                     let preference = match u.kind {
                         UnitKind::Kestrel | UnitKind::Gnat => (0, 0),
