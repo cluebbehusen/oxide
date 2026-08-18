@@ -354,6 +354,58 @@ enum Cmd {
         #[arg(long)]
         factions: Option<oxide_driver::gym::DuelFactions>,
     },
+    /// Endgame diagnostic: a dominant army against a bare remnant, with
+    /// and without intel of its base. Measures whether the shipped
+    /// actor can finish a won game. Diagnostic only.
+    CloseoutProbe {
+        /// Exported weights JSON (tools/train/export.py).
+        #[arg(long)]
+        weights: PathBuf,
+        /// Seeds per variant.
+        #[arg(long, default_value_t = 6, value_parser = clap::value_parser!(u64).range(1..))]
+        seeds: u64,
+        /// Tick horizon per fixture.
+        #[arg(long, default_value_t = 20_000, value_parser = clap::value_parser!(u64).range(1..))]
+        ticks: u64,
+        /// Exact hesitation per mille (0 = Expert clean).
+        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..=1000))]
+        blunder: u32,
+        /// Think cadence in ticks.
+        #[arg(long, default_value_t = 34, value_parser = clap::value_parser!(u64).range(1..))]
+        cadence: u64,
+    },
+    /// Forced-doctrine A/B: the same policy plays itself with one seat
+    /// compelled to keep a quota of the probed kind, separating
+    /// "overpriced" from "never learned". Diagnostic only.
+    ViabilityProbe {
+        /// Exported weights JSON (tools/train/export.py).
+        #[arg(long)]
+        weights: PathBuf,
+        /// Seeds per action (each played from both seats).
+        #[arg(long, default_value_t = 12, value_parser = clap::value_parser!(u64).range(1..))]
+        seeds: u64,
+        /// Tick cap for each probed game.
+        #[arg(long, default_value_t = 40_000, value_parser = clap::value_parser!(u64).range(1..))]
+        ticks: u64,
+        /// Scenario path, or "skirmish".
+        #[arg(long, default_value = "skirmish")]
+        scenario: String,
+        /// Kinds of the probed unit or structure the doctrine keeps
+        /// pressing toward while below this count.
+        #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u32).range(1..))]
+        quota: u32,
+        /// Tick the doctrine wakes on. Forcing from tick zero measures
+        /// "should you rush X", not composition viability.
+        #[arg(long, default_value_t = 3_000)]
+        start_tick: u64,
+        /// One probe action by CLI name (e.g. "skyhook", "bastion").
+        /// Omission sweeps the full train/build roster.
+        #[arg(long)]
+        action: Option<String>,
+        /// Also write the JSON report here.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Exercise a candidate's repair verbs in deterministic wounded-state
     /// fixtures. Diagnostic only: observed, never rewarded.
     RepairProbe {
@@ -857,6 +909,32 @@ fn main() -> Result<()> {
                 aggression,
                 factions,
             },
+        )?,
+        Cmd::CloseoutProbe {
+            weights,
+            seeds,
+            ticks,
+            blunder,
+            cadence,
+        } => oxide_driver::closeout::closeout_probe(&weights, seeds, ticks, blunder, cadence)?,
+        Cmd::ViabilityProbe {
+            weights,
+            seeds,
+            ticks,
+            scenario,
+            quota,
+            start_tick,
+            action,
+            out,
+        } => oxide_driver::viability::viability_probe(
+            &weights,
+            seeds,
+            ticks,
+            &scenario,
+            quota,
+            start_tick,
+            action.as_deref(),
+            out.as_deref(),
         )?,
         Cmd::RepairProbe {
             weights,
