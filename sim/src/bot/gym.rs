@@ -1514,7 +1514,26 @@ impl GymBot {
         mask[Action::NoUpgrade as usize] = true;
         let recovery = self.recovery_posture(&obs, &orientation);
         if recovery != RecoveryPosture::Inactive {
+            // The emergency is a SPENDING freeze, not a fighting
+            // freeze: production, construction, and upgrades lock so
+            // the replacement package's savings survive, but the
+            // operation head keeps its ordinary legality — orders cost
+            // nothing, and a recovering seat with an army must be able
+            // to clear the very guards its Contest posture is stuck
+            // on. Measured before this: a seat with four Fabricators,
+            // a live Harvester, and 2,000 banked scrap idled at a
+            // four-wide mask for a hundred thousand ticks.
+            let operations: Vec<(usize, bool)> = OPERATION_ACTIONS
+                .iter()
+                .map(|&action| (action, mask[action]))
+                .collect();
             mask.fill(false);
+            for (action, legal) in operations {
+                mask[action] = legal;
+            }
+            // Except Scout: the seat's scouts are its harvesters, and
+            // the emergency owns every worker it has left.
+            mask[Action::Scout as usize] = false;
             let action = match recovery {
                 RecoveryPosture::QueueHarvester => Action::TrainHarvester,
                 RecoveryPosture::Salvage => Action::Salvage,
@@ -1535,6 +1554,9 @@ impl GymBot {
                 mask[Action::NoConstruction as usize] = true;
             }
             mask[Action::NoOperation as usize] = true;
+            if action != Action::TrainHarvester && action != Action::Salvage {
+                mask[Action::Idle as usize] = true;
+            }
             mask[Action::NoUpgrade as usize] = true;
         } else if !tactical_reconciliation {
             // The stall doctrines run whenever no defense reconciliation

@@ -981,6 +981,7 @@ fn recovery_reserves_partial_scrap_and_overrides_a_wrong_macro_action() {
         legal,
         vec![
             Action::Idle as usize,
+            Action::FormArmy as usize,
             Action::NoConstruction as usize,
             Action::NoOperation as usize,
             Action::NoUpgrade as usize,
@@ -1006,6 +1007,7 @@ fn recovery_reserves_partial_scrap_and_overrides_a_wrong_macro_action() {
         legal,
         vec![
             Action::TrainHarvester as usize,
+            Action::FormArmy as usize,
             Action::NoConstruction as usize,
             Action::NoOperation as usize,
             Action::NoUpgrade as usize,
@@ -1579,6 +1581,7 @@ fn recovery_does_not_send_a_replacement_across_endpoint_clear_danger() {
         legal,
         vec![
             Action::Idle as usize,
+            Action::Push as usize,
             Action::NoConstruction as usize,
             Action::NoOperation as usize,
             Action::NoUpgrade as usize,
@@ -1779,6 +1782,7 @@ fn recovery_confirms_a_flipped_seats_world_space_assignment() {
         legal,
         vec![
             Action::Idle as usize,
+            Action::FormArmy as usize,
             Action::NoConstruction as usize,
             Action::NoOperation as usize,
             Action::NoUpgrade as usize,
