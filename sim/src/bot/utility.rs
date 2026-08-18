@@ -159,12 +159,26 @@ impl Dials {
 /// and pre-oriented start anchors — public map knowledge of where
 /// enemy bases began. The scripted Brain passes both empty and keeps
 /// its historical behavior byte for byte.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct ScoutAids<'a> {
     /// Enlisted units released for scout duty.
     pub extra: &'a [UnitId],
     /// Pre-oriented enemy start anchors.
     pub anchors: &'a [TilePos],
+    /// Whether ground machines may join the search: false when no
+    /// birthplace is reachable on known terrain — a sealed map's
+    /// search belongs to the air while the ground waits for the ferry.
+    pub ground_may_search: bool,
+}
+
+impl Default for ScoutAids<'_> {
+    fn default() -> Self {
+        Self {
+            extra: &[],
+            anchors: &[],
+            ground_may_search: true,
+        }
+    }
 }
 
 /// Channel-based scripted policy. Its memory is bot-local and legitimate
@@ -1663,7 +1677,11 @@ impl UtilityPolicy {
         force: bool,
         intents: &mut Vec<Intent>,
     ) {
-        let ScoutAids { extra, anchors } = aids;
+        let ScoutAids {
+            extra,
+            anchors,
+            ground_may_search,
+        } = aids;
         /// How far short of the objective a scout stops — inside a
         /// harvester's vision (6), and close enough to aggro (5) that
         /// the peek must rely on the scout's legs, not its armor.
@@ -1837,6 +1855,7 @@ impl UtilityPolicy {
                         && u.site.is_none()
                         && u.founding.is_none()
                         && u.kind.stats().can_fight()
+                        && (ground_may_search || u.kind.stats().domain == Domain::Air)
                         && (!enlisted.contains(&u.id) || extra.contains(&u.id))
                 })
                 .map(|u| u.id)

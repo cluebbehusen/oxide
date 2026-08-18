@@ -721,10 +721,11 @@ pub struct GymBot {
     recovery_worker_hold: Option<(UnitId, u64)>,
     /// Avoid restarting the same deliberate liquidation every think.
     recovery_liquidation: Option<BuildingId>,
-    /// Ground-reachability verdict for `(home, enemy site)`, stamped
-    /// with the known-rock count: rock knowledge only grows, so a
-    /// stale stamp is exactly a stale verdict.
-    island_route_cache: Option<(TilePos, TilePos, usize, bool)>,
+    /// Ground-reachability verdicts, stamped with the known-rock
+    /// count: rock knowledge only grows, so a stale stamp is exactly a
+    /// stale set. Multi-entry because the doctrines, the finish lock,
+    /// and the search all ask about different goals in one think.
+    island_route_cache: (usize, Vec<(TilePos, TilePos, bool)>),
     /// Tick the finish reconciliation's no-op lock first engaged in the
     /// current consecutive streak; a lock that outlives its patience is
     /// a standoff, not a finish, and yields to the doctrines.
@@ -804,7 +805,7 @@ impl GymBot {
             recovery_target: None,
             recovery_worker_hold: None,
             recovery_liquidation: None,
-            island_route_cache: None,
+            island_route_cache: (0, Vec::new()),
             finish_lock_since: None,
             finish_lock_released: false,
             recovery_saving_since: None,
@@ -1739,12 +1740,16 @@ impl GymBot {
     /// re-proved only when new rock is discovered.
     fn known_ground_route(&mut self, obs: &Observation, home: TilePos, site: TilePos) -> bool {
         let stamp = obs.known_rock.len();
-        if let Some((cached_home, cached_site, cached_stamp, verdict)) = self.island_route_cache
-            && cached_home == home
-            && cached_site == site
-            && cached_stamp == stamp
+        if self.island_route_cache.0 != stamp {
+            self.island_route_cache = (stamp, Vec::new());
+        }
+        if let Some((.., verdict)) = self
+            .island_route_cache
+            .1
+            .iter()
+            .find(|(h, s, _)| *h == home && *s == site)
         {
-            return verdict;
+            return *verdict;
         }
         let passability = KnownPassability::from_observation(obs);
         let passable = |tile: TilePos| {
@@ -1761,7 +1766,7 @@ impl GymBot {
             crate::stats::PATH_EXPANSION_CAP,
         )
         .is_some();
-        self.island_route_cache = Some((home, site, stamp, verdict));
+        self.island_route_cache.1.push((home, site, verdict));
         verdict
     }
 
@@ -2360,6 +2365,15 @@ impl GymBot {
             Action::Scout => {
                 let staged: Vec<UnitId> = staging.map(|a| a.members.clone()).unwrap_or_default();
                 let anchors = self.oriented_start_anchors(obs);
+                // Ground fighters join the search only while some
+                // birthplace is ground-reachable on known terrain; on a
+                // sealed map they stay home for the ferry instead of
+                // stalling wave after wave against the coast.
+                let ground_may_search = anchors.is_empty()
+                    || anchors
+                        .clone()
+                        .into_iter()
+                        .any(|anchor| self.known_ground_route(obs, home, anchor));
                 self.policy.scouting(
                     obs,
                     home,
@@ -2367,6 +2381,7 @@ impl GymBot {
                     super::utility::ScoutAids {
                         extra: &staged,
                         anchors: &anchors,
+                        ground_may_search,
                     },
                     true,
                     intents,
