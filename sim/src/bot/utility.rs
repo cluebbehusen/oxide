@@ -619,10 +619,19 @@ impl UtilityPolicy {
         ];
         let to = legs[self.prospect_leg as usize % legs.len()];
         self.prospect_leg += 1;
-        intents.push(Intent::Scout {
-            unit,
-            to: self.passable_near(obs, to),
-        });
+        let to = self.passable_near(obs, to);
+        // A ground prospector on a partitioned map cannot take raw legs:
+        // it steps to the frontier toward the leg exactly like the
+        // search party, or the dispatch bounces forever. (This chore is
+        // the neural bot's only — the scripted Brain never climbs the
+        // ladder — so no scripted-path gate is needed.)
+        let to = match obs.my_units.iter().find(|u| u.id == unit) {
+            Some(u) if u.kind.stats().domain != Domain::Air => {
+                self.ground_frontier_toward(obs, u.tile, to).unwrap_or(to)
+            }
+            _ => to,
+        };
+        intents.push(Intent::Scout { unit, to });
     }
 
     /// Production channel: harvesters to target, then a sentinel drip

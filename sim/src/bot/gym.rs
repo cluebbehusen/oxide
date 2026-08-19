@@ -748,6 +748,10 @@ pub struct GymBot {
     /// that think, because a march that outlived the lock is stuck
     /// regardless of what the route map claims.
     finish_lock_released_at: Option<u64>,
+    /// Riders ordered aboard a sling whose absence from the field means
+    /// cargo, not casualty — tactical memory must not mark the pickup
+    /// point as a massacre.
+    pending_boarders: Vec<UnitId>,
 }
 
 /// What the world looks like at a decision point.
@@ -813,6 +817,7 @@ impl GymBot {
             island_route_cache: (0, Vec::new()),
             finish_lock_since: None,
             finish_lock_released_at: None,
+            pending_boarders: Vec::new(),
             recovery_saving_since: None,
             start_anchors: Vec::new(),
         }
@@ -1509,6 +1514,7 @@ impl GymBot {
             // a job.
             mask[Action::Scout as usize] = obs.my_units.iter().any(|u| {
                 u.site.is_none()
+                    && u.founding.is_none()
                     && if staged_members.contains(&u.id) {
                         u.kind.stats().can_fight()
                     } else {
@@ -2029,6 +2035,45 @@ impl GymBot {
                 home,
                 recovery,
             ));
+            // The freeze stops SPENDING, not the war: the mask kept the
+            // operation head legal, so the sampled operation must lower
+            // — a recovering seat's army fights its way out instead of
+            // dying with a legal verb nothing ever executed.
+            let enlisted: Vec<_> = self.exec.enlisted().collect();
+            let staging = armies
+                .iter()
+                .filter(|a| a.state == ArmyState::Staging)
+                .min_by_key(|a| a.id);
+            let enemy_site = UtilityPolicy::enemy_site(&obs, home);
+            let mut op_intents = Vec::new();
+            self.lower_operation(
+                &obs,
+                &armies,
+                staging,
+                &enlisted,
+                enemy_site,
+                home,
+                plan.operation,
+                &mut op_intents,
+            );
+            let op_intents = orientation.emit(op_intents);
+            let vision = state.vision(self.player);
+            let defer_needed = |kind: BuildingKind, anchor: TilePos| {
+                let (w, h) = kind.base_stats().size;
+                (0..h).any(|dy| (0..w).any(|dx| !vision.visible(anchor.offset(dx, dy))))
+            };
+            commands.extend(self.exec.apply_with(
+                self.player,
+                &world,
+                &op_intents,
+                &LoweringRules::gym(&defer_needed),
+            ));
+            // The construction-plan clock does not charge the seat for
+            // the freeze: an expiry mid-recovery would block_capital a
+            // seat whose plan never had a chance to spend.
+            if self.planned_since.is_some() {
+                self.planned_since = Some(obs.tick);
+            }
             return commands;
         }
         let enlisted: Vec<_> = self.exec.enlisted().collect();
@@ -2074,6 +2119,7 @@ impl GymBot {
         // route filter mirrors the mask: a frame no builder can walk
         // to (a cross-gulf claim) would die at walk time and re-stage
         // every think.
+        let mut extractor_reserve: u32 = 0;
         if plan.construction == Action::BuildExtractor {
             let cost = BuildingKind::Extractor
                 .base_stats()
@@ -2084,19 +2130,26 @@ impl GymBot {
                 !obs.my_buildings.iter().any(|b| b.anchor == anchor)
                     && !obs.enemy_buildings.iter().any(|b| b.anchor == anchor)
             };
-            if obs.scrap >= cost {
-                let (_, builders) = defense_probe.get_or_insert_with(|| {
-                    let passability = KnownPassability::from_observation(&obs);
-                    let builders = DefenseBuilderRoutes::measure(&obs, &enlisted, &passability);
-                    (passability, builders)
-                });
-                if let Some(frame) = obs
-                    .known_frames
-                    .iter()
-                    .filter(|f| unclaimed(**f))
-                    .filter(|f| builders.travel_to(**f, BuildingKind::Extractor).is_some())
-                    .min_by_key(|f| (f.chebyshev(home), f.y, f.x))
-                {
+            let (_, builders) = defense_probe.get_or_insert_with(|| {
+                let passability = KnownPassability::from_observation(&obs);
+                let builders = DefenseBuilderRoutes::measure(&obs, &enlisted, &passability);
+                (passability, builders)
+            });
+            let frame = obs
+                .known_frames
+                .iter()
+                .filter(|f| unclaimed(**f))
+                .filter(|f| builders.travel_to(**f, BuildingKind::Extractor).is_some())
+                .min_by_key(|f| (f.chebyshev(home), f.y, f.x));
+            if let Some(frame) = frame {
+                // A frame claim is a capital project like any other: its
+                // price is reserved whether the claim emits this think
+                // (so a same-think Train or rung cannot rob the walking
+                // founder into an InsufficientScrap death) or the bank is
+                // still short (so the seat SAVES toward the restore
+                // instead of letting production spend under it forever).
+                extractor_reserve = cost;
+                if obs.scrap >= cost {
                     intents.push(Intent::Build {
                         kind: BuildingKind::Extractor,
                         anchor: *frame,
@@ -2131,7 +2184,8 @@ impl GymBot {
         };
         let reserve = self
             .unpaid_claim_reserve(&obs)
-            .saturating_add(build_spend.unwrap_or_else(|| self.saved_plan_reserve()));
+            .saturating_add(build_spend.unwrap_or_else(|| self.saved_plan_reserve()))
+            .saturating_add(extractor_reserve);
         let mut spendable = obs.scrap.saturating_sub(reserve);
 
         // The upgrade head spends above this think's HARD commitments —
@@ -2379,21 +2433,23 @@ impl GymBot {
     ) {
         match action {
             Action::Airlift => {
-                // A loaded sling drops at the front; an empty one
-                // gathers the nearest idle fighters. One leg per
-                // decision — the policy paces the ferry.
+                // A loaded sling with a destination drops at the front;
+                // otherwise an empty (or destination-less) sling gathers
+                // the nearest idle fighters. One leg per decision — the
+                // policy paces the ferry. The lowering is TOTAL over the
+                // mask's disjunction: whichever arm justified the action
+                // is the arm that runs, never an if/else that goes quiet.
                 let loaded = obs
                     .my_units
                     .iter()
                     .filter(|u| u.kind.stats().transport_capacity > 0 && u.cargo > 0)
                     .min_by_key(|u| u.id);
-                if let Some(t) = loaded {
-                    if let Some(at) = enemy_site.or_else(|| staging.map(|a| a.staging)) {
-                        intents.push(Intent::Unload {
-                            transport: t.id,
-                            at,
-                        });
-                    }
+                let destination = enemy_site.or_else(|| staging.map(|a| a.staging));
+                if let (Some(t), Some(at)) = (loaded, destination) {
+                    intents.push(Intent::Unload {
+                        transport: t.id,
+                        at,
+                    });
                 } else if let Some(t) = obs
                     .my_units
                     .iter()
@@ -2402,7 +2458,7 @@ impl GymBot {
                 {
                     let staged: Vec<UnitId> =
                         staging.map(|a| a.members.clone()).unwrap_or_default();
-                    let mut riders: Vec<(i32, UnitId)> = obs
+                    let mut candidates: Vec<(i32, UnitId, u32)> = obs
                         .my_units
                         .iter()
                         .filter(|u| {
@@ -2411,12 +2467,34 @@ impl GymBot {
                                 && u.kind.stats().transport_size > 0
                                 && u.kind.stats().can_fight()
                         })
-                        .map(|u| (u.tile.chebyshev(t.tile), u.id))
+                        .map(|u| {
+                            (
+                                u.tile.chebyshev(t.tile),
+                                u.id,
+                                u32::from(u.kind.stats().transport_size),
+                            )
+                        })
                         .collect();
-                    riders.sort();
-                    let riders: Vec<UnitId> =
-                        riders.into_iter().take(4).map(|(_, id)| id).collect();
+                    candidates.sort();
+                    // Take what fits the rack: a machine too big for the
+                    // remaining room is passed over for a smaller one
+                    // behind it (mirrors the scripted ferry — a raw
+                    // head-count named riders the sling then stranded
+                    // strikeless with TransportFull).
+                    let mut room = u32::from(t.kind.stats().transport_capacity);
+                    let mut riders: Vec<UnitId> = Vec::new();
+                    for (_, id, size) in candidates {
+                        if size <= room {
+                            room -= size;
+                            riders.push(id);
+                        }
+                    }
                     if !riders.is_empty() {
+                        for rider in &riders {
+                            if !self.pending_boarders.contains(rider) {
+                                self.pending_boarders.push(*rider);
+                            }
+                        }
                         intents.push(Intent::Load {
                             transport: t.id,
                             riders,
@@ -2880,6 +2958,13 @@ impl GymBot {
                     .find(|b| b.id == *building)
                     .and_then(|b| b.kind.upgrade_from(b.tier))
                     .map(|upgrade| upgrade.cost),
+                Intent::Build {
+                    kind: BuildingKind::Extractor,
+                    ..
+                } => BuildingKind::Extractor
+                    .base_stats()
+                    .construction
+                    .map(|c| c.cost),
                 _ => None,
             })
             .sum();
@@ -2944,6 +3029,16 @@ impl GymBot {
         if self.memory_tick == Some(world.tick) {
             return;
         }
+        // Boarding ledger upkeep: a pending rider seen idle again
+        // bounced off the sling (samples apply to it normally from here
+        // on), and when no sling holds any cargo an absent rider has no
+        // alibi left — it is dead and the ledger clears.
+        if !world.my_units.iter().any(|u| u.cargo > 0) {
+            self.pending_boarders.clear();
+        } else {
+            self.pending_boarders
+                .retain(|id| !world.my_units.iter().any(|u| u.id == *id && u.idle));
+        }
         self.danger
             .retain(|memory| world.tick.saturating_sub(memory.seen_at) <= DANGER_MEMORY_TICKS);
 
@@ -2953,7 +3048,11 @@ impl GymBot {
                 Some(unit) if unit.hp < previous.hp => {
                     samples.push((unit.tile, recovery_uncertainty_floor()));
                 }
-                None => samples.push((previous.tile, recovery_uncertainty_floor())),
+                // Absent AND ordered aboard = riding as cargo, not dead.
+                None if !self.pending_boarders.contains(&previous.id) => {
+                    samples.push((previous.tile, recovery_uncertainty_floor()))
+                }
+                None => {}
                 Some(_) => {}
             }
         }
