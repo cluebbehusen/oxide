@@ -359,6 +359,21 @@ impl UtilityPolicy {
         }
     }
 
+    /// Retains only the harvest assignments the executive actually
+    /// emitted this think: an assignment the lowering silently refused
+    /// (worker enlisted or claimed elsewhere) must never reach the
+    /// bounce audit — the worker reads idle next think and a live node
+    /// would join the permanent blacklist for a refusal that had
+    /// nothing to do with the node.
+    pub(super) fn confirm_harvest_dispatches(&mut self, commands: &[crate::PlayerCommand]) {
+        self.last_sent.retain(|(id, _)| {
+            commands.iter().any(|command| match &command.command {
+                crate::Command::Harvest { units, .. } => units.contains(id),
+                _ => false,
+            })
+        });
+    }
+
     /// A site requested last think that never appeared was refused for a
     /// reason the observation can't see; stop asking for that anchor.
     /// A pending deferred found is a site on its way, not a refusal:
@@ -1705,6 +1720,19 @@ impl UtilityPolicy {
         {
             self.scout = None; // died on duty
         }
+        // On a proven-sealed map a ground scout cannot reach any leg: a
+        // designated crawler is released back to the pool (a harvester
+        // returns to the economy) instead of being re-dispatched at the
+        // coast forever. Air designates keep the job.
+        if let Some(id) = self.scout
+            && !ground_may_search
+            && obs
+                .my_units
+                .iter()
+                .any(|u| u.id == id && u.kind.stats().domain != Domain::Air)
+        {
+            self.scout = None;
+        }
         if !due {
             // Between sweeps the scout goes back in the pool.
             if let Some(id) = self.scout
@@ -1733,6 +1761,7 @@ impl UtilityPolicy {
                     extra.contains(&u.id)
                         || (!enlisted.contains(&u.id) && (u.kind == UnitKind::Harvester || u.idle))
                 })
+                .filter(|u| ground_may_search || u.kind.stats().domain == Domain::Air)
                 .min_by_key(|u| {
                     let preference = match u.kind {
                         UnitKind::Kestrel | UnitKind::Gnat => (0, 0),
@@ -2046,6 +2075,10 @@ impl UtilityPolicy {
 
     /// The nearest known enemy presence — buildings (ghosts included)
     /// before units — or None while the enemy is entirely unlocated.
+    /// The unit fallback skips machines hovering over known rock: a site
+    /// is a place ground forces could go, and a flyer parked on a crag
+    /// once declared a fully land-connected map "sealed" because the
+    /// route flood was asked to reach an unstandable goal.
     pub(super) fn enemy_site(obs: &Observation, home: TilePos) -> Option<TilePos> {
         obs.enemy_buildings
             .iter()
@@ -2055,6 +2088,7 @@ impl UtilityPolicy {
             .or_else(|| {
                 obs.enemy_units
                     .iter()
+                    .filter(|u| !obs.known_rock_at(u.tile))
                     .map(|u| (u.tile.manhattan(home), u.tile.y, u.tile.x))
                     .min()
                     .map(|(_, y, x)| TilePos::new(x, y))
@@ -2189,6 +2223,18 @@ impl UtilityPolicy {
 
     fn placement_tile_open(&self, obs: &Observation, tile: TilePos) -> bool {
         if !self.tile_open(obs, tile) {
+            return false;
+        }
+        // Nothing may pave over a derelict Extractor frame: the sim
+        // refuses the whole footprint as FrameBlocked, and an anchor the
+        // scorer keeps proposing anyway feeds the dead-anchor ledger for
+        // a refusal the bot could have predicted. (Frames are map data;
+        // this check lives here rather than in `tile_open` because that
+        // predicate also serves rally spots, where standing on a frame
+        // is fine.)
+        if obs.known_frames.iter().any(|frame| {
+            tile.x >= frame.x && tile.x < frame.x + 2 && tile.y >= frame.y && tile.y < frame.y + 2
+        }) {
             return false;
         }
         let claimed = obs.my_units.iter().any(|unit| {

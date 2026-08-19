@@ -3629,6 +3629,14 @@ fn cross_gulf_build_targets_stay_masked_until_a_route_exists() {
         scenario.name = if bridge { "bridge" } else { "gulf" }.into();
         scenario.map = rows;
         scenario.players[0].scrap = 500;
+        // The expansion Foundry is Fabricator-gated; stand one so the
+        // mask question stays about routing, not the tech climb.
+        scenario.buildings = vec![oxide_sim::scenario::BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Fabricator,
+            x: 7,
+            y: 4,
+        }];
         scenario.units = vec![
             oxide_sim::scenario::UnitSpec {
                 player: 0,
@@ -3685,5 +3693,105 @@ fn cross_gulf_build_targets_stay_masked_until_a_route_exists() {
     assert!(
         decision.mask[Action::BuildFoundry as usize],
         "the land bridge makes the frontier routable again"
+    );
+}
+
+/// The archipelago chicken-and-egg: discovery needs air, air needs the
+/// island doctrine, and the doctrine used to need a discovered enemy.
+/// Before any enemy is seen, the authored start anchors (public map
+/// knowledge) now answer the sealed question, so a seat that has mapped
+/// its own coastline bootstraps an Airworks instead of idling blind.
+#[test]
+fn a_sealed_start_bootstraps_airworks_before_any_enemy_is_seen() {
+    let gulf_scenario = |bridge: bool| {
+        let mut rows = vec![
+            "########################################".to_string(),
+            "#1..............#......................#".to_string(),
+            "#...............#......................#".to_string(),
+            "#...............#......................#".to_string(),
+            "#...............#............ss........#".to_string(),
+            "#...............#......................#".to_string(),
+            "#...............#..................2...#".to_string(),
+            "#...............#......................#".to_string(),
+            "########################################".to_string(),
+        ];
+        if bridge {
+            rows[4].replace_range(16..17, ".");
+        }
+        let mut scenario = Scenario::skirmish();
+        scenario.name = "sealed-start".into();
+        scenario.map = rows;
+        scenario.players[0].scrap = 500;
+        scenario.units = vec![
+            oxide_sim::scenario::UnitSpec {
+                player: 0,
+                kind: UnitKind::Harvester,
+                x: 4,
+                y: 4,
+            },
+            // Coastline watchers: the wall column must be EXPLORED for the
+            // knowledge-side route flood to prove the seal (unexplored
+            // terrain reads open). Nothing east of the wall is seen, so no
+            // enemy site exists — only the authored anchors.
+            oxide_sim::scenario::UnitSpec {
+                player: 0,
+                kind: UnitKind::Sentinel,
+                x: 14,
+                y: 2,
+            },
+            oxide_sim::scenario::UnitSpec {
+                player: 0,
+                kind: UnitKind::Sentinel,
+                x: 14,
+                y: 6,
+            },
+        ];
+        // The Airworks tech gate: a standing Fabricator makes BuildAirworks
+        // immediately legal, so the assertion is about the doctrine, not
+        // the tech climb.
+        scenario.buildings = vec![oxide_sim::scenario::BuildingSpec {
+            player: 0,
+            kind: BuildingKind::Fabricator,
+            x: 4,
+            y: 6,
+        }];
+        scenario
+    };
+
+    let anchors = |scenario: &Scenario| -> Vec<chassis::grid::TilePos> {
+        scenario
+            .start_anchors()
+            .expect("fixture anchors parse")
+            .into_iter()
+            .map(|(_, anchor)| anchor)
+            .collect()
+    };
+
+    let sealed_scenario = gulf_scenario(false);
+    let sealed = sealed_scenario.build().expect("gulf map builds");
+    let mut gym = GymBot::new(PlayerId(0));
+    gym.set_start_anchors(anchors(&sealed_scenario));
+    let decision = gym.decision(&sealed);
+    assert!(
+        decision.mask[Action::BuildAirworks as usize],
+        "the sealed start must offer the Airworks"
+    );
+    assert!(
+        !decision.mask[Action::BuildFabricator as usize],
+        "construction narrows to the Airworks bootstrap while sealed"
+    );
+    assert!(
+        decision.mask[Action::NoOperation as usize],
+        "operations stay unforced with no discovered target"
+    );
+
+    let bridged_scenario = gulf_scenario(true);
+    let bridged = bridged_scenario.build().expect("bridge map builds");
+    let mut gym = GymBot::new(PlayerId(0));
+    gym.set_start_anchors(anchors(&bridged_scenario));
+    let decision = gym.decision(&bridged);
+    assert!(
+        decision.mask[Action::BuildFabricator as usize],
+        "a walkable route to the far anchors leaves construction wide"
     );
 }
