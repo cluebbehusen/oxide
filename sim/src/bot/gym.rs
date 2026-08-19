@@ -835,6 +835,26 @@ impl GymBot {
         self.dials.cadence
     }
 
+    /// A compact executive census for external QA sampling: army counts
+    /// by state plus membership totals. Observational only — reading it
+    /// never touches decisions, ordering, or randomness.
+    pub fn exec_census(&self) -> ExecCensus {
+        let mut census = ExecCensus::default();
+        for army in self.exec.armies() {
+            match army.state {
+                super::executive::ArmyState::Staging => {
+                    census.staging += 1;
+                    census.staged_members += army.members.len() as u32;
+                }
+                super::executive::ArmyState::Pushing => census.pushing += 1,
+                super::executive::ArmyState::Engaging => census.engaging += 1,
+                super::executive::ArmyState::Withdrawing => census.withdrawing += 1,
+            }
+        }
+        census.enlisted = self.exec.enlisted().count() as u32;
+        census
+    }
+
     /// The player this bot drives.
     pub fn player(&self) -> PlayerId {
         self.player
@@ -1570,8 +1590,18 @@ impl GymBot {
                 mask[action] = legal;
             }
             // Except Scout: the seat's scouts are its harvesters, and
-            // the emergency owns every worker it has left.
+            // the emergency owns every worker it has left. And except
+            // the gathering verbs: a recovering seat lowering FormArmy
+            // every think ratchets a staging army's target upward
+            // forever (the size floor grows with membership), enlisting
+            // the whole roster into a body that never commits — measured
+            // as pentangle FFAs collapsing from 29-minute decisions into
+            // passive 50-minute caps. The freeze frees only the verbs
+            // that free the SEAT: push the guard, or come home.
             mask[Action::Scout as usize] = false;
+            mask[Action::FormArmy as usize] = false;
+            mask[Action::AirRaid as usize] = false;
+            mask[Action::Airlift as usize] = false;
             let action = match recovery {
                 RecoveryPosture::QueueHarvester => Action::TrainHarvester,
                 RecoveryPosture::Salvage => Action::Salvage,
@@ -5462,6 +5492,24 @@ fn building_plan_code(kind: BuildingKind) -> i64 {
         // future kind can alias a code an old trace may carry.
         BuildingKind::ScuttleCharge => 14,
     }
+}
+
+/// One seat's executive shape at a think, for QA instruments (the
+/// audit's per-think sampling). Serialized into the gym step frames.
+#[derive(Debug, Default, Clone, Copy, serde::Serialize)]
+pub struct ExecCensus {
+    /// Armies gathering at a rally.
+    pub staging: u32,
+    /// Armies marching on a target.
+    pub pushing: u32,
+    /// Armies in contact.
+    pub engaging: u32,
+    /// Armies pulling back to a rally.
+    pub withdrawing: u32,
+    /// Members held by staging armies.
+    pub staged_members: u32,
+    /// Every unit any army holds.
+    pub enlisted: u32,
 }
 
 /// Fog-honest mirror of the sim's construction tech gate

@@ -608,6 +608,7 @@ impl Episode {
                         "seat": gym.player().0,
                         "features": d.features.to_vec(),
                         "mask": d.mask.to_vec(),
+                        "exec": gym.exec_census(),
                     })
                 })
                 .collect();
@@ -656,6 +657,7 @@ impl Episode {
                         "seat": gym.player().0,
                         "features": d.features.to_vec(),
                         "mask": d.mask.to_vec(),
+                        "exec": gym.exec_census(),
                     })
                 })
                 .collect();

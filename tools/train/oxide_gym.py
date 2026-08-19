@@ -566,6 +566,9 @@ class SeatView:
     obs: np.ndarray
     mask: np.ndarray
     raw: list[int]
+    # Executive census from the Rust bot (armies by state, membership) —
+    # QA sampling only; absent on frames from older drivers.
+    exec: dict | None = None
 
     @property
     def faction(self) -> FactionName:
@@ -827,6 +830,7 @@ class Worker:
             obs,
             np.asarray(reply["mask"], dtype=bool),
             raw,
+            exec=reply.get("exec"),
         )
         if self.factions is not None:
             try:

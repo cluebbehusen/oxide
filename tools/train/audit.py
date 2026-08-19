@@ -145,6 +145,7 @@ class SeatTrace:
     tail_harv: int = 0
     tail_idle_harv: int = 0
     tail_legal: Counter = field(default_factory=Counter)
+    tail_exec: Counter = field(default_factory=Counter)
     max_mine: int = 0
     alive: bool = True
     site_known_at: int | None = None
@@ -191,6 +192,10 @@ def screen_game(game: GameTrace) -> list[dict]:
                     f"idle {idle_share:.0%} of {t.tail_n} decisions; legal ["
                     + ", ".join(
                         f"{k} {v * 100 // tn}%" for k, v in t.tail_legal.most_common()
+                    )
+                    + "]; exec ["
+                    + ", ".join(
+                        f"{k} {v / tn:.1f}" for k, v in sorted(t.tail_exec.items())
                     )
                     + "]",
                     **where,
@@ -384,6 +389,9 @@ def play(
                 t.tail_scrap += int(view.raw[F["scrap"]])
                 t.tail_harv += int(view.raw[F["my_harvesters"]])
                 t.tail_idle_harv += int(view.raw[F["idle_harvesters"]])
+                if view.exec:
+                    for key, value in view.exec.items():
+                        t.tail_exec[key] += int(value)
             acts[seat] = plan
         frame = worker.step(acts)
     survivors = set(frame.alive or [])
