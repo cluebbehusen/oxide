@@ -105,7 +105,7 @@ def test_parse_cup_reads_both_opponents_and_skips_banners() -> None:
         "rusher_wins": 12,
         "rusher_games": 24,
     }
-    assert cup_wins(scores) == 32
+    assert cup_wins(scores) == 20 + 2 * 12  # canary weighted double
 
 
 def test_parse_family_counts_reads_the_gate_summary() -> None:

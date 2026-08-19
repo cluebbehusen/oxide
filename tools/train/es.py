@@ -143,8 +143,15 @@ def parse_cup(stdout: str) -> dict:
     return scores
 
 
+RUSHER_WEIGHT = 2
+
+
 def cup_wins(scores: dict) -> int:
-    return scores.get("overseer_wins", 0) + scores.get("rusher_wins", 0)
+    """Fitness weights the rush canary double: the shipped line's one
+    open weakness is Cupric-side rush defense, and an equal-weight cup
+    lets Overseer polish crowd out canary recovery — es-4 spent 2.5
+    hours re-earning 11 canary wins at weight one."""
+    return scores.get("overseer_wins", 0) + RUSHER_WEIGHT * scores.get("rusher_wins", 0)
 
 
 def parse_family_counts(report: str) -> dict[str, int] | None:
