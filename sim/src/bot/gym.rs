@@ -2489,6 +2489,7 @@ impl GymBot {
                         extra: &staged,
                         anchors: &anchors,
                         ground_may_search,
+                        frontier_step: true,
                     },
                     true,
                     intents,

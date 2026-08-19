@@ -169,11 +169,16 @@ pub struct ScoutAids<'a> {
     /// birthplace is reachable on known terrain — a sealed map's
     /// search belongs to the air while the ground waits for the ferry.
     pub ground_may_search: bool,
+    /// Whether ground searchers step to the exploration frontier
+    /// instead of taking cross-dark targets raw (the gym path; the
+    /// scripted Brain keeps its historical dispatch byte for byte).
+    pub frontier_step: bool,
 }
 
 impl Default for ScoutAids<'_> {
     fn default() -> Self {
         Self {
+            frontier_step: false,
             extra: &[],
             anchors: &[],
             ground_may_search: true,
@@ -186,9 +191,12 @@ impl Default for ScoutAids<'_> {
 /// memory, and the scout rotation.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UtilityPolicy {
-    /// Harvest assignments from the last think — a unit idle again right
-    /// after being sent bounced off an unreachable node.
-    last_sent: Vec<(UnitId, TilePos)>,
+    /// Harvest assignments from the last think: worker, node, and where
+    /// the worker stood when sent. A unit idle again right after being
+    /// sent AND still standing where it started bounced off an
+    /// unreachable node; an idle unit that moved (or was re-tasked by
+    /// the scout press mid-walk) proves nothing about the node.
+    last_sent: Vec<(UnitId, TilePos, TilePos)>,
     /// Nodes that bounced a harvester back.
     dead_nodes: Vec<TilePos>,
     /// Harvester count at the last think; a drop means raiders.
@@ -343,11 +351,11 @@ impl UtilityPolicy {
     /// already refuses it), and blacklisting it would poison the tile
     /// against every future deposit landing there.
     pub(super) fn audit_harvests(&mut self, obs: &Observation) {
-        for (id, node) in std::mem::take(&mut self.last_sent) {
+        for (id, node, sent_from) in std::mem::take(&mut self.last_sent) {
             let bounced = obs
                 .my_units
                 .iter()
-                .any(|u| u.id == id && u.idle && u.hp > 0);
+                .any(|u| u.id == id && u.idle && u.hp > 0 && u.tile == sent_from);
             let still_reports = obs
                 .known_scrap
                 .iter()
@@ -359,6 +367,46 @@ impl UtilityPolicy {
         }
     }
 
+    /// The furthest tile a GROUND searcher can commit to today: the
+    /// last EXPLORED tile along the optimistic route toward `to`.
+    /// Unexplored terrain reads open in that route, so it crosses gulfs
+    /// the map may not allow — the searcher walks the lit prefix
+    /// (typically its own coast or the exploration frontier), the walk
+    /// itself extends the light, and the next press re-plans from what
+    /// it learned. Cross-gulf targets dispatched raw were measured as
+    /// ~480 UnreachableGoal rejections per digest window on the
+    /// archipelago maps, with the seat's own coastline never mapped.
+    fn ground_frontier_toward(&self, obs: &Observation, from: TilePos, to: TilePos) -> TilePos {
+        let (w, h) = (obs.map_width, obs.map_height);
+        let explored = |t: TilePos| {
+            t.x >= 0
+                && t.y >= 0
+                && t.x < w
+                && t.y < h
+                && obs
+                    .explored
+                    .get((t.y * w + t.x) as usize)
+                    .copied()
+                    .unwrap_or(false)
+        };
+        let Some(route) = chassis::path::astar(
+            w,
+            h,
+            from,
+            to,
+            |t| !obs.known_rock_at(t),
+            crate::stats::PATH_EXPANSION_CAP,
+        ) else {
+            return to;
+        };
+        route
+            .iter()
+            .copied()
+            .take_while(|tile| explored(*tile))
+            .last()
+            .unwrap_or(to)
+    }
+
     /// Retains only the harvest assignments the executive actually
     /// emitted this think: an assignment the lowering silently refused
     /// (worker enlisted or claimed elsewhere) must never reach the
@@ -366,7 +414,7 @@ impl UtilityPolicy {
     /// would join the permanent blacklist for a refusal that had
     /// nothing to do with the node.
     pub(super) fn confirm_harvest_dispatches(&mut self, commands: &[crate::PlayerCommand]) {
-        self.last_sent.retain(|(id, _)| {
+        self.last_sent.retain(|(id, ..)| {
             commands.iter().any(|command| match &command.command {
                 crate::Command::Harvest { units, .. } => units.contains(id),
                 _ => false,
@@ -454,7 +502,7 @@ impl UtilityPolicy {
                 .map(|(_, y, x)| TilePos::new(x, y));
             if let Some(node) = node {
                 intents.push(Intent::AssignHarvest { unit: u.id, node });
-                self.last_sent.push((u.id, node));
+                self.last_sent.push((u.id, node, u.tile));
             }
         }
     }
@@ -476,7 +524,7 @@ impl UtilityPolicy {
     ) {
         // Economy's assignments this think are still in the ledger
         // (the audits drained it at the think's start).
-        let assigned: Vec<UnitId> = self.last_sent.iter().map(|(id, _)| *id).collect();
+        let assigned: Vec<UnitId> = self.last_sent.iter().map(|(id, ..)| *id).collect();
         let starved: Vec<(UnitId, TilePos)> = obs
             .my_units
             .iter()
@@ -511,7 +559,9 @@ impl UtilityPolicy {
             match node {
                 Some(node) => {
                     intents.push(Intent::AssignHarvest { unit: id, node });
-                    self.last_sent.push((id, node));
+                    if let Some(at) = obs.my_units.iter().find(|u| u.id == id).map(|u| u.tile) {
+                        self.last_sent.push((id, node, at));
+                    }
                 }
                 None => still_starved.push(id),
             }
@@ -1696,6 +1746,7 @@ impl UtilityPolicy {
             extra,
             anchors,
             ground_may_search,
+            frontier_step,
         } = aids;
         /// How far short of the objective a scout stops — inside a
         /// harvester's vision (6), and close enough to aggro (5) that
@@ -1810,10 +1861,14 @@ impl UtilityPolicy {
             self.scout_leg += 1;
             leg
         };
-        intents.push(Intent::Scout {
-            unit: scout,
-            to: self.passable_near(obs, to),
-        });
+        let to = self.passable_near(obs, to);
+        let to = match obs.my_units.iter().find(|u| u.id == scout) {
+            Some(u) if frontier_step && u.kind.stats().domain != Domain::Air => {
+                self.ground_frontier_toward(obs, u.tile, to)
+            }
+            _ => to,
+        };
+        intents.push(Intent::Scout { unit: scout, to });
 
         // The search party: with every enemy site lost, one peeker
         // cannot sweep a big map before the game rots — measured as
@@ -1902,10 +1957,14 @@ impl UtilityPolicy {
                         _ => legs[(unit.0 as usize) % legs.len()],
                     }
                 };
-                intents.push(Intent::Scout {
-                    unit,
-                    to: self.passable_near(obs, to),
-                });
+                let to = self.passable_near(obs, to);
+                let to = match obs.my_units.iter().find(|u| u.id == unit) {
+                    Some(u) if frontier_step && u.kind.stats().domain != Domain::Air => {
+                        self.ground_frontier_toward(obs, u.tile, to)
+                    }
+                    _ => to,
+                };
+                intents.push(Intent::Scout { unit, to });
             }
         }
     }

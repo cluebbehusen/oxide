@@ -291,8 +291,12 @@ pub struct SeatDigestRow {
     pub explored_pct: u32,
     /// Commands the sim rejected since the previous digest.
     pub rejections: u32,
+    /// Rejection counts by reason since the previous digest.
+    pub rejection_reasons: BTreeMap<String, u32>,
     /// Orders that stalled since the previous digest.
     pub stalls: u32,
+    /// Stall counts by reason since the previous digest.
+    pub stall_reasons: BTreeMap<String, u32>,
 }
 
 /// One seat's first-of-kind ledger.
@@ -526,7 +530,9 @@ fn battle_verdict(losses: &[SeatLoss], seat_team: &[u8]) -> String {
 struct SeatWindow {
     hauled: u64,
     rejections: u32,
+    rejection_reasons: BTreeMap<String, u32>,
     stalls: u32,
+    stall_reasons: BTreeMap<String, u32>,
 }
 
 /// Re-executes `replay` once and returns the digest. Deterministic: the same
@@ -756,11 +762,21 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                 Event::ScrapDeposited { player, amount } => {
                     windows[player.0 as usize].hauled += u64::from(*amount);
                 }
-                Event::CommandRejected { player, .. } => {
-                    windows[player.0 as usize].rejections += 1;
+                Event::CommandRejected { player, reason } => {
+                    let window = &mut windows[player.0 as usize];
+                    window.rejections += 1;
+                    *window
+                        .rejection_reasons
+                        .entry(format!("{reason:?}"))
+                        .or_default() += 1;
                 }
-                Event::OrderStalled { player, .. } => {
-                    windows[player.0 as usize].stalls += 1;
+                Event::OrderStalled { player, reason, .. } => {
+                    let window = &mut windows[player.0 as usize];
+                    window.stalls += 1;
+                    *window
+                        .stall_reasons
+                        .entry(format!("{reason:?}"))
+                        .or_default() += 1;
                 }
                 Event::PlayerResigned { player } => {
                     timeline.push(entry(now, TimelineKind::Resignation { seat: player.0 }));
@@ -1110,7 +1126,9 @@ fn capture_digest(
                 foundries: built_count(state, seat_id, BuildingKind::Foundry),
                 explored_pct: team_explored[&state.players()[seat].team],
                 rejections: window.rejections,
+                rejection_reasons: window.rejection_reasons,
                 stalls: window.stalls,
+                stall_reasons: window.stall_reasons,
             }
         })
         .collect();
@@ -1295,9 +1313,21 @@ impl SummaryReport {
                     .map(|(name, count)| format!("{name} x{count}"))
                     .collect::<Vec<_>>()
                     .join(", ");
+                let reasons = |map: &BTreeMap<String, u32>| -> String {
+                    if map.is_empty() {
+                        String::new()
+                    } else {
+                        let parts = map
+                            .iter()
+                            .map(|(reason, count)| format!("{reason} x{count}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!(" [{parts}]")
+                    }
+                };
                 let _ = writeln!(
                     out,
-                    "  s{}: {}u val {} ({})  harv {}/{} idle  bank {} +{}  bld {} ({} foundry)  expl {}%  rej {} stall {}",
+                    "  s{}: {}u val {} ({})  harv {}/{} idle  bank {} +{}  bld {} ({} foundry)  expl {}%  rej {}{} stall {}{}",
                     row.seat,
                     row.units,
                     row.army_value,
@@ -1310,7 +1340,9 @@ impl SummaryReport {
                     row.foundries,
                     row.explored_pct,
                     row.rejections,
+                    reasons(&row.rejection_reasons),
                     row.stalls,
+                    reasons(&row.stall_reasons),
                 );
             }
             if let Some(minimap) = &digest.minimap {
