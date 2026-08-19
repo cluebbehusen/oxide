@@ -73,6 +73,29 @@ enum Cmd {
         #[arg(long)]
         map: bool,
     },
+    /// Digest a replay for review without screenshots: an event timeline
+    /// (battles, expansions, tech firsts, eliminations, lulls), per-seat
+    /// digests at intervals, and a coarse ASCII minimap. Large games read
+    /// tighter with `--every 10000` or `--minimaps none`.
+    ReplaySummary {
+        /// Replay or save JSON path.
+        path: PathBuf,
+        /// Stop after this state tick (tick N is before commands stamped N
+        /// execute); clamped to the replay's recorded duration.
+        #[arg(long)]
+        until: Option<u64>,
+        /// Digest cadence in ticks. Defaults to duration/16, clamped to
+        /// [2000, 10000].
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        every: Option<u64>,
+        /// Emit JSON instead of the text digest.
+        #[arg(long)]
+        json: bool,
+        /// Minimaps on digests: every digest, sparse (every fourth and the
+        /// final), or none.
+        #[arg(long, default_value = "sparse", value_parser = ["all", "sparse", "none"])]
+        minimaps: String,
+    },
     /// Render a scenario state to a PNG (software rasterizer, no window).
     Render {
         /// Scenario path, or "skirmish".
@@ -567,6 +590,31 @@ fn main() -> Result<()> {
                 map,
             )?;
             println!("{}", serde_json::to_string_pretty(&inspection)?);
+        }
+        Cmd::ReplaySummary {
+            path,
+            until,
+            every,
+            json,
+            minimaps,
+        } => {
+            let replay =
+                GameReplay::load(&path).with_context(|| format!("loading {}", path.display()))?;
+            let opts = oxide_driver::replay_summary::SummaryOptions {
+                until,
+                every,
+                minimaps: match minimaps.as_str() {
+                    "all" => oxide_driver::replay_summary::MinimapMode::All,
+                    "none" => oxide_driver::replay_summary::MinimapMode::None,
+                    _ => oxide_driver::replay_summary::MinimapMode::Sparse,
+                },
+            };
+            let report = oxide_driver::replay_summary::summarize(&replay, &opts)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", report.render());
+            }
         }
         Cmd::Render {
             scenario,

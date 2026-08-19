@@ -264,6 +264,10 @@ per-seat views, key/click injection, camera, overlay, scenario loading).
 per-seat command activity and longest silence, plus exact snapshots. A snapshot
 at tick `N` is the state immediately before commands stamped `N` execute;
 repeat `--tick` or pass a comma-separated list, and omit it for the final state.
+`replay-summary` narrates a whole replay as a compact text digest — an event
+timeline (first contact, battles, expansions, eliminations, lulls), per-seat
+digests at intervals, and coarse ASCII minimaps — with `--json` as the stable
+machine contract.
 `profile-shell` builds an optimized native shell, reconstructs the record through
 `--from`, then resumes it as a real live Playing match with the normal HUD, fog,
 and bots. The record's later commands are not replayed: this is an honest live
