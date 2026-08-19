@@ -367,8 +367,9 @@ impl UtilityPolicy {
         }
     }
 
-    /// Where a GROUND searcher extends the light: the nearest explored
-    /// tile that borders unexplored ground (the exploration frontier).
+    /// Where a GROUND searcher extends the light: the explored tile
+    /// bordering unexplored ground (the exploration frontier) closest
+    /// to the searcher's assigned target.
     /// Arriving there lights what lies beyond, the ring recedes, and the
     /// next press plans from the new edge — a sweep that needs no route
     /// through the dark at all. Raw cross-dark targets were measured as
@@ -377,7 +378,12 @@ impl UtilityPolicy {
     /// one coastal tile forever (exploration frozen at 9%). `None` once
     /// nothing known borders darkness — the lit world is swept, and the
     /// caller keeps its original target.
-    fn ground_frontier_toward(&self, obs: &Observation, from: TilePos) -> Option<TilePos> {
+    fn ground_frontier_toward(
+        &self,
+        obs: &Observation,
+        from: TilePos,
+        toward: TilePos,
+    ) -> Option<TilePos> {
         let (w, h) = (obs.map_width, obs.map_height);
         let explored = |t: TilePos| {
             t.x >= 0
@@ -390,7 +396,7 @@ impl UtilityPolicy {
                     .copied()
                     .unwrap_or(false)
         };
-        let mut best: Option<(i32, i32, i32)> = None;
+        let mut best: Option<(i32, i32, i32, i32)> = None;
         for y in 0..h {
             for x in 0..w {
                 let tile = TilePos::new(x, y);
@@ -409,13 +415,19 @@ impl UtilityPolicy {
                 if tile == from {
                     continue;
                 }
-                let key = (tile.manhattan(from), tile.y, tile.x);
+                // Directed sweep: the ring tile closest to the ASSIGNED
+                // target wins, the searcher's own distance breaks ties.
+                // A nearest-to-self pick swept the home region forever
+                // and never carried the search toward the enemy
+                // quadrant (measured as two broad-front seats fighting
+                // fifty minutes without ever seeing a foundry).
+                let key = (tile.manhattan(toward), tile.manhattan(from), tile.y, tile.x);
                 if best.is_none_or(|current| key < current) {
                     best = Some(key);
                 }
             }
         }
-        best.map(|(_, y, x)| TilePos::new(x, y))
+        best.map(|(_, _, y, x)| TilePos::new(x, y))
     }
 
     /// Retains only the harvest assignments the executive actually
@@ -1875,7 +1887,7 @@ impl UtilityPolicy {
         let to = self.passable_near(obs, to);
         let to = match obs.my_units.iter().find(|u| u.id == scout) {
             Some(u) if frontier_step && u.kind.stats().domain != Domain::Air => {
-                self.ground_frontier_toward(obs, u.tile).unwrap_or(to)
+                self.ground_frontier_toward(obs, u.tile, to).unwrap_or(to)
             }
             _ => to,
         };
@@ -1971,7 +1983,7 @@ impl UtilityPolicy {
                 let to = self.passable_near(obs, to);
                 let to = match obs.my_units.iter().find(|u| u.id == unit) {
                     Some(u) if frontier_step && u.kind.stats().domain != Domain::Air => {
-                        self.ground_frontier_toward(obs, u.tile).unwrap_or(to)
+                        self.ground_frontier_toward(obs, u.tile, to).unwrap_or(to)
                     }
                     _ => to,
                 };
