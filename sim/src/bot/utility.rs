@@ -367,16 +367,17 @@ impl UtilityPolicy {
         }
     }
 
-    /// The furthest tile a GROUND searcher can commit to today: the
-    /// last EXPLORED tile along the optimistic route toward `to`.
-    /// Unexplored terrain reads open in that route, so it crosses gulfs
-    /// the map may not allow — the searcher walks the lit prefix
-    /// (typically its own coast or the exploration frontier), the walk
-    /// itself extends the light, and the next press re-plans from what
-    /// it learned. Cross-gulf targets dispatched raw were measured as
-    /// ~480 UnreachableGoal rejections per digest window on the
-    /// archipelago maps, with the seat's own coastline never mapped.
-    fn ground_frontier_toward(&self, obs: &Observation, from: TilePos, to: TilePos) -> TilePos {
+    /// Where a GROUND searcher extends the light: the nearest explored
+    /// tile that borders unexplored ground (the exploration frontier).
+    /// Arriving there lights what lies beyond, the ring recedes, and the
+    /// next press plans from the new edge — a sweep that needs no route
+    /// through the dark at all. Raw cross-dark targets were measured as
+    /// ~480 UnreachableGoal rejections per digest window on archipelago
+    /// maps, and a walk-the-lit-prefix variant parked every searcher on
+    /// one coastal tile forever (exploration frozen at 9%). `None` once
+    /// nothing known borders darkness — the lit world is swept, and the
+    /// caller keeps its original target.
+    fn ground_frontier_toward(&self, obs: &Observation, from: TilePos) -> Option<TilePos> {
         let (w, h) = (obs.map_width, obs.map_height);
         let explored = |t: TilePos| {
             t.x >= 0
@@ -389,22 +390,32 @@ impl UtilityPolicy {
                     .copied()
                     .unwrap_or(false)
         };
-        let Some(route) = chassis::path::astar(
-            w,
-            h,
-            from,
-            to,
-            |t| !obs.known_rock_at(t),
-            crate::stats::PATH_EXPANSION_CAP,
-        ) else {
-            return to;
-        };
-        route
-            .iter()
-            .copied()
-            .take_while(|tile| explored(*tile))
-            .last()
-            .unwrap_or(to)
+        let mut best: Option<(i32, i32, i32)> = None;
+        for y in 0..h {
+            for x in 0..w {
+                let tile = TilePos::new(x, y);
+                if !explored(tile) || self.rock_at(obs, tile) {
+                    continue;
+                }
+                let borders_dark = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|(dx, dy)| {
+                    let n = tile.offset(*dx, *dy);
+                    n.x >= 0 && n.y >= 0 && n.x < w && n.y < h && !explored(n)
+                });
+                if !borders_dark {
+                    continue;
+                }
+                // Standing on the edge already; this tile cannot extend
+                // the light for THIS searcher.
+                if tile == from {
+                    continue;
+                }
+                let key = (tile.manhattan(from), tile.y, tile.x);
+                if best.is_none_or(|current| key < current) {
+                    best = Some(key);
+                }
+            }
+        }
+        best.map(|(_, y, x)| TilePos::new(x, y))
     }
 
     /// Retains only the harvest assignments the executive actually
@@ -1864,7 +1875,7 @@ impl UtilityPolicy {
         let to = self.passable_near(obs, to);
         let to = match obs.my_units.iter().find(|u| u.id == scout) {
             Some(u) if frontier_step && u.kind.stats().domain != Domain::Air => {
-                self.ground_frontier_toward(obs, u.tile, to)
+                self.ground_frontier_toward(obs, u.tile).unwrap_or(to)
             }
             _ => to,
         };
@@ -1960,7 +1971,7 @@ impl UtilityPolicy {
                 let to = self.passable_near(obs, to);
                 let to = match obs.my_units.iter().find(|u| u.id == unit) {
                     Some(u) if frontier_step && u.kind.stats().domain != Domain::Air => {
-                        self.ground_frontier_toward(obs, u.tile, to)
+                        self.ground_frontier_toward(obs, u.tile).unwrap_or(to)
                     }
                     _ => to,
                 };
