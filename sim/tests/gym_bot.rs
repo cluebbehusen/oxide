@@ -3601,3 +3601,89 @@ fn every_masked_legal_production_action_lowers_without_rejection() {
         "test premise: the sweep actually probed ({probed})"
     );
 }
+
+/// The route filter behind the expansion re-order-loop fix: a build target
+/// no builder can walk to must not be mask-legal (a cross-gulf claim dies at
+/// walk time, the site audit blacklists the anchor, and the planner retries
+/// the neighbor every think — measured on the island maps as hundreds of
+/// doomed build orders and zero foundings). The same map with a land bridge
+/// is the control: both actions come back.
+#[test]
+fn cross_gulf_build_targets_stay_masked_until_a_route_exists() {
+    let island_scenario = |bridge: bool| {
+        let mut rows = vec![
+            "########################################".to_string(),
+            "#1..............#......................#".to_string(),
+            "#...............#.............E........#".to_string(),
+            "#...............#......................#".to_string(),
+            "#...............#............ss........#".to_string(),
+            "#...............#......................#".to_string(),
+            "#...............#..................2...#".to_string(),
+            "#...............#......................#".to_string(),
+            "########################################".to_string(),
+        ];
+        if bridge {
+            rows[4].replace_range(16..17, ".");
+        }
+        let mut scenario = Scenario::skirmish();
+        scenario.name = if bridge { "bridge" } else { "gulf" }.into();
+        scenario.map = rows;
+        scenario.players[0].scrap = 500;
+        scenario.units = vec![
+            oxide_sim::scenario::UnitSpec {
+                player: 0,
+                kind: UnitKind::Harvester,
+                x: 4,
+                y: 4,
+            },
+            // Forward observers chaining vision across the corridor: the
+            // frame, the scrap, the anchor ring, AND the route itself must
+            // be EXPLORED knowledge — the builder-route flood walks only
+            // explored ground — so the mask question is purely about the
+            // wall, not about fog.
+            oxide_sim::scenario::UnitSpec {
+                player: 0,
+                kind: UnitKind::Sentinel,
+                x: 12,
+                y: 4,
+            },
+            oxide_sim::scenario::UnitSpec {
+                player: 0,
+                kind: UnitKind::Sentinel,
+                x: 20,
+                y: 4,
+            },
+            oxide_sim::scenario::UnitSpec {
+                player: 0,
+                kind: UnitKind::Sentinel,
+                x: 27,
+                y: 4,
+            },
+        ];
+        scenario
+    };
+
+    let sealed = island_scenario(false).build().expect("gulf map builds");
+    let mut gym = GymBot::new(PlayerId(0));
+    let decision = gym.decision(&sealed);
+    assert!(
+        !decision.mask[Action::BuildExtractor as usize],
+        "a known frame across the gulf must not make BuildExtractor legal"
+    );
+    assert!(
+        !decision.mask[Action::BuildFoundry as usize],
+        "a known scrap frontier across the gulf must not make BuildFoundry legal"
+    );
+
+    let bridged = island_scenario(true).build().expect("bridge map builds");
+    let mut gym = GymBot::new(PlayerId(0));
+    let decision = gym.decision(&bridged);
+    assert!(
+        decision.mask[Action::BuildExtractor as usize],
+        "the land bridge makes the frame routable again"
+    );
+    assert!(
+        decision.mask[Action::BuildFoundry as usize],
+        "the land bridge makes the frontier routable again"
+    );
+}

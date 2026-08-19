@@ -1402,9 +1402,22 @@ impl GymBot {
                 !obs.my_buildings.iter().any(|b| b.anchor == anchor)
                     && !obs.enemy_buildings.iter().any(|b| b.anchor == anchor)
             };
+            // The route filter mirrors the lowering: a frame no builder
+            // can walk to must not make the action legal, or a doctrine
+            // narrowing construction to it starves the whole head.
             mask[Action::BuildExtractor as usize] = free_builder(&obs, &enlisted)
                 && self.unpaid_claim_reserve(&obs) == 0
-                && obs.known_frames.iter().any(|f| unclaimed_frame(*f));
+                && obs.known_frames.iter().any(|f| {
+                    unclaimed_frame(*f) && {
+                        let (_, builders) = defense_probe.get_or_insert_with(|| {
+                            let passability = KnownPassability::from_observation(&obs);
+                            let builders =
+                                DefenseBuilderRoutes::measure(&obs, &enlisted, &passability);
+                            (passability, builders)
+                        });
+                        builders.travel_to(*f, BuildingKind::Extractor).is_some()
+                    }
+                });
             mask[Action::Upgrade as usize] = free_builder(&obs, &enlisted)
                 && obs.my_buildings.iter().any(|b| {
                     b.built
@@ -2002,7 +2015,10 @@ impl GymBot {
             self.set_planned_build(kind, obs.tick);
         }
         // Restoring a frame skips the planned-build machinery: its
-        // anchor is the frame itself, not a placement search.
+        // anchor is the frame itself, not a placement search. The
+        // route filter mirrors the mask: a frame no builder can walk
+        // to (a cross-gulf claim) would die at walk time and re-stage
+        // every think.
         if plan.construction == Action::BuildExtractor {
             let cost = BuildingKind::Extractor
                 .base_stats()
@@ -2013,17 +2029,24 @@ impl GymBot {
                 !obs.my_buildings.iter().any(|b| b.anchor == anchor)
                     && !obs.enemy_buildings.iter().any(|b| b.anchor == anchor)
             };
-            if obs.scrap >= cost
-                && let Some(frame) = obs
+            if obs.scrap >= cost {
+                let (_, builders) = defense_probe.get_or_insert_with(|| {
+                    let passability = KnownPassability::from_observation(&obs);
+                    let builders = DefenseBuilderRoutes::measure(&obs, &enlisted, &passability);
+                    (passability, builders)
+                });
+                if let Some(frame) = obs
                     .known_frames
                     .iter()
                     .filter(|f| unclaimed(**f))
+                    .filter(|f| builders.travel_to(**f, BuildingKind::Extractor).is_some())
                     .min_by_key(|f| (f.chebyshev(home), f.y, f.x))
-            {
-                intents.push(Intent::Build {
-                    kind: BuildingKind::Extractor,
-                    anchor: *frame,
-                });
+                {
+                    intents.push(Intent::Build {
+                        kind: BuildingKind::Extractor,
+                        anchor: *frame,
+                    });
+                }
             }
         }
         // The upgrade head: fixed priority over the eligible ladder,
@@ -2579,25 +2602,36 @@ impl GymBot {
                     .any(|anchor| builders.travel_to(anchor, kind).is_some())
             }
             BuildingKind::Foundry => self
-                .expansion_focus(obs)
-                .and_then(|focus| self.policy.placement_near(obs, kind, focus))
+                .expansion_anchor(obs, enlisted, defense_probe)
                 .is_some(),
             _ => self.policy.placement_near(obs, kind, home).is_some(),
         }
     }
 
-    /// Where an expansion Foundry wants to stand: the closest
-    /// remembered salvage field no own Foundry already serves. `None`
-    /// when the known map holds no such frontier — the action stays
-    /// masked rather than lowering into a redundant home Foundry.
-    fn expansion_focus(&self, obs: &Observation) -> Option<TilePos> {
+    /// Where an expansion Foundry wants to stand: an anchor beside the
+    /// closest remembered salvage field no own Foundry already serves
+    /// that a live builder can actually reach over known terrain. The
+    /// route check is load-bearing: a deferred found at an unroutable
+    /// anchor dies at walk time, the site audit blacklists it as
+    /// refused, and the planner retries the neighbor every think —
+    /// measured on island maps as hundreds of doomed build orders and
+    /// zero foundings. `None` when no reachable frontier exists — the
+    /// action stays masked and exhaustion falls through to the
+    /// Reclaimer.
+    fn expansion_anchor(
+        &self,
+        obs: &Observation,
+        enlisted: &[UnitId],
+        defense_probe: &mut Option<(KnownPassability, DefenseBuilderRoutes)>,
+    ) -> Option<TilePos> {
         let foundries: Vec<TilePos> = obs
             .my_buildings
             .iter()
             .filter(|b| b.kind == BuildingKind::Foundry)
             .map(|b| b.anchor)
             .collect();
-        obs.known_scrap
+        let mut frontiers: Vec<(i32, i32, i32, TilePos)> = obs
+            .known_scrap
             .iter()
             .filter(|(tile, amount)| {
                 *amount > 0
@@ -2605,15 +2639,30 @@ impl GymBot {
                         .iter()
                         .all(|f| f.chebyshev(*tile) > FOUNDRY_EXPANSION_RADIUS)
             })
-            .map(|(tile, _)| *tile)
-            .min_by_key(|tile| {
+            .map(|(tile, _)| {
                 let frontier = foundries
                     .iter()
                     .map(|f| f.chebyshev(*tile))
                     .min()
                     .unwrap_or(0);
-                (frontier, tile.y, tile.x)
+                (frontier, tile.y, tile.x, *tile)
             })
+            .collect();
+        if frontiers.is_empty() {
+            return None;
+        }
+        frontiers.sort_unstable();
+        let (_, builders) = defense_probe.get_or_insert_with(|| {
+            let passability = KnownPassability::from_observation(obs);
+            let builders = DefenseBuilderRoutes::measure(obs, enlisted, &passability);
+            (passability, builders)
+        });
+        frontiers.into_iter().find_map(|(.., focus)| {
+            self.policy
+                .placements_near(obs, BuildingKind::Foundry, focus)
+                .into_iter()
+                .find(|anchor| builders.travel_to(*anchor, BuildingKind::Foundry).is_some())
+        })
     }
 
     fn build_anchor(
@@ -2628,9 +2677,7 @@ impl GymBot {
             BuildingKind::Turret | BuildingKind::FlakTurret | BuildingKind::Bastion => {
                 self.defense_anchor(obs, enlisted, home, kind, defense_probe)
             }
-            BuildingKind::Foundry => self
-                .expansion_focus(obs)
-                .and_then(|focus| self.policy.placement_near(obs, kind, focus)),
+            BuildingKind::Foundry => self.expansion_anchor(obs, enlisted, defense_probe),
             BuildingKind::Array => {
                 // A mast IS its ring: a second mast inside a standing
                 // ring re-buys coverage the first already paid for
