@@ -304,13 +304,14 @@ def play(
     seed: int,
     ticks: int,
     record_dir: pathlib.Path | None = None,
+    forced_style: tuple[str, int] | None = None,
 ) -> GameTrace:
     catalog = worker.profile_catalog
     control = tuple(range(seat_count))
     factions = "".join("f" if s % 2 == 0 else "c" for s in control)
     conds = {
         s: catalog.condition(
-            *PROFILE_ROTATION[(seed + s) % len(PROFILE_ROTATION)],
+            *(forced_style or PROFILE_ROTATION[(seed + s) % len(PROFILE_ROTATION)]),
             catalog.default_role,
             "ferrous" if s % 2 == 0 else "cupric",
         )
@@ -425,6 +426,12 @@ def main() -> None:
     ap.add_argument("--driver", default="../../target/release/oxide-driver")
     ap.add_argument("--scenarios", default="../../scenarios")
     ap.add_argument(
+        "--style",
+        default=None,
+        help="force one 'style/variant' on every seat (e.g. turtle/1) — "
+        "personality-specific failures hide from the dealt rotation",
+    )
+    ap.add_argument(
         "--maps",
         default=None,
         help="comma-separated scenario stems; omission sweeps every shipped map",
@@ -462,6 +469,11 @@ def main() -> None:
     actor.eval()
     out = pathlib.Path("runs/audit") / args.name
     out.mkdir(parents=True, exist_ok=True)
+
+    forced_style: tuple[str, int] | None = None
+    if args.style:
+        style_name, _, variant = args.style.partition("/")
+        forced_style = (style_name, int(variant or 0))
 
     scenario_dir = pathlib.Path(args.scenarios)
     wanted = set(args.maps.split(",")) if args.maps else None
@@ -517,6 +529,7 @@ def main() -> None:
                     record_dir=pathlib.Path(args.save_replays)
                     if args.save_replays
                     else None,
+                    forced_style=forced_style,
                 )
                 game.mode = mode
                 games.append(game)
