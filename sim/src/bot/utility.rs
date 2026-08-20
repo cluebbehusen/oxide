@@ -313,7 +313,7 @@ impl UtilityPolicy {
             self.seen_air = true;
         }
 
-        self.economy(obs, home_tile, &mut intents);
+        self.economy(obs, home_tile, false, &mut intents);
         self.production(dials, obs, home_tile, &mut budget, &mut intents);
         self.construction(dials, obs, home_tile, &mut budget, &mut intents);
         self.repairs(dials, obs, &mut budget, &mut intents);
@@ -352,10 +352,15 @@ impl UtilityPolicy {
     /// against every future deposit landing there.
     pub(super) fn audit_harvests(&mut self, obs: &Observation) {
         for (id, node, sent_from) in std::mem::take(&mut self.last_sent) {
+            // Within one tile of the send point: collision separation
+            // nudges a routeless worker off its exact tile, and an
+            // equality test let the same unreachable node be retried
+            // forever (measured as 98 then 227 NoRoute stalls in the
+            // first two windows of one seat's game).
             let bounced = obs
                 .my_units
                 .iter()
-                .any(|u| u.id == id && u.idle && u.hp > 0 && u.tile == sent_from);
+                .any(|u| u.id == id && u.idle && u.hp > 0 && u.tile.chebyshev(sent_from) <= 1);
             let still_reports = obs
                 .known_scrap
                 .iter()
@@ -378,6 +383,38 @@ impl UtilityPolicy {
     /// one coastal tile forever (exploration frozen at 9%). `None` once
     /// nothing known borders darkness — the lit world is swept, and the
     /// caller keeps its original target.
+    /// The set of tiles walkable from `from` over KNOWN terrain
+    /// (unexplored reads open, known rock closed) — one breadth-first
+    /// flood, indexed `y * width + x`. The route truth every dispatcher
+    /// that names a ground destination must consult: manhattan-nearest
+    /// picks across explored walls stall forever.
+    fn reachable_component(&self, obs: &Observation, from: TilePos) -> Vec<bool> {
+        let (w, h) = (obs.map_width, obs.map_height);
+        let index = |t: TilePos| (t.y * w + t.x) as usize;
+        let mut reachable = vec![false; (w * h).max(0) as usize];
+        if from.x >= 0 && from.y >= 0 && from.x < w && from.y < h {
+            let mut queue = std::collections::VecDeque::new();
+            reachable[index(from)] = true;
+            queue.push_back(from);
+            while let Some(tile) = queue.pop_front() {
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let n = tile.offset(dx, dy);
+                    if n.x >= 0
+                        && n.y >= 0
+                        && n.x < w
+                        && n.y < h
+                        && !reachable[index(n)]
+                        && !self.rock_at(obs, n)
+                    {
+                        reachable[index(n)] = true;
+                        queue.push_back(n);
+                    }
+                }
+            }
+        }
+        reachable
+    }
+
     fn ground_frontier_toward(
         &self,
         obs: &Observation,
@@ -385,22 +422,24 @@ impl UtilityPolicy {
         toward: TilePos,
     ) -> Option<TilePos> {
         let (w, h) = (obs.map_width, obs.map_height);
+        let index = |t: TilePos| (t.y * w + t.x) as usize;
         let explored = |t: TilePos| {
             t.x >= 0
                 && t.y >= 0
                 && t.x < w
                 && t.y < h
-                && obs
-                    .explored
-                    .get((t.y * w + t.x) as usize)
-                    .copied()
-                    .unwrap_or(false)
+                && obs.explored.get(index(t)).copied().unwrap_or(false)
         };
+        // The searcher's reachable component over KNOWN terrain: a ring
+        // tile across an explored bench wall is manhattan-near and
+        // walk-impossible — the same missing-route-check disease this
+        // sweep was built to cure.
+        let reachable = self.reachable_component(obs, from);
         let mut best: Option<(i32, i32, i32, i32)> = None;
         for y in 0..h {
             for x in 0..w {
                 let tile = TilePos::new(x, y);
-                if !explored(tile) || self.rock_at(obs, tile) {
+                if !explored(tile) || self.rock_at(obs, tile) || !reachable[index(tile)] {
                     continue;
                 }
                 let borders_dark = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|(dx, dy)| {
@@ -499,7 +538,20 @@ impl UtilityPolicy {
     /// it sits no deeper in their half than ours — a returning scout
     /// must not be "efficiently" assigned to mine at the enemy's
     /// doorstep.
-    pub(super) fn economy(&mut self, obs: &Observation, home: TilePos, intents: &mut Vec<Intent>) {
+    /// `route_check` (the gym path only; the scripted Brain keeps its
+    /// historical dispatch byte for byte) filters candidate nodes to the
+    /// component walkable from home — a manhattan-nearest node across a
+    /// bench wall stalls the walk, and collision nudges defeated the
+    /// bounce audit for 98 then 227 stalls in one seat's opening.
+    pub(super) fn economy(
+        &mut self,
+        obs: &Observation,
+        home: TilePos,
+        route_check: bool,
+        intents: &mut Vec<Intent>,
+    ) {
+        let reach = route_check.then(|| self.reachable_component(obs, home));
+        let (w, _h) = (obs.map_width, obs.map_height);
         let enemy_base = obs
             .enemy_buildings
             .iter()
@@ -518,6 +570,11 @@ impl UtilityPolicy {
                 .filter(|(pos, amount)| {
                     *amount > 0
                         && !self.dead_nodes.contains(pos)
+                        && reach.as_ref().is_none_or(|r| {
+                            r.get((pos.y * w + pos.x) as usize)
+                                .copied()
+                                .unwrap_or(false)
+                        })
                         && enemy_base.is_none_or(|eb| pos.manhattan(home) <= pos.manhattan(eb))
                 })
                 .map(|(pos, _)| (pos.manhattan(u.tile), pos.y, pos.x))

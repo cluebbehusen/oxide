@@ -2250,7 +2250,7 @@ impl GymBot {
         // starvation ladder behind the normal channel — gym bots
         // prospect; the scripted Brain never does), orphaned
         // sites resumed (paid-for progress must not strand).
-        self.policy.economy(&obs, home, &mut intents);
+        self.policy.economy(&obs, home, true, &mut intents);
         // The action's Build/Repair/Salvage spends a harvester the
         // executive picks only at lowering time, and Scout's lowering
         // is unconditional: a prospector drawn from that same machine
