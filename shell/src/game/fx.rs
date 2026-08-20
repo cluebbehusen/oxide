@@ -807,6 +807,9 @@ impl Game {
                         }
                         oxide_sim::StallReason::TransportFull => "the transport is full",
                         oxide_sim::StallReason::NoOpenGround => "no open ground to unload there",
+                        oxide_sim::StallReason::DangerHold => {
+                            "worker waiting for a safe route home"
+                        }
                     });
                     self.fx.push(Effect {
                         kind: EffectKind::Ping {

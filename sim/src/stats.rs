@@ -2013,6 +2013,14 @@ pub const HARVEST_INCIDENT_MEMORY_TICKS: crate::Tick = 15 * crate::TICKS_PER_SEC
 /// Radius around a recent allied impact or loss that autonomous Harvest
 /// treats as unsafe while the incident memory is live.
 pub const HARVEST_INCIDENT_DANGER_RADIUS: i32 = 4;
+/// How far (Chebyshev tiles) a worker already standing inside observed
+/// danger may route THROUGH it to get out. Static fire is otherwise a
+/// hard barrier, which made a worker caught inside a remembered turret's
+/// ring unable to take its first step home — one was measured parked
+/// bit-identically for 3,600 ticks with a full load, invisible to every
+/// stall counter. A turret's ring is its range plus the static margin,
+/// so this covers egress from the far side of one ring.
+pub const HARVEST_DANGER_EGRESS_RADIUS: i32 = 7;
 
 /// Maximum recent allied impact sites retained per team. Incidents at one
 /// tile coalesce, and the oldest expiry is evicted first at the ceiling.

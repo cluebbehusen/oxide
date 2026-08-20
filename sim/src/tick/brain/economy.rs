@@ -1069,11 +1069,15 @@ struct DropOffScan {
 /// remaining foundry — a fully sealed worker floods twice per tick,
 /// not twice per foundry. Returns false only when no drop-off is
 /// reachable at all: the caller's stall.
+/// Ticks between repeated DangerHold reports for one waiting worker.
+const DANGER_HOLD_REPORT_PERIOD: u64 = 100;
+
 fn try_drop_offs(
     state: &mut State,
     danger: &GroundSalvageDanger,
     id: UnitId,
     drop_offs: &[BuildingId],
+    events: &mut Vec<Event>,
 ) -> bool {
     let mut scan = DropOffScan::default();
     let mut path_cleared = false;
@@ -1116,7 +1120,21 @@ fn try_drop_offs(
         let foundry = state.building(foundry_id).expect("collected live drop-off");
         let (anchor, size) = (foundry.anchor, foundry.stats().size);
         if known_rect_route(state, danger, id, anchor, size, false, Some(&mut scan)).is_some() {
-            // Danger-blocked, not sealed: stand and wait for the window.
+            // Danger-blocked, not sealed: stand and wait for the window —
+            // visibly. A silent wait scored as an employed worker to
+            // every counter, the bot's recovery logic included.
+            if state
+                .current_tick()
+                .is_multiple_of(DANGER_HOLD_REPORT_PERIOD)
+            {
+                let unit = state.unit(id).expect("caller checked");
+                events.push(Event::OrderStalled {
+                    unit: id,
+                    player: unit.player,
+                    pos: unit.pos,
+                    reason: StallReason::DangerHold,
+                });
+            }
             return true;
         }
     }
@@ -1302,7 +1320,7 @@ fn deliver(
         return;
     }
 
-    if try_drop_offs(state, danger, id, &drop_offs) {
+    if try_drop_offs(state, danger, id, &drop_offs, events) {
         return;
     }
 
@@ -1338,7 +1356,7 @@ fn retire(state: &mut State, danger: &GroundSalvageDanger, id: UnitId, events: &
         state.unit_mut(id).expect("caller checked").advance_queue();
         return;
     }
-    if try_drop_offs(state, danger, id, &drop_offs) {
+    if try_drop_offs(state, danger, id, &drop_offs, events) {
         return;
     }
     let unit = state.unit_mut(id).expect("caller checked");
