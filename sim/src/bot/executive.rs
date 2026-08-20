@@ -180,6 +180,12 @@ const WITHDRAW_MARGIN_DEN: u32 = 2;
 /// behind an unroutable order. Matches the recovery patience scale.
 const ARMY_PROGRESS_PATIENCE_TICKS: u64 = 1_200;
 
+/// How long a wedge report stays live as route evidence. Rock never
+/// moves, but the walls a march can hit include buildings and newly
+/// scouted ground, so the doctrine re-probes a target once a window
+/// rather than writing it off for the whole game.
+const WEDGE_MEMORY_TICKS: u64 = 6_000;
+
 /// Radius (tiles) around the army centroid scored as "the fight".
 const ENGAGE_RADIUS: i32 = 8;
 /// A pushing army is engaged once enemies are inside this radius.
@@ -257,6 +263,12 @@ pub struct Executive {
     rear: Vec<UnitId>,
     /// Which combat habits this executive practices.
     doctrine: Doctrine,
+    /// March targets whose pushes recently wedged, with the tick the
+    /// wedge fired. Empirical route truth: the optimistic known-terrain
+    /// route said yes, the ground said no. Doctrines consult this to
+    /// stop re-narrowing a doomed push and to wake the ferry instead.
+    #[serde(default)]
+    wedged: Vec<(TilePos, u64)>,
 }
 
 impl Executive {
@@ -273,6 +285,11 @@ impl Executive {
     /// Rear-line ids currently held out of the draft.
     pub fn rear(&self) -> &[UnitId] {
         &self.rear
+    }
+
+    /// March targets whose pushes wedged within the evidence window.
+    pub fn wedged_targets(&self) -> &[(TilePos, u64)] {
+        &self.wedged
     }
 
     /// Test-only: force a unit onto the rear line, reproducing the
@@ -713,6 +730,9 @@ impl Executive {
     ) -> Vec<PlayerCommand> {
         let mut out = Vec::new();
         let doctrine = self.doctrine;
+        self.wedged
+            .retain(|(_, since)| obs.tick.saturating_sub(*since) <= WEDGE_MEMORY_TICKS);
+        let mut wedge_reports: Vec<(TilePos, u64)> = Vec::new();
         let alive = |id: UnitId| obs.my_units.iter().any(|u| u.id == id);
         self.rear.retain(|id| {
             obs.my_units
@@ -790,7 +810,9 @@ impl Executive {
                         // The march has not gained a tile in the whole
                         // patience window — usually an order across
                         // terrain with no route. Rally where it stands
-                        // so the seat's verbs come back.
+                        // so the seat's verbs come back, and report the
+                        // target as empirically unroutable.
+                        wedge_reports.push((target, obs.tick));
                         army.state = ArmyState::Staging;
                         army.staging = centroid;
                         army.target = None;
@@ -895,6 +917,7 @@ impl Executive {
             }
         }
         self.armies.retain(|a| !a.members.is_empty());
+        self.wedged.extend(wedge_reports);
         out
     }
 

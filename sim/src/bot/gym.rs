@@ -232,6 +232,12 @@ const RECOVERY_HOME_DANGER_RADIUS: i32 = 8;
 /// narrowing production toward them — the flat floor beneath the
 /// army-proportional ferry rule.
 const ISLAND_TRANSPORT_QUOTA: usize = 2;
+/// A doctrine target within this Chebyshev distance of a reported
+/// wedge inherits its evidence: push targets get nudged by
+/// standability adjustments, so exact-tile matching would miss the
+/// report.
+const WEDGE_EVIDENCE_RADIUS: i32 = 4;
+
 /// The proportional ferry floor: total transport lift times this must
 /// cover the ground army's transport bulk, so one assault ferries in a
 /// bounded number of waves instead of trickling behind two shuttles.
@@ -1656,6 +1662,17 @@ impl GymBot {
     /// The dominance gate keeps profile identity intact: an even or
     /// losing seat is never forced out of its own strategy, and the
     /// unreachable-site case belongs to the island doctrine above.
+    /// Whether a recent push wedged near this tile: empirical proof of
+    /// no ground route that outranks the optimistic known-terrain
+    /// answer (unexplored reads open, so a real wall in the dark keeps
+    /// reading routable forever).
+    fn wedge_evidence_near(&self, tile: TilePos) -> bool {
+        self.exec
+            .wedged_targets()
+            .iter()
+            .any(|(target, _)| target.chebyshev(tile) <= WEDGE_EVIDENCE_RADIUS)
+    }
+
     fn apply_finishing_doctrine(
         &mut self,
         obs: &Observation,
@@ -1701,15 +1718,21 @@ impl GymBot {
         if my_strength < seen.saturating_mul(FINISH_DOMINANCE_FACTOR) {
             return;
         }
-        if mask[Action::Push as usize] {
+        // A site a push already wedged against is not a finish target,
+        // whatever the optimistic route says: re-narrowing Push there
+        // re-ran the wedge once per patience window while the island
+        // doctrine (which this evidence wakes) never got the head.
+        let wedged_site = self.wedge_evidence_near(site);
+        if !wedged_site && mask[Action::Push as usize] {
             narrow_head(mask, &OPERATION_ACTIONS, Action::Push);
-        } else if mask[Action::FormArmy as usize] {
+        } else if !wedged_site && mask[Action::FormArmy as usize] {
             narrow_head(mask, &OPERATION_ACTIONS, Action::FormArmy);
         } else if mask[Action::Recall as usize]
             && (lock_released
-                || push_targets
-                    .iter()
-                    .any(|target| !self.known_ground_route(obs, home, *target)))
+                || push_targets.iter().any(|target| {
+                    !self.known_ground_route(obs, home, *target)
+                        || self.wedge_evidence_near(*target)
+                }))
         {
             // Recall only a WEDGED push (no known ground route to its
             // target): bring the body home to staging so a later think
@@ -1746,7 +1769,9 @@ impl GymBot {
         // egg where discovery needs air, air needs this doctrine, and
         // this doctrine used to need discovery.
         let sealed = match enemy_site {
-            Some(site) => !self.known_ground_route(obs, home, site),
+            Some(site) => {
+                !self.known_ground_route(obs, home, site) || self.wedge_evidence_near(site)
+            }
             None => {
                 let anchors = self.oriented_start_anchors(obs);
                 !anchors.is_empty()
