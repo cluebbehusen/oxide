@@ -52,6 +52,11 @@ pub struct Army {
     /// The unit the whole army is concentrating on while engaged.
     /// Spread fire kills nothing; focus deletes one gun at a time.
     pub focus: Option<UnitId>,
+    /// Best distance yet toward the current march goal and the tick it
+    /// was set. A march that beats it resets the wedge clock; one that
+    /// stalls past the patience re-stages in place.
+    #[serde(default)]
+    pub progress: Option<(i32, u64)>,
 }
 
 /// What a policy may ask for. Intents mutate executive bookkeeping or
@@ -167,6 +172,14 @@ const PULLBACK_DEN: u32 = 100;
 /// is free damage handed to the enemy.
 const WITHDRAW_MARGIN_NUM: u32 = 1;
 const WITHDRAW_MARGIN_DEN: u32 = 2;
+/// A marching or withdrawing army that has not bettered its best
+/// distance to its goal for this long is wedged — usually ordered
+/// across terrain with no route — and re-stages where it stands.
+/// Staging reopens the trained-legal verbs (Scout for staged members,
+/// Push, reinforcement), so the operations head never goes dark
+/// behind an unroutable order. Matches the recovery patience scale.
+const ARMY_PROGRESS_PATIENCE_TICKS: u64 = 1_200;
+
 /// Radius (tiles) around the army centroid scored as "the fight".
 const ENGAGE_RADIUS: i32 = 8;
 /// A pushing army is engaged once enemies are inside this radius.
@@ -305,7 +318,10 @@ impl Executive {
         me: PlayerId,
         obs: &Observation,
     ) -> Option<Vec<PlayerCommand>> {
-        let has_harvester = obs.my_units.iter().any(|u| u.kind == UnitKind::Harvester);
+        let has_harvester = obs
+            .my_units
+            .iter()
+            .any(|u| u.kind.stats().harvest.is_some());
         let queued_harvester = obs
             .my_queues
             .iter()
@@ -425,6 +441,7 @@ impl Executive {
                                 staging: *staging,
                                 target: None,
                                 focus: None,
+                                progress: None,
                             });
                         }
                     }
@@ -435,6 +452,7 @@ impl Executive {
                     {
                         a.state = ArmyState::Pushing;
                         a.target = Some(*target);
+                        a.progress = None;
                         march(me, obs, a, *target, &mut out);
                     }
                 }
@@ -444,6 +462,7 @@ impl Executive {
                     {
                         a.state = ArmyState::Withdrawing;
                         a.target = None;
+                        a.progress = None;
                         out.push(PlayerCommand {
                             player: me,
                             command: Command::AttackMove {
@@ -752,16 +771,30 @@ impl Executive {
                     }
                 }
                 ArmyState::Pushing => {
+                    let vanguard = vanguard_centroid(&army.members, obs);
                     if in_contact {
                         army.state = ArmyState::Engaging;
+                        army.progress = None;
                     } else if let Some(target) = army.target
-                        && tiles_within(vanguard_centroid(&army.members, obs), target, 2)
+                        && tiles_within(vanguard, target, 2)
                     {
                         // Arrived and nothing to fight: hold the ground
                         // taken — this rally is the staging point now.
                         army.state = ArmyState::Staging;
                         army.staging = target;
                         army.target = None;
+                        army.progress = None;
+                    } else if let Some(target) = army.target
+                        && wedged(&mut army.progress, vanguard.chebyshev(target), obs.tick)
+                    {
+                        // The march has not gained a tile in the whole
+                        // patience window — usually an order across
+                        // terrain with no route. Rally where it stands
+                        // so the seat's verbs come back.
+                        army.state = ArmyState::Staging;
+                        army.staging = centroid;
+                        army.target = None;
+                        army.progress = None;
                     }
                 }
                 ArmyState::Engaging => {
@@ -773,6 +806,7 @@ impl Executive {
                             None => ArmyState::Staging,
                         };
                         army.focus = None;
+                        army.progress = None;
                         if let Some(target) = army.target {
                             march(me, obs, army, target, &mut out);
                         }
@@ -787,6 +821,7 @@ impl Executive {
                         army.state = ArmyState::Withdrawing;
                         army.target = None;
                         army.focus = None;
+                        army.progress = None;
                         out.push(PlayerCommand {
                             player: me,
                             command: Command::AttackMove {
@@ -843,6 +878,18 @@ impl Executive {
                 ArmyState::Withdrawing => {
                     if tiles_within(centroid, army.staging, 2) {
                         army.state = ArmyState::Staging;
+                        army.progress = None;
+                    } else if wedged(
+                        &mut army.progress,
+                        centroid.chebyshev(army.staging),
+                        obs.tick,
+                    ) {
+                        // The way home is as unroutable as the way out.
+                        // Rally here; Recall and Push become meaningful
+                        // again instead of both being illegal forever.
+                        army.state = ArmyState::Staging;
+                        army.staging = centroid;
+                        army.progress = None;
                     }
                 }
             }
@@ -901,7 +948,7 @@ impl Executive {
         obs.my_units
             .iter()
             .filter(|u| {
-                u.kind == UnitKind::Harvester
+                u.kind.stats().harvest.is_some()
                     && u.site.is_none()
                     // A walking founder is as spoken for as a builder
                     // on site: re-tasking it silently drops the
@@ -1041,6 +1088,23 @@ fn vanguard_centroid(members: &[UnitId], obs: &Observation) -> TilePos {
 }
 
 /// Mean member tile (integer division — a macro-scale center).
+/// Advance a march's wedge clock: records a strictly better distance,
+/// and reports true once the best has stood unimproved for the whole
+/// patience window.
+fn wedged(progress: &mut Option<(i32, u64)>, distance: i32, tick: u64) -> bool {
+    match progress {
+        Some((best, _)) if distance < *best => {
+            *progress = Some((distance, tick));
+            false
+        }
+        Some((_, since)) => tick.saturating_sub(*since) >= ARMY_PROGRESS_PATIENCE_TICKS,
+        None => {
+            *progress = Some((distance, tick));
+            false
+        }
+    }
+}
+
 fn centroid(members: &[UnitId], obs: &Observation) -> TilePos {
     let mut n = 0i32;
     let (mut sx, mut sy) = (0i64, 0i64);
@@ -1185,4 +1249,37 @@ fn local_strength(obs: &Observation, members: &[UnitId]) -> (u64, u64) {
 
 fn tiles_within(a: TilePos, b: TilePos, radius: i32) -> bool {
     a.chebyshev(b) <= radius
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wedge_clock_arms_tracks_and_expires() {
+        let mut progress = None;
+        // First sighting arms the clock without reporting a wedge.
+        assert!(!wedged(&mut progress, 40, 100));
+        assert_eq!(progress, Some((40, 100)));
+        // Any strictly better distance resets the clock.
+        assert!(!wedged(
+            &mut progress,
+            39,
+            100 + ARMY_PROGRESS_PATIENCE_TICKS
+        ));
+        assert_eq!(progress, Some((39, 100 + ARMY_PROGRESS_PATIENCE_TICKS)));
+        // Matching the best is not progress; short of patience holds.
+        assert!(!wedged(
+            &mut progress,
+            39,
+            99 + 2 * ARMY_PROGRESS_PATIENCE_TICKS
+        ));
+        // A full patience window with no better distance is a wedge,
+        // even if the reported distance oscillates upward meanwhile.
+        assert!(wedged(
+            &mut progress,
+            55,
+            100 + 2 * ARMY_PROGRESS_PATIENCE_TICKS
+        ));
+    }
 }

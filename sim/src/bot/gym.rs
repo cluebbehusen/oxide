@@ -1070,7 +1070,7 @@ impl GymBot {
             .my_units
             .iter()
             .filter(|u| {
-                u.kind == UnitKind::Harvester
+                u.kind.stats().harvest.is_some()
                     && u.idle
                     && u.site.is_none()
                     && u.founding.is_none()
@@ -1154,10 +1154,7 @@ impl GymBot {
         let crucible_built = built_count(BuildingKind::Crucible);
         let my_foundries_built = built_count(BuildingKind::Foundry);
         let my_extractors_built = built_count(BuildingKind::Extractor);
-        let unclaimed_frame = |anchor: TilePos| -> bool {
-            !obs.my_buildings.iter().any(|b| b.anchor == anchor)
-                && !obs.enemy_buildings.iter().any(|b| b.anchor == anchor)
-        };
+        let unclaimed_frame = |anchor: TilePos| -> bool { frame_unclaimed(&obs, anchor) };
         let open_frames: Vec<TilePos> = obs
             .known_frames
             .iter()
@@ -1428,10 +1425,7 @@ impl GymBot {
                 mask[action as usize] =
                     self.can_plan_build(&obs, &enlisted, h, kind, &mut defense_probe);
             }
-            let unclaimed_frame = |anchor: TilePos| {
-                !obs.my_buildings.iter().any(|b| b.anchor == anchor)
-                    && !obs.enemy_buildings.iter().any(|b| b.anchor == anchor)
-            };
+            let unclaimed_frame = |anchor: TilePos| frame_unclaimed(&obs, anchor);
             // The route filter mirrors the lowering: a frame no builder
             // can walk to must not make the action legal, or a doctrine
             // narrowing construction to it starves the whole head.
@@ -1539,7 +1533,7 @@ impl GymBot {
                         u.kind.stats().can_fight()
                     } else {
                         !enlisted.contains(&u.id)
-                            && (u.kind == UnitKind::Harvester
+                            && (u.kind.stats().harvest.is_some()
                                 || (u.idle && u.kind.stats().can_fight()))
                     }
             });
@@ -2156,10 +2150,7 @@ impl GymBot {
                 .construction
                 .map(|c| c.cost)
                 .unwrap_or(0);
-            let unclaimed = |anchor: TilePos| {
-                !obs.my_buildings.iter().any(|b| b.anchor == anchor)
-                    && !obs.enemy_buildings.iter().any(|b| b.anchor == anchor)
-            };
+            let unclaimed = |anchor: TilePos| frame_unclaimed(&obs, anchor);
             let (_, builders) = defense_probe.get_or_insert_with(|| {
                 let passability = KnownPassability::from_observation(&obs);
                 let builders = DefenseBuilderRoutes::measure(&obs, &enlisted, &passability);
@@ -3012,7 +3003,7 @@ impl GymBot {
         // and loses the plan.
         let claimed = self.exec.labor_claims(obs, intents);
         let staffable = obs.my_units.iter().any(|u| {
-            u.kind == UnitKind::Harvester
+            u.kind.stats().harvest.is_some()
                 && u.site.is_none()
                 && u.founding.is_none()
                 && !enlisted.contains(&u.id)
@@ -4210,7 +4201,7 @@ fn rear_tile(world: &Observation) -> TilePos {
 /// no-op poisons the pending-site ledger.
 fn free_builder(obs: &Observation, enlisted: &[crate::ids::UnitId]) -> bool {
     obs.my_units.iter().any(|u| {
-        u.kind == UnitKind::Harvester
+        u.kind.stats().harvest.is_some()
             && u.site.is_none()
             && u.founding.is_none()
             && !enlisted.contains(&u.id)
@@ -4233,7 +4224,7 @@ fn apply_expansion_doctrine(obs: &Observation, mask: &mut [bool; ACTION_COUNT]) 
     let (total, idle) = obs
         .my_units
         .iter()
-        .filter(|u| u.kind == UnitKind::Harvester)
+        .filter(|u| u.kind.stats().harvest.is_some())
         .fold((0usize, 0usize), |(t, i), u| {
             (t + 1, i + usize::from(u.idle))
         });
@@ -5512,6 +5503,18 @@ pub struct ExecCensus {
     pub enlisted: u32,
 }
 
+/// Whether a derelict Extractor frame is genuinely open: no own,
+/// ALLIED, or enemy building holds its anchor. The allied check is
+/// load-bearing — a teammate's restored Extractor read as "unclaimed"
+/// for whole matches, and the doctrine spammed a doomed build at it
+/// once per think (measured at 1,069 BadSite rejections on one anchor,
+/// every 28 ticks for 35 minutes).
+fn frame_unclaimed(obs: &Observation, anchor: TilePos) -> bool {
+    !obs.my_buildings.iter().any(|b| b.anchor == anchor)
+        && !obs.ally_buildings.iter().any(|b| b.anchor == anchor)
+        && !obs.enemy_buildings.iter().any(|b| b.anchor == anchor)
+}
+
 /// Fog-honest mirror of the sim's construction tech gate
 /// (`State::prerequisites_met`): every required kind must stand built
 /// among the seat's own buildings. The mask must never advertise a
@@ -5647,7 +5650,7 @@ fn unit_patient(
 ) -> Option<crate::ids::UnitId> {
     let welder_near = |patient: &UnitObs| {
         let mut available = obs.my_units.iter().filter(|u| {
-            u.kind == UnitKind::Harvester
+            u.kind.stats().harvest.is_some()
                 && u.site.is_none()
                 && u.founding.is_none()
                 && u.id != patient.id

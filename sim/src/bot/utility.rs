@@ -324,7 +324,7 @@ impl UtilityPolicy {
         let harvesters = obs
             .my_units
             .iter()
-            .filter(|u| u.kind == UnitKind::Harvester)
+            .filter(|u| u.kind.stats().harvest.is_some())
             .count();
         if dials.scouting && harvesters >= dials.harvester_target as usize {
             self.scouting(
@@ -516,7 +516,7 @@ impl UtilityPolicy {
         let harvesters = obs
             .my_units
             .iter()
-            .filter(|u| u.kind == UnitKind::Harvester)
+            .filter(|u| u.kind.stats().harvest.is_some())
             .count();
         if harvesters < self.harvesters_seen {
             self.raided = true;
@@ -561,7 +561,7 @@ impl UtilityPolicy {
         for u in obs
             .my_units
             .iter()
-            .filter(|u| u.kind == UnitKind::Harvester && u.idle && Some(u.id) != self.scout)
+            .filter(|u| u.kind.stats().harvest.is_some() && u.idle && Some(u.id) != self.scout)
         {
             let node = obs
                 .known_scrap
@@ -609,7 +609,7 @@ impl UtilityPolicy {
             .my_units
             .iter()
             .filter(|u| {
-                u.kind == UnitKind::Harvester
+                u.kind.stats().harvest.is_some()
                     && u.idle
                     && Some(u.id) != self.scout
                     && !assigned.contains(&u.id)
@@ -684,7 +684,18 @@ impl UtilityPolicy {
         // ladder — so no scripted-path gate is needed.)
         let to = match obs.my_units.iter().find(|u| u.id == unit) {
             Some(u) if u.kind.stats().domain != Domain::Air => {
-                self.ground_frontier_toward(obs, u.tile, to).unwrap_or(to)
+                // No reachable frontier left: the lit component is fully
+                // swept, and the raw corner leg is exactly the unroutable
+                // target this machinery exists to avoid — one prospector
+                // was measured cycling five corner legs 1,722 times over
+                // 41 minutes without moving. Stand down instead.
+                match self.ground_frontier_toward(obs, u.tile, to) {
+                    Some(frontier) => frontier,
+                    None => {
+                        self.prospector = None;
+                        return;
+                    }
+                }
             }
             _ => to,
         };
@@ -891,7 +902,7 @@ impl UtilityPolicy {
         let enemy_harvesters = obs
             .enemy_units
             .iter()
-            .filter(|u| u.kind == UnitKind::Harvester)
+            .filter(|u| u.kind.stats().harvest.is_some())
             .count();
         if let Some((qi, fab)) = fabricator {
             use crate::stats::{Domain, Role};
@@ -1483,7 +1494,7 @@ impl UtilityPolicy {
         let harvesters = obs
             .my_units
             .iter()
-            .filter(|u| u.kind == UnitKind::Harvester)
+            .filter(|u| u.kind.stats().harvest.is_some())
             .count();
         if dials.tech {
             let fab_cost = BuildingKind::Fabricator
@@ -1899,7 +1910,8 @@ impl UtilityPolicy {
                 .filter(|u| u.site.is_none() && u.founding.is_none())
                 .filter(|u| {
                     extra.contains(&u.id)
-                        || (!enlisted.contains(&u.id) && (u.kind == UnitKind::Harvester || u.idle))
+                        || (!enlisted.contains(&u.id)
+                            && (u.kind.stats().harvest.is_some() || u.idle))
                 })
                 .filter(|u| ground_may_search || u.kind.stats().domain == Domain::Air)
                 .min_by_key(|u| {
@@ -1953,7 +1965,15 @@ impl UtilityPolicy {
         let to = self.passable_near(obs, to);
         let to = match obs.my_units.iter().find(|u| u.id == scout) {
             Some(u) if frontier_step && u.kind.stats().domain != Domain::Air => {
-                self.ground_frontier_toward(obs, u.tile, to).unwrap_or(to)
+                match self.ground_frontier_toward(obs, u.tile, to) {
+                    Some(frontier) => frontier,
+                    // The lit component is swept: a raw cross-dark leg
+                    // would stall every think. Release the designate.
+                    None => {
+                        self.scout = None;
+                        return;
+                    }
+                }
             }
             _ => to,
         };
@@ -2049,7 +2069,12 @@ impl UtilityPolicy {
                 let to = self.passable_near(obs, to);
                 let to = match obs.my_units.iter().find(|u| u.id == unit) {
                     Some(u) if frontier_step && u.kind.stats().domain != Domain::Air => {
-                        self.ground_frontier_toward(obs, u.tile, to).unwrap_or(to)
+                        match self.ground_frontier_toward(obs, u.tile, to) {
+                            Some(frontier) => frontier,
+                            // Swept component: this searcher has nowhere
+                            // useful to walk — skip it rather than stall.
+                            None => continue,
+                        }
                     }
                     _ => to,
                 };
