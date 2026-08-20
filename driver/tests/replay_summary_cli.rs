@@ -72,7 +72,7 @@ fn replay_summary_emits_the_json_contract() {
     let output = run_summary(&fixture, &["--every", "40", "--json"]);
 
     let report: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
-    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["schema_version"], 2);
     assert_eq!(report["scenario"]["name"], "Skirmish Basin");
     assert_eq!(report["scenario"]["effective_ticks"], 120);
     assert_eq!(report["scenario"]["every"], 40);

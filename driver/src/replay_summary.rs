@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 /// Version of the serialized [`SummaryReport`] contract.
-pub const REPLAY_SUMMARY_SCHEMA_VERSION: u32 = 1;
+pub const REPLAY_SUMMARY_SCHEMA_VERSION: u32 = 2;
 
 /// Space gate: a loss joins an active battle when within this many tiles of
 /// its running centroid. Above the longest direct-fire range in the game
@@ -37,7 +37,7 @@ const BATTLE_RADIUS_TILES: i64 = 12;
 /// Time gate: a battle closes after this many ticks (30 seconds) without a
 /// nearby loss. Reinforcement waves re-engage well inside the window;
 /// assaults on one base minutes apart read as separate battles.
-const BATTLE_QUIET_TICKS: u64 = 600;
+const BATTLE_QUIET_TICKS: u64 = 300;
 
 /// Battles totaling less lost value than this fold into the digest window's
 /// skirmish counter instead of a timeline line (~two line units).
@@ -171,6 +171,9 @@ pub enum TimelineKind {
         losses: Vec<SeatLoss>,
         /// `"even"`, or `"favors team N"` for the lightest-losing team.
         verdict: String,
+        /// The whole cluster is one tick and holds a transport loss: an
+        /// interception of a loaded airframe, not a fight.
+        shootdown: bool,
     },
     /// A seat completed a Foundry beyond its starting count.
     Expansion {
@@ -237,10 +240,20 @@ pub struct SeatLoss {
     pub seat: u8,
     /// Total lost value in scrap (tier-0 construction cost for buildings).
     pub value: u64,
-    /// Units lost.
+    /// Units lost (workers included).
     pub units: u32,
-    /// Buildings lost (never-completed sites included, at value zero).
+    /// Completed buildings lost.
     pub buildings: u32,
+    /// Never-completed construction sites lost (value zero). Split out so
+    /// five abandoned frames cannot read as five razed structures.
+    pub sites: u32,
+    /// Value lost in fighting units.
+    pub combat_value: u64,
+    /// Value lost in workers and other non-combat units. A harvester
+    /// massacre must never render as an army trade.
+    pub worker_value: u64,
+    /// Value lost in completed buildings.
+    pub building_value: u64,
 }
 
 /// Per-seat state at one digest boundary.
@@ -287,12 +300,27 @@ pub struct SeatDigestRow {
     /// salvage refunds) post to the bank without an event — the bank column
     /// carries them.
     pub hauled: u64,
+    /// Units trained since the previous digest.
+    pub trained: u32,
+    /// Units lost since the previous digest. Four identical roster
+    /// snapshots cannot otherwise be told apart from "trained 4, lost 4
+    /// under siege".
+    pub lost: u32,
+    /// Buildings completed since the previous digest.
+    pub buildings_completed: u32,
+    /// Completed buildings lost since the previous digest.
+    pub buildings_lost: u32,
     /// Standing (built) buildings.
     pub buildings: u32,
     /// Standing Foundries.
     pub foundries: u32,
-    /// Explored share of the map in whole percent (vision is team-shared,
-    /// so teammates repeat the same figure).
+    /// Tiles explored by this seat's team (vision is team-shared, so
+    /// teammates repeat the same figure). `explored_pct` is a map-size
+    /// fraction and is not comparable across maps; this and the delta are.
+    pub explored_tiles: u64,
+    /// Tiles newly explored since the previous digest.
+    pub explored_delta: u64,
+    /// Explored share of the map in whole percent.
     pub explored_pct: u32,
     /// Commands the sim rejected since the previous digest.
     pub rejections: u32,
@@ -318,6 +346,11 @@ pub struct SeatTechReach {
 pub struct TechFirstRecord {
     /// The kind's stable name.
     pub name: String,
+    /// The seat began the game with this kind (tick 0, never trained or
+    /// built). Without these rows a census read starting Sentinels as
+    /// nearly never reached.
+    #[serde(default)]
+    pub starting: bool,
     /// Tick of the first training or completion.
     pub tick: u64,
     /// The tick as a `m:ss` clock.
@@ -379,13 +412,34 @@ impl Ledgers {
     }
 }
 
+/// What a loss was, for the per-battle value splits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LossKind {
+    /// A fighting unit.
+    Combat,
+    /// A worker or other non-combat unit.
+    Worker,
+    /// A transport airframe (its cargo dies with it on the same tick).
+    Transport,
+    /// A completed building.
+    Building,
+    /// A never-completed construction site.
+    Site,
+}
+
 /// One battle being accumulated.
 struct BattleCluster {
     from_tick: u64,
     last_loss_tick: u64,
+    /// The first loss tile. Membership is measured from here, not from
+    /// the running centroid, so a battle cannot drift across the map
+    /// one adjacent loss at a time (one measured cluster migrated 25
+    /// tiles over 2,956 ticks and reported as a single place).
+    anchor: (i64, i64),
     sum_x: i64,
     sum_y: i64,
     n: i64,
+    transports: u32,
     losses: BTreeMap<u8, SeatLoss>,
 }
 
@@ -405,6 +459,9 @@ struct Battle {
     to_tick: u64,
     at: [i32; 2],
     losses: Vec<SeatLoss>,
+    /// An instantaneous cluster containing a transport loss: the
+    /// airframe and its riders died together, nothing landed.
+    shootdown: bool,
 }
 
 /// Streaming space-time clusterer over loss events. Pure integer math and
@@ -418,15 +475,15 @@ struct BattleClusterer {
 }
 
 impl BattleClusterer {
-    fn note_loss(&mut self, tick: u64, seat: u8, tile: TilePos, value: u64, building: bool) {
+    fn note_loss(&mut self, tick: u64, seat: u8, tile: TilePos, value: u64, kind: LossKind) {
         self.expire(tick);
         let x = i64::from(tile.x);
         let y = i64::from(tile.y);
         let joined = self.active.iter_mut().find(|cluster| {
-            let dx = cluster.n * x - cluster.sum_x;
-            let dy = cluster.n * y - cluster.sum_y;
-            let radius = BATTLE_RADIUS_TILES * cluster.n;
-            dx * dx + dy * dy <= radius * radius
+            (x - cluster.anchor.0)
+                .abs()
+                .max((y - cluster.anchor.1).abs())
+                <= BATTLE_RADIUS_TILES
         });
         let cluster = match joined {
             Some(cluster) => cluster,
@@ -434,9 +491,11 @@ impl BattleClusterer {
                 self.active.push(BattleCluster {
                     from_tick: tick,
                     last_loss_tick: tick,
+                    anchor: (x, y),
                     sum_x: 0,
                     sum_y: 0,
                     n: 0,
+                    transports: 0,
                     losses: BTreeMap::new(),
                 });
                 self.active.last_mut().expect("just pushed")
@@ -451,12 +510,31 @@ impl BattleClusterer {
             value: 0,
             units: 0,
             buildings: 0,
+            sites: 0,
+            combat_value: 0,
+            worker_value: 0,
+            building_value: 0,
         });
         loss.value += value;
-        if building {
-            loss.buildings += 1;
-        } else {
-            loss.units += 1;
+        match kind {
+            LossKind::Combat => {
+                loss.units += 1;
+                loss.combat_value += value;
+            }
+            LossKind::Worker => {
+                loss.units += 1;
+                loss.worker_value += value;
+            }
+            LossKind::Transport => {
+                loss.units += 1;
+                loss.worker_value += value;
+                cluster.transports += 1;
+            }
+            LossKind::Building => {
+                loss.buildings += 1;
+                loss.building_value += value;
+            }
+            LossKind::Site => loss.sites += 1,
         }
     }
 
@@ -490,6 +568,7 @@ impl BattleClusterer {
                 to_tick: cluster.last_loss_tick,
                 at,
                 losses,
+                shootdown: cluster.transports > 0 && cluster.from_tick == cluster.last_loss_tick,
             });
         } else {
             self.skirmishes.push(cluster.last_loss_tick);
@@ -534,6 +613,10 @@ fn battle_verdict(losses: &[SeatLoss], seat_team: &[u8]) -> String {
 #[derive(Default, Clone)]
 struct SeatWindow {
     hauled: u64,
+    trained: u32,
+    lost: u32,
+    buildings_completed: u32,
+    buildings_lost: u32,
     rejections: u32,
     rejection_reasons: BTreeMap<String, u32>,
     stalls: u32,
@@ -603,13 +686,30 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                 .collect()
         })
         .collect();
-    let mut tech_firsts: Vec<Vec<TechFirstRecord>> = vec![Vec::new(); seat_count];
+    let mut tech_firsts: Vec<Vec<TechFirstRecord>> = (0..seat_count)
+        .map(|seat| {
+            let mut starting: Vec<TechFirstRecord> = unit_reach[seat]
+                .iter()
+                .map(|kind| kind.name())
+                .chain(building_reach[seat].iter().map(|kind| kind.name()))
+                .map(|name| TechFirstRecord {
+                    name: name.to_owned(),
+                    starting: true,
+                    tick: 0,
+                    clock: clock(0),
+                })
+                .collect();
+            starting.sort_by(|a, b| a.name.cmp(&b.name));
+            starting
+        })
+        .collect();
     let mut eliminated: Vec<bool> = (0..seat_count)
         .map(|seat| state.players()[seat].eliminated_at.is_some())
         .collect();
     let mut contacted: BTreeSet<(u8, u8)> = BTreeSet::new();
 
     let mut windows: Vec<SeatWindow> = vec![SeatWindow::default(); seat_count];
+    let mut prev_explored: Vec<u64> = vec![0; seat_count];
     let mut window_combat: u64 = 0;
     let mut quiet_run: Option<QuietRun> = None;
     let mut prev_boundary: u64 = 0;
@@ -630,6 +730,7 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
             match event {
                 Event::UnitTrained { unit, kind, player } => {
                     ledgers.unit_owner.insert(*unit, player.0);
+                    windows[player.0 as usize].trained += 1;
                     note_tech_first(
                         &mut unit_reach[player.0 as usize],
                         &mut tech_firsts[player.0 as usize],
@@ -645,12 +746,21 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                     kind, player, pos, ..
                 } => {
                     window_combat += 1;
+                    windows[player.0 as usize].lost += 1;
+                    let stats = kind.stats();
+                    let loss_kind = if stats.transport_capacity > 0 {
+                        LossKind::Transport
+                    } else if stats.can_fight() {
+                        LossKind::Combat
+                    } else {
+                        LossKind::Worker
+                    };
                     clusterer.note_loss(
                         now,
                         player.0,
                         TilePos::containing(*pos),
-                        u64::from(kind.stats().cost),
-                        false,
+                        u64::from(stats.cost),
+                        loss_kind,
                     );
                 }
                 Event::BuildingDestroyed {
@@ -663,7 +773,13 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                     let value = known
                         .and_then(|kind| kind.base_stats().construction)
                         .map_or(0, |construction| u64::from(construction.cost));
-                    clusterer.note_loss(now, player.0, tile, value, true);
+                    let loss_kind = if known.is_some() {
+                        windows[player.0 as usize].buildings_lost += 1;
+                        LossKind::Building
+                    } else {
+                        LossKind::Site
+                    };
+                    clusterer.note_loss(now, player.0, tile, value, loss_kind);
                     if known == Some(BuildingKind::Foundry) {
                         timeline.push(entry(
                             now,
@@ -682,6 +798,7 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                     ledgers.building.insert(*building, (player.0, *kind));
                     if completed_ids.insert(*building) {
                         let seat = player.0;
+                        windows[seat as usize].buildings_completed += 1;
                         note_tech_first(
                             &mut building_reach[seat as usize],
                             &mut tech_firsts[seat as usize],
@@ -846,6 +963,7 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                     now,
                     post_game,
                     &mut windows,
+                    &mut prev_explored,
                     with_minimap,
                 ));
             }
@@ -869,6 +987,7 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
             state.current_tick(),
             false,
             &mut windows,
+            &mut prev_explored,
             opts.minimaps != MinimapMode::None,
         ));
     }
@@ -882,6 +1001,7 @@ pub fn summarize(replay: &GameReplay, opts: &SummaryOptions) -> Result<SummaryRe
                 at: battle.at,
                 losses: battle.losses.clone(),
                 verdict: battle_verdict(&battle.losses, &seat_team),
+                shootdown: battle.shootdown,
             },
         ));
     }
@@ -961,6 +1081,7 @@ fn note_tech_first<K: Ord + Copy>(
     }
     firsts.push(TechFirstRecord {
         name: name.to_owned(),
+        starting: false,
         tick,
         clock: clock(tick),
     });
@@ -1061,11 +1182,12 @@ fn capture_digest(
     tick: u64,
     post_game: bool,
     windows: &mut [SeatWindow],
+    prev_explored: &mut [u64],
     with_minimap: bool,
 ) -> Digest {
     let seat_count = state.players().len();
     // Vision is team-shared: compute each team's explored share once.
-    let mut team_explored: BTreeMap<u8, u32> = BTreeMap::new();
+    let mut team_explored: BTreeMap<u8, (u64, u32)> = BTreeMap::new();
     let map = state.map();
     let tiles = u64::from(map.width().unsigned_abs()) * u64::from(map.height().unsigned_abs());
     for seat in 0..seat_count {
@@ -1080,7 +1202,7 @@ fn capture_digest(
                     }
                 }
             }
-            ((explored * 100) / tiles.max(1)) as u32
+            (explored, ((explored * 100) / tiles.max(1)) as u32)
         });
     }
 
@@ -1132,9 +1254,20 @@ fn capture_digest(
                 harvesters_idle,
                 bank: state.players()[seat].scrap,
                 hauled: window.hauled,
+                trained: window.trained,
+                lost: window.lost,
+                buildings_completed: window.buildings_completed,
+                buildings_lost: window.buildings_lost,
                 buildings,
                 foundries: built_count(state, seat_id, BuildingKind::Foundry),
-                explored_pct: team_explored[&state.players()[seat].team],
+                explored_tiles: team_explored[&state.players()[seat].team].0,
+                explored_delta: team_explored[&state.players()[seat].team].0.saturating_sub(
+                    std::mem::replace(
+                        &mut prev_explored[seat],
+                        team_explored[&state.players()[seat].team].0,
+                    ),
+                ),
+                explored_pct: team_explored[&state.players()[seat].team].1,
                 rejections: window.rejections,
                 rejection_reasons: window.rejection_reasons,
                 stalls: window.stalls,
@@ -1337,19 +1470,24 @@ impl SummaryReport {
                 };
                 let _ = writeln!(
                     out,
-                    "  s{}: {}u val {} (combat {}) ({})  harv {}/{} idle  bank {} +{}  bld {} ({} foundry)  expl {}%  rej {}{} stall {}{}",
+                    "  s{}: {}u val {} (combat {}) ({})  +{}/-{}  harv {}/{} idle  bank {} +{}  bld {} ({} foundry, +{}/-{})  expl {}% (+{})  rej {}{} stall {}{}",
                     row.seat,
                     row.units,
                     row.army_value,
                     row.combat_value,
                     kinds,
+                    row.trained,
+                    row.lost,
                     row.harvesters,
                     row.harvesters_idle,
                     row.bank,
                     row.hauled,
                     row.buildings,
                     row.foundries,
+                    row.buildings_completed,
+                    row.buildings_lost,
                     row.explored_pct,
+                    row.explored_delta,
                     row.rejections,
                     reasons(&row.rejection_reasons),
                     row.stalls,
@@ -1422,6 +1560,7 @@ fn render_moment(kind: &TimelineKind) -> String {
             at,
             losses,
             verdict,
+            shootdown,
         } => {
             let parts = losses
                 .iter()
@@ -1434,15 +1573,32 @@ fn render_moment(kind: &TimelineKind) -> String {
                     if loss.buildings > 0 {
                         counts.push(format!("{}b", loss.buildings));
                     }
+                    if loss.sites > 0 {
+                        counts.push(format!("{} sites", loss.sites));
+                    }
                     if !counts.is_empty() {
                         let _ = write!(part, " ({})", counts.join("+"));
+                    }
+                    if loss.worker_value > 0 && loss.combat_value > 0 {
+                        let _ = write!(
+                            part,
+                            " [combat {} / workers {}]",
+                            loss.combat_value, loss.worker_value
+                        );
+                    } else if loss.worker_value > 0 {
+                        let _ = write!(part, " [workers only]");
                     }
                     part
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
+            let label = if *shootdown {
+                "transport shootdown"
+            } else {
+                "battle"
+            };
             format!(
-                "battle {}-{} at ({},{}): {parts} — {verdict}",
+                "{label} {}-{} at ({},{}): {parts} — {verdict}",
                 clock(*from_tick),
                 clock(*to_tick),
                 at[0],
@@ -1539,9 +1695,9 @@ mod tests {
     #[test]
     fn nearby_losses_merge_and_distant_losses_split() {
         let mut clusterer = BattleClusterer::default();
-        clusterer.note_loss(100, 0, TilePos::new(10, 10), 90, false);
-        clusterer.note_loss(200, 1, TilePos::new(18, 10), 110, false);
-        clusterer.note_loss(250, 0, TilePos::new(40, 40), 500, false);
+        clusterer.note_loss(100, 0, TilePos::new(10, 10), 90, LossKind::Combat);
+        clusterer.note_loss(200, 1, TilePos::new(18, 10), 110, LossKind::Combat);
+        clusterer.note_loss(250, 0, TilePos::new(40, 40), 500, LossKind::Combat);
         clusterer.finish();
         assert_eq!(clusterer.battles.len(), 2);
         let merged = &clusterer.battles[0];
@@ -1554,13 +1710,13 @@ mod tests {
     #[test]
     fn a_quiet_gap_closes_the_battle() {
         let mut clusterer = BattleClusterer::default();
-        clusterer.note_loss(100, 0, TilePos::new(10, 10), 300, false);
+        clusterer.note_loss(100, 0, TilePos::new(10, 10), 300, LossKind::Combat);
         clusterer.note_loss(
             100 + BATTLE_QUIET_TICKS + 1,
             1,
             TilePos::new(10, 10),
             300,
-            false,
+            LossKind::Combat,
         );
         clusterer.finish();
         assert_eq!(clusterer.battles.len(), 2);
@@ -1569,13 +1725,19 @@ mod tests {
     #[test]
     fn sub_floor_battles_fold_into_skirmishes() {
         let mut clusterer = BattleClusterer::default();
-        clusterer.note_loss(100, 0, TilePos::new(10, 10), BATTLE_VALUE_FLOOR - 20, false);
+        clusterer.note_loss(
+            100,
+            0,
+            TilePos::new(10, 10),
+            BATTLE_VALUE_FLOOR - 20,
+            LossKind::Combat,
+        );
         clusterer.note_loss(
             2_000,
             0,
             TilePos::new(10, 10),
             BATTLE_VALUE_FLOOR + 10,
-            false,
+            LossKind::Combat,
         );
         clusterer.finish();
         assert_eq!(clusterer.battles.len(), 1);
@@ -1589,6 +1751,10 @@ mod tests {
             value,
             units: 1,
             buildings: 0,
+            sites: 0,
+            combat_value: value,
+            worker_value: 0,
+            building_value: 0,
         };
         let duel = &[0u8, 1];
         assert_eq!(battle_verdict(&[loss(0, 400), loss(1, 300)], duel), "even");
@@ -1616,6 +1782,10 @@ mod tests {
             value: 300,
             units: 3,
             buildings: 1,
+            sites: 0,
+            combat_value: 0,
+            worker_value: 0,
+            building_value: 0,
         };
         let cases: Vec<(TimelineKind, &str)> = vec![
             (
@@ -1632,6 +1802,7 @@ mod tests {
                     at: [5, 6],
                     losses: vec![loss],
                     verdict: "even".into(),
+                    shootdown: false,
                 },
                 "battle 0:00-0:30 at (5,6): seat 0 lost 300 (3u+1b) — even",
             ),

@@ -1850,33 +1850,50 @@ fn danger_memory_cools_before_recovery_reuses_a_source() {
     quiet.units.retain(|unit| {
         !(unit.player == 1 && unit.kind == UnitKind::Sentinel && unit.x == 10 && unit.y == 2)
     });
-    let at_tick = |tick: u64| {
+    let at_tick = |tick: u64, fogged: bool| {
         let state = quiet.build().unwrap();
         let mut value = serde_json::to_value(state).unwrap();
         value["tick"] = serde_json::json!(tick);
+        if fogged {
+            for visible in value["vision"][0]["visible"]["cells"]
+                .as_array_mut()
+                .unwrap()
+            {
+                *visible = false.into();
+            }
+        }
         serde_json::from_value::<oxide_sim::State>(value).unwrap()
     };
-    let mut still_hot = gym.clone();
-    let commands = still_hot.step_plan(&at_tick(1_799), ActionPlan::default());
+    let trains_harvester = |commands: &[oxide_sim::PlayerCommand]| {
+        commands.iter().any(|command| {
+            matches!(
+                command.command,
+                Command::Train {
+                    kind: UnitKind::Harvester,
+                    ..
+                }
+            )
+        })
+    };
+    // Live sight outranks memory: the seat can see the guard is gone,
+    // so the source is released before the clock runs out.
+    let mut seeing = gym.clone();
+    let commands = seeing.step_plan(&at_tick(1_799, false), ActionPlan::default());
     assert!(
-        !commands.iter().any(|command| matches!(
-            command.command,
-            Command::Train {
-                kind: UnitKind::Harvester,
-                ..
-            }
-        )),
-        "the last deterministic cooling tick remains guarded"
+        trains_harvester(&commands),
+        "visible empty ground must release the source before the clock: {commands:?}"
     );
-    let commands = gym.step_plan(&at_tick(1_800), ActionPlan::default());
+    // Under fog the memory holds to its last deterministic tick...
+    let mut still_hot = gym.clone();
+    let commands = still_hot.step_plan(&at_tick(1_799, true), ActionPlan::default());
     assert!(
-        commands.iter().any(|command| matches!(
-            command.command,
-            Command::Train {
-                kind: UnitKind::Harvester,
-                ..
-            }
-        )),
+        !trains_harvester(&commands),
+        "the last cooling tick under fog remains guarded"
+    );
+    // ...and expires on the clock.
+    let commands = gym.step_plan(&at_tick(1_800, true), ActionPlan::default());
+    assert!(
+        trains_harvester(&commands),
         "expired danger memory must release the known source: {commands:?}"
     );
 }

@@ -379,8 +379,13 @@ mod lowering_rules {
         ];
 
         let never = |_: BuildingKind, _: TilePos| false;
-        let commands =
-            Executive::new().apply_with(PlayerId(0), &obs, &intents, &LoweringRules::gym(&never));
+        let everywhere = |_: TilePos| vec![true; (obs.map_width * obs.map_height) as usize];
+        let commands = Executive::new().apply_with(
+            PlayerId(0),
+            &obs,
+            &intents,
+            &LoweringRules::gym(&never, &everywhere),
+        );
         assert!(
             commands
                 .iter()

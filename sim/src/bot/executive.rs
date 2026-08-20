@@ -57,6 +57,15 @@ pub struct Army {
     /// stalls past the patience re-stages in place.
     #[serde(default)]
     pub progress: Option<(i32, u64)>,
+    /// The tick and vanguard tile of the last march order, so a later
+    /// think can tell a march that never started (every member idle
+    /// where it stood — the sim refused the order) from one under way.
+    #[serde(default)]
+    pub issued: Option<(u64, TilePos)>,
+    /// Consecutive march orders that bounced at issue. Two in a row is
+    /// route testimony: the target is unreachable from here today.
+    #[serde(default)]
+    pub bounces: u8,
 }
 
 /// What a policy may ask for. Intents mutate executive bookkeeping or
@@ -226,6 +235,13 @@ pub struct LoweringRules<'a> {
     /// Skip a Scout intent naming a unit an earlier intent claimed
     /// this think.
     scout_honors_claims: bool,
+    /// The walkable component of a tile over the seat's known terrain,
+    /// indexed `y * width + x`. When present, a draft enlists only
+    /// fighters that can actually reach the rally — a fighter across a
+    /// pit from its staging point was re-drafted and re-stalled every
+    /// think (267 identical two-unit orders in one game's last window).
+    /// `None` keeps the scripted baseline's unfiltered draft.
+    ground_component: Option<&'a dyn Fn(TilePos) -> Vec<bool>>,
 }
 
 impl LoweringRules<'static> {
@@ -234,6 +250,7 @@ impl LoweringRules<'static> {
         Self {
             defer_needed: None,
             scout_honors_claims: false,
+            ground_component: None,
         }
     }
 }
@@ -242,10 +259,14 @@ impl<'a> LoweringRules<'a> {
     /// The gym path's rules: `defer_needed` mirrors the judgment the
     /// shell's armed click makes (some footprint tile not currently
     /// visible), and Scout keeps off machines the think already spent.
-    pub fn gym(defer_needed: &'a dyn Fn(BuildingKind, TilePos) -> bool) -> Self {
+    pub fn gym(
+        defer_needed: &'a dyn Fn(BuildingKind, TilePos) -> bool,
+        ground_component: &'a dyn Fn(TilePos) -> Vec<bool>,
+    ) -> Self {
         Self {
             defer_needed: Some(defer_needed),
             scout_honors_claims: true,
+            ground_component: Some(ground_component),
         }
     }
 }
@@ -290,6 +311,22 @@ impl Executive {
     /// March targets whose pushes wedged within the evidence window.
     pub fn wedged_targets(&self) -> &[(TilePos, u64)] {
         &self.wedged
+    }
+
+    /// Strikes the lowest-id member from the lowest-id staging army,
+    /// returning it to the free pool. A seat whose every fighter is
+    /// enlisted and whose enemy has vanished into fog has no legal way
+    /// to look: Scout and FormArmy both need a free idle fighter. One
+    /// discharged rally-holder is exactly that fighter.
+    pub fn discharge_one_staged(&mut self) -> Option<UnitId> {
+        let army = self
+            .armies
+            .iter_mut()
+            .filter(|a| a.state == ArmyState::Staging && !a.members.is_empty())
+            .min_by_key(|a| a.id)?;
+        let id = army.members.remove(0);
+        self.armies.retain(|a| !a.members.is_empty());
+        Some(id)
     }
 
     /// Test-only: force a unit onto the rear line, reproducing the
@@ -434,7 +471,7 @@ impl Executive {
                     let want = existing
                         .map(|i| (*size as usize).saturating_sub(self.armies[i].members.len()))
                         .unwrap_or(*size as usize);
-                    let draft = self.draft(obs, *staging, want as u32, &claimed);
+                    let draft = self.draft(obs, *staging, want as u32, &claimed, rules);
                     if !draft.is_empty() {
                         claimed.extend(draft.iter().copied());
                         out.push(PlayerCommand {
@@ -459,6 +496,8 @@ impl Executive {
                                 target: None,
                                 focus: None,
                                 progress: None,
+                                issued: None,
+                                bounces: 0,
                             });
                         }
                     }
@@ -467,9 +506,18 @@ impl Executive {
                     if let Some(a) = self.armies.iter_mut().find(|a| a.id == *army)
                         && !a.members.is_empty()
                     {
+                        // A re-push at the same target is the same march:
+                        // the wedge clock and bounce count carry over, or a
+                        // policy re-issuing Push every think could never
+                        // accumulate either and a refused march would stall
+                        // forever without testifying.
+                        if a.target != Some(*target) {
+                            a.progress = None;
+                            a.bounces = 0;
+                        }
                         a.state = ArmyState::Pushing;
                         a.target = Some(*target);
-                        a.progress = None;
+                        a.issued = Some((obs.tick, vanguard_centroid(&a.members, obs)));
                         march(me, obs, a, *target, &mut out);
                     }
                 }
@@ -704,7 +752,7 @@ impl Executive {
         obs: &Observation,
         rear: TilePos,
     ) -> Vec<PlayerCommand> {
-        self.maintain_with_rejoin(me, obs, rear, false)
+        self.maintain_with_rejoin(me, obs, rear, false, None)
     }
 
     /// Per-think housekeeping for a policy that can deliberately heal
@@ -715,7 +763,24 @@ impl Executive {
         obs: &Observation,
         rear: TilePos,
     ) -> Vec<PlayerCommand> {
-        self.maintain_with_rejoin(me, obs, rear, true)
+        self.maintain_with_rejoin(me, obs, rear, true, None)
+    }
+
+    /// [`Self::maintain_repair_capable`] with ground-connectivity
+    /// testimony for the contact test: an enemy within contact radius
+    /// that no member can walk to — across a channel, over rock — is
+    /// not contact. Without it an army on a coast flipped Engaging and
+    /// Withdrawing every think against raiders it could never reach,
+    /// its units stalling NoFiringPosition every tick (71,000 in one
+    /// game).
+    pub fn maintain_connected(
+        &mut self,
+        me: PlayerId,
+        obs: &Observation,
+        rear: TilePos,
+        connected: &dyn Fn(TilePos, TilePos) -> bool,
+    ) -> Vec<PlayerCommand> {
+        self.maintain_with_rejoin(me, obs, rear, true, Some(connected))
     }
 
     /// Prune the dead, rotate the wounded to the rear, advance army
@@ -727,6 +792,7 @@ impl Executive {
         obs: &Observation,
         rear: TilePos,
         rejoin_healed: bool,
+        connected: Option<&dyn Fn(TilePos, TilePos) -> bool>,
     ) -> Vec<PlayerCommand> {
         let mut out = Vec::new();
         let doctrine = self.doctrine;
@@ -745,7 +811,7 @@ impl Executive {
             if army.members.is_empty() {
                 continue; // swept below
             }
-            let in_contact = enemies_near(obs, &army.members, CONTACT_RADIUS);
+            let in_contact = enemies_near(obs, &army.members, CONTACT_RADIUS, connected);
 
             // Rotate the badly wounded out, but only between fights.
             // Mid-engagement a wounded machine still deals full damage,
@@ -792,9 +858,28 @@ impl Executive {
                 }
                 ArmyState::Pushing => {
                     let vanguard = vanguard_centroid(&army.members, obs);
+                    // Judged on the escorts, the units the march order
+                    // actually names: artillery takes a separate routable
+                    // side-move to staging, and counting it kept a refused
+                    // march from ever reading as idle.
+                    let all_idle = obs
+                        .my_units
+                        .iter()
+                        .filter(|u| army.members.contains(&u.id) && !is_artillery(u))
+                        .all(|u| u.idle);
+                    // A march order the sim refused leaves every member
+                    // idle exactly where it stood. Checked only on a LATER
+                    // think than the order, since this think's commands
+                    // have not executed yet.
+                    let bounced = all_idle
+                        && army.issued.is_some_and(|(at, from)| {
+                            obs.tick > at && vanguard.chebyshev(from) <= 1
+                        });
                     if in_contact {
                         army.state = ArmyState::Engaging;
                         army.progress = None;
+                        army.issued = None;
+                        army.bounces = 0;
                     } else if let Some(target) = army.target
                         && tiles_within(vanguard, target, 2)
                     {
@@ -804,6 +889,27 @@ impl Executive {
                         army.staging = target;
                         army.target = None;
                         army.progress = None;
+                        army.issued = None;
+                        army.bounces = 0;
+                    } else if bounced {
+                        // Two refused orders in a row are route testimony
+                        // on the first think a wedge clock would only begin
+                        // counting — an order refused at issue never
+                        // marches, so it never stalls. Measured: 30,286
+                        // NoRoute stalls in one game of a ground army
+                        // re-ordered into a pit it could not see.
+                        army.issued = None;
+                        army.bounces = army.bounces.saturating_add(1);
+                        if army.bounces >= 2
+                            && let Some(target) = army.target
+                        {
+                            wedge_reports.push((target, obs.tick));
+                            army.state = ArmyState::Staging;
+                            army.staging = centroid;
+                            army.target = None;
+                            army.progress = None;
+                            army.bounces = 0;
+                        }
                     } else if let Some(target) = army.target
                         && wedged(&mut army.progress, vanguard.chebyshev(target), obs.tick)
                     {
@@ -817,6 +923,8 @@ impl Executive {
                         army.staging = centroid;
                         army.target = None;
                         army.progress = None;
+                        army.issued = None;
+                        army.bounces = 0;
                     }
                 }
                 ArmyState::Engaging => {
@@ -994,8 +1102,11 @@ impl Executive {
         staging: TilePos,
         size: u32,
         claimed: &[UnitId],
+        rules: &LoweringRules,
     ) -> Vec<UnitId> {
         let enlisted: Vec<UnitId> = self.enlisted().collect();
+        let reach = rules.ground_component.map(|component| component(staging));
+        let index = |tile: TilePos| (tile.y * obs.map_width + tile.x) as usize;
         let mut candidates: Vec<(i32, UnitId)> = obs
             .my_units
             .iter()
@@ -1010,6 +1121,9 @@ impl Executive {
                     && u.idle
                     && !enlisted.contains(&u.id)
                     && !claimed.contains(&u.id)
+                    && reach
+                        .as_ref()
+                        .is_none_or(|reach| reach.get(index(u.tile)).copied().unwrap_or(false))
             })
             .map(|u| (u.tile.manhattan(staging), u.id))
             .collect();
@@ -1147,15 +1261,25 @@ fn centroid(members: &[UnitId], obs: &Observation) -> TilePos {
 /// member) has an armed enemy inside `radius`. A lone straggler brushing
 /// past an enemy is not the army's fight — quorum keeps the state
 /// machine from being yanked around by grazing contact.
-fn enemies_near(obs: &Observation, members: &[UnitId], radius: i32) -> bool {
+fn enemies_near(
+    obs: &Observation,
+    members: &[UnitId],
+    radius: i32,
+    connected: Option<&dyn Fn(TilePos, TilePos) -> bool>,
+) -> bool {
     let touched = obs
         .my_units
         .iter()
         .filter(|u| members.contains(&u.id))
         .filter(|m| {
-            obs.enemy_units
-                .iter()
-                .any(|e| mutually_relevant(m, e) && m.tile.chebyshev(e.tile) <= radius)
+            obs.enemy_units.iter().any(|e| {
+                mutually_relevant(m, e)
+                    && m.tile.chebyshev(e.tile) <= radius
+                    // The component counts tiles adjacent to walkable
+                    // ground as reachable, so a flyer just offshore is
+                    // still contact while one far over the water is not.
+                    && connected.is_none_or(|connected| connected(m.tile, e.tile))
+            })
         })
         .count();
     touched > 0 && touched * 3 >= members.len()

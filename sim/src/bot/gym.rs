@@ -223,6 +223,24 @@ const RECOVERY_HOLD_RETRY_TICKS: u64 = 120;
 /// dead, replacement unaffordable) before it liquidates a rear
 /// building to fund the fleet instead of idling forever.
 const RECOVERY_SAVING_PATIENCE: u64 = 1_200;
+/// A push's objective still lives while a known enemy stands within
+/// this many tiles of its target.
+const FINISH_OBJECTIVE_RADIUS: i32 = 8;
+/// Consecutive loaded-transport losses before the island doctrine stops
+/// forcing the ferry for a cooldown, so the policy can reach raids,
+/// scouting, and air production instead of feeding the guns one hull
+/// at a time (14 single shootdowns in one game).
+const FERRY_SHOOTDOWN_LIMIT: u8 = 3;
+/// Ticks a bounced rider stays off the ferry's guest list.
+const RIDER_BOUNCE_COOLDOWN: u64 = 1_200;
+/// Air-to-ground strike units that make a sealed seat self-sufficient
+/// across water, exempting it from the ferry forcing.
+const ISLAND_AIR_STRIKE_QUOTA: u32 = 4;
+const FERRY_SHOOTDOWN_COOLDOWN: u64 = 6_000;
+/// Known enemy anti-air within this many tiles of a landing refuses it.
+const LANDING_AA_RADIUS: i32 = 8;
+/// How far back toward home a refused landing falls, to a beachhead.
+const BEACHHEAD_PULL: i32 = 8;
 /// A critically wounded, undefended Foundry under visible pressure cannot
 /// plausibly wait out the public fallback-income clock.
 const RECOVERY_CONCEDE_HP_NUM: u32 = 1;
@@ -308,6 +326,7 @@ struct OwnUnitMemory {
     id: UnitId,
     tile: TilePos,
     hp: u32,
+    cargo: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -744,6 +763,25 @@ pub struct GymBot {
     /// Tick a fruitless recovery save first stalled; cleared whenever
     /// recovery deactivates or makes progress.
     recovery_saving_since: Option<u64>,
+    /// Riders whose boarding bounced (seen idle again while ordered
+    /// aboard), with the tick. Excluded from re-pairing for a cooldown:
+    /// one rider was re-paired to the same sling every think for twenty
+    /// minutes (574 identical Load orders).
+    rider_bounces: Vec<(UnitId, u64)>,
+    /// Loaded transports lost in a row since the last delivery.
+    ferry_shootdowns: u8,
+    /// Tick of the latest loaded-transport loss.
+    ferry_shootdown_at: Option<u64>,
+    /// Tick the seat was first found discovery-dead: an enemy Foundry
+    /// it once knew is gone from its knowledge, no free idle fighter can
+    /// go looking, every fighter is held in a staging rally. Cleared
+    /// whenever any of those changes.
+    discovery_dead_since: Option<u64>,
+    /// Whether an enemy Foundry has ever been in this seat's knowledge.
+    /// Discovery-dead means LOST, not never-found: the opening of every
+    /// game has no Foundry known and every fighter staged, and that is
+    /// the ordinary scouting doctrine's job, not a discharge.
+    enemy_foundry_seen: bool,
     /// Tick the seat first took the Contest posture; cleared when
     /// recovery finds a safe source, deactivates, or escapes. Contest
     /// is otherwise the freeze's only posture with no exit: its sole
@@ -832,6 +870,11 @@ impl GymBot {
             pending_boarders: Vec::new(),
             recovery_saving_since: None,
             recovery_contest_since: None,
+            discovery_dead_since: None,
+            enemy_foundry_seen: false,
+            ferry_shootdowns: 0,
+            rider_bounces: Vec::new(),
+            ferry_shootdown_at: None,
             start_anchors: Vec::new(),
         }
     }
@@ -884,13 +927,23 @@ impl GymBot {
     /// what the subsequent lowering will see.
     pub fn decision(&mut self, state: &State) -> Decision {
         let (world, orientation) = self.observe(state);
-        self.refresh_tactical_memory(&world);
+        self.refresh_tactical_memory(&world, state);
         let obs = orientation.observe(&world);
         self.refresh_recovery_assignment(state, &obs, &orientation);
         self.remember(&world);
         let rear = rear_tile(&world);
         let mut projected = self.exec.clone();
-        let _ = projected.maintain_repair_capable(self.player, &world, rear);
+        {
+            let connected = ground_connectivity(&self.policy, &world);
+            let _ = projected.maintain_connected(self.player, &world, rear, &connected);
+        }
+        reconcile_discovery(
+            &mut self.discovery_dead_since,
+            &mut self.enemy_foundry_seen,
+            &obs,
+            &mut projected,
+            false,
+        );
         self.refresh_founding_claims(&obs);
         self.reconcile_plan(&obs);
         self.refresh_profile_progress(&obs);
@@ -1680,6 +1733,15 @@ impl GymBot {
             .any(|(target, _)| target.chebyshev(tile) <= WEDGE_EVIDENCE_RADIUS)
     }
 
+    /// Wedge evidence for a strategic site, checked both at the site and
+    /// at the doorstep a push toward it would actually march to — the
+    /// march target is what the executive testifies about, and a
+    /// doorstep can sit beyond the evidence radius of its anchor.
+    fn site_wedged(&self, obs: &Observation, site: TilePos) -> bool {
+        self.wedge_evidence_near(site)
+            || doorstep_near(obs, site).is_some_and(|doorstep| self.wedge_evidence_near(doorstep))
+    }
+
     fn apply_finishing_doctrine(
         &mut self,
         obs: &Observation,
@@ -1729,7 +1791,7 @@ impl GymBot {
         // whatever the optimistic route says: re-narrowing Push there
         // re-ran the wedge once per patience window while the island
         // doctrine (which this evidence wakes) never got the head.
-        let wedged_site = self.wedge_evidence_near(site);
+        let wedged_site = self.site_wedged(obs, site);
         if !wedged_site && mask[Action::Push as usize] {
             narrow_head(mask, &OPERATION_ACTIONS, Action::Push);
         } else if !wedged_site && mask[Action::FormArmy as usize] {
@@ -1776,9 +1838,7 @@ impl GymBot {
         // egg where discovery needs air, air needs this doctrine, and
         // this doctrine used to need discovery.
         let sealed = match enemy_site {
-            Some(site) => {
-                !self.known_ground_route(obs, home, site) || self.wedge_evidence_near(site)
-            }
+            Some(site) => !self.known_ground_route(obs, home, site) || self.site_wedged(obs, site),
             None => {
                 let anchors = self.oriented_start_anchors(obs);
                 !anchors.is_empty()
@@ -1812,9 +1872,24 @@ impl GymBot {
             .iter()
             .map(|u| u32::from(u.kind.stats().transport_capacity))
             .sum();
-        if transports < ISLAND_TRANSPORT_QUOTA
-            || lift.saturating_mul(ISLAND_LIFT_FRACTION) < ground_bulk
-        {
+        // A seat already fielding an air strike force crosses the water
+        // on its own terms: forcing lift on it starved the wings that
+        // were winning (the scattering, seed 0: a darter-and-gnat seat
+        // that killed the enemy Foundry at 19:48 was conscripted into
+        // ferrying and never crossed again). Ground-leaning seats still
+        // get the ferry doctrine; air-leaning seats keep their raids.
+        let air_strike = obs
+            .my_units
+            .iter()
+            .filter(|u| {
+                let stats = u.kind.stats();
+                stats.domain == Domain::Air && stats.can_fight() && stats.can_target(Domain::Ground)
+            })
+            .count() as u32;
+        let air_self_sufficient = air_strike >= ISLAND_AIR_STRIKE_QUOTA;
+        let lift_short = transports < ISLAND_TRANSPORT_QUOTA
+            || lift.saturating_mul(ISLAND_LIFT_FRACTION) < ground_bulk;
+        if !air_self_sufficient && lift_short {
             if mask[Action::TrainTransport as usize] {
                 narrow_head(mask, &PRODUCTION_ACTIONS, Action::TrainTransport);
             } else if mask[Action::BuildAirworks as usize]
@@ -1829,12 +1904,41 @@ impl GymBot {
         // Operations steer only toward a target that actually exists; the
         // bootstrap above needs no destination, and discovery flights are
         // the search party's job once air stands.
+        if !air_self_sufficient && lift_short {
+            // Lift-short and unable to afford the shuttle: more ground
+            // bulk only deepens the hole (severance seed 0: 7 -> 15
+            // Lancers, 0 Skyhooks, the bank touching the shuttle's price
+            // once in ten windows). Save instead, once air stands.
+            let airworks_built = obs
+                .my_buildings
+                .iter()
+                .any(|b| b.kind == BuildingKind::Airworks && b.built);
+            if airworks_built
+                && !mask[Action::TrainTransport as usize]
+                && mask[Action::Idle as usize]
+            {
+                narrow_head(mask, &PRODUCTION_ACTIONS, Action::Idle);
+            }
+        }
         if enemy_site.is_some() {
-            if mask[Action::Airlift as usize] {
+            // A ground push cannot cross the seal — off, whatever else
+            // the head offers. Both narrowings below used to be guarded by
+            // their own legality, so a sealed seat with no shuttle and no
+            // away army fell through with Push still legal and re-issued
+            // a guaranteed-NoRoute march every think.
+            mask[Action::Push as usize] = false;
+            let ferry_cooling = self.ferry_shootdowns >= FERRY_SHOOTDOWN_LIMIT
+                && self
+                    .ferry_shootdown_at
+                    .is_some_and(|at| obs.tick.saturating_sub(at) <= FERRY_SHOOTDOWN_COOLDOWN);
+            if ferry_cooling || air_self_sufficient {
+                // The guns have the crossing, or the wings do: leave the
+                // head to the policy rather than forcing another hull.
+            } else if mask[Action::Airlift as usize] {
                 narrow_head(mask, &OPERATION_ACTIONS, Action::Airlift);
             } else if mask[Action::Recall as usize] {
-                // A ground push cannot cross the seal; bring the army home
-                // to staging so the shuttle has riders to gather.
+                // Bring the army home to staging so the shuttle has
+                // riders to gather.
                 narrow_head(mask, &OPERATION_ACTIONS, Action::Recall);
             }
         }
@@ -2061,12 +2165,23 @@ impl GymBot {
     /// executive housekeeping, and returns this tick's commands.
     pub fn step_plan(&mut self, state: &State, plan: ActionPlan) -> Vec<PlayerCommand> {
         let (world, orientation) = self.observe(state);
-        self.refresh_tactical_memory(&world);
+        self.refresh_tactical_memory(&world, state);
         let obs = orientation.observe(&world);
         self.refresh_recovery_assignment(state, &obs, &orientation);
         self.remember(&world);
         let rear = rear_tile(&world);
-        let mut commands = self.exec.maintain_repair_capable(self.player, &world, rear);
+        let mut commands = {
+            let connected = ground_connectivity(&self.policy, &world);
+            self.exec
+                .maintain_connected(self.player, &world, rear, &connected)
+        };
+        reconcile_discovery(
+            &mut self.discovery_dead_since,
+            &mut self.enemy_foundry_seen,
+            &obs,
+            &mut self.exec,
+            true,
+        );
 
         self.refresh_founding_claims(&obs);
         self.reconcile_plan(&obs);
@@ -2118,11 +2233,12 @@ impl GymBot {
                 let (w, h) = kind.base_stats().size;
                 (0..h).any(|dy| (0..w).any(|dx| !vision.visible(anchor.offset(dx, dy))))
             };
+            let ground_component = |from: TilePos| self.policy.reachable_component(&world, from);
             commands.extend(self.exec.apply_with(
                 self.player,
                 &world,
                 &op_intents,
-                &LoweringRules::gym(&defer_needed),
+                &LoweringRules::gym(&defer_needed, &ground_component),
             ));
             // The construction-plan clock does not charge the seat for
             // the freeze: an expiry mid-recovery would block_capital a
@@ -2311,11 +2427,12 @@ impl GymBot {
             let (w, h) = kind.base_stats().size;
             (0..h).any(|dy| (0..w).any(|dx| !vision.visible(anchor.offset(dx, dy))))
         };
+        let ground_component = |from: TilePos| self.policy.reachable_component(&world, from);
         commands.extend(self.exec.apply_with(
             self.player,
             &world,
             &intents,
-            &LoweringRules::gym(&defer_needed),
+            &LoweringRules::gym(&defer_needed, &ground_component),
         ));
         // The bounce audit judges only what was actually commanded.
         self.policy.confirm_harvest_dispatches(&commands);
@@ -2492,17 +2609,53 @@ impl GymBot {
                 // policy paces the ferry. The lowering is TOTAL over the
                 // mask's disjunction: whichever arm justified the action
                 // is the arm that runs, never an if/else that goes quiet.
-                let loaded = obs
+                let mut loaded: Vec<&UnitObs> = obs
                     .my_units
                     .iter()
                     .filter(|u| u.kind.stats().transport_capacity > 0 && u.cargo > 0)
-                    .min_by_key(|u| u.id);
-                let destination = enemy_site.or_else(|| staging.map(|a| a.staging));
-                if let (Some(t), Some(at)) = (loaded, destination) {
-                    intents.push(Intent::Unload {
-                        transport: t.id,
-                        at,
-                    });
+                    .collect();
+                loaded.sort_by_key(|u| u.id);
+                // The landing is a doorstep, never a footprint, and never
+                // under known anti-air: a hull that would land inside the
+                // guns falls back toward home to a beachhead instead.
+                let landing = enemy_site.and_then(|site| {
+                    let aa_near = |tile: TilePos| {
+                        obs.enemy_units.iter().any(|u| {
+                            u.kind.stats().can_target(Domain::Air)
+                                && u.tile.chebyshev(tile) <= LANDING_AA_RADIUS
+                        }) || obs.enemy_buildings.iter().any(|b| {
+                            b.kind == BuildingKind::FlakTurret
+                                && b.anchor.chebyshev(tile) <= LANDING_AA_RADIUS
+                        })
+                    };
+                    let doorstep = standable_near(obs, site);
+                    if aa_near(site) {
+                        let (dx, dy) = (home.x - site.x, home.y - site.y);
+                        let d = dx.abs().max(dy.abs());
+                        if d > 0 {
+                            let pull = BEACHHEAD_PULL.min(d);
+                            let back = TilePos::new(site.x + dx * pull / d, site.y + dy * pull / d);
+                            // A beachhead over open water is no landing:
+                            // unloading at one stalled NoOpenGround every
+                            // think (2,349 in one game). Fall back to the
+                            // doorstep, and hold if even that is gone.
+                            return standable_near(obs, back).or(doorstep);
+                        }
+                    }
+                    doorstep
+                });
+                let destination = landing.or_else(|| staging.map(|a| a.staging));
+                if let (false, Some(at)) = (loaded.is_empty(), destination) {
+                    // Every loaded hull drops in one decision: the ferry is
+                    // a wave, not a shuttle. Production already has to
+                    // build lift for a third of the ground bulk; dropping
+                    // one hull per think spent none of it.
+                    for t in &loaded {
+                        intents.push(Intent::Unload {
+                            transport: t.id,
+                            at,
+                        });
+                    }
                 } else if let Some(t) = obs
                     .my_units
                     .iter()
@@ -2520,17 +2673,18 @@ impl GymBot {
                     let rack_reach = self.policy.reachable_component(obs, t.tile);
                     let reach_index = |tile: TilePos| (tile.y * obs.map_width + tile.x) as usize;
                     let boardable = |u: &UnitObs| {
-                        u.kind.stats().domain == Domain::Air
-                            || [(0, 0), (0, 1), (0, -1), (1, 0), (-1, 0)]
-                                .iter()
-                                .any(|(dx, dy)| {
-                                    let tile = u.tile.offset(*dx, *dy);
-                                    tile.x >= 0
-                                        && tile.y >= 0
-                                        && tile.x < obs.map_width
-                                        && tile.y < obs.map_height
-                                        && rack_reach[reach_index(tile)]
-                                })
+                        !self.rider_bounces.iter().any(|(id, _)| *id == u.id)
+                            && (u.kind.stats().domain == Domain::Air
+                                || [(0, 0), (0, 1), (0, -1), (1, 0), (-1, 0)].iter().any(
+                                    |(dx, dy)| {
+                                        let tile = u.tile.offset(*dx, *dy);
+                                        tile.x >= 0
+                                            && tile.y >= 0
+                                            && tile.x < obs.map_width
+                                            && tile.y < obs.map_height
+                                            && rack_reach[reach_index(tile)]
+                                    },
+                                ))
                     };
                     let mut candidates: Vec<(i32, UnitId, u32)> = obs
                         .my_units
@@ -2604,10 +2758,24 @@ impl GymBot {
                 // is present the target stays local — the nearest standable
                 // intruder, else open ground beside the unstandable one.
                 // Only an intruder-free push takes the strategic site.
-                let target = nearest_standable_intruder(obs, home).or_else(|| {
+                // The strategic site is a building anchor: a footprint
+                // tile nobody can stand on, so an order aimed straight at
+                // it stalls NoRoute even with open ground beside it
+                // (1,150 such stalls in one game). March to the doorstep.
+                let reach = self.policy.reachable_component(obs, home);
+                let target = nearest_standable_intruder(obs, home, &reach).or_else(|| {
                     match nearest_home_intruder(obs, home) {
-                        Some(intruder) => standable_near(obs, intruder),
-                        None => enemy_site,
+                        // A flyer over rock is pushed beside, where ground
+                        // anti-air can answer it — but only if that ground
+                        // is reachable. A raider across a channel is a job
+                        // for guns and wings, not a march: no push.
+                        Some(intruder) => standable_near(obs, intruder).filter(|tile| {
+                            reach
+                                .get((tile.y * obs.map_width + tile.x) as usize)
+                                .copied()
+                                .unwrap_or(false)
+                        }),
+                        None => enemy_site.map(|site| doorstep_near(obs, site).unwrap_or(site)),
                     }
                 });
                 if let (Some(army), Some(target)) = (staging, target) {
@@ -3100,24 +3268,72 @@ impl GymBot {
     /// visible/shared hostile units, radar contacts, visible incoming
     /// impacts, and changes to our own units. Calling `decision` followed
     /// by `step_plan` at the same tick is idempotent.
-    fn refresh_tactical_memory(&mut self, world: &Observation) {
+    fn refresh_tactical_memory(&mut self, world: &Observation, state: &State) {
         if self.memory_tick == Some(world.tick) {
             return;
         }
+        // Live evidence outranks memory: a remembered danger whose tile
+        // the seat can SEE right now, with no enemy near it, is gone.
+        // Without this the only purge was the 1,800-tick expiry, and a
+        // dying Buzzard sighting kept a seat's own doorstep wrecks
+        // "guarded" through a full memory window while its one worker
+        // idled beside 187 scrap (open-quarry seed 1).
+        let vision = state.vision(self.player);
+        self.danger.retain(|memory| {
+            !(vision.visible(memory.tile)
+                && !world
+                    .enemy_units
+                    .iter()
+                    .any(|u| u.tile.chebyshev(memory.tile) <= DANGER_RADIUS)
+                && !world
+                    .enemy_buildings
+                    .iter()
+                    .any(|b| b.anchor.chebyshev(memory.tile) <= DANGER_RADIUS))
+        });
         // Boarding ledger upkeep: a pending rider seen idle again
         // bounced off the sling (samples apply to it normally from here
         // on), and when no sling holds any cargo an absent rider has no
         // alibi left — it is dead and the ledger clears.
+        self.rider_bounces
+            .retain(|(_, at)| world.tick.saturating_sub(*at) <= RIDER_BOUNCE_COOLDOWN);
+        // A pending rider seen idle again bounced off the sling, whether
+        // or not any sling holds cargo — the wholesale clear below used
+        // to erase the evidence first.
+        let tick = world.tick;
+        let bounced: Vec<UnitId> = self
+            .pending_boarders
+            .iter()
+            .copied()
+            .filter(|id| world.my_units.iter().any(|u| u.id == *id && u.idle))
+            .collect();
+        self.rider_bounces
+            .extend(bounced.iter().map(|id| (*id, tick)));
         if !world.my_units.iter().any(|u| u.cargo > 0) {
             self.pending_boarders.clear();
         } else {
-            self.pending_boarders
-                .retain(|id| !world.my_units.iter().any(|u| u.id == *id && u.idle));
+            self.pending_boarders.retain(|id| !bounced.contains(id));
         }
         self.danger
             .retain(|memory| world.tick.saturating_sub(memory.seen_at) <= DANGER_MEMORY_TICKS);
 
         let mut samples: Vec<(TilePos, u64)> = Vec::new();
+        // Ferry outcomes: a loaded sling that vanishes was shot down
+        // with its riders (cargo dies with the airframe); one seen empty
+        // again after flying loaded delivered. Consecutive shootdowns
+        // suspend the island doctrine's ferry forcing for a cooldown.
+        for previous in &self.own_units_seen {
+            if previous.cargo == 0 {
+                continue;
+            }
+            match world.my_units.iter().find(|unit| unit.id == previous.id) {
+                None if !self.pending_boarders.contains(&previous.id) => {
+                    self.ferry_shootdowns = self.ferry_shootdowns.saturating_add(1);
+                    self.ferry_shootdown_at = Some(world.tick);
+                }
+                Some(unit) if unit.cargo == 0 => self.ferry_shootdowns = 0,
+                _ => {}
+            }
+        }
         for previous in &self.own_units_seen {
             match world.my_units.iter().find(|unit| unit.id == previous.id) {
                 Some(unit) if unit.hp < previous.hp => {
@@ -3173,6 +3389,7 @@ impl GymBot {
                 id: unit.id,
                 tile: unit.tile,
                 hp: unit.hp,
+                cargo: unit.cargo,
             })
             .collect();
         self.memory_tick = Some(world.tick);
@@ -3488,9 +3705,13 @@ impl GymBot {
             // (armies, expansion, extractors) fights sieges better
             // than a frozen one. Measured deciding scramble seed 1
             // seven minutes faster.
+            // The bank clause alone is circular when the freeze is what
+            // keeps the bank from growing: after twice the patience with
+            // no safe source found, the seat is released regardless.
             let since = *self.recovery_contest_since.get_or_insert(obs.tick);
-            if obs.scrap >= UnitKind::Harvester.stats().cost
-                && obs.tick.saturating_sub(since) > RECOVERY_SAVING_PATIENCE
+            let held = obs.tick.saturating_sub(since);
+            if (obs.scrap >= UnitKind::Harvester.stats().cost && held > RECOVERY_SAVING_PATIENCE)
+                || held > 2 * RECOVERY_SAVING_PATIENCE
             {
                 self.recovery_active = false;
                 self.recovery_target = None;
@@ -3582,11 +3803,12 @@ impl GymBot {
                 let (w, h) = kind.base_stats().size;
                 (0..h).any(|dy| (0..w).any(|dx| !vision.visible(anchor.offset(dx, dy))))
             };
+            let ground_component = |from: TilePos| this.policy.reachable_component(world, from);
             this.exec.apply_with(
                 this.player,
                 world,
                 &orientation.emit(intents),
-                &LoweringRules::gym(&defer_needed),
+                &LoweringRules::gym(&defer_needed, &ground_component),
             )
         };
 
@@ -4146,13 +4368,32 @@ impl GymBot {
         // lock so the island doctrine can recall it and ferry instead
         // (measured: this lock held dominant seats idle to the time cap
         // on part-sealed maps).
+        // ...and only while it is still doing something: a body that
+        // is entirely idle on a target with no known enemy near it has
+        // finished that push. Holding the lock for it measured as 5:08
+        // of a 4,000-strength team idling over a dead base (compass
+        // grand seed 0).
         let wedge_free: Vec<bool> = armies
             .iter()
             .map(|army| match army.state {
                 ArmyState::Engaging => true,
-                ArmyState::Pushing => army
-                    .target
-                    .is_none_or(|target| self.known_ground_route(obs, home, target)),
+                ArmyState::Pushing => army.target.is_none_or(|target| {
+                    let routable = self.known_ground_route(obs, home, target)
+                        && !self.site_wedged(obs, target);
+                    let moving = obs
+                        .my_units
+                        .iter()
+                        .any(|u| army.members.contains(&u.id) && !u.idle);
+                    let objective_alive = obs
+                        .enemy_units
+                        .iter()
+                        .any(|u| u.tile.chebyshev(target) <= FINISH_OBJECTIVE_RADIUS)
+                        || obs
+                            .enemy_buildings
+                            .iter()
+                            .any(|b| b.anchor.chebyshev(target) <= FINISH_OBJECTIVE_RADIUS);
+                    routable && (moving || objective_alive)
+                }),
                 _ => false,
             })
             .collect();
@@ -4339,12 +4580,32 @@ fn nearest_home_intruder(obs: &Observation, home: TilePos) -> Option<TilePos> {
         .map(|(_, y, x, _)| TilePos::new(x, y))
 }
 
-/// [`nearest_home_intruder`] restricted to tiles a ground army can
-/// stand on: a flyer hovering over rock is a real threat but not a
-/// marchable target — a push aimed at its tile can only wedge there
-/// (measured as a doctrine push/recall oscillator). Only the Push
-/// execution's target choice uses this; masks, the defense arm, and
-/// milestone gating keep the unrestricted read.
+/// The nearest standable tile touching a site's anchor: a march target a
+/// unit can actually stand on without leaving the building's own ground.
+/// `standable_near`'s wider ring could return a tile across a channel
+/// from a coastal base, and a march "succeeded" onto the shore facing it
+/// — the army then sat Engaging across water with a focus order that
+/// stalled NoFiringPosition every tick (47,000 in one game).
+fn doorstep_near(obs: &Observation, site: TilePos) -> Option<TilePos> {
+    let mut best: Option<((i32, i32, i32), TilePos)> = None;
+    for dy in -1..=2 {
+        for dx in -1..=2 {
+            let tile = site.offset(dx, dy);
+            if tile.x < 0 || tile.y < 0 || tile.x >= obs.map_width || tile.y >= obs.map_height {
+                continue;
+            }
+            if standable_near(obs, tile) != Some(tile) {
+                continue;
+            }
+            let key = (tile.chebyshev(site), tile.y, tile.x);
+            if best.is_none_or(|(best_key, _)| key < best_key) {
+                best = Some((key, tile));
+            }
+        }
+    }
+    best.map(|(_, tile)| tile)
+}
+
 /// The nearest tile around `want` a ground machine can stand on by the
 /// seat's own knowledge, ring-scanned outward to three tiles in stable
 /// (r, dy, dx) order. `None` when the whole neighborhood reads as rock.
@@ -4370,11 +4631,21 @@ fn standable_near(obs: &Observation, want: TilePos) -> Option<TilePos> {
     None
 }
 
-fn nearest_standable_intruder(obs: &Observation, home: TilePos) -> Option<TilePos> {
+/// [`nearest_home_intruder`] restricted to tiles a ground army can
+/// stand on AND reach: a flyer hovering over rock, or a raider across a
+/// channel, is a real threat but not a marchable target — a push aimed
+/// at its tile can only wedge there (measured first as a push/recall
+/// oscillator, then as a 16-unit attack-move re-issued every think with
+/// its units stalling NoFiringPosition every tick, 108,000 times in one
+/// game). Only the Push execution's target choice uses this; masks and
+/// milestone gating keep the unrestricted read.
+fn nearest_standable_intruder(obs: &Observation, home: TilePos, reach: &[bool]) -> Option<TilePos> {
+    let index = |tile: TilePos| (tile.y * obs.map_width + tile.x) as usize;
     obs.enemy_units
         .iter()
         .filter(|unit| unit.kind.stats().can_fight() && unit.tile.chebyshev(home) <= 12)
         .filter(|unit| !obs.known_rock.contains(&unit.tile))
+        .filter(|unit| reach.get(index(unit.tile)).copied().unwrap_or(false))
         .map(|unit| (unit.tile.chebyshev(home), unit.tile.y, unit.tile.x, unit.id))
         .min()
         .map(|(_, y, x, _)| TilePos::new(x, y))
@@ -5772,6 +6043,77 @@ fn unit_patient(
                 .then_with(|| (a.tile.y, a.tile.x, a.id).cmp(&(b.tile.y, b.tile.x, b.id)))
         })
         .map(|u| u.id)
+}
+
+/// A seat whose enemy has vanished into fog with every fighter enlisted
+/// in a rally has no legal way to look: Scout and FormArmy both want a
+/// free idle fighter, and the finishing doctrine's scout narrowing needs
+/// Scout legal first. After a patience window, one staged rally-holder
+/// is discharged to the free pool — the trained-legal verbs reopen on
+/// their own, with no mask widening (measured: a 5,540-value army idle
+/// 99% of its tail with push 0% / form 0% legal on trident-plateau).
+fn reconcile_discovery(
+    since: &mut Option<u64>,
+    ever_seen: &mut bool,
+    obs: &Observation,
+    exec: &mut super::executive::Executive,
+    commit: bool,
+) {
+    let foundry_known = obs
+        .enemy_buildings
+        .iter()
+        .any(|b| b.kind == BuildingKind::Foundry);
+    *ever_seen |= foundry_known;
+    if !*ever_seen {
+        *since = None;
+        return;
+    }
+    let free_fighter = obs.my_units.iter().any(|u| {
+        let stats = u.kind.stats();
+        stats.can_fight()
+            && stats.domain == Domain::Ground
+            && u.idle
+            && !exec.enlisted().any(|id| id == u.id)
+    });
+    let staged = exec.armies().iter().any(|a| a.state == ArmyState::Staging);
+    if foundry_known || free_fighter || !staged {
+        *since = None;
+        return;
+    }
+    // The decision preview and the real step both call this in one tick
+    // and must make the same cut, so both discharge — but only the real
+    // step restarts the clock. Leaving the clock alone measured as a
+    // discharge/re-draft oscillation every think from minute one (3,950
+    // commands against 988) that burned the operation head for the
+    // whole game.
+    let started = *since.get_or_insert(obs.tick);
+    if obs.tick.saturating_sub(started) > RECOVERY_SAVING_PATIENCE {
+        exec.discharge_one_staged();
+        if commit {
+            *since = Some(obs.tick);
+        }
+    }
+}
+
+/// A ground-connectivity predicate over the seat's known terrain,
+/// flooding once per distinct origin and answering from the cache after
+/// that (an army's members share an origin for a whole think).
+fn ground_connectivity<'a>(
+    policy: &'a UtilityPolicy,
+    world: &'a Observation,
+) -> impl Fn(TilePos, TilePos) -> bool + 'a {
+    let cache: std::cell::RefCell<Vec<(TilePos, Vec<bool>)>> = std::cell::RefCell::new(Vec::new());
+    move |from: TilePos, to: TilePos| {
+        let index = (to.y * world.map_width + to.x) as usize;
+        let mut cache = cache.borrow_mut();
+        if let Some((_, component)) = cache.iter().find(|(origin, _)| *origin == from) {
+            return component.get(index).copied().unwrap_or(false);
+        }
+        let component = policy.reachable_component(world, from);
+        let hit = component.get(index).copied().unwrap_or(false);
+        cache.push((from, component));
+        hit
+    }
 }
 
 fn home_tile(obs: &Observation) -> Option<TilePos> {

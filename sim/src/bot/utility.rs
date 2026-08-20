@@ -391,24 +391,46 @@ impl UtilityPolicy {
     pub(super) fn reachable_component(&self, obs: &Observation, from: TilePos) -> Vec<bool> {
         let (w, h) = (obs.map_width, obs.map_height);
         let index = |t: TilePos| (t.y * w + t.x) as usize;
-        let mut reachable = vec![false; (w * h).max(0) as usize];
-        if from.x >= 0 && from.y >= 0 && from.x < w && from.y < h {
+        let in_bounds = |t: TilePos| t.x >= 0 && t.y >= 0 && t.x < w && t.y < h;
+        let mut walked = vec![false; (w * h).max(0) as usize];
+        if in_bounds(from) {
+            // The flood walks only tiles a ground unit can stand on in the
+            // seat's knowledge: not rock, not scrap, not under any known
+            // building. Rock alone let the flood pass through a scrap
+            // field or a wall of buildings and name targets the sim then
+            // refused every think (a scout re-sent to one such tile 237
+            // times in a game's last ten minutes).
             let mut queue = std::collections::VecDeque::new();
-            reachable[index(from)] = true;
+            walked[index(from)] = true;
             queue.push_back(from);
             while let Some(tile) = queue.pop_front() {
                 for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
                     let n = tile.offset(dx, dy);
-                    if n.x >= 0
-                        && n.y >= 0
-                        && n.x < w
-                        && n.y < h
-                        && !reachable[index(n)]
-                        && !self.rock_at(obs, n)
-                    {
-                        reachable[index(n)] = true;
+                    if in_bounds(n) && !walked[index(n)] && self.tile_open(obs, n) {
+                        walked[index(n)] = true;
                         queue.push_back(n);
                     }
+                }
+            }
+        }
+        // A destination counts as reachable when a unit can stand next to
+        // it: scrap nodes, doorsteps, and a hovering sling are all worked
+        // from an adjacent tile, never from their own.
+        let mut reachable = walked.clone();
+        for y in 0..h {
+            for x in 0..w {
+                let tile = TilePos::new(x, y);
+                if walked[index(tile)] {
+                    continue;
+                }
+                let adjacent_walked = (-1..=1).any(|dy| {
+                    (-1..=1).any(|dx| {
+                        let n = tile.offset(dx, dy);
+                        (dx != 0 || dy != 0) && in_bounds(n) && walked[index(n)]
+                    })
+                });
+                if adjacent_walked {
+                    reachable[index(tile)] = true;
                 }
             }
         }
@@ -439,7 +461,7 @@ impl UtilityPolicy {
         for y in 0..h {
             for x in 0..w {
                 let tile = TilePos::new(x, y);
-                if !explored(tile) || self.rock_at(obs, tile) || !reachable[index(tile)] {
+                if !explored(tile) || !self.tile_open(obs, tile) || !reachable[index(tile)] {
                     continue;
                 }
                 let borders_dark = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|(dx, dy)| {
