@@ -125,6 +125,13 @@ DOMINANCE = 2
 IDLE_SHARE = 0.8
 EXPANSION_MIN_TICKS = 25_000
 STARVED_IDLE_SHARE = 0.7
+# A "giant" must be a real army. The screen's motivating case was a
+# 259-unit horde that never attacked; measured true positives run
+# 2,500-6,500 strength. Sub-1,000 survivors idling in a corner are
+# paupers, not giants — the old floor of 300 flagged 340-516-strength
+# seats and twice blocked fixes that made games decide faster while
+# freeing a poor seat into visibility.
+PASSIVE_GIANT_STRENGTH = 1_000
 OSCILLATION_MIN = 20
 FROZEN_WIDTH = 5
 DISCOVERY_DEADLINE = 20_000
@@ -259,7 +266,7 @@ def screen_game(game: GameTrace) -> list[dict]:
         offensive = t.ops["push"] + t.ops["raid"] + t.ops["lift"]
         if (
             t.decisions >= 300
-            and t.max_mine >= 300
+            and t.max_mine >= PASSIVE_GIANT_STRENGTH
             and offensive * 100 < t.decisions
             and t.ops["idle"] * 100 >= t.decisions * 85
         ):
