@@ -744,6 +744,12 @@ pub struct GymBot {
     /// Tick a fruitless recovery save first stalled; cleared whenever
     /// recovery deactivates or makes progress.
     recovery_saving_since: Option<u64>,
+    /// Tick the seat first took the Contest posture; cleared when
+    /// recovery finds a safe source, deactivates, or escapes. Contest
+    /// is otherwise the freeze's only posture with no exit: its sole
+    /// release is a viable safe assignment, so a seat whose every
+    /// known node stayed guarded froze its spending forever.
+    recovery_contest_since: Option<u64>,
     /// Enemy Foundry START anchors from the scenario — public map
     /// data, the same prior a player has from picking the map. Fog
     /// still governs what stands there now; these only tell the
@@ -825,6 +831,7 @@ impl GymBot {
             finish_lock_released_at: None,
             pending_boarders: Vec::new(),
             recovery_saving_since: None,
+            recovery_contest_since: None,
             start_anchors: Vec::new(),
         }
     }
@@ -3394,6 +3401,7 @@ impl GymBot {
             self.recovery_assignment = None;
             self.recovery_target = None;
             self.recovery_saving_since = None;
+            self.recovery_contest_since = None;
             return RecoveryPosture::Inactive;
         }
 
@@ -3465,15 +3473,32 @@ impl GymBot {
 
         if !harvesters.is_empty() {
             if let Some(source) = safe {
+                self.recovery_contest_since = None;
                 return RecoveryPosture::Harvest(source);
             }
             if sources.is_empty() {
                 self.recovery_target = None;
+                self.recovery_contest_since = None;
                 return RecoveryPosture::Prospect;
             }
-            // Contest has no patience exit: a freed besieged seat's
-            // trained passivity idles in the open, so the escape waits
-            // for the training era that prices conduct.
+            // Contest borrows the saving patience for its exit: a seat
+            // that has contested guarded ground for the whole window
+            // while able to fund a replacement worker is not
+            // income-dead — it is besieged, and the full doctrine
+            // (armies, expansion, extractors) fights sieges better
+            // than a frozen one. Measured deciding scramble seed 1
+            // seven minutes faster.
+            let since = *self.recovery_contest_since.get_or_insert(obs.tick);
+            if obs.scrap >= UnitKind::Harvester.stats().cost
+                && obs.tick.saturating_sub(since) > RECOVERY_SAVING_PATIENCE
+            {
+                self.recovery_active = false;
+                self.recovery_target = None;
+                self.recovery_worker_hold = None;
+                self.recovery_liquidation = None;
+                self.recovery_contest_since = None;
+                return RecoveryPosture::Inactive;
+            }
             let target = self
                 .recovery_target
                 .filter(|target| {
@@ -3868,6 +3893,7 @@ impl GymBot {
             self.recovery_target = None;
             self.recovery_worker_hold = None;
             self.recovery_liquidation = None;
+            self.recovery_contest_since = None;
         }
     }
 
