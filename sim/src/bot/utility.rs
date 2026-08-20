@@ -1411,7 +1411,8 @@ impl UtilityPolicy {
                         (frontier, tile.y, tile.x)
                     });
                 if let Some(focus) = frontier
-                    && let Some(anchor) = self.placement_near(obs, BuildingKind::Foundry, focus)
+                    && let Some(anchor) =
+                        self.placement_near(obs, BuildingKind::Foundry, focus, false)
                 {
                     *budget -= cost;
                     self.pending_sites.push(anchor);
@@ -1430,7 +1431,7 @@ impl UtilityPolicy {
                 }
                 let cost = kind.base_stats().construction.map(|c| c.cost).unwrap_or(0);
                 if *budget >= cost + TECH_RESERVE
-                    && let Some(anchor) = self.placement_near(obs, kind, home)
+                    && let Some(anchor) = self.placement_near(obs, kind, home, false)
                 {
                     *budget -= cost;
                     self.pending_sites.push(anchor);
@@ -1517,7 +1518,8 @@ impl UtilityPolicy {
                 && !have_fab
                 && harvesters >= dials.harvester_target.min(3) as usize
                 && *budget >= cost + TECH_RESERVE
-                && let Some(anchor) = self.placement_near(obs, BuildingKind::Fabricator, home)
+                && let Some(anchor) =
+                    self.placement_near(obs, BuildingKind::Fabricator, home, false)
             {
                 *budget -= cost;
                 self.pending_sites.push(anchor);
@@ -1543,7 +1545,7 @@ impl UtilityPolicy {
                 && turrets < TURRET_CAP
                 && *budget >= cost + UnitKind::Harvester.stats().cost
                 && let Some(node) = self.nearest_scrap(obs, home)
-                && let Some(anchor) = self.placement_near(obs, BuildingKind::Turret, node)
+                && let Some(anchor) = self.placement_near(obs, BuildingKind::Turret, node, false)
             {
                 *budget -= cost;
                 self.pending_sites.push(anchor);
@@ -1590,7 +1592,7 @@ impl UtilityPolicy {
                     let lean = |from: i32, to: i32| from + (to - from).clamp(-MINE_LEAN, MINE_LEAN);
                     let focus = TilePos::new(lean(home.x, toward.x), lean(home.y, toward.y));
                     if let Some(anchor) =
-                        self.placement_near(obs, BuildingKind::ScuttleCharge, focus)
+                        self.placement_near(obs, BuildingKind::ScuttleCharge, focus, false)
                     {
                         *budget -= cost;
                         self.pending_sites.push(anchor);
@@ -1620,7 +1622,8 @@ impl UtilityPolicy {
                 && flak < FLAK_CAP
                 && *budget >= cost + UnitKind::Harvester.stats().cost
                 && let Some(node) = self.nearest_scrap(obs, home)
-                && let Some(anchor) = self.placement_near(obs, BuildingKind::FlakTurret, node)
+                && let Some(anchor) =
+                    self.placement_near(obs, BuildingKind::FlakTurret, node, false)
             {
                 *budget -= cost;
                 self.pending_sites.push(anchor);
@@ -1651,7 +1654,7 @@ impl UtilityPolicy {
                 && !have_array
                 && let Some(cost) = array_cost
                 && *budget >= cost + TECH_RESERVE
-                && let Some(anchor) = self.placement_near(obs, BuildingKind::Array, home)
+                && let Some(anchor) = self.placement_near(obs, BuildingKind::Array, home, false)
             {
                 *budget -= cost;
                 self.pending_sites.push(anchor);
@@ -1686,7 +1689,7 @@ impl UtilityPolicy {
                 && reclaimers < RECLAIMER_CAP
                 && let Some(cost) = rec_cost
                 && *budget >= cost + TECH_RESERVE
-                && let Some(anchor) = self.placement_near(obs, BuildingKind::Reclaimer, home)
+                && let Some(anchor) = self.placement_near(obs, BuildingKind::Reclaimer, home, false)
             {
                 *budget -= cost;
                 self.pending_sites.push(anchor);
@@ -2332,6 +2335,7 @@ impl UtilityPolicy {
         obs: &Observation,
         kind: BuildingKind,
         near: TilePos,
+        guard_corridors: bool,
     ) -> Option<TilePos> {
         let (w, h) = kind.base_stats().size;
         for r in 3i32..=7 {
@@ -2341,7 +2345,7 @@ impl UtilityPolicy {
                         continue;
                     }
                     let anchor = near.offset(dx, dy);
-                    if self.placement_valid(obs, anchor, w, h) {
+                    if self.placement_valid(obs, anchor, w, h, guard_corridors) {
                         return Some(anchor);
                     }
                 }
@@ -2358,6 +2362,7 @@ impl UtilityPolicy {
         obs: &Observation,
         kind: BuildingKind,
         near: TilePos,
+        guard_corridors: bool,
     ) -> Vec<TilePos> {
         let (w, h) = kind.base_stats().size;
         let mut anchors = Vec::new();
@@ -2368,7 +2373,7 @@ impl UtilityPolicy {
                         continue;
                     }
                     let anchor = near.offset(dx, dy);
-                    if self.placement_valid(obs, anchor, w, h) {
+                    if self.placement_valid(obs, anchor, w, h, guard_corridors) {
                         anchors.push(anchor);
                     }
                 }
@@ -2377,7 +2382,14 @@ impl UtilityPolicy {
         anchors
     }
 
-    fn placement_valid(&self, obs: &Observation, anchor: TilePos, width: i32, height: i32) -> bool {
+    fn placement_valid(
+        &self,
+        obs: &Observation,
+        anchor: TilePos,
+        width: i32,
+        height: i32,
+        guard_corridors: bool,
+    ) -> bool {
         if self.dead_anchors.contains(&anchor) {
             return false;
         }
@@ -2393,13 +2405,72 @@ impl UtilityPolicy {
         if !footprint_ok {
             return false;
         }
-        (-1..=width).any(|dx| {
-            (-1..=height).any(|dy| {
+        let mut ring: Vec<TilePos> = Vec::new();
+        for dx in -1..=width {
+            for dy in -1..=height {
                 let core = (0..width).contains(&dx) && (0..height).contains(&dy);
                 let tile = anchor.offset(dx, dy);
-                !core && in_bounds(tile) && obs.explored(tile) && self.tile_open(obs, tile)
-            })
-        })
+                if !core && in_bounds(tile) && obs.explored(tile) && self.tile_open(obs, tile) {
+                    ring.push(tile);
+                }
+            }
+        }
+        if ring.is_empty() {
+            return false;
+        }
+        // The corridor guard is gym-only: the scripted Overseer path
+        // keeps its historical placements byte-for-byte (the hash gates
+        // arbitrate), and the neural bot — the one measured bricking
+        // its own doorstep — pays the extra check.
+        if !guard_corridors {
+            return true;
+        }
+        // The doorstep ring must stay one piece with the footprint down:
+        // a ring split in two means the building walls a corridor, and
+        // the measured harm is self-blockade — the seat bricks its own
+        // doorstep and every march after that wedges on its own wall.
+        // The test is local (footprint plus a three-tile margin) and
+        // conservative: a ring that reconnects only by a long march
+        // outside the window is refused, and the scan simply tries the
+        // next anchor.
+        if ring.len() == 1 {
+            return true;
+        }
+        let x0 = (anchor.x - 3).max(0);
+        let y0 = (anchor.y - 3).max(0);
+        let x1 = (anchor.x + width + 2).min(obs.map_width - 1);
+        let y1 = (anchor.y + height + 2).min(obs.map_height - 1);
+        let in_footprint = |tile: TilePos| {
+            tile.x >= anchor.x
+                && tile.x < anchor.x + width
+                && tile.y >= anchor.y
+                && tile.y < anchor.y + height
+        };
+        let open = |tile: TilePos| {
+            tile.x >= x0
+                && tile.x <= x1
+                && tile.y >= y0
+                && tile.y <= y1
+                && !in_footprint(tile)
+                && obs.explored(tile)
+                && self.tile_open(obs, tile)
+        };
+        let ww = (x1 - x0 + 1) as usize;
+        let hh = (y1 - y0 + 1) as usize;
+        let index = |tile: TilePos| (tile.y - y0) as usize * ww + (tile.x - x0) as usize;
+        let mut seen = vec![false; ww * hh];
+        let mut queue = vec![ring[0]];
+        seen[index(ring[0])] = true;
+        while let Some(tile) = queue.pop() {
+            for (dx, dy) in [(0, 1), (0, -1), (1, 0), (-1, 0)] {
+                let next = tile.offset(dx, dy);
+                if open(next) && !seen[index(next)] {
+                    seen[index(next)] = true;
+                    queue.push(next);
+                }
+            }
+        }
+        ring.iter().all(|tile| seen[index(*tile)])
     }
 
     fn placement_tile_open(&self, obs: &Observation, tile: TilePos) -> bool {

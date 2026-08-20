@@ -2830,13 +2830,13 @@ impl GymBot {
                 defense_foci(obs, home, kind)
                     .into_iter()
                     .chain(std::iter::once(home))
-                    .flat_map(|focus| self.policy.placements_near(obs, kind, focus))
+                    .flat_map(|focus| self.policy.placements_near(obs, kind, focus, true))
                     .any(|anchor| builders.travel_to(anchor, kind).is_some())
             }
             BuildingKind::Foundry => self
                 .expansion_anchor(obs, enlisted, defense_probe)
                 .is_some(),
-            _ => self.policy.placement_near(obs, kind, home).is_some(),
+            _ => self.policy.placement_near(obs, kind, home, true).is_some(),
         }
     }
 
@@ -2891,7 +2891,7 @@ impl GymBot {
         });
         frontiers.into_iter().find_map(|(.., focus)| {
             self.policy
-                .placements_near(obs, BuildingKind::Foundry, focus)
+                .placements_near(obs, BuildingKind::Foundry, focus, true)
                 .into_iter()
                 .find(|anchor| builders.travel_to(*anchor, BuildingKind::Foundry).is_some())
         })
@@ -2926,7 +2926,7 @@ impl GymBot {
                     .map(|building| building.anchor)
                     .collect();
                 self.policy
-                    .placements_near(obs, kind, home)
+                    .placements_near(obs, kind, home, true)
                     .into_iter()
                     .map(|anchor| {
                         let ring = masts
@@ -2940,7 +2940,7 @@ impl GymBot {
                     .min()
                     .map(|(.., anchor)| anchor)
             }
-            _ => self.policy.placement_near(obs, kind, home),
+            _ => self.policy.placement_near(obs, kind, home, true),
         }
     }
 
@@ -2958,7 +2958,7 @@ impl GymBot {
 
         let mut candidates: Vec<_> = foci
             .into_iter()
-            .flat_map(|focus| self.policy.placements_near(obs, kind, focus))
+            .flat_map(|focus| self.policy.placements_near(obs, kind, focus, true))
             .collect();
         candidates.sort_unstable_by_key(|anchor| (anchor.y, anchor.x));
         candidates.dedup();
@@ -2976,7 +2976,7 @@ impl GymBot {
         let builders = &*builders;
         candidates.retain(|anchor| builders.travel_to(*anchor, kind).is_some());
         if candidates.is_empty() {
-            candidates = self.policy.placements_near(obs, kind, home);
+            candidates = self.policy.placements_near(obs, kind, home, true);
             candidates.retain(|anchor| builders.travel_to(*anchor, kind).is_some());
         }
         if candidates.is_empty() {
