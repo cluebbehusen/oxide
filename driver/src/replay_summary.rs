@@ -267,8 +267,13 @@ pub struct SeatDigestRow {
     pub seat: u8,
     /// Living units.
     pub units: u32,
-    /// Sum of living units' costs.
+    /// Sum of living units' costs, workers included.
     pub army_value: u64,
+    /// Sum of living combat-capable units' costs. Reading `army_value`
+    /// as fighting power manufactured false "winner cannot finish"
+    /// verdicts — a mined-out seat's worker line is value that never
+    /// shoots.
+    pub combat_value: u64,
     /// Top three unit kinds by count.
     pub top_kinds: Vec<(String, u32)>,
     /// Harvest-capable units.
@@ -1084,6 +1089,7 @@ fn capture_digest(
             let seat_id = seat as u8;
             let mut units: u32 = 0;
             let mut army_value: u64 = 0;
+            let mut combat_value: u64 = 0;
             let mut harvesters: u32 = 0;
             let mut harvesters_idle: u32 = 0;
             let mut kind_counts: BTreeMap<&'static str, u32> = BTreeMap::new();
@@ -1093,6 +1099,9 @@ fn capture_digest(
                 }
                 units += 1;
                 army_value += u64::from(unit.kind.stats().cost);
+                if unit.kind.stats().can_fight() {
+                    combat_value += u64::from(unit.kind.stats().cost);
+                }
                 *kind_counts.entry(unit.kind.name()).or_default() += 1;
                 if unit.kind.stats().harvest.is_some() {
                     harvesters += 1;
@@ -1114,6 +1123,7 @@ fn capture_digest(
                 seat: seat_id,
                 units,
                 army_value,
+                combat_value,
                 top_kinds: kinds
                     .into_iter()
                     .map(|(name, count)| (name.to_owned(), count))
@@ -1327,10 +1337,11 @@ impl SummaryReport {
                 };
                 let _ = writeln!(
                     out,
-                    "  s{}: {}u val {} ({})  harv {}/{} idle  bank {} +{}  bld {} ({} foundry)  expl {}%  rej {}{} stall {}{}",
+                    "  s{}: {}u val {} (combat {}) ({})  harv {}/{} idle  bank {} +{}  bld {} ({} foundry)  expl {}%  rej {}{} stall {}{}",
                     row.seat,
                     row.units,
                     row.army_value,
+                    row.combat_value,
                     kinds,
                     row.harvesters,
                     row.harvesters_idle,

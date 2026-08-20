@@ -2479,6 +2479,27 @@ impl GymBot {
                 {
                     let staged: Vec<UnitId> =
                         staging.map(|a| a.members.clone()).unwrap_or_default();
+                    // A rider boards on foot, so the sling's ground
+                    // component is the guest list: a fighter across a
+                    // wall from the rack was re-paired and re-stalled
+                    // every think (measured 1,400 times in one game)
+                    // before this consulted route truth like every
+                    // other ground dispatch.
+                    let rack_reach = self.policy.reachable_component(obs, t.tile);
+                    let reach_index = |tile: TilePos| (tile.y * obs.map_width + tile.x) as usize;
+                    let boardable = |u: &UnitObs| {
+                        u.kind.stats().domain == Domain::Air
+                            || [(0, 0), (0, 1), (0, -1), (1, 0), (-1, 0)]
+                                .iter()
+                                .any(|(dx, dy)| {
+                                    let tile = u.tile.offset(*dx, *dy);
+                                    tile.x >= 0
+                                        && tile.y >= 0
+                                        && tile.x < obs.map_width
+                                        && tile.y < obs.map_height
+                                        && rack_reach[reach_index(tile)]
+                                })
+                    };
                     let mut candidates: Vec<(i32, UnitId, u32)> = obs
                         .my_units
                         .iter()
@@ -2487,6 +2508,7 @@ impl GymBot {
                                 && (!enlisted.contains(&u.id) || staged.contains(&u.id))
                                 && u.kind.stats().transport_size > 0
                                 && u.kind.stats().can_fight()
+                                && boardable(u)
                         })
                         .map(|u| {
                             (
@@ -3353,7 +3375,7 @@ impl GymBot {
         let harvesters: Vec<&UnitObs> = obs
             .my_units
             .iter()
-            .filter(|unit| unit.kind == UnitKind::Harvester)
+            .filter(|unit| unit.kind.stats().harvest.is_some())
             .collect();
         let queued_harvester = obs
             .my_queues
@@ -3401,13 +3423,20 @@ impl GymBot {
                 .fold(0u64, u64::saturating_add);
             remembered.saturating_add(static_guard)
         };
+        let source_danger: Vec<(TilePos, u64)> = sources
+            .iter()
+            .map(|source| (*source, danger(*source)))
+            .collect();
         let recovery_worker = recovery_worker(obs);
-        let safe = sources.iter().copied().find(|source| {
-            danger(*source) == 0
-                && recovery_worker.is_none_or(|worker| {
-                    self.recovery_route_is_safe(obs, orientation, worker, *source, false, None)
-                })
-        });
+        let safe = source_danger
+            .iter()
+            .find(|(source, guard)| {
+                *guard == 0
+                    && recovery_worker.is_none_or(|worker| {
+                        self.recovery_route_is_safe(obs, orientation, worker, *source, false, None)
+                    })
+            })
+            .map(|(source, _)| *source);
 
         if !harvesters.is_empty() {
             if let Some(source) = safe {
@@ -3417,16 +3446,23 @@ impl GymBot {
                 self.recovery_target = None;
                 return RecoveryPosture::Prospect;
             }
+            // Contest has no patience exit: a freed besieged seat's
+            // trained passivity idles in the open, so the escape waits
+            // for the training era that prices conduct.
             let target = self
                 .recovery_target
-                .filter(|target| sources.contains(target) && danger(*target) > 0)
-                .unwrap_or_else(|| {
-                    sources
+                .filter(|target| {
+                    source_danger
                         .iter()
-                        .copied()
-                        .min_by_key(|source| {
-                            (danger(*source), source.manhattan(home), source.y, source.x)
+                        .any(|(source, guard)| source == target && *guard > 0)
+                })
+                .unwrap_or_else(|| {
+                    source_danger
+                        .iter()
+                        .min_by_key(|(source, guard)| {
+                            (*guard, source.manhattan(home), source.y, source.x)
                         })
+                        .map(|(source, _)| *source)
                         .expect("the guarded source list is non-empty")
                 });
             self.recovery_target = Some(target);
@@ -5736,7 +5772,7 @@ fn recovery_worker(obs: &Observation) -> Option<UnitId> {
     obs.my_units
         .iter()
         .filter(|unit| {
-            unit.kind == UnitKind::Harvester
+            unit.kind.stats().harvest.is_some()
                 && unit.site.is_none()
                 && unit.founding.is_none()
                 && unit.salvaging.is_none()

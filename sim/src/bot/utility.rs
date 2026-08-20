@@ -388,7 +388,7 @@ impl UtilityPolicy {
     /// flood, indexed `y * width + x`. The route truth every dispatcher
     /// that names a ground destination must consult: manhattan-nearest
     /// picks across explored walls stall forever.
-    fn reachable_component(&self, obs: &Observation, from: TilePos) -> Vec<bool> {
+    pub(super) fn reachable_component(&self, obs: &Observation, from: TilePos) -> Vec<bool> {
         let (w, h) = (obs.map_width, obs.map_height);
         let index = |t: TilePos| (t.y * w + t.x) as usize;
         let mut reachable = vec![false; (w * h).max(0) as usize];
@@ -628,11 +628,19 @@ impl UtilityPolicy {
         // Rung 1: any known node, enemy-side rule dropped.
         let mut still_starved: Vec<UnitId> = Vec::new();
         for &(id, tile) in &starved {
+            // Route truth for the starved line too: manhattan-nearest
+            // across a known wall re-dispatches and re-stalls the same
+            // worker at the same node every think. Nodes outside the
+            // worker's own walkable component fall through to rung 2.
+            let reach = self.reachable_component(obs, tile);
+            let index = |pos: TilePos| (pos.y * obs.map_width + pos.x) as usize;
             let node = obs
                 .known_scrap
                 .iter()
                 .chain(obs.known_wrecks.iter())
-                .filter(|(pos, amount)| *amount > 0 && !self.dead_nodes.contains(pos))
+                .filter(|(pos, amount)| {
+                    *amount > 0 && !self.dead_nodes.contains(pos) && reach[index(*pos)]
+                })
                 .map(|(pos, _)| (pos.manhattan(tile), pos.y, pos.x))
                 .min()
                 .map(|(_, y, x)| TilePos::new(x, y));
