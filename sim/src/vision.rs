@@ -525,19 +525,7 @@ impl GroundSalvageDanger {
         let bits = index.map(|i| self.lanes[i].get()).unwrap_or(0);
         let observed = self.observed_at(tile, index, bits);
         if observed {
-            // A worker already standing inside STATIC fire may route out
-            // through observed danger — nearby only, so it leaves its own
-            // ring rather than marching through the next one. A turret's
-            // ring never moves, so waiting for a window there is waiting
-            // forever. Mobile pressure keeps the old rule: an army moves
-            // on, and holding still beats walking through it (letting
-            // workers flee through live armies measured as the mirror
-            // skirmish running six times longer).
-            if !(self.static_danger_at(from)
-                && from.chebyshev(tile) <= crate::stats::HARVEST_DANGER_EGRESS_RADIUS)
-            {
-                return false;
-            }
+            return false;
         }
         if index.is_some() && bits & lane::INCIDENT_NEAR == 0 {
             return true;
@@ -546,15 +534,6 @@ impl GroundSalvageDanger {
             let next_distance = incident.chebyshev(tile);
             next_distance <= crate::stats::HARVEST_INCIDENT_DANGER_RADIUS
                 && next_distance < incident.chebyshev(from)
-        })
-    }
-
-    /// Whether a known static weapon (turret, bastion) reaches this tile.
-    fn static_danger_at(&self, tile: TilePos) -> bool {
-        let point = tile.center();
-        self.statics.iter().any(|pressure| {
-            rect_closest_point(pressure.anchor, pressure.size, point).dist_sq(point)
-                <= pressure.reach_sq
         })
     }
 
