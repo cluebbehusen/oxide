@@ -23,8 +23,13 @@ replay that re-executes headless to a bit-identical state hash.
 
 ## Playing
 
-The front door offers Play, Tutorial, Replays, Settings, and Quit
-(plus Continue when an autosave waits). The pause menu carries Save
+The front door offers Play, Tutorial, Replays, Roster, Settings, and
+Quit (plus Continue when an autosave waits). Roster is the codex:
+every machine and works with its sprite, what it is for, and its
+figures, in the order the factories unlock them; the pause menu
+carries it too, so a match can be consulted without leaving it, and
+hovering a train or build card shows the same description and
+figures as a tooltip. The pause menu carries Save
 Game — name the save inline (Enter accepts the suggested name) and
 load it back any time from the Replays shelf, which shelves saves
 and finished-match replays in their own sections. Settings holds live volume

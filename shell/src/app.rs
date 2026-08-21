@@ -20,6 +20,7 @@ use crate::debug_server::IncomingRequest;
 use crate::frame_profile::{FrameObservation, FrameProfiler};
 use crate::game::{Game, GameReplay, SoundKind};
 use crate::menu::{Menu, PreviewCache};
+use crate::screens::codex::CodexScreen;
 use crate::screens::final_map::FinalMapScreen;
 use crate::screens::home::HomeScreen;
 use crate::screens::pause::PauseScreen;
@@ -54,6 +55,15 @@ enum Screen {
     Settings {
         /// The screen itself.
         screen: SettingsScreen,
+        /// The displaced screen, restored wholesale on leave.
+        back: Box<Screen>,
+    },
+    /// The codex — every machine and works with its figures — opened
+    /// over Home or the paused match, which waits here intact exactly
+    /// as it does under Settings.
+    Codex {
+        /// The screen itself.
+        screen: CodexScreen,
         /// The displaced screen, restored wholesale on leave.
         back: Box<Screen>,
     },
@@ -405,13 +415,17 @@ fn soundtrack_scene(screen: &Screen, game: &Game) -> crate::soundtrack::Scene {
         ),
         Screen::FinalMap(_) => match_soundtrack_scene(game, true),
         Screen::Pause(_) => match_soundtrack_scene(game, true),
-        Screen::Settings { back, .. } if matches!(**back, Screen::Pause(_)) => {
+        Screen::Settings { back, .. } | Screen::Codex { back, .. }
+            if matches!(**back, Screen::Pause(_)) =>
+        {
             match_soundtrack_scene(game, true)
         }
         Screen::Results(_) => match_soundtrack_scene(game, false),
-        Screen::Home(_) | Screen::Settings { .. } | Screen::Wizard(_) | Screen::Replays(_) => {
-            crate::soundtrack::Scene::Menu
-        }
+        Screen::Home(_)
+        | Screen::Settings { .. }
+        | Screen::Codex { .. }
+        | Screen::Wizard(_)
+        | Screen::Replays(_) => crate::soundtrack::Scene::Menu,
     }
 }
 
@@ -631,10 +645,13 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             Screen::Home(_) | Screen::Wizard(_) | Screen::Replays(_) | Screen::Results(_) => {
                 app.game.update_fx(dt);
             }
-            Screen::Settings { back, .. } if !matches!(**back, Screen::Pause(_)) => {
+            Screen::Settings { back, .. } | Screen::Codex { back, .. }
+                if !matches!(**back, Screen::Pause(_)) =>
+            {
                 app.game.update_fx(dt);
             }
             Screen::Settings { .. }
+            | Screen::Codex { .. }
             | Screen::Playing
             | Screen::Playback(_)
             | Screen::FinalMap(_)
@@ -665,7 +682,9 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                 // Settings) build their screen after the draw below.
                 let mut next: Option<Screen> = None;
                 match out {
-                    screens::home::Out::Stay | screens::home::Out::Settings => {}
+                    screens::home::Out::Stay
+                    | screens::home::Out::Settings
+                    | screens::home::Out::Roster => {}
                     screens::home::Out::Continue => {
                         // Resume the newest autosave — a replay load, so
                         // it cannot desync from its own history.
@@ -720,6 +739,11 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                         screen: SettingsScreen::open(&app.config),
                         back: Box::new(Screen::Home(home)),
                     }
+                } else if out == screens::home::Out::Roster {
+                    Screen::Codex {
+                        screen: CodexScreen::open(),
+                        back: Box::new(Screen::Home(home)),
+                    }
                 } else {
                     next.unwrap_or(Screen::Home(home))
                 }
@@ -753,6 +777,24 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                     *back
                 } else {
                     Screen::Settings { screen: sc, back }
+                }
+            }
+            Screen::Codex {
+                screen: mut codex,
+                back,
+            } => {
+                let out = codex.update(&events, &mut app.input.mouse, &mut app.game.sounds_pending);
+                render::draw(&app.game, &app.sprites, &app.input);
+                veil();
+                let viewer = app.game.state.player(app.game.human).faction;
+                codex.draw(&app.sprites, viewer);
+                if out == screens::codex::Out::Leave {
+                    *back
+                } else {
+                    Screen::Codex {
+                        screen: codex,
+                        back,
+                    }
                 }
             }
             Screen::Wizard(mut w) => {
@@ -1128,6 +1170,10 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                             back: Box::new(Screen::Pause(ps)),
                         }
                     }
+                    screens::pause::Out::Roster => Screen::Codex {
+                        screen: CodexScreen::open(),
+                        back: Box::new(Screen::Pause(ps)),
+                    },
                     screens::pause::Out::Surrender => {
                         // The command lands on the next tick like any
                         // other. A 1v1 decides on the spot and the
@@ -1358,7 +1404,9 @@ pub(crate) async fn run(args: Args) -> Result<()> {
                         | Screen::Results(_)
                         | Screen::FinalMap(_)
                         | Screen::Pause(_) => true,
-                        Screen::Settings { back, .. } => matches!(**back, Screen::Pause(_)),
+                        Screen::Settings { back, .. } | Screen::Codex { back, .. } => {
+                            matches!(**back, Screen::Pause(_))
+                        }
                         Screen::Playback(pb) => matches!(
                             pb.return_to,
                             PlaybackReturn::Pause | PlaybackReturn::Results
@@ -1418,6 +1466,7 @@ fn visible_profile_mode(screen: &Screen) -> &'static str {
     match screen {
         Screen::Home(_) => "home",
         Screen::Settings { .. } => "settings",
+        Screen::Codex { .. } => "codex",
         Screen::Wizard(_) => "wizard",
         Screen::Playing => "playing",
         Screen::Playback(_) => "playback",
@@ -1475,6 +1524,7 @@ fn capture_ui(screen: &Screen, app: &App) -> UiView {
     let (mode_name, menu): (&str, Option<&Menu>) = match screen {
         Screen::Home(home) => ("home", Some(&home.menu)),
         Screen::Settings { screen: sc, .. } => (sc.mode_name(), Some(&sc.menu)),
+        Screen::Codex { screen: codex, .. } => (codex.mode_name(), Some(&codex.menu)),
         Screen::Wizard(w) => {
             // The wizard's custom screens (grid, setup) speak the same
             // protocol surface the row menus do — automation keeps its
@@ -1710,7 +1760,9 @@ fn handle_request(incoming: IncomingRequest, app: &mut App, screen: &mut Screen,
         if matches!(request, Request::Resume) && outcome.is_ok() {
             let over_pause = match &*screen {
                 Screen::Pause(_) => true,
-                Screen::Settings { back, .. } => matches!(**back, Screen::Pause(_)),
+                Screen::Settings { back, .. } | Screen::Codex { back, .. } => {
+                    matches!(**back, Screen::Pause(_))
+                }
                 _ => false,
             };
             if over_pause {

@@ -38,9 +38,10 @@ soundtrack, debug channels, and frame profiler. The `Screen` enum carries the
 complete state for each active mode, making an impossible screen/payload pair
 unrepresentable.
 
-The screen graph includes Home, Settings/Controls, the New Match wizard,
-Playing, Playback, the Saves & Replays shelf, Results, Final Map, and Pause.
-Settings retain the displaced screen they must return to. Playback records an
+The screen graph includes Home, Settings/Controls, the Codex (the roster
+read from `stats.rs`), the New Match wizard, Playing, Playback, the Saves &
+Replays shelf, Results, Final Map, and Pause. Settings and the Codex retain
+the displaced screen they must return to. Playback records an
 explicit return destination. The live `Game` remains available as the backdrop
 for pause, results, and final-map inspection.
 

@@ -216,69 +216,42 @@ pub fn subject_unit(game: &Game) -> Option<oxide_sim::UnitId> {
         .min()
 }
 
-/// One-line flavor per unit kind — tooltip and codex copy.
+/// The player-facing description per unit kind — the sim's own copy
+/// ([`UnitKind::blurb`]), so the tooltip, the codex, and the source
+/// never drift apart.
 pub fn unit_flavor(kind: UnitKind) -> &'static str {
-    match kind {
-        UnitKind::Harvester => "Collects scrap, constructs buildings, and repairs units.",
-        UnitKind::Sentinel => "General-purpose unit with ground and anti-air weapons.",
-        UnitKind::Scuttler => "Fast ground raider effective against exposed Harvesters.",
-        UnitKind::Lancer => "Long-range ground sniper; vulnerable at close range.",
-        UnitKind::Bombard => "Long-range artillery that needs allied vision to fire.",
-        UnitKind::Flakhound => "Tracked anti-air unit.",
-        UnitKind::Buzzard => "Heavy hovering gunship that attacks ground targets.",
-        UnitKind::Talon => "Heavy air-superiority fighter.",
-        UnitKind::Stinger => "Low-cost ground anti-air unit.",
-        UnitKind::Darter => "Fast aircraft that attacks ground targets.",
-        UnitKind::Wisp => "Fast interceptor that attacks air targets only.",
-        UnitKind::Warden => "Tier-two line brawler: the wall that walks.",
-        UnitKind::Tender => "Armored mobile welder: field sustain for long pushes.",
-        UnitKind::Excavator => "Super-harvester: digs faster, hauls triple, builds at double pace.",
-        UnitKind::Kestrel => "Unarmed scout flyer with far sight.",
-        UnitKind::Gnat => "Unarmed scout flyer with far sight.",
-        UnitKind::Shrike => "Heavy interceptor: the bomber's escort and its answer.",
-        UnitKind::Sylph => "Heavy interceptor: lighter, quicker, hungrier.",
-        UnitKind::Condor => "Strategic bomber: one enormous bomb per committed pass.",
-        UnitKind::Moth => "Carpet bomber: lays a stick of six bombs along its run.",
-        UnitKind::Breaker => "Tier-three assault walker built to crack fortress lines.",
-        UnitKind::Avalanche => "Tier-three rocket battery: extreme reach, blind up close.",
-        UnitKind::Skyhook => "Air transport: carries ground machines across anything.",
-        UnitKind::Sapper => {
-            "Walking charge: detonates against its target; devastating to structures."
-        }
-    }
+    kind.blurb()
 }
 
-/// One-line flavor per building kind.
+/// The player-facing description per building kind
+/// ([`BuildingKind::blurb`]).
 pub fn building_flavor(kind: BuildingKind) -> &'static str {
-    match kind {
-        BuildingKind::Foundry => {
-            "Trains Harvesters and Sentinels. Losing all Foundries eliminates you."
-        }
-        BuildingKind::Fabricator => "Unlocks advanced ground units and aircraft.",
-        BuildingKind::Turret => "Static defense that attacks ground units.",
-        BuildingKind::FlakTurret => "Static defense that attacks aircraft.",
-        BuildingKind::Bastion => {
-            "Long-range artillery emplacement; needs allied vision and cannot fire point-blank."
-        }
-        BuildingKind::Array => {
-            "Reveals terrain within 9 tiles and detects hostile units within 16."
-        }
-        BuildingKind::Extractor => {
-            "Restored strip miner: the strongest income in the game, rebuilt only on a derelict frame."
-        }
-        BuildingKind::Airworks => "Air production hall: trains every flyer.",
-        BuildingKind::Crucible => {
-            "The tier-three works: trains the heaviest machines and gates the deepest upgrades."
-        }
-        BuildingKind::Barricade => "Standing wall segment: blocks ground movement.",
-        BuildingKind::ScuttleCharge => {
-            "Buried charge: hidden from enemies until scouted; detonates under hostile machines."
-        }
-        BuildingKind::Reclaimer => "Generates 1 scrap every 1.5 seconds.",
-        BuildingKind::RepairBay => {
-            "Automatically repairs friendly ground units within 4 tiles. Repairs consume scrap."
-        }
-    }
+    kind.blurb()
+}
+
+/// The figures a player weighs before buying a machine, on one line:
+/// toughness, pace, build time, sight. Weapons get their own lines.
+pub fn unit_stat_line(kind: UnitKind) -> String {
+    let stats = kind.stats();
+    let speed = stats.speed.to_num::<f32>() * oxide_sim::TICKS_PER_SECOND as f32;
+    let build = stats.train_ticks as f32 / oxide_sim::TICKS_PER_SECOND as f32;
+    format!(
+        "{} hp | {speed:.1} tiles/s | {build:.1} s build | sight {}",
+        stats.max_hp, stats.vision
+    )
+}
+
+/// The figures a player weighs before raising a works, on one line:
+/// toughness, build time, footprint, sight.
+pub fn building_stat_line(kind: BuildingKind) -> String {
+    let stats = kind.base_stats();
+    let build = stats.construction.map_or(0.0, |c| {
+        c.build_ticks as f32 / oxide_sim::TICKS_PER_SECOND as f32
+    });
+    format!(
+        "{} hp | {build:.1} s build | {}x{} | sight {}",
+        stats.max_hp, stats.size.0, stats.size.1, stats.vision
+    )
 }
 
 fn weapon_line(weapon: &WeaponStats) -> String {
@@ -334,6 +307,15 @@ pub(crate) fn weapon_combat_icon(weapon: &WeaponStats) -> CombatIcon {
 /// Human lines for a kind's weapons, from the stats table.
 pub fn weapon_lines(kind: UnitKind) -> Vec<String> {
     kind.stats().weapons.iter().map(weapon_line).collect()
+}
+
+/// A building's weapon lines at `tier`, for the codex page.
+pub fn building_weapon_lines(kind: BuildingKind, tier: u8) -> Vec<String> {
+    kind.tier_stats(tier)
+        .weapons
+        .iter()
+        .map(weapon_line)
+        .collect()
 }
 
 fn building_combat_lines(kind: BuildingKind, tier: u8) -> Vec<CombatFact> {
@@ -1000,7 +982,7 @@ pub fn build_with_page(game: &Game, bindings: &BindingMap, build_page: usize) ->
             } else {
                 (true, None)
             };
-            let mut desc = vec![unit_flavor(kind).to_string()];
+            let mut desc = vec![unit_flavor(kind).to_string(), unit_stat_line(kind)];
             desc.extend(weapon_lines(kind));
             panel.cards.push(Card {
                 icon: CardIcon::Unit(kind),
@@ -1296,7 +1278,7 @@ pub fn build_with_page(game: &Game, bindings: &BindingMap, build_page: usize) ->
                 action: CardAction::ArmBuild(kind),
                 enabled,
                 why,
-                desc: vec![building_flavor(kind).to_string()],
+                desc: vec![building_flavor(kind).to_string(), building_stat_line(kind)],
                 progress: None,
             });
         }

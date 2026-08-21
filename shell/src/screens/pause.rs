@@ -22,6 +22,8 @@ pub enum Row {
     WatchReplay,
     /// Tune settings over the paused match.
     Settings,
+    /// Read the codex over the paused match.
+    Roster,
     /// Concede the human's seat (confirms; mid-match only — a decided
     /// match has nothing left to give up).
     Surrender,
@@ -40,6 +42,7 @@ impl Row {
             Row::SaveGame => "Save Game",
             Row::WatchReplay => "Watch Replay",
             Row::Settings => "Settings",
+            Row::Roster => "Roster",
             Row::Surrender => "Surrender",
             Row::Restart => "Restart",
             Row::MainMenu => "Main Menu",
@@ -61,6 +64,7 @@ fn rows(finished: bool, can_surrender: bool) -> Vec<Row> {
         rows.push(Row::SaveGame);
     }
     rows.push(Row::Settings);
+    rows.push(Row::Roster);
     if !finished && can_surrender {
         rows.push(Row::Surrender);
     }
@@ -97,6 +101,8 @@ pub enum Out {
     WatchReplay,
     /// Open Settings over the paused match; this screen waits intact.
     Settings,
+    /// Open the codex over the paused match; this screen waits intact.
+    Roster,
     /// Confirmed: concede the human's seat. The caller issues the sim
     /// command and returns to the match — the result (or the team
     /// game's concede overlay) arrives with the next tick.
@@ -287,7 +293,9 @@ impl PauseScreen {
                 Row::Restart => "progress is discarded and the match starts over",
                 Row::MainMenu => "the match is saved before returning home",
                 Row::Quit => "the match is saved before quitting",
-                Row::Resume | Row::SaveGame | Row::WatchReplay | Row::Settings => scenario_name,
+                Row::Resume | Row::SaveGame | Row::WatchReplay | Row::Settings | Row::Roster => {
+                    scenario_name
+                }
             }
         } else if let Some(notice) = &self.notice {
             notice
@@ -411,6 +419,7 @@ impl PauseScreen {
             Some(Row::SaveGame) => Out::SaveGame,
             Some(Row::WatchReplay) => Out::WatchReplay,
             Some(Row::Settings) => Out::Settings,
+            Some(Row::Roster) => Out::Roster,
             Some(confirmed) => {
                 // Surrender, Restart, Main Menu, and Quit each ask
                 // before carrying out their distinct consequence.

@@ -489,6 +489,32 @@ pub fn viewport() -> macroquad::prelude::Vec2 {
     macroquad::prelude::vec2(view_width(), view_height())
 }
 
+/// Breaks `text` into lines no wider than `max_w` under `measure`,
+/// splitting only at spaces; a single word wider than the limit gets
+/// its own line rather than being cut. Presentation-only text layout
+/// for tooltips and the codex.
+pub fn wrap_words(text: &str, measure: impl Fn(&str) -> f32, max_w: f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if line.is_empty() {
+            word.to_string()
+        } else {
+            format!("{line} {word}")
+        };
+        if !line.is_empty() && measure(&candidate) > max_w {
+            lines.push(std::mem::take(&mut line));
+            line = word.to_string();
+        } else {
+            line = candidate;
+        }
+    }
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
 #[cfg(not(test))]
 fn view_bits() -> (u32, u32) {
     (

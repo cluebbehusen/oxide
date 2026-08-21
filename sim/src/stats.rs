@@ -474,6 +474,34 @@ impl Role {
 }
 
 impl UnitKind {
+    /// Every kind, in declaration order.
+    pub const ALL: [UnitKind; 24] = [
+        UnitKind::Harvester,
+        UnitKind::Sentinel,
+        UnitKind::Scuttler,
+        UnitKind::Lancer,
+        UnitKind::Bombard,
+        UnitKind::Flakhound,
+        UnitKind::Stinger,
+        UnitKind::Buzzard,
+        UnitKind::Darter,
+        UnitKind::Talon,
+        UnitKind::Wisp,
+        UnitKind::Warden,
+        UnitKind::Tender,
+        UnitKind::Excavator,
+        UnitKind::Kestrel,
+        UnitKind::Gnat,
+        UnitKind::Shrike,
+        UnitKind::Sylph,
+        UnitKind::Condor,
+        UnitKind::Moth,
+        UnitKind::Breaker,
+        UnitKind::Avalanche,
+        UnitKind::Skyhook,
+        UnitKind::Sapper,
+    ];
+
     /// The faction whose roster carries this kind; `None` means shared.
     /// Training a faction-bound kind from the other faction's seat is
     /// rejected at command validation.
@@ -533,6 +561,75 @@ impl UnitKind {
             UnitKind::Avalanche => "avalanche",
             UnitKind::Skyhook => "skyhook",
             UnitKind::Sapper => "sapper",
+        }
+    }
+
+    /// The player-facing description: what the machine is for and what
+    /// it dies to, in one or two sentences. The codex and the training
+    /// tooltip read this; the enum's doc comments are the same copy for
+    /// readers of the source.
+    pub const fn blurb(self) -> &'static str {
+        match self {
+            UnitKind::Harvester => {
+                "Gathers scrap from nodes and hauls it to a Foundry. Also the crew that raises buildings and welds wounded machines."
+            }
+            UnitKind::Sentinel => {
+                "The line combat unit: short-ranged, sturdy, expendable. A weak skyward poke keeps a pure air ball honest."
+            }
+            UnitKind::Scuttler => {
+                "Fast, cheap, fragile raider: a contact-range shredder that eats harvest lines and dies to anything that fights back in time."
+            }
+            UnitKind::Lancer => {
+                "Slow long-range artillery: outranges everything it can see, melts to anything that reaches it."
+            }
+            UnitKind::Bombard => {
+                "Heavy siege piece: arcing splash shells that reach beyond its own eyes. Someone else must hold sight on the target."
+            }
+            UnitKind::Flakhound => {
+                "Ferrous anti-air crawler: tanky flak platform, blind to ground."
+            }
+            UnitKind::Stinger => {
+                "Cupric anti-air crawler: cheap and quick, dies to a stiff breeze."
+            }
+            UnitKind::Buzzard => {
+                "Ferrous ground-attack flyer: slow, heavy strikes, no answer to air."
+            }
+            UnitKind::Darter => {
+                "Cupric ground-attack flyer: fast shallow strafes, no answer to air."
+            }
+            UnitKind::Talon => "Ferrous air-superiority flyer: sees far, hits only other flyers.",
+            UnitKind::Wisp => "Cupric air-superiority flyer: a swarm wing, fragile, rapid, cheap.",
+            UnitKind::Warden => {
+                "Tier-two line brawler: an upgunned sentinel-class hull. The frontline that lets tier two fight as a wall, not a clinic."
+            }
+            UnitKind::Tender => {
+                "Armored mobile welder: field sustain for long pushes. No harvest gear; its torch is the whole job."
+            }
+            UnitKind::Excavator => {
+                "Tier-two super-harvester: digs faster, hauls triple, and stands works up at twice the pace. The juiciest raid target alive."
+            }
+            UnitKind::Kestrel => "Ferrous scout flyer: fast, unarmed, far-sighted.",
+            UnitKind::Gnat => "Cupric scout flyer: faster still, frailer still.",
+            UnitKind::Shrike => "Ferrous heavy interceptor: the bomber's escort and its answer.",
+            UnitKind::Sylph => "Cupric heavy interceptor: lighter, quicker, hungrier.",
+            UnitKind::Condor => {
+                "Ferrous strategic bomber: one enormous bomb per pass, flown on a committed attack run. It cannot stop and strafe."
+            }
+            UnitKind::Moth => {
+                "Cupric carpet bomber: a stick of six small bombs laid along its flight line each pass."
+            }
+            UnitKind::Breaker => {
+                "Tier-three assault walker: a slow siege-breaking wall of a machine."
+            }
+            UnitKind::Avalanche => {
+                "Tier-three rocket battery: extreme-reach indirect saturation with a blind ring at its feet."
+            }
+            UnitKind::Skyhook => {
+                "Air transport: an unarmed lifter with a four-point sling rack. Cargo rides sealed; it fights nothing, sees nothing, and dies with the airframe."
+            }
+            UnitKind::Sapper => {
+                "A walking demolition charge: presses to its ordered target and detonates. Enormous against structures, modest splash against machines, always fatal to itself."
+            }
         }
     }
 
@@ -1686,6 +1783,23 @@ impl UnitKind {
 }
 
 impl BuildingKind {
+    /// Every kind, in declaration order.
+    pub const ALL: [BuildingKind; 13] = [
+        BuildingKind::Foundry,
+        BuildingKind::Turret,
+        BuildingKind::Fabricator,
+        BuildingKind::FlakTurret,
+        BuildingKind::Bastion,
+        BuildingKind::Array,
+        BuildingKind::Reclaimer,
+        BuildingKind::RepairBay,
+        BuildingKind::Extractor,
+        BuildingKind::Airworks,
+        BuildingKind::Crucible,
+        BuildingKind::Barricade,
+        BuildingKind::ScuttleCharge,
+    ];
+
     /// Lowercase display name.
     pub const fn name(self) -> &'static str {
         match self {
@@ -1702,6 +1816,52 @@ impl BuildingKind {
             BuildingKind::Crucible => "crucible",
             BuildingKind::Barricade => "barricade",
             BuildingKind::ScuttleCharge => "scuttle charge",
+        }
+    }
+
+    /// The player-facing description: what the works does and what it
+    /// costs you to lose. The codex and the build-palette tooltip read
+    /// this; the enum's doc comments are the same copy for readers of
+    /// the source.
+    pub const fn blurb(self) -> &'static str {
+        match self {
+            BuildingKind::Foundry => {
+                "HQ, unit factory, and scrap drop-off. Lose all of them, lose the game."
+            }
+            BuildingKind::Turret => {
+                "Static defense: fires on its own at anything in range and line of sight. Holds ground; loses to patient siege."
+            }
+            BuildingKind::Fabricator => {
+                "Second factory: trains the advanced roster. The tech gate."
+            }
+            BuildingKind::FlakTurret => "Anti-air emplacement: flak bursts that only ever look up.",
+            BuildingKind::Bastion => {
+                "Artillery emplacement: arcing splash shells beyond its own sight. Punishes lazy siege lines, but needs a spotter at full reach."
+            }
+            BuildingKind::Array => {
+                "Radar: a tall mast of true sight, and a wider ring of blips, contacts without identity that never satisfy a targeted attack."
+            }
+            BuildingKind::Reclaimer => {
+                "Grinds ambient debris into a scrap trickle. Slow to repay itself; the reason a match can outlive its scrap patches."
+            }
+            BuildingKind::RepairBay => {
+                "Field workshop: an unarmed aura that welds own wounded machines, ground and air alike, inside its ring. Billed per hp from the owner's bank at repair pricing."
+            }
+            BuildingKind::Extractor => {
+                "A restored strip-mining machine from the old rush. Rebuilt only on a map-authored derelict frame, it grinds the deep seams for the strongest income in the game. The frame outlives every destruction, so the ground it stands on is contested forever."
+            }
+            BuildingKind::Airworks => {
+                "Air production hall: every flyer trains here. Committing to the sky is a visible, snipeable investment."
+            }
+            BuildingKind::Crucible => {
+                "The tier-three works: trains the heaviest machines and gates the deepest upgrades. Expensive, slow, and worth killing."
+            }
+            BuildingKind::Barricade => {
+                "A cheap standing wall segment: blocks ground movement and nothing else. Terrain you can buy."
+            }
+            BuildingKind::ScuttleCharge => {
+                "A buried demolition charge, the game's only stealth. Invisible to enemies until a scout flies close or an Array's detection ring covers it; detonates under hostile ground machines."
+            }
         }
     }
 
