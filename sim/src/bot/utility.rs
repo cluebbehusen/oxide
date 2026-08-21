@@ -2301,6 +2301,33 @@ impl UtilityPolicy {
             })
     }
 
+    /// The strategic objective for the neural bot. While the enemy still
+    /// fields fighters this is [`Self::enemy_site`], the nearest known
+    /// building — forward pressure on the periphery is part of how the
+    /// styles play, and the battery measures it. Once no enemy fighter
+    /// is known, the objective is the nearest known Foundry: the win
+    /// condition. A dominant attacker was measured cycling four
+    /// extractor sites for fifty minutes without ever marching on the
+    /// Foundry (terrace-ledger seed 1), and every finishing-latency case
+    /// in campaign 3 razed the periphery first. The scripted baseline
+    /// keeps `enemy_site` throughout.
+    pub(super) fn enemy_objective(
+        obs: &Observation,
+        home: TilePos,
+        enemy_beaten: bool,
+    ) -> Option<TilePos> {
+        if !enemy_beaten {
+            return Self::enemy_site(obs, home);
+        }
+        obs.enemy_buildings
+            .iter()
+            .filter(|b| b.kind == BuildingKind::Foundry)
+            .map(|b| (b.anchor.manhattan(home), b.anchor.y, b.anchor.x))
+            .min()
+            .map(|(_, y, x)| TilePos::new(x, y))
+            .or_else(|| Self::enemy_site(obs, home))
+    }
+
     /// Where armies gather: the staging army's rally if one exists, else
     /// a fresh point leaning toward the enemy but within reach of home —
     /// a mid-map rally sits on the enemy's march path and gets

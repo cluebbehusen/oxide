@@ -990,7 +990,8 @@ impl GymBot {
             ArmyState::Engaging => 3,
             ArmyState::Withdrawing => 4,
         });
-        let enemy_site = home.and_then(|h| UtilityPolicy::enemy_site(&obs, h));
+        let beaten = self.enemy_beaten(&obs);
+        let enemy_site = home.and_then(|h| UtilityPolicy::enemy_objective(&obs, h, beaten));
         let home_intruder = home.and_then(|h| nearest_home_intruder(&obs, h));
         let my_strength: i64 = obs
             .my_units
@@ -2215,7 +2216,7 @@ impl GymBot {
                 .iter()
                 .filter(|a| a.state == ArmyState::Staging)
                 .min_by_key(|a| a.id);
-            let enemy_site = UtilityPolicy::enemy_site(&obs, home);
+            let enemy_site = UtilityPolicy::enemy_objective(&obs, home, self.enemy_beaten(&obs));
             let mut op_intents = Vec::new();
             self.lower_operation(
                 &obs,
@@ -2263,7 +2264,7 @@ impl GymBot {
             .iter()
             .filter(|a| a.state == ArmyState::Staging)
             .min_by_key(|a| a.id);
-        let enemy_site = UtilityPolicy::enemy_site(&obs, home);
+        let enemy_site = UtilityPolicy::enemy_objective(&obs, home, self.enemy_beaten(&obs));
         let home_intruder = nearest_home_intruder(&obs, home);
         let mut plan = plan;
         // The finish lock's patience release extends through execution:
@@ -4308,7 +4309,7 @@ impl GymBot {
         armies: &[super::executive::Army],
         home: TilePos,
     ) -> Option<Action> {
-        let _target = UtilityPolicy::enemy_site(obs, home)?;
+        let _target = UtilityPolicy::enemy_objective(obs, home, self.enemy_beaten(obs))?;
         if armies
             .iter()
             .any(|army| army.state == ArmyState::Withdrawing)
@@ -4456,6 +4457,21 @@ impl GymBot {
     /// enemy fighter is visible, the remembered army is what's visible
     /// now (strength and centroid tile); the timestamp freezes when
     /// sight is lost.
+    /// Whether the enemy reads as beaten: no fighter in sight and none
+    /// remembered inside the danger-memory window. Out-of-sight is not
+    /// beaten — under fog the enemy army is simply elsewhere most
+    /// thinks, and treating that as beaten flipped the strategic target
+    /// mid-fight and erased two style families' measured identity.
+    fn enemy_beaten(&self, obs: &Observation) -> bool {
+        // Never having seen a fighter is not beaten either: the enemy
+        // army is merely undiscovered, and reading that as beaten sent
+        // the first push straight at the Foundry in every contested
+        // opening.
+        self.seen_at > 0
+            && !obs.enemy_units.iter().any(|u| u.kind.stats().can_fight())
+            && obs.tick.saturating_sub(self.seen_at) > DANGER_MEMORY_TICKS
+    }
+
     fn remember(&mut self, world: &Observation) {
         let fighters: Vec<_> = world
             .enemy_units
