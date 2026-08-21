@@ -252,6 +252,10 @@ pub struct SeatLoss {
     /// Value lost in workers and other non-combat units. A harvester
     /// massacre must never render as an army trade.
     pub worker_value: u64,
+    /// Value lost in transport airframes (their riders are counted as
+    /// whatever they were). Folding hulls into worker value read a
+    /// shootdown as "loaded worker transports".
+    pub transport_value: u64,
     /// Value lost in completed buildings.
     pub building_value: u64,
 }
@@ -513,6 +517,7 @@ impl BattleClusterer {
             sites: 0,
             combat_value: 0,
             worker_value: 0,
+            transport_value: 0,
             building_value: 0,
         });
         loss.value += value;
@@ -527,7 +532,7 @@ impl BattleClusterer {
             }
             LossKind::Transport => {
                 loss.units += 1;
-                loss.worker_value += value;
+                loss.transport_value += value;
                 cluster.transports += 1;
             }
             LossKind::Building => {
@@ -1579,14 +1584,18 @@ fn render_moment(kind: &TimelineKind) -> String {
                     if !counts.is_empty() {
                         let _ = write!(part, " ({})", counts.join("+"));
                     }
-                    if loss.worker_value > 0 && loss.combat_value > 0 {
-                        let _ = write!(
-                            part,
-                            " [combat {} / workers {}]",
-                            loss.combat_value, loss.worker_value
-                        );
-                    } else if loss.worker_value > 0 {
-                        let _ = write!(part, " [workers only]");
+                    let mut split = Vec::new();
+                    if loss.combat_value > 0 {
+                        split.push(format!("combat {}", loss.combat_value));
+                    }
+                    if loss.worker_value > 0 {
+                        split.push(format!("workers {}", loss.worker_value));
+                    }
+                    if loss.transport_value > 0 {
+                        split.push(format!("transports {}", loss.transport_value));
+                    }
+                    if split.len() > 1 || (loss.combat_value == 0 && !split.is_empty()) {
+                        let _ = write!(part, " [{}]", split.join(" / "));
                     }
                     part
                 })
@@ -1754,6 +1763,7 @@ mod tests {
             sites: 0,
             combat_value: value,
             worker_value: 0,
+            transport_value: 0,
             building_value: 0,
         };
         let duel = &[0u8, 1];
@@ -1785,6 +1795,7 @@ mod tests {
             sites: 0,
             combat_value: 0,
             worker_value: 0,
+            transport_value: 0,
             building_value: 0,
         };
         let cases: Vec<(TimelineKind, &str)> = vec![

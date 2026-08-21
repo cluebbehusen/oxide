@@ -447,7 +447,9 @@ impl Executive {
                     },
                 }),
                 Intent::Build { kind, anchor } => {
-                    if let Some(builder) = self.free_harvester(obs, *anchor, &claimed) {
+                    if let Some(builder) =
+                        self.free_harvester_with(obs, *anchor, &claimed, rules.ground_component)
+                    {
                         claimed.push(builder);
                         out.push(PlayerCommand {
                             player: me,
@@ -505,15 +507,28 @@ impl Executive {
                 Intent::PushArmy { army, target } => {
                     if let Some(a) = self.armies.iter_mut().find(|a| a.id == *army)
                         && !a.members.is_empty()
+                        // An artillery-only body is parked at staging by
+                        // march() rather than sent forward, so entering
+                        // Pushing would start a wedge clock on a march
+                        // that never happened and fabricate a seal.
+                        && obs
+                            .my_units
+                            .iter()
+                            .any(|u| a.members.contains(&u.id) && !is_artillery(u))
                     {
                         // A re-push at the same target is the same march:
                         // the wedge clock and bounce count carry over, or a
                         // policy re-issuing Push every think could never
                         // accumulate either and a refused march would stall
                         // forever without testifying.
+                        // The distance clock is per target; the bounce
+                        // count is not. Two refusals in a row are evidence
+                        // wherever the second was aimed — an alternating
+                        // pair of doorsteps reset the count every think
+                        // and a 20-unit army was refused 160 times without
+                        // ever testifying.
                         if a.target != Some(*target) {
                             a.progress = None;
-                            a.bounces = 0;
                         }
                         a.state = ArmyState::Pushing;
                         a.target = Some(*target);
@@ -928,7 +943,7 @@ impl Executive {
                     }
                 }
                 ArmyState::Engaging => {
-                    let (mine, theirs) = local_strength(obs, &army.members);
+                    let (mine, theirs) = local_strength(obs, &army.members, connected.is_some());
                     if theirs == 0 {
                         // Fight's over here; march on if a target remains.
                         army.state = match army.target {
@@ -1075,11 +1090,29 @@ impl Executive {
         anchor: TilePos,
         claimed: &[UnitId],
     ) -> Option<UnitId> {
+        self.free_harvester_with(obs, anchor, claimed, None)
+    }
+
+    /// [`Self::free_harvester`] with the gym's route truth: the builder's
+    /// walk must reach the anchor's component, or the dispatch re-stalls
+    /// every think the way every other blind dispatcher did.
+    fn free_harvester_with(
+        &self,
+        obs: &Observation,
+        anchor: TilePos,
+        claimed: &[UnitId],
+        component: Option<&dyn Fn(TilePos) -> Vec<bool>>,
+    ) -> Option<UnitId> {
         let enlisted: Vec<UnitId> = self.enlisted().collect();
+        let reach = component.map(|component| component(anchor));
+        let index = |tile: TilePos| (tile.y * obs.map_width + tile.x) as usize;
         obs.my_units
             .iter()
             .filter(|u| {
                 u.kind.stats().harvest.is_some()
+                    && reach
+                        .as_ref()
+                        .is_none_or(|reach| reach.get(index(u.tile)).copied().unwrap_or(false))
                     && u.site.is_none()
                     // A walking founder is as spoken for as a builder
                     // on site: re-tasking it silently drops the
@@ -1279,6 +1312,19 @@ fn enemies_near(
                     // ground as reachable, so a flyer just offshore is
                     // still contact while one far over the water is not.
                     && connected.is_none_or(|connected| connected(m.tile, e.tile))
+            }) || connected.is_some_and(|connected| {
+                obs.enemy_buildings.iter().any(|b| {
+                    b.seen
+                        && b.built
+                        && m.tile.chebyshev(b.anchor) <= radius
+                        // A turret across a channel is not contact either.
+                        && connected(m.tile, b.anchor)
+                        && b.kind
+                            .base_stats()
+                            .weapons
+                            .iter()
+                            .any(|w| w.targets.covers(m.kind.stats().domain))
+                })
             })
         })
         .count();
@@ -1341,7 +1387,7 @@ pub fn building_strength(b: &super::observation::BuildingObs) -> u64 {
 /// the estimate stable when the line bends — a mean position can land in
 /// empty ground and blind every radius test around it — while stragglers
 /// don't sweep distant enemies into the count.
-fn local_strength(obs: &Observation, members: &[UnitId]) -> (u64, u64) {
+fn local_strength(obs: &Observation, members: &[UnitId], count_buildings: bool) -> (u64, u64) {
     use crate::stats::Domain;
     let mine_units: Vec<&UnitObs> = obs
         .my_units
@@ -1387,11 +1433,53 @@ fn local_strength(obs: &Observation, members: &[UnitId]) -> (u64, u64) {
         .iter()
         .map(|u| applicable(u, their_ground, their_air))
         .sum();
-    let theirs: u64 = opposition
+    let mut theirs: u64 = opposition
         .iter()
         .map(|u| applicable(u, my_ground, my_air))
         .sum();
+    // Armed buildings shoot too. The fight model priced only units, so
+    // an army walked into a turret line reading the fight as winnable
+    // and fed two full bodies into it (6,700 value lost for 1,270
+    // returned, terrace-ledger seed 1). Seen and built only — a ghost is
+    // never priced. Neural bot only: the scripted baseline keeps the
+    // unit-only read, byte for byte.
+    if count_buildings {
+        theirs = theirs.saturating_add(armed_buildings_near(
+            obs,
+            &engaged,
+            ENGAGE_RADIUS,
+            my_ground,
+            my_air,
+        ));
+    }
     (mine, theirs)
+}
+
+/// Summed strength of seen, built, armed enemy buildings within `radius`
+/// of any of `tiles` whose weapons cover a domain the army fields.
+fn armed_buildings_near(
+    obs: &Observation,
+    tiles: &[TilePos],
+    radius: i32,
+    my_ground: bool,
+    my_air: bool,
+) -> u64 {
+    use crate::stats::Domain;
+    obs.enemy_buildings
+        .iter()
+        .filter(|b| b.seen && b.built)
+        .filter(|b| tiles.iter().any(|t| t.chebyshev(b.anchor) <= radius))
+        .filter(|b| {
+            let stats = b.kind.base_stats();
+            (my_ground
+                && stats
+                    .weapons
+                    .iter()
+                    .any(|w| w.targets.covers(Domain::Ground)))
+                || (my_air && stats.weapons.iter().any(|w| w.targets.covers(Domain::Air)))
+        })
+        .map(building_strength)
+        .fold(0u64, u64::saturating_add)
 }
 
 fn tiles_within(a: TilePos, b: TilePos, radius: i32) -> bool {
