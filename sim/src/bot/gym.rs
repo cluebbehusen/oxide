@@ -4309,11 +4309,23 @@ impl GymBot {
         armies: &[super::executive::Army],
         home: TilePos,
     ) -> Option<Action> {
-        let _target = UtilityPolicy::enemy_objective(obs, home, self.enemy_beaten(obs))?;
+        let target = UtilityPolicy::enemy_objective(obs, home, self.enemy_beaten(obs))?;
         if armies
             .iter()
             .any(|army| army.state == ArmyState::Withdrawing)
         {
+            return None;
+        }
+        // An objective with no known ground route, or one a push already
+        // wedged against, is the island doctrine's war, not a finish:
+        // committing a staged body at it re-ran the refused march once
+        // per bounce pair for the rest of the game (severance seed 0,
+        // 10,555 NoRoute stalls), and the narrowed head kept the
+        // doctrine that would have sealed it from ever running. A body
+        // already fighting keeps its lock.
+        let objective_routable =
+            self.known_ground_route(obs, home, target) && !self.site_wedged(obs, target);
+        if !objective_routable && !armies.iter().any(|army| army.state == ArmyState::Engaging) {
             return None;
         }
 
